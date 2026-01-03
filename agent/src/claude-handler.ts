@@ -48,7 +48,7 @@ export class ClaudeHandler extends EventEmitter {
     super()
     this.options = {
       workingDirectory: options.workingDirectory || process.cwd(),
-      allowedTools: options.allowedTools || ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'],
+      allowedTools: options.allowedTools || ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash', 'WebSearch', 'WebFetch'],
       permissionMode: options.permissionMode || 'default',
     }
   }

@@ -304,3 +304,29 @@ Say these to test Claude Agent SDK integration:
 1. "What files are in this project?" (should trigger Glob tool)
 2. "Read the package.json file" (should use Read tool)
 3. "Create a test file called hello.txt with hello world" (should use Write tool)
+
+---
+
+## Latest Updates (2026-01-03)
+
+### Features Implemented
+- Permission UI buttons (Deny/Allow Once/Always Allow)
+- Voice agent verbally asks for permission before dangerous operations
+- Text input now reaches the voice agent
+- Disconnect/reconnect without page refresh
+- Data channel communication for permissions and text input
+
+### Research: Hot-Swap Model Switching
+LiveKit's AgentSession API (v1.0+) supports switching between models during a conversation:
+- The unified AgentSession abstracts underlying model types
+- Can switch between pipelined (STT-LLM-TTS) and speech-to-speech models
+- Implementation would require:
+  1. Frontend sends model-switch request via data channel
+  2. Agent stops current session
+  3. Agent creates new session with new model
+  4. Agent starts new session
+- **Status**: Deferred - requires significant refactoring
+
+### Pending Features
+- Codex SDK integration for alternative coding agent
+- Agent selector in frontend (Claude Code vs Codex)
