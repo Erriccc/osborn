@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -21,6 +21,11 @@ interface ChatMessage {
   content: string
   timestamp: Date
   toolName?: string
+}
+
+interface PermissionRequest {
+  toolName: string
+  description: string
 }
 
 function ChatPanel({ messages }: { messages: ChatMessage[] }) {
@@ -102,52 +107,73 @@ function TextInput({ onSend }: { onSend: (text: string) => void }) {
   )
 }
 
-function VoiceAssistantUI({
-  messages,
-  onSendText,
+function PermissionModal({
+  permission,
+  onRespond,
 }: {
-  messages: ChatMessage[]
-  onSendText: (text: string) => void
+  permission: PermissionRequest
+  onRespond: (response: 'allow' | 'deny' | 'always_allow') => void
 }) {
-  const { state, audioTrack } = useVoiceAssistant()
-
   return (
-    <div className="w-full max-w-2xl h-[80vh] flex flex-col bg-gray-900 rounded-xl overflow-hidden border border-gray-700">
-      {/* Header with voice visualizer */}
-      <div className="p-4 border-b border-gray-700 flex items-center gap-4">
-        <div className="h-12 w-32">
-          <BarVisualizer
-            state={state}
-            trackRef={audioTrack}
-            barCount={5}
-            options={{ minHeight: 5 }}
-          />
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full mx-4 border border-gray-600 shadow-xl">
+        <div className="flex items-center gap-3 mb-4">
+          <span className="text-2xl">⚠️</span>
+          <h3 className="text-lg font-semibold text-white">Permission Required</h3>
         </div>
-        <div className="flex-1">
-          <p className="text-sm capitalize text-gray-400">
-            {state === 'listening' ? '🎤 Listening...' :
-             state === 'thinking' ? '🧠 Thinking...' :
-             state === 'speaking' ? '🔊 Speaking...' :
-             state}
+
+        <div className="mb-4">
+          <p className="text-gray-300 mb-2">
+            Claude wants to use: <span className="text-yellow-400 font-mono">{permission.toolName}</span>
+          </p>
+          <p className="text-gray-400 text-sm bg-gray-900 rounded-lg p-3 font-mono">
+            {permission.description}
           </p>
         </div>
-        <VoiceAssistantControlBar />
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => onRespond('deny')}
+            className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors text-white font-medium"
+          >
+            Deny
+          </button>
+          <button
+            onClick={() => onRespond('allow')}
+            className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors text-white font-medium"
+          >
+            Allow Once
+          </button>
+          <button
+            onClick={() => onRespond('always_allow')}
+            className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors text-white font-medium"
+          >
+            Always Allow
+          </button>
+        </div>
+
+        <p className="text-gray-500 text-xs mt-4 text-center">
+          Say "allow", "deny", or "always allow" to respond via voice
+        </p>
       </div>
-
-      {/* Chat messages */}
-      <ChatPanel messages={messages} />
-
-      {/* Text input */}
-      <TextInput onSend={onSendText} />
     </div>
   )
 }
 
-export default function VoiceRoom({ token }: VoiceRoomProps) {
-  const livekitUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-project.livekit.cloud'
+// Inner component that has access to LiveKit hooks
+function VoiceRoomInner() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
 
-  const addMessage = (role: ChatMessage['role'], content: string, toolName?: string) => {
+  const { state, audioTrack } = useVoiceAssistant()
+
+  // Data channel for receiving updates from agent
+  const { message: dataMessage } = useDataChannel('osborn-updates')
+
+  // Data channel for sending to agent
+  const { send: sendToAgent } = useDataChannel('user-input')
+
+  const addMessage = useCallback((role: ChatMessage['role'], content: string, toolName?: string) => {
     setMessages((prev) => [
       ...prev,
       {
@@ -158,14 +184,105 @@ export default function VoiceRoom({ token }: VoiceRoomProps) {
         toolName,
       },
     ])
-  }
+  }, [])
 
-  // Handle text input - send to agent via data channel
-  const handleSendText = (text: string) => {
+  // Handle incoming data channel messages
+  useEffect(() => {
+    if (dataMessage) {
+      try {
+        const data = JSON.parse(new TextDecoder().decode(dataMessage.payload))
+
+        if (data.type === 'user_transcript') {
+          addMessage('user', data.text)
+        } else if (data.type === 'assistant_response') {
+          addMessage('assistant', data.text)
+        } else if (data.type === 'tool_use') {
+          addMessage('system', `Using ${data.tool}: ${data.description || ''}`, data.tool)
+        } else if (data.type === 'permission_request') {
+          // Show permission modal
+          setPendingPermission({
+            toolName: data.toolName,
+            description: data.description,
+          })
+        } else if (data.type === 'permission_response') {
+          // Permission was handled (possibly by voice)
+          setPendingPermission(null)
+        }
+      } catch (e) {
+        // Not JSON, ignore
+      }
+    }
+  }, [dataMessage, addMessage])
+
+  // Handle text input
+  const handleSendText = useCallback((text: string) => {
     addMessage('user', text)
-    // TODO: Send text to agent via data channel
-    // For now, just show in chat
-  }
+    // Send to agent via data channel
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'user_text',
+      content: text,
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [addMessage, sendToAgent])
+
+  // Handle permission response
+  const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
+    const toolName = pendingPermission?.toolName || 'tool'
+    setPendingPermission(null)
+    addMessage('system', `Permission ${response}: ${toolName}`)
+
+    // Send to agent via data channel
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'permission_response',
+      response,
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [addMessage, sendToAgent, pendingPermission])
+
+  return (
+    <>
+      {pendingPermission && (
+        <PermissionModal
+          permission={pendingPermission}
+          onRespond={handlePermissionResponse}
+        />
+      )}
+      <div className="w-full max-w-2xl h-[80vh] flex flex-col bg-gray-900 rounded-xl overflow-hidden border border-gray-700">
+        {/* Header with voice visualizer */}
+        <div className="p-4 border-b border-gray-700 flex items-center gap-4">
+          <div className="h-12 w-32">
+            <BarVisualizer
+              state={state}
+              trackRef={audioTrack}
+              barCount={5}
+              options={{ minHeight: 5 }}
+            />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm capitalize text-gray-400">
+              {state === 'listening' ? '🎤 Listening...' :
+               state === 'thinking' ? '🧠 Thinking...' :
+               state === 'speaking' ? '🔊 Speaking...' :
+               state}
+            </p>
+          </div>
+          <VoiceAssistantControlBar />
+        </div>
+
+        {/* Chat messages */}
+        <ChatPanel messages={messages} />
+
+        {/* Text input */}
+        <TextInput onSend={handleSendText} />
+      </div>
+    </>
+  )
+}
+
+export default function VoiceRoom({ token }: VoiceRoomProps) {
+  const livekitUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-project.livekit.cloud'
 
   return (
     <LiveKitRoom
@@ -177,64 +294,7 @@ export default function VoiceRoom({ token }: VoiceRoomProps) {
       className="w-full flex justify-center"
     >
       <RoomAudioRenderer />
-      <TranscriptHandler addMessage={addMessage} />
-      <VoiceAssistantUI messages={messages} onSendText={handleSendText} />
+      <VoiceRoomInner />
     </LiveKitRoom>
   )
-}
-
-// Component to handle transcription events
-function TranscriptHandler({
-  addMessage,
-}: {
-  addMessage: (role: ChatMessage['role'], content: string, toolName?: string) => void
-}) {
-  const { agent } = useVoiceAssistant()
-
-  // Track transcription events
-  useEffect(() => {
-    if (!agent) return
-
-    // Listen for agent state changes and transcription
-    const handleAgentTranscription = (segments: any[]) => {
-      if (segments.length > 0) {
-        const lastSegment = segments[segments.length - 1]
-        if (lastSegment.final && lastSegment.text) {
-          // This is agent speech that was transcribed
-          // We might already have this from the assistant response
-        }
-      }
-    }
-
-    // The useVoiceAssistant hook provides transcription via the agent
-    // We'll use the agent's messages if available
-  }, [agent])
-
-  // Listen for data channel messages from agent (for tool use, etc.)
-  const { message: dataMessage } = useDataChannel('osborn-updates')
-
-  useEffect(() => {
-    if (dataMessage) {
-      try {
-        const data = JSON.parse(new TextDecoder().decode(dataMessage.payload))
-        // Use message ID to deduplicate
-        const msgId = `${data.type}-${data.text || data.tool || ''}-${Math.floor(Date.now() / 1000)}`
-
-        if (data.type === 'user_transcript') {
-          addMessage('user', data.text)
-        } else if (data.type === 'assistant_response') {
-          addMessage('assistant', data.text)
-        } else if (data.type === 'tool_use') {
-          // Only show tool use once per second (debounce)
-          addMessage('system', `Using ${data.tool}: ${data.description || ''}`, data.tool)
-        } else if (data.type === 'permission_request') {
-          addMessage('system', `Permission needed: ${data.description}`)
-        }
-      } catch (e) {
-        // Not JSON, ignore
-      }
-    }
-  }, [dataMessage])
-
-  return null
 }

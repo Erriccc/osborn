@@ -137,10 +137,13 @@ ALWAYS use run_claude for:
 - Terminal commands (run, install, git)
 - Code tasks (fix, refactor, explain)
 
-PERMISSION HANDLING:
-When you receive a permission_request event, immediately ask the user:
-"Claude wants to [action]. Allow, deny, or always allow?"
-Then listen for their response and use respond_permission with their choice.
+PERMISSION HANDLING - CRITICAL:
+When Claude needs permission (you'll see a system message about permission_request), you MUST:
+1. IMMEDIATELY stop and ask the user verbally: "Claude wants to [describe action]. Should I allow it, deny it, or always allow this type of action?"
+2. Wait for their voice response
+3. When they say "allow", "yes", "go ahead" → call respond_permission with "allow"
+4. When they say "deny", "no", "don't" → call respond_permission with "deny"
+5. When they say "always allow", "always" → call respond_permission with "always_allow"
 
 RESPOND DIRECTLY for greetings and general questions.
 Always end with a question or invite the user to speak.`
@@ -260,6 +263,30 @@ export default defineAgent({
 
     ctx.room.on('trackSubscribed', (track, publication, p) => {
       console.log(`📥 Track subscribed: ${track.kind} from ${p.identity}`)
+    })
+
+    // Listen for data channel messages from frontend
+    ctx.room.on('dataReceived', (payload, participant, kind, topic) => {
+      if (topic === 'user-input') {
+        try {
+          const data = JSON.parse(new TextDecoder().decode(payload))
+          console.log(`📨 Received from frontend:`, data)
+
+          if (data.type === 'permission_response') {
+            // Handle permission response from UI
+            if (claude.hasPendingPermission()) {
+              claude.respondToPermission(data.response)
+              console.log(`✅ Permission ${data.response} from UI`)
+            }
+          } else if (data.type === 'user_text') {
+            // Handle text input from frontend
+            console.log(`📝 Text input: "${data.content}"`)
+            // TODO: Route text to agent for processing
+          }
+        } catch (e) {
+          // Not JSON, ignore
+        }
+      }
     })
 
     // Create the agent
