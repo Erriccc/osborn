@@ -148,13 +148,9 @@ async function sendToFrontend(data: object) {
 
 // Define the run_code tool (works with both Claude and Codex)
 const runCodeTool = llm.tool({
-  description: `Execute coding tasks using the coding agent. Use for:
-- Files: read, write, create, edit, list, search
-- Directories: current directory, list contents
-- Code: fix bugs, refactor, explain, review
-- Terminal: run commands, install packages, git
-- Project: analyze codebase, make changes
-- Web: search the web for information`,
+  description: `Execute coding tasks using the coding agent.
+IMPORTANT: Before calling this tool, ALWAYS say "Got it" or "On it" first so the user knows you heard them.
+Use for: file operations, code tasks, terminal commands, web searches, project analysis.`,
   parameters: z.object({
     task: z.string().describe('The coding task to execute'),
   }),
@@ -209,7 +205,7 @@ Call this after hearing the user's response to a permission prompt.`,
 const OSBORN_INSTRUCTIONS = `You are Osborn, a voice-enabled AI coding assistant.
 
 RESPONSE STYLE:
-- Keep responses SHORT (under 30 words unless explaining code)
+- Keep responses SHORT (under 70 words unless explaining code)
 - Sound natural and conversational
 - Say "Got it" or "On it" immediately when given a task, THEN work on it
 - Ask clarifying questions if the request is ambiguous
