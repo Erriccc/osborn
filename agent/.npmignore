@@ -1,0 +1,15 @@
+# Secrets - NEVER publish
+.env
+.env.local
+.env.*.local
+
+# Source (publish dist only)
+src/
+
+# Dev files
+tsconfig.json
+*.log
+.DS_Store
+
+# Config
+config.ts

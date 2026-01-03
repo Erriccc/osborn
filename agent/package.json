@@ -1,10 +1,10 @@
 {
-  "name": "osborn-agent",
+  "name": "osborn",
   "version": "0.1.0",
   "description": "Voice AI coding assistant - local agent that connects to Osborn frontend",
   "type": "module",
   "bin": {
-    "osborn-agent": "./bin/cli.js"
+    "osborn": "./bin/cli.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts dev",
