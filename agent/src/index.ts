@@ -414,7 +414,12 @@ function createModel(provider: string) {
     const model = new google.beta.realtime.RealtimeModel({
       model: 'gemini-2.5-flash-native-audio-preview',
       voice: 'Puck',
-      instructions: OSBORN_INSTRUCTIONS,
+      // Instructions tell Gemini to greet proactively
+      instructions: OSBORN_INSTRUCTIONS + `
+
+IMPORTANT: When the session starts and you hear the user connect (even silence),
+immediately greet them with: "Hey, I'm Osborn, ready to help with coding. What are you working on?"
+Don't wait for them to speak first.`,
     })
     console.log('✅ Gemini model created')
     return model
