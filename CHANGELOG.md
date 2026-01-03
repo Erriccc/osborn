@@ -28,6 +28,14 @@
 - **Fixed**: Gemini model restored to working config (`gemini-2.5-flash-native-audio-preview-12-2025`)
 - Better logging for speech queue debugging
 
+**Frontend UX Improvements:**
+- Auto-detect agent connection (no more manual "Agent Connected?" button)
+- Persist provider/agent selection in localStorage
+- File attachment support (images, code files)
+- Improved audio visualization with state badges
+- Better waiting screen with live connection status
+- Agent sends heartbeat when ready
+
 ### v0.1.2
 - Multi-agent pool (2 Claude handlers)
 - Streaming feedback to voice LLM
