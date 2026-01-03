@@ -243,8 +243,8 @@ function createModel(provider: string) {
     // From official docs: https://docs.livekit.io/agents/models/realtime/plugins/gemini/
     // Package v1.0.31 uses google.beta.realtime (not google.realtime yet)
     const model = new google.beta.realtime.RealtimeModel({
-      // model: 'gemini-2.5-flash-native-audio-preview-12-2025', // From official docs
-      model: 'gemini-3.5-flash-latest', // From official docs
+      model: 'gemini-2.5-flash-native-audio-preview-12-2025', // From official docs
+      // model: 'gemini-3.5-flash-latest', // From official docs
       voice: 'Puck',
       instructions: OSBORN_INSTRUCTIONS,
     })
