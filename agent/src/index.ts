@@ -31,11 +31,29 @@ if (DEBUG) {
 
 console.log(`🤖 Default LLM Provider: ${DEFAULT_PROVIDER}`)
 
+// Example MCP server configurations (uncomment to enable)
+const MCP_SERVERS = {
+  // GitHub integration
+  // 'github': {
+  //   command: 'npx',
+  //   args: ['@modelcontextprotocol/server-github'],
+  //   env: { GITHUB_TOKEN: process.env.GITHUB_TOKEN || '' }
+  // },
+  // Filesystem with specific allowed paths
+  // 'filesystem': {
+  //   command: 'npx',
+  //   args: ['@modelcontextprotocol/server-filesystem'],
+  //   env: { ALLOWED_PATHS: '/Users/newupgrade/Desktop/Developer' }
+  // },
+}
+
 // Pre-initialize Claude handler at module load (before any connections)
 console.log('🔥 Pre-initializing Claude Code...')
 const claude = new ClaudeHandler({
   workingDirectory: '/Users/newupgrade/Desktop/Developer/osborn',
   permissionMode: 'default', // Ask for permission on dangerous tools (Bash, Write, Edit)
+  // Uncomment to enable MCP servers:
+  // mcpServers: MCP_SERVERS,
 })
 
 // Listen for permission requests from Claude

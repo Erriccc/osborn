@@ -1,9 +1,14 @@
 import { Codex } from '@openai/codex-sdk'
 import { EventEmitter } from 'events'
 
+type SandboxMode = 'workspace-write' | 'danger-full-access'
+type ApprovalPolicy = 'on-failure' | 'on-request' | 'never'
+
 interface CodexHandlerOptions {
   workingDirectory?: string
   skipGitRepoCheck?: boolean
+  sandboxMode?: SandboxMode
+  approvalPolicy?: ApprovalPolicy
 }
 
 /**
@@ -13,6 +18,16 @@ interface CodexHandlerOptions {
  * - Thread persistence (reuses same thread for context)
  * - Built-in coding tools (file operations, terminal commands)
  * - Hooks for observability
+ *
+ * Requirements:
+ * - Codex CLI must be installed (npm install -g @openai/codex or use npx)
+ * - Must be authenticated via: codex login (ChatGPT) or OPENAI_API_KEY env var
+ *
+ * Sandbox/Approval modes are configured via:
+ * - ~/.codex/config.yaml for global settings
+ * - CLI flags: --sandbox, --approval-policy
+ *
+ * Note: The SDK spawns the CLI binary, so authentication must be done beforehand.
  */
 export class CodexHandler extends EventEmitter {
   private codex: Codex

@@ -1,11 +1,14 @@
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk'
+import { query, type Options, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
 
 interface ClaudeHandlerOptions {
   workingDirectory?: string
   allowedTools?: string[]
   permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions'
+  mcpServers?: Record<string, McpServerConfig>
 }
+
+export type { McpServerConfig }
 
 export interface PermissionRequestEvent {
   toolName: string
@@ -68,8 +71,12 @@ export class ClaudeHandler extends EventEmitter {
       workingDirectory: options.workingDirectory || process.cwd(),
       allowedTools: options.allowedTools || ClaudeHandler.ALL_TOOLS,
       permissionMode: options.permissionMode || 'default',
+      mcpServers: options.mcpServers,
     }
     console.log(`🔧 Allowed tools: ${this.options.allowedTools?.join(', ')}`)
+    if (this.options.mcpServers) {
+      console.log(`🔌 MCP servers: ${Object.keys(this.options.mcpServers).join(', ')}`)
+    }
   }
 
   async run(prompt: string): Promise<string> {
@@ -94,6 +101,8 @@ export class ClaudeHandler extends EventEmitter {
         abortController: this.abortController || undefined,
         // CRITICAL: Resume existing session for context continuity
         ...(this.sessionId && { resume: this.sessionId }),
+        // MCP servers configuration
+        ...(this.options.mcpServers && { mcpServers: this.options.mcpServers }),
         hooks: {
           PreToolUse: [{
             matcher: '.*',
