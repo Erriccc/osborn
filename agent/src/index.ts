@@ -101,23 +101,46 @@ function getAvailableAgent(): AgentSlot {
 // Track current provider for API-specific behavior
 let currentProvider = 'openai'
 
+// Track actual agent state - CRITICAL for speech queue
+let agentState: string = 'initializing'
+
 // Queue for messages to speak (permissions, status updates)
 const speechQueue: string[] = []
 let isSpeaking = false
+let processingScheduled = false
 
-// Process speech queue - speak next message when idle
+// Process speech queue - ONLY when agent is truly idle
 async function processSpeechQueue() {
-  if (isSpeaking || speechQueue.length === 0 || !currentSession) return
+  // Don't process if:
+  // 1. Already speaking from queue
+  // 2. No messages in queue
+  // 3. No session
+  // 4. Agent is NOT in 'listening' state (busy speaking/thinking)
+  if (isSpeaking || speechQueue.length === 0 || !currentSession) {
+    processingScheduled = false
+    return
+  }
+
+  // CRITICAL: Only speak when agent is actually idle (listening)
+  if (agentState !== 'listening') {
+    console.log(`🔇 Agent busy (${agentState}), waiting to speak...`)
+    processingScheduled = false
+    return
+  }
+
+  // Skip for Gemini (doesn't support generateReply)
   if (currentProvider === 'gemini') {
-    // Gemini doesn't support generateReply - just log
     while (speechQueue.length > 0) {
-      console.log(`🔊 [Gemini] ${speechQueue.shift()}`)
+      console.log(`🔊 [Gemini would say] ${speechQueue.shift()}`)
     }
+    processingScheduled = false
     return
   }
 
   isSpeaking = true
+  processingScheduled = false
   const message = speechQueue.shift()!
+  console.log(`🔊 Speaking: ${message.substring(0, 60)}...`)
 
   try {
     const timeout = new Promise((_, reject) =>
@@ -127,23 +150,36 @@ async function processSpeechQueue() {
       currentSession.generateReply({ userInput: message }),
       timeout
     ])
+    console.log(`✅ Spoke successfully`)
   } catch (err) {
-    console.log(`⚠️ Could not speak: ${message.substring(0, 50)}...`)
+    console.log(`⚠️ Could not speak: ${(err as Error).message}`)
   } finally {
     isSpeaking = false
-    // Process next in queue
-    if (speechQueue.length > 0) {
-      setTimeout(processSpeechQueue, 500)
+    // Schedule next queue item only after this one completes
+    if (speechQueue.length > 0 && !processingScheduled) {
+      processingScheduled = true
+      // Wait for agent to return to listening state - checked in state listener
+      console.log(`📋 ${speechQueue.length} more messages queued`)
     }
   }
 }
 
-// Queue permission request to be spoken
+// Schedule queue processing when agent becomes idle
+function scheduleQueueProcessing() {
+  if (processingScheduled || speechQueue.length === 0 || isSpeaking) return
+  if (agentState !== 'listening') return
+
+  processingScheduled = true
+  setTimeout(processSpeechQueue, 500)
+}
+
+// Queue permission request to be spoken - DON'T process immediately
 function speakPermissionRequest(toolName: string, description: string) {
   const message = `[SYSTEM: Tell user] I need permission to ${description}. Say yes, no, or always allow.`
   speechQueue.push(message)
-  console.log(`🔊 Queued permission: ${toolName}`)
-  processSpeechQueue()
+  console.log(`🔊 Queued permission: ${toolName} (queue size: ${speechQueue.length})`)
+  // Let the state listener trigger processing when agent is idle
+  scheduleQueueProcessing()
 }
 
 // Speak status updates (streaming feedback)
@@ -162,8 +198,9 @@ function speakStatus(status: string) {
 
   const message = `[STATUS - say briefly: ${status}]`
   speechQueue.push(message)
-  console.log(`🔊 Queued status: ${status}`)
-  processSpeechQueue()
+  console.log(`🔊 Queued status: ${status} (queue size: ${speechQueue.length})`)
+  // Let the state listener trigger processing when agent is idle
+  scheduleQueueProcessing()
 }
 
 // Setup event handlers for each agent
@@ -420,19 +457,16 @@ function createModel(provider: string) {
   if (provider === 'gemini') {
     console.log('📱 Using Gemini Live API')
     console.log('🔑 GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'set' : 'NOT SET')
-    // From official docs: https://docs.livekit.io/agents/models/realtime/plugins/gemini/
-    // Package v1.0.31 uses google.beta.realtime (not google.realtime yet)
-    const model = new google.beta.realtime.RealtimeModel({
-      model: 'gemini-2.5-flash-native-audio-preview',
-      voice: 'Puck',
-      // Instructions tell Gemini to greet proactively
-      instructions: OSBORN_INSTRUCTIONS + `
 
-IMPORTANT: When the session starts and you hear the user connect (even silence),
-immediately greet them with: "Hey, I'm Osborn, ready to help with coding. What are you working on?"
-Don't wait for them to speak first.`,
+    // Use the exact model name from when it was working (commit eea8b42)
+    const modelName = 'gemini-2.5-flash-native-audio-preview-12-2025'
+
+    const model = new google.beta.realtime.RealtimeModel({
+      model: modelName,
+      voice: 'Puck',
+      instructions: OSBORN_INSTRUCTIONS,
     })
-    console.log('✅ Gemini model created')
+    console.log(`✅ Gemini model created: ${modelName}`)
     return model
   } else {
     console.log('📱 Using OpenAI Realtime API')
@@ -532,9 +566,15 @@ export default defineAgent({
     })
     session.on('agent_state_changed' as any, (ev: any) => {
       console.log(`🤖 Agent state: ${ev.oldState} → ${ev.newState}`)
-      // When agent becomes idle (listening), process speech queue
-      if (ev.newState === 'listening' && !isSpeaking) {
-        setTimeout(processSpeechQueue, 300)
+      agentState = ev.newState // Track actual state
+
+      // When agent becomes idle (listening), try to process speech queue
+      if (ev.newState === 'listening') {
+        // Only try if there are items and we're not already processing
+        if (speechQueue.length > 0 && !isSpeaking) {
+          console.log(`📋 Agent idle, ${speechQueue.length} messages waiting`)
+          scheduleQueueProcessing()
+        }
       }
     })
     session.on('user_input_transcribed' as any, (ev: any) => {

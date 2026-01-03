@@ -8,28 +8,30 @@
 
 ### Known Issues (Current)
 
-1. **Room code not passed correctly**
-   - User runs: `npm run dev --room e4jm4f`
-   - Should run: `npm run dev -- --room e4jm4f` (note the `--`)
-   - Room shows as `undefined` in logs
+1. **Room code not passed correctly** ✅ FIXED in v0.1.3
+   - Use: `npm run room <code>` or `npm run dev -- --room <code>`
 
-2. **OpenAI permission speech conflicts**
-   - Error: `conversation_already_has_active_response`
-   - Cause: Trying to speak permission request while model is already speaking
-   - Fix needed: Queue permission requests or wait for active response
+2. **OpenAI permission speech conflicts** ✅ FIXED in v0.1.3
+   - Was: `conversation_already_has_active_response` errors
+   - Fix: Track actual agent state, only speak when `listening`
 
-3. **Gemini not responding**
-   - Session connects but model doesn't speak
-   - `generateReply` times out (known LiveKit bug #2165)
-   - Instruction-based greeting not triggering
+3. **Gemini not responding** ✅ FIXED in v0.1.3
+   - Reverted to exact model name from working commit: `gemini-2.5-flash-native-audio-preview-12-2025`
+   - Removed experimental options (proactivity, enableAffectiveDialog) that broke it
 
 ## Version History
 
-### v0.1.2 (Current)
+### v0.1.3 (Current)
+- **Fixed**: Speech queue now tracks actual agent state (`listening`, `speaking`, etc.)
+- **Fixed**: Permissions/status only spoken when agent is truly idle
+- **Fixed**: Room code parsing with `npm run room <code>` script
+- **Fixed**: Gemini model restored to working config (`gemini-2.5-flash-native-audio-preview-12-2025`)
+- Better logging for speech queue debugging
+
+### v0.1.2
 - Multi-agent pool (2 Claude handlers)
 - Streaming feedback to voice LLM
 - Smart silence mode ("let me know when done")
-- Permission speaking (broken for OpenAI)
 - Gemini greeting via instructions (not working)
 
 ### v0.1.1
