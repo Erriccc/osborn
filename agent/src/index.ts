@@ -101,58 +101,69 @@ function getAvailableAgent(): AgentSlot {
 // Track current provider for API-specific behavior
 let currentProvider = 'openai'
 
-// Speak permission requests through voice (with timeout protection)
-async function speakPermissionRequest(toolName: string, description: string) {
-  if (!currentSession) return
-  // Gemini doesn't support generateReply well - just log for now
+// Queue for messages to speak (permissions, status updates)
+const speechQueue: string[] = []
+let isSpeaking = false
+
+// Process speech queue - speak next message when idle
+async function processSpeechQueue() {
+  if (isSpeaking || speechQueue.length === 0 || !currentSession) return
   if (currentProvider === 'gemini') {
-    console.log(`🔊 [Would speak] Permission needed: ${description}`)
+    // Gemini doesn't support generateReply - just log
+    while (speechQueue.length > 0) {
+      console.log(`🔊 [Gemini] ${speechQueue.shift()}`)
+    }
     return
   }
+
+  isSpeaking = true
+  const message = speechQueue.shift()!
+
   try {
-    currentSession.interrupt()
-    const message = `I need permission to ${description}. Should I allow this, deny it, or always allow ${toolName}?`
-    // Add timeout to prevent hanging
     const timeout = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('timeout')), 5000)
     )
     await Promise.race([
-      currentSession.generateReply({ userInput: `[SYSTEM: Ask user for permission] ${message}` }),
+      currentSession.generateReply({ userInput: message }),
       timeout
     ])
   } catch (err) {
-    console.log('⚠️ Could not speak permission (will show in UI)')
+    console.log(`⚠️ Could not speak: ${message.substring(0, 50)}...`)
+  } finally {
+    isSpeaking = false
+    // Process next in queue
+    if (speechQueue.length > 0) {
+      setTimeout(processSpeechQueue, 500)
+    }
   }
 }
 
-// Speak status updates (streaming feedback)
-let quietMode = false // User can say "let me know when done" to enable
-let lastStatusTime = 0
-const STATUS_THROTTLE_MS = 3000 // Don't speak status more than every 3s
+// Queue permission request to be spoken
+function speakPermissionRequest(toolName: string, description: string) {
+  const message = `[SYSTEM: Tell user] I need permission to ${description}. Say yes, no, or always allow.`
+  speechQueue.push(message)
+  console.log(`🔊 Queued permission: ${toolName}`)
+  processSpeechQueue()
+}
 
-async function speakStatus(status: string) {
+// Speak status updates (streaming feedback)
+let quietMode = false
+let lastStatusTime = 0
+const STATUS_THROTTLE_MS = 5000 // Throttle to every 5s
+
+function speakStatus(status: string) {
   if (quietMode) return
-  if (!currentSession) return
-  // Gemini doesn't support generateReply well - just log
-  if (currentProvider === 'gemini') {
-    console.log(`🔊 [Status] ${status}`)
+  const now = Date.now()
+  if (now - lastStatusTime < STATUS_THROTTLE_MS) {
+    console.log(`🔇 [Throttled] ${status}`)
     return
   }
-  const now = Date.now()
-  if (now - lastStatusTime < STATUS_THROTTLE_MS) return
   lastStatusTime = now
 
-  try {
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('timeout')), 3000)
-    )
-    await Promise.race([
-      currentSession.generateReply({ userInput: `[STATUS UPDATE - briefly mention this: ${status}]` }),
-      timeout
-    ])
-  } catch (err) {
-    // Ignore status speak errors - just log to console
-  }
+  const message = `[STATUS - say briefly: ${status}]`
+  speechQueue.push(message)
+  console.log(`🔊 Queued status: ${status}`)
+  processSpeechQueue()
 }
 
 // Setup event handlers for each agent
@@ -521,6 +532,10 @@ export default defineAgent({
     })
     session.on('agent_state_changed' as any, (ev: any) => {
       console.log(`🤖 Agent state: ${ev.oldState} → ${ev.newState}`)
+      // When agent becomes idle (listening), process speech queue
+      if (ev.newState === 'listening' && !isSpeaking) {
+        setTimeout(processSpeechQueue, 300)
+      }
     })
     session.on('user_input_transcribed' as any, (ev: any) => {
       console.log(`📝 Transcribed: "${ev.transcript}" (final: ${ev.isFinal})`)

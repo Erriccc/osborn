@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "tsx src/index.ts dev",
     "start": "tsx src/index.ts start",
-    "build": "tsc"
+    "build": "tsc",
+    "room": "tsx src/index.ts dev --room"
   },
   "keywords": [
     "voice",
