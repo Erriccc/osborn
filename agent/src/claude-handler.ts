@@ -44,13 +44,32 @@ export class ClaudeHandler extends EventEmitter {
   // Tools the user has permanently approved
   private alwaysAllowedTools: Set<string> = new Set()
 
+  // All available Claude Agent SDK tools
+  private static readonly ALL_TOOLS = [
+    // File operations
+    'Read', 'Write', 'Edit', 'MultiEdit',
+    // Search
+    'Glob', 'Grep',
+    // Terminal
+    'Bash',
+    // Web
+    'WebSearch', 'WebFetch',
+    // Notebooks
+    'NotebookEdit',
+    // Task management
+    'Task', 'TodoWrite',
+    // LSP (Language Server Protocol)
+    'LSP',
+  ]
+
   constructor(options: ClaudeHandlerOptions = {}) {
     super()
     this.options = {
       workingDirectory: options.workingDirectory || process.cwd(),
-      allowedTools: options.allowedTools || ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash', 'WebSearch', 'WebFetch'],
+      allowedTools: options.allowedTools || ClaudeHandler.ALL_TOOLS,
       permissionMode: options.permissionMode || 'default',
     }
+    console.log(`🔧 Allowed tools: ${this.options.allowedTools?.join(', ')}`)
   }
 
   async run(prompt: string): Promise<string> {

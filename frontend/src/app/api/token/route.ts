@@ -12,16 +12,17 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  // Get provider from query params (default to openai)
+  // Get provider and coding agent from query params
   const provider = request.nextUrl.searchParams.get('provider') || 'openai'
+  const codingAgent = request.nextUrl.searchParams.get('codingAgent') || 'claude'
 
   const roomName = 'osborn-room'
   const participantName = `user-${Date.now()}`
 
   const at = new AccessToken(apiKey, apiSecret, {
     identity: participantName,
-    // Include provider in participant metadata
-    metadata: JSON.stringify({ provider }),
+    // Include provider and coding agent in participant metadata
+    metadata: JSON.stringify({ provider, codingAgent }),
   })
 
   at.addGrant({

@@ -6,6 +6,10 @@ import { fileURLToPath } from 'url'
 import 'dotenv/config'
 
 import { ClaudeHandler, type PermissionRequestEvent, type PermissionResponse } from './claude-handler.js'
+import { CodexHandler } from './codex-handler.js'
+
+// Type for coding agent selection
+type CodingAgent = 'claude' | 'codex'
 
 // Global error handlers to catch silent failures
 process.on('unhandledRejection', (reason, promise) => {
@@ -57,6 +61,10 @@ claude.run('Respond with just: ready')
 let jobContext: JobContext | null = null
 let currentSession: voice.AgentSession | null = null
 
+// Track the current coding handler (can be Claude or Codex)
+let currentCodingAgent: CodingAgent = 'claude'
+let codexHandler: CodexHandler | null = null
+
 // Helper to send data to frontend
 async function sendToFrontend(data: object) {
   if (!jobContext) return
@@ -72,23 +80,30 @@ async function sendToFrontend(data: object) {
   }
 }
 
-// Define the run_claude tool
-const runClaudeTool = llm.tool({
-  description: `Execute coding tasks using Claude Code. Use for:
+// Define the run_code tool (works with both Claude and Codex)
+const runCodeTool = llm.tool({
+  description: `Execute coding tasks using the coding agent. Use for:
 - Files: read, write, create, edit, list, search
 - Directories: current directory, list contents
 - Code: fix bugs, refactor, explain, review
 - Terminal: run commands, install packages, git
-- Project: analyze codebase, make changes`,
+- Project: analyze codebase, make changes
+- Web: search the web for information`,
   parameters: z.object({
     task: z.string().describe('The coding task to execute'),
   }),
   execute: async ({ task }) => {
-    console.log(`\n🔨 Claude: "${task}"`)
+    const agentName = currentCodingAgent === 'claude' ? 'Claude Code' : 'OpenAI Codex'
+    console.log(`\n🔨 ${agentName}: "${task}"`)
     await sendToFrontend({ type: 'system', text: `Working on: ${task}` })
 
     try {
-      const result = await claude.run(task)
+      let result: string
+      if (currentCodingAgent === 'codex' && codexHandler) {
+        result = await codexHandler.run(task)
+      } else {
+        result = await claude.run(task)
+      }
       console.log(`✅ Done: ${result.length} chars`)
       await sendToFrontend({ type: 'assistant_response', text: result })
       return result
@@ -124,30 +139,37 @@ Call this after hearing the user's response to a permission prompt.`,
   },
 })
 
-// Agent instructions
-const OSBORN_INSTRUCTIONS = `You are Osborn, a voice-enabled coding assistant.
-Keep responses under 45 words. Sound natural and human.
+// Agent instructions - dynamically includes available tools
+const OSBORN_INSTRUCTIONS = `You are Osborn, a voice-enabled AI assistant with coding superpowers.
+Keep responses under 50 words. Sound natural and human.
 
-RULES:
-1. For ANY coding/file/directory/terminal task - use the run_claude tool
-2. For general chat - respond directly and briefly
-3. After run_claude returns, summarize briefly what was done
+AVAILABLE CAPABILITIES via run_code tool:
+- Read, Write, Edit, MultiEdit files
+- Glob (find files by pattern), Grep (search content)
+- Bash (run terminal commands)
+- WebSearch (search the web), WebFetch (fetch URLs)
+- NotebookEdit (edit Jupyter notebooks)
+- Task (delegate complex tasks), TodoWrite (track tasks)
+- LSP (code intelligence - go to definition, find references)
 
-ALWAYS use run_claude for:
-- File operations (read, write, list, search)
-- Terminal commands (run, install, git)
-- Code tasks (fix, refactor, explain)
+WHEN TO USE run_code:
+- File operations (read, write, create, edit, list, find)
+- Code tasks (fix, refactor, explain, review, debug)
+- Terminal commands (run, install, test, build, git)
+- Web searches (look up documentation, APIs, errors)
+- Project analysis (understand codebase, find patterns)
 
-PERMISSION HANDLING - CRITICAL:
-When Claude needs permission (you'll see a system message about permission_request), you MUST:
-1. IMMEDIATELY stop and ask the user verbally: "Claude wants to [describe action]. Should I allow it, deny it, or always allow this type of action?"
-2. Wait for their voice response
-3. When they say "allow", "yes", "go ahead" → call respond_permission with "allow"
-4. When they say "deny", "no", "don't" → call respond_permission with "deny"
-5. When they say "always allow", "always" → call respond_permission with "always_allow"
+WHEN TO RESPOND DIRECTLY:
+- Greetings and small talk
+- General knowledge questions
+- Clarifying what the user wants
 
-RESPOND DIRECTLY for greetings and general questions.
-Always end with a question or invite the user to speak.`
+PERMISSION HANDLING:
+When the coding agent needs permission, you MUST:
+1. Tell the user: "[Agent] wants to [action]. Allow, deny, or always allow?"
+2. When they respond, call respond_permission with their choice
+
+Be conversational and helpful. Ask follow-up questions when needed.`
 
 // Voice assistant with tools
 class OsbornAssistant extends voice.Agent {
@@ -155,7 +177,7 @@ class OsbornAssistant extends voice.Agent {
     super({
       instructions: OSBORN_INSTRUCTIONS,
       tools: {
-        run_claude: runClaudeTool,
+        run_code: runCodeTool,
         respond_permission: respondPermissionTool,
       },
     })
@@ -198,6 +220,17 @@ function getProviderFromParticipant(metadata?: string): string {
   }
 }
 
+// Helper to get coding agent from participant metadata
+function getCodingAgentFromParticipant(metadata?: string): CodingAgent {
+  if (!metadata) return 'claude'
+  try {
+    const data = JSON.parse(metadata)
+    return data.codingAgent || 'claude'
+  } catch {
+    return 'claude'
+  }
+}
+
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     console.log('🚀 Agent starting for room:', ctx.room.name)
@@ -235,7 +268,19 @@ export default defineAgent({
     console.log('👤 Participant joined:', participant.identity)
     console.log('📋 Participant metadata:', participant.metadata)
     const provider = getProviderFromParticipant(participant.metadata)
+    const codingAgent = getCodingAgentFromParticipant(participant.metadata)
     console.log(`🎯 User selected provider: ${provider}`)
+    console.log(`🔧 User selected coding agent: ${codingAgent}`)
+
+    // Set the current coding agent and initialize if needed
+    currentCodingAgent = codingAgent
+    if (codingAgent === 'codex') {
+      console.log('🔧 Initializing Codex handler...')
+      codexHandler = new CodexHandler({
+        workingDirectory: '/Users/newupgrade/Desktop/Developer/osborn',
+      })
+      console.log('✅ Codex handler ready')
+    }
 
     // Create model based on user's choice
     const model = createModel(provider)
