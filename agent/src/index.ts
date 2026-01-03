@@ -7,9 +7,29 @@ import 'dotenv/config'
 
 import { ClaudeHandler, type PermissionRequestEvent, type PermissionResponse } from './claude-handler.js'
 import { CodexHandler } from './codex-handler.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames } from './config.js'
 
 // Type for coding agent selection
 type CodingAgent = 'claude' | 'codex'
+
+// Parse CLI arguments for room code
+function parseArgs(): { roomCode?: string } {
+  const args = process.argv.slice(2)
+  let roomCode: string | undefined
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--room' && args[i + 1]) {
+      roomCode = args[i + 1]
+    }
+  }
+
+  return { roomCode }
+}
+
+const cliArgs = parseArgs()
+if (cliArgs.roomCode) {
+  console.log(`🔗 Room code provided: ${cliArgs.roomCode}`)
+}
 
 // Global error handlers to catch silent failures
 process.on('unhandledRejection', (reason, promise) => {
@@ -31,30 +51,26 @@ if (DEBUG) {
 
 console.log(`🤖 Default LLM Provider: ${DEFAULT_PROVIDER}`)
 
-// Example MCP server configurations (uncomment to enable)
-const MCP_SERVERS = {
-  // GitHub integration
-  // 'github': {
-  //   command: 'npx',
-  //   args: ['@modelcontextprotocol/server-github'],
-  //   env: { GITHUB_TOKEN: process.env.GITHUB_TOKEN || '' }
-  // },
-  // Filesystem with specific allowed paths
-  // 'filesystem': {
-  //   command: 'npx',
-  //   args: ['@modelcontextprotocol/server-filesystem'],
-  //   env: { ALLOWED_PATHS: '/Users/newupgrade/Desktop/Developer' }
-  // },
+// Load configuration from ~/.osborn/config.yaml
+console.log('📁 Loading configuration...')
+const config = loadConfig()
+const mcpServers = getMcpServers(config)
+const enabledMcpNames = getEnabledMcpServerNames(config)
+
+if (enabledMcpNames.length > 0) {
+  console.log(`🔌 Enabled MCP servers: ${enabledMcpNames.join(', ')}`)
 }
 
 // Pre-initialize Claude handler at module load (before any connections)
 console.log('🔥 Pre-initializing Claude Code...')
+const workingDir = config.workingDirectory || process.cwd()
 const claude = new ClaudeHandler({
-  workingDirectory: '/Users/newupgrade/Desktop/Developer/osborn',
+  workingDirectory: workingDir,
   permissionMode: 'default', // Ask for permission on dangerous tools (Bash, Write, Edit)
-  // Uncomment to enable MCP servers:
-  // mcpServers: MCP_SERVERS,
+  mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
 })
+
+console.log(`📂 Working directory: ${workingDir}`)
 
 // Listen for permission requests from Claude
 claude.on('permission_request', (req: PermissionRequestEvent) => {
@@ -82,6 +98,23 @@ let currentSession: voice.AgentSession | null = null
 // Track the current coding handler (can be Claude or Codex)
 let currentCodingAgent: CodingAgent = 'claude'
 let codexHandler: CodexHandler | null = null
+
+// Helper to cleanup previous session before starting new one
+async function cleanupSession() {
+  if (currentSession) {
+    console.log('🧹 Cleaning up previous session...')
+    try {
+      currentSession.removeAllListeners()
+      // Close session gracefully if method exists
+      if (typeof (currentSession as any).close === 'function') {
+        await (currentSession as any).close()
+      }
+    } catch (err) {
+      console.log('⚠️ Session cleanup error (non-fatal):', (err as Error).message)
+    }
+    currentSession = null
+  }
+}
 
 // Helper to send data to frontend
 async function sendToFrontend(data: object) {
@@ -252,6 +285,17 @@ function getCodingAgentFromParticipant(metadata?: string): CodingAgent {
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     console.log('🚀 Agent starting for room:', ctx.room.name)
+
+    // If room code was provided via CLI, validate room name
+    if (cliArgs.roomCode) {
+      const expectedRoom = `osborn-${cliArgs.roomCode}`
+      if (ctx.room.name !== expectedRoom) {
+        console.log(`⏭️ Skipping room ${ctx.room.name} (waiting for ${expectedRoom})`)
+        return // Don't handle this room
+      }
+      console.log(`✅ Room matches expected: ${expectedRoom}`)
+    }
+
     jobContext = ctx
 
     // Claude verbose logging
@@ -295,13 +339,16 @@ export default defineAgent({
     if (codingAgent === 'codex') {
       console.log('🔧 Initializing Codex handler...')
       codexHandler = new CodexHandler({
-        workingDirectory: '/Users/newupgrade/Desktop/Developer/osborn',
+        workingDirectory: workingDir,
       })
       console.log('✅ Codex handler ready')
     }
 
     // Create model based on user's choice
     const model = createModel(provider)
+
+    // Clean up any previous session before creating new one
+    await cleanupSession()
 
     const session = new voice.AgentSession({
       llm: model,
@@ -328,6 +375,12 @@ export default defineAgent({
 
     ctx.room.on('trackSubscribed', (track, publication, p) => {
       console.log(`📥 Track subscribed: ${track.kind} from ${p.identity}`)
+    })
+
+    ctx.room.on('participantDisconnected', async (p) => {
+      console.log(`👋 Participant disconnected: ${p.identity}`)
+      // Clean up session when user disconnects to prepare for next connection
+      await cleanupSession()
     })
 
     // Listen for data channel messages from frontend
@@ -382,4 +435,20 @@ export default defineAgent({
   },
 })
 
-cli.runApp(new ServerOptions({ agent: fileURLToPath(import.meta.url) }))
+// Configure server options
+const serverOptions: any = {
+  agent: fileURLToPath(import.meta.url),
+}
+
+// If room code is provided, filter to only handle that room
+if (cliArgs.roomCode) {
+  const targetRoom = `osborn-${cliArgs.roomCode}`
+  console.log(`🎯 Filtering for room: ${targetRoom}`)
+  // The agent will be dispatched to rooms matching this pattern
+  serverOptions.workerOptions = {
+    // Note: Room filtering is handled by LiveKit dispatch
+    // For local development, we validate the room in the entry function
+  }
+}
+
+cli.runApp(new ServerOptions(serverOptions))

@@ -15,6 +15,7 @@
     "@livekit/agents-plugin-openai": "^1.0.0",
     "@openai/codex-sdk": "^0.77.0",
     "dotenv": "^16.4.0",
+    "yaml": "^2.3.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

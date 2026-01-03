@@ -330,3 +330,95 @@ LiveKit's AgentSession API (v1.0+) supports switching between models during a co
 ### Pending Features
 - Codex SDK integration for alternative coding agent
 - Agent selector in frontend (Claude Code vs Codex)
+
+---
+
+## Latest Updates (2026-01-03) - Architecture Overhaul
+
+### Hosted Frontend + Local Backend Architecture
+
+Osborn now supports a production-ready architecture where:
+- **Frontend**: Hosted publicly (Vercel, Netlify, etc.)
+- **Backend Agent**: Runs locally on user's machine via CLI
+- **Connection**: Via LiveKit Cloud with room codes
+
+### New Features Implemented
+
+#### 1. Room Code System
+- Frontend generates 6-character room codes (e.g., `abc123`)
+- User runs: `npx osborn-agent --room abc123`
+- Agent connects to specific room
+- Supports reconnection with same room code (stored in localStorage)
+
+#### 2. Gemini Hot-Switching Fix
+- Added session cleanup when switching providers
+- Proper cleanup on participant disconnect
+- New sessions are now properly isolated
+
+#### 3. MCP Configuration via Config File
+Users can configure MCP servers in `~/.osborn/config.yaml`:
+```yaml
+workingDirectory: /path/to/project
+defaultProvider: openai
+defaultCodingAgent: claude
+
+mcpServers:
+  github:
+    enabled: true
+    command: npx
+    args: ['@modelcontextprotocol/server-github']
+    env:
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+
+  filesystem:
+    enabled: true
+    command: npx
+    args: ['@modelcontextprotocol/server-filesystem', '/allowed/path']
+```
+
+#### 4. New Connection Flow
+```
+1. User visits hosted website
+2. Clicks "Start Session" → gets room code
+3. Runs agent locally with room code
+4. Agent connects via LiveKit Cloud
+5. Voice session begins
+```
+
+### Files Modified
+- `agent/src/index.ts` - Room code support, session cleanup, config loading
+- `agent/src/config.ts` - NEW: Config file management
+- `agent/package.json` - Added yaml dependency
+- `frontend/src/app/page.tsx` - Room code UI, connection states
+- `frontend/src/app/api/token/route.ts` - Room code generation
+
+### Architecture Diagram
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Hosted Frontend (Vercel)                                                │
+│  └── Displays room code, connects to LiveKit Cloud                      │
+└────────────────────────────┬────────────────────────────────────────────┘
+                             │ WebRTC
+                             ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│  LiveKit Cloud                                                           │
+│  └── Routes audio/data between frontend and agent                       │
+└────────────────────────────┬────────────────────────────────────────────┘
+                             │ WebRTC
+                             ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│  User's Machine (CLI)                                                    │
+│  └── npx osborn-agent --room abc123                                     │
+│  └── Reads ~/.osborn/config.yaml for MCP servers                        │
+│  └── Runs Claude Code / Codex with user's API keys                      │
+│  └── Has access to user's filesystem                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### To Test
+1. Start frontend: `cd frontend && npm run dev`
+2. Visit http://localhost:3000
+3. Click "Start Session" → copy room code
+4. In another terminal: `cd agent && npm install && npm run dev -- --room <code>`
+5. Click "Agent Connected? Start Voice"
+6. Speak to Osborn!
