@@ -648,6 +648,10 @@ export default defineAgent({
     console.log(`✅ Session started in ${Date.now() - startTime}ms with ${provider.toUpperCase()} + Claude tools`)
     console.log('🎤 Ready for voice input! Speak to start.')
 
+    // Send heartbeat to frontend so it knows we're ready
+    await sendToFrontend({ type: 'agent_ready', provider, codingAgent })
+    console.log('💓 Sent agent_ready heartbeat to frontend')
+
     // Greet user immediately so they know it's working
     // Note: Gemini doesn't support generateReply well, so we skip for now
     if (provider !== 'gemini') {

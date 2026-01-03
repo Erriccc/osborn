@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import VoiceRoom from '@/components/VoiceRoom'
 
 type LLMProvider = 'openai' | 'gemini'
@@ -15,13 +15,29 @@ export default function Home() {
   const [codingAgent, setCodingAgent] = useState<CodingAgent>('claude')
   const [isConnecting, setIsConnecting] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [agentStatus, setAgentStatus] = useState<string>('waiting')
 
-  // Check for stored room code on mount (for reconnection)
+  // Check for stored preferences on mount
   useEffect(() => {
-    const stored = localStorage.getItem('osborn-room-code')
-    if (stored) {
-      setRoomCode(stored)
-    }
+    const storedRoom = localStorage.getItem('osborn-room-code')
+    const storedProvider = localStorage.getItem('osborn-provider') as LLMProvider | null
+    const storedAgent = localStorage.getItem('osborn-coding-agent') as CodingAgent | null
+
+    if (storedRoom) setRoomCode(storedRoom)
+    if (storedProvider) setProvider(storedProvider)
+    if (storedAgent) setCodingAgent(storedAgent)
+  }, [])
+
+  // Save preferences when changed
+  useEffect(() => {
+    localStorage.setItem('osborn-provider', provider)
+    localStorage.setItem('osborn-coding-agent', codingAgent)
+  }, [provider, codingAgent])
+
+  // Handle agent ready signal from VoiceRoom
+  const handleAgentReady = useCallback(() => {
+    setAgentStatus('connected')
+    setConnectionState('connected')
   }, [])
 
   const startSession = async () => {
@@ -153,49 +169,56 @@ export default function Home() {
         </div>
       )}
 
-      {connectionState === 'waiting' && roomCode && (
-        <div className="flex flex-col items-center gap-6 max-w-lg">
-          <div className="text-center p-6 bg-gray-800 rounded-xl border border-gray-700">
-            <p className="text-gray-400 mb-4">Run this command on your machine:</p>
-            <div className="flex items-center gap-2 bg-gray-900 rounded-lg p-3">
-              <code className="flex-1 text-green-400 font-mono text-sm">
-                npx osborn-agent --room {roomCode}
+      {connectionState === 'waiting' && roomCode && token && (
+        <div className="flex flex-col items-center gap-6 w-full max-w-2xl">
+          {/* Agent connection panel */}
+          <div className="w-full p-6 bg-gray-800 rounded-xl border border-gray-700">
+            <div className="flex items-center gap-3 mb-4">
+              <div className={`w-3 h-3 rounded-full ${agentStatus === 'connected' ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} />
+              <span className="text-gray-300">
+                {agentStatus === 'connected' ? 'Agent Connected!' : 'Waiting for agent...'}
+              </span>
+            </div>
+
+            <p className="text-gray-400 mb-3 text-sm">Run this command on your machine:</p>
+            <div className="flex items-center gap-2 bg-gray-900 rounded-lg p-3 mb-3">
+              <code className="flex-1 text-green-400 font-mono text-sm overflow-x-auto">
+                npm run room {roomCode}
               </code>
               <button
                 onClick={copyCommand}
-                className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors shrink-0"
               >
-                {copied ? 'Copied!' : 'Copy'}
+                {copied ? '✓' : 'Copy'}
               </button>
             </div>
-            <p className="text-xs text-gray-500 mt-3">
-              Make sure you have Node.js installed and your API keys configured
-            </p>
-          </div>
 
-          <div className="text-center">
-            <div className="animate-pulse text-yellow-400 mb-2">
-              Waiting for agent to connect...
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-gray-500">
+                Room: <span className="font-mono text-gray-300">{roomCode}</span>
+              </span>
+              <span className="text-gray-500">
+                {provider === 'openai' ? '🔵 OpenAI' : '🟢 Gemini'} + {codingAgent === 'claude' ? '🟠 Claude' : '🟣 Codex'}
+              </span>
             </div>
-            <p className="text-sm text-gray-500">
-              Room Code: <span className="font-mono text-white">{roomCode}</span>
-            </p>
           </div>
 
-          <div className="flex gap-4">
-            <button
-              onClick={connect}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
-            >
-              Agent Connected? Start Voice
-            </button>
+          {/* VoiceRoom in waiting mode - listens for agent heartbeat */}
+          <VoiceRoom
+            token={token}
+            onDisconnect={disconnect}
+            onAgentReady={handleAgentReady}
+            waitingMode={agentStatus !== 'connected'}
+          />
+
+          {agentStatus !== 'connected' && (
             <button
               onClick={newSession}
-              className="px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg transition-colors"
+              className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
             >
               Cancel
             </button>
-          </div>
+          )}
         </div>
       )}
 
