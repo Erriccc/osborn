@@ -1,8 +1,5 @@
 import { query, type Options, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
-import { appendFileSync, mkdirSync, existsSync } from 'fs'
-import { join } from 'path'
-import { homedir } from 'os'
 
 interface ClaudeHandlerOptions {
   workingDirectory?: string
@@ -41,27 +38,34 @@ interface ToolLogEntry {
   error?: string
 }
 
-// Ensure log directory exists
-const LOG_DIR = join(homedir(), '.osborn', 'logs')
-if (!existsSync(LOG_DIR)) {
-  mkdirSync(LOG_DIR, { recursive: true })
-}
-
-// Log file path (rotates daily)
-function getLogFilePath(): string {
-  const date = new Date().toISOString().split('T')[0]
-  return join(LOG_DIR, `tool-calls-${date}.jsonl`)
-}
-
-// Append log entry (non-blocking)
+// Log tool calls to terminal (async, non-blocking)
 function logToolCall(entry: ToolLogEntry): void {
-  try {
-    const line = JSON.stringify(entry) + '\n'
-    appendFileSync(getLogFilePath(), line)
-  } catch (err) {
-    // Don't fail if logging fails
-    console.error('⚠️ Failed to write tool log:', (err as Error).message)
-  }
+  // Use setImmediate to avoid blocking the main execution
+  setImmediate(() => {
+    const time = new Date().toLocaleTimeString()
+    const inputStr = JSON.stringify(entry.input).substring(0, 100)
+
+    switch (entry.status) {
+      case 'started':
+        console.log(`\n🔧 [${time}] TOOL START: ${entry.toolName}`)
+        console.log(`   📥 Input: ${inputStr}${inputStr.length >= 100 ? '...' : ''}`)
+        break
+      case 'completed':
+        const duration = entry.duration ? `${entry.duration}ms` : '?'
+        console.log(`✅ [${time}] TOOL DONE: ${entry.toolName} (${duration})`)
+        if (entry.output) {
+          const outStr = typeof entry.output === 'string'
+            ? entry.output.substring(0, 150)
+            : JSON.stringify(entry.output).substring(0, 150)
+          console.log(`   📤 Output: ${outStr}${outStr.length >= 150 ? '...' : ''}`)
+        }
+        break
+      case 'blocked':
+        console.log(`❌ [${time}] TOOL BLOCKED: ${entry.toolName}`)
+        console.log(`   ⛔ Reason: ${entry.error || 'User denied'}`)
+        break
+    }
+  })
 }
 
 /**
@@ -117,7 +121,6 @@ export class ClaudeHandler extends EventEmitter {
     }
     console.log(`🔧 Allowed tools: ${this.options.allowedTools?.join(', ')}`)
     console.log(`🔐 Require all permissions: ${this.options.requireAllPermissions}`)
-    console.log(`📝 Tool logs: ${LOG_DIR}`)
     if (this.options.mcpServers) {
       console.log(`🔌 MCP servers: ${Object.keys(this.options.mcpServers).join(', ')}`)
     }

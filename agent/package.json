@@ -1,13 +1,30 @@
 {
   "name": "osborn-agent",
   "version": "0.1.0",
-  "private": true,
+  "description": "Voice AI coding assistant - local agent that connects to Osborn frontend",
   "type": "module",
+  "bin": {
+    "osborn-agent": "./bin/cli.js"
+  },
   "scripts": {
     "dev": "tsx src/index.ts dev",
     "start": "tsx src/index.ts start",
     "build": "tsc"
   },
+  "keywords": [
+    "voice",
+    "ai",
+    "coding",
+    "assistant",
+    "claude",
+    "livekit"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Erriccc/osborn.git"
+  },
+  "author": "Osborn Ojure",
+  "license": "MIT",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.74",
     "@livekit/agents": "^1.0.0",
@@ -15,12 +32,15 @@
     "@livekit/agents-plugin-openai": "^1.0.0",
     "@openai/codex-sdk": "^0.77.0",
     "dotenv": "^16.4.0",
+    "tsx": "^4.0.0",
     "yaml": "^2.3.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "tsx": "^4.0.0",
     "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
