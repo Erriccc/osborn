@@ -98,15 +98,30 @@ function getAvailableAgent(): AgentSlot {
   return agentPool[0]
 }
 
-// Speak permission requests through voice
+// Track current provider for API-specific behavior
+let currentProvider = 'openai'
+
+// Speak permission requests through voice (with timeout protection)
 async function speakPermissionRequest(toolName: string, description: string) {
   if (!currentSession) return
+  // Gemini doesn't support generateReply well - just log for now
+  if (currentProvider === 'gemini') {
+    console.log(`🔊 [Would speak] Permission needed: ${description}`)
+    return
+  }
   try {
     currentSession.interrupt()
     const message = `I need permission to ${description}. Should I allow this, deny it, or always allow ${toolName}?`
-    await currentSession.generateReply({ userInput: `[SYSTEM: Ask user for permission] ${message}` })
+    // Add timeout to prevent hanging
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('timeout')), 5000)
+    )
+    await Promise.race([
+      currentSession.generateReply({ userInput: `[SYSTEM: Ask user for permission] ${message}` }),
+      timeout
+    ])
   } catch (err) {
-    console.error('Failed to speak permission request:', err)
+    console.log('⚠️ Could not speak permission (will show in UI)')
   }
 }
 
@@ -118,17 +133,25 @@ const STATUS_THROTTLE_MS = 3000 // Don't speak status more than every 3s
 async function speakStatus(status: string) {
   if (quietMode) return
   if (!currentSession) return
+  // Gemini doesn't support generateReply well - just log
+  if (currentProvider === 'gemini') {
+    console.log(`🔊 [Status] ${status}`)
+    return
+  }
   const now = Date.now()
   if (now - lastStatusTime < STATUS_THROTTLE_MS) return
   lastStatusTime = now
 
   try {
-    // Don't interrupt, just inject as context
-    await currentSession.generateReply({
-      userInput: `[STATUS UPDATE - briefly mention this: ${status}]`
-    })
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('timeout')), 3000)
+    )
+    await Promise.race([
+      currentSession.generateReply({ userInput: `[STATUS UPDATE - briefly mention this: ${status}]` }),
+      timeout
+    ])
   } catch (err) {
-    // Ignore status speak errors
+    // Ignore status speak errors - just log to console
   }
 }
 
@@ -462,6 +485,9 @@ export default defineAgent({
     console.log(`🎯 User selected provider: ${provider}`)
     console.log(`🔧 User selected coding agent: ${codingAgent}`)
 
+    // Set the current provider for API-specific behavior
+    currentProvider = provider
+
     // Set the current coding agent and initialize if needed
     currentCodingAgent = codingAgent
     if (codingAgent === 'codex') {
@@ -563,13 +589,24 @@ export default defineAgent({
     console.log('🎤 Ready for voice input! Speak to start.')
 
     // Greet user immediately so they know it's working
-    try {
-      await session.generateReply({
-        userInput: '[SYSTEM: Greet the user briefly. Say something like "Hey, I\'m Osborn, ready to help with coding. What are you working on?"]'
-      })
-      console.log('👋 Greeting sent')
-    } catch (err) {
-      console.error('Failed to send greeting:', err)
+    // Note: Gemini doesn't support generateReply well, so we skip for now
+    if (provider !== 'gemini') {
+      try {
+        const timeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 5000)
+        )
+        await Promise.race([
+          session.generateReply({
+            userInput: '[SYSTEM: Greet the user briefly. Say "Hey, I\'m Osborn, ready to help. What are you working on?"]'
+          }),
+          timeout
+        ])
+        console.log('👋 Greeting sent')
+      } catch (err) {
+        console.log('⚠️ Greeting skipped (timeout or unsupported)')
+      }
+    } else {
+      console.log('👋 Gemini ready - waiting for user to speak first')
     }
   },
 })
