@@ -72,7 +72,7 @@ const claude = new ClaudeHandler({
 
 console.log(`📂 Working directory: ${workingDir}`)
 
-// Listen for permission requests from Claude
+// Listen for permission requests from Claude - will be handled by speakPermissionRequest
 claude.on('permission_request', (req: PermissionRequestEvent) => {
   console.log(`\n⚠️ PERMISSION REQUIRED ⚠️`)
   console.log(`🔧 Tool: ${req.toolName}`)
@@ -84,7 +84,22 @@ claude.on('permission_request', (req: PermissionRequestEvent) => {
     toolName: req.toolName,
     description: req.description,
   })
+  // Speak the permission request through the voice agent
+  speakPermissionRequest(req.toolName, req.description)
 })
+
+// Speak permission requests through voice
+async function speakPermissionRequest(toolName: string, description: string) {
+  if (!currentSession) return
+  try {
+    // Interrupt current speech and ask for permission
+    currentSession.interrupt()
+    const message = `I need permission to ${description}. Should I allow this, deny it, or always allow ${toolName}?`
+    await currentSession.generateReply({ userInput: `[SYSTEM: Ask user for permission] ${message}` })
+  } catch (err) {
+    console.error('Failed to speak permission request:', err)
+  }
+}
 
 // Pre-warm Claude immediately on server start
 claude.run('Respond with just: ready')
@@ -190,37 +205,34 @@ Call this after hearing the user's response to a permission prompt.`,
   },
 })
 
-// Agent instructions - dynamically includes available tools
-const OSBORN_INSTRUCTIONS = `You are Osborn, a voice-enabled AI assistant with coding superpowers.
-Keep responses under 50 words. Sound natural and human.
+// Agent instructions - optimized for fast, natural responses
+const OSBORN_INSTRUCTIONS = `You are Osborn, a voice-enabled AI coding assistant.
 
-AVAILABLE CAPABILITIES via run_code tool:
-- Read, Write, Edit, MultiEdit files
-- Glob (find files by pattern), Grep (search content)
-- Bash (run terminal commands)
-- WebSearch (search the web), WebFetch (fetch URLs)
-- NotebookEdit (edit Jupyter notebooks)
-- Task (delegate complex tasks), TodoWrite (track tasks)
-- LSP (code intelligence - go to definition, find references)
+RESPONSE STYLE:
+- Keep responses SHORT (under 30 words unless explaining code)
+- Sound natural and conversational
+- Say "Got it" or "On it" immediately when given a task, THEN work on it
+- Ask clarifying questions if the request is ambiguous
 
-WHEN TO USE run_code:
-- File operations (read, write, create, edit, list, find)
-- Code tasks (fix, refactor, explain, review, debug)
-- Terminal commands (run, install, test, build, git)
-- Web searches (look up documentation, APIs, errors)
-- Project analysis (understand codebase, find patterns)
-
-WHEN TO RESPOND DIRECTLY:
-- Greetings and small talk
-- General knowledge questions
-- Clarifying what the user wants
+CAPABILITIES (via run_code tool):
+- Files: read, write, edit, search, find
+- Code: fix bugs, refactor, explain, review
+- Terminal: run commands, git, install packages
+- Web: search documentation, APIs, errors
 
 PERMISSION HANDLING:
-When the coding agent needs permission, you MUST:
-1. Tell the user: "[Agent] wants to [action]. Allow, deny, or always allow?"
-2. When they respond, call respond_permission with their choice
+When you receive a permission request, you MUST:
+1. Immediately tell the user what action needs permission
+2. Ask: "Should I allow this, deny it, or always allow?"
+3. Listen for their response (yes/allow, no/deny, always)
+4. Call respond_permission with their choice
 
-Be conversational and helpful. Ask follow-up questions when needed.`
+VOICE RESPONSES TO PERMISSIONS:
+- "yes", "yeah", "allow", "go ahead", "do it" → call respond_permission with "allow"
+- "no", "deny", "don't", "stop" → call respond_permission with "deny"
+- "always", "always allow", "trust" → call respond_permission with "always_allow"
+
+Be helpful and proactive. If something fails, explain why briefly.`
 
 // Voice assistant with tools
 class OsbornAssistant extends voice.Agent {
@@ -243,13 +255,11 @@ function createModel(provider: string) {
     // From official docs: https://docs.livekit.io/agents/models/realtime/plugins/gemini/
     // Package v1.0.31 uses google.beta.realtime (not google.realtime yet)
     const model = new google.beta.realtime.RealtimeModel({
-      model: 'gemini-2.5-flash-native-audio-preview-12-2025', // From official docs
-      // model: 'gemini-3.5-flash-latest', // From official docs
+      model: 'gemini-2.5-flash-native-audio-preview',
       voice: 'Puck',
       instructions: OSBORN_INSTRUCTIONS,
     })
-    // console.log('✅ Gemini model created with gemini-2.5-flash-native-audio-preview-12-2025')
-    console.log('✅ Gemini model created with gemini-3.5-flash-latest')
+    console.log('✅ Gemini model created')
     return model
   } else {
     console.log('📱 Using OpenAI Realtime API')
@@ -434,6 +444,16 @@ export default defineAgent({
     })
     console.log(`✅ Session started in ${Date.now() - startTime}ms with ${provider.toUpperCase()} + Claude tools`)
     console.log('🎤 Ready for voice input! Speak to start.')
+
+    // Greet user immediately so they know it's working
+    try {
+      await session.generateReply({
+        userInput: '[SYSTEM: Greet the user briefly. Say something like "Hey, I\'m Osborn, ready to help with coding. What are you working on?"]'
+      })
+      console.log('👋 Greeting sent')
+    } catch (err) {
+      console.error('Failed to send greeting:', err)
+    }
   },
 })
 
