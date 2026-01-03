@@ -13,6 +13,7 @@ import '@livekit/components-styles'
 
 interface VoiceRoomProps {
   token: string
+  onDisconnect?: () => void
 }
 
 interface ChatMessage {
@@ -161,7 +162,7 @@ function PermissionModal({
 }
 
 // Inner component that has access to LiveKit hooks
-function VoiceRoomInner() {
+function VoiceRoomInner({ onDisconnect }: { onDisconnect?: () => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
 
@@ -269,6 +270,14 @@ function VoiceRoomInner() {
             </p>
           </div>
           <VoiceAssistantControlBar />
+          {onDisconnect && (
+            <button
+              onClick={onDisconnect}
+              className="px-3 py-1.5 text-sm bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded-lg transition-colors border border-red-600/50"
+            >
+              Disconnect
+            </button>
+          )}
         </div>
 
         {/* Chat messages */}
@@ -281,7 +290,7 @@ function VoiceRoomInner() {
   )
 }
 
-export default function VoiceRoom({ token }: VoiceRoomProps) {
+export default function VoiceRoom({ token, onDisconnect }: VoiceRoomProps) {
   const livekitUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-project.livekit.cloud'
 
   return (
@@ -292,9 +301,10 @@ export default function VoiceRoom({ token }: VoiceRoomProps) {
       audio={true}
       video={false}
       className="w-full flex justify-center"
+      onDisconnected={onDisconnect}
     >
       <RoomAudioRenderer />
-      <VoiceRoomInner />
+      <VoiceRoomInner onDisconnect={onDisconnect} />
     </LiveKitRoom>
   )
 }

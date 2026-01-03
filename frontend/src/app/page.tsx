@@ -9,8 +9,10 @@ export default function Home() {
   const [isConnected, setIsConnected] = useState(false)
   const [token, setToken] = useState<string | null>(null)
   const [provider, setProvider] = useState<LLMProvider>('openai')
+  const [isConnecting, setIsConnecting] = useState(false)
 
   const connect = async () => {
+    setIsConnecting(true)
     try {
       const res = await fetch(`/api/token?provider=${provider}`)
       const data = await res.json()
@@ -18,7 +20,14 @@ export default function Home() {
       setIsConnected(true)
     } catch (error) {
       console.error('Failed to get token:', error)
+    } finally {
+      setIsConnecting(false)
     }
+  }
+
+  const disconnect = () => {
+    setIsConnected(false)
+    setToken(null)
   }
 
   return (
@@ -54,13 +63,14 @@ export default function Home() {
 
           <button
             onClick={connect}
-            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-lg font-medium transition-colors"
+            disabled={isConnecting}
+            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-wait rounded-lg text-lg font-medium transition-colors"
           >
-            Connect to Voice
+            {isConnecting ? 'Connecting...' : 'Connect to Voice'}
           </button>
         </div>
       ) : (
-        <VoiceRoom token={token!} />
+        <VoiceRoom token={token!} onDisconnect={disconnect} />
       )}
     </main>
   )
