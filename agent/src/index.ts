@@ -53,8 +53,9 @@ claude.run('Respond with just: ready')
   .then(() => console.log('✅ Claude pre-warmed and ready!'))
   .catch((err) => console.log('⚠️ Pre-warm failed:', err.message))
 
-// Track job context for data channel
+// Track job context and session for data channel
 let jobContext: JobContext | null = null
+let currentSession: voice.AgentSession | null = null
 
 // Helper to send data to frontend
 async function sendToFrontend(data: object) {
@@ -242,6 +243,7 @@ export default defineAgent({
     const session = new voice.AgentSession({
       llm: model,
     })
+    currentSession = session
 
     // Add session event listeners for debugging
     // Using string literals as AgentSessionEventTypes is not directly exported
@@ -266,7 +268,7 @@ export default defineAgent({
     })
 
     // Listen for data channel messages from frontend
-    ctx.room.on('dataReceived', (payload, participant, kind, topic) => {
+    ctx.room.on('dataReceived', async (payload, participant, kind, topic) => {
       if (topic === 'user-input') {
         try {
           const data = JSON.parse(new TextDecoder().decode(payload))
@@ -281,7 +283,20 @@ export default defineAgent({
           } else if (data.type === 'user_text') {
             // Handle text input from frontend
             console.log(`📝 Text input: "${data.content}"`)
-            // TODO: Route text to agent for processing
+            // Inject text into the session as user input
+            if (currentSession) {
+              try {
+                // Interrupt any current speech first
+                currentSession.interrupt()
+                // Generate a reply to the text input
+                await currentSession.generateReply({
+                  userInput: data.content,
+                })
+                console.log(`✅ Injected text to session`)
+              } catch (err) {
+                console.error(`❌ Failed to inject text:`, err)
+              }
+            }
           }
         } catch (e) {
           // Not JSON, ignore
