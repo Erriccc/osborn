@@ -61,38 +61,47 @@ if (enabledMcpNames.length > 0) {
   console.log(`🔌 Enabled MCP servers: ${enabledMcpNames.join(', ')}`)
 }
 
-// Pre-initialize Claude handler at module load (before any connections)
-console.log('🔥 Pre-initializing Claude Code...')
+// ============================================================
+// MULTI-AGENT POOL - 2 Claude handlers for parallel work
+// ============================================================
 const workingDir = config.workingDirectory || process.cwd()
-const claude = new ClaudeHandler({
-  workingDirectory: workingDir,
-  permissionMode: 'default', // Ask for permission on dangerous tools (Bash, Write, Edit)
-  mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-})
-
 console.log(`📂 Working directory: ${workingDir}`)
 
-// Listen for permission requests from Claude - will be handled by speakPermissionRequest
-claude.on('permission_request', (req: PermissionRequestEvent) => {
-  console.log(`\n⚠️ PERMISSION REQUIRED ⚠️`)
-  console.log(`🔧 Tool: ${req.toolName}`)
-  console.log(`📝 Action: ${req.description}`)
-  console.log(`⏳ Waiting for user response (say: allow, deny, or always allow)...`)
-  // Send to frontend for UI display
-  sendToFrontend({
-    type: 'permission_request',
-    toolName: req.toolName,
-    description: req.description,
-  })
-  // Speak the permission request through the voice agent
-  speakPermissionRequest(req.toolName, req.description)
-})
+interface AgentSlot {
+  id: number
+  handler: ClaudeHandler
+  busy: boolean
+  currentTask: string | null
+  context: string[] // Recent conversation context
+}
+
+// Create pool of 2 Claude agents
+console.log('🔥 Pre-initializing Claude Code agents (x2)...')
+const agentPool: AgentSlot[] = [1, 2].map(id => ({
+  id,
+  handler: new ClaudeHandler({
+    workingDirectory: workingDir,
+    permissionMode: 'default',
+    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+  }),
+  busy: false,
+  currentTask: null,
+  context: [],
+}))
+
+// Get an available agent, or the least busy one
+function getAvailableAgent(): AgentSlot {
+  const free = agentPool.find(a => !a.busy)
+  if (free) return free
+  // All busy - return first one (will queue)
+  console.log('⚠️ All agents busy, queuing on agent 1')
+  return agentPool[0]
+}
 
 // Speak permission requests through voice
 async function speakPermissionRequest(toolName: string, description: string) {
   if (!currentSession) return
   try {
-    // Interrupt current speech and ask for permission
     currentSession.interrupt()
     const message = `I need permission to ${description}. Should I allow this, deny it, or always allow ${toolName}?`
     await currentSession.generateReply({ userInput: `[SYSTEM: Ask user for permission] ${message}` })
@@ -101,10 +110,106 @@ async function speakPermissionRequest(toolName: string, description: string) {
   }
 }
 
-// Pre-warm Claude immediately on server start
-claude.run('Respond with just: ready')
-  .then(() => console.log('✅ Claude pre-warmed and ready!'))
-  .catch((err) => console.log('⚠️ Pre-warm failed:', err.message))
+// Speak status updates (streaming feedback)
+let quietMode = false // User can say "let me know when done" to enable
+let lastStatusTime = 0
+const STATUS_THROTTLE_MS = 3000 // Don't speak status more than every 3s
+
+async function speakStatus(status: string) {
+  if (quietMode) return
+  if (!currentSession) return
+  const now = Date.now()
+  if (now - lastStatusTime < STATUS_THROTTLE_MS) return
+  lastStatusTime = now
+
+  try {
+    // Don't interrupt, just inject as context
+    await currentSession.generateReply({
+      userInput: `[STATUS UPDATE - briefly mention this: ${status}]`
+    })
+  } catch (err) {
+    // Ignore status speak errors
+  }
+}
+
+// Setup event handlers for each agent
+agentPool.forEach(slot => {
+  const agent = slot.handler
+
+  // Permission requests
+  agent.on('permission_request', (req: PermissionRequestEvent) => {
+    console.log(`\n⚠️ [Agent ${slot.id}] PERMISSION REQUIRED: ${req.toolName}`)
+    sendToFrontend({
+      type: 'permission_request',
+      toolName: req.toolName,
+      description: req.description,
+      agentId: slot.id,
+    })
+    speakPermissionRequest(req.toolName, req.description)
+  })
+
+  // Tool use - streaming feedback
+  agent.on('tool_use', (tool: any) => {
+    console.log(`🔧 [Agent ${slot.id}] Using: ${tool.name}`)
+    const statusMsg = getToolStatusMessage(tool.name, tool.input)
+    if (statusMsg) {
+      sendToFrontend({ type: 'status', agentId: slot.id, message: statusMsg })
+      speakStatus(statusMsg)
+    }
+  })
+
+  // Tool results
+  agent.on('tool_result', (result: any) => {
+    console.log(`✅ [Agent ${slot.id}] Done: ${result.name || 'tool'}`)
+  })
+
+  // Text output
+  agent.on('text', (text: string) => {
+    if (text.length > 0) {
+      console.log(`💬 [Agent ${slot.id}]: ${text.substring(0, 100)}...`)
+    }
+  })
+
+  // Errors
+  agent.on('error', (err: any) => {
+    console.error(`❌ [Agent ${slot.id}] Error:`, err)
+  })
+})
+
+// Convert tool usage to human-readable status
+function getToolStatusMessage(toolName: string, input: any): string | null {
+  switch (toolName) {
+    case 'Read':
+      return `Reading ${input?.file_path?.split('/').pop() || 'file'}`
+    case 'Write':
+      return `Writing to ${input?.file_path?.split('/').pop() || 'file'}`
+    case 'Edit':
+      return `Editing ${input?.file_path?.split('/').pop() || 'file'}`
+    case 'Glob':
+      return `Searching for ${input?.pattern || 'files'}`
+    case 'Grep':
+      return `Searching for "${input?.pattern?.substring(0, 20) || 'pattern'}"`
+    case 'Bash':
+      const cmd = input?.command?.substring(0, 30) || 'command'
+      return `Running: ${cmd}`
+    case 'WebSearch':
+      return `Searching web for "${input?.query?.substring(0, 30) || 'query'}"`
+    case 'WebFetch':
+      return `Fetching ${input?.url?.substring(0, 40) || 'URL'}`
+    case 'Task':
+      return `Starting sub-task`
+    default:
+      return null // Don't announce every tool
+  }
+}
+
+// Pre-warm both agents
+console.log('🔥 Warming up agents...')
+Promise.all(agentPool.map(slot =>
+  slot.handler.run('Respond with just: ready')
+    .then(() => console.log(`✅ Agent ${slot.id} ready!`))
+    .catch(err => console.log(`⚠️ Agent ${slot.id} warm-up failed:`, err.message))
+))
 
 // Track job context and session for data channel
 let jobContext: JobContext | null = null
@@ -155,23 +260,53 @@ Use for: file operations, code tasks, terminal commands, web searches, project a
     task: z.string().describe('The coding task to execute'),
   }),
   execute: async ({ task }) => {
-    const agentName = currentCodingAgent === 'claude' ? 'Claude Code' : 'OpenAI Codex'
-    console.log(`\n🔨 ${agentName}: "${task}"`)
-    await sendToFrontend({ type: 'system', text: `Working on: ${task}` })
+    // Check for quiet mode trigger
+    if (task.toLowerCase().includes('let me know when done') ||
+        task.toLowerCase().includes('tell me when finished')) {
+      quietMode = true
+      console.log('🤫 Quiet mode enabled')
+    }
+    if (task.toLowerCase().includes('keep me updated') ||
+        task.toLowerCase().includes('give me updates')) {
+      quietMode = false
+      console.log('🔊 Updates enabled')
+    }
+
+    // Get available agent from pool
+    const slot = getAvailableAgent()
+    const agentName = currentCodingAgent === 'claude' ? `Claude ${slot.id}` : 'Codex'
+    console.log(`\n🔨 [Agent ${slot.id}] Task: "${task}"`)
+    await sendToFrontend({ type: 'system', text: `Agent ${slot.id} working on: ${task}`, agentId: slot.id })
+
+    // Mark agent as busy
+    slot.busy = true
+    slot.currentTask = task
 
     try {
       let result: string
       if (currentCodingAgent === 'codex' && codexHandler) {
         result = await codexHandler.run(task)
       } else {
-        result = await claude.run(task)
+        // Add context from recent conversation
+        const contextPrefix = slot.context.length > 0
+          ? `Context from conversation: ${slot.context.slice(-3).join(' | ')}\n\nTask: `
+          : ''
+        result = await slot.handler.run(contextPrefix + task)
       }
-      console.log(`✅ Done: ${result.length} chars`)
-      await sendToFrontend({ type: 'assistant_response', text: result })
+
+      // Store task in context for future reference
+      slot.context.push(`Task: ${task.substring(0, 50)} → Done`)
+      if (slot.context.length > 10) slot.context.shift()
+
+      console.log(`✅ [Agent ${slot.id}] Done: ${result.length} chars`)
+      await sendToFrontend({ type: 'assistant_response', text: result, agentId: slot.id })
       return result
     } catch (err) {
-      console.error('❌ Error:', err)
+      console.error(`❌ [Agent ${slot.id}] Error:`, err)
       return `Error: ${(err as Error).message}`
+    } finally {
+      slot.busy = false
+      slot.currentTask = null
     }
   },
 })
@@ -187,15 +322,18 @@ Call this after hearing the user's response to a permission prompt.`,
     ),
   }),
   execute: async ({ response }) => {
-    if (!claude.hasPendingPermission()) {
+    // Find agent with pending permission
+    const slotWithPending = agentPool.find(s => s.handler.hasPendingPermission())
+    if (!slotWithPending) {
       return 'No pending permission request.'
     }
-    const pending = claude.getPendingPermission()
-    claude.respondToPermission(response as PermissionResponse)
+    const pending = slotWithPending.handler.getPendingPermission()
+    slotWithPending.handler.respondToPermission(response as PermissionResponse)
     await sendToFrontend({
       type: 'permission_response',
       response,
-      toolName: pending?.toolName
+      toolName: pending?.toolName,
+      agentId: slotWithPending.id
     })
     return `Permission ${response} for ${pending?.toolName || 'tool'}.`
   },
@@ -306,25 +444,7 @@ export default defineAgent({
 
     jobContext = ctx
 
-    // Claude verbose logging
-    claude.on('tool_use', (tool) => {
-      console.log(`\n🔧 Claude Tool Started: ${tool.name}`)
-      if (tool.input) {
-        const inputStr = JSON.stringify(tool.input).substring(0, 200)
-        console.log(`   Input: ${inputStr}${inputStr.length >= 200 ? '...' : ''}`)
-      }
-    })
-    claude.on('tool_result', (result) => {
-      console.log(`✅ Claude Tool Completed: ${result.name || 'unknown'}`)
-    })
-    claude.on('text', (text) => {
-      if (text.length > 0) {
-        console.log(`💬 Claude says: ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`)
-      }
-    })
-    claude.on('error', (err) => {
-      console.error(`❌ Claude Error:`, err)
-    })
+    // Note: Agent event handlers are set up in agentPool initialization above
 
     // Connect FIRST so we can wait for participants
     console.log('📡 Connecting to room...')
@@ -399,10 +519,11 @@ export default defineAgent({
           console.log(`📨 Received from frontend:`, data)
 
           if (data.type === 'permission_response') {
-            // Handle permission response from UI
-            if (claude.hasPendingPermission()) {
-              claude.respondToPermission(data.response)
-              console.log(`✅ Permission ${data.response} from UI`)
+            // Handle permission response from UI - find agent with pending permission
+            const slotWithPending = agentPool.find(s => s.handler.hasPendingPermission())
+            if (slotWithPending) {
+              slotWithPending.handler.respondToPermission(data.response)
+              console.log(`✅ Permission ${data.response} from UI for Agent ${slotWithPending.id}`)
             }
           } else if (data.type === 'user_text') {
             // Handle text input from frontend
