@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+.next/
+out/
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+agent/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Claude Code
+.claude/
+
+# Temporary files
+*.tmp
+*.temp
+I_am_here.txt
