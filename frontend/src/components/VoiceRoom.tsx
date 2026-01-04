@@ -10,6 +10,7 @@ import {
   useDataChannel,
 } from '@livekit/components-react'
 import '@livekit/components-styles'
+import { MarkdownMessage } from './MarkdownMessage'
 
 interface VoiceRoomProps {
   token: string
@@ -69,7 +70,11 @@ function ChatPanel({ messages }: { messages: ChatMessage[] }) {
                 🔧 {msg.toolName}
               </div>
             )}
-            <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+            {msg.role === 'assistant' ? (
+              <MarkdownMessage content={msg.content} />
+            ) : (
+              <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+            )}
             <p className="text-xs opacity-50 mt-1">
               {msg.timestamp.toLocaleTimeString()}
             </p>
@@ -231,6 +236,32 @@ function PermissionModal({
           Say "allow", "deny", or "always allow" to respond via voice
         </p>
       </div>
+    </div>
+  )
+}
+
+// Status badge with animation
+function StatusBadge({ state }: { state: string }) {
+  const config: Record<string, { bg: string; text: string; icon: string; label: string }> = {
+    listening: { bg: 'bg-green-500/20', text: 'text-green-400', icon: '🎤', label: 'Listening' },
+    thinking: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', icon: '🧠', label: 'Thinking' },
+    speaking: { bg: 'bg-blue-500/20', text: 'text-blue-400', icon: '🔊', label: 'Speaking' },
+    idle: { bg: 'bg-gray-500/20', text: 'text-gray-400', icon: '⏸️', label: 'Idle' },
+  }
+
+  const { bg, text, icon, label } = config[state] || config.idle
+
+  return (
+    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${bg} ${text} border border-current/20`}>
+      <span className={state === 'listening' ? 'animate-pulse' : ''}>{icon}</span>
+      <span className="text-sm font-medium">{label}</span>
+      {state === 'thinking' && (
+        <span className="flex gap-1">
+          <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+          <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+          <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+        </span>
+      )}
     </div>
   )
 }
@@ -436,17 +467,7 @@ function VoiceRoomInner({
             />
           </div>
           <div className="flex items-center gap-3">
-            <div className={`px-3 py-1.5 rounded-full text-sm font-medium ${
-              state === 'listening' ? 'bg-green-500/20 text-green-400' :
-              state === 'thinking' ? 'bg-yellow-500/20 text-yellow-400' :
-              state === 'speaking' ? 'bg-blue-500/20 text-blue-400' :
-              'bg-gray-500/20 text-gray-400'
-            }`}>
-              {state === 'listening' ? '🎤 Listening' :
-               state === 'thinking' ? '🧠 Thinking' :
-               state === 'speaking' ? '🔊 Speaking' :
-               state}
-            </div>
+            <StatusBadge state={state} />
             <VoiceAssistantControlBar />
             {onDisconnect && (
               <button

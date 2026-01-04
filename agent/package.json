@@ -1,6 +1,6 @@
 {
   "name": "osborn",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Voice AI coding assistant - local agent that connects to Osborn frontend",
   "type": "module",
   "bin": {
@@ -29,8 +29,11 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.74",
     "@livekit/agents": "^1.0.0",
+    "@livekit/agents-plugin-deepgram": "^1.0.31",
+    "@livekit/agents-plugin-elevenlabs": "^1.0.31",
     "@livekit/agents-plugin-google": "^1.0.0",
     "@livekit/agents-plugin-openai": "^1.0.0",
+    "@livekit/agents-plugin-silero": "^1.0.31",
     "@livekit/rtc-node": "^0.13.22",
     "@openai/codex-sdk": "^0.77.0",
     "dotenv": "^16.4.0",

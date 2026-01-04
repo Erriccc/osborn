@@ -422,3 +422,97 @@ mcpServers:
 4. In another terminal: `cd agent && npm install && npm run dev -- --room <code>`
 5. Click "Agent Connected? Start Voice"
 6. Speak to Osborn!
+
+---
+
+## v0.2.0 Development (2026-01-03) - Three-Layer Architecture + UI Overhaul
+
+### Goal: Siri-like Voice Coding Experience
+
+**Problem with current architecture:**
+- OpenAI Realtime: Expensive ($0.06/min)
+- Gemini Live: Can't say hello (no `generateReply` support)
+- Voice model directly calls Claude Code - no smart summarization
+
+### Three-Layer Architecture (In Progress)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Layer 1: Voice I/O (STT + TTS)                                  │
+│   - STT: Deepgram (fast, Node.js compatible)                    │
+│   - TTS: Gemini TTS (cheap, good quality)                       │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────┐
+│ Layer 2: Bridge LLM (Context Manager)                           │
+│   - Model: Gemini 2.5 Pro                                       │
+│   - Handles: greetings, acknowledgments, conversation flow      │
+│   - Summarizes coding results for voice output                  │
+│   - Tools: run_code, manage_permission                          │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────┐
+│ Layer 3: Coding Agent (Claude Code)                             │
+│   - Plan Agent: Research, read-only (fast)                      │
+│   - Execute Agent: Write access (permissions)                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Files Created/Modified
+
+| File | Status | Purpose |
+|------|--------|---------|
+| `agent/src/voice-io.ts` | ✅ Created | STT/TTS factory (Deepgram + Gemini TTS) |
+| `agent/src/bridge-llm.ts` | ✅ Created | Bridge LLM with Gemini 2.5 Pro |
+| `agent/src/index.ts` | 🔄 Pending | Add pipelined mode alongside realtime |
+| `agent/src/config.ts` | 🔄 Pending | Add voiceMode config option |
+| `frontend/src/components/MarkdownMessage.tsx` | 🔄 Pending | Markdown renderer |
+| `frontend/src/components/VoiceRoom.tsx` | 🔄 Pending | Better status, markdown |
+
+### Dependencies Added
+
+**Agent (backend):**
+```json
+"@livekit/agents-plugin-deepgram": "^1.0.31"
+"@livekit/agents-plugin-elevenlabs": "^1.0.31"
+"@livekit/agents-plugin-silero": "^1.0.31"
+```
+
+**Frontend:**
+```json
+"react-markdown": installed
+"remark-gfm": installed
+"rehype-highlight": installed
+"highlight.js": installed
+```
+
+### Key Design Decisions
+1. **Pipelined mode is opt-in** - realtime stays default
+2. **STT**: Deepgram (Gemini STT not available in Node.js)
+3. **Bridge LLM**: Gemini 2.5 Pro (smart context management)
+4. **TTS**: Gemini TTS (cheap, uses existing Google API key)
+5. **Greeting solved**: TTS speaks directly via `session.say()`
+
+### Next Steps
+1. Update `index.ts` with pipelined mode session creation
+2. Update `config.ts` with new voice mode options
+3. Create `MarkdownMessage.tsx` component
+4. Update `VoiceRoom.tsx` with markdown rendering
+5. Test both modes together
+6. Publish v0.2.0
+
+### Config Example for Pipelined Mode
+```yaml
+# ~/.osborn/config.yaml
+workingDirectory: /path/to/project
+voiceMode: pipelined  # or 'realtime' (default)
+
+pipelined:
+  stt:
+    provider: deepgram
+  llm:
+    provider: gemini-pro
+  tts:
+    provider: gemini
+    voice: Zephyr
+```

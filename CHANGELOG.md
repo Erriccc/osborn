@@ -22,7 +22,63 @@
 
 ## Version History
 
-### v0.1.6 (Current)
+### v0.2.0 (Current)
+**Three-Layer Voice Architecture & UI Overhaul**
+
+This release introduces a major architectural improvement and enhanced UI.
+
+#### New Features
+
+**Three-Layer Voice Architecture (Pipelined Mode)**
+- **Layer 1 - Voice I/O**: Separate STT (Deepgram) and TTS (Gemini) for flexible voice handling
+- **Layer 2 - Bridge LLM**: Gemini 2.5 Pro for intelligent conversation management, greetings, and context bridging
+- **Layer 3 - Coding Agent**: Claude Code with Plan (read-only) and Execute (write) agents
+- **Voice Mode Selection**: Choose between `realtime` (OpenAI/Gemini speech-to-speech) or `pipelined` (STT+LLM+TTS)
+- **Smart Summarization**: Bridge LLM summarizes technical results for natural voice responses
+- **Solves Gemini Greeting**: TTS speaks directly in pipelined mode - no more silent starts
+
+**Improved Configuration**
+- New `voiceMode` option: `'realtime'` (default) or `'pipelined'`
+- Configurable pipelined providers: STT, Bridge LLM, and TTS
+- Full config via `~/.osborn/config.yaml`
+
+**Frontend UI Overhaul**
+- **Markdown Rendering**: Assistant messages now render with full markdown support
+- **Syntax Highlighting**: Code blocks with language badges and copy buttons
+- **Better Status Indicators**: Animated status badges for listening/thinking/speaking states
+- **Rich Text Support**: Headers, lists, links, tables, blockquotes rendered beautifully
+- **GitHub-Dark Theme**: Code blocks styled with highlight.js github-dark theme
+
+#### Backend Changes
+- New `voice-io.ts`: STT/TTS factory with provider abstraction
+- New `bridge-llm.ts`: Bridge LLM with context tracking and tools
+- Updated `config.ts`: New types and helpers for pipelined config
+- Updated `index.ts`: Dual-mode session creation and improved speech queue
+
+#### Frontend Changes
+- New `MarkdownMessage.tsx`: Full markdown renderer with syntax highlighting
+- Updated `VoiceRoom.tsx`: Markdown integration and animated status badges
+- Added dependencies: `react-markdown`, `remark-gfm`, `rehype-highlight`
+
+#### Config Example
+```yaml
+# ~/.osborn/config.yaml
+workingDirectory: /path/to/project
+voiceMode: pipelined  # or 'realtime'
+
+pipelined:
+  stt:
+    provider: deepgram
+  llm:
+    provider: gemini-pro
+  tts:
+    provider: gemini
+    voice: Zephyr
+```
+
+---
+
+### v0.1.6
 **Context Management & Voice Intelligence**
 - **Dynamic Instructions**: Voice LLM now knows working directory and project context
 - **Shared Context**: Actions and discovered files tracked between voice and coding agents

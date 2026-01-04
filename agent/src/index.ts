@@ -11,7 +11,9 @@ initializeLogger({ pretty: true, level: 'info' })
 
 import { ClaudeHandler, type PermissionRequestEvent, type PermissionResponse } from './claude-handler.js'
 import { CodexHandler } from './codex-handler.js'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getPipelinedConfig, type VoiceMode } from './config.js'
+import { createSTT, createTTS, createVAD, type VoiceIOConfig } from './voice-io.js'
+import { createBridgeLLM, getBridgeInstructions, BridgeContext, createBridgeTools, type BridgeLLMConfig } from './bridge-llm.js'
 
 // ============================================================
 // DIRECT CONNECTION ARCHITECTURE
@@ -113,9 +115,15 @@ async function main() {
     console.log(`   Or enter code "${roomCode}" in the frontend\n`)
   }
 
-  // Default provider
+  // Default provider and voice mode
   const defaultProvider = cliArgs.provider || process.env.LLM_PROVIDER || 'openai'
+  const voiceMode = getVoiceMode(config)
+  const pipelinedConfig = getPipelinedConfig(config)
   console.log(`🎯 Default voice provider: ${defaultProvider}`)
+  console.log(`🎙️ Voice mode: ${voiceMode}`)
+  if (voiceMode === 'pipelined') {
+    console.log(`   STT: ${pipelinedConfig.stt.provider}, LLM: ${pipelinedConfig.llm.provider}, TTS: ${pipelinedConfig.tts.provider}`)
+  }
 
   // ============================================================
   // Initialize Claude Agents (Dual Architecture)
@@ -245,32 +253,37 @@ async function main() {
     }
   }
 
-  // Process speech queue
+  // Process speech queue - supports both realtime and pipelined modes
   async function processSpeechQueue() {
     if (isSpeaking || speechQueue.length === 0 || !currentSession) return
     if (agentState !== 'listening') return
-    if (currentProvider === 'gemini') {
-      // Gemini doesn't support generateReply
-      while (speechQueue.length > 0) {
-        console.log(`🔊 [Would say] ${speechQueue.shift()}`)
-      }
-      return
-    }
 
     isSpeaking = true
     const message = speechQueue.shift()!
 
     try {
-      await Promise.race([
-        currentSession.generateReply({ userInput: message }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
-      ])
-    } catch {
-      // Ignore speech errors
+      if (voiceMode === 'pipelined') {
+        // Pipelined mode: Use session.say() with TTS
+        await Promise.race([
+          (currentSession as any).say(message),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+        ])
+      } else if (currentProvider !== 'gemini') {
+        // Realtime mode: Use generateReply (only OpenAI supports this)
+        await Promise.race([
+          currentSession.generateReply({ userInput: message }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+        ])
+      } else {
+        // Gemini realtime doesn't support generateReply - just log
+        console.log(`🔊 [Would say] ${message}`)
+      }
+    } catch (err) {
+      console.log('⚠️ Speech queue error:', err)
     } finally {
       isSpeaking = false
       if (speechQueue.length > 0) {
-        setTimeout(processSpeechQueue, 500)
+        setTimeout(processSpeechQueue, 300)
       }
     }
   }
@@ -436,10 +449,10 @@ PERMISSIONS: When you hear permission request, tell user what needs permission a
     }
   }
 
-  // Create voice model
-  function createModel(provider: string) {
+  // Create voice model for realtime mode
+  function createRealtimeModel(provider: string) {
     if (provider === 'gemini') {
-      console.log('📱 Using Gemini Live API')
+      console.log('📱 Using Gemini Live API (realtime)')
       return new google.beta.realtime.RealtimeModel({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         voice: 'Puck',
@@ -451,6 +464,39 @@ PERMISSIONS: When you hear permission request, tell user what needs permission a
         voice: 'alloy',
       })
     }
+  }
+
+  // Create pipelined session (STT + LLM + TTS)
+  // Bridge context for tracking conversation state
+  const bridgeContext = new BridgeContext()
+
+  async function createPipelinedSession(): Promise<voice.AgentSession> {
+    const { stt: sttConfig, llm: llmConfig, tts: ttsConfig } = pipelinedConfig
+    console.log(`📱 Using Pipelined Mode (${sttConfig.provider} STT + ${llmConfig.provider} + ${ttsConfig.provider} TTS)`)
+
+    const stt = createSTT({
+      provider: sttConfig.provider,
+      model: sttConfig.model,
+      language: sttConfig.language,
+    })
+    const bridgeLLM = createBridgeLLM({
+      provider: llmConfig.provider,
+      model: llmConfig.model,
+    })
+    const tts = createTTS({
+      provider: ttsConfig.provider,
+      model: ttsConfig.model,
+      voice: ttsConfig.voice,
+    })
+    const vad = await createVAD()
+
+    return new voice.AgentSession({
+      vad,
+      stt,
+      llm: bridgeLLM,
+      tts,
+      turnDetection: 'vad' as any,
+    })
   }
 
   // ============================================================
@@ -490,9 +536,14 @@ PERMISSIONS: When you hear permission request, tell user what needs permission a
       codexHandler = new CodexHandler({ workingDirectory: workingDir })
     }
 
-    // Create voice session
-    const model = createModel(provider)
-    const session = new voice.AgentSession({ llm: model })
+    // Create voice session based on voiceMode
+    let session: voice.AgentSession
+    if (voiceMode === 'pipelined') {
+      session = await createPipelinedSession()
+    } else {
+      const model = createRealtimeModel(provider)
+      session = new voice.AgentSession({ llm: model })
+    }
     currentSession = session
 
     // Session events
@@ -554,14 +605,25 @@ PERMISSIONS: When you hear permission request, tell user what needs permission a
       })
       console.log('✅ agent_ready sent (with retries scheduled)')
 
-      // Greet user (OpenAI only)
-      if (provider !== 'gemini') {
+      // Greet user
+      const greeting = "Hey! I'm Osborn. What are you working on?"
+      if (voiceMode === 'pipelined') {
+        // Pipelined mode: Use session.say() with TTS
+        try {
+          console.log('👋 Sending greeting via TTS...')
+          await (session as any).say(greeting)
+          console.log('✅ Greeting sent')
+        } catch (err) {
+          console.log('⚠️ Greeting via TTS failed:', err)
+        }
+      } else if (provider !== 'gemini') {
+        // Realtime mode: Only OpenAI supports generateReply
         try {
           await session.generateReply({
-            userInput: '[Greet the user: "Hey, I\'m Osborn. What are you working on?"]'
+            userInput: `[Greet the user: "${greeting}"]`
           })
         } catch {
-          console.log('⚠️ Greeting skipped')
+          console.log('⚠️ Greeting skipped (Gemini)')
         }
       }
     } catch (err) {
