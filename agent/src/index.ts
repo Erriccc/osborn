@@ -18,8 +18,15 @@ function parseArgs(): { roomCode?: string } {
   let roomCode: string | undefined
 
   for (let i = 0; i < args.length; i++) {
+    // Explicit --room flag
     if (args[i] === '--room' && args[i + 1]) {
       roomCode = args[i + 1]
+      break
+    }
+    // Short code after 'dev' or 'start' (e.g., `npm run dev abc123`)
+    if ((args[i - 1] === 'dev' || args[i - 1] === 'start') &&
+        args[i] && !args[i].startsWith('-') && args[i].length >= 4 && args[i].length <= 10) {
+      roomCode = args[i]
     }
   }
 
@@ -62,40 +69,111 @@ if (enabledMcpNames.length > 0) {
 }
 
 // ============================================================
-// MULTI-AGENT POOL - 2 Claude handlers for parallel work
+// DUAL AGENT ARCHITECTURE - Plan Agent + Execute Agent
+// ============================================================
+// Plan Agent: Research, context gathering, understanding (read-only)
+// Execute Agent: Implementation, running commands (full access)
 // ============================================================
 const workingDir = config.workingDirectory || process.cwd()
 console.log(`📂 Working directory: ${workingDir}`)
 
 interface AgentSlot {
   id: number
+  role: 'plan' | 'execute'
   handler: ClaudeHandler
   busy: boolean
   currentTask: string | null
   context: string[] // Recent conversation context
 }
 
-// Create pool of 2 Claude agents
-console.log('🔥 Pre-initializing Claude Code agents (x2)...')
-const agentPool: AgentSlot[] = [1, 2].map(id => ({
-  id,
+// Create dual agents: Plan + Execute
+console.log('🔥 Initializing dual Claude agents...')
+
+// Plan Agent - Read-only, research, context gathering
+const planAgent: AgentSlot = {
+  id: 1,
+  role: 'plan',
   handler: new ClaudeHandler({
     workingDirectory: workingDir,
-    permissionMode: 'default',
+    permissionMode: 'plan', // Read-only tools
+    agentRole: 'plan',
     mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
   }),
   busy: false,
   currentTask: null,
   context: [],
-}))
+}
 
-// Get an available agent, or the least busy one
-function getAvailableAgent(): AgentSlot {
-  const free = agentPool.find(a => !a.busy)
-  if (free) return free
-  // All busy - return first one (will queue)
-  console.log('⚠️ All agents busy, queuing on agent 1')
-  return agentPool[0]
+// Execute Agent - Full access for implementation
+const executeAgent: AgentSlot = {
+  id: 2,
+  role: 'execute',
+  handler: new ClaudeHandler({
+    workingDirectory: workingDir,
+    permissionMode: 'default', // Full tools with permission
+    agentRole: 'execute',
+    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+  }),
+  busy: false,
+  currentTask: null,
+  context: [],
+}
+
+// Combined pool for event handling
+const agentPool: AgentSlot[] = [planAgent, executeAgent]
+
+// Smart routing - determine which agent should handle the task
+function routeTask(task: string): AgentSlot {
+  const taskLower = task.toLowerCase()
+
+  // Plan agent handles: research, understanding, explaining, analyzing
+  const planKeywords = [
+    'what', 'how', 'why', 'explain', 'understand', 'analyze', 'review',
+    'describe', 'show me', 'tell me about', 'look at', 'check',
+    'find', 'search', 'explore', 'investigate', 'research',
+    'plan', 'design', 'architect', 'strategy', 'approach',
+    'summarize', 'overview', 'structure', 'flow', 'diagram',
+  ]
+
+  // Execute agent handles: implementation, changes, running
+  const executeKeywords = [
+    'create', 'make', 'build', 'implement', 'add', 'write',
+    'fix', 'update', 'change', 'modify', 'edit', 'refactor',
+    'delete', 'remove', 'run', 'execute', 'install', 'deploy',
+    'commit', 'push', 'test', 'debug', 'start', 'stop',
+  ]
+
+  // Check for execute keywords first (more specific intent)
+  for (const keyword of executeKeywords) {
+    if (taskLower.includes(keyword)) {
+      // But if busy, fall back to plan for research
+      if (executeAgent.busy && !planAgent.busy) {
+        console.log(`🔄 Execute agent busy, using Plan agent for initial research`)
+        return planAgent
+      }
+      return executeAgent
+    }
+  }
+
+  // Check for plan keywords
+  for (const keyword of planKeywords) {
+    if (taskLower.includes(keyword)) {
+      return planAgent
+    }
+  }
+
+  // Default: Start with plan agent to gather context first
+  if (!planAgent.busy) {
+    return planAgent
+  }
+
+  // If plan is busy, use execute
+  return executeAgent
+}
+
+// Get specific agent by role
+function getAgent(role: 'plan' | 'execute'): AgentSlot {
+  return role === 'plan' ? planAgent : executeAgent
 }
 
 // Track current provider for API-specific behavior
@@ -276,11 +354,14 @@ function getToolStatusMessage(toolName: string, input: any): string | null {
 
 // Pre-warm both agents
 console.log('🔥 Warming up agents...')
-Promise.all(agentPool.map(slot =>
-  slot.handler.run('Respond with just: ready')
-    .then(() => console.log(`✅ Agent ${slot.id} ready!`))
-    .catch(err => console.log(`⚠️ Agent ${slot.id} warm-up failed:`, err.message))
-))
+Promise.all([
+  planAgent.handler.run('Respond with just: ready')
+    .then(() => console.log(`✅ Plan Agent ready!`))
+    .catch(err => console.log(`⚠️ Plan Agent warm-up failed:`, err.message)),
+  executeAgent.handler.run('Respond with just: ready')
+    .then(() => console.log(`✅ Execute Agent ready!`))
+    .catch(err => console.log(`⚠️ Execute Agent warm-up failed:`, err.message)),
+])
 
 // Track job context and session for data channel
 let jobContext: JobContext | null = null
@@ -325,7 +406,11 @@ async function sendToFrontend(data: object) {
 // Define the run_code tool (works with both Claude and Codex)
 const runCodeTool = llm.tool({
   description: `Execute coding tasks using the coding agent.
-IMPORTANT: Before calling this tool, ALWAYS say "Got it" or "On it" first so the user knows you heard them.
+IMPORTANT: Before calling this tool, ALWAYS acknowledge the user first ("Got it", "On it", "Let me check").
+This tool routes to either:
+- Plan Agent: For research, understanding, explaining, analyzing
+- Execute Agent: For creating, fixing, running, implementing
+
 Use for: file operations, code tasks, terminal commands, web searches, project analysis.`,
   parameters: z.object({
     task: z.string().describe('The coding task to execute'),
@@ -343,9 +428,10 @@ Use for: file operations, code tasks, terminal commands, web searches, project a
       console.log('🔊 Updates enabled')
     }
 
-    // Get available agent from pool
-    const slot = getAvailableAgent()
-    const agentName = currentCodingAgent === 'claude' ? `Claude ${slot.id}` : 'Codex'
+    // Smart routing - determine which agent should handle the task
+    const slot = routeTask(task)
+    const agentEmoji = slot.role === 'plan' ? '📋' : '🔨'
+    const agentName = currentCodingAgent === 'claude' ? `${slot.role.charAt(0).toUpperCase() + slot.role.slice(1)} Agent` : 'Codex'
     console.log(`\n🔨 [Agent ${slot.id}] Task: "${task}"`)
     await sendToFrontend({ type: 'system', text: `Agent ${slot.id} working on: ${task}`, agentId: slot.id })
 

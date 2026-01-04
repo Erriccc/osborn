@@ -4,10 +4,12 @@ import { EventEmitter } from 'events'
 interface ClaudeHandlerOptions {
   workingDirectory?: string
   allowedTools?: string[]
-  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions'
+  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
   mcpServers?: Record<string, McpServerConfig>
   // If true, ALL tools require permission (not just dangerous ones)
   requireAllPermissions?: boolean
+  // Agent role for logging
+  agentRole?: 'plan' | 'execute'
 }
 
 export type { McpServerConfig }
@@ -109,21 +111,65 @@ export class ClaudeHandler extends EventEmitter {
     'LSP',
   ]
 
+  // Plan mode tools - read-only, research, context gathering
+  private static readonly PLAN_TOOLS = [
+    'Read',           // View file contents
+    'Glob',           // File pattern matching
+    'Grep',           // Content searching
+    'Bash',           // Read-only bash (ls, git status, git log, etc.)
+    'Task',           // Research agents
+    'WebFetch',       // Web content analysis
+    'WebSearch',      // Internet searching
+    'LSP',            // Code intelligence (go to definition, references)
+  ]
+
+  // Execute mode tools - full access
+  private static readonly EXECUTE_TOOLS = ClaudeHandler.ALL_TOOLS
+
+  private agentRole: 'plan' | 'execute'
+
   constructor(options: ClaudeHandlerOptions = {}) {
     super()
+
+    // Set agent role
+    this.agentRole = options.agentRole || (options.permissionMode === 'plan' ? 'plan' : 'execute')
+
+    // For plan mode, restrict to read-only tools
+    const isPlanMode = options.permissionMode === 'plan'
+    const defaultTools = isPlanMode ? ClaudeHandler.PLAN_TOOLS : ClaudeHandler.ALL_TOOLS
+
     this.options = {
       workingDirectory: options.workingDirectory || process.cwd(),
-      allowedTools: options.allowedTools || ClaudeHandler.ALL_TOOLS,
-      permissionMode: options.permissionMode || 'default',
+      allowedTools: options.allowedTools || defaultTools,
+      // Plan mode uses 'default' permission mode but with restricted tools
+      permissionMode: isPlanMode ? 'default' : (options.permissionMode || 'default'),
       mcpServers: options.mcpServers,
-      // By default, require permission for ALL tools
-      requireAllPermissions: options.requireAllPermissions ?? true,
+      // Plan mode doesn't require permissions (read-only is safe)
+      // Execute mode requires permissions for safety
+      requireAllPermissions: isPlanMode ? false : (options.requireAllPermissions ?? true),
     }
+
+    const roleEmoji = this.agentRole === 'plan' ? '📋' : '🔨'
+    console.log(`${roleEmoji} Agent role: ${this.agentRole.toUpperCase()}`)
     console.log(`🔧 Allowed tools: ${this.options.allowedTools?.join(', ')}`)
-    console.log(`🔐 Require all permissions: ${this.options.requireAllPermissions}`)
+    console.log(`🔐 Require permissions: ${this.options.requireAllPermissions}`)
     if (this.options.mcpServers) {
       console.log(`🔌 MCP servers: ${Object.keys(this.options.mcpServers).join(', ')}`)
     }
+  }
+
+  /**
+   * Get the agent's role
+   */
+  getRole(): 'plan' | 'execute' {
+    return this.agentRole
+  }
+
+  /**
+   * Check if this is a plan-mode agent
+   */
+  isPlanMode(): boolean {
+    return this.agentRole === 'plan'
   }
 
   /**
