@@ -405,7 +405,7 @@ Plan Agent = reading/research. Execute Agent = writing (will ask user for permis
 
 WORKING DIRECTORY: ${workingDir}
 
-STYLE: Keep responses SHORT (under 70 words). Sound natural. Say "Got it" when given a task.
+STYLE: Keep responses SHORT (under 250 words). Sound natural. Say "Got it" when given a task.
 
 CAPABILITIES (via run_code tool):
 - Read/write/edit files, search codebase

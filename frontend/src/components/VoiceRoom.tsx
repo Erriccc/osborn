@@ -273,6 +273,18 @@ function VoiceRoomInner({
 
   const { state, audioTrack } = useVoiceAssistant()
 
+  // Fallback: detect agent connection from voice state
+  // If voice assistant state changes to listening/speaking, agent is connected
+  useEffect(() => {
+    if (state === 'listening' || state === 'speaking' || state === 'thinking') {
+      if (!agentConnected) {
+        console.log('🔄 Agent detected via voice state:', state)
+        setAgentConnected(true)
+        onAgentReady?.()
+      }
+    }
+  }, [state, agentConnected, onAgentReady])
+
   // Data channel for receiving updates from agent
   const { message: dataMessage } = useDataChannel('osborn-updates')
 
