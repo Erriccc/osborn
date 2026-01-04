@@ -548,7 +548,7 @@ PERMISSIONS: When you hear permission request, tell user what needs permission a
       }, 20000)
 
       // Mark as sent when user first speaks (no need to keep sending)
-      session.on('input_speech_started', () => {
+      session.on('input_speech_started' as any, () => {
         readySent = true
         clearInterval(readyInterval)
       })
