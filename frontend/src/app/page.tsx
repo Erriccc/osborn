@@ -11,6 +11,7 @@ export default function Home() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
   const [token, setToken] = useState<string | null>(null)
   const [roomCode, setRoomCode] = useState<string | null>(null)
+  const [roomInput, setRoomInput] = useState<string>('')
   const [provider, setProvider] = useState<LLMProvider>('openai')
   const [codingAgent, setCodingAgent] = useState<CodingAgent>('claude')
   const [isConnecting, setIsConnecting] = useState(false)
@@ -40,15 +41,39 @@ export default function Home() {
     setConnectionState('connected')
   }, [])
 
-  const startSession = async () => {
+  const joinRoom = async (code: string) => {
     setIsConnecting(true)
     try {
-      // Use stored room code if available, otherwise generate new one
-      const existingCode = localStorage.getItem('osborn-room-code')
-      const url = existingCode
-        ? `/api/token?provider=${provider}&codingAgent=${codingAgent}&roomCode=${existingCode}`
-        : `/api/token?provider=${provider}&codingAgent=${codingAgent}`
+      const url = `/api/token?provider=${provider}&codingAgent=${codingAgent}&roomCode=${code}`
+      const res = await fetch(url)
+      const data = await res.json()
 
+      setToken(data.token)
+      setRoomCode(data.roomCode)
+      localStorage.setItem('osborn-room-code', data.roomCode)
+      setAgentStatus('waiting')
+      setConnectionState('waiting')
+    } catch (error) {
+      console.error('Failed to join room:', error)
+    } finally {
+      setIsConnecting(false)
+    }
+  }
+
+  const startSession = async () => {
+    // If room input is provided, join that room
+    if (roomInput.trim()) {
+      return joinRoom(roomInput.trim())
+    }
+    // Otherwise use stored room code or generate new
+    const existingCode = localStorage.getItem('osborn-room-code')
+    if (existingCode) {
+      return joinRoom(existingCode)
+    }
+    // Generate new room (legacy flow - frontend creates room)
+    setIsConnecting(true)
+    try {
+      const url = `/api/token?provider=${provider}&codingAgent=${codingAgent}`
       const res = await fetch(url)
       const data = await res.json()
 
@@ -147,12 +172,39 @@ export default function Home() {
             </div>
           </div>
 
+          {/* Room code input */}
+          <div className="text-center w-full max-w-sm">
+            <p className="text-sm text-gray-500 mb-2">Join Existing Room (from agent)</p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={roomInput}
+                onChange={(e) => setRoomInput(e.target.value.toLowerCase())}
+                placeholder="Enter room code..."
+                className="flex-1 px-4 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none font-mono"
+              />
+              <button
+                onClick={() => joinRoom(roomInput.trim())}
+                disabled={isConnecting || !roomInput.trim()}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+              >
+                Join
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4 text-gray-500">
+            <div className="h-px bg-gray-700 flex-1" />
+            <span className="text-sm">or</span>
+            <div className="h-px bg-gray-700 flex-1" />
+          </div>
+
           <button
             onClick={startSession}
             disabled={isConnecting}
             className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-wait rounded-lg text-lg font-medium transition-colors"
           >
-            {isConnecting ? 'Starting...' : roomCode ? 'Reconnect' : 'Start Session'}
+            {isConnecting ? 'Starting...' : roomCode ? 'Reconnect' : 'Create New Room'}
           </button>
 
           {roomCode && (
@@ -169,49 +221,50 @@ export default function Home() {
         </div>
       )}
 
-      {connectionState === 'waiting' && roomCode && token && (
+      {/* Unified view for waiting and connected states - keeps VoiceRoom mounted */}
+      {(connectionState === 'waiting' || connectionState === 'connected') && roomCode && token && (
         <div className="flex flex-col items-center gap-6 w-full max-w-2xl">
-          {/* Agent connection panel */}
-          <div className="w-full p-6 bg-gray-800 rounded-xl border border-gray-700">
-            <div className="flex items-center gap-3 mb-4">
-              <div className={`w-3 h-3 rounded-full ${agentStatus === 'connected' ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} />
-              <span className="text-gray-300">
-                {agentStatus === 'connected' ? 'Agent Connected!' : 'Waiting for agent...'}
-              </span>
-            </div>
+          {/* Agent connection panel - show when waiting */}
+          {connectionState === 'waiting' && agentStatus !== 'connected' && (
+            <div className="w-full p-6 bg-gray-800 rounded-xl border border-gray-700">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-3 h-3 rounded-full bg-yellow-500 animate-pulse" />
+                <span className="text-gray-300">Waiting for agent...</span>
+              </div>
 
-            <p className="text-gray-400 mb-3 text-sm">Run this command on your machine:</p>
-            <div className="flex items-center gap-2 bg-gray-900 rounded-lg p-3 mb-3">
-              <code className="flex-1 text-green-400 font-mono text-sm overflow-x-auto">
-                npm run room {roomCode}
-              </code>
-              <button
-                onClick={copyCommand}
-                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors shrink-0"
-              >
-                {copied ? '✓' : 'Copy'}
-              </button>
-            </div>
+              <p className="text-gray-400 mb-3 text-sm">Run this command on your machine:</p>
+              <div className="flex items-center gap-2 bg-gray-900 rounded-lg p-3 mb-3">
+                <code className="flex-1 text-green-400 font-mono text-sm overflow-x-auto">
+                  npm run room {roomCode}
+                </code>
+                <button
+                  onClick={copyCommand}
+                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors shrink-0"
+                >
+                  {copied ? '✓' : 'Copy'}
+                </button>
+              </div>
 
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-500">
-                Room: <span className="font-mono text-gray-300">{roomCode}</span>
-              </span>
-              <span className="text-gray-500">
-                {provider === 'openai' ? '🔵 OpenAI' : '🟢 Gemini'} + {codingAgent === 'claude' ? '🟠 Claude' : '🟣 Codex'}
-              </span>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500">
+                  Room: <span className="font-mono text-gray-300">{roomCode}</span>
+                </span>
+                <span className="text-gray-500">
+                  {provider === 'openai' ? '🔵 OpenAI' : '🟢 Gemini'} + {codingAgent === 'claude' ? '🟠 Claude' : '🟣 Codex'}
+                </span>
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* VoiceRoom in waiting mode - listens for agent heartbeat */}
+          {/* VoiceRoom stays mounted across waiting->connected transition */}
           <VoiceRoom
             token={token}
             onDisconnect={disconnect}
             onAgentReady={handleAgentReady}
-            waitingMode={agentStatus !== 'connected'}
+            waitingMode={connectionState === 'waiting' && agentStatus !== 'connected'}
           />
 
-          {agentStatus !== 'connected' && (
+          {connectionState === 'waiting' && agentStatus !== 'connected' && (
             <button
               onClick={newSession}
               className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
@@ -220,10 +273,6 @@ export default function Home() {
             </button>
           )}
         </div>
-      )}
-
-      {connectionState === 'connected' && token && (
-        <VoiceRoom token={token} onDisconnect={disconnect} />
       )}
     </main>
   )

@@ -294,9 +294,11 @@ function VoiceRoomInner({
 
   // Handle incoming data channel messages
   useEffect(() => {
+    console.log('📬 dataMessage changed:', dataMessage ? 'has payload' : 'null')
     if (dataMessage) {
       try {
         const data = JSON.parse(new TextDecoder().decode(dataMessage.payload))
+        console.log('📩 Received data:', data.type, data)
 
         if (data.type === 'agent_ready') {
           // Agent is ready - notify parent

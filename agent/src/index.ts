@@ -1,45 +1,64 @@
-import { type JobContext, ServerOptions, cli, defineAgent, llm, voice } from '@livekit/agents'
+import { llm, voice, initializeLogger } from '@livekit/agents'
 import * as openai from '@livekit/agents-plugin-openai'
 import * as google from '@livekit/agents-plugin-google'
+import { Room, RoomEvent, RemoteParticipant, LocalParticipant, DataPacketKind } from '@livekit/rtc-node'
+import { AccessToken } from 'livekit-server-sdk'
 import { z } from 'zod'
-import { fileURLToPath } from 'url'
 import 'dotenv/config'
+
+// Initialize logger before anything else
+initializeLogger({ pretty: true, level: 'info' })
 
 import { ClaudeHandler, type PermissionRequestEvent, type PermissionResponse } from './claude-handler.js'
 import { CodexHandler } from './codex-handler.js'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames } from './config.js'
 
+// ============================================================
+// DIRECT CONNECTION ARCHITECTURE
+// ============================================================
+// This agent connects DIRECTLY to LiveKit rooms without using
+// the worker dispatch pattern. This is ideal for CLI tools that
+// users install locally and connect to cloud-hosted frontends.
+// ============================================================
+
 // Type for coding agent selection
 type CodingAgent = 'claude' | 'codex'
 
-// Parse CLI arguments for room code
-function parseArgs(): { roomCode?: string } {
+// Generate a short, user-friendly room code
+function generateRoomCode(): string {
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789'
+  let code = ''
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return code
+}
+
+// Parse CLI arguments
+function parseArgs(): { roomCode?: string; provider?: string } {
   const args = process.argv.slice(2)
   let roomCode: string | undefined
+  let provider: string | undefined
 
   for (let i = 0; i < args.length; i++) {
-    // Explicit --room flag
     if (args[i] === '--room' && args[i + 1]) {
       roomCode = args[i + 1]
-      break
     }
-    // Short code after 'dev' or 'start' (e.g., `npm run dev abc123`)
-    if ((args[i - 1] === 'dev' || args[i - 1] === 'start') &&
-        args[i] && !args[i].startsWith('-') && args[i].length >= 4 && args[i].length <= 10) {
+    if (args[i] === '--provider' && args[i + 1]) {
+      provider = args[i + 1]
+    }
+    // Short code detection (e.g., `npm run dev abc123`)
+    if (!args[i].startsWith('-') && args[i].length >= 4 && args[i].length <= 10 &&
+        !['dev', 'start'].includes(args[i])) {
       roomCode = args[i]
     }
   }
 
-  return { roomCode }
+  return { roomCode, provider }
 }
 
-const cliArgs = parseArgs()
-if (cliArgs.roomCode) {
-  console.log(`🔗 Room code provided: ${cliArgs.roomCode}`)
-}
-
-// Global error handlers to catch silent failures
-process.on('unhandledRejection', (reason, promise) => {
+// Global error handlers
+process.on('unhandledRejection', (reason) => {
   console.error('❌ Unhandled Rejection:', reason)
 })
 
@@ -47,734 +66,571 @@ process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error)
 })
 
-// Default provider (can be overridden by participant metadata)
-const DEFAULT_PROVIDER = process.env.LLM_PROVIDER || 'openai'
+// Main function
+async function main() {
+  console.log('\n🤖 Osborn Voice AI Coding Assistant\n')
 
-// Debug mode
-const DEBUG = process.env.DEBUG_LIVEKIT === 'true'
-if (DEBUG) {
-  console.log('🐛 Debug logging enabled')
-}
+  // Validate environment
+  const livekitUrl = process.env.LIVEKIT_URL
+  const apiKey = process.env.LIVEKIT_API_KEY
+  const apiSecret = process.env.LIVEKIT_API_SECRET
 
-console.log(`🤖 Default LLM Provider: ${DEFAULT_PROVIDER}`)
+  if (!livekitUrl || !apiKey || !apiSecret) {
+    console.error('❌ Missing required environment variables:')
+    if (!livekitUrl) console.error('   - LIVEKIT_URL')
+    if (!apiKey) console.error('   - LIVEKIT_API_KEY')
+    if (!apiSecret) console.error('   - LIVEKIT_API_SECRET')
+    console.error('\nSet these in your .env file or environment.')
+    process.exit(1)
+  }
 
-// Load configuration from ~/.osborn/config.yaml
-console.log('📁 Loading configuration...')
-const config = loadConfig()
-const mcpServers = getMcpServers(config)
-const enabledMcpNames = getEnabledMcpServerNames(config)
+  // Parse CLI args
+  const cliArgs = parseArgs()
 
-if (enabledMcpNames.length > 0) {
-  console.log(`🔌 Enabled MCP servers: ${enabledMcpNames.join(', ')}`)
-}
+  // Load configuration
+  console.log('📁 Loading configuration...')
+  const config = loadConfig()
+  const mcpServers = getMcpServers(config)
+  const enabledMcpNames = getEnabledMcpServerNames(config)
 
-// ============================================================
-// DUAL AGENT ARCHITECTURE - Plan Agent + Execute Agent
-// ============================================================
-// Plan Agent: Research, context gathering, understanding (read-only)
-// Execute Agent: Implementation, running commands (full access)
-// ============================================================
-const workingDir = config.workingDirectory || process.cwd()
-console.log(`📂 Working directory: ${workingDir}`)
+  if (enabledMcpNames.length > 0) {
+    console.log(`🔌 Enabled MCP servers: ${enabledMcpNames.join(', ')}`)
+  }
 
-interface AgentSlot {
-  id: number
-  role: 'plan' | 'execute'
-  handler: ClaudeHandler
-  busy: boolean
-  currentTask: string | null
-  context: string[] // Recent conversation context
-}
+  const workingDir = config.workingDirectory || process.cwd()
+  console.log(`📂 Working directory: ${workingDir}`)
 
-// Create dual agents: Plan + Execute
-console.log('🔥 Initializing dual Claude agents...')
+  // Determine room code
+  const roomCode = cliArgs.roomCode || generateRoomCode()
+  const roomName = `osborn-${roomCode}`
 
-// Plan Agent - Read-only, research, context gathering
-const planAgent: AgentSlot = {
-  id: 1,
-  role: 'plan',
-  handler: new ClaudeHandler({
-    workingDirectory: workingDir,
-    permissionMode: 'plan', // Read-only tools
-    agentRole: 'plan',
-    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-  }),
-  busy: false,
-  currentTask: null,
-  context: [],
-}
+  if (cliArgs.roomCode) {
+    console.log(`🔗 Joining room: ${roomCode}`)
+  } else {
+    console.log(`\n✨ Created new room: ${roomCode}`)
+    console.log(`\n📋 Share this with the frontend or run:`)
+    console.log(`   Open: https://osborn.app?room=${roomCode}`)
+    console.log(`   Or enter code "${roomCode}" in the frontend\n`)
+  }
 
-// Execute Agent - Full access for implementation
-const executeAgent: AgentSlot = {
-  id: 2,
-  role: 'execute',
-  handler: new ClaudeHandler({
-    workingDirectory: workingDir,
-    permissionMode: 'default', // Full tools with permission
-    agentRole: 'execute',
-    mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-  }),
-  busy: false,
-  currentTask: null,
-  context: [],
-}
+  // Default provider
+  const defaultProvider = cliArgs.provider || process.env.LLM_PROVIDER || 'openai'
+  console.log(`🎯 Default voice provider: ${defaultProvider}`)
 
-// Combined pool for event handling
-const agentPool: AgentSlot[] = [planAgent, executeAgent]
+  // ============================================================
+  // Initialize Claude Agents (Dual Architecture)
+  // ============================================================
+  console.log('\n🔥 Initializing Claude agents...')
 
-// Smart routing - determine which agent should handle the task
-function routeTask(task: string): AgentSlot {
-  const taskLower = task.toLowerCase()
+  interface AgentSlot {
+    id: number
+    role: 'plan' | 'execute'
+    handler: ClaudeHandler
+    busy: boolean
+    currentTask: string | null
+    context: string[]
+  }
 
-  // Plan agent handles: research, understanding, explaining, analyzing
-  const planKeywords = [
-    'what', 'how', 'why', 'explain', 'understand', 'analyze', 'review',
-    'describe', 'show me', 'tell me about', 'look at', 'check',
-    'find', 'search', 'explore', 'investigate', 'research',
-    'plan', 'design', 'architect', 'strategy', 'approach',
-    'summarize', 'overview', 'structure', 'flow', 'diagram',
-  ]
+  // Plan Agent - Read-only, research
+  const planAgent: AgentSlot = {
+    id: 1,
+    role: 'plan',
+    handler: new ClaudeHandler({
+      workingDirectory: workingDir,
+      permissionMode: 'plan',
+      agentRole: 'plan',
+      mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+    }),
+    busy: false,
+    currentTask: null,
+    context: [],
+  }
 
-  // Execute agent handles: implementation, changes, running
-  const executeKeywords = [
-    'create', 'make', 'build', 'implement', 'add', 'write',
-    'fix', 'update', 'change', 'modify', 'edit', 'refactor',
-    'delete', 'remove', 'run', 'execute', 'install', 'deploy',
-    'commit', 'push', 'test', 'debug', 'start', 'stop',
-  ]
+  // Execute Agent - Full access
+  const executeAgent: AgentSlot = {
+    id: 2,
+    role: 'execute',
+    handler: new ClaudeHandler({
+      workingDirectory: workingDir,
+      permissionMode: 'default',
+      agentRole: 'execute',
+      mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+    }),
+    busy: false,
+    currentTask: null,
+    context: [],
+  }
 
-  // Check for execute keywords first (more specific intent)
-  for (const keyword of executeKeywords) {
-    if (taskLower.includes(keyword)) {
-      // But if busy, fall back to plan for research
-      if (executeAgent.busy && !planAgent.busy) {
-        console.log(`🔄 Execute agent busy, using Plan agent for initial research`)
-        return planAgent
+  const agentPool: AgentSlot[] = [planAgent, executeAgent]
+
+  // Smart routing
+  function routeTask(task: string): AgentSlot {
+    const taskLower = task.toLowerCase()
+
+    const executeKeywords = [
+      'create', 'make', 'build', 'implement', 'add', 'write',
+      'fix', 'update', 'change', 'modify', 'edit', 'refactor',
+      'delete', 'remove', 'run', 'execute', 'install', 'deploy',
+      'commit', 'push', 'test', 'debug', 'start', 'stop',
+    ]
+
+    for (const keyword of executeKeywords) {
+      if (taskLower.includes(keyword)) {
+        if (executeAgent.busy && !planAgent.busy) {
+          return planAgent
+        }
+        return executeAgent
       }
-      return executeAgent
     }
+
+    return planAgent.busy ? executeAgent : planAgent
   }
 
-  // Check for plan keywords
-  for (const keyword of planKeywords) {
-    if (taskLower.includes(keyword)) {
-      return planAgent
-    }
-  }
+  // ============================================================
+  // Create Access Token for Agent
+  // ============================================================
+  console.log('🔑 Creating access token...')
 
-  // Default: Start with plan agent to gather context first
-  if (!planAgent.busy) {
-    return planAgent
-  }
-
-  // If plan is busy, use execute
-  return executeAgent
-}
-
-// Get specific agent by role
-function getAgent(role: 'plan' | 'execute'): AgentSlot {
-  return role === 'plan' ? planAgent : executeAgent
-}
-
-// Track current provider for API-specific behavior
-let currentProvider = 'openai'
-
-// Track actual agent state - CRITICAL for speech queue
-let agentState: string = 'initializing'
-
-// Queue for messages to speak (permissions, status updates)
-const speechQueue: string[] = []
-let isSpeaking = false
-let processingScheduled = false
-
-// Process speech queue - ONLY when agent is truly idle
-async function processSpeechQueue() {
-  // Don't process if:
-  // 1. Already speaking from queue
-  // 2. No messages in queue
-  // 3. No session
-  // 4. Agent is NOT in 'listening' state (busy speaking/thinking)
-  if (isSpeaking || speechQueue.length === 0 || !currentSession) {
-    processingScheduled = false
-    return
-  }
-
-  // CRITICAL: Only speak when agent is actually idle (listening)
-  if (agentState !== 'listening') {
-    console.log(`🔇 Agent busy (${agentState}), waiting to speak...`)
-    processingScheduled = false
-    return
-  }
-
-  // Skip for Gemini (doesn't support generateReply)
-  if (currentProvider === 'gemini') {
-    while (speechQueue.length > 0) {
-      console.log(`🔊 [Gemini would say] ${speechQueue.shift()}`)
-    }
-    processingScheduled = false
-    return
-  }
-
-  isSpeaking = true
-  processingScheduled = false
-  const message = speechQueue.shift()!
-  console.log(`🔊 Speaking: ${message.substring(0, 60)}...`)
-
-  try {
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('timeout')), 5000)
-    )
-    await Promise.race([
-      currentSession.generateReply({ userInput: message }),
-      timeout
-    ])
-    console.log(`✅ Spoke successfully`)
-  } catch (err) {
-    console.log(`⚠️ Could not speak: ${(err as Error).message}`)
-  } finally {
-    isSpeaking = false
-    // Schedule next queue item only after this one completes
-    if (speechQueue.length > 0 && !processingScheduled) {
-      processingScheduled = true
-      // Wait for agent to return to listening state - checked in state listener
-      console.log(`📋 ${speechQueue.length} more messages queued`)
-    }
-  }
-}
-
-// Schedule queue processing when agent becomes idle
-function scheduleQueueProcessing() {
-  if (processingScheduled || speechQueue.length === 0 || isSpeaking) return
-  if (agentState !== 'listening') return
-
-  processingScheduled = true
-  setTimeout(processSpeechQueue, 500)
-}
-
-// Queue permission request to be spoken - DON'T process immediately
-function speakPermissionRequest(toolName: string, description: string) {
-  const message = `[SYSTEM: Tell user] I need permission to ${description}. Say yes, no, or always allow.`
-  speechQueue.push(message)
-  console.log(`🔊 Queued permission: ${toolName} (queue size: ${speechQueue.length})`)
-  // Let the state listener trigger processing when agent is idle
-  scheduleQueueProcessing()
-}
-
-// Speak status updates (streaming feedback)
-let quietMode = false
-let lastStatusTime = 0
-const STATUS_THROTTLE_MS = 5000 // Throttle to every 5s
-
-function speakStatus(status: string) {
-  if (quietMode) return
-  const now = Date.now()
-  if (now - lastStatusTime < STATUS_THROTTLE_MS) {
-    console.log(`🔇 [Throttled] ${status}`)
-    return
-  }
-  lastStatusTime = now
-
-  const message = `[STATUS - say briefly: ${status}]`
-  speechQueue.push(message)
-  console.log(`🔊 Queued status: ${status} (queue size: ${speechQueue.length})`)
-  // Let the state listener trigger processing when agent is idle
-  scheduleQueueProcessing()
-}
-
-// Setup event handlers for each agent
-agentPool.forEach(slot => {
-  const agent = slot.handler
-
-  // Permission requests
-  agent.on('permission_request', (req: PermissionRequestEvent) => {
-    console.log(`\n⚠️ [Agent ${slot.id}] PERMISSION REQUIRED: ${req.toolName}`)
-    sendToFrontend({
-      type: 'permission_request',
-      toolName: req.toolName,
-      description: req.description,
-      agentId: slot.id,
-    })
-    speakPermissionRequest(req.toolName, req.description)
+  const token = new AccessToken(apiKey, apiSecret, {
+    identity: 'osborn-agent',
+    name: 'Osborn AI',
+    metadata: JSON.stringify({ type: 'agent', version: '0.1.5' }),
   })
 
-  // Tool use - streaming feedback
-  agent.on('tool_use', (tool: any) => {
-    console.log(`🔧 [Agent ${slot.id}] Using: ${tool.name}`)
-    const statusMsg = getToolStatusMessage(tool.name, tool.input)
-    if (statusMsg) {
-      sendToFrontend({ type: 'status', agentId: slot.id, message: statusMsg })
-      speakStatus(statusMsg)
+  token.addGrant({
+    roomJoin: true,
+    room: roomName,
+    canPublish: true,
+    canSubscribe: true,
+    canPublishData: true,
+  })
+
+  const jwt = await token.toJwt()
+
+  // ============================================================
+  // Connect to Room Directly
+  // ============================================================
+  console.log('📡 Connecting to LiveKit...')
+
+  const room = new Room()
+
+  // Track state
+  let currentSession: voice.AgentSession | null = null
+  let currentProvider = defaultProvider
+  let currentCodingAgent: CodingAgent = 'claude'
+  let codexHandler: CodexHandler | null = null
+  let localParticipant: LocalParticipant | null = null
+  let agentState = 'initializing'
+
+  // Speech queue
+  const speechQueue: string[] = []
+  let isSpeaking = false
+
+  // Helper to send data to frontend
+  async function sendToFrontend(data: object) {
+    if (!localParticipant) {
+      console.log('⚠️ sendToFrontend: no localParticipant!')
+      return
     }
-  })
-
-  // Tool results
-  agent.on('tool_result', (result: any) => {
-    console.log(`✅ [Agent ${slot.id}] Done: ${result.name || 'tool'}`)
-  })
-
-  // Text output
-  agent.on('text', (text: string) => {
-    if (text.length > 0) {
-      console.log(`💬 [Agent ${slot.id}]: ${text.substring(0, 100)}...`)
-    }
-  })
-
-  // Errors
-  agent.on('error', (err: any) => {
-    console.error(`❌ [Agent ${slot.id}] Error:`, err)
-  })
-})
-
-// Convert tool usage to human-readable status
-function getToolStatusMessage(toolName: string, input: any): string | null {
-  switch (toolName) {
-    case 'Read':
-      return `Reading ${input?.file_path?.split('/').pop() || 'file'}`
-    case 'Write':
-      return `Writing to ${input?.file_path?.split('/').pop() || 'file'}`
-    case 'Edit':
-      return `Editing ${input?.file_path?.split('/').pop() || 'file'}`
-    case 'Glob':
-      return `Searching for ${input?.pattern || 'files'}`
-    case 'Grep':
-      return `Searching for "${input?.pattern?.substring(0, 20) || 'pattern'}"`
-    case 'Bash':
-      const cmd = input?.command?.substring(0, 30) || 'command'
-      return `Running: ${cmd}`
-    case 'WebSearch':
-      return `Searching web for "${input?.query?.substring(0, 30) || 'query'}"`
-    case 'WebFetch':
-      return `Fetching ${input?.url?.substring(0, 40) || 'URL'}`
-    case 'Task':
-      return `Starting sub-task`
-    default:
-      return null // Don't announce every tool
-  }
-}
-
-// Pre-warm both agents
-console.log('🔥 Warming up agents...')
-Promise.all([
-  planAgent.handler.run('Respond with just: ready')
-    .then(() => console.log(`✅ Plan Agent ready!`))
-    .catch(err => console.log(`⚠️ Plan Agent warm-up failed:`, err.message)),
-  executeAgent.handler.run('Respond with just: ready')
-    .then(() => console.log(`✅ Execute Agent ready!`))
-    .catch(err => console.log(`⚠️ Execute Agent warm-up failed:`, err.message)),
-])
-
-// Track job context and session for data channel
-let jobContext: JobContext | null = null
-let currentSession: voice.AgentSession | null = null
-
-// Track the current coding handler (can be Claude or Codex)
-let currentCodingAgent: CodingAgent = 'claude'
-let codexHandler: CodexHandler | null = null
-
-// Helper to cleanup previous session before starting new one
-async function cleanupSession() {
-  if (currentSession) {
-    console.log('🧹 Cleaning up previous session...')
     try {
-      currentSession.removeAllListeners()
-      // Close session gracefully if method exists
-      if (typeof (currentSession as any).close === 'function') {
-        await (currentSession as any).close()
-      }
+      const encoder = new TextEncoder()
+      const payload = encoder.encode(JSON.stringify(data))
+      await localParticipant.publishData(payload, {
+        reliable: true,
+        topic: 'osborn-updates',
+      })
+      console.log(`📤 Sent to frontend: ${(data as any).type}`)
     } catch (err) {
-      console.log('⚠️ Session cleanup error (non-fatal):', (err as Error).message)
+      console.error('❌ sendToFrontend error:', err)
     }
-    currentSession = null
   }
-}
 
-// Helper to send data to frontend
-async function sendToFrontend(data: object) {
-  if (!jobContext) return
-  try {
-    const encoder = new TextEncoder()
-    const payload = encoder.encode(JSON.stringify(data))
-    await jobContext.room.localParticipant?.publishData(payload, {
-      reliable: true,
-      topic: 'osborn-updates',
-    })
-  } catch (err) {
-    // Ignore send errors
-  }
-}
-
-// Define the run_code tool (works with both Claude and Codex)
-const runCodeTool = llm.tool({
-  description: `Execute coding tasks using the coding agent.
-IMPORTANT: Before calling this tool, ALWAYS acknowledge the user first ("Got it", "On it", "Let me check").
-This tool routes to either:
-- Plan Agent: For research, understanding, explaining, analyzing
-- Execute Agent: For creating, fixing, running, implementing
-
-Use for: file operations, code tasks, terminal commands, web searches, project analysis.`,
-  parameters: z.object({
-    task: z.string().describe('The coding task to execute'),
-  }),
-  execute: async ({ task }) => {
-    // Check for quiet mode trigger
-    if (task.toLowerCase().includes('let me know when done') ||
-        task.toLowerCase().includes('tell me when finished')) {
-      quietMode = true
-      console.log('🤫 Quiet mode enabled')
-    }
-    if (task.toLowerCase().includes('keep me updated') ||
-        task.toLowerCase().includes('give me updates')) {
-      quietMode = false
-      console.log('🔊 Updates enabled')
+  // Process speech queue
+  async function processSpeechQueue() {
+    if (isSpeaking || speechQueue.length === 0 || !currentSession) return
+    if (agentState !== 'listening') return
+    if (currentProvider === 'gemini') {
+      // Gemini doesn't support generateReply
+      while (speechQueue.length > 0) {
+        console.log(`🔊 [Would say] ${speechQueue.shift()}`)
+      }
+      return
     }
 
-    // Smart routing - determine which agent should handle the task
-    const slot = routeTask(task)
-    const agentEmoji = slot.role === 'plan' ? '📋' : '🔨'
-    const agentName = currentCodingAgent === 'claude' ? `${slot.role.charAt(0).toUpperCase() + slot.role.slice(1)} Agent` : 'Codex'
-    console.log(`\n🔨 [Agent ${slot.id}] Task: "${task}"`)
-    await sendToFrontend({ type: 'system', text: `Agent ${slot.id} working on: ${task}`, agentId: slot.id })
-
-    // Mark agent as busy
-    slot.busy = true
-    slot.currentTask = task
+    isSpeaking = true
+    const message = speechQueue.shift()!
 
     try {
-      let result: string
-      if (currentCodingAgent === 'codex' && codexHandler) {
-        result = await codexHandler.run(task)
-      } else {
-        // Add context from recent conversation
-        const contextPrefix = slot.context.length > 0
-          ? `Context from conversation: ${slot.context.slice(-3).join(' | ')}\n\nTask: `
-          : ''
-        result = await slot.handler.run(contextPrefix + task)
-      }
-
-      // Store task in context for future reference
-      slot.context.push(`Task: ${task.substring(0, 50)} → Done`)
-      if (slot.context.length > 10) slot.context.shift()
-
-      console.log(`✅ [Agent ${slot.id}] Done: ${result.length} chars`)
-      await sendToFrontend({ type: 'assistant_response', text: result, agentId: slot.id })
-      return result
-    } catch (err) {
-      console.error(`❌ [Agent ${slot.id}] Error:`, err)
-      return `Error: ${(err as Error).message}`
+      await Promise.race([
+        currentSession.generateReply({ userInput: message }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+      ])
+    } catch {
+      // Ignore speech errors
     } finally {
-      slot.busy = false
-      slot.currentTask = null
+      isSpeaking = false
+      if (speechQueue.length > 0) {
+        setTimeout(processSpeechQueue, 500)
+      }
     }
-  },
-})
+  }
 
-// Define the permission response tool
-const respondPermissionTool = llm.tool({
-  description: `Respond to a pending permission request from Claude Code.
-Use this ONLY when there is a pending permission request.
-Call this after hearing the user's response to a permission prompt.`,
-  parameters: z.object({
-    response: z.enum(['allow', 'deny', 'always_allow']).describe(
-      'The user response: "allow" for one-time approval, "deny" to reject, "always_allow" to permanently allow this tool type'
-    ),
-  }),
-  execute: async ({ response }) => {
-    // Find agent with pending permission
-    const slotWithPending = agentPool.find(s => s.handler.hasPendingPermission())
-    if (!slotWithPending) {
-      return 'No pending permission request.'
-    }
-    const pending = slotWithPending.handler.getPendingPermission()
-    slotWithPending.handler.respondToPermission(response as PermissionResponse)
-    await sendToFrontend({
-      type: 'permission_response',
-      response,
-      toolName: pending?.toolName,
-      agentId: slotWithPending.id
+  // Setup agent event handlers
+  agentPool.forEach(slot => {
+    slot.handler.on('permission_request', (req: PermissionRequestEvent) => {
+      console.log(`\n⚠️ [${slot.role}] PERMISSION: ${req.toolName}`)
+      sendToFrontend({
+        type: 'permission_request',
+        toolName: req.toolName,
+        description: req.description,
+        agentId: slot.id,
+      })
+      speechQueue.push(`[Tell user] I need permission to ${req.description}. Say yes, no, or always allow.`)
+      processSpeechQueue()
     })
-    return `Permission ${response} for ${pending?.toolName || 'tool'}.`
-  },
-})
 
-// Agent instructions - optimized for fast, natural responses
-const OSBORN_INSTRUCTIONS = `You are Osborn, a voice-enabled AI coding assistant.
+    slot.handler.on('tool_use', (tool: any) => {
+      console.log(`🔧 [${slot.role}] Using: ${tool.name}`)
+    })
 
-RESPONSE STYLE:
-- Keep responses SHORT (under 70 words unless explaining code)
-- Sound natural and conversational
-- Say "Got it" or "On it" immediately when given a task, THEN work on it
-- Ask clarifying questions if the request is ambiguous
+    slot.handler.on('error', (err: any) => {
+      console.error(`❌ [${slot.role}] Error:`, err)
+    })
+  })
+
+  // Define tools for voice LLM
+  const runCodeTool = llm.tool({
+    description: `Execute ANY coding task by delegating to Claude agents. YOU MUST USE THIS for:
+- Reading files ("read package.json", "show me the code")
+- Writing/editing files ("fix this bug", "add a function")
+- Running commands ("run npm test", "git status")
+- Searching code ("find where X is defined")
+- Explaining code ("what does this function do")
+
+You DON'T need permission to use this - it routes to the right agent automatically.
+Plan Agent = reading/research. Execute Agent = writing (will ask user for permission).`,
+    parameters: z.object({
+      task: z.string().describe('The coding task to execute'),
+    }),
+    execute: async ({ task }) => {
+      const slot = routeTask(task)
+      console.log(`\n🔨 [${slot.role}] Task: "${task}"`)
+      await sendToFrontend({ type: 'system', text: `${slot.role} agent: ${task}` })
+
+      slot.busy = true
+      slot.currentTask = task
+      sharedContext.currentFocus = task.substring(0, 50)
+
+      try {
+        let result: string
+        if (currentCodingAgent === 'codex' && codexHandler) {
+          result = await codexHandler.run(task)
+        } else {
+          const contextPrefix = slot.context.length > 0
+            ? `Context: ${slot.context.slice(-3).join(' | ')}\n\nTask: `
+            : ''
+          result = await slot.handler.run(contextPrefix + task)
+        }
+
+        slot.context.push(`${task.substring(0, 50)} → Done`)
+        if (slot.context.length > 10) slot.context.shift()
+
+        // Update shared context
+        sharedContext.addAction(`${slot.role}: ${task.substring(0, 30)}`)
+
+        // Extract file references from result
+        const fileMatches = result.match(/(?:\/[\w\-\.\/]+|src\/[\w\-\.\/]+|\.\/[\w\-\.\/]+)/g)
+        if (fileMatches) {
+          fileMatches.slice(0, 3).forEach(f => sharedContext.addFile(f))
+        }
+
+        console.log(`✅ [${slot.role}] Done`)
+        await sendToFrontend({ type: 'assistant_response', text: result })
+
+        // Return a concise summary for the voice LLM
+        const summary = result.length > 500
+          ? result.substring(0, 500) + '... [truncated for voice]'
+          : result
+        return summary
+      } catch (err) {
+        return `Error: ${(err as Error).message}`
+      } finally {
+        slot.busy = false
+        slot.currentTask = null
+      }
+    },
+  })
+
+  const respondPermissionTool = llm.tool({
+    description: `Respond to a permission request. Call after hearing user's response.`,
+    parameters: z.object({
+      response: z.enum(['allow', 'deny', 'always_allow']),
+    }),
+    execute: async ({ response }) => {
+      const slot = agentPool.find(s => s.handler.hasPendingPermission())
+      if (!slot) return 'No pending permission.'
+      const pending = slot.handler.getPendingPermission()
+      slot.handler.respondToPermission(response as PermissionResponse)
+      await sendToFrontend({ type: 'permission_response', response, toolName: pending?.toolName })
+      return `Permission ${response} for ${pending?.toolName || 'tool'}.`
+    },
+  })
+
+  // Shared context that both voice and coding agents contribute to
+  const sharedContext = {
+    recentActions: [] as string[],
+    discoveredFiles: [] as string[],
+    currentFocus: null as string | null,
+    addAction(action: string) {
+      this.recentActions.push(action)
+      if (this.recentActions.length > 5) this.recentActions.shift()
+    },
+    addFile(file: string) {
+      if (!this.discoveredFiles.includes(file)) {
+        this.discoveredFiles.push(file)
+        if (this.discoveredFiles.length > 10) this.discoveredFiles.shift()
+      }
+    },
+    getContextSummary() {
+      const parts = []
+      if (this.currentFocus) parts.push(`Focus: ${this.currentFocus}`)
+      if (this.recentActions.length) parts.push(`Recent: ${this.recentActions.slice(-3).join(', ')}`)
+      if (this.discoveredFiles.length) parts.push(`Files: ${this.discoveredFiles.slice(-5).join(', ')}`)
+      return parts.join(' | ')
+    }
+  }
+
+  // Dynamic instructions with working directory context
+  const getInstructions = () => `You are Osborn, a voice AI coding assistant.
+
+WORKING DIRECTORY: ${workingDir}
+
+STYLE: Keep responses SHORT (under 70 words). Sound natural. Say "Got it" when given a task.
 
 CAPABILITIES (via run_code tool):
-- Files: read, write, edit, search, find
-- Code: fix bugs, refactor, explain, review
-- Terminal: run commands, git, install packages
-- Web: search documentation, APIs, errors
+- Read/write/edit files, search codebase
+- Run terminal commands (npm, git, etc)
+- Fix bugs, refactor, explain code
+- Search web/docs for solutions
 
-PERMISSION HANDLING:
-When you receive a permission request, you MUST:
-1. Immediately tell the user what action needs permission
-2. Ask: "Should I allow this, deny it, or always allow?"
-3. Listen for their response (yes/allow, no/deny, always)
-4. Call respond_permission with their choice
+TWO AGENTS AVAILABLE:
+- Plan Agent: Research, explore, read files (fast, no permissions needed)
+- Execute Agent: Write code, make changes (asks permission for writes)
 
-VOICE RESPONSES TO PERMISSIONS:
-- "yes", "yeah", "allow", "go ahead", "do it" → call respond_permission with "allow"
-- "no", "deny", "don't", "stop" → call respond_permission with "deny"
-- "always", "always allow", "trust" → call respond_permission with "always_allow"
+${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummary()}` : ''}
 
-Be helpful and proactive. If something fails, explain why briefly.`
+PERMISSIONS: When you hear permission request, tell user what needs permission and ask "allow, deny, or always allow?" Then call respond_permission.`
 
-// Voice assistant with tools
-class OsbornAssistant extends voice.Agent {
-  constructor() {
-    super({
-      instructions: OSBORN_INSTRUCTIONS,
-      tools: {
-        run_code: runCodeTool,
-        respond_permission: respondPermissionTool,
-      },
-    })
-  }
-}
+  const INSTRUCTIONS = getInstructions()
 
-// Create the appropriate model based on provider
-function createModel(provider: string) {
-  if (provider === 'gemini') {
-    console.log('📱 Using Gemini Live API')
-    console.log('🔑 GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'set' : 'NOT SET')
-
-    // Use the exact model name from when it was working (commit eea8b42)
-    const modelName = 'gemini-2.5-flash-native-audio-preview-12-2025'
-
-    const model = new google.beta.realtime.RealtimeModel({
-      model: modelName,
-      voice: 'Puck',
-      instructions: OSBORN_INSTRUCTIONS,
-    })
-    console.log(`✅ Gemini model created: ${modelName}`)
-    return model
-  } else {
-    console.log('📱 Using OpenAI Realtime API')
-    console.log('🔑 OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? 'set' : 'NOT SET')
-    const model = new openai.realtime.RealtimeModel({
-      voice: 'alloy',
-    })
-    console.log('✅ OpenAI model created')
-    return model
-  }
-}
-
-// Helper to get provider from participant metadata
-function getProviderFromParticipant(metadata?: string): string {
-  if (!metadata) return DEFAULT_PROVIDER
-  try {
-    const data = JSON.parse(metadata)
-    return data.provider || DEFAULT_PROVIDER
-  } catch {
-    return DEFAULT_PROVIDER
-  }
-}
-
-// Helper to get coding agent from participant metadata
-function getCodingAgentFromParticipant(metadata?: string): CodingAgent {
-  if (!metadata) return 'claude'
-  try {
-    const data = JSON.parse(metadata)
-    return data.codingAgent || 'claude'
-  } catch {
-    return 'claude'
-  }
-}
-
-export default defineAgent({
-  entry: async (ctx: JobContext) => {
-    console.log('🚀 Agent starting for room:', ctx.room.name)
-
-    // If room code was provided via CLI, validate room name
-    if (cliArgs.roomCode) {
-      const expectedRoom = `osborn-${cliArgs.roomCode}`
-      if (ctx.room.name !== expectedRoom) {
-        console.log(`⏭️ Skipping room ${ctx.room.name} (waiting for ${expectedRoom})`)
-        return // Don't handle this room
-      }
-      console.log(`✅ Room matches expected: ${expectedRoom}`)
-    }
-
-    jobContext = ctx
-
-    // Note: Agent event handlers are set up in agentPool initialization above
-
-    // Connect FIRST so we can wait for participants
-    console.log('📡 Connecting to room...')
-    await ctx.connect()
-    console.log('✅ Connected to room')
-
-    // Wait for a participant to join using LiveKit's built-in method
-    console.log('⏳ Waiting for participant...')
-    const participant = await ctx.waitForParticipant()
-
-    console.log('👤 Participant joined:', participant.identity)
-    console.log('📋 Participant metadata:', participant.metadata)
-    const provider = getProviderFromParticipant(participant.metadata)
-    const codingAgent = getCodingAgentFromParticipant(participant.metadata)
-    console.log(`🎯 User selected provider: ${provider}`)
-    console.log(`🔧 User selected coding agent: ${codingAgent}`)
-
-    // Set the current provider for API-specific behavior
-    currentProvider = provider
-
-    // Set the current coding agent and initialize if needed
-    currentCodingAgent = codingAgent
-    if (codingAgent === 'codex') {
-      console.log('🔧 Initializing Codex handler...')
-      codexHandler = new CodexHandler({
-        workingDirectory: workingDir,
+  // Voice agent class
+  class OsbornVoiceAgent extends voice.Agent {
+    constructor() {
+      super({
+        instructions: INSTRUCTIONS,
+        tools: {
+          run_code: runCodeTool,
+          respond_permission: respondPermissionTool,
+        },
       })
-      console.log('✅ Codex handler ready')
+    }
+  }
+
+  // Create voice model
+  function createModel(provider: string) {
+    if (provider === 'gemini') {
+      console.log('📱 Using Gemini Live API')
+      return new google.beta.realtime.RealtimeModel({
+        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        voice: 'Puck',
+        instructions: INSTRUCTIONS,
+      })
+    } else {
+      console.log('📱 Using OpenAI Realtime API')
+      return new openai.realtime.RealtimeModel({
+        voice: 'alloy',
+      })
+    }
+  }
+
+  // ============================================================
+  // Room Event Handlers
+  // ============================================================
+
+  room.on(RoomEvent.Connected, () => {
+    console.log('✅ Connected to room:', roomName)
+    localParticipant = room.localParticipant
+  })
+
+  room.on(RoomEvent.Disconnected, () => {
+    console.log('👋 Disconnected from room')
+    currentSession = null
+  })
+
+  room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
+    console.log(`\n👤 User joined: ${participant.identity}`)
+
+    // Get provider from participant metadata
+    let provider = defaultProvider
+    let codingAgent: CodingAgent = 'claude'
+
+    if (participant.metadata) {
+      try {
+        const meta = JSON.parse(participant.metadata)
+        provider = meta.provider || defaultProvider
+        codingAgent = meta.codingAgent || 'claude'
+      } catch {}
     }
 
-    // Create model based on user's choice
+    currentProvider = provider
+    currentCodingAgent = codingAgent
+    console.log(`🎯 Provider: ${provider}, Agent: ${codingAgent}`)
+
+    if (codingAgent === 'codex') {
+      codexHandler = new CodexHandler({ workingDirectory: workingDir })
+    }
+
+    // Create voice session
     const model = createModel(provider)
-
-    // Clean up any previous session before creating new one
-    await cleanupSession()
-
-    const session = new voice.AgentSession({
-      llm: model,
-    })
+    const session = new voice.AgentSession({ llm: model })
     currentSession = session
 
-    // Add session event listeners for debugging
-    // Using string literals as AgentSessionEventTypes is not directly exported
+    // Session events
+    session.on('agent_state_changed' as any, (ev: any) => {
+      agentState = ev.newState
+      console.log(`🤖 State: ${ev.newState}`)
+      if (ev.newState === 'listening' && speechQueue.length > 0) {
+        processSpeechQueue()
+      }
+    })
+
+    session.on('user_input_transcribed' as any, (ev: any) => {
+      console.log(`📝 User: "${ev.transcript}"`)
+    })
+
     session.on('user_state_changed' as any, (ev: any) => {
       console.log(`👤 User state: ${ev.oldState} → ${ev.newState}`)
     })
-    session.on('agent_state_changed' as any, (ev: any) => {
-      console.log(`🤖 Agent state: ${ev.oldState} → ${ev.newState}`)
-      agentState = ev.newState // Track actual state
 
-      // When agent becomes idle (listening), try to process speech queue
-      if (ev.newState === 'listening') {
-        // Only try if there are items and we're not already processing
-        if (speechQueue.length > 0 && !isSpeaking) {
-          console.log(`📋 Agent idle, ${speechQueue.length} messages waiting`)
-          scheduleQueueProcessing()
-        }
-      }
-    })
-    session.on('user_input_transcribed' as any, (ev: any) => {
-      console.log(`📝 Transcribed: "${ev.transcript}" (final: ${ev.isFinal})`)
-    })
     session.on('error' as any, (ev: any) => {
       console.error('❌ Session error:', ev.error)
     })
+
     session.on('close' as any, (ev: any) => {
       console.log('🚪 Session closed:', ev.reason)
     })
 
-    ctx.room.on('trackSubscribed', (track, publication, p) => {
-      console.log(`📥 Track subscribed: ${track.kind} from ${p.identity}`)
-    })
+    // Start voice session
+    console.log('🎬 Starting voice session...')
+    const agent = new OsbornVoiceAgent()
 
-    ctx.room.on('participantDisconnected', async (p) => {
-      console.log(`👋 Participant disconnected: ${p.identity}`)
-      // Clean up session when user disconnects to prepare for next connection
-      await cleanupSession()
-    })
+    try {
+      await session.start({
+        agent,
+        room,
+      })
+      console.log('✅ Voice session started!')
+      console.log('🎤 Ready - speak to begin!\n')
 
-    // Listen for data channel messages from frontend
-    ctx.room.on('dataReceived', async (payload, participant, kind, topic) => {
-      if (topic === 'user-input') {
+      // Send ready signal with persistent retry (frontend might not be subscribed yet)
+      console.log('💓 Sending agent_ready signal...')
+      let readySent = false
+      const sendReady = async () => {
+        if (readySent) return
+        await sendToFrontend({ type: 'agent_ready', provider, codingAgent })
+      }
+      // Keep sending every 2 seconds for 20 seconds total
+      const readyInterval = setInterval(sendReady, 2000)
+      await sendReady()
+      setTimeout(() => {
+        clearInterval(readyInterval)
+        console.log('✅ agent_ready retries complete')
+      }, 20000)
+
+      // Mark as sent when user first speaks (no need to keep sending)
+      session.on('input_speech_started', () => {
+        readySent = true
+        clearInterval(readyInterval)
+      })
+      console.log('✅ agent_ready sent (with retries scheduled)')
+
+      // Greet user (OpenAI only)
+      if (provider !== 'gemini') {
         try {
-          const data = JSON.parse(new TextDecoder().decode(payload))
-          console.log(`📨 Received from frontend:`, data)
-
-          if (data.type === 'permission_response') {
-            // Handle permission response from UI - find agent with pending permission
-            const slotWithPending = agentPool.find(s => s.handler.hasPendingPermission())
-            if (slotWithPending) {
-              slotWithPending.handler.respondToPermission(data.response)
-              console.log(`✅ Permission ${data.response} from UI for Agent ${slotWithPending.id}`)
-            }
-          } else if (data.type === 'user_text') {
-            // Handle text input from frontend
-            console.log(`📝 Text input: "${data.content}"`)
-            // Inject text into the session as user input
-            if (currentSession) {
-              try {
-                // Interrupt any current speech first
-                currentSession.interrupt()
-                // Generate a reply to the text input
-                await currentSession.generateReply({
-                  userInput: data.content,
-                })
-                console.log(`✅ Injected text to session`)
-              } catch (err) {
-                console.error(`❌ Failed to inject text:`, err)
-              }
-            }
-          }
-        } catch (e) {
-          // Not JSON, ignore
+          await session.generateReply({
+            userInput: '[Greet the user: "Hey, I\'m Osborn. What are you working on?"]'
+          })
+        } catch {
+          console.log('⚠️ Greeting skipped')
         }
       }
-    })
-
-    // Create the agent
-    const agent = new OsbornAssistant()
-
-    // Start session
-    console.log('🎬 Starting voice session...')
-    const startTime = Date.now()
-    await session.start({
-      agent,
-      room: ctx.room,
-    })
-    console.log(`✅ Session started in ${Date.now() - startTime}ms with ${provider.toUpperCase()} + Claude tools`)
-    console.log('🎤 Ready for voice input! Speak to start.')
-
-    // Send heartbeat to frontend so it knows we're ready
-    await sendToFrontend({ type: 'agent_ready', provider, codingAgent })
-    console.log('💓 Sent agent_ready heartbeat to frontend')
-
-    // Greet user immediately so they know it's working
-    // Note: Gemini doesn't support generateReply well, so we skip for now
-    if (provider !== 'gemini') {
-      try {
-        const timeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), 5000)
-        )
-        await Promise.race([
-          session.generateReply({
-            userInput: '[SYSTEM: Greet the user briefly. Say "Hey, I\'m Osborn, ready to help. What are you working on?"]'
-          }),
-          timeout
-        ])
-        console.log('👋 Greeting sent')
-      } catch (err) {
-        console.log('⚠️ Greeting skipped (timeout or unsupported)')
-      }
-    } else {
-      console.log('👋 Gemini ready - waiting for user to speak first')
+    } catch (err) {
+      console.error('❌ Failed to start session:', err)
     }
-  },
-})
+  })
 
-// Configure server options
-const serverOptions: any = {
-  agent: fileURLToPath(import.meta.url),
-}
+  room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
+    console.log(`👋 User left: ${participant.identity}`)
+    if (currentSession) {
+      currentSession.removeAllListeners()
+      currentSession = null
+    }
+    console.log('⏳ Waiting for new user...\n')
+  })
 
-// If room code is provided, filter to only handle that room
-if (cliArgs.roomCode) {
-  const targetRoom = `osborn-${cliArgs.roomCode}`
-  console.log(`🎯 Filtering for room: ${targetRoom}`)
-  // The agent will be dispatched to rooms matching this pattern
-  serverOptions.workerOptions = {
-    // Note: Room filtering is handled by LiveKit dispatch
-    // For local development, we validate the room in the entry function
+  room.on(RoomEvent.DataReceived, async (payload, participant, kind, topic) => {
+    if (topic !== 'user-input') return
+
+    try {
+      const data = JSON.parse(new TextDecoder().decode(payload))
+      console.log('📨 Data:', data.type)
+
+      if (data.type === 'permission_response') {
+        const slot = agentPool.find(s => s.handler.hasPendingPermission())
+        if (slot) {
+          slot.handler.respondToPermission(data.response)
+          console.log(`✅ Permission: ${data.response}`)
+        }
+      } else if (data.type === 'user_text' && currentSession) {
+        console.log(`📝 Text: "${data.content}"`)
+        currentSession.interrupt()
+        await currentSession.generateReply({ userInput: data.content })
+      }
+    } catch {}
+  })
+
+  // ============================================================
+  // Connect to Room
+  // ============================================================
+
+  try {
+    await room.connect(livekitUrl, jwt, {
+      autoSubscribe: true,
+      dynacast: true,
+    })
+
+    // Set localParticipant immediately after connection
+    localParticipant = room.localParticipant
+    console.log('✅ Connected to room:', roomName)
+
+    console.log('\n⏳ Waiting for user to connect...')
+    console.log(`   Room: ${roomCode}\n`)
+
+    // Warm up agents in background
+    console.log('🔥 Warming up agents...')
+    Promise.all([
+      planAgent.handler.run('ready').then(() => console.log('✅ Plan agent ready')),
+      executeAgent.handler.run('ready').then(() => console.log('✅ Execute agent ready')),
+    ]).catch(() => {})
+
+    // Keep process alive
+    await new Promise(() => {})
+
+  } catch (err) {
+    console.error('❌ Failed to connect:', err)
+    process.exit(1)
   }
 }
 
-cli.runApp(new ServerOptions(serverOptions))
+// Run
+main().catch(console.error)
