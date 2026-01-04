@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import VoiceRoom from '@/components/VoiceRoom'
 
-type LLMProvider = 'openai' | 'gemini'
+type Provider = 'openai' | 'gemini'
+type VoiceArch = 'realtime' | 'pipelined'
 type CodingAgent = 'claude' | 'codex'
 type ConnectionState = 'disconnected' | 'waiting' | 'connected'
 
@@ -12,7 +13,8 @@ export default function Home() {
   const [token, setToken] = useState<string | null>(null)
   const [roomCode, setRoomCode] = useState<string | null>(null)
   const [roomInput, setRoomInput] = useState<string>('')
-  const [provider, setProvider] = useState<LLMProvider>('openai')
+  const [provider, setProvider] = useState<Provider>('openai')
+  const [voiceArch, setVoiceArch] = useState<VoiceArch>('realtime')
   const [codingAgent, setCodingAgent] = useState<CodingAgent>('claude')
   const [isConnecting, setIsConnecting] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -21,19 +23,22 @@ export default function Home() {
   // Check for stored preferences on mount
   useEffect(() => {
     const storedRoom = localStorage.getItem('osborn-room-code')
-    const storedProvider = localStorage.getItem('osborn-provider') as LLMProvider | null
+    const storedProvider = localStorage.getItem('osborn-provider') as Provider | null
+    const storedVoiceArch = localStorage.getItem('osborn-voice-arch') as VoiceArch | null
     const storedAgent = localStorage.getItem('osborn-coding-agent') as CodingAgent | null
 
     if (storedRoom) setRoomCode(storedRoom)
     if (storedProvider) setProvider(storedProvider)
+    if (storedVoiceArch) setVoiceArch(storedVoiceArch)
     if (storedAgent) setCodingAgent(storedAgent)
   }, [])
 
   // Save preferences when changed
   useEffect(() => {
     localStorage.setItem('osborn-provider', provider)
+    localStorage.setItem('osborn-voice-arch', voiceArch)
     localStorage.setItem('osborn-coding-agent', codingAgent)
-  }, [provider, codingAgent])
+  }, [provider, voiceArch, codingAgent])
 
   // Handle agent ready signal from VoiceRoom
   const handleAgentReady = useCallback(() => {
@@ -44,7 +49,7 @@ export default function Home() {
   const joinRoom = async (code: string) => {
     setIsConnecting(true)
     try {
-      const url = `/api/token?provider=${provider}&codingAgent=${codingAgent}&roomCode=${code}`
+      const url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}&roomCode=${code}`
       const res = await fetch(url)
       const data = await res.json()
 
@@ -73,7 +78,7 @@ export default function Home() {
     // Generate new room (legacy flow - frontend creates room)
     setIsConnecting(true)
     try {
-      const url = `/api/token?provider=${provider}&codingAgent=${codingAgent}`
+      const url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}`
       const res = await fetch(url)
       const data = await res.json()
 
@@ -130,7 +135,7 @@ export default function Home() {
                     : 'border-gray-600 text-gray-400 hover:border-gray-500'
                 }`}
               >
-                OpenAI Realtime
+                OpenAI
               </button>
               <button
                 onClick={() => setProvider('gemini')}
@@ -140,7 +145,36 @@ export default function Home() {
                     : 'border-gray-600 text-gray-400 hover:border-gray-500'
                 }`}
               >
-                Gemini Live
+                Gemini
+              </button>
+            </div>
+          </div>
+
+          {/* Voice Architecture selector */}
+          <div className="text-center">
+            <p className="text-sm text-gray-500 mb-2">Voice Architecture</p>
+            <div className="flex gap-4">
+              <button
+                onClick={() => setVoiceArch('realtime')}
+                className={`px-4 py-2 rounded-lg border-2 transition-colors ${
+                  voiceArch === 'realtime'
+                    ? 'border-cyan-500 bg-cyan-500/20 text-cyan-400'
+                    : 'border-gray-600 text-gray-400 hover:border-gray-500'
+                }`}
+              >
+                Realtime
+                <span className="block text-xs opacity-70">Speech-to-Speech</span>
+              </button>
+              <button
+                onClick={() => setVoiceArch('pipelined')}
+                className={`px-4 py-2 rounded-lg border-2 transition-colors ${
+                  voiceArch === 'pipelined'
+                    ? 'border-pink-500 bg-pink-500/20 text-pink-400'
+                    : 'border-gray-600 text-gray-400 hover:border-gray-500'
+                }`}
+              >
+                Pipelined
+                <span className="block text-xs opacity-70">STT → LLM → TTS</span>
               </button>
             </div>
           </div>
@@ -250,7 +284,7 @@ export default function Home() {
                   Room: <span className="font-mono text-gray-300">{roomCode}</span>
                 </span>
                 <span className="text-gray-500">
-                  {provider === 'openai' ? '🔵 OpenAI' : '🟢 Gemini'} + {codingAgent === 'claude' ? '🟠 Claude' : '🟣 Codex'}
+                  {provider === 'openai' ? '🔵 OpenAI' : '🟢 Gemini'} {voiceArch === 'pipelined' ? '⚡ Pipelined' : '🎙️ Realtime'} + {codingAgent === 'claude' ? '🟠 Claude' : '🟣 Codex'}
                 </span>
               </div>
             </div>

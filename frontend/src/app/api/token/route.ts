@@ -23,8 +23,9 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  // Get provider and coding agent from query params
+  // Get provider, voice architecture, and coding agent from query params
   const provider = request.nextUrl.searchParams.get('provider') || 'openai'
+  const voiceArch = request.nextUrl.searchParams.get('voiceArch') || 'realtime'
   const codingAgent = request.nextUrl.searchParams.get('codingAgent') || 'claude'
 
   // Get or generate room code
@@ -36,8 +37,8 @@ export async function GET(request: NextRequest) {
 
   const at = new AccessToken(apiKey, apiSecret, {
     identity: participantName,
-    // Include provider and coding agent in participant metadata
-    metadata: JSON.stringify({ provider, codingAgent }),
+    // Include provider, voice architecture, and coding agent in participant metadata
+    metadata: JSON.stringify({ provider, voiceArch, codingAgent }),
   })
 
   at.addGrant({
@@ -55,6 +56,7 @@ export async function GET(request: NextRequest) {
     roomName,
     roomCode, // Return for display to user
     provider,
+    voiceArch,
     codingAgent,
   })
 }

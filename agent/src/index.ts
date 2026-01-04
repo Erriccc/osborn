@@ -11,7 +11,7 @@ initializeLogger({ pretty: true, level: 'info' })
 
 import { ClaudeHandler, type PermissionRequestEvent, type PermissionResponse } from './claude-handler.js'
 import { CodexHandler } from './codex-handler.js'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getPipelinedConfig, type VoiceMode } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, type VoiceMode } from './config.js'
 import { createSTT, createTTS, createVAD, type VoiceIOConfig } from './voice-io.js'
 import { createBridgeLLM, getBridgeInstructions, BridgeContext, createBridgeTools, type BridgeLLMConfig } from './bridge-llm.js'
 
@@ -115,15 +115,11 @@ async function main() {
     console.log(`   Or enter code "${roomCode}" in the frontend\n`)
   }
 
-  // Default provider and voice mode
+  // Default provider and voice mode (can be overridden by frontend)
   const defaultProvider = cliArgs.provider || process.env.LLM_PROVIDER || 'openai'
   const voiceMode = getVoiceMode(config)
-  const pipelinedConfig = getPipelinedConfig(config)
   console.log(`🎯 Default voice provider: ${defaultProvider}`)
-  console.log(`🎙️ Voice mode: ${voiceMode}`)
-  if (voiceMode === 'pipelined') {
-    console.log(`   STT: ${pipelinedConfig.stt.provider}, LLM: ${pipelinedConfig.llm.provider}, TTS: ${pipelinedConfig.tts.provider}`)
-  }
+  console.log(`🎙️ Default voice mode: ${voiceMode} (can be changed from frontend)`)
 
   // ============================================================
   // Initialize Claude Agents (Dual Architecture)
@@ -225,6 +221,7 @@ async function main() {
   // Track state
   let currentSession: voice.AgentSession | null = null
   let currentProvider = defaultProvider
+  let currentVoiceArch: 'realtime' | 'pipelined' = voiceMode
   let currentCodingAgent: CodingAgent = 'claude'
   let codexHandler: CodexHandler | null = null
   let localParticipant: LocalParticipant | null = null
@@ -262,7 +259,7 @@ async function main() {
     const message = speechQueue.shift()!
 
     try {
-      if (voiceMode === 'pipelined') {
+      if (currentVoiceArch === 'pipelined') {
         // Pipelined mode: Use session.say() with TTS
         await Promise.race([
           (currentSession as any).say(message),
@@ -470,23 +467,28 @@ PERMISSIONS: When you hear permission request, tell user what needs permission a
   // Bridge context for tracking conversation state
   const bridgeContext = new BridgeContext()
 
-  async function createPipelinedSession(): Promise<voice.AgentSession> {
-    const { stt: sttConfig, llm: llmConfig, tts: ttsConfig } = pipelinedConfig
-    console.log(`📱 Using Pipelined Mode (${sttConfig.provider} STT + ${llmConfig.provider} + ${ttsConfig.provider} TTS)`)
+  async function createPipelinedSession(provider: string): Promise<voice.AgentSession> {
+    // Configure pipeline based on provider choice:
+    // OpenAI: Whisper STT + GPT-4o + OpenAI TTS
+    // Gemini: Whisper STT + Gemini Pro + Gemini TTS
+    const isOpenAI = provider === 'openai'
+
+    const sttProvider = 'openai-whisper' // Both use OpenAI Whisper (Gemini STT not available in Node.js)
+    const llmProvider = isOpenAI ? 'gpt-4o' : 'gemini-pro'
+    const ttsProvider = isOpenAI ? 'openai' : 'gemini'
+    const ttsVoice = isOpenAI ? 'alloy' : 'Zephyr'
+
+    console.log(`📱 Using Pipelined Mode (Whisper STT + ${llmProvider} + ${ttsProvider} TTS)`)
 
     const stt = createSTT({
-      provider: sttConfig.provider,
-      model: sttConfig.model,
-      language: sttConfig.language,
+      provider: sttProvider,
     })
     const bridgeLLM = createBridgeLLM({
-      provider: llmConfig.provider,
-      model: llmConfig.model,
+      provider: llmProvider as any,
     })
     const tts = createTTS({
-      provider: ttsConfig.provider,
-      model: ttsConfig.model,
-      voice: ttsConfig.voice,
+      provider: ttsProvider as any,
+      voice: ttsVoice,
     })
     const vad = await createVAD()
 
@@ -516,30 +518,33 @@ PERMISSIONS: When you hear permission request, tell user what needs permission a
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
 
-    // Get provider from participant metadata
+    // Get settings from participant metadata
     let provider = defaultProvider
+    let userVoiceArch: 'realtime' | 'pipelined' = voiceMode // Default to config
     let codingAgent: CodingAgent = 'claude'
 
     if (participant.metadata) {
       try {
         const meta = JSON.parse(participant.metadata)
         provider = meta.provider || defaultProvider
+        userVoiceArch = meta.voiceArch || voiceMode
         codingAgent = meta.codingAgent || 'claude'
       } catch {}
     }
 
     currentProvider = provider
+    currentVoiceArch = userVoiceArch
     currentCodingAgent = codingAgent
-    console.log(`🎯 Provider: ${provider}, Agent: ${codingAgent}`)
+    console.log(`🎯 Provider: ${provider}, Voice: ${userVoiceArch}, Agent: ${codingAgent}`)
 
     if (codingAgent === 'codex') {
       codexHandler = new CodexHandler({ workingDirectory: workingDir })
     }
 
-    // Create voice session based on voiceMode
+    // Create voice session based on user's voice architecture choice
     let session: voice.AgentSession
-    if (voiceMode === 'pipelined') {
-      session = await createPipelinedSession()
+    if (userVoiceArch === 'pipelined') {
+      session = await createPipelinedSession(provider)
     } else {
       const model = createRealtimeModel(provider)
       session = new voice.AgentSession({ llm: model })
@@ -607,7 +612,7 @@ PERMISSIONS: When you hear permission request, tell user what needs permission a
 
       // Greet user
       const greeting = "Hey! I'm Osborn. What are you working on?"
-      if (voiceMode === 'pipelined') {
+      if (userVoiceArch === 'pipelined') {
         // Pipelined mode: Use session.say() with TTS
         try {
           console.log('👋 Sending greeting via TTS...')
