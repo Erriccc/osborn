@@ -18,7 +18,7 @@ export interface STTConfig {
 }
 
 export interface TTSConfig {
-  provider: 'gemini' | 'openai' | 'elevenlabs'
+  provider: 'gemini' | 'openai' | 'elevenlabs' | 'deepgram'
   voice?: string
   model?: string
 }
@@ -72,6 +72,11 @@ export function createTTS(config: TTSConfig) {
       return new openai.TTS({
         voice: (config.voice as any) || 'alloy',
         model: config.model || 'tts-1',
+      })
+
+    case 'deepgram':
+      return new deepgram.TTS({
+        model: (config.model || 'aura-asteria-en') as any,
       })
 
     default:

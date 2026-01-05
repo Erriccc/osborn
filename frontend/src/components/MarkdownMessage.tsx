@@ -11,8 +11,17 @@ interface MarkdownMessageProps {
 }
 
 export function MarkdownMessage({ content }: MarkdownMessageProps) {
+  // Debug: log what we're rendering
+  console.log(`📝 MarkdownMessage rendering: "${content?.substring(0, 50)}..."`)
+
+  // Safety check
+  if (!content || typeof content !== 'string' || !content.trim()) {
+    console.warn('⚠️ MarkdownMessage: empty or invalid content')
+    return null
+  }
+
   return (
-    <div className="markdown-content prose prose-invert prose-sm max-w-none">
+    <div className="markdown-content prose prose-invert prose-sm max-w-none text-gray-100">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}

@@ -22,7 +22,44 @@
 
 ## Version History
 
-### v0.2.0 (Current)
+### v0.2.2 (Current)
+**Frontend Updates & Agent Intelligence**
+
+#### Frontend Fixes
+- **Fixed assistant messages not displaying**: Messages were being received but content wasn't rendering due to aggressive markdown parsing stripping content
+- **Improved message parsing**: Conservative approach to parsing - only removes explicit reasoning blocks, preserves all other content
+- **Better duplicate detection**: Tracks last 5 messages per role instead of just the last one
+- **Added status_update handler**: Frontend now displays background task status updates
+- **Debug logging**: Added comprehensive logging throughout message pipeline for troubleshooting
+
+#### Agent Improvements
+- **Internet access awareness**: Agent now knows it has full internet access for web search, fetching URLs, and API calls
+- **Fixed task ID tracking**: Status manager now uses brain's task IDs to prevent ID mismatch between systems
+- **Added registerTask()**: New method to register tasks with specific IDs from brain
+- **Source tracking**: All messages now include source field for debugging (tool_result, direct_command, research_complete, etc.)
+- **System status messages**: Shows "Running: ...", "Researching: ...", "Executing: ..." progress updates
+- **No markdown in speech**: Updated instructions to prevent Gemini from adding **bold** headers in voice responses
+
+---
+
+### v0.2.1
+**Bug Fixes & UI Improvements**
+
+#### Bug Fixes
+- **Fixed Claude Agent SDK warmup error**: Improved warmup prompt from minimal `'ready'` to proper instruction, with graceful error handling
+- **Fixed agent speech not appearing in chat**: Added `playout_completed` event handler for Gemini realtime mode
+- **Fixed user transcript not sending**: Added `input_speech_stopped` fallback handler for accumulated transcripts
+- **Fixed mute button missing**: Added mute/unmute toggle button with microphone icons
+- **Fixed button visibility**: Restructured header layout with compact visualizer (h-12 w-24)
+
+#### UI Improvements
+- Added mute button with visual feedback (red when muted)
+- Improved header layout with better button spacing
+- Status badge shows agent state properly
+
+---
+
+### v0.2.0
 **Three-Layer Voice Architecture & UI Overhaul**
 
 This release introduces a major architectural improvement and enhanced UI.

@@ -16,24 +16,37 @@ import { z } from 'zod'
 import type { ClaudeHandler } from './claude-handler'
 
 export interface BridgeLLMConfig {
-  provider: 'gemini-pro' | 'gpt-4o'
+  provider: 'gemini-pro' | 'gemini-flash' | 'gpt-4o' | 'gpt-4o-mini'
   model?: string
 }
 
 /**
  * Create Bridge LLM instance
- * Default: Gemini 2.5 Pro (smart, good for context management)
+ * Recommended: Gemini 2.5 Pro (smart, good reasoning, cheaper than GPT-4o)
+ * Alternative: Gemini Flash (faster but less reliable)
  */
 export function createBridgeLLM(config: BridgeLLMConfig) {
   switch (config.provider) {
     case 'gemini-pro':
+      // Gemini 2.5 Pro - smart model for complex reasoning
       return new google.LLM({
-        model: config.model || 'gemini-2.5-pro-preview-06-05',
+        model: config.model || 'gemini-2.5-pro',
+      })
+
+    case 'gemini-flash':
+      // Gemini 2.0 Flash - fast model for quick responses
+      return new google.LLM({
+        model: config.model || 'gemini-2.0-flash',
       })
 
     case 'gpt-4o':
       return new openai.LLM({
         model: config.model || 'gpt-4o',
+      })
+
+    case 'gpt-4o-mini':
+      return new openai.LLM({
+        model: config.model || 'gpt-4o-mini',
       })
 
     default:
@@ -207,8 +220,9 @@ Call this when user responds to a permission request with: yes, allow, deny, no,
 
 /**
  * Default Bridge LLM configuration
+ * Using Gemini 2.5 Pro for smart conversation management
  */
 export const DEFAULT_BRIDGE_CONFIG: BridgeLLMConfig = {
   provider: 'gemini-pro',
-  model: 'gemini-2.5-pro-preview-06-05',
+  model: 'gemini-2.5-pro',
 }

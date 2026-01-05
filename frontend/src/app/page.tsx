@@ -33,6 +33,13 @@ export default function Home() {
     if (storedAgent) setCodingAgent(storedAgent)
   }, [])
 
+  // Reset voiceArch to realtime when switching to Gemini (pipelined not supported)
+  useEffect(() => {
+    if (provider === 'gemini' && voiceArch === 'pipelined') {
+      setVoiceArch('realtime')
+    }
+  }, [provider, voiceArch])
+
   // Save preferences when changed
   useEffect(() => {
     localStorage.setItem('osborn-provider', provider)
@@ -150,34 +157,36 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Voice Architecture selector */}
-          <div className="text-center">
-            <p className="text-sm text-gray-500 mb-2">Voice Architecture</p>
-            <div className="flex gap-4">
-              <button
-                onClick={() => setVoiceArch('realtime')}
-                className={`px-4 py-2 rounded-lg border-2 transition-colors ${
-                  voiceArch === 'realtime'
-                    ? 'border-cyan-500 bg-cyan-500/20 text-cyan-400'
-                    : 'border-gray-600 text-gray-400 hover:border-gray-500'
-                }`}
-              >
-                Realtime
-                <span className="block text-xs opacity-70">Speech-to-Speech</span>
-              </button>
-              <button
-                onClick={() => setVoiceArch('pipelined')}
-                className={`px-4 py-2 rounded-lg border-2 transition-colors ${
-                  voiceArch === 'pipelined'
-                    ? 'border-pink-500 bg-pink-500/20 text-pink-400'
-                    : 'border-gray-600 text-gray-400 hover:border-gray-500'
-                }`}
-              >
-                Pipelined
-                <span className="block text-xs opacity-70">STT → LLM → TTS</span>
-              </button>
+          {/* Voice Architecture selector - only show for OpenAI */}
+          {provider === 'openai' && (
+            <div className="text-center">
+              <p className="text-sm text-gray-500 mb-2">Voice Architecture</p>
+              <div className="flex gap-4">
+                <button
+                  onClick={() => setVoiceArch('realtime')}
+                  className={`px-4 py-2 rounded-lg border-2 transition-colors ${
+                    voiceArch === 'realtime'
+                      ? 'border-cyan-500 bg-cyan-500/20 text-cyan-400'
+                      : 'border-gray-600 text-gray-400 hover:border-gray-500'
+                  }`}
+                >
+                  Realtime
+                  <span className="block text-xs opacity-70">Speech-to-Speech</span>
+                </button>
+                <button
+                  onClick={() => setVoiceArch('pipelined')}
+                  className={`px-4 py-2 rounded-lg border-2 transition-colors ${
+                    voiceArch === 'pipelined'
+                      ? 'border-pink-500 bg-pink-500/20 text-pink-400'
+                      : 'border-gray-600 text-gray-400 hover:border-gray-500'
+                  }`}
+                >
+                  Pipelined
+                  <span className="block text-xs opacity-70">STT → LLM → TTS</span>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Coding Agent selector */}
           <div className="text-center">
@@ -296,6 +305,7 @@ export default function Home() {
             onDisconnect={disconnect}
             onAgentReady={handleAgentReady}
             waitingMode={connectionState === 'waiting' && agentStatus !== 'connected'}
+            provider={provider}
           />
 
           {connectionState === 'waiting' && agentStatus !== 'connected' && (
