@@ -873,6 +873,12 @@ function VoiceRoomInner({
             addMessageRef.current?.('system', data.summary)
           }
         }
+      } else if (data.type === 'progress_update') {
+        // Real-time progress updates during research
+        if (data.text && data.text.trim()) {
+          console.log('🔄 Progress update:', data.text.substring(0, 50))
+          addMessageRef.current?.('system', `Progress: ${data.text}`)
+        }
       } else {
         console.log('❓ Unknown message type:', data.type)
       }

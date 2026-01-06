@@ -17,6 +17,8 @@ export interface TaskStatus {
   startedAt: number
   completedAt?: number
   progress?: number // 0-100
+  progressUpdates: string[] // Interim updates during execution
+  lastUpdate?: string // Most recent update for voice
 }
 
 export interface StatusUpdate {
@@ -56,6 +58,7 @@ export class StatusManager {
       query,
       status: 'pending',
       startedAt: Date.now(),
+      progressUpdates: [],
     })
 
     console.log(`📋 [Status] Task registered: ${id} - ${query.substring(0, 50)}...`)
@@ -71,6 +74,42 @@ export class StatusManager {
       task.status = 'running'
       if (progress !== undefined) task.progress = progress
     }
+  }
+
+  /**
+   * Add a progress update to a running task (for interim voice updates)
+   */
+  addProgressUpdate(id: string, update: string) {
+    const task = this.tasks.get(id)
+    if (task) {
+      task.progressUpdates.push(update)
+      task.lastUpdate = update
+      console.log(`📊 [Status] Progress update for ${id.substring(0, 12)}: ${update.substring(0, 60)}...`)
+    }
+  }
+
+  /**
+   * Get the latest unspoken progress update for any running task
+   * Returns null if no new updates available
+   */
+  getLatestProgressUpdate(): { taskId: string; update: string } | null {
+    const runningTasks = Array.from(this.tasks.values()).filter(t => t.status === 'running')
+
+    for (const task of runningTasks) {
+      if (task.lastUpdate) {
+        const update = task.lastUpdate
+        task.lastUpdate = undefined // Mark as consumed
+        return { taskId: task.id, update }
+      }
+    }
+    return null
+  }
+
+  /**
+   * Check if there are new progress updates available
+   */
+  hasProgressUpdates(): boolean {
+    return Array.from(this.tasks.values()).some(t => t.status === 'running' && t.lastUpdate)
   }
 
   /**

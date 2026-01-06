@@ -1,10 +1,12 @@
+// Load environment variables FIRST before any other imports
+import 'dotenv/config'
+
 import { llm, voice, initializeLogger } from '@livekit/agents'
 import * as openai from '@livekit/agents-plugin-openai'
 import * as google from '@livekit/agents-plugin-google'
 import { Room, RoomEvent, RemoteParticipant, LocalParticipant, DataPacketKind } from '@livekit/rtc-node'
 import { AccessToken } from 'livekit-server-sdk'
 import { z } from 'zod'
-import 'dotenv/config'
 
 // Initialize logger before anything else
 initializeLogger({ pretty: true, level: 'info' })
@@ -13,8 +15,9 @@ import { ClaudeHandler, type PermissionRequestEvent, type PermissionResponse } f
 import { CodexHandler } from './codex-handler.js'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, type VoiceMode } from './config.js'
 import { createSTT, createTTS, createVAD, type VoiceIOConfig } from './voice-io.js'
-import { createBridgeLLM, getBridgeInstructions, BridgeContext, createBridgeTools, type BridgeLLMConfig } from './bridge-llm.js'
-import { createConversationBrain, type ConversationBrain, type BrainDecision, type ResearchTask } from './conversation-brain.js'
+import { createBridgeLLM } from './bridge-llm.js'
+import { createClaudeLLM } from './claude-llm.js'
+import { createCodexLLM } from './codex-llm.js'
 import { statusManager } from './status-manager.js'
 
 // ============================================================
@@ -279,6 +282,55 @@ async function main() {
   const speechQueue: string[] = []
   let isSpeaking = false
 
+  // ============================================================
+  // TASK DEDUPLICATION - Prevents duplicate research tasks
+  // ============================================================
+  const activeTaskHashes = new Map<string, { startTime: number; slot: AgentSlot }>()
+  const recentTaskHashes = new Set<string>() // Tasks completed in last 30 seconds
+
+  function hashTask(task: string): string {
+    // Normalize task for comparison (lowercase, trim, remove extra spaces)
+    return task.toLowerCase().trim().replace(/\s+/g, ' ').substring(0, 100)
+  }
+
+  function isTaskDuplicate(task: string): boolean {
+    const hash = hashTask(task)
+
+    // Check if exact same task is currently running
+    if (activeTaskHashes.has(hash)) {
+      const active = activeTaskHashes.get(hash)!
+      const elapsed = Date.now() - active.startTime
+      if (elapsed < 60000) { // Within 60 seconds
+        console.log(`⏭️ Skipping duplicate task (running for ${elapsed}ms): "${task.substring(0, 50)}..."`)
+        return true
+      }
+    }
+
+    // Check if task was recently completed
+    if (recentTaskHashes.has(hash)) {
+      console.log(`⏭️ Skipping recently completed task: "${task.substring(0, 50)}..."`)
+      return true
+    }
+
+    return false
+  }
+
+  function registerTask(task: string, slot: AgentSlot): void {
+    const hash = hashTask(task)
+    activeTaskHashes.set(hash, { startTime: Date.now(), slot })
+  }
+
+  function completeTask(task: string): void {
+    const hash = hashTask(task)
+    activeTaskHashes.delete(hash)
+    recentTaskHashes.add(hash)
+
+    // Clear from recent after 30 seconds
+    setTimeout(() => {
+      recentTaskHashes.delete(hash)
+    }, 30000)
+  }
+
   // Helper to send data to frontend (with size limit handling)
   const MAX_MESSAGE_SIZE = 60000 // Leave some headroom below 65535 limit
 
@@ -350,7 +402,7 @@ async function main() {
     }
   }
 
-  // Setup agent event handlers
+  // Setup agent event handlers - Stream Claude progress to frontend
   agentPool.forEach(slot => {
     slot.handler.on('permission_request', (req: PermissionRequestEvent) => {
       console.log(`\n⚠️ [${slot.role}] PERMISSION: ${req.toolName}`)
@@ -364,12 +416,73 @@ async function main() {
       processSpeechQueue()
     })
 
+    // Stream tool usage to frontend in real-time
     slot.handler.on('tool_use', (tool: any) => {
       console.log(`🔧 [${slot.role}] Using: ${tool.name}`)
+      // Send tool usage to frontend for display
+      const toolDesc = tool.description || tool.input?.substring?.(0, 100) || ''
+      sendToFrontend({
+        type: 'tool_use',
+        tool: tool.name,
+        description: toolDesc,
+        agentRole: slot.role,
+      })
+
+      // For pipelined mode, speak brief updates via TTS
+      if (currentVoiceArch === 'pipelined' && currentSession && agentState === 'listening') {
+        const briefDesc = `Using ${tool.name}`
+        ;(currentSession as any).say?.(briefDesc).catch(() => {})
+      }
+    })
+
+    // Stream progress updates
+    slot.handler.on('progress', (progress: any) => {
+      console.log(`📊 [${slot.role}] Progress: ${progress.text || progress.message}`)
+      sendToFrontend({
+        type: 'progress_update',
+        text: progress.text || progress.message,
+        source: slot.role,
+      })
+    })
+
+    // Stream Claude's text output (thinking/reasoning)
+    slot.handler.on('text', (text: string) => {
+      if (text && text.length > 10) {
+        console.log(`💭 [${slot.role}] Claude: ${text.substring(0, 100)}...`)
+        sendToFrontend({
+          type: 'progress_update',
+          text: text.substring(0, 300),
+          source: `claude_${slot.role}`,
+        })
+      }
+    })
+
+    // Stream tool results
+    slot.handler.on('tool_result', (result: any) => {
+      console.log(`✅ [${slot.role}] Tool done: ${result.name} (${result.duration}ms)`)
+      sendToFrontend({
+        type: 'tool_use',
+        tool: result.name,
+        description: `Completed in ${result.duration}ms`,
+        status: 'completed',
+        agentRole: slot.role,
+      })
+    })
+
+    // Stream final result
+    slot.handler.on('result', (result: string) => {
+      if (result && result.length > 10) {
+        console.log(`📋 [${slot.role}] Result: ${result.substring(0, 100)}...`)
+        // Don't send result here - it's sent via run_code tool return
+      }
     })
 
     slot.handler.on('error', (err: any) => {
       console.error(`❌ [${slot.role}] Error:`, err)
+      sendToFrontend({
+        type: 'system',
+        text: `⚠️ ${slot.role} error: ${err.message || err}`,
+      })
     })
   })
 
@@ -388,9 +501,19 @@ Plan Agent = reading/research. Execute Agent = writing (will ask user for permis
       task: z.string().describe('The coding task to execute'),
     }),
     execute: async ({ task }) => {
+      // DEDUPLICATION: Skip if same task is already running or recently completed
+      if (isTaskDuplicate(task)) {
+        return `Task already running or recently completed: ${task.substring(0, 50)}...`
+      }
+
       const slot = routeTask(task)
       console.log(`\n🔨 [${slot.role}] Task: "${task}"`)
-      await sendToFrontend({ type: 'system', text: `${slot.role} agent: ${task}` })
+
+      // Register task to prevent duplicates
+      registerTask(task, slot)
+
+      // Send to frontend immediately
+      await sendToFrontend({ type: 'system', text: `🔧 ${slot.role} agent: ${task}` })
 
       slot.busy = true
       slot.currentTask = task
@@ -420,6 +543,11 @@ Plan Agent = reading/research. Execute Agent = writing (will ask user for permis
         }
 
         console.log(`✅ [${slot.role}] Done`)
+
+        // Mark task as complete (for deduplication)
+        completeTask(task)
+
+        // Send full result to frontend
         await sendToFrontend({ type: 'assistant_response', text: result, source: 'run_code' })
 
         // Return a concise summary for the voice LLM
@@ -429,6 +557,7 @@ Plan Agent = reading/research. Execute Agent = writing (will ask user for permis
         return summary
       } catch (err) {
         const errorMsg = `Error: ${(err as Error).message}`
+        completeTask(task) // Still mark as complete to avoid retries
         await sendToFrontend({ type: 'assistant_response', text: errorMsg, source: 'run_code_error' })
         return errorMsg
       } finally {
@@ -454,251 +583,10 @@ Plan Agent = reading/research. Execute Agent = writing (will ask user for permis
   })
 
   // ============================================================
-  // SMART BRAIN: Conversation Manager with Background Research
+  // SHARED CONTEXT
   // ============================================================
-  // Uses Gemini 2.5 Pro to:
-  // 1. Keep conversation alive with relevant questions
-  // 2. Build context until we understand what user wants
-  // 3. Dispatch background research agents (2-3 parallel)
-  // 4. Decide when we have enough info to execute
-  // 5. Handle direct commands immediately
+  // Tracks conversation state across voice and coding agents
   // ============================================================
-
-  // Create the Conversation Brain (Gemini 2.5 Pro)
-  const conversationBrain = createConversationBrain({
-    workingDir,
-    onSpeak: async (text) => {
-      // This will be called when brain wants to say something
-      speechQueue.push(text)
-      processSpeechQueue()
-    },
-    onStateChange: async (state) => {
-      await sendToFrontend({ type: 'agent_state', state })
-    },
-  })
-
-  // Background research runner - uses Plan agents in parallel
-  async function runBackgroundResearch(task: ResearchTask): Promise<void> {
-    const planSlot = agentPool.find(s => s.role === 'plan' && !s.busy)
-    if (!planSlot) {
-      console.log(`⚠️ No available plan agent for research: ${task.query}`)
-      conversationBrain.receiveResearchResult(task.id, 'No agent available', false)
-      statusManager.completeTask(task.id, 'No agent available', false)
-      return
-    }
-
-    // Register with status manager using the brain's task ID
-    statusManager.registerTask(task.id, 'research', task.query)
-
-    // Track in both systems
-    conversationBrain.markResearchRunning(task.id)
-    statusManager.markRunning(task.id)
-    planSlot.busy = true
-    planSlot.currentTask = task.query
-
-    console.log(`🔍 [Research ${task.id.substring(0, 8)}] Starting: "${task.query}"`)
-    await sendToFrontend({ type: 'system', text: `Researching: ${task.query.substring(0, 50)}...` })
-
-    try {
-      const result = await planSlot.handler.run(task.query)
-      conversationBrain.receiveResearchResult(task.id, result, true)
-      statusManager.completeTask(task.id, result, true)
-      console.log(`✅ [Research ${task.id.substring(0, 8)}] Completed`)
-    } catch (err) {
-      const errorMsg = (err as Error).message
-      conversationBrain.receiveResearchResult(task.id, errorMsg, false)
-      statusManager.completeTask(task.id, errorMsg, false)
-      console.log(`❌ [Research ${task.id.substring(0, 8)}] Failed:`, err)
-    } finally {
-      planSlot.busy = false
-      planSlot.currentTask = null
-    }
-  }
-
-  // Process brain decisions
-  async function processBrainDecision(decision: BrainDecision): Promise<string> {
-    console.log(`🧠 Decision: ${decision.action} - ${decision.reasoning || ''}`)
-
-    switch (decision.action) {
-      case 'direct_command':
-        // Simple command - execute immediately via Plan agent
-        if (decision.directCommand) {
-          const slot = routeTask(decision.directCommand)
-          slot.busy = true
-          await sendToFrontend({ type: 'system', text: `Running: ${decision.directCommand.substring(0, 50)}...` })
-          try {
-            const result = await slot.handler.run(decision.directCommand)
-            await sendToFrontend({ type: 'assistant_response', text: result, source: 'direct_command' })
-            sharedContext.addAction(`Direct: ${decision.directCommand.substring(0, 30)}`)
-            return result.length > 400 ? result.substring(0, 400) + '...' : result
-          } finally {
-            slot.busy = false
-          }
-        }
-        // Send fallback speech to frontend
-        const directSpeech = decision.speech || 'Done.'
-        await sendToFrontend({ type: 'assistant_response', text: directSpeech, source: 'direct_command_ack' })
-        return directSpeech
-
-      case 'research': {
-        // Start background research tasks and wait for completion
-        if (decision.researchQueries) {
-          const tasks = conversationBrain.getPendingResearchTasks()
-
-          // Note: Brain already created task IDs. We'll use those IDs in statusManager.
-          // Don't create duplicate tasks - the brain's task IDs will be used for tracking.
-
-          // Send initial acknowledgment to frontend (Gemini will speak this)
-          const ackSpeech = decision.speech || "Let me look into that..."
-          await sendToFrontend({ type: 'assistant_response', text: ackSpeech, source: 'research_ack' })
-
-          // Run all research tasks in parallel and wait for completion
-          const researchPromises = tasks.map(task => runBackgroundResearch(task))
-          await Promise.all(researchPromises)
-
-          console.log(`✅ Research completed, generating voice summary...`)
-
-          // Generate conversational summary - Gemini speaks tool return values
-          const statusUpdate = await conversationBrain.generateStatusUpdate()
-          if (statusUpdate) {
-            await sendToFrontend({ type: 'assistant_response', text: statusUpdate, source: 'research_complete' })
-            return statusUpdate  // Just the findings - Gemini speaks this
-          }
-
-          // Fallback: summarize raw results
-          const brainState = conversationBrain.getState()
-          if (brainState.completedResearch.length > 0) {
-            const findings = brainState.completedResearch
-              .map(r => r.result?.substring(0, 200) || '')
-              .filter(r => r.length > 0)
-              .join(' ')
-            const summary = `Here's what I found: ${findings.substring(0, 350)}`
-            await sendToFrontend({ type: 'assistant_response', text: summary, source: 'research_summary' })
-            return summary
-          }
-          return "I looked into that but couldn't find specifics. Can you clarify?"
-        }
-        const researchSpeech = decision.speech || "Let me look into that..."
-        await sendToFrontend({ type: 'assistant_response', text: researchSpeech, source: 'research_fallback' })
-        return researchSpeech
-      }
-
-      case 'execute':
-        // Full execution - use Execute agent (single writer)
-        if (decision.executeTask) {
-          const executeSlot = agentPool.find(s => s.role === 'execute')
-          if (!executeSlot) {
-            return "I'm ready to execute but the agent isn't available."
-          }
-
-          await sendToFrontend({ type: 'agent_state', state: 'thinking' })
-          await sendToFrontend({ type: 'system', text: `Executing: ${decision.executeTask.substring(0, 50)}...` })
-          executeSlot.busy = true
-          executeSlot.currentTask = decision.executeTask
-
-          try {
-            console.log(`🚀 [Execute] Starting: "${decision.executeTask.substring(0, 60)}..."`)
-            const result = await executeSlot.handler.run(decision.executeTask)
-            await sendToFrontend({ type: 'assistant_response', text: result, source: 'execute' })
-            sharedContext.addAction(`Execute: ${decision.executeTask.substring(0, 30)}`)
-            console.log(`✅ [Execute] Completed`)
-            return result.length > 400 ? result.substring(0, 400) + '...' : result
-          } finally {
-            executeSlot.busy = false
-            executeSlot.currentTask = null
-            await sendToFrontend({ type: 'agent_state', state: 'listening' })
-          }
-        }
-        // Send fallback speech to frontend
-        const executeSpeech = decision.speech || "Execution complete."
-        await sendToFrontend({ type: 'assistant_response', text: executeSpeech, source: 'execute_ack' })
-        return executeSpeech
-
-      case 'clarify':
-      case 'speak':
-      default: {
-        // Send speech to frontend for chat display
-        const speech = decision.speech || "I'm here to help!"
-        await sendToFrontend({ type: 'assistant_response', text: speech, source: 'speak' })
-        return speech
-      }
-    }
-  }
-
-  // The main tool that Gemini Realtime calls
-  // Key insight: Tool return values are given to the model but NOT automatically spoken.
-  // We need to return text that the model will naturally want to speak aloud.
-  // ALSO: We must explicitly send tool results to frontend since Gemini events may be unreliable
-  const thinkAndDecideTool = llm.tool({
-    description: `Use this for ANY user request that needs coding work.
-Returns a response you should speak to the user.
-
-IMPORTANT: The text returned from this tool is what you should say to the user.
-Speak the returned text naturally - it contains the answer or status update.
-
-Call this for:
-- Complex requests ("help me add auth", "fix this bug")
-- Questions about the code ("what does this do", "where is X")
-- Direct commands ("read file X", "run npm test")
-- ANY coding-related request
-
-The tool handles research and execution, then returns what to tell the user.`,
-    parameters: z.object({
-      userInput: z.string().describe('What the user said'),
-    }),
-    execute: async ({ userInput }) => {
-      console.log(`\n🧠 [Brain] Processing: "${userInput.substring(0, 80)}..."`)
-      await sendToFrontend({ type: 'agent_state', state: 'thinking' })
-
-      try {
-        // Let the brain analyze and decide
-        const decision = await conversationBrain.processUserInput(userInput)
-
-        // Process the decision and get speakable result
-        const result = await processBrainDecision(decision)
-
-        // Format result for speech - ensure it's conversational
-        const speakableResult = formatForSpeech(result, decision)
-
-        console.log(`🔊 [Tool Result] "${speakableResult.substring(0, 100)}..."`)
-
-        // IMPORTANT: Always send the tool result to frontend
-        // This ensures the chat gets updated even if Gemini voice events don't fire
-        await sendToFrontend({ type: 'assistant_response', text: speakableResult, source: 'tool_result' })
-
-        return speakableResult
-
-      } catch (err) {
-        console.error(`❌ [Brain] Error:`, err)
-        const errorMsg = "I ran into an issue processing that. Could you try rephrasing?"
-        await sendToFrontend({ type: 'assistant_response', text: errorMsg, source: 'tool_error' })
-        return errorMsg
-      } finally {
-        await sendToFrontend({ type: 'agent_state', state: 'listening' })
-      }
-    },
-  })
-
-  // Helper to format results for natural speech
-  function formatForSpeech(result: string, decision: BrainDecision): string {
-    // If decision has speech and we have additional results, combine them
-    const speech = decision.speech || ''
-
-    // If result is very long, summarize it
-    if (result.length > 500) {
-      // Extract key info for voice
-      const lines = result.split('\n').filter(l => l.trim())
-      const keyLines = lines.slice(0, 3).join('. ')
-      return speech ? `${speech} ${keyLines}` : keyLines
-    }
-
-    // If result differs from speech, it likely has new info
-    if (result !== speech && result.length > 0) {
-      return result
-    }
-
-    return speech || "Done."
-  }
 
   // Shared context that both voice and coding agents contribute to
   const sharedContext = {
@@ -725,40 +613,6 @@ The tool handles research and execution, then returns what to tell the user.`,
     }
   }
 
-  // Check status tool - allows Gemini to poll for background task updates
-  const checkStatusTool = llm.tool({
-    description: `Check the status of background research and tasks.
-Call this tool when:
-- User asks "how's it going?", "are you done?", "what did you find?"
-- You want to check if background research has completed
-- You need to provide an update on running tasks
-- A few seconds have passed since starting a task
-
-This returns current task status and any results ready to share.`,
-    parameters: z.object({
-      reason: z.string().optional().describe('Why checking status (for logging)'),
-    }),
-    execute: async ({ reason }) => {
-      console.log(`📊 [Status Check] ${reason || 'Checking status...'}`)
-      const status = statusManager.getStatusUpdate()
-
-      // Log what we found
-      if (status.hasUpdates) {
-        console.log(`📊 [Status] Found ${status.completedTasks.length} completed tasks`)
-      } else if (status.runningTasks.length > 0) {
-        console.log(`📊 [Status] ${status.runningTasks.length} tasks still running`)
-      }
-
-      // Send status to frontend
-      await sendToFrontend({ type: 'status_update', ...status })
-
-      // Clear old completed tasks
-      statusManager.clearReportedTasks()
-
-      return status.summary
-    },
-  })
-
   // Dynamic instructions with working directory context
   const getInstructions = () => `You are Osborn, a friendly voice AI coding assistant.
 
@@ -767,35 +621,25 @@ WORKING DIRECTORY: ${workingDir}
 PERSONALITY: Conversational, helpful, proactive.
 - Keep responses SHORT (<50 words for voice)
 - ALWAYS speak tool results to the user verbally
-- Be specific about what you found
-- Do NOT add markdown formatting like **bold** headers in your speech
-
-CRITICAL: After ANY tool call completes, you MUST speak the result to the user.
+- Do NOT add markdown formatting like **bold** headers
 
 CAPABILITIES:
-- You have FULL INTERNET ACCESS via the coding agents
-- You can search the web, fetch URLs, look up documentation
-- You can read/write files, run commands, search code
-- You can research topics, find information online, check APIs
+- FULL INTERNET ACCESS (web search, fetch URLs, APIs)
+- Read/write files, run commands, search code
+- Multiple Claude Code agents for parallel research
 
 TOOLS:
-1. think_and_decide - For ANY request (coding, research, web search, questions). Returns findings you MUST speak.
-2. run_code - For direct commands. Returns results you MUST speak.
-3. check_status - For progress. Returns status you MUST speak.
-4. respond_permission - For permission responses.
+1. run_code - Execute ANY coding task (reading, writing, commands, research)
+   Routes automatically: Plan agents for reading/research, Execute agent for writing
+2. respond_permission - Handle permission responses (yes/no/always allow)
 
-FLOW:
-1. User asks → call appropriate tool
-2. Tool returns result → SPEAK the result to user
-3. Never stay silent after a tool completes
+USAGE:
+- Use run_code for ALL coding requests
+- The tool handles routing to the right agent automatically
+- Tasks may take time - that's normal
+- Speak the results naturally to the user
 
-EXAMPLE:
-User: "What's in the codebase?"
-You: "Let me look." [calls think_and_decide]
-Tool returns: "Found a React app with src/, components/, pages/"
-You: "I found a React app with source, components, and pages folders. Want details?"
-
-${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getContextSummary()}` : ""}`
+${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummary()}` : ""}`
 
   const INSTRUCTIONS = getInstructions()
 
@@ -807,8 +651,6 @@ ${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getConte
         tools: {
           run_code: runCodeTool,
           respond_permission: respondPermissionTool,
-          think_and_decide: thinkAndDecideTool,
-          check_status: checkStatusTool,
         },
       })
     }
@@ -835,24 +677,24 @@ ${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getConte
   }
 
   // Create pipelined session (STT + LLM + TTS)
-  // Bridge context for tracking conversation state
-  const bridgeContext = new BridgeContext()
-
   async function createPipelinedSession(provider: string): Promise<voice.AgentSession> {
-    // Configure pipeline based on provider choice:
-    // OpenAI: OpenAI Whisper + GPT-4o + OpenAI TTS (all OpenAI - single API key)
-    // Gemini: Groq Whisper + Gemini LLM + OpenAI TTS (uses Groq for fast STT, OpenAI for quality TTS)
+    // PIPELINE CONFIGURATION:
+    // - STT: Deepgram Nova-3 (native streaming, no "audio too short" errors)
+    // - LLM: Gemini 2.5 Pro (smart conversation manager)
+    // - TTS: Gemini (fast, same API key)
+    // Note: OpenAI Whisper is batch-only and causes fragmentation issues
     const isOpenAI = provider === 'openai'
 
-    const sttProvider = isOpenAI ? 'openai-whisper' : 'groq-whisper'
+    const sttProvider = 'deepgram' // Native streaming - no short audio errors
     const llmProvider = isOpenAI ? 'gpt-4o' : 'gemini-pro'
-    const ttsProvider = 'openai'  // OpenAI TTS for both (reliable, good quality)
-    const ttsVoice = isOpenAI ? 'alloy' : 'nova'  // Different voices for each provider
+    const ttsProvider = 'gemini' // Better streaming for long responses
+    const ttsVoice = 'Zephyr'
 
-    console.log(`📱 Using Pipelined Mode (${sttProvider} + ${llmProvider} + ${ttsProvider} TTS)`)
+    console.log(`📱 Pipeline: ${sttProvider} STT → ${llmProvider} → ${ttsProvider} TTS`)
+    console.log('   ✨ session.say() ENABLED for interim voice updates!')
 
     const stt = createSTT({
-      provider: sttProvider,
+      provider: sttProvider as any,
     })
     const bridgeLLM = createBridgeLLM({
       provider: llmProvider as any,
@@ -867,6 +709,63 @@ ${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getConte
       vad,
       stt,
       llm: bridgeLLM,
+      tts,
+      turnDetection: 'vad' as any,
+    })
+  }
+
+  // Create DIRECT session (STT + Claude/Codex SDK + TTS) - No middle layer!
+  async function createDirectSession(codingAgent: CodingAgent): Promise<voice.AgentSession> {
+    // DIRECT CONFIGURATION:
+    // - STT: Deepgram Nova-3 (native streaming, no "audio too short" errors)
+    // - LLM: Claude Agent SDK or Codex Agent SDK (direct!)
+    // - TTS: Gemini (fast)
+    // Note: OpenAI Whisper is batch-only and causes fragmentation issues
+    console.log(`🎯 DIRECT MODE: Deepgram STT → ${codingAgent.toUpperCase()} Agent SDK → Gemini TTS`)
+    console.log('   🔥 No middle layer - direct voice to coding agent!')
+
+    const stt = createSTT({ provider: 'deepgram' })
+    const tts = createTTS({ provider: 'gemini', voice: 'Zephyr' })
+    const vad = await createVAD()
+
+    // Create the appropriate LLM wrapper
+    const directLLM = codingAgent === 'codex'
+      ? createCodexLLM({ workingDirectory: workingDir })
+      : createClaudeLLM({ workingDirectory: workingDir })
+
+    // Wire up events from the SDK wrapper to frontend
+    directLLM.events.on('tool_use', (data) => {
+      console.log(`🔧 [direct] Tool: ${data.name}`)
+      sendToFrontend({ type: 'tool_use', tool: data.name, agentRole: 'direct' })
+    })
+    directLLM.events.on('tool_result', (data) => {
+      console.log(`✅ [direct] Done: ${data.name}`)
+      sendToFrontend({ type: 'tool_use', tool: data.name, status: 'completed', agentRole: 'direct' })
+    })
+
+    // Wire up permission requests - sends to frontend for user approval
+    directLLM.events.on('permission_request', (data) => {
+      console.log(`⚠️ [direct] Permission needed: ${data.toolName}`)
+      sendToFrontend({
+        type: 'permission_request',
+        toolName: data.toolName,
+        input: data.input,
+        agentRole: 'direct',
+      })
+      // Also speak the request so user knows to respond
+      if (currentSession) {
+        const desc = `I need permission to use ${data.toolName}. Say yes or no.`
+        ;(currentSession as any).say?.(desc).catch(() => {})
+      }
+    })
+
+    // Store directLLM reference for permission responses
+    ;(createDirectSession as any).currentLLM = directLLM
+
+    return new voice.AgentSession({
+      vad,
+      stt,
+      llm: directLLM,
       tts,
       turnDetection: 'vad' as any,
     })
@@ -889,9 +788,18 @@ ${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getConte
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
 
+    // Clean up any existing session before creating a new one
+    if (currentSession) {
+      console.log('🧹 Cleaning up previous session...')
+      try {
+        currentSession.removeAllListeners()
+      } catch {}
+      currentSession = null
+    }
+
     // Get settings from participant metadata
     let provider = defaultProvider
-    let userVoiceArch: 'realtime' | 'pipelined' = voiceMode // Default to config
+    let userVoiceArch: 'realtime' | 'pipelined' | 'direct' = voiceMode as any // Default to config
     let codingAgent: CodingAgent = 'claude'
 
     if (participant.metadata) {
@@ -904,7 +812,7 @@ ${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getConte
     }
 
     currentProvider = provider
-    currentVoiceArch = userVoiceArch
+    currentVoiceArch = userVoiceArch as any
     currentCodingAgent = codingAgent
     console.log(`🎯 Provider: ${provider}, Voice: ${userVoiceArch}, Agent: ${codingAgent}`)
 
@@ -914,7 +822,10 @@ ${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getConte
 
     // Create voice session based on user's voice architecture choice
     let session: voice.AgentSession
-    if (userVoiceArch === 'pipelined') {
+    if (userVoiceArch === 'direct') {
+      // DIRECT MODE: Voice → Claude/Codex Agent SDK → TTS (no middle layer!)
+      session = await createDirectSession(codingAgent)
+    } else if (userVoiceArch === 'pipelined') {
       session = await createPipelinedSession(provider)
     } else {
       const model = createRealtimeModel(provider)
@@ -922,204 +833,105 @@ ${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getConte
     }
     currentSession = session
 
-    // Track last transcript to avoid duplicates
+    // ============================================================
+    // SIMPLIFIED TRANSCRIPT HANDLING
+    // Single source of truth to avoid duplicates
+    // ============================================================
     let lastTranscript = ''
-    let lastSentTranscript = ''
+    let lastSentUserTranscript = ''
+    let lastSentAgentTranscript = ''
 
+    // Helper to send user transcript (with deduplication)
+    function sendUserTranscript(transcript: string, source: string) {
+      if (!transcript || transcript.length < 3) return
+      // Normalize for comparison
+      const normalized = transcript.trim().replace(/\s+/g, ' ')
+      if (normalized === lastSentUserTranscript) return
+      if (normalized === '<noise>' || normalized.toLowerCase() === 'thank you') return // Skip noise
+
+      console.log(`📝 User (${source}): "${transcript.substring(0, 60)}..."`)
+      sendToFrontend({ type: 'user_transcript', text: transcript })
+      lastSentUserTranscript = normalized
+    }
+
+    // Helper to send agent transcript (with deduplication)
+    function sendAgentTranscript(text: string, source: string) {
+      if (!text || text.length < 3) return
+      const normalized = text.trim().replace(/\s+/g, ' ')
+      if (normalized === lastSentAgentTranscript) return
+
+      console.log(`💬 Agent (${source}): "${text.substring(0, 60)}..."`)
+      sendToFrontend({ type: 'assistant_response', text })
+      lastSentAgentTranscript = normalized
+    }
+
+    // Incremental transcription (for display while speaking)
     session.on('user_input_transcribed' as any, (ev: any) => {
       const transcript = ev.transcript || ''
-      // Only log if it's different and substantial (avoid incremental updates)
       if (transcript && transcript !== lastTranscript && transcript.length > lastTranscript.length + 3) {
-        console.log(`📝 User: "${transcript}"`)
         lastTranscript = transcript
       }
     })
 
-    // Send final transcript when user stops speaking
+    // PRIMARY: conversation_item_added is the authoritative source
+    session.on('conversation_item_added' as any, (ev: any) => {
+      let text = ''
+      if (Array.isArray(ev.item?.content)) {
+        text = typeof ev.item.content[0] === 'string'
+          ? ev.item.content.join('\n')
+          : ev.item.content.map((c: any) => c.text).filter(Boolean).join('\n')
+      } else if (typeof ev.item?.content === 'string') {
+        text = ev.item.content
+      } else if (ev.item?.text) {
+        text = ev.item.text
+      }
+
+      if (ev.item?.role === 'user' && text) {
+        sendUserTranscript(text, 'conv_item')
+      } else if (ev.item?.role === 'assistant' && text) {
+        sendAgentTranscript(text, 'conv_item')
+      }
+    })
+
+    // FALLBACK: user_speech_committed for when conversation_item doesn't fire
     session.on('user_speech_committed' as any, (ev: any) => {
       const transcript = ev.transcript || ev.text || lastTranscript
-      if (transcript && transcript !== lastSentTranscript) {
-        console.log(`📝 User (final): "${transcript}"`)
-        sendToFrontend({ type: 'user_transcript', text: transcript })
-        lastSentTranscript = transcript
-        lastTranscript = ''
-      }
+      sendUserTranscript(transcript, 'committed')
+      lastTranscript = ''
     })
 
-    // For Gemini realtime, send transcript when user state changes from speaking to listening
-    session.on('user_state_changed' as any, (ev: any) => {
-      console.log(`👤 User state: ${ev.oldState} → ${ev.newState}`)
-      // When user stops speaking, send the accumulated transcript
-      if (ev.oldState === 'speaking' && ev.newState === 'listening' && lastTranscript && lastTranscript !== lastSentTranscript) {
-        console.log(`📝 User (state change): "${lastTranscript}"`)
-        sendToFrontend({ type: 'user_transcript', text: lastTranscript })
-        lastSentTranscript = lastTranscript
-        // Don't clear lastTranscript yet - might need it for retry
-      }
-    })
-
-    // Backup: also listen to input_speech_stopped
-    session.on('input_speech_stopped' as any, (ev: any) => {
-      // If there's a final transcript in the event, use it
-      const transcript = ev.transcript || ev.text
-      if (transcript && transcript.length > 0 && transcript !== lastSentTranscript) {
-        console.log(`📝 User (stopped): "${transcript}"`)
-        sendToFrontend({ type: 'user_transcript', text: transcript })
-        lastSentTranscript = transcript
-        lastTranscript = ''
-      }
-    })
-
-    // Capture agent speech for chat display
-    let currentAgentMessage = ''
-    let lastSentAgentMessage = ''
-
-    session.on('agent_speech_started' as any, (ev: any) => {
-      console.log(`🔊 Agent speaking...`, JSON.stringify(ev || {}).substring(0, 200))
-      currentAgentMessage = ev.text || ev.message || ev.content || ''
-    })
-
-    session.on('agent_speech_committed' as any, (ev: any) => {
-      const message = ev.text || ev.message || ev.content || currentAgentMessage
-      console.log(`💬 Agent committed: "${message?.substring(0, 100)}..."`)
-      if (message && message !== lastSentAgentMessage) {
-        sendToFrontend({ type: 'assistant_response', text: message })
-        lastSentAgentMessage = message
-      }
-      currentAgentMessage = ''
-    })
-
-    // Also capture from playout completed (for Gemini realtime)
-    session.on('playout_completed' as any, (ev: any) => {
-      const message = ev.message || ev.text || ev.content
-      console.log(`💬 Playout completed: "${message?.substring(0, 100)}..."`)
-      if (message && message.length > 0 && message !== lastSentAgentMessage) {
-        sendToFrontend({ type: 'assistant_response', text: message })
-        lastSentAgentMessage = message
-      }
-    })
-
-    // Capture agent state change to speaking -> listening (agent finished speaking)
+    // Agent state tracking
     session.on('agent_state_changed' as any, (ev: any) => {
       agentState = ev.newState
       console.log(`🤖 State: ${ev.newState}`)
       sendToFrontend({ type: 'agent_state', state: ev.newState })
 
-      // When agent finishes speaking, check if we have a message to send
-      if (ev.oldState === 'speaking' && ev.newState === 'listening' && currentAgentMessage && currentAgentMessage !== lastSentAgentMessage) {
-        console.log(`💬 Agent (state change): "${currentAgentMessage.substring(0, 100)}..."`)
-        sendToFrontend({ type: 'assistant_response', text: currentAgentMessage })
-        lastSentAgentMessage = currentAgentMessage
-        currentAgentMessage = ''
-      }
-
+      // Process speech queue when agent becomes available
       if (ev.newState === 'listening' && speechQueue.length > 0) {
         processSpeechQueue()
       }
     })
 
-    // Try to capture any transcript/message events
-    session.on('transcript' as any, (ev: any) => {
-      console.log(`📜 Transcript event:`, JSON.stringify(ev || {}).substring(0, 300))
-      const text = ev.text || ev.transcript || ev.message
-      if (text && ev.role === 'assistant' && text !== lastSentAgentMessage) {
-        sendToFrontend({ type: 'assistant_response', text })
-        lastSentAgentMessage = text
+    // FALLBACK: playout_completed for final agent message (Gemini realtime)
+    session.on('playout_completed' as any, (ev: any) => {
+      const message = ev.message || ev.text || ev.content
+      if (message && message.length > 0) {
+        sendAgentTranscript(message, 'playout')
       }
     })
 
-    // Capture conversation item added (works for both OpenAI and Gemini)
-    session.on('conversation_item_added' as any, (ev: any) => {
-      console.log(`📝 Conversation item:`, JSON.stringify(ev || {}).substring(0, 300))
-
-      if (ev.item?.role === 'assistant') {
-        // Handle different content formats:
-        // Gemini: content is array of strings ["text"]
-        // OpenAI: content is array of objects [{type: "text", text: "..."}]
-        let text = ''
-        if (Array.isArray(ev.item.content)) {
-          if (typeof ev.item.content[0] === 'string') {
-            // Gemini format: ["string1", "string2"]
-            text = ev.item.content.join('\n')
-          } else if (ev.item.content[0]?.text) {
-            // OpenAI format: [{text: "..."}]
-            text = ev.item.content.map((c: any) => c.text).join('\n')
-          }
-        } else if (typeof ev.item.content === 'string') {
-          text = ev.item.content
-        } else if (ev.item.text) {
-          text = ev.item.text
-        }
-
-        if (text && text !== lastSentAgentMessage) {
-          console.log(`💬 Agent (conv item): "${text.substring(0, 100)}..."`)
-          sendToFrontend({ type: 'assistant_response', text })
-          lastSentAgentMessage = text
-        }
-      } else if (ev.item?.role === 'user') {
-        // Also capture user messages from conversation items
-        let text = ''
-        if (Array.isArray(ev.item.content)) {
-          if (typeof ev.item.content[0] === 'string') {
-            text = ev.item.content.join('\n')
-          } else if (ev.item.content[0]?.text) {
-            text = ev.item.content.map((c: any) => c.text).join('\n')
-          }
-        } else if (typeof ev.item.content === 'string') {
-          text = ev.item.content
-        }
-
-        if (text && text !== lastSentTranscript) {
-          console.log(`📝 User (conv item): "${text.substring(0, 100)}..."`)
-          sendToFrontend({ type: 'user_transcript', text })
-          lastSentTranscript = text
-        }
-      }
-    })
-
-    // Listen for input audio transcription completed (Gemini)
+    // FALLBACK: Gemini transcription events (if conversation_item doesn't fire)
     session.on('input_audio_transcription_completed' as any, (ev: any) => {
-      console.log(`📜 Input transcription completed:`, JSON.stringify(ev || {}).substring(0, 300))
       const transcript = ev.transcript || ev.text
-      if (transcript && transcript !== lastSentTranscript) {
-        console.log(`📝 User (transcription): "${transcript}"`)
-        sendToFrontend({ type: 'user_transcript', text: transcript })
-        lastSentTranscript = transcript
-      }
+      if (transcript) sendUserTranscript(transcript, 'input_transcription')
     })
 
-    // Listen for output audio transcription completed (agent speech text)
-    session.on("output_audio_transcription_completed" as any, (ev: any) => {
-      console.log(`📜 Output transcription completed:`, JSON.stringify(ev || {}).substring(0, 300))
+    session.on('output_audio_transcription_completed' as any, (ev: any) => {
       const text = ev.transcript || ev.text
-      if (text && text !== lastSentAgentMessage) {
-        console.log(`💬 Agent (output transcription):`, text.substring(0, 100))
-        sendToFrontend({ type: "assistant_response", text })
-        lastSentAgentMessage = text
-      }
+      if (text) sendAgentTranscript(text, 'output_transcription')
     })
 
-
-    // Debug: Log additional session events to find the right ones for Gemini
-    const debugEvents = [
-      'agent_started_speaking',
-      'agent_stopped_speaking',
-      'response_content_added',
-      'response_done',
-      'conversation_updated',
-      'metrics_collected'
-    ]
-    for (const eventName of debugEvents) {
-      session.on(eventName as any, (ev: any) => {
-        console.log(`🔍 [${eventName}]:`, JSON.stringify(ev || {}).substring(0, 200))
-      })
-    }
-
-    // Also capture from function call results
-    session.on('function_calls_collected' as any, (ev: any) => {
-      console.log(`🔧 Function calls:`, ev)
-    })
-
+    // Error and close handlers
     session.on('error' as any, (ev: any) => {
       console.error('❌ Session error:', ev.error)
     })
@@ -1213,10 +1025,18 @@ ${sharedContext.getContextSummary() ? `CURRENT CONTEXT: ${sharedContext.getConte
       console.log('📨 Data:', data.type)
 
       if (data.type === 'permission_response') {
+        // Check pipelined mode agent pool first
         const slot = agentPool.find(s => s.handler.hasPendingPermission())
         if (slot) {
           slot.handler.respondToPermission(data.response)
-          console.log(`✅ Permission: ${data.response}`)
+          console.log(`✅ Permission (pipelined): ${data.response}`)
+        }
+        // Also check direct mode LLM
+        const directLLM = (createDirectSession as any).currentLLM
+        if (directLLM && directLLM.hasPendingPermission?.()) {
+          const allow = data.response === 'allow' || data.response === 'always_allow'
+          directLLM.respondToPermission(allow)
+          console.log(`✅ Permission (direct): ${data.response}`)
         }
       } else if (data.type === 'user_text' && currentSession) {
         console.log(`📝 Text: "${data.content}"`)

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import VoiceRoom from '@/components/VoiceRoom'
 
 type Provider = 'openai' | 'gemini'
-type VoiceArch = 'realtime' | 'pipelined'
+type VoiceArch = 'realtime' | 'pipelined' | 'direct'
 type CodingAgent = 'claude' | 'codex'
 type ConnectionState = 'disconnected' | 'waiting' | 'connected'
 
@@ -33,12 +33,9 @@ export default function Home() {
     if (storedAgent) setCodingAgent(storedAgent)
   }, [])
 
-  // Reset voiceArch to realtime when switching to Gemini (pipelined not supported)
-  useEffect(() => {
-    if (provider === 'gemini' && voiceArch === 'pipelined') {
-      setVoiceArch('realtime')
-    }
-  }, [provider, voiceArch])
+  // Note: Pipelined mode now works for both OpenAI and Gemini!
+  // Gemini pipelined uses: Groq STT + Gemini LLM + Deepgram TTS
+  // This enables session.say() for interim voice updates during long tasks
 
   // Save preferences when changed
   useEffect(() => {
@@ -157,36 +154,48 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Voice Architecture selector - only show for OpenAI */}
-          {provider === 'openai' && (
-            <div className="text-center">
-              <p className="text-sm text-gray-500 mb-2">Voice Architecture</p>
-              <div className="flex gap-4">
-                <button
-                  onClick={() => setVoiceArch('realtime')}
-                  className={`px-4 py-2 rounded-lg border-2 transition-colors ${
-                    voiceArch === 'realtime'
-                      ? 'border-cyan-500 bg-cyan-500/20 text-cyan-400'
-                      : 'border-gray-600 text-gray-400 hover:border-gray-500'
-                  }`}
-                >
-                  Realtime
-                  <span className="block text-xs opacity-70">Speech-to-Speech</span>
-                </button>
-                <button
-                  onClick={() => setVoiceArch('pipelined')}
-                  className={`px-4 py-2 rounded-lg border-2 transition-colors ${
-                    voiceArch === 'pipelined'
-                      ? 'border-pink-500 bg-pink-500/20 text-pink-400'
-                      : 'border-gray-600 text-gray-400 hover:border-gray-500'
-                  }`}
-                >
-                  Pipelined
-                  <span className="block text-xs opacity-70">STT → LLM → TTS</span>
-                </button>
-              </div>
+          {/* Voice Architecture selector */}
+          <div className="text-center">
+            <p className="text-sm text-gray-500 mb-2">Voice Architecture</p>
+            <div className="flex gap-4">
+              <button
+                onClick={() => setVoiceArch('realtime')}
+                className={`px-4 py-2 rounded-lg border-2 transition-colors ${
+                  voiceArch === 'realtime'
+                    ? 'border-cyan-500 bg-cyan-500/20 text-cyan-400'
+                    : 'border-gray-600 text-gray-400 hover:border-gray-500'
+                }`}
+              >
+                Realtime
+                <span className="block text-xs opacity-70">Native Voice AI</span>
+              </button>
+              <button
+                onClick={() => setVoiceArch('pipelined')}
+                className={`px-4 py-2 rounded-lg border-2 transition-colors ${
+                  voiceArch === 'pipelined'
+                    ? 'border-pink-500 bg-pink-500/20 text-pink-400'
+                    : 'border-gray-600 text-gray-400 hover:border-gray-500'
+                }`}
+              >
+                Pipelined
+                <span className="block text-xs opacity-70">Voice Updates</span>
+              </button>
+              <button
+                onClick={() => setVoiceArch('direct')}
+                className={`px-4 py-2 rounded-lg border-2 transition-colors ${
+                  voiceArch === 'direct'
+                    ? 'border-green-500 bg-green-500/20 text-green-400'
+                    : 'border-gray-600 text-gray-400 hover:border-gray-500'
+                }`}
+              >
+                Direct
+                <span className="block text-xs opacity-70">SDK Native 🔥</span>
+              </button>
             </div>
-          )}
+            <p className="text-xs text-gray-600 mt-1">
+              Direct mode: Voice → Agent SDK → TTS (no middle layer!)
+            </p>
+          </div>
 
           {/* Coding Agent selector */}
           <div className="text-center">
@@ -293,7 +302,7 @@ export default function Home() {
                   Room: <span className="font-mono text-gray-300">{roomCode}</span>
                 </span>
                 <span className="text-gray-500">
-                  {provider === 'openai' ? '🔵 OpenAI' : '🟢 Gemini'} {voiceArch === 'pipelined' ? '⚡ Pipelined' : '🎙️ Realtime'} + {codingAgent === 'claude' ? '🟠 Claude' : '🟣 Codex'}
+                  {provider === 'openai' ? '🔵 OpenAI' : '🟢 Gemini'} {voiceArch === 'direct' ? '🔥 Direct' : voiceArch === 'pipelined' ? '⚡ Pipelined' : '🎙️ Realtime'} + {codingAgent === 'claude' ? '🟠 Claude' : '🟣 Codex'}
                 </span>
               </div>
             </div>
