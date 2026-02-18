@@ -1,35 +1,35 @@
 // Load environment variables FIRST before any other imports
 import 'dotenv/config'
 
-import { llm, voice, initializeLogger } from '@livekit/agents'
-import * as openai from '@livekit/agents-plugin-openai'
-import * as google from '@livekit/agents-plugin-google'
-import { Room, RoomEvent, RemoteParticipant, LocalParticipant, DataPacketKind } from '@livekit/rtc-node'
+import { voice, initializeLogger, type Agent } from '@livekit/agents'
+import { Room, RoomEvent, RemoteParticipant, LocalParticipant } from '@livekit/rtc-node'
 import { AccessToken } from 'livekit-server-sdk'
-import { z } from 'zod'
 
 // Initialize logger before anything else
 initializeLogger({ pretty: true, level: 'info' })
 
-import { ClaudeHandler, type PermissionRequestEvent, type PermissionResponse } from './claude-handler.js'
-import { CodexHandler } from './codex-handler.js'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, type VoiceMode } from './config.js'
-import { createSTT, createTTS, createVAD, type VoiceIOConfig } from './voice-io.js'
-import { createBridgeLLM } from './bridge-llm.js'
+import { createServer, type IncomingMessage, type ServerResponse } from 'http'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
+import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
-import { createCodexLLM } from './codex-llm.js'
-import { statusManager } from './status-manager.js'
+import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
+import { MCP_CATALOG } from './config.js'
+import { llm } from '@livekit/agents'
+import { z } from 'zod'
 
 // ============================================================
-// DIRECT CONNECTION ARCHITECTURE
+// DUAL MODE VOICE ARCHITECTURE
 // ============================================================
-// This agent connects DIRECTLY to LiveKit rooms without using
-// the worker dispatch pattern. This is ideal for CLI tools that
-// users install locally and connect to cloud-hosted frontends.
+// DIRECT MODE (default): STT → Claude Agent SDK → TTS
+//   - Full coding capabilities via Claude Agent SDK
+//   - Permission system flows to frontend
+//   - Best for actual coding tasks
+//
+// REALTIME MODE: OpenAI/Gemini native speech-to-speech
+//   - Faster response, lower latency
+//   - Voice LLM with tool calling (ask_agent, respond_permission)
+//   - Routes tasks to Claude agents for execution
 // ============================================================
-
-// Type for coding agent selection
-type CodingAgent = 'claude' | 'codex'
 
 // Generate a short, user-friendly room code
 function generateRoomCode(): string {
@@ -42,17 +42,13 @@ function generateRoomCode(): string {
 }
 
 // Parse CLI arguments
-function parseArgs(): { roomCode?: string; provider?: string } {
+function parseArgs(): { roomCode?: string } {
   const args = process.argv.slice(2)
   let roomCode: string | undefined
-  let provider: string | undefined
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--room' && args[i + 1]) {
       roomCode = args[i + 1]
-    }
-    if (args[i] === '--provider' && args[i + 1]) {
-      provider = args[i + 1]
     }
     // Short code detection (e.g., `npm run dev abc123`)
     if (!args[i].startsWith('-') && args[i].length >= 4 && args[i].length <= 10 &&
@@ -61,29 +57,123 @@ function parseArgs(): { roomCode?: string; provider?: string } {
     }
   }
 
-  return { roomCode, provider }
+  return { roomCode }
 }
 
 // Global error handlers
 process.on('unhandledRejection', (reason: any) => {
-  // Suppress known Google LLM abort errors (happens when user interrupts)
   const msg = reason?.message || String(reason)
   if (msg.includes('aborted') || msg.includes('AbortError')) {
     console.log('⚠️ LLM request aborted (user interrupted)')
     return
   }
-  // Log other errors but don't crash
   console.error('❌ Unhandled Rejection:', msg)
 })
 
 process.on('uncaughtException', (error) => {
-  // Suppress abort errors
   if (error.message?.includes('aborted') || error.message?.includes('AbortError')) {
     console.log('⚠️ Operation aborted')
     return
   }
   console.error('❌ Uncaught Exception:', error)
 })
+
+// ============================================================
+// HTTP API SERVER - Exposes session data to cloud-deployed frontend
+// ============================================================
+
+function startApiServer(workingDir: string, port: number): void {
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // CORS headers for cloud frontend
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204)
+      res.end()
+      return
+    }
+
+    const url = new URL(req.url || '/', `http://localhost:${port}`)
+
+    if (req.method === 'GET' && url.pathname === '/sessions') {
+      try {
+        await cleanupOrphanedMetadata(workingDir)
+        const sessions = await listSessions(workingDir)
+        const payload = {
+          sessions: sessions.map(s => ({
+            sessionId: s.sessionId,
+            timestamp: s.timestamp.toISOString(),
+            lastMessage: s.lastMessage,
+            messageCount: s.messageCount,
+          })),
+          total: sessions.length,
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(payload))
+      } catch (err) {
+        console.error('API /sessions error:', err)
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ sessions: [], total: 0, error: 'Failed to list sessions' }))
+      }
+      return
+    }
+
+    if (req.method === 'GET' && url.pathname === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ status: 'ok', workingDir }))
+      return
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
+  })
+
+  server.listen(port, () => {
+    console.log(`🌐 API server listening on http://localhost:${port}`)
+    console.log(`   Sessions: http://localhost:${port}/sessions`)
+  })
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`⚠️ API port ${port} in use, trying ${port + 1}...`)
+      startApiServer(workingDir, port + 1)
+    } else {
+      console.error('❌ API server error:', err)
+    }
+  })
+}
+
+// ============================================================
+// SESSION CONTEXT HELPERS
+// ============================================================
+
+/**
+ * Build a context briefing string for the realtime agent
+ * Summarizes the session state and recent conversation
+ */
+function buildContextBriefing(
+  summary: SessionSummary,
+  history: ConversationExchange[]
+): string {
+  const lines = [
+    `Session ID: ${summary.sessionId.substring(0, 8)}`,
+    `Messages: ${summary.messageCount}`,
+    '',
+    'Recent conversation:'
+  ]
+
+  for (const exchange of history.slice(-5)) {
+    const content = exchange.content.length > 200
+      ? exchange.content.substring(0, 200) + '...'
+      : exchange.content
+    lines.push(`${exchange.role === 'user' ? 'User' : 'Assistant'}: ${content}`)
+  }
+
+  return lines.join('\n')
+}
+
 
 // Main function
 async function main() {
@@ -118,6 +208,20 @@ async function main() {
 
   const workingDir = config.workingDirectory || process.cwd()
   console.log(`📂 Working directory: ${workingDir}`)
+  console.log(`🔬 Mode: RESEARCH`)
+
+  // Determine voice mode
+  const voiceMode = getVoiceMode(config)
+  const realtimeConfig = getRealtimeConfig(config)
+  const directConfig = getDirectConfig(config)
+
+  if (voiceMode === 'realtime') {
+    console.log(`🎙️ REALTIME MODE: ${realtimeConfig.provider} native speech-to-speech`)
+    console.log(`   Voice: ${realtimeConfig.provider === 'openai' ? realtimeConfig.openaiVoice : realtimeConfig.geminiVoice}`)
+  } else {
+    console.log(`🎯 DIRECT MODE: ${directConfig.stt.provider} STT → Claude Agent SDK → ${directConfig.tts.provider} TTS`)
+    console.log('   🔥 Full coding capabilities!')
+  }
 
   // Determine room code
   const roomCode = cliArgs.roomCode || generateRoomCode()
@@ -132,114 +236,9 @@ async function main() {
     console.log(`   Or enter code "${roomCode}" in the frontend\n`)
   }
 
-  // Default provider and voice mode (can be overridden by frontend)
-  const defaultProvider = cliArgs.provider || process.env.LLM_PROVIDER || 'openai'
-  const voiceMode = getVoiceMode(config)
-  console.log(`🎯 Default voice provider: ${defaultProvider}`)
-  console.log(`🎙️ Default voice mode: ${voiceMode} (can be changed from frontend)`)
-
-  // ============================================================
-  // Initialize Claude Agents (Dual Architecture)
-  // ============================================================
-  console.log('\n🔥 Initializing Claude agents...')
-
-  interface AgentSlot {
-    id: number
-    role: 'plan' | 'execute'
-    handler: ClaudeHandler
-    busy: boolean
-    currentTask: string | null
-    context: string[]
-  }
-
-  // Plan Agents (2-3 for parallel background research)
-  const planAgent1: AgentSlot = {
-    id: 1,
-    role: 'plan',
-    handler: new ClaudeHandler({
-      workingDirectory: workingDir,
-      permissionMode: 'plan',
-      agentRole: 'plan',
-      mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-    }),
-    busy: false,
-    currentTask: null,
-    context: [],
-  }
-
-  const planAgent2: AgentSlot = {
-    id: 2,
-    role: 'plan',
-    handler: new ClaudeHandler({
-      workingDirectory: workingDir,
-      permissionMode: 'plan',
-      agentRole: 'plan',
-      mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-    }),
-    busy: false,
-    currentTask: null,
-    context: [],
-  }
-
-  const planAgent3: AgentSlot = {
-    id: 3,
-    role: 'plan',
-    handler: new ClaudeHandler({
-      workingDirectory: workingDir,
-      permissionMode: 'plan',
-      agentRole: 'plan',
-      mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-    }),
-    busy: false,
-    currentTask: null,
-    context: [],
-  }
-
-  // Execute Agent - Single writer for actual code changes
-  const executeAgent: AgentSlot = {
-    id: 4,
-    role: 'execute',
-    handler: new ClaudeHandler({
-      workingDirectory: workingDir,
-      permissionMode: 'default',
-      agentRole: 'execute',
-      mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-    }),
-    busy: false,
-    currentTask: null,
-    context: [],
-  }
-
-  // Pool: 3 Plan agents (research) + 1 Execute agent (writing)
-  const agentPool: AgentSlot[] = [planAgent1, planAgent2, planAgent3, executeAgent]
-  console.log(`🧠 Agent pool: ${agentPool.filter(a => a.role === 'plan').length} Plan + ${agentPool.filter(a => a.role === 'execute').length} Execute`)
-
-  // Smart routing
-  function routeTask(task: string): AgentSlot {
-    const taskLower = task.toLowerCase()
-
-    const executeKeywords = [
-      'create', 'make', 'build', 'implement', 'add', 'write',
-      'fix', 'update', 'change', 'modify', 'edit', 'refactor',
-      'delete', 'remove', 'run', 'execute', 'install', 'deploy',
-      'commit', 'push', 'test', 'debug', 'start', 'stop',
-    ]
-
-    for (const keyword of executeKeywords) {
-      if (taskLower.includes(keyword)) {
-        // If execute agent is busy, find an available plan agent
-        if (executeAgent.busy) {
-          const freePlan = agentPool.find(s => s.role === 'plan' && !s.busy)
-          if (freePlan) return freePlan
-        }
-        return executeAgent
-      }
-    }
-
-    // For non-execute tasks, find any available plan agent
-    const freePlan = agentPool.find(s => s.role === 'plan' && !s.busy)
-    return freePlan || executeAgent
-  }
+  // Start HTTP API server for frontend session browsing
+  const apiPort = parseInt(process.env.OSBORN_API_PORT || '8741', 10)
+  startApiServer(workingDir, apiPort)
 
   // ============================================================
   // Create Access Token for Agent
@@ -249,7 +248,7 @@ async function main() {
   const token = new AccessToken(apiKey, apiSecret, {
     identity: 'osborn-agent',
     name: 'Osborn AI',
-    metadata: JSON.stringify({ type: 'agent', version: '0.1.5' }),
+    metadata: JSON.stringify({ type: 'agent', version: '0.3.0' }),
   })
 
   token.addGrant({
@@ -263,7 +262,7 @@ async function main() {
   const jwt = await token.toJwt()
 
   // ============================================================
-  // Connect to Room Directly
+  // Connect to Room
   // ============================================================
   console.log('📡 Connecting to LiveKit...')
 
@@ -271,68 +270,96 @@ async function main() {
 
   // Track state
   let currentSession: voice.AgentSession | null = null
-  let currentProvider = defaultProvider
-  let currentVoiceArch: 'realtime' | 'pipelined' = voiceMode
-  let currentCodingAgent: CodingAgent = 'claude'
-  let codexHandler: CodexHandler | null = null
+  let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
+  let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
 
-  // Speech queue
-  const speechQueue: string[] = []
-  let isSpeaking = false
+  // Task deduplication guard - prevents Gemini re-execution loops
+  let lastTaskRequest = ''
+  let lastTaskTime = 0
+
+  // Background research state - tracks async ask_agent execution
+  let activeResearch: {
+    researchLog: string[]
+    pendingUpdates: string[] // Queue of updates waiting to be injected
+    cleanup: () => void
+  } | null = null
 
   // ============================================================
-  // TASK DEDUPLICATION - Prevents duplicate research tasks
+  // Unified Voice Injection Queue
   // ============================================================
-  const activeTaskHashes = new Map<string, { startTime: number; slot: AgentSlot }>()
-  const recentTaskHashes = new Set<string>() // Tasks completed in last 30 seconds
+  // ALL system injections (research updates, completions, notifications, errors)
+  // go through this queue. Never call generateReply directly for injections.
+  // The queue only drains when the voice model is confirmed 'listening'.
+  // After draining, the model transitions to thinking/speaking, and the queue
+  // naturally pauses until the next 'listening' state.
 
-  function hashTask(task: string): string {
-    // Normalize task for comparison (lowercase, trim, remove extra spaces)
-    return task.toLowerCase().trim().replace(/\s+/g, ' ').substring(0, 100)
+  const voiceQueue: string[] = []
+
+  function queueVoiceInjection(instructions: string) {
+    voiceQueue.push(instructions)
+    console.log(`📥 Voice queue: +1 (total: ${voiceQueue.length}): ${instructions.substring(0, 80)}...`)
+    processVoiceQueue()
   }
 
-  function isTaskDuplicate(task: string): boolean {
-    const hash = hashTask(task)
-
-    // Check if exact same task is currently running
-    if (activeTaskHashes.has(hash)) {
-      const active = activeTaskHashes.get(hash)!
-      const elapsed = Date.now() - active.startTime
-      if (elapsed < 60000) { // Within 60 seconds
-        console.log(`⏭️ Skipping duplicate task (running for ${elapsed}ms): "${task.substring(0, 50)}..."`)
-        return true
-      }
+  function processVoiceQueue() {
+    if (voiceQueue.length === 0) return
+    if (!currentSession) return
+    if (agentState !== 'listening') {
+      console.log(`⏸️ Voice queue: ${voiceQueue.length} items waiting (model: ${agentState})`)
+      return // Will be called again when agent_state_changed → 'listening'
     }
 
-    // Check if task was recently completed
-    if (recentTaskHashes.has(hash)) {
-      console.log(`⏭️ Skipping recently completed task: "${task.substring(0, 50)}..."`)
-      return true
+    // Batch ALL queued items into one generateReply call
+    const items = voiceQueue.splice(0)
+    const batchedInstruction = items.length === 1
+      ? items[0]
+      : items.join('\n\n---\n\n')
+
+    console.log(`📡 Voice queue: processing ${items.length} batched items (${batchedInstruction.length} chars)`)
+
+    try {
+      currentSession.generateReply({
+        instructions: batchedInstruction,
+        toolChoice: 'none' as any,
+      })
+      // Model transitions to thinking/speaking after this call.
+      // When it returns to 'listening', agent_state_changed triggers processVoiceQueue() again.
+    } catch (err) {
+      console.log('⚠️ Voice queue generateReply failed, re-queuing:', err)
+      voiceQueue.unshift(...items)
     }
-
-    return false
   }
 
-  function registerTask(task: string, slot: AgentSlot): void {
-    const hash = hashTask(task)
-    activeTaskHashes.set(hash, { startTime: Date.now(), slot })
-  }
+  // Research event batching — debounce rapid-fire tool events into a single voice queue entry
+  let researchBatchTimer: ReturnType<typeof setTimeout> | null = null
 
-  function completeTask(task: string): void {
-    const hash = hashTask(task)
-    activeTaskHashes.delete(hash)
-    recentTaskHashes.add(hash)
+  function scheduleResearchBatch() {
+    if (researchBatchTimer) return // Already scheduled
+    researchBatchTimer = setTimeout(() => {
+      researchBatchTimer = null
+      if (!activeResearch || activeResearch.pendingUpdates.length === 0) return
 
-    // Clear from recent after 30 seconds
-    setTimeout(() => {
-      recentTaskHashes.delete(hash)
-    }, 30000)
+      const updates = activeResearch.pendingUpdates.splice(0)
+      const batchText = updates.slice(-8).join('. ')
+      console.log(`📡 [research] Batching ${updates.length} events: ${batchText.substring(0, 80)}...`)
+
+      // Send to frontend for visibility
+      sendToFrontend({
+        type: 'claude_output',
+        text: `[Research Progress] ${batchText}`,
+        isStreaming: true,
+        agentRole: 'research-progress',
+      })
+
+      // Push to unified voice queue (will be spoken when model is available)
+      queueVoiceInjection(`[RESEARCH UPDATE] Your backend agent is still working. Here's what it's doing: ${batchText}. Mention the specific tools or actions (e.g. "I'm searching the web for..." or "Reading through the docs now..."). Do NOT call any tools.`)
+    }, 3000) // 3s debounce: batch multiple tool events before queuing
   }
 
   // Helper to send data to frontend (with size limit handling)
-  const MAX_MESSAGE_SIZE = 60000 // Leave some headroom below 65535 limit
+  const MAX_MESSAGE_SIZE = 60000
 
   async function sendToFrontend(data: object) {
     if (!localParticipant) {
@@ -347,9 +374,8 @@ async function main() {
       if (jsonData.length > MAX_MESSAGE_SIZE) {
         const truncatedData = { ...data } as any
         if (truncatedData.text && typeof truncatedData.text === 'string') {
-          // Truncate text to fit within limit
           const overhead = JSON.stringify({ ...truncatedData, text: '' }).length
-          const maxTextLength = MAX_MESSAGE_SIZE - overhead - 100 // Extra buffer
+          const maxTextLength = MAX_MESSAGE_SIZE - overhead - 100
           truncatedData.text = truncatedData.text.substring(0, maxTextLength) + '\n\n[Message truncated due to size limit]'
           jsonData = JSON.stringify(truncatedData)
           console.log(`⚠️ Message truncated from ${(data as any).text?.length} to ${truncatedData.text.length} chars`)
@@ -367,408 +393,571 @@ async function main() {
     }
   }
 
-  // Process speech queue - supports both realtime and pipelined modes
-  async function processSpeechQueue() {
-    if (isSpeaking || speechQueue.length === 0 || !currentSession) return
-    if (agentState !== 'listening') return
-
-    isSpeaking = true
-    const message = speechQueue.shift()!
-
-    try {
-      if (currentVoiceArch === 'pipelined') {
-        // Pipelined mode: Use session.say() with TTS
-        await Promise.race([
-          (currentSession as any).say(message),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
-        ])
-      } else if (currentProvider !== 'gemini') {
-        // Realtime mode: Use generateReply (only OpenAI supports this)
-        await Promise.race([
-          currentSession.generateReply({ userInput: message }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
-        ])
-      } else {
-        // Gemini realtime doesn't support generateReply - just log
-        console.log(`🔊 [Would say] ${message}`)
-      }
-    } catch (err) {
-      console.log('⚠️ Speech queue error:', err)
-    } finally {
-      isSpeaking = false
-      if (speechQueue.length > 0) {
-        setTimeout(processSpeechQueue, 300)
-      }
-    }
-  }
-
-  // Setup agent event handlers - Stream Claude progress to frontend
-  agentPool.forEach(slot => {
-    slot.handler.on('permission_request', (req: PermissionRequestEvent) => {
-      console.log(`\n⚠️ [${slot.role}] PERMISSION: ${req.toolName}`)
-      sendToFrontend({
-        type: 'permission_request',
-        toolName: req.toolName,
-        description: req.description,
-        agentId: slot.id,
-      })
-      speechQueue.push(`[Tell user] I need permission to ${req.description}. Say yes, no, or always allow.`)
-      processSpeechQueue()
-    })
-
-    // Stream tool usage to frontend in real-time
-    slot.handler.on('tool_use', (tool: any) => {
-      console.log(`🔧 [${slot.role}] Using: ${tool.name}`)
-      // Send tool usage to frontend for display
-      const toolDesc = tool.description || tool.input?.substring?.(0, 100) || ''
-      sendToFrontend({
-        type: 'tool_use',
-        tool: tool.name,
-        description: toolDesc,
-        agentRole: slot.role,
-      })
-
-      // For pipelined mode, speak brief updates via TTS
-      if (currentVoiceArch === 'pipelined' && currentSession && agentState === 'listening') {
-        const briefDesc = `Using ${tool.name}`
-        ;(currentSession as any).say?.(briefDesc).catch(() => {})
-      }
-    })
-
-    // Stream progress updates
-    slot.handler.on('progress', (progress: any) => {
-      console.log(`📊 [${slot.role}] Progress: ${progress.text || progress.message}`)
-      sendToFrontend({
-        type: 'progress_update',
-        text: progress.text || progress.message,
-        source: slot.role,
-      })
-    })
-
-    // Stream Claude's text output (thinking/reasoning)
-    slot.handler.on('text', (text: string) => {
-      if (text && text.length > 10) {
-        console.log(`💭 [${slot.role}] Claude: ${text.substring(0, 100)}...`)
-        sendToFrontend({
-          type: 'progress_update',
-          text: text.substring(0, 300),
-          source: `claude_${slot.role}`,
-        })
-      }
-    })
-
-    // Stream tool results
-    slot.handler.on('tool_result', (result: any) => {
-      console.log(`✅ [${slot.role}] Tool done: ${result.name} (${result.duration}ms)`)
-      sendToFrontend({
-        type: 'tool_use',
-        tool: result.name,
-        description: `Completed in ${result.duration}ms`,
-        status: 'completed',
-        agentRole: slot.role,
-      })
-    })
-
-    // Stream final result
-    slot.handler.on('result', (result: string) => {
-      if (result && result.length > 10) {
-        console.log(`📋 [${slot.role}] Result: ${result.substring(0, 100)}...`)
-        // Don't send result here - it's sent via run_code tool return
-      }
-    })
-
-    slot.handler.on('error', (err: any) => {
-      console.error(`❌ [${slot.role}] Error:`, err)
-      sendToFrontend({
-        type: 'system',
-        text: `⚠️ ${slot.role} error: ${err.message || err}`,
-      })
-    })
-  })
-
-  // Define tools for voice LLM
-  const runCodeTool = llm.tool({
-    description: `Execute ANY coding task by delegating to Claude agents. YOU MUST USE THIS for:
-- Reading files ("read package.json", "show me the code")
-- Writing/editing files ("fix this bug", "add a function")
-- Running commands ("run npm test", "git status")
-- Searching code ("find where X is defined")
-- Explaining code ("what does this function do")
-
-You DON'T need permission to use this - it routes to the right agent automatically.
-Plan Agent = reading/research. Execute Agent = writing (will ask user for permission).`,
-    parameters: z.object({
-      task: z.string().describe('The coding task to execute'),
-    }),
-    execute: async ({ task }) => {
-      // DEDUPLICATION: Skip if same task is already running or recently completed
-      if (isTaskDuplicate(task)) {
-        return `Task already running or recently completed: ${task.substring(0, 50)}...`
-      }
-
-      const slot = routeTask(task)
-      console.log(`\n🔨 [${slot.role}] Task: "${task}"`)
-
-      // Register task to prevent duplicates
-      registerTask(task, slot)
-
-      // Send to frontend immediately
-      await sendToFrontend({ type: 'system', text: `🔧 ${slot.role} agent: ${task}` })
-
-      slot.busy = true
-      slot.currentTask = task
-      sharedContext.currentFocus = task.substring(0, 50)
-
-      try {
-        let result: string
-        if (currentCodingAgent === 'codex' && codexHandler) {
-          result = await codexHandler.run(task)
-        } else {
-          const contextPrefix = slot.context.length > 0
-            ? `Context: ${slot.context.slice(-3).join(' | ')}\n\nTask: `
-            : ''
-          result = await slot.handler.run(contextPrefix + task)
-        }
-
-        slot.context.push(`${task.substring(0, 50)} → Done`)
-        if (slot.context.length > 10) slot.context.shift()
-
-        // Update shared context
-        sharedContext.addAction(`${slot.role}: ${task.substring(0, 30)}`)
-
-        // Extract file references from result
-        const fileMatches = result.match(/(?:\/[\w\-\.\/]+|src\/[\w\-\.\/]+|\.\/[\w\-\.\/]+)/g)
-        if (fileMatches) {
-          fileMatches.slice(0, 3).forEach(f => sharedContext.addFile(f))
-        }
-
-        console.log(`✅ [${slot.role}] Done`)
-
-        // Mark task as complete (for deduplication)
-        completeTask(task)
-
-        // Send full result to frontend
-        await sendToFrontend({ type: 'assistant_response', text: result, source: 'run_code' })
-
-        // Return a concise summary for the voice LLM
-        const summary = result.length > 500
-          ? result.substring(0, 500) + '... [truncated for voice]'
-          : result
-        return summary
-      } catch (err) {
-        const errorMsg = `Error: ${(err as Error).message}`
-        completeTask(task) // Still mark as complete to avoid retries
-        await sendToFrontend({ type: 'assistant_response', text: errorMsg, source: 'run_code_error' })
-        return errorMsg
-      } finally {
-        slot.busy = false
-        slot.currentTask = null
-      }
-    },
-  })
-
-  const respondPermissionTool = llm.tool({
-    description: `Respond to a permission request. Call after hearing user's response.`,
-    parameters: z.object({
-      response: z.enum(['allow', 'deny', 'always_allow']),
-    }),
-    execute: async ({ response }) => {
-      const slot = agentPool.find(s => s.handler.hasPendingPermission())
-      if (!slot) return 'No pending permission.'
-      const pending = slot.handler.getPendingPermission()
-      slot.handler.respondToPermission(response as PermissionResponse)
-      await sendToFrontend({ type: 'permission_response', response, toolName: pending?.toolName })
-      return `Permission ${response} for ${pending?.toolName || 'tool'}.`
-    },
-  })
-
-  // ============================================================
-  // SHARED CONTEXT
-  // ============================================================
-  // Tracks conversation state across voice and coding agents
-  // ============================================================
-
-  // Shared context that both voice and coding agents contribute to
-  const sharedContext = {
-    recentActions: [] as string[],
-    discoveredFiles: [] as string[],
-    currentFocus: null as string | null,
-    addAction(action: string) {
-      this.recentActions.push(action)
-      if (this.recentActions.length > 5) this.recentActions.shift()
-      statusManager.addContext(action)
-    },
-    addFile(file: string) {
-      if (!this.discoveredFiles.includes(file)) {
-        this.discoveredFiles.push(file)
-        if (this.discoveredFiles.length > 10) this.discoveredFiles.shift()
-      }
-    },
-    getContextSummary() {
-      const parts = []
-      if (this.currentFocus) parts.push(`Focus: ${this.currentFocus}`)
-      if (this.recentActions.length) parts.push(`Recent: ${this.recentActions.slice(-3).join(', ')}`)
-      if (this.discoveredFiles.length) parts.push(`Files: ${this.discoveredFiles.slice(-5).join(', ')}`)
-      return parts.join(' | ')
-    }
-  }
-
-  // Dynamic instructions with working directory context
-  const getInstructions = () => `You are Osborn, a friendly voice AI coding assistant.
-
-WORKING DIRECTORY: ${workingDir}
-
-PERSONALITY: Conversational, helpful, proactive.
-- Keep responses SHORT (<50 words for voice)
-- ALWAYS speak tool results to the user verbally
-- Do NOT add markdown formatting like **bold** headers
-
-CAPABILITIES:
-- FULL INTERNET ACCESS (web search, fetch URLs, APIs)
-- Read/write files, run commands, search code
-- Multiple Claude Code agents for parallel research
-
-TOOLS:
-1. run_code - Execute ANY coding task (reading, writing, commands, research)
-   Routes automatically: Plan agents for reading/research, Execute agent for writing
-2. respond_permission - Handle permission responses (yes/no/always allow)
-
-USAGE:
-- Use run_code for ALL coding requests
-- The tool handles routing to the right agent automatically
-- Tasks may take time - that's normal
-- Speak the results naturally to the user
-
-${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummary()}` : ""}`
-
-  const INSTRUCTIONS = getInstructions()
-
-  // Voice agent class
-  class OsbornVoiceAgent extends voice.Agent {
-    constructor() {
-      super({
-        instructions: INSTRUCTIONS,
-        tools: {
-          run_code: runCodeTool,
-          respond_permission: respondPermissionTool,
-        },
-      })
-    }
-  }
-
-  // Create voice model for realtime mode
-  function createRealtimeModel(provider: string) {
-    if (provider === 'gemini') {
-      console.log('📱 Using Gemini Live API (realtime)')
-      return new google.beta.realtime.RealtimeModel({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
-        voice: 'Puck',
-        instructions: INSTRUCTIONS,
-        // Enable transcription so we get text of what the agent says
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
-      })
+  // Helper: announce via voice - uses voice queue for realtime, say() for direct
+  async function announceViaVoice(text: string) {
+    if (!currentSession) return
+    if (currentVoiceMode === 'realtime') {
+      queueVoiceInjection(`[NOTIFICATION] ${text}. Acknowledge briefly in one sentence. Do NOT call any tools.`)
     } else {
-      console.log('📱 Using OpenAI Realtime API')
-      return new openai.realtime.RealtimeModel({
-        voice: 'alloy',
-      })
+      try {
+        await (currentSession as any).say(text)
+      } catch (err) {
+        console.log('⚠️ Voice announcement failed:', err)
+      }
     }
   }
 
-  // Create pipelined session (STT + LLM + TTS)
-  async function createPipelinedSession(provider: string): Promise<voice.AgentSession> {
-    // PIPELINE CONFIGURATION:
-    // - STT: Deepgram Nova-3 (native streaming, no "audio too short" errors)
-    // - LLM: Gemini 2.5 Pro (smart conversation manager)
-    // - TTS: Gemini (fast, same API key)
-    // Note: OpenAI Whisper is batch-only and causes fragmentation issues
-    const isOpenAI = provider === 'openai'
-
-    const sttProvider = 'deepgram' // Native streaming - no short audio errors
-    const llmProvider = isOpenAI ? 'gpt-4o' : 'gemini-pro'
-    const ttsProvider = 'gemini' // Better streaming for long responses
-    const ttsVoice = 'Zephyr'
-
-    console.log(`📱 Pipeline: ${sttProvider} STT → ${llmProvider} → ${ttsProvider} TTS`)
-    console.log('   ✨ session.say() ENABLED for interim voice updates!')
-
-    const stt = createSTT({
-      provider: sttProvider as any,
-    })
-    const bridgeLLM = createBridgeLLM({
-      provider: llmProvider as any,
-    })
-    const tts = createTTS({
-      provider: ttsProvider as any,
-      voice: ttsVoice,
-    })
-    const vad = await createVAD()
-
-    return new voice.AgentSession({
-      vad,
-      stt,
-      llm: bridgeLLM,
-      tts,
-      turnDetection: 'vad' as any,
-    })
-  }
-
-  // Create DIRECT session (STT + Claude/Codex SDK + TTS) - No middle layer!
-  async function createDirectSession(codingAgent: CodingAgent): Promise<voice.AgentSession> {
-    // DIRECT CONFIGURATION:
-    // - STT: Deepgram Nova-3 (native streaming, no "audio too short" errors)
-    // - LLM: Claude Agent SDK or Codex Agent SDK (direct!)
-    // - TTS: Gemini (fast)
-    // Note: OpenAI Whisper is batch-only and causes fragmentation issues
-    console.log(`🎯 DIRECT MODE: Deepgram STT → ${codingAgent.toUpperCase()} Agent SDK → Gemini TTS`)
-    console.log('   🔥 No middle layer - direct voice to coding agent!')
+  // Create DIRECT session (STT + Claude Agent SDK + TTS)
+  async function createDirectSession(): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
+    console.log('🎯 Creating direct session...')
 
     const stt = createSTT({ provider: 'deepgram' })
-    const tts = createTTS({ provider: 'gemini', voice: 'Zephyr' })
+    const tts = createTTS({ provider: 'deepgram', voice: 'aura-asteria-en' })
     const vad = await createVAD()
 
-    // Create the appropriate LLM wrapper
-    const directLLM = codingAgent === 'codex'
-      ? createCodexLLM({ workingDirectory: workingDir })
-      : createClaudeLLM({ workingDirectory: workingDir })
+    // Create Claude LLM wrapper in research mode
+    const directLLM = createClaudeLLM({
+      workingDirectory: workingDir,
+      mcpServers,
+    })
+    currentLLM = directLLM
 
-    // Wire up events from the SDK wrapper to frontend
+    // Wire up MCP server changes to frontend
+    directLLM.events.on('mcp_servers_changed', (data) => {
+      console.log(`🔌 MCP servers changed: ${data.enabledKeys.join(', ') || 'none'}`)
+      sendToFrontend({
+        type: 'mcp_servers_changed',
+        enabledKeys: data.enabledKeys,
+        mcpServers: getMcpServerStatusList(config),
+      })
+    })
+
+    // Wire up events from the Claude SDK wrapper to frontend
     directLLM.events.on('tool_use', (data) => {
-      console.log(`🔧 [direct] Tool: ${data.name}`)
+      console.log(`🔧 Claude: ${data.name}`)
       sendToFrontend({ type: 'tool_use', tool: data.name, agentRole: 'direct' })
     })
+
     directLLM.events.on('tool_result', (data) => {
-      console.log(`✅ [direct] Done: ${data.name}`)
+      console.log(`✅ Done: ${data.name}`)
       sendToFrontend({ type: 'tool_use', tool: data.name, status: 'completed', agentRole: 'direct' })
+
+      // Detect research artifact writes (session workspace or legacy research dir)
+      if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {
+        const fp = data.input.file_path
+        if (fp.includes('.osborn/sessions/') || fp.includes('.osborn/research/')) {
+          sendToFrontend({
+            type: 'research_artifact_updated',
+            filePath: fp,
+            fileName: fp.split('/').pop(),
+          })
+        }
+      }
+    })
+
+    // Wire up Claude text output - RAW text goes to frontend for chat bubbles
+    directLLM.events.on('assistant_text', (data) => {
+      console.log(`💬 Claude text: ${data.text?.substring(0, 60)}...`)
+      sendToFrontend({
+        type: 'claude_output',
+        text: data.text,
+        isStreaming: true,
+        agentRole: 'direct',
+      })
+    })
+
+    // Wire up Claude final result - RAW result goes to frontend
+    directLLM.events.on('assistant_result', (data) => {
+      console.log(`📋 Claude result: ${data.text?.substring(0, 60)}...`)
+      sendToFrontend({
+        type: 'claude_output',
+        text: data.text,
+        isStreaming: false,
+        isFinal: true,
+        agentRole: 'direct',
+      })
     })
 
     // Wire up permission requests - sends to frontend for user approval
     directLLM.events.on('permission_request', (data) => {
-      console.log(`⚠️ [direct] Permission needed: ${data.toolName}`)
+      console.log(`⚠️ Permission needed: ${data.toolName}`)
+      const toolName = data.toolName
+      const input = data.input || {}
+
+      // Build descriptive message based on tool type
+      let description = `I need permission to use ${toolName}.`
+      if (toolName === 'Bash' && input.command) {
+        const cmd = String(input.command).substring(0, 60)
+        description = `I want to run the command: ${cmd}${String(input.command).length > 60 ? '...' : ''}`
+      } else if (toolName === 'Write' && input.file_path) {
+        description = `I want to create or overwrite the file: ${input.file_path}`
+      } else if (toolName === 'Edit' && input.file_path) {
+        description = `I want to edit the file: ${input.file_path}`
+      } else if (toolName === 'WebFetch' && input.url) {
+        description = `I want to fetch content from: ${input.url}`
+      }
+
       sendToFrontend({
         type: 'permission_request',
         toolName: data.toolName,
         input: data.input,
+        description,
         agentRole: 'direct',
       })
-      // Also speak the request so user knows to respond
+      // Speak the descriptive request so user knows to respond
       if (currentSession) {
-        const desc = `I need permission to use ${data.toolName}. Say yes or no.`
-        ;(currentSession as any).say?.(desc).catch(() => {})
+        const ttsMessage = `${description} Say yes, no, or always.`
+        ;(currentSession as any).say?.(ttsMessage).catch(() => {})
       }
     })
 
-    // Store directLLM reference for permission responses
-    ;(createDirectSession as any).currentLLM = directLLM
+    // Wire up session resume failure - notify frontend when SDK creates new session instead
+    directLLM.events.on('session_resume_failed', (data) => {
+      console.error(`❌ Session resume failed: ${data.requestedSessionId} → ${data.actualSessionId}`)
+      sendToFrontend({
+        type: 'session_resume_failed',
+        requestedSessionId: data.requestedSessionId,
+        actualSessionId: data.actualSessionId,
+      })
+    })
 
-    return new voice.AgentSession({
-      vad,
+    // Wire up file checkpoint capture - track restore points for file rewind
+    directLLM.events.on('checkpoint_captured', (data) => {
+      console.log(`📍 Checkpoint: ${data.checkpointId.substring(0, 8)}...`)
+      sendToFrontend({
+        type: 'checkpoint_captured',
+        checkpointId: data.checkpointId,
+      })
+    })
+
+    // Create the Agent with instructions, STT, LLM, TTS
+    const agent = new voice.Agent({
+      instructions: "You are Osborn, a voice AI research assistant. Help users research, explore, and understand topics. Be concise in your spoken responses.",
       stt,
       llm: directLLM,
       tts,
-      turnDetection: 'vad' as any,
+      vad,
+      turnDetection: 'vad',
     })
+
+    // Create the session (no longer passes STT/LLM/TTS here)
+    const session = new voice.AgentSession({
+      turnDetection: 'vad',
+    })
+
+    return { session, agent }
+  }
+
+  // ============================================================
+  // REALTIME MODE - OpenAI/Gemini native speech-to-speech
+  // ============================================================
+
+  // Claude handler for realtime mode tool execution
+  let realtimeClaudeHandler: ReturnType<typeof createClaudeLLM> | null = null
+
+  // Create REALTIME session (OpenAI/Gemini native speech-to-speech)
+  async function createRealtimeSession(sessionRealtimeConfig?: typeof realtimeConfig): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
+    const rtConfig = sessionRealtimeConfig || realtimeConfig
+    console.log(`🎯 Creating realtime session (${rtConfig.provider})...`)
+
+    // Create Claude LLM for tool execution (research tasks)
+    realtimeClaudeHandler = createClaudeLLM({
+      workingDirectory: workingDir,
+      mcpServers,
+    })
+    currentLLM = realtimeClaudeHandler
+
+    // Wire up MCP server changes to frontend
+    realtimeClaudeHandler.events.on('mcp_servers_changed', (data) => {
+      console.log(`🔌 MCP servers changed: ${data.enabledKeys.join(', ') || 'none'}`)
+      sendToFrontend({
+        type: 'mcp_servers_changed',
+        enabledKeys: data.enabledKeys,
+        mcpServers: getMcpServerStatusList(config),
+      })
+    })
+
+    // Wire up Claude events to frontend
+    realtimeClaudeHandler.events.on('tool_use', (data) => {
+      console.log(`🔧 Claude: ${data.name}`)
+      sendToFrontend({ type: 'tool_use', tool: data.name, agentRole: 'realtime' })
+    })
+
+    realtimeClaudeHandler.events.on('tool_result', (data) => {
+      console.log(`✅ Done: ${data.name}`)
+      sendToFrontend({ type: 'tool_use', tool: data.name, status: 'completed', agentRole: 'realtime' })
+
+      // Detect research artifact writes (session workspace or legacy research dir)
+      if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {
+        const fp = data.input.file_path
+        if (fp.includes('.osborn/sessions/') || fp.includes('.osborn/research/')) {
+          sendToFrontend({
+            type: 'research_artifact_updated',
+            filePath: fp,
+            fileName: fp.split('/').pop(),
+          })
+        }
+      }
+    })
+
+    realtimeClaudeHandler.events.on('assistant_result', (data) => {
+      console.log(`📋 Claude result: ${data.text?.substring(0, 60)}...`)
+      sendToFrontend({
+        type: 'claude_output',
+        text: data.text,
+        isStreaming: false,
+        isFinal: true,
+        agentRole: 'realtime',
+      })
+    })
+
+    // Stream Claude's research text to frontend as progress updates
+    realtimeClaudeHandler.events.on('assistant_text', (data) => {
+      if (data.text && data.text.trim()) {
+        sendToFrontend({
+          type: 'claude_output',
+          text: data.text,
+          isStreaming: true,
+          agentRole: 'realtime-agent',
+        })
+      }
+    })
+
+    realtimeClaudeHandler.events.on('permission_request', (data) => {
+      console.log(`⚠️ Permission needed: ${data.toolName}`)
+      const toolName = data.toolName
+      const input = data.input || {}
+
+      // Build descriptive message based on tool type
+      let description = `I need permission to use ${toolName}.`
+      if (toolName === 'Bash' && input.command) {
+        const cmd = String(input.command).substring(0, 60)
+        description = `I want to run the command: ${cmd}${String(input.command).length > 60 ? '...' : ''}`
+      } else if (toolName === 'Write' && input.file_path) {
+        description = `I want to create or overwrite the file: ${input.file_path}`
+      } else if (toolName === 'Edit' && input.file_path) {
+        description = `I want to edit the file: ${input.file_path}`
+      } else if (toolName === 'WebFetch' && input.url) {
+        description = `I want to fetch content from: ${input.url}`
+      }
+
+      sendToFrontend({
+        type: 'permission_request',
+        toolName: data.toolName,
+        input: data.input,
+        description,
+        agentRole: 'realtime',
+      })
+    })
+
+    // Wire up session resume failure for realtime mode
+    realtimeClaudeHandler.events.on('session_resume_failed', (data) => {
+      console.error(`❌ Session resume failed: ${data.requestedSessionId} → ${data.actualSessionId}`)
+      sendToFrontend({
+        type: 'session_resume_failed',
+        requestedSessionId: data.requestedSessionId,
+        actualSessionId: data.actualSessionId,
+      })
+    })
+
+    // Wire up file checkpoint capture for realtime mode
+    realtimeClaudeHandler.events.on('checkpoint_captured', (data) => {
+      console.log(`📍 Checkpoint: ${data.checkpointId.substring(0, 8)}...`)
+      sendToFrontend({
+        type: 'checkpoint_captured',
+        checkpointId: data.checkpointId,
+      })
+    })
+
+    // Create tools for the realtime voice LLM
+    const askAgentTool = llm.tool({
+      description: `Delegate a task to your backend agent (Claude), which has full analysis, research, coding, swarm/sub delegation capabilities.
+
+Use for:
+- Searching docs, APIs, tutorials, articles
+- Fetching web pages, YouTube transcripts
+- Reading and analyzing code, configs, architecture
+- Running bash commands, testing servers, checking implementations
+- Using MCP tools (GitHub, YouTube, and other external tools)
+- Saving reference materials to the session library
+- Updating the session spec with findings and decisions
+- Comparing options, tools, libraries, services
+- Any question requiring research, verification, or code execution
+
+Reformulate the user's spoken request into a clear, specific task.
+The more context you include (language, framework, constraints), the better the results.`,
+      parameters: z.object({
+        request: z.string().describe('The task or question to delegate to the agent'),
+      }),
+      execute: async ({ request: task }) => {
+        console.log(`\n🔨 [realtime] Task: "${task}"`)
+
+        // Deduplication guard: prevent re-execution of same task within 10s
+        const now = Date.now()
+        if (task === lastTaskRequest && (now - lastTaskTime) < 10000) {
+          console.log('⏭️ Skipping duplicate task (within 10s window)')
+          return 'This task was just completed. The results were already relayed.'
+        }
+        lastTaskRequest = task
+        lastTaskTime = now
+
+        // If research is already active, inform the model
+        if (activeResearch) {
+          console.log('⏳ Research already in progress, rejecting new ask_agent call')
+          return 'Research is already in progress. Wait for the results before starting a new task.'
+        }
+
+        await sendToFrontend({ type: 'system', text: `Executing: ${task}` })
+
+        // Set up research log batching — events push to queue for state-driven injection
+        const researchLog: string[] = []
+        const pendingUpdates: string[] = []
+        const onToolUse = (data: any) => {
+          const entry = `Using ${data.name}`
+          researchLog.push(entry)
+          pendingUpdates.push(entry)
+          scheduleResearchBatch()
+        }
+        const onToolResult = (data: any) => {
+          const entry = `${data.name} done`
+          researchLog.push(entry)
+          pendingUpdates.push(entry)
+          scheduleResearchBatch() // Trigger debounced drain if model is already listening
+        }
+        const onText = (data: any) => {
+          if (data.text?.trim()) {
+            const preview = data.text.trim().substring(0, 150)
+            const firstSentence = preview.match(/^[^.!?\n]+[.!?]/)?.[0] || preview
+            researchLog.push(firstSentence)
+            pendingUpdates.push(firstSentence)
+            scheduleResearchBatch()
+          }
+        }
+        realtimeClaudeHandler!.events.on('tool_use', onToolUse)
+        realtimeClaudeHandler!.events.on('tool_result', onToolResult)
+        realtimeClaudeHandler!.events.on('assistant_text', onText)
+
+        const cleanupListeners = () => {
+          realtimeClaudeHandler?.events.off('tool_use', onToolUse)
+          realtimeClaudeHandler?.events.off('tool_result', onToolResult)
+          realtimeClaudeHandler?.events.off('assistant_text', onText)
+        }
+
+        // Track active research — updates drain when model enters 'listening' state
+        activeResearch = {
+          researchLog,
+          pendingUpdates,
+          cleanup: cleanupListeners,
+        }
+
+        // Run research in the background (non-blocking)
+        const researchPromise = (async () => {
+          const stream = realtimeClaudeHandler!.chat({
+            chatCtx: {
+              items: [{ type: 'message', role: 'user', content: [task] }],
+            } as any,
+          })
+
+          let result = ''
+          for await (const chunk of stream) {
+            if (chunk.delta?.content) {
+              result += chunk.delta.content
+            }
+          }
+          return result
+        })()
+
+        // Handle completion asynchronously
+        researchPromise.then(async (result) => {
+          console.log(`✅ [realtime] Research complete (${result.length} chars)`)
+
+          // Clean up
+          cleanupListeners()
+
+          // Send to frontend
+          await sendToFrontend({ type: 'assistant_response', text: result })
+          const resultPreview = result.length > 150
+            ? result.substring(0, 150) + '...'
+            : result
+          await sendToFrontend({ type: 'task_completed', task, resultPreview })
+
+          // Build enhanced return with research log
+          const logSummary = researchLog.length > 0
+            ? `\n\n[RESEARCH LOG]\n${researchLog.slice(0, 15).join('\n')}`
+            : ''
+
+          // Cap results for voice model context (2500 chars)
+          const maxReturn = 2500
+          const resultForVoice = result.length <= maxReturn
+            ? result
+            : (() => {
+                const truncated = result.substring(0, maxReturn)
+                const lastPeriod = truncated.lastIndexOf('.')
+                return lastPeriod > maxReturn * 0.7
+                  ? truncated.substring(0, lastPeriod + 1)
+                  : truncated + '...'
+              })()
+
+          const fullResult = (resultForVoice + logSummary) || 'Research completed successfully.'
+
+          // Clear active research and batch timer before injecting final results
+          if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+          activeResearch = null
+
+          // Send final results to frontend for visibility
+          await sendToFrontend({
+            type: 'claude_output',
+            text: `[Research Complete] Injecting findings into voice model (${fullResult.length} chars)`,
+            isStreaming: false,
+            agentRole: 'research-progress',
+          })
+
+          // Queue final results for voice injection — the queue handles availability gating
+          console.log(`📡 [realtime] Queuing final results (${fullResult.length} chars, agentState: ${agentState})`)
+          queueVoiceInjection(`[RESEARCH COMPLETE] Here are the findings from your research task "${task}":\n\n${fullResult}\n\nIMPORTANT: When relaying these findings, you MUST include the specific names, tools, packages, numbers, and URLs found. Do NOT summarize them as "various tools" or "several options" — say the actual names. For example, say "I found three main options: Puppeteer, Playwright, and Cypress" not "I found various testing tools." Cover the key findings in detail — this is what the user has been waiting for. Speak as if YOU found this information. Do NOT call ask_agent again — the research is done.`)
+        }).catch(async (err) => {
+          console.error(`❌ [realtime] Research failed:`, err)
+
+          // Clean up
+          cleanupListeners()
+          if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+          activeResearch = null
+
+          // Queue error notification — will be spoken when model is available
+          queueVoiceInjection(`[NOTIFICATION] The research task encountered an error: ${(err as Error).message}. Let the user know briefly and ask if they want to try again. Do NOT call any tools.`)
+        })
+
+        // Return immediately to unblock the voice model
+        return 'Research started. I\'ll relay findings as they come in — you can keep talking to the user while I work.'
+      },
+    })
+
+    const respondPermissionTool = llm.tool({
+      description: `Respond to a permission request. Call after hearing user's response.`,
+      parameters: z.object({
+        response: z.enum(['allow', 'deny', 'always_allow']),
+      }),
+      execute: async ({ response }) => {
+        if (!realtimeClaudeHandler?.hasPendingPermission()) {
+          return 'No pending permission.'
+        }
+        const pending = realtimeClaudeHandler.getPendingPermission()
+        const allow = response === 'allow' || response === 'always_allow'
+        realtimeClaudeHandler.respondToPermission(allow)
+        await sendToFrontend({ type: 'permission_response', response, toolName: pending?.toolName })
+        return `Permission ${response} for ${pending?.toolName || 'tool'}.`
+      },
+    })
+
+    // Instructions for realtime voice LLM
+    const realtimeInstructions = `You are Osborn, a voice AI research assistant.
+
+You have a powerful backend agent (Claude) that can read files, search the web, fetch docs,
+get YouTube transcripts, analyze codebases, run bash commands, use MCP tools (GitHub, YouTube, etc.),
+test implementations, and save findings to a session library.
+
+WORKING DIRECTORY: ${workingDir}
+
+== YOUR ROLE ==
+You are the voice interface. Listen, clarify, summarize, discuss, and relay findings.
+Your backend agent does the heavy lifting — research, reading, analysis, documentation.
+
+== WHEN TO USE ask_agent ==
+ALWAYS delegate when:
+- User asks a factual question you're not 100% confident about
+- User asks about code, files, APIs, docs, or any technical topic
+- User asks you to research, find, compare, analyze, or document something
+- User asks about their project structure, code, or configs
+- User wants to run commands, test something, or check an implementation
+- User wants to use external tools (GitHub, YouTube, etc.)
+- Any question requiring current/accurate information
+
+NEVER delegate when:
+- Small talk or casual conversation
+- Feedback on your behavior
+- Yes/no confirmations, go ahead, stop
+- You can answer from info already retrieved this session
+
+== ANTI-HALLUCINATION RULES ==
+1. If uncertain about technical details, STOP and delegate
+2. Never make up file paths, API details, version numbers, configs
+3. Never claim to have checked something unless the agent actually did
+4. "Let me look that up" is always preferred over guessing
+
+== USING RETRIEVED INFO ==
+Remember findings from this session. Don't re-delegate for follow-ups about info
+already retrieved. DO re-delegate for new questions, deeper detail, or updates.
+
+== CLARIFYING QUESTIONS ==
+You can ask clarifying questions when it helps focus the research:
+- "What's your target platform?"
+- "Are you looking at self-hosted or cloud?"
+- "Do you have a preference between X and Y?"
+Don't force clarification every time — if the request is clear enough, just delegate.
+Clarification can also happen naturally as the conversation progresses.
+
+== LIVE RESEARCH UPDATES ==
+While your backend agent is working, you'll receive periodic [RESEARCH UPDATE] messages
+with status on what it's doing (tools used, pages fetched, files read). Use these to:
+- Give the user natural filler: "I'm checking the docs now..." / "Found some configs, still digging..."
+- Keep the conversation alive while research runs in the background
+- You don't need to repeat every detail — just give a natural sense of progress
+
+When the research finishes, you'll receive a [RESEARCH COMPLETE] message with the full findings
+plus a [RESEARCH LOG] showing what was done. Use this to:
+- Relay findings with SPECIFIC details — name every tool, package, library, or number found
+- Do NOT abstract specifics into vague phrases like "various options" or "several tools" — say the actual names
+- For lists of items, mention them by name: "I found Remix, Astro, and SvelteKit" not "I found several frameworks"
+- Answer follow-ups with specifics: "The website I looked at was postgresql.org"
+- Speak as if YOU found it — not "the agent found..."
+- The user can see full details in the chat panel, but your voice summary should still include the key specifics
+
+== ADAPTIVE VERBOSITY ==
+Match your response length to what the user wants:
+- "What's the gist?" / "Quick summary" → 1-3 sentences (but still name specific items, not vague summaries)
+- Normal questions → 3-6 sentences
+- Research results (first time presenting [RESEARCH COMPLETE] findings) → 6-10 sentences with all key specifics (default for research)
+- "Tell me more" / "Go deeper" / "Explain the tradeoffs" → 10+ sentences with full detail
+- "Give me everything" / "Full breakdown" → share as much detail as reasonable
+
+Research results default to DETAILED, not brief. The user waited for these — give them the specifics.
+When in doubt for non-research responses, give a standard-length answer and let the user ask for more.
+
+== NOTIFICATIONS ==
+Messages with [NOTIFICATION], [RESEARCH UPDATE], or [RESEARCH COMPLETE] prefix are system messages.
+- [RESEARCH UPDATE]: Your agent is still working. Give a brief status filler to keep the user engaged.
+- [RESEARCH COMPLETE]: Research is done. Relay the findings with specific names and details — do not summarize vaguely.
+- [NOTIFICATION]: General system update. Acknowledge briefly.
+- Do NOT treat any of these as new user requests. Do NOT call ask_agent in response.
+
+== PERMISSIONS ==
+When a permission request appears, tell the user what needs permission and ask: "allow, deny, or always allow?" Then call respond_permission.
+
+== STYLE ==
+- Be direct and natural, like a smart colleague on a voice call
+- Say "On it" or "Looking into that" when starting research
+- Research runs in the background — you'll get progress updates and can chat with the user while it runs
+- When progress updates arrive, give brief natural status: "Still looking..." / "Found some interesting stuff..."
+- When results arrive, relay findings clearly — speak as if YOU found it
+- Let the user drive the conversation — you don't always need to end with a question`
+
+    // Create realtime model
+    const realtimeModel = createRealtimeModelFromConfig(rtConfig, realtimeInstructions)
+
+    // Create the Agent with realtime model and tools
+    const agent = new voice.Agent({
+      instructions: realtimeInstructions,
+      llm: realtimeModel,
+      tools: {
+        ask_agent: askAgentTool,
+        respond_permission: respondPermissionTool,
+      },
+    })
+
+    // Create the session
+    const session = new voice.AgentSession({})
+
+    return { session, agent }
   }
 
   // ============================================================
@@ -782,79 +971,103 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
 
   room.on(RoomEvent.Disconnected, () => {
     console.log('👋 Disconnected from room')
+    // Clean up active research and voice queue
+    voiceQueue.length = 0
+    if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+    if (activeResearch) {
+      activeResearch.cleanup()
+      activeResearch = null
+    }
     currentSession = null
+    currentLLM = null
   })
 
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
 
     // Clean up any existing session before creating a new one
+    voiceQueue.length = 0
+    if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+    if (activeResearch) {
+      activeResearch.cleanup()
+      activeResearch = null
+    }
     if (currentSession) {
       console.log('🧹 Cleaning up previous session...')
       try {
         currentSession.removeAllListeners()
       } catch {}
       currentSession = null
+      currentLLM = null
     }
 
-    // Get settings from participant metadata
-    let provider = defaultProvider
-    let userVoiceArch: 'realtime' | 'pipelined' | 'direct' = voiceMode as any // Default to config
-    let codingAgent: CodingAgent = 'claude'
-
-    if (participant.metadata) {
-      try {
-        const meta = JSON.parse(participant.metadata)
-        provider = meta.provider || defaultProvider
-        userVoiceArch = meta.voiceArch || voiceMode
-        codingAgent = meta.codingAgent || 'claude'
-      } catch {}
+    // Extract voice architecture, provider, and sessionId from participant metadata (sent by frontend)
+    // This overrides the config file setting for per-session flexibility
+    let sessionVoiceMode: VoiceMode = voiceMode  // Default to config
+    let sessionRealtimeProvider: 'gemini' | 'openai' = realtimeConfig.provider  // Default to config
+    let preSelectedSessionId: string | null = null
+    try {
+      const metadata = JSON.parse(participant.metadata || '{}')
+      console.log(`📋 Participant metadata:`, metadata)
+      if (metadata.voiceArch === 'realtime' || metadata.voiceArch === 'direct') {
+        sessionVoiceMode = metadata.voiceArch
+        console.log(`🎙️ Using voice mode from frontend: ${sessionVoiceMode}`)
+      } else if (metadata.voiceArch) {
+        console.log(`⚠️ Unknown voiceArch "${metadata.voiceArch}", using config: ${voiceMode}`)
+      }
+      // Read provider selection from frontend (openai or gemini)
+      if (metadata.provider === 'openai' || metadata.provider === 'gemini') {
+        sessionRealtimeProvider = metadata.provider
+        console.log(`🎙️ Using provider from frontend: ${sessionRealtimeProvider}`)
+      }
+      // Read pre-selected session ID from frontend (session browser selection)
+      if (metadata.sessionId && typeof metadata.sessionId === 'string' && metadata.sessionId.length > 0) {
+        preSelectedSessionId = metadata.sessionId
+        console.log(`📂 Pre-selected session from frontend: ${preSelectedSessionId}`)
+      }
+    } catch (err) {
+      console.log('⚠️ Could not parse participant metadata, using config voiceMode:', voiceMode)
     }
 
-    currentProvider = provider
-    currentVoiceArch = userVoiceArch as any
-    currentCodingAgent = codingAgent
-    console.log(`🎯 Provider: ${provider}, Voice: ${userVoiceArch}, Agent: ${codingAgent}`)
+    // Sync to outer scope so DataReceived handler can use it
+    currentVoiceMode = sessionVoiceMode
 
-    if (codingAgent === 'codex') {
-      codexHandler = new CodexHandler({ workingDirectory: workingDir })
-    }
-
-    // Create voice session based on user's voice architecture choice
+    // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession
-    if (userVoiceArch === 'direct') {
-      // DIRECT MODE: Voice → Claude/Codex Agent SDK → TTS (no middle layer!)
-      session = await createDirectSession(codingAgent)
-    } else if (userVoiceArch === 'pipelined') {
-      session = await createPipelinedSession(provider)
+    let agent: voice.Agent
+
+    if (sessionVoiceMode === 'realtime') {
+      // Override the config provider with the frontend's selection
+      const sessionRealtimeConfig = { ...realtimeConfig, provider: sessionRealtimeProvider }
+      console.log(`🎙️ REALTIME MODE: ${sessionRealtimeConfig.provider} native speech-to-speech`)
+      const result = await createRealtimeSession(sessionRealtimeConfig)
+      session = result.session
+      agent = result.agent
     } else {
-      const model = createRealtimeModel(provider)
-      session = new voice.AgentSession({ llm: model })
+      console.log(`🎯 DIRECT MODE: Claude Agent SDK with full coding capabilities`)
+      const result = await createDirectSession()
+      session = result.session
+      agent = result.agent
     }
     currentSession = session
 
     // ============================================================
-    // SIMPLIFIED TRANSCRIPT HANDLING
-    // Single source of truth to avoid duplicates
+    // Transcript handling
     // ============================================================
-    let lastTranscript = ''
     let lastSentUserTranscript = ''
     let lastSentAgentTranscript = ''
 
-    // Helper to send user transcript (with deduplication)
     function sendUserTranscript(transcript: string, source: string) {
       if (!transcript || transcript.length < 3) return
-      // Normalize for comparison
       const normalized = transcript.trim().replace(/\s+/g, ' ')
       if (normalized === lastSentUserTranscript) return
-      if (normalized === '<noise>' || normalized.toLowerCase() === 'thank you') return // Skip noise
+      if (normalized === '<noise>' || normalized.toLowerCase() === 'thank you') return
 
       console.log(`📝 User (${source}): "${transcript.substring(0, 60)}..."`)
       sendToFrontend({ type: 'user_transcript', text: transcript })
       lastSentUserTranscript = normalized
     }
 
-    // Helper to send agent transcript (with deduplication)
     function sendAgentTranscript(text: string, source: string) {
       if (!text || text.length < 3) return
       const normalized = text.trim().replace(/\s+/g, ' ')
@@ -864,14 +1077,6 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
       sendToFrontend({ type: 'assistant_response', text })
       lastSentAgentTranscript = normalized
     }
-
-    // Incremental transcription (for display while speaking)
-    session.on('user_input_transcribed' as any, (ev: any) => {
-      const transcript = ev.transcript || ''
-      if (transcript && transcript !== lastTranscript && transcript.length > lastTranscript.length + 3) {
-        lastTranscript = transcript
-      }
-    })
 
     // PRIMARY: conversation_item_added is the authoritative source
     session.on('conversation_item_added' as any, (ev: any) => {
@@ -893,11 +1098,10 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
       }
     })
 
-    // FALLBACK: user_speech_committed for when conversation_item doesn't fire
+    // FALLBACK: user_speech_committed
     session.on('user_speech_committed' as any, (ev: any) => {
-      const transcript = ev.transcript || ev.text || lastTranscript
+      const transcript = ev.transcript || ev.text || ''
       sendUserTranscript(transcript, 'committed')
-      lastTranscript = ''
     })
 
     // Agent state tracking
@@ -906,29 +1110,19 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
       console.log(`🤖 State: ${ev.newState}`)
       sendToFrontend({ type: 'agent_state', state: ev.newState })
 
-      // Process speech queue when agent becomes available
-      if (ev.newState === 'listening' && speechQueue.length > 0) {
-        processSpeechQueue()
+      // When the model becomes available (listening), process any queued voice injections
+      if (ev.newState === 'listening' && voiceQueue.length > 0) {
+        // Small delay to let the model settle before injecting
+        setTimeout(() => processVoiceQueue(), 500)
       }
     })
 
-    // FALLBACK: playout_completed for final agent message (Gemini realtime)
+    // FALLBACK: playout_completed
     session.on('playout_completed' as any, (ev: any) => {
       const message = ev.message || ev.text || ev.content
       if (message && message.length > 0) {
         sendAgentTranscript(message, 'playout')
       }
-    })
-
-    // FALLBACK: Gemini transcription events (if conversation_item doesn't fire)
-    session.on('input_audio_transcription_completed' as any, (ev: any) => {
-      const transcript = ev.transcript || ev.text
-      if (transcript) sendUserTranscript(transcript, 'input_transcription')
-    })
-
-    session.on('output_audio_transcription_completed' as any, (ev: any) => {
-      const text = ev.transcript || ev.text
-      if (text) sendAgentTranscript(text, 'output_transcription')
     })
 
     // Error and close handlers
@@ -942,32 +1136,50 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
 
     // Start voice session
     console.log('🎬 Starting voice session...')
-    const agent = new OsbornVoiceAgent()
 
     try {
-      // Enable video for Gemini realtime (supports vision)
-      const inputOptions = provider === 'gemini' ? {
-        videoEnabled: true,  // Enable video/vision for Gemini
-        audioEnabled: true,
-        textEnabled: true,
-      } : undefined
-
-      await session.start({
-        agent,
-        room,
-        inputOptions,
-      })
+      await session.start({ agent, room })
       console.log('✅ Voice session started!')
       console.log('🎤 Ready - speak to begin!\n')
 
-      // Send ready signal with persistent retry (frontend might not be subscribed yet)
+      // Ensure session workspace exists
+      if (currentLLM?.sessionId) {
+        const workspace = ensureSessionWorkspace(workingDir, currentLLM.sessionId)
+        console.log(`📁 Session workspace: ${workspace}`)
+      }
+
+      // Send ready signal with persistent retry
       console.log('💓 Sending agent_ready signal...')
       let readySent = false
+      const provider = sessionVoiceMode === 'realtime' ? realtimeConfig.provider : 'claude'
+
+      // Fetch full session list for startup session browser
+      const allSessions = await listSessions(workingDir)
+      const recentSessionId = allSessions.length > 0 ? allSessions[0].sessionId : null
+      const hasRecentSession = allSessions.length > 0
+
+      // Prepare sessions for frontend (up to 50)
+      const sessionsForFrontend = allSessions.slice(0, 50).map(s => ({
+        sessionId: s.sessionId,
+        timestamp: s.timestamp.toISOString(),
+        lastMessage: s.lastMessage,
+        messageCount: s.messageCount,
+      }))
+
       const sendReady = async () => {
         if (readySent) return
-        await sendToFrontend({ type: 'agent_ready', provider, codingAgent })
+        await sendToFrontend({
+          type: 'agent_ready',
+          provider,
+          voiceMode: sessionVoiceMode,
+          hasRecentSession,
+          recentSessionId,
+          sessions: sessionsForFrontend,
+          preSelectedSessionId,
+          mcpServers: getMcpServerStatusList(config),
+          enabledMcpServers: enabledMcpNames,
+        })
       }
-      // Keep sending every 2 seconds for 20 seconds total
       const readyInterval = setInterval(sendReady, 2000)
       await sendReady()
       setTimeout(() => {
@@ -975,32 +1187,67 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
         console.log('✅ agent_ready retries complete')
       }, 20000)
 
-      // Mark as sent when user first speaks (no need to keep sending)
+      // Stop agent_ready retries on user speech
       session.on('input_speech_started' as any, () => {
         readySent = true
         clearInterval(readyInterval)
       })
-      console.log('✅ agent_ready sent (with retries scheduled)')
 
-      // Greet user
-      const greeting = "Hey! I'm Osborn. What are you working on?"
-      if (userVoiceArch === 'pipelined') {
-        // Pipelined mode: Use session.say() with TTS
+      // Greet user via TTS (delayed if resume prompt will be shown)
+      // For realtime mode: use generateReply() since there's no standalone TTS
+      // For direct mode: use say() which goes through the configured TTS
+      const greetViaVoice = async (text: string) => {
+        if (sessionVoiceMode === 'realtime') {
+          // Realtime models handle their own speech generation
+          await session.generateReply({ userInput: text })
+        } else {
+          await (session as any).say(text)
+        }
+      }
+
+      if (preSelectedSessionId && sessionExists(preSelectedSessionId, workingDir)) {
+        // User pre-selected a session from the session browser — auto-resume immediately
+        console.log(`📂 Auto-resuming pre-selected session: ${preSelectedSessionId}`)
+        if (currentLLM) {
+          currentLLM.setResumeSessionId(preSelectedSessionId)
+          console.log(`🔄 Session resume configured: ${preSelectedSessionId}`)
+
+          // Fetch context and greet with it
+          const summary = await getSessionSummary(preSelectedSessionId, workingDir)
+          const conversationHistory = await getConversationHistory(preSelectedSessionId, workingDir, 5)
+
+          await sendToFrontend({
+            type: 'session_resume_set',
+            sessionId: preSelectedSessionId,
+            success: true,
+          })
+
+          // Greet with session context
+          if (summary) {
+            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            try {
+              if (sessionVoiceMode === 'realtime') {
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
+                await session.generateReply({ userInput: contextPrompt })
+              } else {
+                await (session as any).say("Welcome back! Ready to continue our previous conversation.")
+              }
+            } catch (err) {
+              console.log('⚠️ Pre-selected session greeting failed:', err)
+            }
+          }
+        }
+      } else if (!preSelectedSessionId && hasRecentSession) {
+        // No pre-selected session but sessions exist — defer greeting for session gate
+        console.log('⏳ Deferring greeting until session gate is completed')
+      } else {
+        // No sessions at all (or new session chosen) — greet as new user
         try {
-          console.log('👋 Sending greeting via TTS...')
-          await (session as any).say(greeting)
+          console.log('👋 Sending greeting...')
+          await greetViaVoice("The user just connected for the first time. Briefly greet them as Osborn and ask what they're working on.")
           console.log('✅ Greeting sent')
         } catch (err) {
-          console.log('⚠️ Greeting via TTS failed:', err)
-        }
-      } else if (provider !== 'gemini') {
-        // Realtime mode: Only OpenAI supports generateReply
-        try {
-          await session.generateReply({
-            userInput: `[Greet the user: "${greeting}"]`
-          })
-        } catch {
-          console.log('⚠️ Greeting skipped (Gemini)')
+          console.log('⚠️ Greeting failed:', err)
         }
       }
     } catch (err) {
@@ -1013,6 +1260,7 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
     if (currentSession) {
       currentSession.removeAllListeners()
       currentSession = null
+      currentLLM = null
     }
     console.log('⏳ Waiting for new user...\n')
   })
@@ -1025,23 +1273,349 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
       console.log('📨 Data:', data.type)
 
       if (data.type === 'permission_response') {
-        // Check pipelined mode agent pool first
-        const slot = agentPool.find(s => s.handler.hasPendingPermission())
-        if (slot) {
-          slot.handler.respondToPermission(data.response)
-          console.log(`✅ Permission (pipelined): ${data.response}`)
-        }
-        // Also check direct mode LLM
-        const directLLM = (createDirectSession as any).currentLLM
-        if (directLLM && directLLM.hasPendingPermission?.()) {
+        // Handle permission response for direct mode
+        if (currentLLM && currentLLM.hasPendingPermission?.()) {
           const allow = data.response === 'allow' || data.response === 'always_allow'
-          directLLM.respondToPermission(allow)
-          console.log(`✅ Permission (direct): ${data.response}`)
+          currentLLM.respondToPermission(allow)
+          console.log(`✅ Permission: ${data.response}`)
         }
       } else if (data.type === 'user_text' && currentSession) {
         console.log(`📝 Text: "${data.content}"`)
         currentSession.interrupt()
         await currentSession.generateReply({ userInput: data.content })
+      }
+      // ============================================================
+      // SESSION MANAGEMENT HANDLERS
+      // ============================================================
+      else if (data.type === 'list_sessions') {
+        // List available sessions for this project
+        console.log('📋 Listing available sessions...')
+        try {
+          // Clean up orphaned metadata entries before listing
+          await cleanupOrphanedMetadata(workingDir)
+
+          const sessions = await listSessions(workingDir)
+          await sendToFrontend({
+            type: 'sessions_list',
+            sessions: sessions.map(s => ({
+              sessionId: s.sessionId,
+              timestamp: s.timestamp.toISOString(),
+              lastMessage: s.lastMessage,
+              messageCount: s.messageCount,
+            })),
+            count: sessions.length,
+          })
+        } catch (err) {
+          console.error('Failed to list sessions:', err)
+          await sendToFrontend({
+            type: 'sessions_list',
+            sessions: [],
+            count: 0,
+            error: 'Failed to list sessions',
+          })
+        }
+      }
+      else if (data.type === 'resume_session' && currentLLM) {
+        // Set session to resume
+        const sessionId = data.sessionId as string
+        if (sessionId && sessionExists(sessionId, workingDir)) {
+          currentLLM.setResumeSessionId(sessionId)
+          console.log(`🔄 Will resume session: ${sessionId}`)
+
+          const summary = await getSessionSummary(sessionId, workingDir)
+          const conversationHistory = await getConversationHistory(sessionId, workingDir, 5)
+
+          await sendToFrontend({
+            type: 'session_resume_set',
+            sessionId,
+            success: true,
+          })
+
+          if (currentSession && summary) {
+            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            console.log('📋 Injecting session context into voice agent...')
+            try {
+              if (currentVoiceMode === 'realtime') {
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
+                await currentSession.generateReply({ userInput: contextPrompt })
+              } else {
+                await (currentSession as any).say("Ready to continue our previous conversation.")
+              }
+            } catch (err) {
+              console.log('⚠️ Context injection failed:', err)
+            }
+          }
+        } else {
+          console.error(`❌ Session not found: ${sessionId}`)
+          await sendToFrontend({
+            type: 'session_resume_set',
+            sessionId,
+            success: false,
+            error: 'Session not found',
+          })
+        }
+      }
+      else if (data.type === 'continue_session' && currentLLM) {
+        const recentId = await getMostRecentSessionId(workingDir)
+        if (recentId) {
+          currentLLM.setResumeSessionId(recentId)
+          console.log(`🔄 Continuing most recent session: ${recentId}`)
+
+          const summary = await getSessionSummary(recentId, workingDir)
+          const conversationHistory = await getConversationHistory(recentId, workingDir, 5)
+
+          await sendToFrontend({
+            type: 'session_resume_set',
+            sessionId: recentId,
+            success: true,
+          })
+
+          if (currentSession && summary) {
+            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            console.log('📋 Injecting session context into voice agent...')
+            try {
+              if (currentVoiceMode === 'realtime') {
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue their most recent research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
+                await currentSession.generateReply({ userInput: contextPrompt })
+              } else {
+                await (currentSession as any).say("Continuing where we left off.")
+              }
+            } catch (err) {
+              console.log('⚠️ Context injection failed:', err)
+            }
+          }
+        } else {
+          console.log('📋 No previous sessions found - starting fresh')
+          await sendToFrontend({
+            type: 'session_resume_set',
+            sessionId: null,
+            success: false,
+            error: 'No previous sessions found',
+          })
+        }
+      }
+      else if (data.type === 'switch_session' && currentLLM) {
+        // Switch to a different session mid-conversation
+        const sessionId = data.sessionId as string
+
+        if (sessionId && sessionExists(sessionId, workingDir)) {
+          // Step 1: Get FULL context summary with conversation history
+          const summary = await getSessionSummary(sessionId, workingDir)
+          const conversationHistory = await getConversationHistory(sessionId, workingDir, 10)
+
+          // Step 2: Reset LLM state and configure for new session
+          currentLLM.resetForSessionSwitch()
+          currentLLM.setResumeSessionId(sessionId)
+          console.log(`🔄 Switched to session: ${sessionId}`)
+
+          // Step 3: Send full context to frontend (including conversation history)
+          await sendToFrontend({
+            type: 'session_switched',
+            sessionId,
+            success: true,
+            summary,
+            conversationHistory,
+          })
+
+          // Step 4: Voice agent acknowledges context
+          if (currentSession && summary) {
+            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            try {
+              if (currentVoiceMode === 'realtime') {
+                const contextPrompt = `[SESSION SWITCHED] The user switched to a different research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge the switch and summarize what was being worked on.`
+                await currentSession.generateReply({ userInput: contextPrompt })
+              } else {
+                const acknowledgment = summary.lastMessages.length > 0
+                  ? `I've switched to your previous session. You were working on: ${summary.lastMessages[summary.lastMessages.length - 1]?.substring(0, 100)}`
+                  : `Switched to previous session with ${summary.messageCount} messages. What would you like to continue with?`
+                await (currentSession as any).say(acknowledgment)
+              }
+            } catch (err) {
+              console.log('⚠️ Switch acknowledgment failed:', err)
+            }
+          }
+        } else {
+          await sendToFrontend({
+            type: 'session_switched',
+            sessionId,
+            success: false,
+            error: 'Session not found',
+          })
+        }
+      }
+      else if (data.type === 'get_current_session' && currentLLM) {
+        // Get current session ID
+        await sendToFrontend({
+          type: 'current_session',
+          sessionId: currentLLM.sessionId,
+          isResumingSession: currentLLM.isResumingSession,
+        })
+      }
+      // ============================================================
+      // SESSION GATE HANDLER (initial session selection before voice)
+      // ============================================================
+      else if (data.type === 'get_plan_file') {
+        const filePath = data.filePath as string
+        if (filePath && filePath.includes('.claude/plans/')) {
+          try {
+            const fs = await import('fs')
+            const content = fs.readFileSync(filePath, 'utf-8')
+            await sendToFrontend({ type: 'plan_file_content', filePath, content, fileName: filePath.split('/').pop() })
+          } catch (err) {
+            await sendToFrontend({ type: 'plan_file_content', filePath, content: '', error: (err as Error).message })
+          }
+        }
+      }
+      else if (data.type === 'get_research_artifact') {
+        const filePath = data.filePath as string
+        if (filePath && (filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/'))) {
+          try {
+            const fs = await import('fs')
+            const fileName = filePath.split('/').pop() || ''
+            const ext = fileName.split('.').pop()?.toLowerCase() || ''
+            const isImage = ['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)
+            if (isImage) {
+              const base64 = fs.readFileSync(filePath, 'base64')
+              await sendToFrontend({ type: 'research_artifact_content', filePath, content: base64, fileName, isImage: true, mimeType: `image/${ext}` })
+            } else {
+              const content = fs.readFileSync(filePath, 'utf-8')
+              await sendToFrontend({ type: 'research_artifact_content', filePath, content, fileName, isImage: false })
+            }
+          } catch (err) {
+            await sendToFrontend({ type: 'research_artifact_content', filePath, content: '', error: (err as Error).message })
+          }
+        }
+      }
+      // ============================================================
+      // MCP SERVER TOGGLE HANDLERS
+      // ============================================================
+      else if (data.type === 'mcp_toggle' && currentLLM) {
+        const serverKey = data.serverKey as string
+        const enabled = data.enabled as boolean
+        console.log(`🔌 MCP toggle: ${serverKey} → ${enabled ? 'ON' : 'OFF'}`)
+
+        if (enabled) {
+          try {
+            // Check if this is a Smithery HTTP server — use proxy to bypass SDK bug
+            const catalogEntry = MCP_CATALOG.find(e => e.serverKey === serverKey)
+            const isSmitheryServer = catalogEntry?.url && isSmitheryUrl(catalogEntry.url)
+
+            if (isSmitheryServer && catalogEntry?.url) {
+              // Smithery cloud server: use in-process proxy (bypasses SDK HTTP bug #18296)
+              const parsed = parseSmitheryUrl(catalogEntry.url)
+              if (parsed) {
+                const proxyConfig = await createSmitheryProxy({
+                  name: serverKey,
+                  namespace: parsed.namespace,
+                  connectionId: parsed.connectionId,
+                })
+                currentLLM.enableMcpServer(serverKey, proxyConfig)
+                await announceViaVoice(`${serverKey} tools enabled.`)
+              } else {
+                throw new Error(`Could not parse Smithery URL: ${catalogEntry.url}`)
+              }
+            } else {
+              // Non-Smithery server: use standard config (stdio or direct http)
+              const serverConfigs = buildMcpServersForKeys(config, [serverKey])
+              const serverConfig = serverConfigs[serverKey]
+              if (serverConfig) {
+                currentLLM.enableMcpServer(serverKey, serverConfig)
+                await announceViaVoice(`${serverKey} tools enabled.`)
+              } else {
+                throw new Error('Server configuration not found')
+              }
+            }
+          } catch (err) {
+            const errorMsg = err instanceof SmitheryAuthorizationError
+              ? `OAuth required: ${err.authorizationUrl}`
+              : (err as Error).message
+            console.error(`❌ MCP toggle failed for ${serverKey}: ${errorMsg}`)
+            await sendToFrontend({
+              type: 'mcp_toggle_result',
+              serverKey,
+              success: false,
+              error: errorMsg,
+            })
+          }
+        } else {
+          await destroySmitheryProxy(serverKey) // Clean up proxy if exists
+          currentLLM.disableMcpServer(serverKey)
+          await announceViaVoice(`${serverKey} tools disabled.`)
+        }
+
+        // Send updated status back
+        await sendToFrontend({
+          type: 'mcp_toggle_result',
+          serverKey,
+          enabled,
+          success: true,
+          mcpServers: getMcpServerStatusList(config),
+          enabledKeys: currentLLM.getEnabledMcpServerKeys(),
+        })
+      }
+      else if (data.type === 'get_mcp_status') {
+        // Frontend requesting current MCP status
+        const statusList = getMcpServerStatusList(config)
+        const enabledKeys = currentLLM?.getEnabledMcpServerKeys() || []
+        // Merge runtime enabled state into status list
+        const mergedStatus = statusList.map(s => ({
+          ...s,
+          enabled: enabledKeys.includes(s.serverKey),
+        }))
+        await sendToFrontend({
+          type: 'mcp_status',
+          mcpServers: mergedStatus,
+          enabledKeys,
+        })
+      }
+      else if (data.type === 'session_selected') {
+        const sessionId = data.sessionId as string | null
+        console.log(`🚪 Session gate completed: ${sessionId ? `resume ${sessionId}` : 'fresh start'}`)
+
+        if (sessionId && currentLLM && sessionExists(sessionId, workingDir)) {
+          // Resume the selected session
+          currentLLM.setResumeSessionId(sessionId)
+          console.log(`🔄 Resuming session: ${sessionId}`)
+
+          // Fetch context and greet with it
+          const summary = await getSessionSummary(sessionId, workingDir)
+          const conversationHistory = await getConversationHistory(sessionId, workingDir, 5)
+
+          await sendToFrontend({
+            type: 'session_resume_set',
+            sessionId,
+            success: true,
+          })
+
+          // Greet with session context
+          if (currentSession && summary) {
+            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            try {
+              if (currentVoiceMode === 'realtime') {
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
+                await currentSession.generateReply({ userInput: contextPrompt })
+              } else {
+                await (currentSession as any).say("Welcome back! Ready to continue our previous conversation.")
+              }
+            } catch (err) {
+              console.log('⚠️ Session gate greeting failed:', err)
+            }
+          }
+        } else {
+          // Fresh start - just greet normally
+          console.log('🆕 Starting fresh session')
+          if (currentSession) {
+            try {
+              if (currentVoiceMode === 'realtime') {
+                await currentSession.generateReply({ userInput: "The user just connected and chose to start a fresh session. Briefly greet them as Osborn and ask what they're working on." })
+              } else {
+                await (currentSession as any).say("Hey! I'm Osborn. What are you working on?")
+              }
+            } catch (err) {
+              console.log('⚠️ Fresh session greeting failed:', err)
+            }
+          }
+        }
       }
     } catch {}
   })
@@ -1056,24 +1630,11 @@ ${sharedContext.getContextSummary() ? `CONTEXT: ${sharedContext.getContextSummar
       dynacast: true,
     })
 
-    // Set localParticipant immediately after connection
     localParticipant = room.localParticipant
     console.log('✅ Connected to room:', roomName)
 
     console.log('\n⏳ Waiting for user to connect...')
     console.log(`   Room: ${roomCode}\n`)
-
-    // Warm up agents in background (just the first Plan + Execute to save resources)
-    console.log('🔥 Warming up agents...')
-    const warmupPrompt = 'Say "ready" and nothing else.'
-    Promise.all([
-      planAgent1.handler.run(warmupPrompt)
-        .then(() => console.log('✅ Plan agent 1 ready'))
-        .catch((err) => console.log('⚠️ Plan agent warmup skipped:', err.message?.substring(0, 50) || 'error')),
-      executeAgent.handler.run(warmupPrompt)
-        .then(() => console.log('✅ Execute agent ready'))
-        .catch((err) => console.log('⚠️ Execute agent warmup skipped:', err.message?.substring(0, 50) || 'error')),
-    ]).catch(() => {})
 
     // Keep process alive
     await new Promise(() => {})

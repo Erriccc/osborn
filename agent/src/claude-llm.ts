@@ -8,23 +8,18 @@
  */
 
 import { llm, shortuuid, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk'
+import { query, type Options, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
+import { saveSessionMetadata } from './config.js'
 
 export interface ClaudeLLMOptions {
   workingDirectory?: string
-  /**
-   * Permission mode for tool usage:
-   * - 'default': Prompts for dangerous tools, uses canUseTool callback
-   * - 'acceptEdits': Auto-accepts file edits only
-   * - 'bypassPermissions': Auto-accepts ALL tools (no prompts)
-   * - 'plan': Read-only mode for research
-   */
-  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
-  /** Tools that Claude can use */
+  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions'
   allowedTools?: string[]
-  /** Event emitter for tool_use, permission_request, progress updates */
   eventEmitter?: EventEmitter
+  resumeSessionId?: string
+  continueSession?: boolean
+  mcpServers?: Record<string, McpServerConfig>
 }
 
 /**
@@ -63,48 +58,108 @@ function stripMarkdownForTTS(text: string): string {
     .trim()
 }
 
-// Default tools for voice agent - includes all common tools
-const DEFAULT_ALLOWED_TOOLS = [
-  // File operations
+/**
+ * Summarize text for TTS - create short spoken summaries
+ * Full output goes to frontend, this condensed version is spoken
+ */
+function summarizeForTTS(text: string, maxLength: number = 500): string {
+  // First strip markdown
+  let summary = stripMarkdownForTTS(text)
+
+  // Remove file paths (keep just filename)
+  summary = summary.replace(/\/[\w\-\.\/]+\/([\w\-\.]+)/g, '$1')
+
+  // Remove code block placeholders if too many
+  const codeBlockCount = (summary.match(/\[code block\]/g) || []).length
+  if (codeBlockCount > 1) {
+    summary = summary.replace(/\[code block\]/g, '').replace(/\s+/g, ' ')
+    summary = summary.trim() + ` I've included ${codeBlockCount} code examples.`
+  }
+
+  // If still too long, take first sentence(s) up to maxLength
+  if (summary.length > maxLength) {
+    // Try to break at sentence boundaries
+    const sentences = summary.match(/[^.!?]+[.!?]+/g) || [summary]
+    let result = ''
+    for (const sentence of sentences) {
+      if ((result + sentence).length <= maxLength) {
+        result += sentence
+      } else {
+        break
+      }
+    }
+    // If no complete sentence fits, truncate with ellipsis
+    if (!result) {
+      result = summary.substring(0, maxLength - 3) + '...'
+    }
+    summary = result.trim()
+  }
+
+  return summary || 'Done.'
+}
+
+// Research mode tools — full research capabilities
+const RESEARCH_TOOLS = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep',
-  // Shell
-  'Bash',
-  // Web access
-  'WebSearch', 'WebFetch',
-  // Code intelligence
-  'LSP',
-  // Multi-step tasks
-  'Task', 'TodoWrite',
+  'Bash', 'WebSearch', 'WebFetch',
+  'LSP', 'Task', 'TodoWrite',
 ]
 
 /**
  * Claude LLM - Wraps Claude Agent SDK for LiveKit
+ * Research mode: reads anything, writes only to session workspace
  */
 export class ClaudeLLM extends llm.LLM {
   #opts: ClaudeLLMOptions
   #sessionId: string | null = null
   #eventEmitter: EventEmitter
+  #resumeSessionId: string | null = null
+  #continueSession: boolean = false
+  #mcpServers: Record<string, McpServerConfig> = {}
+
+  // File checkpointing - stores checkpoint UUIDs for rewinding file changes
+  #checkpoints: string[] = []
+  #latestCheckpoint: string | null = null
 
   // Pending permission request (for voice approval flow)
   #pendingPermission: {
     toolName: string
-    input: any
-    resolve: (decision: { behavior: 'allow' | 'deny', message?: string }) => void
+    input: Record<string, unknown>
+    resolve: (decision: { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }) => void
   } | null = null
 
   constructor(opts: ClaudeLLMOptions = {}) {
     super()
+
+    // Session resume/continue options
+    this.#resumeSessionId = opts.resumeSessionId || null
+    this.#continueSession = opts.continueSession || false
+
+    // MCP servers
+    this.#mcpServers = opts.mcpServers || {}
+
     this.#opts = {
       workingDirectory: opts.workingDirectory || process.cwd(),
-      // Use 'default' for permission prompts, voice agent will handle approval
       permissionMode: opts.permissionMode || 'default',
-      allowedTools: opts.allowedTools || DEFAULT_ALLOWED_TOOLS,
+      allowedTools: opts.allowedTools || RESEARCH_TOOLS,
+      resumeSessionId: this.#resumeSessionId || undefined,
+      continueSession: this.#continueSession,
+      mcpServers: this.#mcpServers,
     }
     this.#eventEmitter = opts.eventEmitter || new EventEmitter()
-    console.log('🟠 ClaudeLLM initialized (Claude Agent SDK)')
+
+    console.log('🟠 ClaudeLLM initialized (Research Mode)')
     console.log(`   📁 Working dir: ${this.#opts.workingDirectory}`)
-    console.log(`   🔑 Permission mode: ${this.#opts.permissionMode}`)
     console.log(`   🔧 Allowed tools: ${this.#opts.allowedTools?.join(', ')}`)
+    const mcpCount = Object.keys(this.#mcpServers).length
+    if (mcpCount > 0) {
+      console.log(`   🔌 MCP servers: ${Object.keys(this.#mcpServers).join(', ')}`)
+    }
+    if (this.#resumeSessionId) {
+      console.log(`   🔄 Resuming session: ${this.#resumeSessionId}`)
+    } else if (this.#continueSession) {
+      console.log(`   🔄 Continuing most recent session`)
+    }
   }
 
   /**
@@ -113,10 +168,18 @@ export class ClaudeLLM extends llm.LLM {
    */
   respondToPermission(allow: boolean, message?: string) {
     if (this.#pendingPermission) {
-      this.#pendingPermission.resolve({
-        behavior: allow ? 'allow' : 'deny',
-        message: message || (allow ? undefined : 'User denied permission'),
-      })
+      const input = this.#pendingPermission.input
+      if (allow) {
+        this.#pendingPermission.resolve({
+          behavior: 'allow',
+          updatedInput: input, // Pass through original input
+        })
+      } else {
+        this.#pendingPermission.resolve({
+          behavior: 'deny',
+          message: message || 'User denied permission',
+        })
+      }
       this.#pendingPermission = null
     }
   }
@@ -138,6 +201,60 @@ export class ClaudeLLM extends llm.LLM {
     return null
   }
 
+  // ============================================================
+  // MCP SERVER MANAGEMENT - Runtime enable/disable MCP servers
+  // ============================================================
+
+  /**
+   * Get all currently enabled MCP servers
+   */
+  getMcpServers(): Record<string, McpServerConfig> {
+    return { ...this.#mcpServers }
+  }
+
+  /**
+   * Get list of enabled MCP server keys
+   */
+  getEnabledMcpServerKeys(): string[] {
+    return Object.keys(this.#mcpServers)
+  }
+
+  /**
+   * Replace all MCP servers at once
+   */
+  setMcpServers(servers: Record<string, McpServerConfig>): void {
+    this.#mcpServers = { ...servers }
+    this.#opts.mcpServers = this.#mcpServers
+    console.log(`🔌 MCP servers updated: ${Object.keys(servers).join(', ') || 'none'}`)
+    this.#eventEmitter.emit('mcp_servers_changed', {
+      enabledKeys: Object.keys(this.#mcpServers),
+    })
+  }
+
+  /**
+   * Enable a single MCP server
+   */
+  enableMcpServer(key: string, config: McpServerConfig): void {
+    this.#mcpServers[key] = config
+    this.#opts.mcpServers = this.#mcpServers
+    console.log(`🔌 MCP server enabled: ${key}`)
+    this.#eventEmitter.emit('mcp_servers_changed', {
+      enabledKeys: Object.keys(this.#mcpServers),
+    })
+  }
+
+  /**
+   * Disable a single MCP server
+   */
+  disableMcpServer(key: string): void {
+    delete this.#mcpServers[key]
+    this.#opts.mcpServers = this.#mcpServers
+    console.log(`🔌 MCP server disabled: ${key}`)
+    this.#eventEmitter.emit('mcp_servers_changed', {
+      enabledKeys: Object.keys(this.#mcpServers),
+    })
+  }
+
   label(): string {
     return 'claude.agent-sdk'
   }
@@ -150,8 +267,128 @@ export class ClaudeLLM extends llm.LLM {
     return this.#sessionId
   }
 
+  /**
+   * Set session ID to resume a specific conversation
+   * Call this before sending the first message to resume from a previous session
+   */
+  setResumeSessionId(sessionId: string | null): void {
+    this.#resumeSessionId = sessionId
+    // CRITICAL: Sync to opts so ClaudeLLMStream.run() picks up the resume ID
+    this.#opts.resumeSessionId = sessionId || undefined
+
+    if (sessionId) {
+      console.log(`🔄 Will resume session: ${sessionId}`)
+    }
+  }
+
+  /**
+   * Reset state for mid-conversation session switch
+   * Clears pending permissions and resets conversation tracking
+   */
+  resetForSessionSwitch(): void {
+    // Clear any pending permission request from previous session
+    if (this.#pendingPermission) {
+      // Deny the pending permission to clean up
+      this.#pendingPermission.resolve({
+        behavior: 'deny',
+        message: 'Session switched - permission request cancelled',
+      })
+      this.#pendingPermission = null
+    }
+
+    // Clear session resume state so new resume can take effect
+    this.#resumeSessionId = null
+    this.#continueSession = false
+    this.#opts.resumeSessionId = undefined
+    this.#opts.continueSession = false
+    this.#sessionId = null
+
+    // Clear checkpoints from previous session
+    this.#checkpoints = []
+    this.#latestCheckpoint = null
+
+    // Emit event for listeners
+    this.#eventEmitter.emit('session_reset')
+
+    console.log('🔄 LLM state reset for session switch')
+  }
+
+  /**
+   * Enable "continue" mode - resumes most recent session
+   */
+  setContinueSession(enabled: boolean): void {
+    this.#continueSession = enabled
+    this.#opts.continueSession = enabled
+    if (enabled) {
+      console.log(`🔄 Will continue most recent session`)
+    }
+  }
+
+  /**
+   * Check if this instance is configured to resume a session
+   */
+  get isResumingSession(): boolean {
+    return !!(this.#resumeSessionId || this.#continueSession)
+  }
+
   get events(): EventEmitter {
     return this.#eventEmitter
+  }
+
+  // ============================================================
+  // FILE CHECKPOINTING - Track and rewind file changes
+  // ============================================================
+
+  /**
+   * Capture a checkpoint UUID for potential file rewind
+   * Called internally when receiving user message UUIDs from the SDK
+   */
+  captureCheckpoint(checkpointId: string): void {
+    this.#checkpoints.push(checkpointId)
+    this.#latestCheckpoint = checkpointId
+    console.log(`📍 Checkpoint captured: ${checkpointId.substring(0, 8)}...`)
+    this.#eventEmitter.emit('checkpoint_captured', { checkpointId })
+  }
+
+  /**
+   * Get the most recent checkpoint UUID
+   * Use this to rewind all file changes back to the beginning
+   */
+  getLatestCheckpoint(): string | null {
+    return this.#latestCheckpoint
+  }
+
+  /**
+   * Get the first checkpoint UUID (initial state)
+   * Rewinding to this restores all files to their original state
+   */
+  getFirstCheckpoint(): string | null {
+    return this.#checkpoints.length > 0 ? this.#checkpoints[0] : null
+  }
+
+  /**
+   * Get all captured checkpoint UUIDs
+   * Ordered from oldest to newest
+   */
+  getCheckpoints(): string[] {
+    return [...this.#checkpoints]
+  }
+
+  /**
+   * Clear all captured checkpoints
+   * Call this when starting a new session
+   */
+  clearCheckpoints(): void {
+    this.#checkpoints = []
+    this.#latestCheckpoint = null
+    console.log('🧹 Checkpoints cleared')
+  }
+
+  /**
+   * Check if checkpoints are available
+   */
+  hasCheckpoints(): boolean {
+    return this.#checkpoints.length > 0
   }
 
   chat({
@@ -174,9 +411,14 @@ export class ClaudeLLM extends llm.LLM {
       sessionId: this.#sessionId,
       onSessionId: (id) => { this.#sessionId = id },
       eventEmitter: this.#eventEmitter,
+      // Pass checkpoint capture handler
+      onCheckpoint: (checkpointId: string) => {
+        this.captureCheckpoint(checkpointId)
+      },
       // Pass permission handler for canUseTool callback
-      onPermissionRequest: (toolName: string, input: any) => {
-        return new Promise<{ behavior: 'allow' | 'deny', message?: string }>((resolve) => {
+      onPermissionRequest: (toolName: string, input: Record<string, unknown>) => {
+        type PermResult = { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
+        return new Promise<PermResult>((resolve) => {
           this.#pendingPermission = { toolName, input, resolve }
           console.log(`⚠️ Permission request: ${toolName}`)
           this.#eventEmitter.emit('permission_request', { toolName, input })
@@ -186,6 +428,9 @@ export class ClaudeLLM extends llm.LLM {
   }
 }
 
+// Permission result type matching Claude Agent SDK
+type PermissionResult = { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
+
 /**
  * Claude LLM Stream - Runs Claude Agent SDK query() and streams results
  */
@@ -194,7 +439,8 @@ class ClaudeLLMStream extends llm.LLMStream {
   #sessionId: string | null
   #onSessionId: (id: string) => void
   #eventEmitter: EventEmitter
-  #onPermissionRequest: (toolName: string, input: any) => Promise<{ behavior: 'allow' | 'deny', message?: string }>
+  #onPermissionRequest: (toolName: string, input: Record<string, unknown>) => Promise<PermissionResult>
+  #onCheckpoint: (checkpointId: string) => void
 
   constructor(
     llmInstance: ClaudeLLM,
@@ -206,6 +452,7 @@ class ClaudeLLMStream extends llm.LLMStream {
       sessionId,
       onSessionId,
       eventEmitter,
+      onCheckpoint,
       onPermissionRequest,
     }: {
       chatCtx: llm.ChatContext
@@ -215,7 +462,8 @@ class ClaudeLLMStream extends llm.LLMStream {
       sessionId: string | null
       onSessionId: (id: string) => void
       eventEmitter: EventEmitter
-      onPermissionRequest: (toolName: string, input: any) => Promise<{ behavior: 'allow' | 'deny', message?: string }>
+      onCheckpoint: (checkpointId: string) => void
+      onPermissionRequest: (toolName: string, input: Record<string, unknown>) => Promise<PermissionResult>
     },
   ) {
     super(llmInstance, { chatCtx, toolCtx, connOptions })
@@ -223,6 +471,7 @@ class ClaudeLLMStream extends llm.LLMStream {
     this.#sessionId = sessionId
     this.#onSessionId = onSessionId
     this.#eventEmitter = eventEmitter
+    this.#onCheckpoint = onCheckpoint
     this.#onPermissionRequest = onPermissionRequest
   }
 
@@ -260,14 +509,65 @@ class ClaudeLLMStream extends llm.LLMStream {
       console.log(`🎤 User: "${userText.substring(0, 100)}${userText.length > 100 ? '...' : ''}"`)
 
       // Build Claude Agent SDK options
+      const resumeSessionId = this.#opts.resumeSessionId
+      const continueSession = this.#opts.continueSession
+
+      // Session workspace path for system prompt
+      const workspacePath = this.#opts.workingDirectory
+        ? `${this.#opts.workingDirectory}/.osborn/sessions/`
+        : '.osborn/sessions/'
+
+      // Build allowedTools with MCP wildcard patterns
+      const mcpKeys = Object.keys(this.#opts.mcpServers || {})
+      const mcpPatterns = mcpKeys.map(key => `mcp__${key}__*`)
+      const allowedTools = [
+        ...(this.#opts.allowedTools || []),
+        ...mcpPatterns,
+      ]
+
       const sdkOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
-        allowedTools: this.#opts.allowedTools,
-        ...(this.#sessionId && { resume: this.#sessionId }),
-        // Permission callback - fires when a tool needs user approval
-        // (only in 'default' mode, not in 'bypassPermissions' or 'acceptEdits')
-        canUseTool: async (toolName: string, input: any) => {
+        allowedTools,
+        enableFileCheckpointing: true,
+        extraArgs: { 'replay-user-messages': null },
+        ...(resumeSessionId && { resume: resumeSessionId }),
+        ...(continueSession && !resumeSessionId && { continue: true }),
+        ...(this.#sessionId && !resumeSessionId && !continueSession && { resume: this.#sessionId }),
+        ...(mcpKeys.length > 0 && {
+          mcpServers: this.#opts.mcpServers,
+        }),
+        ...(mcpKeys.length > 0 && (() => {
+          for (const [key, cfg] of Object.entries(this.#opts.mcpServers || {})) {
+            const cfgType = (cfg as any).type || 'stdio'
+            console.log(`🔌 SDK query MCP: ${key} [type=${cfgType}]`)
+          }
+          return {}
+        })()),
+        // Research mode system prompt — always injected
+        systemPrompt: `You are in RESEARCH MODE. Your role is to deeply research, explore, and document topics.
+
+SESSION WORKSPACE: ${workspacePath}
+- spec.md: Read at start. Update after significant findings with decisions, requirements, open questions.
+- library/: Save reference materials, docs, code snippets, transcripts here.
+
+WRITE RULES:
+- CAN write to: .osborn/sessions/ (spec, library, notes, diagrams)
+- CAN write to: .osborn/research/ (backward compat)
+- CANNOT modify project source files outside .osborn/
+- CAN read ANY file in the project
+
+RESEARCH WORKFLOW:
+1. Read spec.md first if it exists
+2. Research the user's question thoroughly
+3. Save important findings to library/
+4. Update spec.md with new decisions, findings, open questions
+5. Summarize findings conversationally
+
+ARTIFACTS: spec.md (main doc), library/*.md (notes), library/*.mmd (diagrams)
+
+Be thorough. Ask clarifying questions. Track decisions and rationale in spec.md.`,
+        canUseTool: async (toolName, input, _options) => {
           console.log(`⚠️ Permission needed: ${toolName}`)
           return this.#onPermissionRequest(toolName, input)
         },
@@ -277,17 +577,29 @@ class ClaudeLLMStream extends llm.LLMStream {
             hooks: [async (input: any) => {
               const toolName = input?.tool_name || 'unknown'
               const toolInput = input?.tool_input || {}
+
+              // Safety: block Write/Edit outside session workspace
+              if (toolName === 'Write' || toolName === 'Edit') {
+                const filePath = String(toolInput.file_path || '')
+                if (filePath && !filePath.includes('.osborn/sessions/') && !filePath.includes('.osborn/research/')) {
+                  console.log(`🚫 Research mode: blocked write to ${filePath}`)
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Research mode: writes restricted to session workspace' })
+                  return { decision: 'block', reason: 'Research mode: write to .osborn/sessions/ only.' }
+                }
+              }
+
               console.log(`🔧 Claude: ${toolName}`)
               this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput })
-              return {} // Allow tool (permission already handled by canUseTool)
+              return {}
             }]
           }],
           PostToolUse: [{
             matcher: '.*',
             hooks: [async (input: any) => {
               const toolName = input?.tool_name || 'unknown'
+              const toolInput = input?.tool_input || {}
               console.log(`✅ Done: ${toolName}`)
-              this.#eventEmitter.emit('tool_result', { name: toolName })
+              this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput })
               return {}
             }]
           }]
@@ -296,49 +608,100 @@ class ClaudeLLMStream extends llm.LLMStream {
 
       // Run Claude Agent SDK query() and stream results
       let hasOutput = false
+      let fullResponse = '' // Collect full response for frontend
 
       for await (const message of query({ prompt: userText, options: sdkOptions })) {
         // Capture session ID for context continuity
         if ((message as any).type === 'system' && (message as any).subtype === 'init') {
+          // Log MCP server connection status
+          const mcpServers = (message as any).mcp_servers
+          if (mcpServers && Array.isArray(mcpServers)) {
+            for (const s of mcpServers) {
+              const status = s.status === 'connected' ? '✅' : '❌'
+              console.log(`${status} MCP server ${s.name}: ${s.status}`)
+              if (s.status !== 'connected') {
+                console.log(`   🔍 MCP error:`, JSON.stringify(s))
+              }
+            }
+          }
           const newSessionId = (message as any).session_id
           if (newSessionId) {
             this.#onSessionId(newSessionId)
-            if (!this.#sessionId) {
+            const isNewSession = !this.#sessionId
+            if (isNewSession) {
               console.log(`📋 New session: ${newSessionId}`)
             }
             this.#sessionId = newSessionId
+
+            // Save session metadata for new sessions
+            if (isNewSession && this.#opts.workingDirectory) {
+              saveSessionMetadata(this.#opts.workingDirectory, {
+                sessionId: newSessionId,
+                lastUpdated: new Date().toISOString(),
+                projectPath: this.#opts.workingDirectory,
+              })
+            }
+
+            // Verify session resume succeeded (if we requested a specific session)
+            const requestedResumeId = this.#opts.resumeSessionId
+            if (requestedResumeId && newSessionId !== requestedResumeId) {
+              console.error(`❌ Session resume FAILED: Expected ${requestedResumeId.substring(0, 8)}..., got ${newSessionId.substring(0, 8)}...`)
+              this.#eventEmitter.emit('session_resume_failed', {
+                requestedSessionId: requestedResumeId,
+                actualSessionId: newSessionId,
+              })
+            } else if (requestedResumeId && newSessionId === requestedResumeId) {
+              console.log(`✅ Session resumed successfully: ${newSessionId.substring(0, 8)}...`)
+            }
           }
         }
 
-        // Stream text chunks → TTS (strip markdown for speech)
+        // Capture checkpoint UUIDs from user messages (for file rewind capability)
+        // Per SDK docs: user messages include a UUID that can be used as a restore point
+        if ((message as any).type === 'user' && (message as any).uuid) {
+          const checkpointId = (message as any).uuid
+          this.#onCheckpoint(checkpointId)
+        }
+
+        // Stream text chunks
         if ((message as any).type === 'assistant' && (message as any).message?.content) {
           for (const block of (message as any).message.content) {
             if (block.type === 'text' && block.text) {
               hasOutput = true
-              // Strip markdown so TTS doesn't read "star star" or "pound pound"
-              const ttsText = stripMarkdownForTTS(block.text)
-              this.queue.put({
-                id: requestId,
-                delta: { role: 'assistant', content: ttsText },
-              })
+              const rawText = block.text
+
+              // Emit RAW text to frontend (for chat bubbles with full formatting)
+              this.#eventEmitter.emit('assistant_text', { text: rawText })
+
+              // Collect for final TTS summary
+              fullResponse += rawText + ' '
             }
           }
         }
 
-        // Final result (also strip markdown)
+        // Final result
         if ((message as any).type === 'result' && (message as any).result) {
+          const rawResult = (message as any).result
+
+          // Emit RAW result to frontend
+          this.#eventEmitter.emit('assistant_result', { text: rawResult })
+
           if (!hasOutput) {
-            const ttsText = stripMarkdownForTTS((message as any).result)
-            this.queue.put({
-              id: requestId,
-              delta: { role: 'assistant', content: ttsText },
-            })
+            fullResponse = rawResult
             hasOutput = true
           }
         }
       }
 
-      if (!hasOutput) {
+      // Send SUMMARIZED output to TTS (spoken)
+      if (hasOutput && fullResponse.trim()) {
+        const ttsText = summarizeForTTS(fullResponse.trim())
+        console.log(`🔊 TTS (summarized ${fullResponse.length} → ${ttsText.length} chars): "${ttsText.substring(0, 80)}..."`)
+        this.queue.put({
+          id: requestId,
+          delta: { role: 'assistant', content: ttsText },
+        })
+      } else {
         this.queue.put({
           id: requestId,
           delta: { role: 'assistant', content: 'Done.' },

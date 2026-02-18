@@ -1,15 +1,17 @@
 /**
- * Voice I/O Module - Layer 1 of Three-Layer Architecture
- * Handles STT (Speech-to-Text) and TTS (Text-to-Speech) creation
+ * Voice I/O Module
+ * Handles STT (Speech-to-Text), TTS (Text-to-Speech), and Realtime model creation
  *
- * Note: Gemini STT is Python-only, so we use Deepgram for STT
- * but Gemini TTS is available in Node.js
+ * Supports two modes:
+ * - Direct mode: STT (Deepgram) → Claude Agent SDK → TTS (Deepgram)
+ * - Realtime mode: OpenAI/Gemini native speech-to-speech models
  */
 
 import * as deepgram from '@livekit/agents-plugin-deepgram'
 import * as google from '@livekit/agents-plugin-google'
 import * as openai from '@livekit/agents-plugin-openai'
 import * as silero from '@livekit/agents-plugin-silero'
+import type { RealtimeConfig } from './config.js'
 
 export interface STTConfig {
   provider: 'deepgram' | 'groq-whisper' | 'openai-whisper'
@@ -67,7 +69,7 @@ export function createTTS(config: TTSConfig) {
       // Gemini TTS via google plugin
       tts = new (google.beta as any).TTS({
         model: config.model || 'gemini-2.5-flash-preview-tts',
-        voice: config.voice || 'Zephyr',
+        voice: config.voice || 'apollo',
       })
       break
 
@@ -127,7 +129,7 @@ export async function createVAD() {
 
 /**
  * Default voice I/O configuration
- * Uses Deepgram STT (fast, accurate) + Gemini TTS (cheap, good)
+ * Uses Deepgram STT (fast, accurate) + Deepgram TTS (fast, good)
  */
 export const DEFAULT_VOICE_IO_CONFIG: VoiceIOConfig = {
   stt: {
@@ -136,7 +138,65 @@ export const DEFAULT_VOICE_IO_CONFIG: VoiceIOConfig = {
     language: 'en',
   },
   tts: {
-    provider: 'gemini',
-    voice: 'Zephyr',
+    provider: 'deepgram',
+    voice: 'aura-asteria-en',
   },
+}
+
+// ============================================================
+// REALTIME MODE - OpenAI/Gemini native speech-to-speech
+// ============================================================
+
+export interface RealtimeModelConfig {
+  provider: 'openai' | 'gemini'
+  // OpenAI options
+  openaiVoice?: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer'
+  openaiModel?: string
+  // Gemini options
+  geminiVoice?: 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Aoede'
+  geminiModel?: string
+  // Shared options
+  instructions?: string
+}
+
+/**
+ * Create Realtime Model for native speech-to-speech
+ * Supports OpenAI Realtime API and Gemini Live API
+ *
+ * Note: Instructions are passed to voice.Agent, not to the RealtimeModel
+ */
+export function createRealtimeModel(config: RealtimeModelConfig) {
+  if (config.provider === 'gemini') {
+    console.log('📱 Using Gemini Live API (realtime)')
+    return new google.beta.realtime.RealtimeModel({
+      model: config.geminiModel || 'gemini-2.5-flash-native-audio-preview-12-2025',
+      voice: config.geminiVoice || 'Puck',
+      // Gemini supports instructions at model level
+      instructions: config.instructions,
+      // Enable transcription so we get text of what the agent says
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+    })
+  } else {
+    console.log('📱 Using OpenAI Realtime API')
+    // OpenAI RealtimeModel - instructions go to voice.Agent instead
+    return new openai.realtime.RealtimeModel({
+      model: config.openaiModel || 'gpt-4o-realtime-preview',
+      voice: config.openaiVoice || 'alloy',
+    })
+  }
+}
+
+/**
+ * Create realtime model from config
+ */
+export function createRealtimeModelFromConfig(realtimeConfig: RealtimeConfig, instructions?: string) {
+  return createRealtimeModel({
+    provider: realtimeConfig.provider || 'openai',
+    openaiVoice: realtimeConfig.openaiVoice,
+    openaiModel: realtimeConfig.openaiModel,
+    geminiVoice: realtimeConfig.geminiVoice,
+    geminiModel: realtimeConfig.geminiModel,
+    instructions,
+  })
 }

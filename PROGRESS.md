@@ -1,518 +1,132 @@
-# Osborn - Voice AI Coding Assistant Progress
+# Osborn v0.4.3 - Voice AI Research Assistant
 
-## Project Overview
-Voice-enabled coding assistant using LiveKit + Claude Code + Fast LLM (Groq)
+## Architecture
 
-## Current Status: ✅ Claude Code WORKING - Voice Response Fixed
+Osborn is a voice AI assistant for software research and development. It uses LiveKit for real-time voice communication, Claude Agent SDK for research capabilities, and OpenAI/Gemini for native speech-to-speech interaction.
 
----
+### Dual Voice Modes
 
-## What's Working vs What's Not
+| Mode | Stack | Best For |
+|------|-------|----------|
+| **Direct** | STT (Deepgram) → Claude Agent SDK → TTS (Deepgram) | Full research tasks, maximum tool access |
+| **Realtime** | OpenAI Realtime / Gemini Live native speech-to-speech | Fast conversation, voice-first UX, delegates to Claude via `ask_agent` |
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Frontend (Next.js + LiveKit) | ✅ Working | Voice UI, room connection |
-| Agent (LiveKit) | ✅ Working | Receives/sends voice |
-| OpenAI Realtime | ✅ Working | GPT-4 voice responses |
-| **Claude Code Integration** | 🔧 WIRED UP | Waiting for test |
-| **Claude Agent SDK** | 🔧 WIRED UP | `claude-handler.ts` called on coding tasks |
-| **Fast LLM (Groq)** | 🔧 WIRED UP | `fast-llm.ts` used for intent detection |
-| Permissions | ⚠️ acceptEdits mode | Auto-accepts file edits |
-| Room code pairing | ❌ Not implemented | |
+### Single Research Mode
 
-**🔧 Flow: Speech → Groq (intent) → Coding tasks route to Claude Code, chat stays with GPT-4**
+No plan/execute/edit mode toggles. The agent operates in a single **research** mode with write safety (Write/Edit blocked outside `.osborn/sessions/`).
 
----
-
-## Test Results (2026-01-02)
-
-### Verified Working
-- [x] Frontend starts on localhost:3000
-- [x] Agent registers with LiveKit Cloud (US Central)
-- [x] Room connection between frontend and agent
-- [x] Voice input detected (onInputSpeechStarted/Stopped)
-- [x] Voice output via OpenAI Realtime TTS
-- [x] Two-way voice conversation
-
-### Not Yet Tested (Claude Code not connected)
-- [ ] File read/write via voice
-- [ ] Terminal commands via voice
-- [ ] Permission prompts
-- [ ] Claude Code tool use
-- [ ] Fast LLM acknowledgment
-
----
-
-## MVP Features - Implementation Status
-
-From MVP_SPEC.md:
-
-### US1: Voice Conversation with Fast Acknowledgment
-- [x] User speaks into microphone
-- [ ] Within 200ms, fast LLM acknowledges ← **NOT IMPLEMENTED**
-- [x] Audio response plays
-- [ ] Claude Code starts in background ← **NOT IMPLEMENTED**
-
-### US2: Claude Code Integration
-- [ ] Claude reads files ← **NOT CONNECTED**
-- [ ] Claude makes edits ← **NOT CONNECTED**
-- [ ] User notified when complete
-- [ ] User sees what changed
-
-### US3: Mid-Conversation Context Addition
-- [ ] Context queue ← **NOT IMPLEMENTED**
-- [ ] Fast LLM acknowledges additions
-- [ ] Context injected to Claude
-
-### US4: Permission Handling
-- [ ] Permission requests via voice ← **NOT IMPLEMENTED**
-- [ ] Voice approval ("yes", "no")
-- [ ] UI approval buttons
-
-### US5: Chat Interface
-- [ ] Text input fallback ← **NOT IMPLEMENTED**
-- [ ] Tool usage display
-
----
-
-## What Claude Code / Agent SDK CAN Do (when connected)
+### System Diagram
 
 ```
-✅ Read files (any file in working directory)
-✅ Write/Edit files
-✅ Run terminal commands (Bash)
-✅ Search code (Glob, Grep)
-✅ Full file system access
-✅ Permission system (ask before dangerous ops)
-✅ Session persistence (--continue flag)
+Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
+                                              ├── Claude Agent SDK (research tools)
+                                              ├── OpenAI/Gemini Realtime (voice)
+                                              └── MCP Servers (GitHub, YouTube, etc.)
 ```
 
 ---
 
-## Next Steps to Connect Claude Code
+## Current Features
 
-### 1. Modify agent/src/index.ts
-```typescript
-// Current: Only uses OpenAI Realtime
-const session = new voice.AgentSession({
-  llm: new openai.realtime.RealtimeModel({ voice: 'alloy' }),
-})
-
-// Need: Add Claude Code handler
-import { ClaudeHandler } from './claude-handler'
-
-// On user speech, route coding tasks to Claude
-session.on('user_speech_committed', async (text) => {
-  const isCodingTask = detectCodingIntent(text)
-  if (isCodingTask) {
-    const claude = new ClaudeHandler({ workingDirectory: '/path/to/project' })
-    const result = await claude.run(text)
-    // Speak result back
-  }
-})
-```
-
-### 2. Add Intent Detection (fast-llm.ts)
-- Use Groq to classify: coding task vs general chat
-- Sub-200ms response time
-
-### 3. Wire Up Permissions
-- Claude Code emits permission events
-- Route to voice/UI for approval
-
----
-
-## Commands to Run
-
-**Terminal 1 (Frontend):**
-```bash
-cd /Users/newupgrade/Desktop/Developer/osborn/frontend
-npm run dev
-```
-
-**Terminal 2 (Agent):**
-```bash
-cd /Users/newupgrade/Desktop/Developer/osborn/agent
-npm run dev
-```
-
-**Test URL:** http://localhost:3000
+| Feature | Status |
+|---------|--------|
+| Voice interface (LiveKit) | Working |
+| OpenAI Realtime voice | Working |
+| Gemini Live voice | Working |
+| Direct mode (STT → Claude → TTS) | Working |
+| Claude Agent SDK tools (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch) | Working |
+| Permission system (voice + UI approval) | Working |
+| Room code connection system | Working |
+| Text input fallback | Working |
+| Session management (resume, switch, browse) | Working |
+| Session gate (startup session selection) | Working |
+| Single research mode (write-safe) | Working |
+| Session workspace (`.osborn/sessions/<uuid>/`) | Working |
+| MCP server integration (GitHub, YouTube, etc.) | Working |
+| Smithery cloud MCP proxy (`type: 'sdk'`) | Working |
+| `ask_agent` tool (non-blocking, realtime → Claude) | Working |
+| Unified voice injection queue | Working |
+| Research event batching + voice queue | Working |
+| Specificity prompts (no vague summaries) | Working |
+| Adaptive verbosity (BRIEF/STANDARD/DETAILED/FULL) | Working |
+| Anti-hallucination prompt (realtime mode) | Working |
+| Markdown rendering in chat | Working |
+| Task deduplication guard | Working |
 
 ---
 
 ## Key Files
 
-| File | Purpose | Status |
-|------|---------|--------|
-| `agent/src/index.ts` | LiveKit agent entry | ✅ Working (OpenAI only) |
-| `agent/src/claude-handler.ts` | Claude SDK wrapper | 📝 Written, not called |
-| `agent/src/fast-llm.ts` | Groq intent detection | 📝 Written, not called |
-| `frontend/src/components/VoiceRoom.tsx` | Voice UI | ✅ Working |
+| File | Purpose |
+|------|---------|
+| `agent/src/index.ts` | Main entry, room events, session creation, voice queue, data handlers |
+| `agent/src/claude-llm.ts` | Claude Agent SDK wrapper, research mode systemPrompt, PreToolUse write safety |
+| `agent/src/config.ts` | Config loading, session management, workspace helpers |
+| `agent/src/smithery-proxy.ts` | In-process MCP proxy for Smithery cloud servers |
+| `agent/src/voice-io.ts` | STT/TTS/VAD/Realtime model factory |
+| `frontend/src/components/VoiceRoom.tsx` | Main UI component |
+| `frontend/src/components/MarkdownMessage.tsx` | Markdown renderer |
+| `frontend/src/components/SessionBrowser.tsx` | Session browser component |
+| `frontend/src/lib/sessions.ts` | Session utilities (formatTime, groupSessionsByDate) |
 
 ---
 
-## Architecture (Target vs Current)
+## v0.4.3 Changes — Unified Voice Injection Queue
 
-### Current (Working)
-```
-User speaks → LiveKit → Agent → OpenAI Realtime → Response → User hears
-```
+### Problem
+Multiple code paths called `generateReply` independently (research updates, research complete, notifications, errors) without checking model availability. This caused `generateReply timed out waiting for generation_created event` errors when the model was busy speaking. The old system used `drainResearchQueue()` with `drainInFlight` guards and separate immediate/deferred `[RESEARCH COMPLETE]` injection paths, but these still raced.
 
-### Target (MVP)
-```
-User speaks → LiveKit → Agent → Fast LLM (Groq) → Acknowledgment
-                                    ↓
-                              Claude Code → File ops → Summary → TTS → User hears
-```
+### Solution
+- **Unified `voiceQueue[]`**: Single queue for ALL system injections. `queueVoiceInjection()` adds items, `processVoiceQueue()` drains them.
+- **State-machine gating**: `processVoiceQueue()` only calls `generateReply` when `agentState === 'listening'`. After the call, the model transitions to `thinking/speaking` → `listening`, which triggers `processVoiceQueue()` again via `agent_state_changed`.
+- **Batched delivery**: Multiple queued items are combined into one `generateReply({ instructions, toolChoice: 'none' })` call.
+- **Research batching**: `scheduleResearchBatch()` debounces rapid tool events (3s), formats as `[RESEARCH UPDATE]`, pushes to voice queue.
+- **Specificity prompts**: `[RESEARCH COMPLETE]` mandates naming specific tools, packages, URLs. Adaptive verbosity defaults research to DETAILED tier (6-10 sentences).
+- **Removed**: `drainResearchQueue()`, `scheduleDrain()`, `drainDebounceTimer`, `drainInFlight`, immediate/deferred dual paths, `.catch()` workarounds.
 
----
-
-Last Updated: 2026-01-02 19:30
-
----
-
-## Claude Agent SDK Deep Research (2026-01-02)
-
-### Key Finding: TWO Different Packages!
-
-| Package | Purpose |
-|---------|---------|
-| `@anthropic-ai/claude-code` | CLI tool only (no SDK exports) |
-| `@anthropic-ai/claude-agent-sdk` | **Proper SDK with `query()` function** ✅ |
-
-### SDK Capabilities
-
-The Claude Agent SDK provides:
-
-```typescript
-import { query, ClaudeAgentOptions } from '@anthropic-ai/claude-agent-sdk'
-
-// Built-in tools (no implementation needed!)
-// Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch
-
-// Permission modes
-// 'default' - asks for each tool
-// 'acceptEdits' - auto-accepts file edits
-// 'bypassPermissions' - allows everything
-
-// Hooks for interception
-// PreToolUse, PostToolUse, Stop, SessionStart, SessionEnd
-
-// Session management with resume
-// Resume from session_id for multi-turn conversations
-
-// MCP server support
-// Connect external tools via Model Context Protocol
-```
-
-### SDK Usage Example
-
-```typescript
-for await (const message of query({
-  prompt: "Find and fix the bug in auth.py",
-  options: {
-    allowedTools: ["Read", "Edit", "Bash"],
-    permissionMode: "acceptEdits",
-    cwd: "/path/to/project",
-    hooks: {
-      PreToolUse: [{
-        matcher: ".*",
-        hooks: [async (input) => {
-          console.log(`Using tool: ${input.tool_name}`)
-          return {} // allow
-        }]
-      }]
-    }
-  }
-})) {
-  if (message.type === 'assistant') {
-    // Handle Claude's response
-  }
-  if (message.type === 'result') {
-    // Query complete
-  }
-}
-```
-
-### Permission Handling Options
-
-| Mode | Behavior |
-|------|----------|
-| `default` | Shows permission UI for each tool |
-| `acceptEdits` | Auto-accepts Read/Write/Edit, asks for Bash |
-| `bypassPermissions` | Allows everything (dangerous!) |
-
-For voice, we can use hooks to intercept permission requests and route to voice/UI.
-
-### Context Injection via Hooks
-
-```typescript
-// PreToolUse hook can block and add context
-hooks: {
-  PreToolUse: [{
-    matcher: ".*",
-    hooks: [async (input) => {
-      if (needsContext) {
-        return {
-          decision: "block",
-          reason: "User added: also check the tests"
-        }
-      }
-      return {}
-    }]
-  }]
-}
-```
-
-### Resources
-
-- [Official Docs](https://platform.claude.com/docs/en/agent-sdk/overview)
-- [TypeScript SDK GitHub](https://github.com/anthropics/claude-agent-sdk-typescript)
-- [Demo Examples](https://github.com/anthropics/claude-agent-sdk-demos)
-- [NPM Package](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
+### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/index.ts` | Replaced drain system with `voiceQueue`/`queueVoiceInjection`/`processVoiceQueue`/`scheduleResearchBatch`. Updated `announceViaVoice()`, `[RESEARCH COMPLETE]`, error handler, cleanup paths. Added specificity prompts. |
 
 ---
 
-## Latest Changes
+## Configuration
 
-### Fixed SDK Integration (2026-01-02 19:30)
-- **Changed package**: `@anthropic-ai/claude-code` → `@anthropic-ai/claude-agent-sdk`
-- Rewrote `claude-handler.ts` to use proper SDK `query()` function
-- Added PreToolUse/PostToolUse hooks for observability
-- Session management ready for multi-turn conversations
-
-### Claude Working + TTS Fix (2026-01-02 19:15)
-- Claude Code successfully executes tool calls (Bash, Glob, etc.)
-- Fixed TTS error: `session.say()` doesn't work with OpenAI Realtime
-- Solution: Use `session.generateReply({ instructions: ... })` instead
-- This tells GPT-4 what to say and it speaks it via its built-in TTS
-
-### Pre-warming Added (2026-01-02 19:20)
-- Claude now pre-warms on agent start
-- Runs a simple query in background to initialize session
-- First real coding request is faster because Claude is already running
-
-### To Install & Test
-```bash
-cd /Users/newupgrade/Desktop/Developer/osborn/agent
-npm install  # Installs the correct SDK
-npm run dev
+### Environment Variables (agent/.env)
+```env
+LIVEKIT_URL=wss://your-livekit-url
+LIVEKIT_API_KEY=your-api-key
+LIVEKIT_API_SECRET=your-api-secret
+OPENAI_API_KEY=your-openai-key
+GOOGLE_API_KEY=your-google-key
+ANTHROPIC_API_KEY=your-anthropic-key
+SMITHERY_API_KEY=your-smithery-key  # Optional, for cloud MCP
 ```
 
-### Test Commands to Verify
-Say these to test Claude Agent SDK integration:
-1. "What files are in this project?" (should trigger Glob tool)
-2. "Read the package.json file" (should use Read tool)
-3. "Create a test file called hello.txt with hello world" (should use Write tool)
-
----
-
-## Latest Updates (2026-01-03)
-
-### Features Implemented
-- Permission UI buttons (Deny/Allow Once/Always Allow)
-- Voice agent verbally asks for permission before dangerous operations
-- Text input now reaches the voice agent
-- Disconnect/reconnect without page refresh
-- Data channel communication for permissions and text input
-
-### Research: Hot-Swap Model Switching
-LiveKit's AgentSession API (v1.0+) supports switching between models during a conversation:
-- The unified AgentSession abstracts underlying model types
-- Can switch between pipelined (STT-LLM-TTS) and speech-to-speech models
-- Implementation would require:
-  1. Frontend sends model-switch request via data channel
-  2. Agent stops current session
-  3. Agent creates new session with new model
-  4. Agent starts new session
-- **Status**: Deferred - requires significant refactoring
-
-### Pending Features
-- Codex SDK integration for alternative coding agent
-- Agent selector in frontend (Claude Code vs Codex)
-
----
-
-## Latest Updates (2026-01-03) - Architecture Overhaul
-
-### Hosted Frontend + Local Backend Architecture
-
-Osborn now supports a production-ready architecture where:
-- **Frontend**: Hosted publicly (Vercel, Netlify, etc.)
-- **Backend Agent**: Runs locally on user's machine via CLI
-- **Connection**: Via LiveKit Cloud with room codes
-
-### New Features Implemented
-
-#### 1. Room Code System
-- Frontend generates 6-character room codes (e.g., `abc123`)
-- User runs: `npx osborn-agent --room abc123`
-- Agent connects to specific room
-- Supports reconnection with same room code (stored in localStorage)
-
-#### 2. Gemini Hot-Switching Fix
-- Added session cleanup when switching providers
-- Proper cleanup on participant disconnect
-- New sessions are now properly isolated
-
-#### 3. MCP Configuration via Config File
-Users can configure MCP servers in `~/.osborn/config.yaml`:
+### Config File (~/.osborn/config.yaml)
 ```yaml
 workingDirectory: /path/to/project
 defaultProvider: openai
-defaultCodingAgent: claude
+voiceMode: realtime  # or 'direct'
+
+realtime:
+  provider: openai  # or 'gemini'
+  openaiVoice: alloy
+  geminiVoice: Puck
+
+direct:
+  stt:
+    provider: deepgram
+  tts:
+    provider: deepgram
+    voice: aura-asteria-en
 
 mcpServers:
   github:
     enabled: true
-    command: npx
-    args: ['@modelcontextprotocol/server-github']
-    env:
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
-
-  filesystem:
-    enabled: true
-    command: npx
-    args: ['@modelcontextprotocol/server-filesystem', '/allowed/path']
 ```
-
-#### 4. New Connection Flow
-```
-1. User visits hosted website
-2. Clicks "Start Session" → gets room code
-3. Runs agent locally with room code
-4. Agent connects via LiveKit Cloud
-5. Voice session begins
-```
-
-### Files Modified
-- `agent/src/index.ts` - Room code support, session cleanup, config loading
-- `agent/src/config.ts` - NEW: Config file management
-- `agent/package.json` - Added yaml dependency
-- `frontend/src/app/page.tsx` - Room code UI, connection states
-- `frontend/src/app/api/token/route.ts` - Room code generation
-
-### Architecture Diagram
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Hosted Frontend (Vercel)                                                │
-│  └── Displays room code, connects to LiveKit Cloud                      │
-└────────────────────────────┬────────────────────────────────────────────┘
-                             │ WebRTC
-                             ↓
-┌─────────────────────────────────────────────────────────────────────────┐
-│  LiveKit Cloud                                                           │
-│  └── Routes audio/data between frontend and agent                       │
-└────────────────────────────┬────────────────────────────────────────────┘
-                             │ WebRTC
-                             ↓
-┌─────────────────────────────────────────────────────────────────────────┐
-│  User's Machine (CLI)                                                    │
-│  └── npx osborn-agent --room abc123                                     │
-│  └── Reads ~/.osborn/config.yaml for MCP servers                        │
-│  └── Runs Claude Code / Codex with user's API keys                      │
-│  └── Has access to user's filesystem                                    │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### To Test
-1. Start frontend: `cd frontend && npm run dev`
-2. Visit http://localhost:3000
-3. Click "Start Session" → copy room code
-4. In another terminal: `cd agent && npm install && npm run dev -- --room <code>`
-5. Click "Agent Connected? Start Voice"
-6. Speak to Osborn!
 
 ---
 
-## v0.2.0 Development (2026-01-03) - Three-Layer Architecture + UI Overhaul
-
-### Goal: Siri-like Voice Coding Experience
-
-**Problem with current architecture:**
-- OpenAI Realtime: Expensive ($0.06/min)
-- Gemini Live: Can't say hello (no `generateReply` support)
-- Voice model directly calls Claude Code - no smart summarization
-
-### Three-Layer Architecture (In Progress)
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Layer 1: Voice I/O (STT + TTS)                                  │
-│   - STT: Deepgram (fast, Node.js compatible)                    │
-│   - TTS: Gemini TTS (cheap, good quality)                       │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────────┐
-│ Layer 2: Bridge LLM (Context Manager)                           │
-│   - Model: Gemini 2.5 Pro                                       │
-│   - Handles: greetings, acknowledgments, conversation flow      │
-│   - Summarizes coding results for voice output                  │
-│   - Tools: run_code, manage_permission                          │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────────┐
-│ Layer 3: Coding Agent (Claude Code)                             │
-│   - Plan Agent: Research, read-only (fast)                      │
-│   - Execute Agent: Write access (permissions)                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Files Created/Modified
-
-| File | Status | Purpose |
-|------|--------|---------|
-| `agent/src/voice-io.ts` | ✅ Created | STT/TTS factory (Deepgram + Gemini TTS) |
-| `agent/src/bridge-llm.ts` | ✅ Created | Bridge LLM with Gemini 2.5 Pro |
-| `agent/src/index.ts` | 🔄 Pending | Add pipelined mode alongside realtime |
-| `agent/src/config.ts` | 🔄 Pending | Add voiceMode config option |
-| `frontend/src/components/MarkdownMessage.tsx` | 🔄 Pending | Markdown renderer |
-| `frontend/src/components/VoiceRoom.tsx` | 🔄 Pending | Better status, markdown |
-
-### Dependencies Added
-
-**Agent (backend):**
-```json
-"@livekit/agents-plugin-deepgram": "^1.0.31"
-"@livekit/agents-plugin-elevenlabs": "^1.0.31"
-"@livekit/agents-plugin-silero": "^1.0.31"
-```
-
-**Frontend:**
-```json
-"react-markdown": installed
-"remark-gfm": installed
-"rehype-highlight": installed
-"highlight.js": installed
-```
-
-### Key Design Decisions
-1. **Pipelined mode is opt-in** - realtime stays default
-2. **STT**: Deepgram (Gemini STT not available in Node.js)
-3. **Bridge LLM**: Gemini 2.5 Pro (smart context management)
-4. **TTS**: Gemini TTS (cheap, uses existing Google API key)
-5. **Greeting solved**: TTS speaks directly via `session.say()`
-
-### Next Steps
-1. Update `index.ts` with pipelined mode session creation
-2. Update `config.ts` with new voice mode options
-3. Create `MarkdownMessage.tsx` component
-4. Update `VoiceRoom.tsx` with markdown rendering
-5. Test both modes together
-6. Publish v0.2.0
-
-### Config Example for Pipelined Mode
-```yaml
-# ~/.osborn/config.yaml
-workingDirectory: /path/to/project
-voiceMode: pipelined  # or 'realtime' (default)
-
-pipelined:
-  stt:
-    provider: deepgram
-  llm:
-    provider: gemini-pro
-  tts:
-    provider: gemini
-    voice: Zephyr
-```
+Last Updated: 2025-02-17

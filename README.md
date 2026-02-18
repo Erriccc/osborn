@@ -1,42 +1,40 @@
-# Osborn - Voice AI Coding Assistant
+# Osborn - Voice AI Research & Development Assistant
 
-Voice-enabled coding assistant powered by LiveKit + Claude Code. Talk to your code.
+Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SDK. Talk to your code, research deeply, and build plans before executing.
 
 ## Features
 
 - **Voice Interface**: Real-time voice conversation using LiveKit
-- **Multi-Provider Support**: Choose between OpenAI Realtime or Gemini Live for voice
-- **Claude Code Integration**: File operations, code editing, terminal commands via voice
-- **Dual Agent System**: Plan agent (research) + Execute agent (implementation)
-- **Permission System**: Approve/deny file operations via voice or UI
-- **Direct Connection**: Agent runs locally, connects to cloud-hosted frontend via room codes
+- **Multi-Provider Voice**: OpenAI Realtime, Gemini Live, or Direct (STT + Claude + TTS)
+- **Research-First Plan Mode**: Read code, search web, run read-only commands, create research artifacts
+- **Execute Mode**: Full coding capabilities — file operations, terminal commands, code editing
+- **Claude Agent SDK**: Full tool access (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch)
+- **Permission System**: Approve/deny operations via voice or UI
+- **Session Management**: Resume, switch, and browse previous conversations
+- **MCP Integration**: Extend with GitHub, YouTube, filesystem, and custom MCP servers
+- **Research Artifacts**: Plans, diagrams (mermaid), notes, and analysis files
+
+## Modes
+
+| Mode | Purpose | Capabilities |
+|------|---------|-------------|
+| **Plan** | Research, explore, brainstorm | Read all files, search web, read-only bash, write to `.osborn/research/` and `.claude/plans/` |
+| **Execute** | Implement changes | Everything — full tool access |
+
+Plan mode is the default. The agent researches deeply and creates artifacts (plans, diagrams, notes) that appear in the Files panel. Switch to Execute mode when ready to implement.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Hosted Frontend (osborn.app or localhost)                              │
-│  └── Displays room code, connects to LiveKit Cloud                      │
-└────────────────────────────┬────────────────────────────────────────────┘
-                             │ WebRTC
-                             ↓
-┌─────────────────────────────────────────────────────────────────────────┐
-│  LiveKit Cloud                                                           │
-│  └── Routes audio/data between frontend and agent                       │
-└────────────────────────────┬────────────────────────────────────────────┘
-                             │ WebRTC
-                             ↓
-┌─────────────────────────────────────────────────────────────────────────┐
-│  User's Machine (CLI)                                                    │
-│  └── npx osborn --room abc123                                           │
-│  └── Runs Claude Code with access to local filesystem                   │
-│  └── Uses your API keys (never sent to cloud)                           │
-└─────────────────────────────────────────────────────────────────────────┘
+Frontend (Next.js)  <-->  LiveKit Cloud  <-->  Agent (local machine)
+                                                ├── Claude Agent SDK (tools)
+                                                ├── OpenAI/Gemini Realtime (voice)
+                                                └── MCP Servers (extensions)
 ```
 
 ## Quick Start
 
-### Option 1: Using Hosted Frontend (Recommended)
+### Option 1: Using Hosted Frontend
 
 ```bash
 # Install and run the agent
@@ -49,22 +47,15 @@ npx osborn
 
 ### Option 2: Local Development
 
-1. Clone the repository
+1. Clone and install:
 ```bash
 git clone https://github.com/Erriccc/osborn.git
 cd osborn
-```
-
-2. Install dependencies
-```bash
-# Agent
 cd agent && npm install
-
-# Frontend
 cd ../frontend && npm install
 ```
 
-3. Configure environment variables
+2. Configure environment variables:
 
 **agent/.env:**
 ```env
@@ -73,6 +64,7 @@ LIVEKIT_API_KEY=your-api-key
 LIVEKIT_API_SECRET=your-api-secret
 OPENAI_API_KEY=your-openai-key
 GOOGLE_API_KEY=your-google-key
+ANTHROPIC_API_KEY=your-anthropic-key
 ```
 
 **frontend/.env.local:**
@@ -82,81 +74,111 @@ LIVEKIT_API_KEY=your-api-key
 LIVEKIT_API_SECRET=your-api-secret
 ```
 
-4. Run the application
+3. Run:
 ```bash
-# Terminal 1: Start agent
+# Terminal 1: Agent
 cd agent && npm run dev
-# Note the room code (e.g., "g63yut")
 
-# Terminal 2: Start frontend
+# Terminal 2: Frontend
 cd frontend && npm run dev
-
 # Open http://localhost:3000
-# Enter the room code from Terminal 1
 ```
 
 ## Configuration
 
-Create `~/.osborn/config.yaml` for custom settings:
+Create `~/.osborn/config.yaml`:
 
 ```yaml
-workingDirectory: /path/to/your/project
-defaultProvider: gemini  # or openai
-defaultCodingAgent: claude
+workingDirectory: /path/to/project
+voiceMode: direct        # or 'realtime'
+agentMode: plan          # or 'execute'
+defaultProvider: openai  # or 'gemini' (for realtime mode)
+
+realtime:
+  provider: openai
+  openaiVoice: alloy
+
+direct:
+  stt:
+    provider: deepgram
+  tts:
+    provider: deepgram
+    voice: aura-asteria-en
 
 mcpServers:
   github:
     enabled: true
     command: npx
-    args: ['@modelcontextprotocol/server-github']
+    args: ['-y', '@modelcontextprotocol/server-github']
     env:
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
 ```
 
 ## Voice Commands
 
-Once connected, try:
-- "What files are in this project?"
-- "Read the package.json file"
+### Research (Plan Mode)
+- "Research how authentication works in this project"
+- "Show me the data flow from API to database"
+- "Create a diagram of the component architecture"
+- "Write up a plan for adding OAuth"
+- "Search for best practices on rate limiting"
+- "What dependencies does this project use?"
+
+### Implementation (Execute Mode)
 - "Create a file called hello.txt with hello world"
+- "Fix the bug in the login handler"
 - "Run npm test"
-- "Find where the User class is defined"
-
-## Current Status
-
-| Component | Status |
-|-----------|--------|
-| Voice Interface (LiveKit) | ✅ Working |
-| OpenAI Realtime | ✅ Working |
-| Gemini Live | ✅ Working |
-| Claude Code Tools | ✅ Working |
-| Permission Prompts | ✅ Working |
-| Room Code System | ✅ Working |
-| Text Input | ✅ Working |
-| Dual Agent Routing | ✅ Working |
-
-## Tech Stack
-
-- **Voice**: LiveKit Agents SDK + RTCNode
-- **Realtime AI**: OpenAI Realtime API / Gemini Live API
-- **Coding Agent**: Claude Code via @anthropic-ai/claude-agent-sdk
-- **Frontend**: Next.js + React + Tailwind CSS
+- "Add error handling to the API routes"
 
 ## Project Structure
 
 ```
 osborn/
-├── agent/                 # LiveKit voice agent (npm package)
+├── agent/                  # LiveKit voice agent (backend)
 │   ├── src/
-│   │   ├── index.ts       # Agent entry point
-│   │   └── claude-handler.ts  # Claude Agent SDK wrapper
+│   │   ├── index.ts        # Agent entry, room events, data handlers
+│   │   ├── claude-llm.ts   # Claude Agent SDK wrapper, mode filtering
+│   │   ├── config.ts       # Config, sessions, research directory helpers
+│   │   ├── voice-io.ts     # STT/TTS/VAD/Realtime model factory
+│   │   └── claude-handler.ts  # Claude handler utilities
 │   └── package.json
-├── frontend/              # Next.js web frontend
+├── frontend/               # Next.js web frontend
 │   ├── src/
-│   │   └── components/    # React components
+│   │   ├── components/
+│   │   │   ├── VoiceRoom.tsx       # Main voice UI
+│   │   │   ├── MarkdownMessage.tsx # Markdown renderer
+│   │   │   └── SessionBrowser.tsx  # Session browser
+│   │   └── lib/
+│   │       └── sessions.ts         # Session utilities
 │   └── package.json
-└── CHANGELOG.md          # Version history
+├── PROGRESS.md             # Development progress
+└── README.md
 ```
+
+## Current Status
+
+| Component | Status |
+|-----------|--------|
+| Voice Interface (LiveKit) | Working |
+| OpenAI Realtime | Working |
+| Gemini Live | Working |
+| Direct Mode (STT + Claude + TTS) | Working |
+| Claude Agent SDK Tools | Working |
+| Permission System | Working |
+| Plan Mode (enhanced) | Working |
+| Execute Mode | Working |
+| Session Management | Working |
+| Research Artifacts | Working |
+| Files Panel | Working |
+| MCP Integration | Working |
+
+## Tech Stack
+
+- **Voice**: LiveKit Agents SDK + RTCNode
+- **Realtime AI**: OpenAI Realtime API / Gemini Live API
+- **Coding Agent**: Claude via @anthropic-ai/claude-agent-sdk
+- **Frontend**: Next.js 14 + React + Tailwind CSS
+- **STT/TTS**: Deepgram (default), with OpenAI/ElevenLabs/Gemini options
 
 ## License
 

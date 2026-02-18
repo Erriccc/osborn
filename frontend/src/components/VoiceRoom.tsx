@@ -12,6 +12,7 @@ import {
 import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
+import { formatTime, groupSessionsByDate } from '@/lib/sessions'
 
 interface VoiceRoomProps {
   token: string
@@ -19,6 +20,7 @@ interface VoiceRoomProps {
   onAgentReady?: () => void
   waitingMode?: boolean
   provider?: string
+  preSelectedSessionId?: string | null
 }
 
 // Message parts inspired by AI SDK - supports streaming, tool calls, reasoning
@@ -43,6 +45,50 @@ interface ChatMessage {
 interface PermissionRequest {
   toolName: string
   description: string
+  input?: Record<string, unknown>
+  riskLevel?: 'low' | 'medium' | 'high'
+}
+
+// Helper to determine tool risk level
+function getToolRiskLevel(toolName: string): 'low' | 'medium' | 'high' {
+  const highRisk = ['Bash', 'Write', 'Edit', 'NotebookEdit']
+  const mediumRisk = ['WebFetch', 'Task', 'KillShell']
+  if (highRisk.includes(toolName)) return 'high'
+  if (mediumRisk.includes(toolName)) return 'medium'
+  return 'low'
+}
+
+// Session info from backend
+interface SessionInfo {
+  sessionId: string
+  timestamp: string
+  lastMessage?: string
+  messageCount: number
+}
+
+// MCP server status from backend
+interface McpServerStatus {
+  serverKey: string
+  name: string
+  description: string
+  category: 'code' | 'web' | 'data' | 'utility'
+  transport: 'stdio' | 'http' | 'sse'
+  enabled: boolean
+  available: boolean
+  missingEnvVars?: string[]
+  source: 'catalog' | 'config'
+}
+
+// Generated file tracking (plans + research artifacts)
+interface GeneratedFile {
+  filePath: string
+  fileName: string
+  content?: string
+  type: 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'other'
+  source: 'plan' | 'research'  // .claude/plans/ vs .osborn/sessions/
+  updatedAt: Date
+  isImage?: boolean
+  mimeType?: string
 }
 
 // Streaming indicator dots
@@ -157,17 +203,9 @@ function parseMessageParts(content: string): MessagePart[] {
     remainingContent = remainingContent.replace(reasoningMatch[0], '').trim()
   }
 
-  // Strip ONLY lines that are purely bold headers (like "**Some Header**\n")
-  // Keep content on the same line as headers
+  // Collapse excessive newlines but preserve bold headers for markdown rendering
   remainingContent = remainingContent
-    .split('\n')
-    .map(line => {
-      // If line is ONLY a bold header with nothing else, remove it
-      const isBoldOnlyLine = /^\s*\*\*[^*]+\*\*\s*$/.test(line)
-      return isBoldOnlyLine ? '' : line
-    })
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n') // Collapse multiple newlines
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 
   // Always include remaining content as text
@@ -245,8 +283,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 if (part.content && part.content.trim()) {
                   // Debug: log what we're rendering
                   console.log(`🖼️ Rendering text part with content: "${part.content.substring(0, 50)}..."`)
-                  // Check if content has markdown formatting
-                  const hasMarkdown = /[*#`\[\]]/.test(part.content)
+                  // Check if content has markdown formatting (including tables with |)
+                  const hasMarkdown = /[*#`\[\]|]/.test(part.content) || /^-{3,}$/m.test(part.content)
                   if (hasMarkdown) {
                     return <MarkdownMessage key={idx} content={part.content} />
                   }
@@ -518,6 +556,265 @@ function TextInput({
   )
 }
 
+// Unified Control Menu - Combines mode toggle, session history, tools, and settings
+function ControlMenu({
+  sessions,
+  currentSessionId,
+  onLoadSessions,
+  onResumeSession,
+  onContinueSession,
+  isLoadingSessions,
+  disabled,
+  mcpServers,
+  onMcpToggle,
+  onLoadMcpStatus,
+}: {
+  sessions: SessionInfo[]
+  currentSessionId?: string | null
+  onLoadSessions: () => void
+  onResumeSession: (sessionId: string) => void
+  onContinueSession: () => void
+  isLoadingSessions?: boolean
+  disabled?: boolean
+  mcpServers?: McpServerStatus[]
+  onMcpToggle?: (serverKey: string, enabled: boolean) => void
+  onLoadMcpStatus?: () => void
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<'history' | 'tools'>('history')
+  const [showSwitchConfirm, setShowSwitchConfirm] = useState(false)
+  const [pendingSwitchSessionId, setPendingSwitchSessionId] = useState<string | null>(null)
+
+  const enabledMcpCount = (mcpServers || []).filter(s => s.enabled).length
+
+  // Load data when tabs are opened
+  const handleTabChange = (tab: 'history' | 'tools') => {
+    setActiveTab(tab)
+    if (tab === 'history' && sessions.length === 0) {
+      onLoadSessions()
+    }
+    if (tab === 'tools') {
+      onLoadMcpStatus?.()
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      {/* Research mode indicator - always visible */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        disabled={disabled}
+        className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all text-xs bg-violet-500/10 border-violet-500/30 text-violet-400 ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:opacity-80'}`}
+        title="Open settings"
+      >
+        <span className="font-medium">Research</span>
+        <svg className={`w-3 h-3 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* Dropdown menu */}
+      {isOpen && (
+        <div className="absolute top-14 left-4 right-4 sm:left-auto sm:right-auto sm:w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+          {/* Tabs */}
+          <div className="flex border-b border-gray-700">
+            <button
+              onClick={() => handleTabChange('history')}
+              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                activeTab === 'history'
+                  ? 'text-violet-400 border-b-2 border-violet-400 bg-violet-500/10'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              History
+            </button>
+            <button
+              onClick={() => handleTabChange('tools')}
+              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors relative ${
+                activeTab === 'tools'
+                  ? 'text-violet-400 border-b-2 border-violet-400 bg-violet-500/10'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              Tools
+              {enabledMcpCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-green-500/20 text-green-400">
+                  {enabledMcpCount}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* History Tab */}
+          {activeTab === 'history' && (
+            <div className="max-h-96 overflow-y-auto">
+              <div className="p-2 border-b border-gray-800">
+                <button
+                  onClick={() => {
+                    onContinueSession()
+                    setIsOpen(false)
+                  }}
+                  className="w-full py-2 text-xs bg-violet-500/20 text-violet-400 rounded-lg hover:bg-violet-500/30 transition-colors"
+                >
+                  Continue Last Session
+                </button>
+              </div>
+              <div className="p-2">
+                {isLoadingSessions ? (
+                  <div className="flex items-center justify-center py-4 text-gray-500 text-xs">
+                    <svg className="w-4 h-4 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Loading...
+                  </div>
+                ) : sessions.length === 0 ? (
+                  <p className="text-center py-4 text-gray-500 text-xs">No previous sessions</p>
+                ) : (
+                  <div className="space-y-1">
+                    {sessions.map((session) => (
+                      <button
+                        key={session.sessionId}
+                        onClick={() => {
+                          if (currentSessionId && currentSessionId !== session.sessionId) {
+                            // Show confirmation for mid-conversation switch
+                            setPendingSwitchSessionId(session.sessionId)
+                            setShowSwitchConfirm(true)
+                          } else {
+                            onResumeSession(session.sessionId)
+                            setIsOpen(false)
+                          }
+                        }}
+                        className={`w-full text-left p-2 rounded-lg transition-colors text-xs ${
+                          currentSessionId === session.sessionId
+                            ? 'bg-violet-500/20 border border-violet-500/30'
+                            : 'hover:bg-gray-800'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="text-gray-400">{formatTime(session.timestamp)}</span>
+                          <span className="text-gray-500">{session.messageCount} msgs</span>
+                        </div>
+                        <p className="text-gray-300 truncate">
+                          {session.lastMessage || 'No preview'}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Tools Tab */}
+          {activeTab === 'tools' && (
+            <div className="max-h-96 overflow-y-auto p-3 space-y-3">
+              {(!mcpServers || mcpServers.length === 0) ? (
+                <p className="text-center py-4 text-gray-500 text-xs">No MCP tools available</p>
+              ) : (
+                <>
+                  {/* Group by category */}
+                  {(['code', 'web', 'data', 'utility'] as const).map(category => {
+                    const serversInCategory = mcpServers.filter(s => s.category === category)
+                    if (serversInCategory.length === 0) return null
+                    const categoryLabels: Record<string, string> = {
+                      code: 'Code', web: 'Web', data: 'Data', utility: 'Utility',
+                    }
+                    return (
+                      <div key={category}>
+                        <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+                          {categoryLabels[category]}
+                        </h4>
+                        <div className="space-y-1">
+                          {serversInCategory.map(server => (
+                            <div
+                              key={server.serverKey}
+                              className="flex items-center justify-between p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
+                            >
+                              <div className="flex-1 min-w-0 mr-2">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-sm font-medium text-gray-200">{server.name}</span>
+                                  {server.source === 'config' && (
+                                    <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700 text-gray-400">custom</span>
+                                  )}
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                                    server.transport === 'stdio' ? 'bg-gray-700 text-gray-400' : 'bg-emerald-900/50 text-emerald-400'
+                                  }`}>
+                                    {server.transport === 'stdio' ? 'local' : 'cloud'}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-gray-500 truncate">{server.description}</p>
+                                {!server.available && server.missingEnvVars && (
+                                  <p className="text-[10px] text-amber-400 mt-0.5">
+                                    Missing: {server.missingEnvVars.join(', ')}
+                                  </p>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => onMcpToggle?.(server.serverKey, !server.enabled)}
+                                disabled={!server.available}
+                                className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${
+                                  !server.available
+                                    ? 'bg-gray-700 cursor-not-allowed opacity-50'
+                                    : server.enabled
+                                    ? 'bg-green-500'
+                                    : 'bg-gray-600 hover:bg-gray-500'
+                                }`}
+                                title={!server.available ? `Missing env vars: ${server.missingEnvVars?.join(', ')}` : server.enabled ? 'Disable' : 'Enable'}
+                              >
+                                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                                  server.enabled ? 'translate-x-4' : 'translate-x-0'
+                                }`} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <p className="text-[10px] text-gray-600 text-center pt-1">
+                    Changes apply on next message
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Switch confirmation dialog */}
+          {showSwitchConfirm && (
+            <div className="absolute inset-0 bg-black/80 flex items-center justify-center rounded-lg z-10">
+              <div className="bg-gray-800 p-4 rounded-lg text-center">
+                <p className="text-sm text-white mb-3">Switch to this session?</p>
+                <p className="text-xs text-gray-400 mb-4">Current context will be saved.</p>
+                <div className="flex gap-2 justify-center">
+                  <button
+                    onClick={() => setShowSwitchConfirm(false)}
+                    className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (pendingSwitchSessionId) {
+                        onResumeSession(pendingSwitchSessionId)
+                      }
+                      setShowSwitchConfirm(false)
+                      setIsOpen(false)
+                    }}
+                    className="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 rounded text-sm"
+                  >
+                    Switch
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function PermissionModal({
   permission,
   onRespond,
@@ -525,6 +822,35 @@ function PermissionModal({
   permission: PermissionRequest
   onRespond: (response: 'allow' | 'deny' | 'always_allow') => void
 }) {
+  const riskColors = {
+    low: 'text-green-400 bg-green-500/10 border-green-500/30',
+    medium: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30',
+    high: 'text-red-400 bg-red-500/10 border-red-500/30',
+  }
+  const riskLevel = permission.riskLevel || 'medium'
+
+  // Extract key details from input for display
+  const getInputDetails = () => {
+    const input = permission.input
+    if (!input) return null
+
+    if (permission.toolName === 'Bash' && input.command) {
+      return { label: 'Command', value: String(input.command) }
+    }
+    if ((permission.toolName === 'Write' || permission.toolName === 'Edit') && input.file_path) {
+      return { label: 'File', value: String(input.file_path) }
+    }
+    if (permission.toolName === 'WebFetch' && input.url) {
+      return { label: 'URL', value: String(input.url) }
+    }
+    if (permission.toolName === 'Grep' && input.pattern) {
+      return { label: 'Pattern', value: String(input.pattern) }
+    }
+    return null
+  }
+
+  const inputDetails = getInputDetails()
+
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-gray-900 rounded-2xl p-6 max-w-md w-full border border-gray-700/50 shadow-2xl">
@@ -546,11 +872,26 @@ function PermissionModal({
             <span className="px-2 py-0.5 bg-violet-500/20 text-violet-300 text-sm font-mono rounded-md">
               {permission.toolName}
             </span>
+            {/* Risk level indicator */}
+            <span className={`px-2 py-0.5 text-xs font-medium rounded-md border ${riskColors[riskLevel]}`}>
+              {riskLevel.toUpperCase()} RISK
+            </span>
           </div>
           <div className="bg-gray-800/50 rounded-xl p-3 border border-gray-700/50">
-            <p className="text-gray-300 text-sm font-mono leading-relaxed">
+            <p className="text-gray-300 text-sm leading-relaxed">
               {permission.description}
             </p>
+            {/* Show input details if available */}
+            {inputDetails && (
+              <div className="mt-2 pt-2 border-t border-gray-700/50">
+                <span className="text-xs text-gray-500">{inputDetails.label}:</span>
+                <code className="block mt-1 text-xs text-violet-300 bg-gray-800 p-2 rounded-lg overflow-x-auto">
+                  {inputDetails.value.length > 100
+                    ? inputDetails.value.substring(0, 100) + '...'
+                    : inputDetails.value}
+                </code>
+              </div>
+            )}
           </div>
         </div>
 
@@ -673,10 +1014,12 @@ function VoiceRoomInner({
   onDisconnect,
   onAgentReady,
   waitingMode,
+  preSelectedSessionId,
 }: {
   onDisconnect?: () => void
   onAgentReady?: () => void
   waitingMode?: boolean
+  preSelectedSessionId?: string | null
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
@@ -684,6 +1027,29 @@ function VoiceRoomInner({
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [agentState, setAgentState] = useState<string>('idle')
   const [isMuted, setIsMuted] = useState(false)
+  // Session management state
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false)
+  // Auto-resume prompt state
+  const [showResumePrompt, setShowResumePrompt] = useState(false)
+  const [recentSessionId, setRecentSessionId] = useState<string | null>(null)
+  // Session gate: tracks whether user has chosen a session (or fresh start) before voice begins
+  const [sessionGateCompleted, setSessionGateCompleted] = useState(false)
+  // Copy feedback state for "Copy All Messages" button
+  const [copyFeedback, setCopyFeedback] = useState(false)
+  // Generated files state (plans + research artifacts)
+  const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([])
+  const [showFilesPanel, setShowFilesPanel] = useState(true)
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
+  const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
+  // MCP server state
+  const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
+
+  // Derived: currently selected file for preview
+  const selectedFile = useMemo(() => {
+    return generatedFiles.find(f => f.filePath === selectedFilePath) || generatedFiles[0] || null
+  }, [generatedFiles, selectedFilePath])
 
   const { localParticipant } = useLocalParticipant()
 
@@ -694,6 +1060,56 @@ function VoiceRoomInner({
       setIsMuted(newMuted)
     }
   }, [localParticipant, isMuted])
+
+  // Copy all messages to clipboard with timestamps
+  const handleCopyAllMessages = useCallback(async () => {
+    if (messages.length === 0) return
+
+    const formattedText = messages
+      .map(msg => {
+        const role = msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'Osborn' : 'System'
+        const time = msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        return `[${time}] ${role}:\n${msg.content}`
+      })
+      .join('\n\n---\n\n')
+
+    try {
+      await navigator.clipboard.writeText(formattedText)
+      setCopyFeedback(true)
+      setTimeout(() => setCopyFeedback(false), 1500)
+    } catch (err) {
+      console.error('Failed to copy messages:', err)
+    }
+  }, [messages])
+
+  // Copy single generated file
+  const handleCopyFile = useCallback(async (filePath: string) => {
+    const file = generatedFiles.find(f => f.filePath === filePath)
+    if (!file?.content) return
+    try {
+      await navigator.clipboard.writeText(file.content)
+      setFileCopyFeedback(filePath)
+      setTimeout(() => setFileCopyFeedback(null), 1500)
+    } catch (err) {
+      console.error('Failed to copy file:', err)
+    }
+  }, [generatedFiles])
+
+  // Copy all generated files
+  const handleCopyAllFiles = useCallback(async () => {
+    const allContent = generatedFiles
+      .filter(f => f.content && !f.isImage)
+      .map(f => `# ${f.fileName}\n\n${f.content}`)
+      .join('\n\n---\n\n')
+    if (!allContent) return
+    try {
+      await navigator.clipboard.writeText(allContent)
+      setFileCopyFeedback('all')
+      setTimeout(() => setFileCopyFeedback(null), 1500)
+    } catch (err) {
+      console.error('Failed to copy files:', err)
+    }
+  }, [generatedFiles])
 
   const handleAttachFile = useCallback(async (files: FileList) => {
     const newFiles: AttachedFile[] = Array.from(files).map((file) => {
@@ -778,15 +1194,21 @@ function VoiceRoomInner({
   const onAgentReadyRef = useRef(onAgentReady)
   onAgentReadyRef.current = onAgentReady
 
+  // Refs to track session gate state in data handler without causing re-subscriptions
+  const sessionGateCompletedRef = useRef(sessionGateCompleted)
+  sessionGateCompletedRef.current = sessionGateCompleted
+  const showResumePromptRef = useRef(showResumePrompt)
+  showResumePromptRef.current = showResumePrompt
+
   const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string) => void>()
 
   // addMessage function with duplicate detection
   addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
-    // Safety check
-    if (!content || typeof content !== 'string') {
-      console.error(`❌ addMessage: invalid content for ${role}:`, content)
+    // Safety check - skip empty/whitespace-only messages
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      console.log(`⏭️ addMessage: skipping empty ${role} message`)
       return
     }
 
@@ -827,6 +1249,40 @@ function VoiceRoomInner({
       if (data.type === 'agent_ready') {
         setAgentConnected(true)
         onAgentReadyRef.current?.()
+        // Store sessions from agent_ready if provided
+        if (data.sessions && Array.isArray(data.sessions)) {
+          setSessions(data.sessions)
+        }
+        // Store MCP server status from agent_ready
+        if (data.mcpServers && Array.isArray(data.mcpServers)) {
+          // Merge runtime enabled state with status list
+          const enabledKeys: string[] = data.enabledMcpServers || []
+          const merged = data.mcpServers.map((s: McpServerStatus) => ({
+            ...s,
+            enabled: enabledKeys.includes(s.serverKey),
+          }))
+          setMcpServers(merged)
+        }
+        // Only process session gate logic on the FIRST agent_ready (skip retries)
+        if (!sessionGateCompletedRef.current && !showResumePromptRef.current) {
+          // If a session was pre-selected from the session browser, skip the gate entirely
+          if (preSelectedSessionId || data.preSelectedSessionId) {
+            console.log('📂 Pre-selected session — skipping session gate')
+            setSessionGateCompleted(true)
+            setCurrentSessionId(preSelectedSessionId || data.preSelectedSessionId)
+          }
+          // Show session gate if sessions available — mic muted until user chooses
+          else if (data.sessions?.length > 0 || (data.hasRecentSession && data.recentSessionId)) {
+            setRecentSessionId(data.recentSessionId)
+            setShowResumePrompt(true)
+            // Mute mic while session gate is shown (prevents premature speech)
+            setIsMuted(true)
+            localParticipant?.setMicrophoneEnabled(false)
+          } else {
+            // No sessions — gate is automatically completed
+            setSessionGateCompleted(true)
+          }
+        }
       } else if (data.type === 'agent_state') {
         setAgentState(data.state)
       } else if (data.type === 'user_transcript') {
@@ -856,11 +1312,29 @@ function VoiceRoomInner({
           addMessageRef.current?.('system', data.text)
         }
       } else if (data.type === 'tool_use') {
-        addMessageRef.current?.('system', `Using ${data.tool}: ${data.description || ''}`, data.tool)
+        // Show tool usage with status
+        const status = data.status === 'completed' ? '✓' : '⏳'
+        const msg = data.status === 'completed'
+          ? `${status} ${data.tool} completed`
+          : `${status} Using ${data.tool}...`
+        addMessageRef.current?.('system', msg, data.tool)
+      } else if (data.type === 'claude_output') {
+        // Raw Claude output for chat bubbles (full formatting preserved)
+        console.log('🤖 Claude output:', {
+          textLength: data.text?.length,
+          isStreaming: data.isStreaming,
+          isFinal: data.isFinal,
+          preview: data.text?.substring(0, 100)
+        })
+        if (data.text && data.text.trim()) {
+          addMessageRef.current?.('assistant', data.text)
+        }
       } else if (data.type === 'permission_request') {
         setPendingPermission({
           toolName: data.toolName,
           description: data.description,
+          input: data.input,
+          riskLevel: getToolRiskLevel(data.toolName),
         })
       } else if (data.type === 'permission_response') {
         setPendingPermission(null)
@@ -879,16 +1353,202 @@ function VoiceRoomInner({
           console.log('🔄 Progress update:', data.text.substring(0, 50))
           addMessageRef.current?.('system', `Progress: ${data.text}`)
         }
+      } else if (data.type === 'sessions_list') {
+        // Received list of previous sessions
+        console.log('📋 Sessions list:', data.sessions?.length || 0)
+        setSessions(data.sessions || [])
+        setIsLoadingSessions(false)
+      } else if (data.type === 'current_session') {
+        // Current session info
+        console.log('📋 Current session:', data.sessionId)
+        setCurrentSessionId(data.sessionId || null)
+      } else if (data.type === 'session_resume_set') {
+        // Session resume confirmation
+        if (data.success) {
+          console.log('🔄 Session resume set:', data.sessionId)
+          setCurrentSessionId(data.sessionId)
+          addMessageRef.current?.('system', '🔄 Resuming session...')
+        } else {
+          console.log('❌ Session resume failed:', data.error)
+          addMessageRef.current?.('system', `❌ ${data.error || 'Failed to resume session'}`)
+        }
+      } else if (data.type === 'session_resume_failed') {
+        // SDK created a new session instead of resuming the requested one
+        console.warn('⚠️ Session resume verification failed:', data)
+        addMessageRef.current?.('system', `⚠️ Could not restore previous session. Starting fresh conversation.`)
+        setCurrentSessionId(data.actualSessionId)
+      } else if (data.type === 'session_switched') {
+        // Handle mid-conversation session switch
+        if (data.success) {
+          setCurrentSessionId(data.sessionId)
+
+          // Clear current chat messages before showing new context
+          setMessages([])
+
+          // Show previous session context if available
+          if (data.conversationHistory?.length > 0) {
+            // Add last few exchanges as context
+            addMessageRef.current?.('system', '─── Previous Session Context ───')
+            for (const exchange of data.conversationHistory.slice(-3)) {
+              addMessageRef.current?.(
+                exchange.role === 'user' ? 'user' : 'assistant',
+                exchange.content
+              )
+            }
+            addMessageRef.current?.('system', '─── Session Resumed ───')
+          }
+
+          // Show summary in chat
+          const summary = data.summary
+          addMessageRef.current?.('system',
+            `🔄 Switched to session (${summary?.messageCount || 0} messages)`
+          )
+        } else {
+          addMessageRef.current?.('system', `❌ Failed to switch: ${data.error}`)
+        }
+      } else if (data.type === 'plan_file_updated') {
+        // Plan file was written/edited by the agent
+        console.log('📋 Plan file updated:', data.fileName)
+        const fileName = data.fileName || data.filePath.split('/').pop() || 'plan.md'
+        setGeneratedFiles((prev) => {
+          const existing = prev.findIndex(f => f.filePath === data.filePath)
+          const entry: GeneratedFile = {
+            filePath: data.filePath,
+            fileName,
+            type: 'plan',
+            source: 'plan',
+            updatedAt: new Date(),
+          }
+          if (existing >= 0) {
+            const updated = [...prev]
+            updated[existing] = { ...updated[existing], ...entry, content: undefined }
+            return updated
+          }
+          return [...prev, entry]
+        })
+        // Auto-request content
+        const encoder = new TextEncoder()
+        const payload = encoder.encode(JSON.stringify({
+          type: 'get_plan_file',
+          filePath: data.filePath,
+        }))
+        sendToAgent(payload, { reliable: true })
+        setShowFilesPanel(true)
+        setSelectedFilePath(data.filePath)
+      } else if (data.type === 'plan_file_content') {
+        // Plan file content received
+        console.log('📋 Plan file content received:', data.fileName, data.content?.length || 0, 'chars')
+        setGeneratedFiles((prev) => prev.map(f =>
+          f.filePath === data.filePath
+            ? { ...f, content: data.content || data.error || 'Empty file' }
+            : f
+        ))
+      } else if (data.type === 'research_artifact_updated') {
+        // Research artifact was written/edited by the agent
+        console.log('🔬 Research artifact updated:', data.fileName)
+        const fileName = data.fileName || data.filePath.split('/').pop() || 'artifact'
+        const ext = fileName.split('.').pop()?.toLowerCase() || ''
+        let fileType: GeneratedFile['type'] = 'other'
+        if (fileName.includes('plan')) fileType = 'plan'
+        else if (ext === 'mmd' || ext === 'mermaid') fileType = 'diagram'
+        else if (ext === 'md') fileType = 'notes'
+        else if (['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)) fileType = 'image'
+        else if (fileName.includes('summary')) fileType = 'summary'
+
+        setGeneratedFiles((prev) => {
+          const existing = prev.findIndex(f => f.filePath === data.filePath)
+          const entry: GeneratedFile = {
+            filePath: data.filePath,
+            fileName,
+            type: fileType,
+            source: 'research',
+            updatedAt: new Date(),
+          }
+          if (existing >= 0) {
+            const updated = [...prev]
+            updated[existing] = { ...updated[existing], ...entry, content: undefined }
+            return updated
+          }
+          return [...prev, entry]
+        })
+        // Auto-request content
+        const encoder = new TextEncoder()
+        const payload = encoder.encode(JSON.stringify({
+          type: 'get_research_artifact',
+          filePath: data.filePath,
+        }))
+        sendToAgent(payload, { reliable: true })
+        setShowFilesPanel(true)
+        setSelectedFilePath(data.filePath)
+      } else if (data.type === 'research_artifact_content') {
+        // Research artifact content received
+        console.log('🔬 Research artifact content received:', data.fileName, data.isImage ? 'image' : `${data.content?.length || 0} chars`)
+        setGeneratedFiles((prev) => prev.map(f =>
+          f.filePath === data.filePath
+            ? { ...f, content: data.content || data.error || 'Empty file', isImage: data.isImage || false, mimeType: data.mimeType }
+            : f
+        ))
+      } else if (data.type === 'mcp_status' || data.type === 'mcp_servers_changed') {
+        // MCP server status update
+        console.log('🔌 MCP status update:', data.enabledKeys)
+        if (data.mcpServers && Array.isArray(data.mcpServers)) {
+          const enabledKeys: string[] = data.enabledKeys || []
+          const merged = data.mcpServers.map((s: McpServerStatus) => ({
+            ...s,
+            enabled: enabledKeys.includes(s.serverKey),
+          }))
+          setMcpServers(merged)
+        }
+      } else if (data.type === 'mcp_toggle_result') {
+        // MCP toggle confirmation from backend
+        console.log('🔌 MCP toggle result:', data.serverKey, data.success)
+        if (data.success && data.mcpServers && Array.isArray(data.mcpServers)) {
+          const enabledKeys: string[] = data.enabledKeys || []
+          const merged = data.mcpServers.map((s: McpServerStatus) => ({
+            ...s,
+            enabled: enabledKeys.includes(s.serverKey),
+          }))
+          setMcpServers(merged)
+        }
       } else {
         console.log('❓ Unknown message type:', data.type)
       }
     } catch (e) {
       console.error('❌ Failed to parse data message:', e)
     }
-  }, [])
+  }, [preSelectedSessionId, sendToAgent])
 
   // Subscribe to data channel with callback - this fires for EVERY message
   useDataChannel('osborn-updates', handleDataMessage)
+
+  // Session management handlers
+  const handleLoadSessions = useCallback(() => {
+    setIsLoadingSessions(true)
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'list_sessions',
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [sendToAgent])
+
+  const handleResumeSession = useCallback((sessionId: string) => {
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'resume_session',
+      sessionId,
+    }))
+    sendToAgent(payload, { reliable: true })
+    addMessageRef.current?.('system', `🔄 Resuming session ${sessionId.substring(0, 8)}...`)
+  }, [sendToAgent])
+
+  const handleContinueSession = useCallback(() => {
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'continue_session',
+    }))
+    sendToAgent(payload, { reliable: true })
+    addMessageRef.current?.('system', '🔄 Continuing previous session...')
+  }, [sendToAgent])
 
   // Compress image to fit within data channel limits
   const compressImage = async (file: File, maxSize: number = 40000): Promise<string> => {
@@ -1007,6 +1667,59 @@ function VoiceRoomInner({
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, pendingPermission])
 
+  // MCP server toggle handler
+  const handleMcpToggle = useCallback((serverKey: string, enabled: boolean) => {
+    // Optimistic update
+    setMcpServers((prev) => prev.map(s =>
+      s.serverKey === serverKey ? { ...s, enabled } : s
+    ))
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'mcp_toggle',
+      serverKey,
+      enabled,
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [sendToAgent])
+
+  // Request current MCP status
+  const handleLoadMcpStatus = useCallback(() => {
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'get_mcp_status',
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [sendToAgent])
+
+  // Helper: complete the session gate (unmute mic, send session_selected to backend)
+  const completeSessionGate = useCallback((sessionId: string | null) => {
+    setShowResumePrompt(false)
+    setSessionGateCompleted(true)
+    // Unmute mic now that user has made their choice
+    setIsMuted(false)
+    localParticipant?.setMicrophoneEnabled(true)
+    // Notify backend of session choice so it can apply resume + send greeting
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'session_selected',
+      sessionId,
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [localParticipant, sendToAgent])
+
+  // Handle auto-resume prompt actions (must be before early returns to maintain hook order)
+  const handleResumePromptContinue = useCallback(() => {
+    if (recentSessionId) {
+      handleResumeSession(recentSessionId)
+    }
+    completeSessionGate(recentSessionId)
+  }, [recentSessionId, handleResumeSession, completeSessionGate])
+
+  const handleResumePromptStartFresh = useCallback(() => {
+    completeSessionGate(null)
+    addMessageRef.current?.('system', '🆕 Starting a fresh session')
+  }, [completeSessionGate])
+
   if (waitingMode) {
     return (
       <div className="w-full p-6 text-center">
@@ -1030,38 +1743,165 @@ function VoiceRoomInner({
         />
       )}
 
-      <div className="w-full max-w-2xl h-[85vh] flex flex-col bg-gradient-to-b from-gray-900 to-gray-950 rounded-2xl overflow-hidden border border-gray-800/50 shadow-2xl">
-        {/* Header */}
-        <div className="p-4 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
-          <div className="flex items-center gap-4">
+      {/* Session browser modal - shows list of previous sessions */}
+      {showResumePrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md mx-4 shadow-2xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-violet-500/20 flex items-center justify-center">
+                <span className="text-xl">📂</span>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-white">Previous Sessions</h3>
+                <p className="text-sm text-gray-400">Continue or start fresh</p>
+              </div>
+            </div>
+
+            {/* Session list with date grouping */}
+            {sessions.length > 0 ? (
+              <div className="flex-1 overflow-y-auto space-y-1 mb-4 max-h-96">
+                {groupSessionsByDate(sessions).map((group) => (
+                  <div key={group.label}>
+                    <div className="sticky top-0 bg-gray-900/95 backdrop-blur-sm px-2 py-1.5 border-b border-gray-800/50">
+                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{group.label}</span>
+                    </div>
+                    <div className="space-y-1 p-1">
+                      {group.sessions.map((session, index) => (
+                        <button
+                          key={session.sessionId}
+                          onClick={() => {
+                            handleResumeSession(session.sessionId)
+                            completeSessionGate(session.sessionId)
+                          }}
+                          className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                            group.label === 'Today' && index === 0
+                              ? 'border-violet-500 bg-violet-500/10'
+                              : 'border-gray-700 hover:border-gray-500'
+                          }`}
+                        >
+                          <div className="flex justify-between items-start">
+                            <span className="text-sm font-medium text-white">
+                              {formatTime(session.timestamp)}
+                              {group.label === 'Today' && index === 0 && <span className="ml-2 text-violet-400">(Latest)</span>}
+                            </span>
+                            <span className="text-xs text-gray-500">{session.messageCount} msgs</span>
+                          </div>
+                          {session.lastMessage && (
+                            <p className="text-xs text-gray-400 mt-1 truncate">{session.lastMessage}</p>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-400 text-sm mb-4">No previous sessions found.</p>
+            )}
+
+            {/* Start Fresh button */}
+            <button
+              onClick={handleResumePromptStartFresh}
+              className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <span>🆕</span>
+              Start Fresh
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="w-full h-[85vh] flex gap-3 transition-all duration-300 max-w-[90rem]">
+      <div className="flex-1 min-w-0 flex flex-col bg-gradient-to-b from-gray-900 to-gray-950 rounded-2xl overflow-hidden border border-gray-800/50 shadow-2xl">
+        {/* Header - Streamlined */}
+        <div className="relative px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
+          <div className="flex items-center gap-3">
             {/* Visualizer */}
             <VoiceVisualizer state={state} audioTrack={audioTrack} />
 
             {/* Status */}
             <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} />
 
+            {/* Control Menu (Mode + History + Tools) */}
+            <ControlMenu
+              sessions={sessions}
+              currentSessionId={currentSessionId}
+              onLoadSessions={handleLoadSessions}
+              onResumeSession={handleResumeSession}
+              onContinueSession={handleContinueSession}
+              isLoadingSessions={isLoadingSessions}
+              disabled={!agentConnected}
+              mcpServers={mcpServers}
+              onMcpToggle={handleMcpToggle}
+              onLoadMcpStatus={handleLoadMcpStatus}
+            />
+
             {/* Spacer */}
             <div className="flex-1" />
 
-            {/* Controls */}
-            <div className="flex items-center gap-2">
+            {/* Compact Controls */}
+            <div className="flex items-center gap-1.5">
+              {/* Files button - always visible */}
+              <button
+                onClick={() => setShowFilesPanel(!showFilesPanel)}
+                className={`relative p-2 rounded-lg transition-all ${
+                  showFilesPanel
+                    ? 'bg-violet-500/20 text-violet-400'
+                    : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                }`}
+                title="Toggle files panel"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                {generatedFiles.length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-violet-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
+                    {generatedFiles.length}
+                  </span>
+                )}
+              </button>
+
+              {/* Copy All Messages button */}
+              <button
+                onClick={handleCopyAllMessages}
+                disabled={messages.length === 0}
+                className={`p-2 rounded-lg transition-all ${
+                  copyFeedback
+                    ? 'bg-green-500/20 text-green-400'
+                    : messages.length === 0
+                      ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
+                      : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                }`}
+                title={copyFeedback ? 'Copied!' : 'Copy all messages'}
+              >
+                {copyFeedback ? (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                )}
+              </button>
+
               {/* Mute button */}
               <button
                 onClick={toggleMute}
-                className={`p-2.5 rounded-xl transition-all ${
+                className={`p-2 rounded-lg transition-all ${
                   isMuted
-                    ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30 ring-2 ring-red-500/50'
+                    ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
                     : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
                 }`}
                 title={isMuted ? 'Unmute' : 'Mute'}
               >
                 {isMuted ? (
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
                   </svg>
                 ) : (
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                   </svg>
                 )}
@@ -1071,9 +1911,9 @@ function VoiceRoomInner({
               {onDisconnect && (
                 <button
                   onClick={onDisconnect}
-                  className="px-4 py-2.5 text-sm bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl transition-all border border-red-500/30 hover:border-red-500/50 font-medium"
+                  className="px-3 py-1.5 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg transition-all border border-red-500/30"
                 >
-                  End Session
+                  End
                 </button>
               )}
             </div>
@@ -1094,6 +1934,174 @@ function VoiceRoomInner({
           onRemoveFile={handleRemoveFile}
         />
       </div>
+
+      {/* Inline files preview panel */}
+      {showFilesPanel && (
+        <div className="w-[28rem] shrink-0 flex flex-col bg-gray-900 rounded-2xl overflow-hidden border border-gray-800/50 shadow-2xl">
+          {/* Panel header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700/50">
+            <div className="flex items-center gap-2">
+              <svg className="w-4 h-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+              <span className="text-sm font-semibold text-white">Files</span>
+              <span className="text-xs text-gray-500">({generatedFiles.length})</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {generatedFiles.filter(f => !f.isImage).length > 1 && (
+                <button
+                  onClick={handleCopyAllFiles}
+                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                    fileCopyFeedback === 'all'
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-gray-800 text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  {fileCopyFeedback === 'all' ? 'Copied!' : 'Copy All'}
+                </button>
+              )}
+              <button
+                onClick={() => setShowFilesPanel(false)}
+                className="p-1 text-gray-400 hover:text-white rounded transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* File browser - compact list */}
+          <div className="border-b border-gray-700/50 max-h-52 overflow-y-auto">
+            {generatedFiles.filter(f => f.source === 'plan').length > 0 && (
+              <div>
+                <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
+                  Plans
+                </div>
+                {generatedFiles.filter(f => f.source === 'plan').map((file) => (
+                  <button
+                    key={file.filePath}
+                    onClick={() => setSelectedFilePath(file.filePath)}
+                    className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
+                      selectedFile?.filePath === file.filePath
+                        ? 'bg-violet-500/15 border-l-2 border-violet-400'
+                        : 'hover:bg-gray-800/50 border-l-2 border-transparent'
+                    }`}
+                  >
+                    <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-violet-500/20 text-violet-400">Plan</span>
+                    <span className="text-xs font-mono text-gray-300 truncate flex-1">{file.fileName}</span>
+                    {!file.content && (
+                      <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {generatedFiles.filter(f => f.source === 'research').length > 0 && (
+              <div>
+                <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
+                  Research
+                </div>
+                {generatedFiles.filter(f => f.source === 'research').map((file) => {
+                  const typeBadge: Record<string, { label: string; color: string }> = {
+                    diagram: { label: 'Diagram', color: 'bg-blue-500/20 text-blue-400' },
+                    notes: { label: 'Notes', color: 'bg-emerald-500/20 text-emerald-400' },
+                    image: { label: 'Image', color: 'bg-amber-500/20 text-amber-400' },
+                    summary: { label: 'Summary', color: 'bg-cyan-500/20 text-cyan-400' },
+                    plan: { label: 'Plan', color: 'bg-violet-500/20 text-violet-400' },
+                    other: { label: 'File', color: 'bg-gray-500/20 text-gray-400' },
+                  }
+                  const badge = typeBadge[file.type] || typeBadge.other
+                  return (
+                    <button
+                      key={file.filePath}
+                      onClick={() => setSelectedFilePath(file.filePath)}
+                      className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
+                        selectedFile?.filePath === file.filePath
+                          ? 'bg-violet-500/15 border-l-2 border-violet-400'
+                          : 'hover:bg-gray-800/50 border-l-2 border-transparent'
+                      }`}
+                    >
+                      <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded ${badge.color}`}>{badge.label}</span>
+                      <span className="text-xs font-mono text-gray-300 truncate flex-1">{file.fileName}</span>
+                      {!file.content && (
+                        <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Preview area */}
+          <div className="flex-1 overflow-y-auto">
+            {generatedFiles.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-3 p-6">
+                <svg className="w-10 h-10 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                <span className="text-sm">No files yet</span>
+                <span className="text-xs text-gray-600 text-center">Research artifacts and plans will appear here as the agent works</span>
+              </div>
+            ) : selectedFile ? (
+              <div>
+                <div className="sticky top-0 flex items-center justify-between px-4 py-2 bg-gray-800/80 backdrop-blur-sm border-b border-gray-700/30 z-10">
+                  <span className="text-xs font-mono text-violet-300 truncate">{selectedFile.fileName}</span>
+                  {!selectedFile.isImage && (
+                    <button
+                      onClick={() => handleCopyFile(selectedFile.filePath)}
+                      className={`px-2 py-1 text-xs rounded transition-colors shrink-0 ml-2 ${
+                        fileCopyFeedback === selectedFile.filePath
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'bg-gray-700 text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      {fileCopyFeedback === selectedFile.filePath ? 'Copied!' : 'Copy'}
+                    </button>
+                  )}
+                </div>
+                <div className="p-4">
+                  {selectedFile.content ? (
+                    selectedFile.isImage ? (
+                      <img
+                        src={`data:${selectedFile.mimeType || 'image/png'};base64,${selectedFile.content}`}
+                        alt={selectedFile.fileName}
+                        className="max-w-full rounded-lg border border-gray-700"
+                      />
+                    ) : selectedFile.type === 'diagram' ? (
+                      <pre className="text-xs text-gray-300 bg-gray-800/60 rounded-lg p-3 overflow-x-auto font-mono whitespace-pre-wrap">{selectedFile.content}</pre>
+                    ) : (
+                      <div className="text-sm">
+                        <MarkdownMessage content={selectedFile.content} />
+                      </div>
+                    )
+                  ) : (
+                    <div className="flex items-center justify-center py-8 text-gray-500 text-xs">
+                      <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Loading content...
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                Select a file to preview
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      </div>
     </>
   )
 }
@@ -1104,6 +2112,7 @@ export default function VoiceRoom({
   onAgentReady,
   waitingMode,
   provider,
+  preSelectedSessionId,
 }: VoiceRoomProps) {
   const livekitUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-project.livekit.cloud'
   const enableVideo = provider === 'gemini'
@@ -1123,6 +2132,7 @@ export default function VoiceRoom({
         onDisconnect={onDisconnect}
         onAgentReady={onAgentReady}
         waitingMode={waitingMode}
+        preSelectedSessionId={preSelectedSessionId}
       />
     </LiveKitRoom>
   )

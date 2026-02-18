@@ -140,7 +140,9 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
             return <>{children}</>
           },
         }}
-      />
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   )
 }

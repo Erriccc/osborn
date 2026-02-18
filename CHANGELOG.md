@@ -22,7 +22,59 @@
 
 ## Version History
 
-### v0.2.2 (Current)
+### v0.4.3 (Current) — Unified Voice Injection Queue + Specificity Prompts
+- **Unified voice injection queue**: ALL system injections (`[RESEARCH UPDATE]`, `[RESEARCH COMPLETE]`, notifications, errors) go through a single `voiceQueue[]` gated by `agentState === 'listening'`. Eliminates `generateReply timed out` errors caused by calling `generateReply` while the model is busy.
+- **State-machine driven processing**: `processVoiceQueue()` only fires when model is `listening`. After calling `generateReply`, model naturally transitions to `thinking/speaking` → `listening`, which triggers the next batch. No timers, no `drainInFlight` guards, no deferred one-shot listeners.
+- **Batched voice injections**: Multiple queued items (e.g. 3 research updates + 1 completion) are combined into a single `generateReply` call, reducing model interruptions.
+- **Research event batching**: `scheduleResearchBatch()` debounces rapid tool events (3s), formats them as a single `[RESEARCH UPDATE]`, and pushes to the voice queue.
+- **Specificity prompts**: `[RESEARCH COMPLETE]` injection now mandates naming specific tools, packages, numbers, and URLs — no more vague "various tools" summaries. Adaptive verbosity defaults research results to DETAILED (6-10 sentences).
+- **Removed**: `drainResearchQueue()`, `scheduleDrain()`, `drainDebounceTimer`, `drainInFlight`, immediate/deferred dual injection paths, `.catch()` workarounds on `generateReply` return values.
+
+---
+
+### v0.4.2 — Non-Blocking Research + Live Progress
+- **Non-blocking `ask_agent`**: Tool returns immediately, runs Claude research in background
+- **Queue-based progress injection**: Research events (tool_use, tool_result, assistant_text) push to `pendingUpdates` queue; drains when voice model enters `listening` state via `agent_state_changed` event
+- **`[RESEARCH UPDATE]` injections**: Batched progress sent to realtime voice model via `generateReply({ instructions, toolChoice: 'none' })` — model speaks natural status updates
+- **`[RESEARCH COMPLETE]` injection**: Final results with research log injected when research finishes; deferred to next `listening` state if model is busy
+- **Frontend visibility**: Progress drains and final results emit `claude_output` events with `agentRole: 'research-progress'` for chat panel visibility
+- **`activeResearch` guard**: Prevents concurrent research tasks; cleaned up on disconnect/reconnect
+
+---
+
+### v0.4.1 — Voice UX Fixes
+- **Double summarization fix**: `ask_agent` return value increased from 500 → 2500 chars with sentence-boundary truncation
+- **Research log batching**: tool_use/tool_result/assistant_text events collected during execution, appended as `[RESEARCH LOG]` to tool return
+- **Adaptive verbosity**: Realtime prompt guidance: BRIEF (1-3 sentences), STANDARD (3-6), DETAILED (6-10), FULL (all details)
+- **Streaming research text**: `assistant_text` events wired to frontend as `claude_output` during `ask_agent`
+- **Session workspace paths**: Full Claude session UUID instead of 8-char truncation (`.osborn/sessions/<full-uuid>/`)
+- **Smithery proxy reconnection**: Patch covers both `McpServer.connect` and inner `Server._server.connect`
+
+---
+
+### v0.4.0 — Research Mode Refactor (Phase 1a)
+- **Removed plan/execute/edit mode system**: ~200 lines of enforcement code deleted
+- **Single research mode**: `RESEARCH_TOOLS` array replaces `PLAN_TOOLS`/`EDIT_TOOLS`/`DEFAULT_ALLOWED_TOOLS`
+- **Simplified PreToolUse hook**: ~10 lines, only blocks Write/Edit outside `.osborn/sessions/` and `.osborn/research/`
+- **Session workspace**: `.osborn/sessions/<id>/` with `spec.md` + `library/` structure
+- **Always-on systemPrompt**: Research mode instructions injected via Claude SDK `systemPrompt` field
+- **Frontend cleanup**: Removed Mode tab, Execute button, AgentModeState — static "Research" label
+- **Data channel cleanup**: Removed `agent_mode_changed`, `edit_mode_changed`, `toggle_agent_mode`, `approve_plan`, `reject_plan`
+
+---
+
+### v0.3.0 — Enhanced Plan Mode
+- **`PLAN_TOOLS`** replaces `READ_ONLY_TOOLS`: includes Write, Edit, Bash (filtered by PreToolUse hook)
+- **Path filtering**: Write/Edit only to `.osborn/research/` and `.claude/plans/`
+- **Bash deny-list**: Blocks destructive commands (rm, npm install, git push), allows read-only (ls, git log, cat)
+- **`permissionMode: 'default'`**: Fixed from `'plan'` which blocked ALL tools
+- **Research directory**: Per-session at `.osborn/research/<session-id-prefix>/`
+- **Unified Files panel**: `GeneratedFile` replaces `PlanFile` — shows both plans and research artifacts
+- **Claude SDK `systemPrompt`**: Plan mode injects write rules and artifact creation guidance
+
+---
+
+### v0.2.2
 **Frontend Updates & Agent Intelligence**
 
 #### Frontend Fixes
@@ -110,7 +162,7 @@ pipelined:
     provider: gemini-pro
   tts:
     provider: gemini
-    voice: Zephyr
+    voice: Aoede
 ```
 
 ---

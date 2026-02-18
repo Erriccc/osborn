@@ -126,6 +126,34 @@ export class ClaudeHandler extends EventEmitter {
   // Execute mode tools - full access
   private static readonly EXECUTE_TOOLS = ClaudeHandler.ALL_TOOLS
 
+  // MCP Read-Only patterns - tools that don't modify external resources
+  // These patterns match MCP tool names that are safe for read-only/plan mode
+  private static readonly MCP_READ_ONLY_PATTERNS = [
+    // GitHub - read operations only (search, list, get)
+    /^mcp__github__(search|list|get)_/,
+    // YouTube - all tools are typically read-only
+    /^mcp__youtube__/,
+    // LiveKit - read operations only (list, get)
+    /^mcp__livekit__(list|get)_/,
+    // LiveKit docs - all read-only
+    /^mcp__livekit-docs__/,
+    // Filesystem - read only
+    /^mcp__filesystem__read/,
+    // Generic patterns for common read operations across any MCP server
+    /^mcp__[^_]+__(get|list|search|read|fetch|query|describe|show|find)_/,
+    /^mcp__[^_]+__(get|list|search|read|fetch|query|describe|show|find)$/,
+  ]
+
+  /**
+   * Check if an MCP tool is safe for read-only/plan mode
+   * Returns true if the tool only reads data (doesn't modify external resources)
+   */
+  private static isMcpToolReadOnly(toolName: string): boolean {
+    return ClaudeHandler.MCP_READ_ONLY_PATTERNS.some(pattern =>
+      pattern.test(toolName)
+    )
+  }
+
   private agentRole: 'plan' | 'execute'
 
   constructor(options: ClaudeHandlerOptions = {}) {
@@ -246,6 +274,25 @@ export class ClaudeHandler extends EventEmitter {
               // Record start time for duration tracking
               this.toolStartTimes.set(id, Date.now())
 
+              // Block write MCP operations in plan/read-only mode
+              if (this.agentRole === 'plan' && toolName.startsWith('mcp__')) {
+                if (!ClaudeHandler.isMcpToolReadOnly(toolName)) {
+                  console.log(`❌ Blocked write MCP tool in plan mode: ${toolName}`)
+                  logToolCall({
+                    timestamp: new Date().toISOString(),
+                    toolName,
+                    toolUseId: id,
+                    input: toolInput,
+                    status: 'blocked',
+                    error: 'MCP write operation blocked in read-only mode',
+                  })
+                  return {
+                    decision: 'block',
+                    reason: 'Write operations are not allowed in read-only mode. Switch to edit mode to use this tool.'
+                  }
+                }
+              }
+
               // Log tool start (background, non-blocking)
               logToolCall({
                 timestamp: new Date().toISOString(),
@@ -329,7 +376,7 @@ export class ClaudeHandler extends EventEmitter {
               })
 
               console.log(`✅ Completed: ${toolName} (${duration ? duration + 'ms' : 'unknown duration'})`)
-              this.emit('tool_result', { name: toolName, output: toolOutput, duration })
+              this.emit('tool_result', { name: toolName, input: input?.tool_input || {}, output: toolOutput, duration })
               return {}
             }]
           }]
