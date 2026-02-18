@@ -1382,6 +1382,10 @@ function VoiceRoomInner({
         if (data.success) {
           setCurrentSessionId(data.sessionId)
 
+          // Clear previous session's files
+          setGeneratedFiles([])
+          setSelectedFilePath(null)
+
           // Clear current chat messages before showing new context
           setMessages([])
 
@@ -1488,6 +1492,43 @@ function VoiceRoomInner({
             ? { ...f, content: data.content || data.error || 'Empty file', isImage: data.isImage || false, mimeType: data.mimeType }
             : f
         ))
+      } else if (data.type === 'session_artifacts') {
+        // Bulk load existing session artifacts on resume/switch
+        console.log('📁 Session artifacts received:', data.artifacts?.length || 0)
+        if (data.artifacts && Array.isArray(data.artifacts)) {
+          const newFiles: GeneratedFile[] = data.artifacts.map((a: any) => {
+            const ext = a.fileName.split('.').pop()?.toLowerCase() || ''
+            const isImage = ['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)
+            return {
+              filePath: a.filePath,
+              fileName: a.fileName,
+              type: a.type as GeneratedFile['type'],
+              source: 'research' as const,
+              updatedAt: new Date(a.updatedAt),
+              isImage,
+              mimeType: isImage ? `image/${ext}` : undefined,
+            }
+          })
+
+          setGeneratedFiles((prev) => {
+            const existingPaths = new Set(prev.map(f => f.filePath))
+            const uniqueNew = newFiles.filter(f => !existingPaths.has(f.filePath))
+            return [...prev, ...uniqueNew]
+          })
+
+          // Auto-select first file and request its content
+          if (newFiles.length > 0) {
+            setSelectedFilePath(newFiles[0].filePath)
+            for (const file of newFiles) {
+              const encoder = new TextEncoder()
+              const payload = encoder.encode(JSON.stringify({
+                type: 'get_research_artifact',
+                filePath: file.filePath,
+              }))
+              sendToAgent(payload, { reliable: true })
+            }
+          }
+        }
       } else if (data.type === 'mcp_status' || data.type === 'mcp_servers_changed') {
         // MCP server status update
         console.log('🔌 MCP status update:', data.enabledKeys)

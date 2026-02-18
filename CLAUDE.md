@@ -71,13 +71,13 @@ The agent operates in a single **research** mode. It can read any file, search t
 **Agent:**
 - `agent/src/index.ts` — Main entry: LiveKit room events, session creation (`createDirectSession`/`createRealtimeSession`), all DataReceived handlers, HTTP API server (port 8741)
 - `agent/src/claude-llm.ts` — `ClaudeLLM` class extending `llm.LLM`: wraps Claude Agent SDK `query()`, research mode system prompt, session resume, MCP servers, checkpoints, permission flow
-- `agent/src/config.ts` — `OsbornConfig` loading from `~/.osborn/config.yaml`, session management (list/get/history), session workspace helpers, MCP catalog with Smithery cloud support
+- `agent/src/config.ts` — `OsbornConfig` loading from `~/.osborn/config.yaml`, session management (list/get/history), session workspace helpers, `listWorkspaceArtifacts()` for file explorer persistence, MCP catalog with Smithery cloud support
 - `agent/src/smithery-proxy.ts` — In-process MCP proxy for Smithery cloud servers. Bypasses Claude Agent SDK HTTP bug (#18296) by using `@smithery/api/mcp` `createConnection()` + MCP SDK `Client` to get a working transport, then wraps in local `McpServer` as `type: 'sdk'`
 - `agent/src/voice-io.ts` — Factory functions for STT, TTS, VAD, and realtime model creation
 
 **Frontend:**
-- `frontend/src/components/VoiceRoom.tsx` — Main UI component (~1900 lines): voice visualization, chat, permission UI, session management, MCP toggles, inline side-by-side files panel
-- `frontend/src/components/MarkdownMessage.tsx` — Markdown renderer with syntax highlighting (highlight.js + rehype)
+- `frontend/src/components/VoiceRoom.tsx` — Main UI component (~2000 lines): voice visualization, chat, permission UI, session management, MCP toggles, always-visible files panel with session artifact persistence
+- `frontend/src/components/MarkdownMessage.tsx` — Markdown renderer with syntax highlighting (highlight.js + rehype). `CodeBlock` accepts `React.ReactNode` children (not `String()`) to preserve rehype-highlight spans. `extractText()` walks React tree for copy button
 - `frontend/src/components/SessionBrowser.tsx` — Past session browser
 - `frontend/src/app/api/token/route.ts` — LiveKit JWT token generation with metadata (provider, voiceArch, sessionId)
 - `frontend/src/app/page.tsx` — Landing page: room join, provider/session selection
@@ -85,8 +85,8 @@ The agent operates in a single **research** mode. It can read any file, search t
 ### Data Channel Protocol
 
 Frontend ↔ Agent communication uses LiveKit data channels:
-- **Agent → Frontend** (`topic: 'osborn-updates'`): `tool_use`, `tool_result`, `tool_blocked`, `agent_state`, `agent_ready`, `permission_request`, `claude_output`, `assistant_response`, `task_completed`, `plan_file_updated`, `research_artifact_updated`, `session_resume_set`, `mcp_toggle_result`, `mcp_servers_changed`, `mcp_status`, `checkpoint_captured`
-- **Frontend → Agent** (`topic: 'user-input'`): `permission_response`, `user_text`, `resume_session`, `continue_session`, `switch_session`, `mcp_toggle`, `get_mcp_status`, `session_selected`, `get_plan_file`, `get_research_artifact`
+- **Agent → Frontend** (`topic: 'osborn-updates'`): `tool_use`, `tool_result`, `tool_blocked`, `agent_state`, `agent_ready`, `permission_request`, `claude_output`, `assistant_response`, `task_completed`, `plan_file_updated`, `research_artifact_updated`, `session_resume_set`, `session_artifacts`, `mcp_toggle_result`, `mcp_servers_changed`, `mcp_status`, `checkpoint_captured`
+- **Frontend → Agent** (`topic: 'user-input'`): `permission_response`, `user_text`, `resume_session`, `continue_session`, `switch_session`, `mcp_toggle`, `get_mcp_status`, `session_selected`, `get_plan_file`, `get_research_artifact`, `get_session_artifacts`
 
 ### Session & File Storage
 - Sessions: `~/.claude/projects/<project-path>/` as `.jsonl` files + `.session-meta.json`

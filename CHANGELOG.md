@@ -22,7 +22,31 @@
 
 ## Version History
 
-### v0.4.3 (Current) — Unified Voice Injection Queue + Specificity Prompts
+### v0.4.4 (Current) — Full-Width UI, File Explorer Persistence, MCP Proxy Fix
+
+#### UI Layout Overhaul
+- **Full-width layout**: Removed `max-w-2xl` constraint from `page.tsx` and `max-w-3xl` default from `VoiceRoom.tsx`. UI now uses full viewport width (`max-w-[90rem]`)
+- **Files panel always visible**: `showFilesPanel` defaults to `true`. Panel shows "No files yet" empty state when no artifacts exist. Toggle button always visible (not gated on file count)
+- **Code block rendering fix**: `MarkdownMessage.tsx` `CodeBlock` now accepts `React.ReactNode` children instead of `String()` — fixes `[object Object]` rendering when `rehype-highlight` transforms code into syntax-highlighted `<span>` elements. Added `extractText()` helper for copy button plain text extraction
+
+#### File Explorer Session Persistence
+- **Workspace artifact loading on resume**: When resuming/switching sessions, the agent scans `.osborn/sessions/` for existing files and sends them to frontend via new `session_artifacts` event
+- **All resume paths covered**: Artifact emission added to 4 code paths — `session_selected` (session gate), `resume_session`, `continue_session`, `switch_session`
+- **New `listWorkspaceArtifacts()`**: Scans flat `.osborn/sessions/` directory (where Claude actually writes) instead of per-session subdirectory. Recursive — includes `library/` contents
+- **New `get_session_artifacts` handler**: Frontend can request artifacts on demand
+- **File clearing on session switch**: `generatedFiles` and `selectedFilePath` reset before loading new session's artifacts
+- **Content lazy-loading**: Only metadata sent initially; content fetched on-demand when file is selected
+
+#### Smithery MCP Proxy Reconnection Fix
+- **Fixed "Already connected to a transport" error**: On second `query()` call, the SDK tried to reconnect the proxy `McpServer` which threw. Proxy now patches both `McpServer.connect()` and inner `Server._server.connect()` to auto-close existing transport before accepting a new one
+- **YouTube MCP confirmed working**: 7 tools discovered and used natively across multiple queries
+
+#### Data Channel Protocol
+- **New events**: `session_artifacts` (Agent → Frontend), `get_session_artifacts` (Frontend → Agent)
+
+---
+
+### v0.4.3 — Unified Voice Injection Queue + Specificity Prompts
 - **Unified voice injection queue**: ALL system injections (`[RESEARCH UPDATE]`, `[RESEARCH COMPLETE]`, notifications, errors) go through a single `voiceQueue[]` gated by `agentState === 'listening'`. Eliminates `generateReply timed out` errors caused by calling `generateReply` while the model is busy.
 - **State-machine driven processing**: `processVoiceQueue()` only fires when model is `listening`. After calling `generateReply`, model naturally transitions to `thinking/speaking` → `listening`, which triggers the next batch. No timers, no `drainInFlight` guards, no deferred one-shot listeners.
 - **Batched voice injections**: Multiple queued items (e.g. 3 research updates + 1 completion) are combined into a single `generateReply` call, reducing model interruptions.

@@ -42,7 +42,7 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
 
             return (
               <CodeBlock language={language}>
-                {String(children).replace(/\n$/, '')}
+                {children}
               </CodeBlock>
             )
           },
@@ -147,12 +147,25 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
   )
 }
 
+// Extract plain text from React children tree (for copy button)
+function extractText(node: React.ReactNode): string {
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (!node) return ''
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (typeof node === 'object' && 'props' in node) {
+    return extractText((node as React.ReactElement).props.children)
+  }
+  return ''
+}
+
 // Separate CodeBlock component with copy functionality
-function CodeBlock({ children, language }: { children: string; language: string }) {
+function CodeBlock({ children, language }: { children: React.ReactNode; language: string }) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(children)
+    const text = extractText(children).replace(/\n$/, '')
+    navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }, [children])

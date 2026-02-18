@@ -11,17 +11,13 @@ Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SD
 - **Claude Agent SDK**: Full tool access (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch)
 - **Permission System**: Approve/deny operations via voice or UI
 - **Session Management**: Resume, switch, and browse previous conversations
-- **MCP Integration**: Extend with GitHub, YouTube, filesystem, and custom MCP servers
-- **Research Artifacts**: Plans, diagrams (mermaid), notes, and analysis files
+- **MCP Integration**: Extend with GitHub, YouTube, filesystem, and custom MCP servers (Smithery cloud proxy)
+- **Research Artifacts**: Plans, diagrams (mermaid), notes, and analysis files — persist across session resumes
+- **Full-Width UI**: Responsive layout with always-visible Files panel and syntax-highlighted code
 
-## Modes
+## Research Mode
 
-| Mode | Purpose | Capabilities |
-|------|---------|-------------|
-| **Plan** | Research, explore, brainstorm | Read all files, search web, read-only bash, write to `.osborn/research/` and `.claude/plans/` |
-| **Execute** | Implement changes | Everything — full tool access |
-
-Plan mode is the default. The agent researches deeply and creates artifacts (plans, diagrams, notes) that appear in the Files panel. Switch to Execute mode when ready to implement.
+The agent operates in a single **research** mode. It reads code, searches the web, runs commands, fetches YouTube transcripts, and saves findings to a session workspace (`.osborn/sessions/`). Write operations are restricted to the workspace directory for safety. Research artifacts (plans, diagrams, notes) appear in the always-visible Files panel.
 
 ## Architecture
 
@@ -116,19 +112,14 @@ mcpServers:
 
 ## Voice Commands
 
-### Research (Plan Mode)
+### Research
 - "Research how authentication works in this project"
 - "Show me the data flow from API to database"
 - "Create a diagram of the component architecture"
 - "Write up a plan for adding OAuth"
 - "Search for best practices on rate limiting"
 - "What dependencies does this project use?"
-
-### Implementation (Execute Mode)
-- "Create a file called hello.txt with hello world"
-- "Fix the bug in the login handler"
-- "Run npm test"
-- "Add error handling to the API routes"
+- "Get the transcript for this YouTube video"
 
 ## Project Structure
 
@@ -138,9 +129,9 @@ osborn/
 │   ├── src/
 │   │   ├── index.ts        # Agent entry, room events, data handlers
 │   │   ├── claude-llm.ts   # Claude Agent SDK wrapper, mode filtering
-│   │   ├── config.ts       # Config, sessions, research directory helpers
-│   │   ├── voice-io.ts     # STT/TTS/VAD/Realtime model factory
-│   │   └── claude-handler.ts  # Claude handler utilities
+│   │   ├── config.ts          # Config, sessions, workspace helpers
+│   │   ├── smithery-proxy.ts  # Smithery cloud MCP proxy
+│   │   └── voice-io.ts       # STT/TTS/VAD/Realtime model factory
 │   └── package.json
 ├── frontend/               # Next.js web frontend
 │   ├── src/
@@ -165,12 +156,12 @@ osborn/
 | Direct Mode (STT + Claude + TTS) | Working |
 | Claude Agent SDK Tools | Working |
 | Permission System | Working |
-| Plan Mode (enhanced) | Working |
-| Execute Mode | Working |
+| Research Mode | Working |
 | Session Management | Working |
 | Research Artifacts | Working |
-| Files Panel | Working |
-| MCP Integration | Working |
+| Files Panel (always visible, persists on resume) | Working |
+| MCP Integration (Smithery cloud proxy) | Working |
+| Full-Width Responsive Layout | Working |
 
 ## Tech Stack
 

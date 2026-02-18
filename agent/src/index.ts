@@ -9,7 +9,7 @@ import { AccessToken } from 'livekit-server-sdk'
 initializeLogger({ pretty: true, level: 'info' })
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listResearchArtifacts, listWorkspaceArtifacts, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -1222,6 +1222,22 @@ When a permission request appears, tell the user what needs permission and ask: 
             success: true,
           })
 
+          // Send existing workspace artifacts to frontend
+          const preArtifacts = listWorkspaceArtifacts(workingDir)
+          if (preArtifacts.length > 0) {
+            console.log(`📁 Sending ${preArtifacts.length} workspace artifacts to frontend`)
+            await sendToFrontend({
+              type: 'session_artifacts',
+              sessionId: preSelectedSessionId,
+              artifacts: preArtifacts.map(a => ({
+                filePath: a.filePath,
+                fileName: a.fileName,
+                type: a.type,
+                updatedAt: a.updatedAt,
+              }))
+            })
+          }
+
           // Greet with session context
           if (summary) {
             const contextBriefing = buildContextBriefing(summary, conversationHistory)
@@ -1331,6 +1347,22 @@ When a permission request appears, tell the user what needs permission and ask: 
             success: true,
           })
 
+          // Send existing session artifacts to frontend
+          const artifacts = listWorkspaceArtifacts(workingDir)
+          if (artifacts.length > 0) {
+            console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
+            await sendToFrontend({
+              type: 'session_artifacts',
+              sessionId,
+              artifacts: artifacts.map(a => ({
+                filePath: a.filePath,
+                fileName: a.fileName,
+                type: a.type,
+                updatedAt: a.updatedAt,
+              }))
+            })
+          }
+
           if (currentSession && summary) {
             const contextBriefing = buildContextBriefing(summary, conversationHistory)
             console.log('📋 Injecting session context into voice agent...')
@@ -1369,6 +1401,22 @@ When a permission request appears, tell the user what needs permission and ask: 
             sessionId: recentId,
             success: true,
           })
+
+          // Send existing session artifacts to frontend
+          const artifacts = listWorkspaceArtifacts(workingDir)
+          if (artifacts.length > 0) {
+            console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
+            await sendToFrontend({
+              type: 'session_artifacts',
+              sessionId: recentId,
+              artifacts: artifacts.map(a => ({
+                filePath: a.filePath,
+                fileName: a.fileName,
+                type: a.type,
+                updatedAt: a.updatedAt,
+              }))
+            })
+          }
 
           if (currentSession && summary) {
             const contextBriefing = buildContextBriefing(summary, conversationHistory)
@@ -1417,6 +1465,22 @@ When a permission request appears, tell the user what needs permission and ask: 
             conversationHistory,
           })
 
+          // Step 3.5: Send existing session artifacts to frontend
+          const switchArtifacts = listWorkspaceArtifacts(workingDir)
+          if (switchArtifacts.length > 0) {
+            console.log(`📁 Sending ${switchArtifacts.length} session artifacts to frontend`)
+            await sendToFrontend({
+              type: 'session_artifacts',
+              sessionId,
+              artifacts: switchArtifacts.map(a => ({
+                filePath: a.filePath,
+                fileName: a.fileName,
+                type: a.type,
+                updatedAt: a.updatedAt,
+              }))
+            })
+          }
+
           // Step 4: Voice agent acknowledges context
           if (currentSession && summary) {
             const contextBriefing = buildContextBriefing(summary, conversationHistory)
@@ -1450,6 +1514,23 @@ When a permission request appears, tell the user what needs permission and ask: 
           sessionId: currentLLM.sessionId,
           isResumingSession: currentLLM.isResumingSession,
         })
+      }
+      else if (data.type === 'get_session_artifacts') {
+        const sessionId = data.sessionId as string
+        if (sessionId) {
+          const artifacts = listWorkspaceArtifacts(workingDir)
+          console.log(`📁 Sending ${artifacts.length} session artifacts for ${sessionId.substring(0, 8)}`)
+          await sendToFrontend({
+            type: 'session_artifacts',
+            sessionId,
+            artifacts: artifacts.map(a => ({
+              filePath: a.filePath,
+              fileName: a.fileName,
+              type: a.type,
+              updatedAt: a.updatedAt,
+            }))
+          })
+        }
       }
       // ============================================================
       // SESSION GATE HANDLER (initial session selection before voice)
@@ -1586,6 +1667,22 @@ When a permission request appears, tell the user what needs permission and ask: 
             sessionId,
             success: true,
           })
+
+          // Send existing session artifacts to frontend
+          const gateArtifacts = listWorkspaceArtifacts(workingDir)
+          if (gateArtifacts.length > 0) {
+            console.log(`📁 Sending ${gateArtifacts.length} session artifacts to frontend`)
+            await sendToFrontend({
+              type: 'session_artifacts',
+              sessionId,
+              artifacts: gateArtifacts.map(a => ({
+                filePath: a.filePath,
+                fileName: a.fileName,
+                type: a.type,
+                updatedAt: a.updatedAt,
+              }))
+            })
+          }
 
           // Greet with session context
           if (currentSession && summary) {

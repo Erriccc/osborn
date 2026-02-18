@@ -1,4 +1,4 @@
-# Osborn v0.4.3 - Voice AI Research Assistant
+# Osborn v0.4.4 - Voice AI Research Assistant
 
 ## Architecture
 
@@ -41,9 +41,12 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | Session management (resume, switch, browse) | Working |
 | Session gate (startup session selection) | Working |
 | Single research mode (write-safe) | Working |
-| Session workspace (`.osborn/sessions/<uuid>/`) | Working |
+| Session workspace (`.osborn/sessions/`) | Working |
+| File explorer persistence on resume | Working |
+| Full-width responsive UI layout | Working |
 | MCP server integration (GitHub, YouTube, etc.) | Working |
 | Smithery cloud MCP proxy (`type: 'sdk'`) | Working |
+| MCP proxy reconnection across queries | Working |
 | `ask_agent` tool (non-blocking, realtime → Claude) | Working |
 | Unified voice injection queue | Working |
 | Research event batching + voice queue | Working |
@@ -68,6 +71,35 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | `frontend/src/components/MarkdownMessage.tsx` | Markdown renderer |
 | `frontend/src/components/SessionBrowser.tsx` | Session browser component |
 | `frontend/src/lib/sessions.ts` | Session utilities (formatTime, groupSessionsByDate) |
+
+---
+
+## v0.4.4 Changes — Full-Width UI, File Explorer Persistence, MCP Fix
+
+### UI Layout
+- Removed `max-w-2xl` parent constraint (672px cap) → full viewport width
+- Files panel always visible with empty state; toggle button always shown
+- Fixed `[object Object]` in code blocks — `CodeBlock` accepts React nodes, `extractText()` for copy
+
+### File Explorer Persistence
+- `listWorkspaceArtifacts()` scans flat `.osborn/sessions/` recursively (where Claude actually writes)
+- `session_artifacts` event sent on all 4 resume paths (session gate, resume, continue, switch)
+- `get_session_artifacts` handler for on-demand requests
+- Files cleared on session switch before loading new session's artifacts
+
+### MCP Proxy Fix
+- Smithery proxy patches `McpServer.connect()` + inner `Server._server.connect()` for reconnection
+- Fixes "Already connected to a transport" on second `query()` call
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/index.ts` | Import `listWorkspaceArtifacts`, emit `session_artifacts` on 4 resume paths, add `get_session_artifacts` handler |
+| `agent/src/config.ts` | Add `listWorkspaceArtifacts()`, refactor `listResearchArtifacts()` to use shared `scanDirForArtifacts()` |
+| `agent/src/smithery-proxy.ts` | Patch `McpServer.connect` + `Server._server.connect` for reconnection |
+| `frontend/src/app/page.tsx` | Remove `max-w-2xl` constraint |
+| `frontend/src/components/VoiceRoom.tsx` | Full-width layout, files panel default on, `session_artifacts` handler, file clearing on switch |
+| `frontend/src/components/MarkdownMessage.tsx` | `CodeBlock` accepts `React.ReactNode`, add `extractText()` for copy |
 
 ---
 
@@ -129,4 +161,4 @@ mcpServers:
 
 ---
 
-Last Updated: 2025-02-17
+Last Updated: 2026-02-17

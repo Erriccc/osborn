@@ -1063,20 +1063,50 @@ export interface ResearchArtifact {
   updatedAt: string
 }
 
+function classifyFile(fileName: string): ResearchArtifact['type'] {
+  const ext = fileName.split('.').pop()?.toLowerCase() || ''
+  if (fileName.includes('plan')) return 'plan'
+  if (ext === 'mmd' || ext === 'mermaid') return 'diagram'
+  if (ext === 'md') return 'notes'
+  if (['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)) return 'image'
+  if (fileName.includes('summary')) return 'summary'
+  return 'other'
+}
+
+function scanDirForArtifacts(dir: string): ResearchArtifact[] {
+  const results: ResearchArtifact[] = []
+  function scan(scanPath: string) {
+    try {
+      for (const entry of readdirSync(scanPath)) {
+        const fullPath = join(scanPath, entry)
+        const stat = statSync(fullPath)
+        if (stat.isDirectory()) {
+          scan(fullPath)
+        } else {
+          results.push({
+            fileName: entry,
+            filePath: fullPath,
+            type: classifyFile(entry),
+            size: stat.size,
+            updatedAt: stat.mtime.toISOString(),
+          })
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  scan(dir)
+  return results
+}
+
 export function listResearchArtifacts(projectPath: string, sessionId: string): ResearchArtifact[] {
-  const dir = getSessionWorkspace(projectPath, sessionId)
-  try {
-    return readdirSync(dir).map(f => {
-      const fullPath = join(dir, f)
-      const stat = statSync(fullPath)
-      const ext = f.split('.').pop()?.toLowerCase() || ''
-      let type: ResearchArtifact['type'] = 'other'
-      if (f.includes('plan')) type = 'plan'
-      else if (ext === 'mmd' || ext === 'mermaid') type = 'diagram'
-      else if (ext === 'md') type = 'notes'
-      else if (['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)) type = 'image'
-      else if (f.includes('summary')) type = 'summary'
-      return { fileName: f, filePath: fullPath, type, size: stat.size, updatedAt: stat.mtime.toISOString() }
-    })
-  } catch { return [] }
+  return scanDirForArtifacts(getSessionWorkspace(projectPath, sessionId))
+}
+
+/**
+ * List all artifacts in the shared .osborn/sessions/ workspace.
+ * The system prompt directs Claude to write here (flat, not per-session).
+ */
+export function listWorkspaceArtifacts(projectPath: string): ResearchArtifact[] {
+  const dir = join(projectPath, '.osborn', 'sessions')
+  return scanDirForArtifacts(dir)
 }

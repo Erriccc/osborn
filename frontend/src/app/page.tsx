@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import VoiceRoom from '@/components/VoiceRoom'
 import SessionBrowser from '@/components/SessionBrowser'
 
-type Provider = 'openai' | 'gemini'
+type Provider = 'gemini' | 'openai'
 type VoiceArch = 'realtime' | 'pipelined' | 'direct'
 type CodingAgent = 'claude' | 'codex'
 type ConnectionState = 'browsing' | 'waiting' | 'connected'
@@ -13,7 +13,7 @@ export default function Home() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('browsing')
   const [token, setToken] = useState<string | null>(null)
   const [roomCode, setRoomCode] = useState<string | null>(null)
-  const [provider, setProvider] = useState<Provider>('openai')
+  const [provider, setProvider] = useState<Provider>('gemini')
   const [voiceArch, setVoiceArch] = useState<VoiceArch>('realtime')
   const [codingAgent, setCodingAgent] = useState<CodingAgent>('claude')
   const [copied, setCopied] = useState(false)
@@ -157,7 +157,7 @@ export default function Home() {
                   Room: <span className="font-mono text-gray-300">{roomCode}</span>
                 </span>
                 <span className="text-gray-500">
-                  {provider === 'openai' ? 'OpenAI' : 'Gemini'} / {voiceArch === 'direct' ? 'Direct' : voiceArch === 'pipelined' ? 'Pipelined' : 'Realtime'} / {codingAgent === 'claude' ? 'Claude' : 'Codex'}
+                  {provider === 'gemini' ? 'Gemini' : 'OpenAI'} / {voiceArch === 'direct' ? 'Direct' : voiceArch === 'pipelined' ? 'Pipelined' : 'Realtime'} / {codingAgent === 'claude' ? 'Claude' : 'Codex'}
                 </span>
               </div>
             </div>
