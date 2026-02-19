@@ -841,7 +841,7 @@ export async function getConversationHistory(
           if (text) {
             exchanges.push({
               role: 'user',
-              content: text.substring(0, 500)  // Limit length
+              content: text.substring(0, 2000)  // Allow longer content for richer context
             })
           }
         }
@@ -852,7 +852,7 @@ export async function getConversationHistory(
           if (text) {
             exchanges.push({
               role: 'assistant',
-              content: text.substring(0, 500)  // Limit length
+              content: text.substring(0, 2000)  // Allow longer content for richer context
             })
           }
         }

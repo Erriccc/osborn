@@ -67,6 +67,16 @@ process.on('unhandledRejection', (reason: any) => {
     console.log('⚠️ LLM request aborted (user interrupted)')
     return
   }
+  // Gemini plugin intentionally supersedes generate_reply calls — safe to suppress
+  if (msg.includes('Superseded')) {
+    console.log('⚠️ generateReply superseded (expected during concurrent injections)')
+    return
+  }
+  // OpenAI race: voice queue fired while server-side VAD already created a response
+  if (msg.includes('conversation_already_has_active_response') || msg.includes('active_response')) {
+    console.log('⚠️ OpenAI active response collision (will retry on next listening state)')
+    return
+  }
   console.error('❌ Unhandled Rejection:', msg)
 })
 
@@ -151,27 +161,76 @@ function startApiServer(workingDir: string, port: number): void {
 
 /**
  * Build a context briefing string for the realtime agent
- * Summarizes the session state and recent conversation
+ * Loads session conversation history so the model has deep context.
+ * Gemini has smaller context limits — cap at 10 exchanges with 500 char content.
+ * OpenAI handles full history (30 exchanges, 2000 char content).
  */
 function buildContextBriefing(
   summary: SessionSummary,
-  history: ConversationExchange[]
+  history: ConversationExchange[],
+  provider?: string
 ): string {
+  const isGemini = provider === 'gemini'
+  // Gemini: last 10 exchanges capped at 500 chars. OpenAI: full history.
+  const maxExchanges = isGemini ? 10 : history.length
+  const maxContentLen = isGemini ? 500 : 2000
+  const trimmedHistory = history.slice(-maxExchanges)
+
   const lines = [
     `Session ID: ${summary.sessionId.substring(0, 8)}`,
-    `Messages: ${summary.messageCount}`,
+    `Total messages: ${summary.messageCount}`,
     '',
-    'Recent conversation:'
+    '=== SESSION CONVERSATION HISTORY ==='
   ]
 
-  for (const exchange of history.slice(-5)) {
-    const content = exchange.content.length > 200
-      ? exchange.content.substring(0, 200) + '...'
+  for (const exchange of trimmedHistory) {
+    const content = exchange.content.length > maxContentLen
+      ? exchange.content.substring(0, maxContentLen) + '...'
       : exchange.content
     lines.push(`${exchange.role === 'user' ? 'User' : 'Assistant'}: ${content}`)
+    lines.push('')
   }
 
   return lines.join('\n')
+}
+
+/**
+ * Load full session conversation history into the realtime model's ChatContext.
+ * This gives the model persistent memory of what was discussed/researched,
+ * enabling deeper follow-up conversations without re-delegating to ask_agent.
+ *
+ * NOTE: Gemini's Live API doesn't support updateChatCtx (crashes with code 1008).
+ * For Gemini, the session resume context is already injected via generateReply({ userInput })
+ * which becomes part of the conversation history as model turns.
+ */
+function loadSessionHistoryIntoChatCtx(
+  agent: voice.Agent | null,
+  history: ConversationExchange[],
+  provider?: string
+) {
+  if (!agent || history.length === 0) return
+  // Skip for Gemini — updateChatCtx triggers unsupported operations on Gemini Live API
+  if (provider === 'gemini') {
+    console.log(`🧠 Skipping ChatCtx load for Gemini (${history.length} exchanges) — context injected via generateReply`)
+    return
+  }
+
+  try {
+    const chatCtx = agent.chatCtx.copy()
+
+    // Inject each conversation exchange as a proper chat message
+    for (const exchange of history) {
+      chatCtx.addMessage({
+        role: exchange.role === 'user' ? 'user' : 'assistant',
+        content: exchange.content,
+      })
+    }
+
+    agent.updateChatCtx(chatCtx)
+    console.log(`🧠 Loaded ${history.length} conversation exchanges into ChatCtx (${history.reduce((sum, e) => sum + e.content.length, 0)} chars)`)
+  } catch (err) {
+    console.log('⚠️ Failed to load session history into ChatCtx:', err)
+  }
 }
 
 
@@ -267,13 +326,17 @@ async function main() {
   console.log('📡 Connecting to LiveKit...')
 
   const room = new Room()
+  room.setMaxListeners(50)  // Prevent MaxListenersExceeded warnings on reconnect
 
   // Track state
   let currentSession: voice.AgentSession | null = null
+  let currentAgent: voice.Agent | null = null  // For updateChatCtx() context injection
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
+  let userState = 'listening'  // Track user speech state for queue safety
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
+  let currentProvider: string = realtimeConfig.provider  // Track active realtime provider
 
   // Task deduplication guard - prevents Gemini re-execution loops
   let lastTaskRequest = ''
@@ -310,6 +373,11 @@ async function main() {
       console.log(`⏸️ Voice queue: ${voiceQueue.length} items waiting (model: ${agentState})`)
       return // Will be called again when agent_state_changed → 'listening'
     }
+    // Don't inject while user is speaking — server-side VAD will auto-create a response
+    if (userState === 'speaking') {
+      console.log(`⏸️ Voice queue: ${voiceQueue.length} items waiting (user speaking)`)
+      return
+    }
 
     // Batch ALL queued items into one generateReply call
     const items = voiceQueue.splice(0)
@@ -320,15 +388,42 @@ async function main() {
     console.log(`📡 Voice queue: processing ${items.length} batched items (${batchedInstruction.length} chars)`)
 
     try {
+      // Cancel any in-flight response to prevent OpenAI "active_response" collision
+      currentSession.interrupt()
+
       currentSession.generateReply({
         instructions: batchedInstruction,
         toolChoice: 'none' as any,
       })
       // Model transitions to thinking/speaking after this call.
       // When it returns to 'listening', agent_state_changed triggers processVoiceQueue() again.
+
+      // Also inject into chatCtx as persistent context so the model remembers across turns
+      injectIntoChatCtx(batchedInstruction)
     } catch (err) {
       console.log('⚠️ Voice queue generateReply failed, re-queuing:', err)
       voiceQueue.unshift(...items)
+    }
+  }
+
+  // Inject content into the agent's ChatContext as persistent memory
+  // This ensures the realtime model can reference prior research in follow-up questions
+  // NOTE: Gemini doesn't support updateChatCtx (crashes with "Operation not implemented" code 1008).
+  // For Gemini, generateReply({ instructions }) already injects as model turns, so context persists naturally.
+  function injectIntoChatCtx(content: string) {
+    if (!currentAgent) return
+    // Skip for Gemini — updateChatCtx triggers unsupported operations on Gemini Live API
+    if (currentVoiceMode === 'realtime' && currentProvider === 'gemini') return
+    try {
+      const chatCtx = currentAgent.chatCtx.copy()
+      chatCtx.addMessage({
+        role: 'assistant',
+        content: content,
+      })
+      currentAgent.updateChatCtx(chatCtx)
+      console.log(`🧠 ChatCtx updated (+${content.length} chars persistent context)`)
+    } catch (err) {
+      console.log('⚠️ ChatCtx injection failed:', err)
     }
   }
 
@@ -979,6 +1074,7 @@ When a permission request appears, tell the user what needs permission and ask: 
       activeResearch = null
     }
     currentSession = null
+    currentAgent = null
     currentLLM = null
   })
 
@@ -995,9 +1091,13 @@ When a permission request appears, tell the user what needs permission and ask: 
     if (currentSession) {
       console.log('🧹 Cleaning up previous session...')
       try {
+        await currentSession.close()
+      } catch {}
+      try {
         currentSession.removeAllListeners()
       } catch {}
       currentSession = null
+      currentAgent = null
       currentLLM = null
     }
 
@@ -1031,6 +1131,7 @@ When a permission request appears, tell the user what needs permission and ask: 
 
     // Sync to outer scope so DataReceived handler can use it
     currentVoiceMode = sessionVoiceMode
+    currentProvider = sessionRealtimeProvider
 
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession
@@ -1050,6 +1151,7 @@ When a permission request appears, tell the user what needs permission and ask: 
       agent = result.agent
     }
     currentSession = session
+    currentAgent = agent  // Store for updateChatCtx() context injection
 
     // ============================================================
     // Transcript handling
@@ -1112,9 +1214,15 @@ When a permission request appears, tell the user what needs permission and ask: 
 
       // When the model becomes available (listening), process any queued voice injections
       if (ev.newState === 'listening' && voiceQueue.length > 0) {
-        // Small delay to let the model settle before injecting
-        setTimeout(() => processVoiceQueue(), 500)
+        // Brief delay to let the model settle, but short to minimize collision window
+        setTimeout(() => processVoiceQueue(), 50)
       }
+    })
+
+    // User state tracking — prevents queue from colliding with server-side VAD
+    session.on('user_state_changed' as any, (ev: any) => {
+      userState = ev.newState
+      console.log(`👤 User state: ${ev.newState}`)
     })
 
     // FALLBACK: playout_completed
@@ -1127,6 +1235,12 @@ When a permission request appears, tell the user what needs permission and ask: 
 
     // Error and close handlers
     session.on('error' as any, (ev: any) => {
+      const msg = ev.error?.message || String(ev.error)
+      // OpenAI race: voice queue collided with server-side VAD auto-response
+      if (msg.includes('conversation_already_has_active_response') || msg.includes('active_response')) {
+        console.log('⚠️ OpenAI active response collision — queue will retry on next listening state')
+        return
+      }
       console.error('❌ Session error:', ev.error)
     })
 
@@ -1214,7 +1328,7 @@ When a permission request appears, tell the user what needs permission and ask: 
 
           // Fetch context and greet with it
           const summary = await getSessionSummary(preSelectedSessionId, workingDir)
-          const conversationHistory = await getConversationHistory(preSelectedSessionId, workingDir, 5)
+          const conversationHistory = await getConversationHistory(preSelectedSessionId, workingDir, 30)
 
           await sendToFrontend({
             type: 'session_resume_set',
@@ -1238,13 +1352,14 @@ When a permission request appears, tell the user what needs permission and ask: 
             })
           }
 
-          // Greet with session context
+          // Load full session history into realtime model's context
           if (summary) {
-            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
             try {
               if (sessionVoiceMode === 'realtime') {
                 const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
-                await session.generateReply({ userInput: contextPrompt })
+                await session.generateReply({ instructions: contextPrompt })
               } else {
                 await (session as any).say("Welcome back! Ready to continue our previous conversation.")
               }
@@ -1339,7 +1454,7 @@ When a permission request appears, tell the user what needs permission and ask: 
           console.log(`🔄 Will resume session: ${sessionId}`)
 
           const summary = await getSessionSummary(sessionId, workingDir)
-          const conversationHistory = await getConversationHistory(sessionId, workingDir, 5)
+          const conversationHistory = await getConversationHistory(sessionId, workingDir, 30)
 
           await sendToFrontend({
             type: 'session_resume_set',
@@ -1364,12 +1479,13 @@ When a permission request appears, tell the user what needs permission and ask: 
           }
 
           if (currentSession && summary) {
-            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
             console.log('📋 Injecting session context into voice agent...')
             try {
               if (currentVoiceMode === 'realtime') {
                 const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
-                await currentSession.generateReply({ userInput: contextPrompt })
+                await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 await (currentSession as any).say("Ready to continue our previous conversation.")
               }
@@ -1394,7 +1510,7 @@ When a permission request appears, tell the user what needs permission and ask: 
           console.log(`🔄 Continuing most recent session: ${recentId}`)
 
           const summary = await getSessionSummary(recentId, workingDir)
-          const conversationHistory = await getConversationHistory(recentId, workingDir, 5)
+          const conversationHistory = await getConversationHistory(recentId, workingDir, 30)
 
           await sendToFrontend({
             type: 'session_resume_set',
@@ -1419,12 +1535,13 @@ When a permission request appears, tell the user what needs permission and ask: 
           }
 
           if (currentSession && summary) {
-            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
             console.log('📋 Injecting session context into voice agent...')
             try {
               if (currentVoiceMode === 'realtime') {
                 const contextPrompt = `[SESSION RESUMED] The user chose to continue their most recent research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
-                await currentSession.generateReply({ userInput: contextPrompt })
+                await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 await (currentSession as any).say("Continuing where we left off.")
               }
@@ -1449,7 +1566,7 @@ When a permission request appears, tell the user what needs permission and ask: 
         if (sessionId && sessionExists(sessionId, workingDir)) {
           // Step 1: Get FULL context summary with conversation history
           const summary = await getSessionSummary(sessionId, workingDir)
-          const conversationHistory = await getConversationHistory(sessionId, workingDir, 10)
+          const conversationHistory = await getConversationHistory(sessionId, workingDir, 30)
 
           // Step 2: Reset LLM state and configure for new session
           currentLLM.resetForSessionSwitch()
@@ -1483,11 +1600,12 @@ When a permission request appears, tell the user what needs permission and ask: 
 
           // Step 4: Voice agent acknowledges context
           if (currentSession && summary) {
-            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
             try {
               if (currentVoiceMode === 'realtime') {
                 const contextPrompt = `[SESSION SWITCHED] The user switched to a different research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge the switch and summarize what was being worked on.`
-                await currentSession.generateReply({ userInput: contextPrompt })
+                await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 const acknowledgment = summary.lastMessages.length > 0
                   ? `I've switched to your previous session. You were working on: ${summary.lastMessages[summary.lastMessages.length - 1]?.substring(0, 100)}`
@@ -1660,7 +1778,7 @@ When a permission request appears, tell the user what needs permission and ask: 
 
           // Fetch context and greet with it
           const summary = await getSessionSummary(sessionId, workingDir)
-          const conversationHistory = await getConversationHistory(sessionId, workingDir, 5)
+          const conversationHistory = await getConversationHistory(sessionId, workingDir, 30)
 
           await sendToFrontend({
             type: 'session_resume_set',
@@ -1684,13 +1802,14 @@ When a permission request appears, tell the user what needs permission and ask: 
             })
           }
 
-          // Greet with session context
+          // Load full session history and greet with context
           if (currentSession && summary) {
-            const contextBriefing = buildContextBriefing(summary, conversationHistory)
+            loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
             try {
               if (currentVoiceMode === 'realtime') {
                 const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
-                await currentSession.generateReply({ userInput: contextPrompt })
+                await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 await (currentSession as any).say("Welcome back! Ready to continue our previous conversation.")
               }
