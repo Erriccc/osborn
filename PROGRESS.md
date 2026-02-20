@@ -1,4 +1,4 @@
-# Osborn v0.4.4 - Voice AI Research Assistant
+# Osborn v0.4.6 - Voice AI Research Assistant
 
 ## Architecture
 
@@ -53,6 +53,10 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | Specificity prompts (no vague summaries) | Working |
 | Adaptive verbosity (BRIEF/STANDARD/DETAILED/FULL) | Working |
 | Anti-hallucination prompt (realtime mode) | Working |
+| Gemini auto-recovery (1008 crash) | Working |
+| Research task queuing (follow-up chains) | Working |
+| Enriched research progress (file paths, commands) | Working |
+| Voice queue flood protection (`isProcessingQueue` + cap) | Working |
 | Markdown rendering in chat | Working |
 | Task deduplication guard | Working |
 
@@ -71,6 +75,53 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | `frontend/src/components/MarkdownMessage.tsx` | Markdown renderer |
 | `frontend/src/components/SessionBrowser.tsx` | Session browser component |
 | `frontend/src/lib/sessions.ts` | Session utilities (formatTime, groupSessionsByDate) |
+
+---
+
+## v0.4.6 Changes — Gemini Research Relay Fixes
+
+### Anti-Hallucination
+- Generalized fact-fidelity rules across 4 prompt locations (removed tech-specific examples)
+
+### Research Task Queuing
+- `pendingResearchTask` stores follow-up tasks while research is running
+- `executeResearch()` extracted from `ask_agent` body — called by both tool and pending chain
+- Queued task auto-executes after current completes (2s delay, SDK auto-resumes context)
+
+### Voice Queue Fix
+- `isProcessingQueue` guard prevents concurrent `generateReply` calls
+- 30s safety timeout clears stuck guard (Gemini state machine hang edge case)
+- Drop items on error instead of re-queuing (prevents infinite cascades)
+- Research debounce 3s → 8s, capped at 3 voice updates per task
+
+### Enriched Research Updates
+- `onToolUse` includes file paths, commands, search queries instead of generic tool names
+- `onToolResult` removed from voice updates (eliminates "Read done" doubling)
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/index.ts` | `executeResearch()` extraction, `pendingResearchTask` queue, `isProcessingQueue` guard, enriched `onToolUse`/`onToolResult`, generalized anti-hallucination prompts, 8s debounce, 3-update cap |
+
+---
+
+## v0.4.5 Changes — Gemini 1008 Crash Fix + Auto-Recovery
+
+### Problem
+Gemini Live API crashes with WebSocket code 1008 during interruptions. SDK kills the session with no auto-reconnect.
+
+### Solution
+- Skip `interrupt()` for Gemini provider in `processVoiceQueue()` and `user_text` handler
+- `wireSessionEvents()` extracted for reuse during auto-recovery
+- On crash: auto-recreates realtime session, re-wires events, notifies user via voice
+- `lastRecoveryTime` guard (10s min between recoveries) prevents infinite loops
+- Skip `updateChatCtx` for Gemini (crashes with 1008)
+- LiveKit SDK update 1.0.31→1.0.45
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/index.ts` | Gemini interrupt guard, `wireSessionEvents()` extraction, auto-recovery handler, ChatCtx skip for Gemini |
 
 ---
 
@@ -161,4 +212,4 @@ mcpServers:
 
 ---
 
-Last Updated: 2026-02-17
+Last Updated: 2026-02-20

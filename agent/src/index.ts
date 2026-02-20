@@ -347,7 +347,11 @@ async function main() {
     researchLog: string[]
     pendingUpdates: string[] // Queue of updates waiting to be injected
     cleanup: () => void
+    voiceUpdateCount: number // Cap voice injections to prevent flooding
   } | null = null
+
+  // Queued follow-up research task — executes after current research completes
+  let pendingResearchTask: string | null = null
 
   // ============================================================
   // Unified Voice Injection Queue
@@ -359,6 +363,7 @@ async function main() {
   // naturally pauses until the next 'listening' state.
 
   const voiceQueue: string[] = []
+  let isProcessingQueue = false
 
   function queueVoiceInjection(instructions: string) {
     voiceQueue.push(instructions)
@@ -369,6 +374,10 @@ async function main() {
   function processVoiceQueue() {
     if (voiceQueue.length === 0) return
     if (!currentSession) return
+    if (isProcessingQueue) {
+      console.log(`⏸️ Voice queue: already processing, ${voiceQueue.length} items waiting`)
+      return
+    }
     if (agentState !== 'listening') {
       console.log(`⏸️ Voice queue: ${voiceQueue.length} items waiting (model: ${agentState})`)
       return // Will be called again when agent_state_changed → 'listening'
@@ -379,6 +388,20 @@ async function main() {
       return
     }
 
+    isProcessingQueue = true
+
+    // Safety timeout: if agent_state_changed never fires (e.g. Gemini state machine hang),
+    // clear the guard after 30s so the queue isn't permanently stuck
+    setTimeout(() => {
+      if (isProcessingQueue) {
+        console.log('⚠️ Voice queue: isProcessingQueue stuck for 30s, clearing')
+        isProcessingQueue = false
+        if (voiceQueue.length > 0 && agentState === 'listening') {
+          processVoiceQueue()
+        }
+      }
+    }, 30000)
+
     // Batch ALL queued items into one generateReply call
     const items = voiceQueue.splice(0)
     const batchedInstruction = items.length === 1
@@ -388,8 +411,11 @@ async function main() {
     console.log(`📡 Voice queue: processing ${items.length} batched items (${batchedInstruction.length} chars)`)
 
     try {
-      // Cancel any in-flight response to prevent OpenAI "active_response" collision
-      currentSession.interrupt()
+      // Skip interrupt for Gemini — disrupts Gemini's state machine, causing it to
+      // never transition back to 'listening' (hangs in speaking state indefinitely)
+      if (currentProvider !== 'gemini') {
+        currentSession.interrupt()
+      }
 
       currentSession.generateReply({
         instructions: batchedInstruction,
@@ -401,9 +427,12 @@ async function main() {
       // Also inject into chatCtx as persistent context so the model remembers across turns
       injectIntoChatCtx(batchedInstruction)
     } catch (err) {
-      console.log('⚠️ Voice queue generateReply failed, re-queuing:', err)
-      voiceQueue.unshift(...items)
+      console.log('⚠️ Voice queue generateReply failed, dropping items:', err)
+      // Do NOT re-queue — re-queuing causes infinite retry cascades
+      // The frontend still has the updates via claude_output events
+      isProcessingQueue = false
     }
+    // isProcessingQueue is cleared when agent_state_changed fires
   }
 
   // Inject content into the agent's ChatContext as persistent memory
@@ -436,6 +465,13 @@ async function main() {
       researchBatchTimer = null
       if (!activeResearch || activeResearch.pendingUpdates.length === 0) return
 
+      // Cap voice updates to prevent flooding — frontend still gets all updates via claude_output
+      if (activeResearch.voiceUpdateCount >= 3) {
+        activeResearch.pendingUpdates.splice(0) // clear but don't inject
+        return
+      }
+      activeResearch.voiceUpdateCount++
+
       const updates = activeResearch.pendingUpdates.splice(0)
       const batchText = updates.slice(-8).join('. ')
       console.log(`📡 [research] Batching ${updates.length} events: ${batchText.substring(0, 80)}...`)
@@ -449,8 +485,8 @@ async function main() {
       })
 
       // Push to unified voice queue (will be spoken when model is available)
-      queueVoiceInjection(`[RESEARCH UPDATE] Your backend agent is still working. Here's what it's doing: ${batchText}. Mention the specific tools or actions (e.g. "I'm searching the web for..." or "Reading through the docs now..."). Do NOT call any tools.`)
-    }, 3000) // 3s debounce: batch multiple tool events before queuing
+      queueVoiceInjection(`[RESEARCH UPDATE] Here's what your research agent is doing: ${batchText}. Give a brief natural update — one or two sentences. Do NOT call any tools.`)
+    }, 8000) // 8s debounce: reduces voice queue flooding during research
   }
 
   // Helper to send data to frontend (with size limit handling)
@@ -764,6 +800,173 @@ async function main() {
       })
     })
 
+    // Extracted research execution — called by ask_agent and by pending task chain
+    function executeResearch(task: string): string {
+      sendToFrontend({ type: 'system', text: `Executing: ${task}` })
+
+      // Set up research log batching — events push to queue for state-driven injection
+      const researchLog: string[] = []
+      const pendingUpdates: string[] = []
+      const onToolUse = (data: any) => {
+        const input = data.input || {}
+        let entry: string
+
+        if (data.name === 'Read' && input.file_path) {
+          const fileName = input.file_path.split('/').pop() || input.file_path
+          entry = `Reading ${fileName}`
+        } else if (data.name === 'Bash' && input.command) {
+          const cmd = input.command.substring(0, 80)
+          entry = `Running: ${cmd}`
+        } else if (data.name === 'Glob' && input.pattern) {
+          entry = `Searching for files matching ${input.pattern}`
+        } else if (data.name === 'Grep' && input.pattern) {
+          entry = `Searching for "${input.pattern}" in files`
+        } else if (data.name === 'WebSearch' && input.query) {
+          entry = `Searching the web for "${input.query}"`
+        } else if (data.name === 'WebFetch' && input.url) {
+          const hostname = input.url.replace(/https?:\/\//, '').split('/')[0]
+          entry = `Fetching content from ${hostname}`
+        } else if (data.name === 'Write' && input.file_path) {
+          const fileName = input.file_path.split('/').pop() || input.file_path
+          entry = `Writing ${fileName}`
+        } else if (data.name === 'Edit' && input.file_path) {
+          const fileName = input.file_path.split('/').pop() || input.file_path
+          entry = `Editing ${fileName}`
+        } else if (data.name.startsWith('mcp__')) {
+          const parts = data.name.split('__')
+          const serverName = parts[1] || 'external'
+          const toolAction = parts.slice(2).join(' ') || 'tool'
+          entry = `Using ${serverName}: ${toolAction}`
+        } else {
+          entry = `Using ${data.name}`
+        }
+
+        researchLog.push(entry)
+        pendingUpdates.push(entry)
+        scheduleResearchBatch()
+      }
+      const onToolResult = (data: any) => {
+        // Only log to researchLog for the final summary — don't push to pendingUpdates
+        // This prevents redundant "Reading config.ts. Read done." voice updates
+        researchLog.push(`${data.name} completed`)
+      }
+      const onText = (data: any) => {
+        if (data.text?.trim()) {
+          const preview = data.text.trim().substring(0, 150)
+          const firstSentence = preview.match(/^[^.!?\n]+[.!?]/)?.[0] || preview
+          researchLog.push(firstSentence)
+          pendingUpdates.push(firstSentence)
+          scheduleResearchBatch()
+        }
+      }
+      realtimeClaudeHandler!.events.on('tool_use', onToolUse)
+      realtimeClaudeHandler!.events.on('tool_result', onToolResult)
+      realtimeClaudeHandler!.events.on('assistant_text', onText)
+
+      const cleanupListeners = () => {
+        realtimeClaudeHandler?.events.off('tool_use', onToolUse)
+        realtimeClaudeHandler?.events.off('tool_result', onToolResult)
+        realtimeClaudeHandler?.events.off('assistant_text', onText)
+      }
+
+      // Track active research — updates drain when model enters 'listening' state
+      activeResearch = {
+        researchLog,
+        pendingUpdates,
+        cleanup: cleanupListeners,
+        voiceUpdateCount: 0,
+      }
+
+      // Run research in the background (non-blocking)
+      const researchPromise = (async () => {
+        const stream = realtimeClaudeHandler!.chat({
+          chatCtx: {
+            items: [{ type: 'message', role: 'user', content: [task] }],
+          } as any,
+        })
+
+        let result = ''
+        for await (const chunk of stream) {
+          if (chunk.delta?.content) {
+            result += chunk.delta.content
+          }
+        }
+        return result
+      })()
+
+      // Handle completion asynchronously
+      researchPromise.then(async (result) => {
+        console.log(`✅ [realtime] Research complete (${result.length} chars)`)
+
+        // Clean up
+        cleanupListeners()
+
+        // Send to frontend
+        await sendToFrontend({ type: 'assistant_response', text: result })
+        const resultPreview = result.length > 150
+          ? result.substring(0, 150) + '...'
+          : result
+        await sendToFrontend({ type: 'task_completed', task, resultPreview })
+
+        // Build enhanced return with research log
+        const logSummary = researchLog.length > 0
+          ? `\n\n[RESEARCH LOG]\n${researchLog.slice(0, 15).join('\n')}`
+          : ''
+
+        // Cap results for voice model context (2500 chars)
+        const maxReturn = 2500
+        const resultForVoice = result.length <= maxReturn
+          ? result
+          : (() => {
+              const truncated = result.substring(0, maxReturn)
+              const lastPeriod = truncated.lastIndexOf('.')
+              return lastPeriod > maxReturn * 0.7
+                ? truncated.substring(0, lastPeriod + 1)
+                : truncated + '...'
+            })()
+
+        const fullResult = (resultForVoice + logSummary) || 'Research completed successfully.'
+
+        // Clear active research and batch timer before injecting final results
+        if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+        activeResearch = null
+
+        // Chain next task if queued — SDK auto-resumes session context
+        if (pendingResearchTask) {
+          const nextTask = pendingResearchTask
+          pendingResearchTask = null
+          console.log(`📋 Starting queued task: "${nextTask.substring(0, 60)}"`)
+          // Brief delay to let voice model speak current results before starting next
+          setTimeout(() => executeResearch(nextTask), 2000)
+        }
+
+        // Send final results to frontend for visibility
+        await sendToFrontend({
+          type: 'claude_output',
+          text: `[Research Complete] Injecting findings into voice model (${fullResult.length} chars)`,
+          isStreaming: false,
+          agentRole: 'research-progress',
+        })
+
+        // Queue final results for voice injection — the queue handles availability gating
+        console.log(`📡 [realtime] Queuing final results (${fullResult.length} chars, agentState: ${agentState})`)
+        queueVoiceInjection(`[RESEARCH COMPLETE] Your research on "${task}" is done. Here are the VERIFIED results:\n\n${fullResult}\n\nCRITICAL: Relay ONLY what appears above. Every name, number, and detail you say must come from the text above. Do NOT add facts from your own knowledge — if it's not in the results, don't say it. Do NOT call ask_agent again.`)
+      }).catch(async (err) => {
+        console.error(`❌ [realtime] Research failed:`, err)
+
+        // Clean up
+        cleanupListeners()
+        if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+        activeResearch = null
+
+        // Queue error notification — will be spoken when model is available
+        queueVoiceInjection(`[NOTIFICATION] The research task encountered an error: ${(err as Error).message}. Let the user know briefly and ask if they want to try again. Do NOT call any tools.`)
+      })
+
+      // Return immediately to unblock the voice model
+      return 'Research started. I\'ll relay findings as they come in — you can keep talking to the user while I work.'
+    }
+
     // Create tools for the realtime voice LLM
     const askAgentTool = llm.tool({
       description: `Delegate a task to your backend agent (Claude), which has full analysis, research, coding, swarm/sub delegation capabilities.
@@ -796,134 +999,14 @@ The more context you include (language, framework, constraints), the better the 
         lastTaskRequest = task
         lastTaskTime = now
 
-        // If research is already active, inform the model
+        // If research is already active, queue the follow-up task
         if (activeResearch) {
-          console.log('⏳ Research already in progress, rejecting new ask_agent call')
-          return 'Research is already in progress. Wait for the results before starting a new task.'
+          console.log(`📋 Research in progress, queuing: "${task.substring(0, 60)}"`)
+          pendingResearchTask = task
+          return 'Research is already running. I\'ll start on your follow-up next.'
         }
 
-        await sendToFrontend({ type: 'system', text: `Executing: ${task}` })
-
-        // Set up research log batching — events push to queue for state-driven injection
-        const researchLog: string[] = []
-        const pendingUpdates: string[] = []
-        const onToolUse = (data: any) => {
-          const entry = `Using ${data.name}`
-          researchLog.push(entry)
-          pendingUpdates.push(entry)
-          scheduleResearchBatch()
-        }
-        const onToolResult = (data: any) => {
-          const entry = `${data.name} done`
-          researchLog.push(entry)
-          pendingUpdates.push(entry)
-          scheduleResearchBatch() // Trigger debounced drain if model is already listening
-        }
-        const onText = (data: any) => {
-          if (data.text?.trim()) {
-            const preview = data.text.trim().substring(0, 150)
-            const firstSentence = preview.match(/^[^.!?\n]+[.!?]/)?.[0] || preview
-            researchLog.push(firstSentence)
-            pendingUpdates.push(firstSentence)
-            scheduleResearchBatch()
-          }
-        }
-        realtimeClaudeHandler!.events.on('tool_use', onToolUse)
-        realtimeClaudeHandler!.events.on('tool_result', onToolResult)
-        realtimeClaudeHandler!.events.on('assistant_text', onText)
-
-        const cleanupListeners = () => {
-          realtimeClaudeHandler?.events.off('tool_use', onToolUse)
-          realtimeClaudeHandler?.events.off('tool_result', onToolResult)
-          realtimeClaudeHandler?.events.off('assistant_text', onText)
-        }
-
-        // Track active research — updates drain when model enters 'listening' state
-        activeResearch = {
-          researchLog,
-          pendingUpdates,
-          cleanup: cleanupListeners,
-        }
-
-        // Run research in the background (non-blocking)
-        const researchPromise = (async () => {
-          const stream = realtimeClaudeHandler!.chat({
-            chatCtx: {
-              items: [{ type: 'message', role: 'user', content: [task] }],
-            } as any,
-          })
-
-          let result = ''
-          for await (const chunk of stream) {
-            if (chunk.delta?.content) {
-              result += chunk.delta.content
-            }
-          }
-          return result
-        })()
-
-        // Handle completion asynchronously
-        researchPromise.then(async (result) => {
-          console.log(`✅ [realtime] Research complete (${result.length} chars)`)
-
-          // Clean up
-          cleanupListeners()
-
-          // Send to frontend
-          await sendToFrontend({ type: 'assistant_response', text: result })
-          const resultPreview = result.length > 150
-            ? result.substring(0, 150) + '...'
-            : result
-          await sendToFrontend({ type: 'task_completed', task, resultPreview })
-
-          // Build enhanced return with research log
-          const logSummary = researchLog.length > 0
-            ? `\n\n[RESEARCH LOG]\n${researchLog.slice(0, 15).join('\n')}`
-            : ''
-
-          // Cap results for voice model context (2500 chars)
-          const maxReturn = 2500
-          const resultForVoice = result.length <= maxReturn
-            ? result
-            : (() => {
-                const truncated = result.substring(0, maxReturn)
-                const lastPeriod = truncated.lastIndexOf('.')
-                return lastPeriod > maxReturn * 0.7
-                  ? truncated.substring(0, lastPeriod + 1)
-                  : truncated + '...'
-              })()
-
-          const fullResult = (resultForVoice + logSummary) || 'Research completed successfully.'
-
-          // Clear active research and batch timer before injecting final results
-          if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
-          activeResearch = null
-
-          // Send final results to frontend for visibility
-          await sendToFrontend({
-            type: 'claude_output',
-            text: `[Research Complete] Injecting findings into voice model (${fullResult.length} chars)`,
-            isStreaming: false,
-            agentRole: 'research-progress',
-          })
-
-          // Queue final results for voice injection — the queue handles availability gating
-          console.log(`📡 [realtime] Queuing final results (${fullResult.length} chars, agentState: ${agentState})`)
-          queueVoiceInjection(`[RESEARCH COMPLETE] Here are the findings from your research task "${task}":\n\n${fullResult}\n\nIMPORTANT: When relaying these findings, you MUST include the specific names, tools, packages, numbers, and URLs found. Do NOT summarize them as "various tools" or "several options" — say the actual names. For example, say "I found three main options: Puppeteer, Playwright, and Cypress" not "I found various testing tools." Cover the key findings in detail — this is what the user has been waiting for. Speak as if YOU found this information. Do NOT call ask_agent again — the research is done.`)
-        }).catch(async (err) => {
-          console.error(`❌ [realtime] Research failed:`, err)
-
-          // Clean up
-          cleanupListeners()
-          if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
-          activeResearch = null
-
-          // Queue error notification — will be spoken when model is available
-          queueVoiceInjection(`[NOTIFICATION] The research task encountered an error: ${(err as Error).message}. Let the user know briefly and ask if they want to try again. Do NOT call any tools.`)
-        })
-
-        // Return immediately to unblock the voice model
-        return 'Research started. I\'ll relay findings as they come in — you can keep talking to the user while I work.'
+        return executeResearch(task)
       },
     })
 
@@ -974,10 +1057,12 @@ NEVER delegate when:
 - You can answer from info already retrieved this session
 
 == ANTI-HALLUCINATION RULES ==
-1. If uncertain about technical details, STOP and delegate
-2. Never make up file paths, API details, version numbers, configs
+1. If uncertain about ANY factual detail, STOP and delegate to ask_agent
+2. Never make up names, numbers, dates, paths, versions, or details of any kind
 3. Never claim to have checked something unless the agent actually did
 4. "Let me look that up" is always preferred over guessing
+5. When you receive [RESEARCH COMPLETE], ONLY state facts from the provided text — do NOT add from your own knowledge
+6. If a detail is not in the research findings, do NOT say it — even if you think you know the answer
 
 == USING RETRIEVED INFO ==
 Remember findings from this session. Don't re-delegate for follow-ups about info
@@ -997,15 +1082,17 @@ with status on what it's doing (tools used, pages fetched, files read). Use thes
 - Give the user natural filler: "I'm checking the docs now..." / "Found some configs, still digging..."
 - Keep the conversation alive while research runs in the background
 - You don't need to repeat every detail — just give a natural sense of progress
+- Do NOT guess or preview findings before they arrive — only say what the updates actually report
 
-When the research finishes, you'll receive a [RESEARCH COMPLETE] message with the full findings
-plus a [RESEARCH LOG] showing what was done. Use this to:
-- Relay findings with SPECIFIC details — name every tool, package, library, or number found
-- Do NOT abstract specifics into vague phrases like "various options" or "several tools" — say the actual names
-- For lists of items, mention them by name: "I found Remix, Astro, and SvelteKit" not "I found several frameworks"
-- Answer follow-ups with specifics: "The website I looked at was postgresql.org"
-- Speak as if YOU found it — not "the agent found..."
-- The user can see full details in the chat panel, but your voice summary should still include the key specifics
+When the research finishes, you'll receive a [RESEARCH COMPLETE] message with VERIFIED findings.
+These findings are FACTS — treat them as ground truth. You MUST:
+- Read the findings carefully before speaking
+- ONLY state facts that appear in the findings — do NOT add anything from your own knowledge
+- If a name, tool, or detail appears in the findings, say it exactly as listed
+- If something is NOT in the findings, do NOT mention it — even if you think you know
+- Speak as if YOU found it — say "I found" not "the agent found"
+- If you're unsure about a detail, say "let me double-check" rather than guessing
+NEVER add, invent, or substitute any facts not explicitly present in the findings text.
 
 == ADAPTIVE VERBOSITY ==
 Match your response length to what the user wants:
@@ -1021,7 +1108,7 @@ When in doubt for non-research responses, give a standard-length answer and let 
 == NOTIFICATIONS ==
 Messages with [NOTIFICATION], [RESEARCH UPDATE], or [RESEARCH COMPLETE] prefix are system messages.
 - [RESEARCH UPDATE]: Your agent is still working. Give a brief status filler to keep the user engaged.
-- [RESEARCH COMPLETE]: Research is done. Relay the findings with specific names and details — do not summarize vaguely.
+- [RESEARCH COMPLETE]: Research is done. Relay ONLY facts from the provided findings — do NOT add anything from your own knowledge.
 - [NOTIFICATION]: General system update. Acknowledge briefly.
 - Do NOT treat any of these as new user requests. Do NOT call ask_agent in response.
 
@@ -1068,6 +1155,8 @@ When a permission request appears, tell the user what needs permission and ask: 
     console.log('👋 Disconnected from room')
     // Clean up active research and voice queue
     voiceQueue.length = 0
+    isProcessingQueue = false
+    pendingResearchTask = null
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     if (activeResearch) {
       activeResearch.cleanup()
@@ -1083,6 +1172,8 @@ When a permission request appears, tell the user what needs permission and ask: 
 
     // Clean up any existing session before creating a new one
     voiceQueue.length = 0
+    isProcessingQueue = false
+    pendingResearchTask = null
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     if (activeResearch) {
       activeResearch.cleanup()
@@ -1154,99 +1245,166 @@ When a permission request appears, tell the user what needs permission and ask: 
     currentAgent = agent  // Store for updateChatCtx() context injection
 
     // ============================================================
-    // Transcript handling
+    // Session event wiring — extracted into function for auto-recovery
     // ============================================================
-    let lastSentUserTranscript = ''
-    let lastSentAgentTranscript = ''
+    let lastRecoveryTime = 0
+    const MIN_RECOVERY_INTERVAL = 10000  // 10 seconds between recovery attempts
 
-    function sendUserTranscript(transcript: string, source: string) {
-      if (!transcript || transcript.length < 3) return
-      const normalized = transcript.trim().replace(/\s+/g, ' ')
-      if (normalized === lastSentUserTranscript) return
-      if (normalized === '<noise>' || normalized.toLowerCase() === 'thank you') return
+    function wireSessionEvents(sess: voice.AgentSession, agt: voice.Agent) {
+      // Transcript dedup state (reset per wiring)
+      let lastSentUserTranscript = ''
+      let lastSentAgentTranscript = ''
 
-      console.log(`📝 User (${source}): "${transcript.substring(0, 60)}..."`)
-      sendToFrontend({ type: 'user_transcript', text: transcript })
-      lastSentUserTranscript = normalized
+      function sendUserTranscript(transcript: string, source: string) {
+        if (!transcript || transcript.length < 3) return
+        const normalized = transcript.trim().replace(/\s+/g, ' ')
+        if (normalized === lastSentUserTranscript) return
+        if (normalized === '<noise>' || normalized.toLowerCase() === 'thank you') return
+
+        console.log(`📝 User (${source}): "${transcript.substring(0, 60)}..."`)
+        sendToFrontend({ type: 'user_transcript', text: transcript })
+        lastSentUserTranscript = normalized
+      }
+
+      function sendAgentTranscript(text: string, source: string) {
+        if (!text || text.length < 3) return
+        const normalized = text.trim().replace(/\s+/g, ' ')
+        if (normalized === lastSentAgentTranscript) return
+
+        console.log(`💬 Agent (${source}): "${text.substring(0, 60)}..."`)
+        sendToFrontend({ type: 'assistant_response', text })
+        lastSentAgentTranscript = normalized
+      }
+
+      // PRIMARY: conversation_item_added is the authoritative source
+      sess.on('conversation_item_added' as any, (ev: any) => {
+        let text = ''
+        if (Array.isArray(ev.item?.content)) {
+          text = typeof ev.item.content[0] === 'string'
+            ? ev.item.content.join('\n')
+            : ev.item.content.map((c: any) => c.text).filter(Boolean).join('\n')
+        } else if (typeof ev.item?.content === 'string') {
+          text = ev.item.content
+        } else if (ev.item?.text) {
+          text = ev.item.text
+        }
+
+        if (ev.item?.role === 'user' && text) {
+          sendUserTranscript(text, 'conv_item')
+        } else if (ev.item?.role === 'assistant' && text) {
+          sendAgentTranscript(text, 'conv_item')
+        }
+      })
+
+      // FALLBACK: user_speech_committed
+      sess.on('user_speech_committed' as any, (ev: any) => {
+        const transcript = ev.transcript || ev.text || ''
+        sendUserTranscript(transcript, 'committed')
+      })
+
+      // Agent state tracking
+      sess.on('agent_state_changed' as any, (ev: any) => {
+        agentState = ev.newState
+        // Clear processing guard when model transitions to any new state
+        isProcessingQueue = false
+        console.log(`🤖 State: ${ev.newState}`)
+        sendToFrontend({ type: 'agent_state', state: ev.newState })
+
+        // When the model becomes available (listening), process any queued voice injections
+        if (ev.newState === 'listening' && voiceQueue.length > 0) {
+          setTimeout(() => processVoiceQueue(), 500)  // 500ms to let model settle
+        }
+      })
+
+      // User state tracking — prevents queue from colliding with server-side VAD
+      sess.on('user_state_changed' as any, (ev: any) => {
+        userState = ev.newState
+        console.log(`👤 User state: ${ev.newState}`)
+      })
+
+      // FALLBACK: playout_completed
+      sess.on('playout_completed' as any, (ev: any) => {
+        const message = ev.message || ev.text || ev.content
+        if (message && message.length > 0) {
+          sendAgentTranscript(message, 'playout')
+        }
+      })
+
+      // Error handler
+      sess.on('error' as any, (ev: any) => {
+        const msg = ev.error?.message || String(ev.error)
+        // OpenAI race: voice queue collided with server-side VAD auto-response
+        if (msg.includes('conversation_already_has_active_response') || msg.includes('active_response')) {
+          console.log('⚠️ OpenAI active response collision — queue will retry on next listening state')
+          return
+        }
+        console.error('❌ Session error:', ev.error)
+      })
+
+      // Close handler with auto-recovery for Gemini 1008 crashes
+      sess.on('close' as any, async (ev: any) => {
+        console.log('🚪 Session closed:', ev.reason)
+
+        // Auto-recover from crashes in realtime mode
+        if (ev.reason === 'error' && currentVoiceMode === 'realtime') {
+          const now = Date.now()
+          if (now - lastRecoveryTime < MIN_RECOVERY_INTERVAL) {
+            console.log('⚠️ Recovery too frequent — skipping to prevent loop')
+            sendToFrontend({ type: 'agent_state', state: 'error' })
+            return
+          }
+          lastRecoveryTime = now
+
+          console.log('🔄 Auto-recovering from session crash...')
+
+          // Clean up dead session
+          try { sess.removeAllListeners() } catch {}
+          currentSession = null
+          currentAgent = null
+
+          // Clear voice queue — stale injections from the crashed session
+          voiceQueue.length = 0
+          isProcessingQueue = false
+          pendingResearchTask = null
+          if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+          if (activeResearch) { activeResearch.cleanup(); activeResearch = null }
+
+          try {
+            const recoveryConfig = { ...realtimeConfig, provider: currentProvider as 'gemini' | 'openai' }
+            const result = await createRealtimeSession(recoveryConfig)
+            const newSession = result.session
+            const newAgent = result.agent
+            currentSession = newSession
+            currentAgent = newAgent
+
+            // Re-wire event listeners on the new session
+            wireSessionEvents(newSession, newAgent)
+
+            await newSession.start({ agent: newAgent, room })
+
+            // Sync state
+            agentState = 'listening'
+            sendToFrontend({ type: 'agent_state', state: 'listening' })
+
+            // Resume Claude session if one was active
+            if (currentLLM?.sessionId) {
+              currentLLM.setContinueSession(true)
+            }
+
+            // Notify via voice
+            queueVoiceInjection('[NOTIFICATION] The voice session was briefly interrupted but has been recovered. Ask the user if they can hear you and continue where you left off. Do NOT call any tools.')
+
+            console.log('✅ Auto-recovery complete')
+          } catch (err) {
+            console.error('❌ Auto-recovery failed:', err)
+            sendToFrontend({ type: 'agent_state', state: 'error' })
+          }
+        }
+      })
     }
 
-    function sendAgentTranscript(text: string, source: string) {
-      if (!text || text.length < 3) return
-      const normalized = text.trim().replace(/\s+/g, ' ')
-      if (normalized === lastSentAgentTranscript) return
-
-      console.log(`💬 Agent (${source}): "${text.substring(0, 60)}..."`)
-      sendToFrontend({ type: 'assistant_response', text })
-      lastSentAgentTranscript = normalized
-    }
-
-    // PRIMARY: conversation_item_added is the authoritative source
-    session.on('conversation_item_added' as any, (ev: any) => {
-      let text = ''
-      if (Array.isArray(ev.item?.content)) {
-        text = typeof ev.item.content[0] === 'string'
-          ? ev.item.content.join('\n')
-          : ev.item.content.map((c: any) => c.text).filter(Boolean).join('\n')
-      } else if (typeof ev.item?.content === 'string') {
-        text = ev.item.content
-      } else if (ev.item?.text) {
-        text = ev.item.text
-      }
-
-      if (ev.item?.role === 'user' && text) {
-        sendUserTranscript(text, 'conv_item')
-      } else if (ev.item?.role === 'assistant' && text) {
-        sendAgentTranscript(text, 'conv_item')
-      }
-    })
-
-    // FALLBACK: user_speech_committed
-    session.on('user_speech_committed' as any, (ev: any) => {
-      const transcript = ev.transcript || ev.text || ''
-      sendUserTranscript(transcript, 'committed')
-    })
-
-    // Agent state tracking
-    session.on('agent_state_changed' as any, (ev: any) => {
-      agentState = ev.newState
-      console.log(`🤖 State: ${ev.newState}`)
-      sendToFrontend({ type: 'agent_state', state: ev.newState })
-
-      // When the model becomes available (listening), process any queued voice injections
-      if (ev.newState === 'listening' && voiceQueue.length > 0) {
-        // Brief delay to let the model settle, but short to minimize collision window
-        setTimeout(() => processVoiceQueue(), 50)
-      }
-    })
-
-    // User state tracking — prevents queue from colliding with server-side VAD
-    session.on('user_state_changed' as any, (ev: any) => {
-      userState = ev.newState
-      console.log(`👤 User state: ${ev.newState}`)
-    })
-
-    // FALLBACK: playout_completed
-    session.on('playout_completed' as any, (ev: any) => {
-      const message = ev.message || ev.text || ev.content
-      if (message && message.length > 0) {
-        sendAgentTranscript(message, 'playout')
-      }
-    })
-
-    // Error and close handlers
-    session.on('error' as any, (ev: any) => {
-      const msg = ev.error?.message || String(ev.error)
-      // OpenAI race: voice queue collided with server-side VAD auto-response
-      if (msg.includes('conversation_already_has_active_response') || msg.includes('active_response')) {
-        console.log('⚠️ OpenAI active response collision — queue will retry on next listening state')
-        return
-      }
-      console.error('❌ Session error:', ev.error)
-    })
-
-    session.on('close' as any, (ev: any) => {
-      console.log('🚪 Session closed:', ev.reason)
-    })
+    // Wire events on the initial session
+    wireSessionEvents(session, agent)
 
     // Start voice session
     console.log('🎬 Starting voice session...')
@@ -1412,7 +1570,10 @@ When a permission request appears, tell the user what needs permission and ask: 
         }
       } else if (data.type === 'user_text' && currentSession) {
         console.log(`📝 Text: "${data.content}"`)
-        currentSession.interrupt()
+        // Skip interrupt for Gemini — disrupts state machine (hangs in speaking state)
+        if (currentProvider !== 'gemini') {
+          currentSession.interrupt()
+        }
         await currentSession.generateReply({ userInput: data.content })
       }
       // ============================================================

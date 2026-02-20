@@ -6,11 +6,12 @@ Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SD
 
 - **Voice Interface**: Real-time voice conversation using LiveKit
 - **Multi-Provider Voice**: OpenAI Realtime, Gemini Live, or Direct (STT + Claude + TTS)
-- **Research-First Plan Mode**: Read code, search web, run read-only commands, create research artifacts
-- **Execute Mode**: Full coding capabilities — file operations, terminal commands, code editing
+- **Research Mode**: Read code, search web, run commands, fetch YouTube transcripts, save findings to session workspace
 - **Claude Agent SDK**: Full tool access (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch)
 - **Permission System**: Approve/deny operations via voice or UI
 - **Session Management**: Resume, switch, and browse previous conversations
+- **Follow-Up Research Queuing**: Ask follow-up questions while research is running — they chain automatically
+- **Gemini Auto-Recovery**: Automatic session recovery from Gemini 1008 crashes with voice notification
 - **MCP Integration**: Extend with GitHub, YouTube, filesystem, and custom MCP servers (Smithery cloud proxy)
 - **Research Artifacts**: Plans, diagrams (mermaid), notes, and analysis files — persist across session resumes
 - **Full-Width UI**: Responsive layout with always-visible Files panel and syntax-highlighted code
@@ -87,7 +88,6 @@ Create `~/.osborn/config.yaml`:
 ```yaml
 workingDirectory: /path/to/project
 voiceMode: direct        # or 'realtime'
-agentMode: plan          # or 'execute'
 defaultProvider: openai  # or 'gemini' (for realtime mode)
 
 realtime:
@@ -159,6 +159,8 @@ osborn/
 | Research Mode | Working |
 | Session Management | Working |
 | Research Artifacts | Working |
+| Research Task Queuing (follow-up chains) | Working |
+| Gemini Auto-Recovery (1008 crash) | Working |
 | Files Panel (always visible, persists on resume) | Working |
 | MCP Integration (Smithery cloud proxy) | Working |
 | Full-Width Responsive Layout | Working |

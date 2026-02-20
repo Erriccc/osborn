@@ -8,21 +8,68 @@
 
 ### Known Issues (Current)
 
-1. **Room code not passed correctly** ✅ FIXED in v0.1.3
+1. **Gemini idle timeout**: Gemini Live API crashes with WebSocket code 1008 ("BidiGenerateContent session not found") every ~2 hours when no user interaction. Auto-recovery handles it, but loops endlessly if user is away — each recovery creates a new session that times out again.
+
+2. **Gemini `interrupt()` causes state hang**: Calling `session.interrupt()` on Gemini disrupts its internal state machine — model gets stuck in `speaking` state and never transitions back to `listening`. All `interrupt()` calls must be guarded with `if (currentProvider !== 'gemini')`.
+
+3. **Room code not passed correctly** ✅ FIXED in v0.1.3
    - Use: `npm run room <code>` or `npm run dev -- --room <code>`
 
-2. **OpenAI permission speech conflicts** ✅ FIXED in v0.1.3
+4. **OpenAI permission speech conflicts** ✅ FIXED in v0.1.3
    - Was: `conversation_already_has_active_response` errors
    - Fix: Track actual agent state, only speak when `listening`
 
-3. **Gemini not responding** ✅ FIXED in v0.1.3
+5. **Gemini not responding** ✅ FIXED in v0.1.3
    - Reverted to exact model name from working commit: `gemini-2.5-flash-native-audio-preview-12-2025`
    - Removed experimental options (proactivity, enableAffectiveDialog) that broke it
    - **Note**: If Gemini appears unresponsive, restart the agent - usually a stale session issue, not a bug
 
 ## Version History
 
-### v0.4.4 (Current) — Full-Width UI, File Explorer Persistence, MCP Proxy Fix
+### v0.4.6 (Current) — Gemini Research Relay: Anti-Hallucination, Task Queuing, Voice Queue Fix
+
+#### Anti-Hallucination Prompts
+- **Generalized fact-fidelity rules**: Removed tech-specific examples ("TypeScript/Python/Django") that Gemini treated as style hints rather than constraints. Replaced with universal rules: "only state facts from findings, don't add from your own knowledge"
+- Updated across 4 prompt locations: `[RESEARCH COMPLETE]` injection, anti-hallucination rules, research complete handling guidance, notifications quick-ref
+
+#### Follow-Up Research Task Queuing
+- **`pendingResearchTask` queue**: When research is already running, follow-up `ask_agent` calls store the task instead of rejecting. After current research completes, queued task auto-executes with 2s delay
+- **`executeResearch()` extraction**: Core research logic extracted from `ask_agent` execute body into a named function, callable by both `ask_agent` and the pending task chain
+- **SDK auto-context**: Claude Agent SDK auto-resumes via `sessionId` — follow-up tasks inherit all prior research context without manual session management
+
+#### Voice Queue Flooding Fix
+- **`isProcessingQueue` guard**: Prevents concurrent `generateReply` calls. Cleared on every `agent_state_changed` event
+- **30s safety timeout**: If `agent_state_changed` never fires (e.g. Gemini state machine hang), clears the guard and retries the queue
+- **Drop-not-requeue**: On `generateReply` error, items are dropped instead of re-queued — prevents infinite retry cascades. Frontend still has updates via `claude_output` events
+- **8s research batch debounce** (was 3s): Reduces voice queue flooding during active research
+- **3-update cap per task**: `voiceUpdateCount` limits voice injections per research task — prevents chatty updates on long research
+- **500ms queue retry delay** (was 50ms): Longer settle time after model enters `listening` state
+
+#### Enriched Research Updates
+- **`onToolUse` includes parameters**: "Reading config.ts", "Running: ls -la", "Searching for 'pinecone' in files", "Fetching content from github.com" — instead of generic "Using Read"
+- **`onToolResult` no longer doubles**: Removed from `pendingUpdates` — eliminates "Reading config.ts. Read completed." pairs in voice updates
+- **MCP tool formatting**: `mcp__youtube__search` → "Using youtube: search"
+
+#### Gemini interrupt() Constraint
+- `interrupt()` kept Gemini-guarded in both `processVoiceQueue()` and `user_text` handler — re-enabling causes Gemini's state machine to hang in `speaking` state indefinitely
+
+---
+
+### v0.4.5 — Gemini 1008 Crash Fix + Auto-Recovery
+
+#### Root Cause
+Gemini Live API (`gemini-2.5-flash-native-audio-preview-12-2025`) crashes with WebSocket code 1008 during user interruptions + tool calls. SDK marks code 1008 as `retryable: false`, `recoverable: false` — kills the session with no auto-reconnect.
+
+#### Fixes
+- **Skip `interrupt()` for Gemini**: `processVoiceQueue()` and `user_text` handler guard with `if (currentProvider !== 'gemini')`. Gemini handles interruptions internally via `activityStart`/`activityEnd`
+- **Auto-recovery**: `wireSessionEvents()` extracted from `ParticipantConnected`. On session close with `reason === 'error'`, automatically recreates realtime session, re-wires events, starts new session, notifies user via voice. `lastRecoveryTime` guard prevents loops (10s minimum between recoveries)
+- **Skip `updateChatCtx` for Gemini**: `injectIntoChatCtx()` and `loadSessionHistoryIntoChatCtx()` skip when `currentProvider === 'gemini'` — Gemini doesn't support `updateChatCtx` (crashes with 1008)
+- **`generateReply({ instructions })` not `userInput`**: All session resume paths use `instructions` parameter to avoid `updateChatCtx` calls
+- **LiveKit SDK update**: Packages 1.0.31→1.0.45, rtc-node 0.13.22→0.13.24
+
+---
+
+### v0.4.4 — Full-Width UI, File Explorer Persistence, MCP Proxy Fix
 
 #### UI Layout Overhaul
 - **Full-width layout**: Removed `max-w-2xl` constraint from `page.tsx` and `max-w-3xl` default from `VoiceRoom.tsx`. UI now uses full viewport width (`max-w-[90rem]`)

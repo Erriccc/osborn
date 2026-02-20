@@ -168,6 +168,8 @@ export interface RealtimeModelConfig {
 export function createRealtimeModel(config: RealtimeModelConfig) {
   if (config.provider === 'gemini') {
     console.log('📱 Using Gemini Live API (realtime)')
+    // Note: 12-2025 model has a known bug causing code 1008 crashes during user interruptions
+    // with tool calls. No newer model available yet — auto-recovery in index.ts handles this.
     return new google.beta.realtime.RealtimeModel({
       model: config.geminiModel || 'gemini-2.5-flash-native-audio-preview-12-2025',
       voice: config.geminiVoice || 'Puck',
