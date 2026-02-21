@@ -347,7 +347,7 @@ async function main() {
     researchLog: string[]
     pendingUpdates: string[] // Queue of updates waiting to be injected
     cleanup: () => void
-    voiceUpdateCount: number // Cap voice injections to prevent flooding
+    voiceUpdateCount: number // Track voice injection count (no cap — 8s debounce prevents flooding)
   } | null = null
 
   // Queued follow-up research task — executes after current research completes
@@ -465,15 +465,8 @@ async function main() {
       researchBatchTimer = null
       if (!activeResearch || activeResearch.pendingUpdates.length === 0) return
 
-      // Cap voice updates to prevent flooding — frontend still gets all updates via claude_output
-      if (activeResearch.voiceUpdateCount >= 3) {
-        activeResearch.pendingUpdates.splice(0) // clear but don't inject
-        return
-      }
-      activeResearch.voiceUpdateCount++
-
       const updates = activeResearch.pendingUpdates.splice(0)
-      const batchText = updates.slice(-8).join('. ')
+      const batchText = updates.slice(-10).join('. ')
       console.log(`📡 [research] Batching ${updates.length} events: ${batchText.substring(0, 80)}...`)
 
       // Send to frontend for visibility
@@ -539,7 +532,7 @@ async function main() {
   }
 
   // Create DIRECT session (STT + Claude Agent SDK + TTS)
-  async function createDirectSession(): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
+  async function createDirectSession(resumeSessionId?: string): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
     console.log('🎯 Creating direct session...')
 
     const stt = createSTT({ provider: 'deepgram' })
@@ -550,8 +543,21 @@ async function main() {
     const directLLM = createClaudeLLM({
       workingDirectory: workingDir,
       mcpServers,
+      resumeSessionId,
     })
     currentLLM = directLLM
+
+    // For resumed sessions, eagerly create workspace (we know the real ID)
+    if (resumeSessionId) {
+      const workspace = ensureSessionWorkspace(workingDir, resumeSessionId)
+      console.log(`📁 Session workspace (resumed): ${workspace}`)
+    }
+
+    // For new sessions, create workspace when SDK assigns real session ID
+    directLLM.events.once('session_id', ({ sessionId }: { sessionId: string }) => {
+      const workspace = ensureSessionWorkspace(workingDir, sessionId)
+      console.log(`📁 Session workspace created: ${workspace}`)
+    })
 
     // Wire up MCP server changes to frontend
     directLLM.events.on('mcp_servers_changed', (data) => {
@@ -687,7 +693,7 @@ async function main() {
   let realtimeClaudeHandler: ReturnType<typeof createClaudeLLM> | null = null
 
   // Create REALTIME session (OpenAI/Gemini native speech-to-speech)
-  async function createRealtimeSession(sessionRealtimeConfig?: typeof realtimeConfig): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
+  async function createRealtimeSession(sessionRealtimeConfig?: typeof realtimeConfig, resumeSessionId?: string): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
     const rtConfig = sessionRealtimeConfig || realtimeConfig
     console.log(`🎯 Creating realtime session (${rtConfig.provider})...`)
 
@@ -695,8 +701,21 @@ async function main() {
     realtimeClaudeHandler = createClaudeLLM({
       workingDirectory: workingDir,
       mcpServers,
+      resumeSessionId,
     })
     currentLLM = realtimeClaudeHandler
+
+    // For resumed sessions, eagerly create workspace (we know the real ID)
+    if (resumeSessionId) {
+      const workspace = ensureSessionWorkspace(workingDir, resumeSessionId)
+      console.log(`📁 Session workspace (resumed): ${workspace}`)
+    }
+
+    // For new sessions, create workspace when SDK assigns real session ID
+    realtimeClaudeHandler.events.once('session_id', ({ sessionId }: { sessionId: string }) => {
+      const workspace = ensureSessionWorkspace(workingDir, sessionId)
+      console.log(`📁 Session workspace created: ${workspace}`)
+    })
 
     // Wire up MCP server changes to frontend
     realtimeClaudeHandler.events.on('mcp_servers_changed', (data) => {
@@ -799,6 +818,71 @@ async function main() {
         checkpointId: data.checkpointId,
       })
     })
+
+    // Extract priority content from research results — preserves URLs, code blocks, and key details
+    function extractPriorityContent(result: string, maxChars: number = 4000): string {
+      if (result.length <= maxChars) return result
+
+      // Extract URLs (preserve for voice relay)
+      const urlRegex = /https?:\/\/[^\s\)\"\'>\]]+/g
+      const urls = [...new Set(result.match(urlRegex) || [])]
+
+      // Extract code blocks (first 2, up to 400 chars each)
+      const codeBlockRegex = /```[\s\S]*?```/g
+      const codeBlocks: string[] = []
+      let match
+      while ((match = codeBlockRegex.exec(result)) !== null && codeBlocks.length < 2) {
+        const block = match[0].length > 400 ? match[0].substring(0, 397) + '```' : match[0]
+        codeBlocks.push(block)
+      }
+
+      // Build sections
+      const sections: string[] = []
+
+      // Take the first ~2500 chars of narrative (intro + main findings)
+      const narrativeEnd = Math.min(result.length, 2500)
+      const narrativeTruncated = result.substring(0, narrativeEnd)
+      const lastPeriod = narrativeTruncated.lastIndexOf('.')
+      const narrative = lastPeriod > narrativeEnd * 0.6
+        ? narrativeTruncated.substring(0, lastPeriod + 1)
+        : narrativeTruncated
+      sections.push(narrative)
+
+      // Append conclusion (last ~500 chars) if result is long enough
+      if (result.length > 3000) {
+        const tail = result.substring(result.length - 500)
+        const firstPeriod = tail.indexOf('.')
+        const conclusion = firstPeriod > 0 ? tail.substring(firstPeriod + 1).trim() : tail.trim()
+        if (conclusion.length > 50) {
+          sections.push(`\n\n[CONCLUSION]\n${conclusion}`)
+        }
+      }
+
+      // Append code blocks if not already in the narrative
+      if (codeBlocks.length > 0) {
+        const codeSection = codeBlocks.filter(cb => !narrative.includes(cb))
+        if (codeSection.length > 0) {
+          sections.push(`\n\n[CODE EXAMPLES]\n${codeSection.join('\n\n')}`)
+        }
+      }
+
+      // Append URLs if not already in the narrative
+      const newUrls = urls.filter(u => !narrative.includes(u))
+      if (newUrls.length > 0) {
+        sections.push(`\n\n[LINKS]\n${newUrls.slice(0, 5).join('\n')}`)
+      }
+
+      let assembled = sections.join('')
+
+      // Final safety truncation if assembled exceeds maxChars
+      if (assembled.length > maxChars) {
+        const truncated = assembled.substring(0, maxChars)
+        const lp = truncated.lastIndexOf('.')
+        assembled = lp > maxChars * 0.7 ? truncated.substring(0, lp + 1) : truncated + '...'
+      }
+
+      return assembled
+    }
 
     // Extracted research execution — called by ask_agent and by pending task chain
     function executeResearch(task: string): string {
@@ -910,20 +994,11 @@ async function main() {
 
         // Build enhanced return with research log
         const logSummary = researchLog.length > 0
-          ? `\n\n[RESEARCH LOG]\n${researchLog.slice(0, 15).join('\n')}`
+          ? `\n\n[RESEARCH LOG]\n${researchLog.slice(0, 25).join('\n')}`
           : ''
 
-        // Cap results for voice model context (2500 chars)
-        const maxReturn = 2500
-        const resultForVoice = result.length <= maxReturn
-          ? result
-          : (() => {
-              const truncated = result.substring(0, maxReturn)
-              const lastPeriod = truncated.lastIndexOf('.')
-              return lastPeriod > maxReturn * 0.7
-                ? truncated.substring(0, lastPeriod + 1)
-                : truncated + '...'
-            })()
+        // Extract priority content — preserves URLs, code blocks, and key details (4000 char limit)
+        const resultForVoice = extractPriorityContent(result)
 
         const fullResult = (resultForVoice + logSummary) || 'Research completed successfully.'
 
@@ -950,7 +1025,11 @@ async function main() {
 
         // Queue final results for voice injection — the queue handles availability gating
         console.log(`📡 [realtime] Queuing final results (${fullResult.length} chars, agentState: ${agentState})`)
-        queueVoiceInjection(`[RESEARCH COMPLETE] Your research on "${task}" is done. Here are the VERIFIED results:\n\n${fullResult}\n\nCRITICAL: Relay ONLY what appears above. Every name, number, and detail you say must come from the text above. Do NOT add facts from your own knowledge — if it's not in the results, don't say it. Do NOT call ask_agent again.`)
+        queueVoiceInjection(`[RESEARCH COMPLETE] Research on "${task}" is done.\n\n${fullResult}\n\nCRITICAL: ONLY state facts that appear VERBATIM in the text above. Do NOT add file names, paths, numbers, or details from your own knowledge. If a detail is not explicitly written above, do NOT say it. Relay these verified findings naturally — start with the headline finding. Do NOT re-delegate.`)
+
+        // Inject FULL untruncated result into ChatCtx so voice model can answer
+        // follow-up questions ("tell me more", "what were those links?") from memory
+        injectIntoChatCtx(`[FULL RESEARCH DETAILS for "${task}"]\n${result}`)
       }).catch(async (err) => {
         console.error(`❌ [realtime] Research failed:`, err)
 
@@ -969,21 +1048,22 @@ async function main() {
 
     // Create tools for the realtime voice LLM
     const askAgentTool = llm.tool({
-      description: `Delegate a task to your backend agent (Claude), which has full analysis, research, coding, swarm/sub delegation capabilities.
+      description: `Delegate a task to your backend agent (Claude), which has full research, analysis, reasoning, and coding capabilities.
 
 Use for:
-- Searching docs, APIs, tutorials, articles
-- Fetching web pages, YouTube transcripts
-- Reading and analyzing code, configs, architecture
-- Running bash commands, testing servers, checking implementations
+- Researching topics, technologies, concepts, or ideas in depth
+- Fetching and analyzing web pages, articles, blog posts, YouTube transcripts
+- Reading and summarizing documentation, papers, or reference materials
+- Exploring and analyzing codebases, configs, architecture
+- Comparing options, tools, approaches — with tradeoffs and recommendations
+- Running bash commands, testing implementations
 - Using MCP tools (GitHub, YouTube, and other external tools)
-- Saving reference materials to the session library
-- Updating the session spec with findings and decisions
-- Comparing options, tools, libraries, services
-- Any question requiring research, verification, or code execution
+- Saving findings to the session library and updating the spec
+- Any question requiring research, analysis, verification, or deeper reasoning
 
 Reformulate the user's spoken request into a clear, specific task.
-The more context you include (language, framework, constraints), the better the results.`,
+The more context you include (topic, constraints, what they want to learn), the better the results.
+If the user wants specific details (examples, URLs, comparisons, step-by-step breakdown), mention that in your request.`,
       parameters: z.object({
         request: z.string().describe('The task or question to delegate to the agent'),
       }),
@@ -1043,12 +1123,13 @@ Your backend agent does the heavy lifting — research, reading, analysis, docum
 == WHEN TO USE ask_agent ==
 ALWAYS delegate when:
 - User asks a factual question you're not 100% confident about
-- User asks about code, files, APIs, docs, or any technical topic
-- User asks you to research, find, compare, analyze, or document something
-- User asks about their project structure, code, or configs
+- User asks you to research, explore, compare, analyze, or explain a topic
+- User wants to read or discuss docs, articles, blog posts, YouTube videos
+- User asks about code, files, APIs, architecture, or technical topics
+- User wants to understand tradeoffs, knowledge gaps, or technical debt
 - User wants to run commands, test something, or check an implementation
 - User wants to use external tools (GitHub, YouTube, etc.)
-- Any question requiring current/accurate information
+- Any question requiring current/accurate information or deeper reasoning
 
 NEVER delegate when:
 - Small talk or casual conversation
@@ -1063,6 +1144,7 @@ NEVER delegate when:
 4. "Let me look that up" is always preferred over guessing
 5. When you receive [RESEARCH COMPLETE], ONLY state facts from the provided text — do NOT add from your own knowledge
 6. If a detail is not in the research findings, do NOT say it — even if you think you know the answer
+7. CRITICAL: When the user asks about specific code/infile details (variable names, line numbers, snippets, quotes, function signatures, file contents, control flow), you MUST delegate to ask_agent or gathered resources/specifications. NEVER guess variable names or line numbers — always say "Let me check" and delegate. Even if you think you know from earlier context, verify with ask_agent if the user is asking for precision.
 
 == USING RETRIEVED INFO ==
 Remember findings from this session. Don't re-delegate for follow-ups about info
@@ -1083,27 +1165,37 @@ with status on what it's doing (tools used, pages fetched, files read). Use thes
 - Keep the conversation alive while research runs in the background
 - You don't need to repeat every detail — just give a natural sense of progress
 - Do NOT guess or preview findings before they arrive — only say what the updates actually report
+- NEVER fill in details yourself while waiting. Do NOT say specific file names, paths, or technical details until the research results arrive. Say "I'm looking into it" NOT "I can see files like X and Y"
 
 When the research finishes, you'll receive a [RESEARCH COMPLETE] message with VERIFIED findings.
 These findings are FACTS — treat them as ground truth. You MUST:
 - Read the findings carefully before speaking
-- ONLY state facts that appear in the findings — do NOT add anything from your own knowledge
-- If a name, tool, or detail appears in the findings, say it exactly as listed
+- ONLY state facts that appear WORD FOR WORD in the findings — do NOT add anything from your own knowledge
+- If a file name, path, tool, or detail appears in the findings, say it exactly as listed
 - If something is NOT in the findings, do NOT mention it — even if you think you know
 - Speak as if YOU found it — say "I found" not "the agent found"
 - If you're unsure about a detail, say "let me double-check" rather than guessing
+- NEVER invent file names, directory structures, or code details — this is the #1 source of errors
 NEVER add, invent, or substitute any facts not explicitly present in the findings text.
 
 == ADAPTIVE VERBOSITY ==
 Match your response length to what the user wants:
 - "What's the gist?" / "Quick summary" → 1-3 sentences (but still name specific items, not vague summaries)
 - Normal questions → 3-6 sentences
-- Research results (first time presenting [RESEARCH COMPLETE] findings) → 6-10 sentences with all key specifics (default for research)
+- Research results ([RESEARCH COMPLETE]) → Share ALL key specifics from the findings. Use as many sentences as needed to cover every concrete name, version, pattern, and recommendation. Start with the headline finding, then cover details. Offer to go deeper on code examples or links if available.
 - "Tell me more" / "Go deeper" / "Explain the tradeoffs" → 10+ sentences with full detail
 - "Give me everything" / "Full breakdown" → share as much detail as reasonable
 
 Research results default to DETAILED, not brief. The user waited for these — give them the specifics.
 When in doubt for non-research responses, give a standard-length answer and let the user ask for more.
+
+== RELAYING DETAILS ==
+When presenting research findings, prioritize SPECIFICS over summaries:
+- Name the actual thing — never say "a number of solutions" or "several options exist"
+- Use concrete details: specific names, dates, numbers, comparisons, tradeoffs
+- Mention actual URLs when the findings include them
+- If findings include examples, data, or references, relay the key points first, then offer: "I have more details on that if you want them"
+- When the user asks "tell me more" or "go deeper", refer to context from this session rather than re-delegating
 
 == NOTIFICATIONS ==
 Messages with [NOTIFICATION], [RESEARCH UPDATE], or [RESEARCH COMPLETE] prefix are system messages.
@@ -1121,7 +1213,11 @@ When a permission request appears, tell the user what needs permission and ask: 
 - Research runs in the background — you'll get progress updates and can chat with the user while it runs
 - When progress updates arrive, give brief natural status: "Still looking..." / "Found some interesting stuff..."
 - When results arrive, relay findings clearly — speak as if YOU found it
-- Let the user drive the conversation — you don't always need to end with a question`
+- Let the user drive the conversation — you don't always need to end with a question
+- Use natural acknowledgments before longer answers: "Got it", "Right", "Sure"
+- When you have a lot of findings, start with the headline: "So the main thing is..." then build detail
+- It's OK to pause and say "let me think about how to explain this" before relaying complex findings
+- The user can interrupt you at any time — relay details clearly at a conversational pace, not rushed`
 
     // Create realtime model
     const realtimeModel = createRealtimeModelFromConfig(rtConfig, realtimeInstructions)
@@ -1224,6 +1320,14 @@ When a permission request appears, tell the user what needs permission and ask: 
     currentVoiceMode = sessionVoiceMode
     currentProvider = sessionRealtimeProvider
 
+    // Resume session ID — only set when resuming an existing session
+    const resumeSessionId = preSelectedSessionId || undefined
+    if (resumeSessionId) {
+      console.log(`🆔 Resuming session: ${resumeSessionId}`)
+    } else {
+      console.log(`🆔 New session (ID assigned by SDK)`)
+    }
+
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession
     let agent: voice.Agent
@@ -1232,12 +1336,12 @@ When a permission request appears, tell the user what needs permission and ask: 
       // Override the config provider with the frontend's selection
       const sessionRealtimeConfig = { ...realtimeConfig, provider: sessionRealtimeProvider }
       console.log(`🎙️ REALTIME MODE: ${sessionRealtimeConfig.provider} native speech-to-speech`)
-      const result = await createRealtimeSession(sessionRealtimeConfig)
+      const result = await createRealtimeSession(sessionRealtimeConfig, resumeSessionId)
       session = result.session
       agent = result.agent
     } else {
       console.log(`🎯 DIRECT MODE: Claude Agent SDK with full coding capabilities`)
-      const result = await createDirectSession()
+      const result = await createDirectSession(resumeSessionId)
       session = result.session
       agent = result.agent
     }
@@ -1371,7 +1475,10 @@ When a permission request appears, tell the user what needs permission and ask: 
 
           try {
             const recoveryConfig = { ...realtimeConfig, provider: currentProvider as 'gemini' | 'openai' }
-            const result = await createRealtimeSession(recoveryConfig)
+            // Reuse existing session ID for workspace continuity during recovery
+            // Prefer real SDK session ID, fall back to original resume ID
+            const recoverySessionId = currentLLM?.sessionId || resumeSessionId
+            const result = await createRealtimeSession(recoveryConfig, recoverySessionId)
             const newSession = result.session
             const newAgent = result.agent
             currentSession = newSession
@@ -1414,11 +1521,7 @@ When a permission request appears, tell the user what needs permission and ask: 
       console.log('✅ Voice session started!')
       console.log('🎤 Ready - speak to begin!\n')
 
-      // Ensure session workspace exists
-      if (currentLLM?.sessionId) {
-        const workspace = ensureSessionWorkspace(workingDir, currentLLM.sessionId)
-        console.log(`📁 Session workspace: ${workspace}`)
-      }
+      // Workspace is created later in the session_id event handler (when SDK assigns real ID)
 
       // Send ready signal with persistent retry
       console.log('💓 Sending agent_ready signal...')
@@ -1494,8 +1597,8 @@ When a permission request appears, tell the user what needs permission and ask: 
             success: true,
           })
 
-          // Send existing workspace artifacts to frontend
-          const preArtifacts = listWorkspaceArtifacts(workingDir)
+          // Send existing workspace artifacts to frontend (session-scoped)
+          const preArtifacts = listWorkspaceArtifacts(workingDir, preSelectedSessionId!)
           if (preArtifacts.length > 0) {
             console.log(`📁 Sending ${preArtifacts.length} workspace artifacts to frontend`)
             await sendToFrontend({
@@ -1623,8 +1726,8 @@ When a permission request appears, tell the user what needs permission and ask: 
             success: true,
           })
 
-          // Send existing session artifacts to frontend
-          const artifacts = listWorkspaceArtifacts(workingDir)
+          // Send existing session artifacts to frontend (session-scoped)
+          const artifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (artifacts.length > 0) {
             console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -1679,8 +1782,8 @@ When a permission request appears, tell the user what needs permission and ask: 
             success: true,
           })
 
-          // Send existing session artifacts to frontend
-          const artifacts = listWorkspaceArtifacts(workingDir)
+          // Send existing session artifacts to frontend (session-scoped)
+          const artifacts = listWorkspaceArtifacts(workingDir, recentId)
           if (artifacts.length > 0) {
             console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -1743,8 +1846,8 @@ When a permission request appears, tell the user what needs permission and ask: 
             conversationHistory,
           })
 
-          // Step 3.5: Send existing session artifacts to frontend
-          const switchArtifacts = listWorkspaceArtifacts(workingDir)
+          // Step 3.5: Send existing session artifacts to frontend (session-scoped)
+          const switchArtifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (switchArtifacts.length > 0) {
             console.log(`📁 Sending ${switchArtifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -1797,7 +1900,7 @@ When a permission request appears, tell the user what needs permission and ask: 
       else if (data.type === 'get_session_artifacts') {
         const sessionId = data.sessionId as string
         if (sessionId) {
-          const artifacts = listWorkspaceArtifacts(workingDir)
+          const artifacts = listWorkspaceArtifacts(workingDir, sessionId)
           console.log(`📁 Sending ${artifacts.length} session artifacts for ${sessionId.substring(0, 8)}`)
           await sendToFrontend({
             type: 'session_artifacts',
@@ -1947,8 +2050,8 @@ When a permission request appears, tell the user what needs permission and ask: 
             success: true,
           })
 
-          // Send existing session artifacts to frontend
-          const gateArtifacts = listWorkspaceArtifacts(workingDir)
+          // Send existing session artifacts to frontend (session-scoped)
+          const gateArtifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (gateArtifacts.length > 0) {
             console.log(`📁 Sending ${gateArtifacts.length} session artifacts to frontend`)
             await sendToFrontend({

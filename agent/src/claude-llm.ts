@@ -20,6 +20,7 @@ export interface ClaudeLLMOptions {
   resumeSessionId?: string
   continueSession?: boolean
   mcpServers?: Record<string, McpServerConfig>
+  model?: string  // Claude model ID (default: claude-sonnet-4-6)
 }
 
 /**
@@ -260,7 +261,7 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   get model(): string {
-    return 'claude-sonnet-4-20250514'
+    return this.#opts.model || 'claude-sonnet-4-6'
   }
 
   get sessionId(): string | null {
@@ -409,7 +410,13 @@ export class ClaudeLLM extends llm.LLM {
       connOptions,
       opts: this.#opts,
       sessionId: this.#sessionId,
-      onSessionId: (id) => { this.#sessionId = id },
+      onSessionId: (id) => {
+        const isFirst = !this.#sessionId
+        this.#sessionId = id
+        if (isFirst) {
+          this.#eventEmitter.emit('session_id', { sessionId: id })
+        }
+      },
       eventEmitter: this.#eventEmitter,
       // Pass checkpoint capture handler
       onCheckpoint: (checkpointId: string) => {
@@ -512,10 +519,13 @@ class ClaudeLLMStream extends llm.LLMStream {
       const resumeSessionId = this.#opts.resumeSessionId
       const continueSession = this.#opts.continueSession
 
-      // Session workspace path for system prompt
-      const workspacePath = this.#opts.workingDirectory
-        ? `${this.#opts.workingDirectory}/.osborn/sessions/`
-        : '.osborn/sessions/'
+      // Session workspace path for system prompt — only available after SDK assigns a real session ID
+      const sessionId = this.#sessionId || this.#opts.resumeSessionId || null
+      const workspacePath = sessionId
+        ? (this.#opts.workingDirectory
+            ? `${this.#opts.workingDirectory}/.osborn/sessions/${sessionId}/`
+            : `.osborn/sessions/${sessionId}/`)
+        : null
 
       // Build allowedTools with MCP wildcard patterns
       const mcpKeys = Object.keys(this.#opts.mcpServers || {})
@@ -529,6 +539,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
         allowedTools,
+        model: this.#opts.model || 'claude-sonnet-4-6',
         enableFileCheckpointing: true,
         extraArgs: { 'replay-user-messages': null },
         ...(resumeSessionId && { resume: resumeSessionId }),
@@ -545,29 +556,96 @@ class ClaudeLLMStream extends llm.LLMStream {
           return {}
         })()),
         // Research mode system prompt — always injected
-        systemPrompt: `You are in RESEARCH MODE. Your role is to deeply research, explore, and document topics.
+        systemPrompt: workspacePath
+          ? `You are in RESEARCH MODE. Your role is to deeply research, explore, and document topics.
 
 SESSION WORKSPACE: ${workspacePath}
-- spec.md: Read at start. Update after significant findings with decisions, requirements, open questions.
-- library/: Save reference materials, docs, code snippets, transcripts here.
+This workspace is your persistent knowledge base for this session. Use it proactively.
+
+spec.md — LIVING CONTEXT DOCUMENT:
+- Read at start of every query for accumulated context
+- Proactively update with: user preferences, architecture details, current status/use case, preferred stack, resource descriptions, decisions, requirements, open questions
+- This is the source of truth for what the user wants and where things stand
+- Maintain structured sections so information is easy to find and build on
+
+library/ — RESEARCH OFFLOAD:
+- Proactively save gathered research details here as you find them
+- How-to guides, video transcripts, blog summaries, API docs, code samples
+- Factual sub-topic deep dives the user may revisit later
+- Use descriptive filenames: "nextjs-app-router-guide.md", "competitor-analysis.md"
+- This offloads detail from conversation so you can reference it later without re-researching
 
 WRITE RULES:
-- CAN write to: .osborn/sessions/ (spec, library, notes, diagrams)
+- CAN write to: ${workspacePath} (spec, library, notes, diagrams)
 - CAN write to: .osborn/research/ (backward compat)
 - CANNOT modify project source files outside .osborn/
 - CAN read ANY file in the project
 
+FILE WRITING — STRICT RULES:
+- ONLY write files inside: ${workspacePath}
+- ALWAYS use the full absolute path starting with ${workspacePath}
+- For spec.md: Read it first, then use Edit to update preserving the heading structure
+- For library/: Use descriptive filenames like "api-comparison.md", "setup-guide.md"
+- NEVER guess or hallucinate file paths — always construct from the workspace path above
+- NEVER claim you wrote a file without actually calling Write or Edit
+- If you want to save findings, actually call Write/Edit — do not just say you did
+
 RESEARCH WORKFLOW:
-1. Read spec.md first if it exists
-2. Research the user's question thoroughly
-3. Save important findings to library/
-4. Update spec.md with new decisions, findings, open questions
-5. Summarize findings conversationally
+1. Read spec.md first — understand accumulated context and user preferences
+2. Research the user's question thoroughly using all available tools
+3. Offload detailed findings to library/ (transcripts, guides, factual details)
+4. Update spec.md with new decisions, preferences, status changes, architecture notes
+5. Summarize findings conversationally — reference saved artifacts
+6. Use spec.md + library/ to build and maintain the plan/full analysis over time
 
-ARTIFACTS: spec.md (main doc), library/*.md (notes), library/*.mmd (diagrams)
+ANTI-HALLUCINATION — CRITICAL:
+- NEVER state file names, paths, line counts, or code details from memory — ALWAYS use tools (Glob, Read, Bash) to verify first
+- Every fact in your response and every fact written to spec.md or library/ MUST come from a tool result, not from your training data
+- If a tool returns unexpected results, trust the tool output over your expectations
+- Do NOT create documentation files filled with assumed/guessed content — only write what you have verified via tools
+- Keep files focused: one library/ file per distinct topic, not a sprawling "everything" dump
+- Quality over quantity: one accurate file beats five speculative ones
 
-Be thorough. Ask clarifying questions. Track decisions and rationale in spec.md.`,
+Be thorough. Ask clarifying questions. Track decisions and rationale in spec.md.
+
+VOICE RELAY FORMAT:
+Your findings will be spoken aloud to the user by a voice model. To maximize clarity:
+- Lead with the most important concrete finding first
+- State specific names, dates, numbers, URLs, and key details explicitly
+- When comparing options, name each one and state clear tradeoffs
+- End with a clear recommendation or next step if applicable
+- Avoid long narrative preambles — get to the point quickly`
+          : `You are in RESEARCH MODE. Your role is to deeply research, explore, and document topics.
+
+SESSION WORKSPACE: Not yet initialized.
+Focus on researching the user's question. File saving will be available after the session is established.
+
+- CAN read ANY file in the project
+- CANNOT modify project source files outside .osborn/
+
+ANTI-HALLUCINATION — CRITICAL:
+- NEVER state file names, paths, line counts, or code details from memory — ALWAYS use tools (Glob, Read, Bash) to verify first
+- Every fact in your response MUST come from a tool result, not from your training data
+
+VOICE RELAY FORMAT:
+Your findings will be spoken aloud to the user by a voice model. To maximize clarity:
+- Lead with the most important concrete finding first
+- State specific names, dates, numbers, URLs, and key details explicitly
+- Avoid long narrative preambles — get to the point quickly`,
         canUseTool: async (toolName, input, _options) => {
+          // Auto-approve writes to session workspace
+          if (toolName === 'Write' || toolName === 'Edit') {
+            const filePath = String(input?.file_path || '')
+            if (filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')) {
+              console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
+              return { behavior: 'allow', updatedInput: input }
+            }
+          }
+          // Auto-deny tools the research agent should never use
+          if (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode') {
+            console.log(`🚫 Auto-denied ${toolName} (not used in research mode)`)
+            return { behavior: 'deny', message: 'Research mode does not use plan mode. Just proceed with the research directly.' }
+          }
           console.log(`⚠️ Permission needed: ${toolName}`)
           return this.#onPermissionRequest(toolName, input)
         },

@@ -11,6 +11,7 @@ import {
 } from '@livekit/components-react'
 import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
+import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { formatTime, groupSessionsByDate } from '@/lib/sessions'
 
@@ -1040,9 +1041,10 @@ function VoiceRoomInner({
   const [copyFeedback, setCopyFeedback] = useState(false)
   // Generated files state (plans + research artifacts)
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([])
-  const [showFilesPanel, setShowFilesPanel] = useState(true)
+  const [showFilesPanel, setShowFilesPanel] = useState(false)
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
   const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
+  const [isFilesModalOpen, setIsFilesModalOpen] = useState(true)
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
 
@@ -1437,7 +1439,7 @@ function VoiceRoomInner({
           filePath: data.filePath,
         }))
         sendToAgent(payload, { reliable: true })
-        setShowFilesPanel(true)
+        setIsFilesModalOpen(true)
         setSelectedFilePath(data.filePath)
       } else if (data.type === 'plan_file_content') {
         // Plan file content received
@@ -1482,7 +1484,7 @@ function VoiceRoomInner({
           filePath: data.filePath,
         }))
         sendToAgent(payload, { reliable: true })
-        setShowFilesPanel(true)
+        setIsFilesModalOpen(true)
         setSelectedFilePath(data.filePath)
       } else if (data.type === 'research_artifact_content') {
         // Research artifact content received
@@ -1884,13 +1886,13 @@ function VoiceRoomInner({
             <div className="flex items-center gap-1.5">
               {/* Files button - always visible */}
               <button
-                onClick={() => setShowFilesPanel(!showFilesPanel)}
+                onClick={() => setIsFilesModalOpen(!isFilesModalOpen)}
                 className={`relative p-2 rounded-lg transition-all ${
-                  showFilesPanel
+                  isFilesModalOpen
                     ? 'bg-violet-500/20 text-violet-400'
                     : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
                 }`}
-                title="Toggle files panel"
+                title="Toggle files explorer"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -2001,6 +2003,15 @@ function VoiceRoomInner({
                   {fileCopyFeedback === 'all' ? 'Copied!' : 'Copy All'}
                 </button>
               )}
+              <button
+                onClick={() => setIsFilesModalOpen(true)}
+                className="p-1 text-gray-400 hover:text-white rounded transition-colors"
+                title="Expand files explorer"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
+                </svg>
+              </button>
               <button
                 onClick={() => setShowFilesPanel(false)}
                 className="p-1 text-gray-400 hover:text-white rounded transition-colors"
@@ -2143,6 +2154,18 @@ function VoiceRoomInner({
         </div>
       )}
       </div>
+
+      {/* Files Explorer Modal */}
+      <FilesExplorerModal
+        isOpen={isFilesModalOpen}
+        onClose={() => setIsFilesModalOpen(false)}
+        files={generatedFiles}
+        selectedFilePath={selectedFilePath}
+        onSelectFile={setSelectedFilePath}
+        onCopyFile={handleCopyFile}
+        onCopyAll={handleCopyAllFiles}
+        fileCopyFeedback={fileCopyFeedback}
+      />
     </>
   )
 }

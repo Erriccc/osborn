@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { parse, stringify } from 'yaml'
@@ -1017,7 +1017,49 @@ export function ensureSessionWorkspace(projectPath: string, sessionId: string): 
   const dir = getSessionWorkspace(projectPath, sessionId)
   const libraryDir = join(dir, 'library')
   mkdirSync(libraryDir, { recursive: true })
+  // Create default spec.md if it doesn't exist (won't overwrite on resumed sessions)
+  const specPath = join(dir, 'spec.md')
+  if (!existsSync(specPath)) {
+    writeFileSync(specPath, `# Research Session
+
+## Topic
+
+## User Context
+<!-- Preferences, current status, use case, preferred stack, resources -->
+
+## Architecture & Details
+<!-- Technical details, codebase structure, current state -->
+
+## Findings
+
+## Plan
+<!-- Actionable steps, full analysis, recommendations -->
+
+## Open Questions
+
+## Decisions
+`, 'utf-8')
+  }
   return dir
+}
+
+/**
+ * Rename a session workspace folder to match the SDK session ID.
+ * Returns the new path, or null if rename was not needed/possible.
+ */
+export function renameSessionWorkspace(projectPath: string, oldSessionId: string, newSessionId: string): string | null {
+  if (oldSessionId === newSessionId) return null
+  const oldDir = getSessionWorkspace(projectPath, oldSessionId)
+  const newDir = getSessionWorkspace(projectPath, newSessionId)
+  if (!existsSync(oldDir)) return null
+  if (existsSync(newDir)) return null // target already exists
+  try {
+    renameSync(oldDir, newDir)
+    return newDir
+  } catch (err) {
+    console.error(`⚠️ Failed to rename workspace ${oldSessionId} → ${newSessionId}:`, err)
+    return null
+  }
 }
 
 // Deprecated aliases for backward compatibility
@@ -1103,10 +1145,13 @@ export function listResearchArtifacts(projectPath: string, sessionId: string): R
 }
 
 /**
- * List all artifacts in the shared .osborn/sessions/ workspace.
- * The system prompt directs Claude to write here (flat, not per-session).
+ * List artifacts in a session workspace.
+ * When sessionId is provided, scans the per-session folder (.osborn/sessions/{sessionId}/).
+ * Without sessionId, falls back to the flat .osborn/sessions/ directory (legacy).
  */
-export function listWorkspaceArtifacts(projectPath: string): ResearchArtifact[] {
-  const dir = join(projectPath, '.osborn', 'sessions')
+export function listWorkspaceArtifacts(projectPath: string, sessionId?: string): ResearchArtifact[] {
+  const dir = sessionId
+    ? join(projectPath, '.osborn', 'sessions', sessionId)
+    : join(projectPath, '.osborn', 'sessions')
   return scanDirForArtifacts(dir)
 }

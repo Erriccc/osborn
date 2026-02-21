@@ -26,7 +26,24 @@
 
 ## Version History
 
-### v0.4.6 (Current) — Gemini Research Relay: Anti-Hallucination, Task Queuing, Voice Queue Fix
+### v0.4.8 (Current) — Strict Write Rules + Auto-Approve Workspace Writes
+
+#### Problem
+The agent sometimes hallucinated file writes (claiming "I updated spec.md" without calling Write) or used wrong paths from memory. Writer sub-agent delegation was tested but caused worse problems: sub-agent inherited `permissionMode: 'default'`, triggering permission prompts that blocked the voice queue and caused `generateReply timed out` cascades.
+
+#### Fixes
+- **Strict file writing prompt**: System prompt `FILE WRITING — STRICT RULES` section with explicit instructions: always use full absolute workspace path, read spec.md before editing, never hallucinate paths, never claim a write without calling Write/Edit
+- **Auto-approve workspace writes**: `canUseTool` callback auto-approves `Write`/`Edit` when path is within `.osborn/sessions/` or `.osborn/research/` — no permission prompt for workspace files
+- **Removed writer sub-agent**: Sub-agent delegation removed after testing showed it introduced permission blocking, extra latency, and voice queue crashes. Direct Write/Edit with strong prompts + PreToolUse safety hook is simpler and more reliable
+
+#### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/claude-llm.ts` | Strict file writing prompt, auto-approve workspace writes in `canUseTool`, removed `agents.writer` config |
+
+---
+
+### v0.4.6 — Gemini Research Relay: Anti-Hallucination, Task Queuing, Voice Queue Fix
 
 #### Anti-Hallucination Prompts
 - **Generalized fact-fidelity rules**: Removed tech-specific examples ("TypeScript/Python/Django") that Gemini treated as style hints rather than constraints. Replaced with universal rules: "only state facts from findings, don't add from your own knowledge"

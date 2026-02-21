@@ -1,4 +1,4 @@
-# Osborn v0.4.6 - Voice AI Research Assistant
+# Osborn v0.4.8 - Voice AI Research Assistant
 
 ## Architecture
 
@@ -35,6 +35,7 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | Gemini Live voice | Working |
 | Direct mode (STT → Claude → TTS) | Working |
 | Claude Agent SDK tools (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch) | Working |
+| Auto-approve workspace writes (no permission prompt) | Working |
 | Permission system (voice + UI approval) | Working |
 | Room code connection system | Working |
 | Text input fallback | Working |
@@ -67,7 +68,7 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | File | Purpose |
 |------|---------|
 | `agent/src/index.ts` | Main entry, room events, session creation, voice queue, data handlers |
-| `agent/src/claude-llm.ts` | Claude Agent SDK wrapper, research mode systemPrompt, PreToolUse write safety |
+| `agent/src/claude-llm.ts` | Claude Agent SDK wrapper, research mode systemPrompt, PreToolUse write safety, auto-approve workspace writes |
 | `agent/src/config.ts` | Config loading, session management, workspace helpers |
 | `agent/src/smithery-proxy.ts` | In-process MCP proxy for Smithery cloud servers |
 | `agent/src/voice-io.ts` | STT/TTS/VAD/Realtime model factory |
@@ -75,6 +76,24 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | `frontend/src/components/MarkdownMessage.tsx` | Markdown renderer |
 | `frontend/src/components/SessionBrowser.tsx` | Session browser component |
 | `frontend/src/lib/sessions.ts` | Session utilities (formatTime, groupSessionsByDate) |
+
+---
+
+## v0.4.8 Changes — Strict Write Rules + Auto-Approve Workspace Writes
+
+### Problem
+Agent hallucinated writes or used wrong paths. Sub-agent delegation tested but caused permission blocking and voice queue crashes.
+
+### Solution
+- Strict `FILE WRITING` prompt: full absolute paths, read before edit, never hallucinate writes
+- `canUseTool` auto-approves Write/Edit to `.osborn/sessions/` and `.osborn/research/`
+- Removed writer sub-agent (permission prompt + latency + voice queue issues)
+- PreToolUse hook retained as path safety net
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/claude-llm.ts` | Removed Write/Edit from RESEARCH_TOOLS, mandatory delegation prompt, improved writer config |
 
 ---
 
@@ -212,4 +231,4 @@ mcpServers:
 
 ---
 
-Last Updated: 2026-02-20
+Last Updated: 2026-02-21

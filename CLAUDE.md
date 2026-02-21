@@ -53,16 +53,18 @@ Frontend (Next.js 14) <-> LiveKit Cloud <-> Agent (Node.js/tsx on local machine)
 
 The agent operates in a single **research** mode. It can read any file, search the web, run commands, fetch YouTube transcripts, and save findings to a per-session workspace. There are no plan/execute or read-only/edit mode toggles.
 
-**Write safety**: A `PreToolUse` hook in `claude-llm.ts` blocks `Write`/`Edit` outside `.osborn/sessions/` (and legacy `.osborn/research/`). All other tools are unrestricted. The `permissionMode` is `'default'` — the SDK prompts for dangerous operations.
+**Write safety**: A `PreToolUse` hook in `claude-llm.ts` blocks `Write`/`Edit` outside `.osborn/sessions/` (and legacy `.osborn/research/`). The `canUseTool` callback auto-approves writes to the session workspace (no permission prompt), while all other tools use `permissionMode: 'default'`. The system prompt has strict file writing rules (full absolute paths, no hallucinated writes).
 
-**Session workspace** (created per session):
+**Session workspace** (created per session, includes default `spec.md` template):
 ```
 <workingDir>/.osborn/sessions/<full-session-uuid>/
-  spec.md        # Evolving specification document
-  library/       # Downloaded docs, transcripts, notes, code samples
+  spec.md        # Living context doc: user preferences, architecture, status, decisions, plan
+  library/       # Offloaded research: transcripts, guides, factual deep dives, code samples
 ```
 
-**System prompt**: Always injected via `systemPrompt` field in `claude-llm.ts`. Describes research mode, workspace paths, write rules, and research workflow.
+The agent proactively updates `spec.md` with user context (preferences, architecture, status) and saves detailed research findings to `library/` for later reference. This creates a persistent knowledge base that accumulates across the session.
+
+**System prompt**: Always injected via `systemPrompt` field in `claude-llm.ts`. Describes research mode, workspace paths, write rules, and proactive knowledge management workflow.
 
 **Legacy types**: `EditMode` and `AgentMode` are still exported from `config.ts` for backward compatibility with old `.session-meta.json` files, but are not used in the active code path.
 
@@ -70,7 +72,7 @@ The agent operates in a single **research** mode. It can read any file, search t
 
 **Agent:**
 - `agent/src/index.ts` — Main entry: LiveKit room events, session creation (`createDirectSession`/`createRealtimeSession`), all DataReceived handlers, HTTP API server (port 8741)
-- `agent/src/claude-llm.ts` — `ClaudeLLM` class extending `llm.LLM`: wraps Claude Agent SDK `query()`, research mode system prompt, session resume, MCP servers, checkpoints, permission flow
+- `agent/src/claude-llm.ts` — `ClaudeLLM` class extending `llm.LLM`: wraps Claude Agent SDK `query()`, research mode system prompt, session resume, MCP servers, checkpoints, permission flow, configurable model (default Sonnet), auto-approve workspace writes in `canUseTool`
 - `agent/src/config.ts` — `OsbornConfig` loading from `~/.osborn/config.yaml`, session management (list/get/history), session workspace helpers, `listWorkspaceArtifacts()` for file explorer persistence, MCP catalog with Smithery cloud support
 - `agent/src/smithery-proxy.ts` — In-process MCP proxy for Smithery cloud servers. Bypasses Claude Agent SDK HTTP bug (#18296) by using `@smithery/api/mcp` `createConnection()` + MCP SDK `Client` to get a working transport, then wraps in local `McpServer` as `type: 'sdk'`
 - `agent/src/voice-io.ts` — Factory functions for STT, TTS, VAD, and realtime model creation
@@ -122,6 +124,9 @@ MCP servers extend Claude with external tools (GitHub, YouTube, etc.). Three tra
 ## Critical Patterns
 
 - **opts sync**: When updating ClaudeLLM state (`setResumeSessionId`, `setContinueSession`, `resetForSessionSwitch`), always sync to both the instance field AND `this.#opts` — otherwise `ClaudeLLMStream` won't see the update.
+- **Workspace path fallback**: `sessionId` for workspace path uses `this.#sessionId || this.#opts.resumeSessionId || null`. When null (first query of new session), workspace instructions are omitted from the system prompt. Workspace is created when the SDK emits the real `session_id`. For resumed sessions, workspace is eagerly created since the real ID is already known.
+- **Workspace write auto-approval**: The `canUseTool` callback auto-approves `Write`/`Edit` calls when the file path is within `.osborn/sessions/` or `.osborn/research/`. This prevents the SDK permission prompt from blocking workspace writes. The `PreToolUse` hook remains as a safety net to block writes outside the workspace. The system prompt has strict rules: always use full absolute workspace path, never hallucinate paths, never claim a write without actually calling Write/Edit.
+- **Configurable model**: `ClaudeLLMOptions.model` defaults to `claude-sonnet-4-6`. Passed to both the `model` getter and SDK `Options.model`. Haiku was tested but hallucinated file structures; Sonnet is the safe default.
 - **Unified voice injection queue**: ALL system injections (research updates, completions, notifications, errors) go through `voiceQueue[]` + `queueVoiceInjection()` + `processVoiceQueue()`. Never call `generateReply` directly for injections. The queue only processes when `agentState === 'listening'`. Multiple items are batched into one `generateReply({ instructions, toolChoice: 'none' })` call. The `agent_state_changed` → `listening` event triggers `processVoiceQueue()` again after the model finishes speaking.
 - **Voice announcements in realtime mode**: Use `queueVoiceInjection()` (which gates on model availability) not `session.generateReply()` directly, and not `session.say()` (no standalone TTS in realtime). Use `[NOTIFICATION]` prefix + "Do NOT call any tools" to prevent feedback loops.
 - **Feedback loop prevention**: Never pass system messages through `generateReply({ userInput })` in realtime — Gemini/OpenAI treats them as new user requests. Use dedup guard (`lastTaskRequest`/`lastTaskTime` with 10s window).
@@ -143,7 +148,7 @@ The system has layered prompts at different levels:
 |---|---|---|---|
 | **Realtime voice model** | `index.ts` | Realtime sessions | Large prompt: Osborn persona, `ask_agent` delegation rules, anti-hallucination rules, clarifying questions, live research updates (`[RESEARCH UPDATE]`/`[RESEARCH COMPLETE]`), adaptive verbosity (brief/standard/detailed/full), notification handling |
 | **Direct voice agent** | `index.ts` | Direct sessions | Short: "You are Osborn, a voice AI research assistant..." |
-| **Claude SDK research mode** | `claude-llm.ts` | Always | Injected via `systemPrompt` field: research mode rules, session workspace path, write rules, spec.md workflow, library artifact guidance |
+| **Claude SDK research mode** | `claude-llm.ts` | Always | Injected via `systemPrompt` field: research mode rules, session workspace path, write rules, proactive knowledge management (spec.md as living context doc, library/ as research offload), writer sub-agent delegation |
 | **`ask_agent` tool desc** | `index.ts` | Realtime sessions | Full capability list (research, bash, MCP tools, code analysis). Non-blocking: returns immediately, injects progress + final results via `generateReply()` |
 | **Notifications** | `announceViaVoice()` → `queueVoiceInjection()` in `index.ts` | Any mode | `[NOTIFICATION] {text}. Acknowledge briefly. Do NOT call any tools.` |
 | **Research progress** | `scheduleResearchBatch()` + `queueVoiceInjection()` in `index.ts` | During research | `[RESEARCH UPDATE]` batched (8s debounce, max 3 per task) + `[RESEARCH COMPLETE]` with fact-fidelity mandate. All go through unified `voiceQueue`, gated on `listening` state. Uses `toolChoice: 'none'` |
