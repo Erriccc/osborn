@@ -598,6 +598,15 @@ RESEARCH WORKFLOW:
 5. Summarize findings conversationally — reference saved artifacts
 6. Use spec.md + library/ to build and maintain the plan/full analysis over time
 
+PARALLEL SUB-AGENTS — USE THE TASK TOOL:
+- For complex research with multiple independent parts, use the Task tool to spawn sub-agents that work in parallel
+- Example: researching 3 different technologies → spawn 3 Task sub-agents simultaneously, each researching one
+- Example: reading multiple files for analysis → spawn sub-agents to read and summarize each file concurrently
+- Sub-agents can use: Read, Glob, Grep, Bash, WebSearch, WebFetch
+- Launch multiple Task calls in the SAME response to run them in parallel — do NOT wait for one to finish before starting the next
+- Collect sub-agent results, then synthesize findings yourself
+- This dramatically speeds up research that would otherwise be sequential
+
 ANTI-HALLUCINATION — CRITICAL:
 - NEVER state file names, paths, line counts, or code details from memory — ALWAYS use tools (Glob, Read, Bash) to verify first
 - Every fact in your response and every fact written to spec.md or library/ MUST come from a tool result, not from your training data

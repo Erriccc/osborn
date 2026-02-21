@@ -350,8 +350,7 @@ async function main() {
     voiceUpdateCount: number // Track voice injection count (no cap — 8s debounce prevents flooding)
   } | null = null
 
-  // Queued follow-up research task — executes after current research completes
-  let pendingResearchTask: string | null = null
+  // No manual queuing — the Claude SDK handles sequential queries internally
 
   // ============================================================
   // Unified Voice Injection Queue
@@ -478,7 +477,7 @@ async function main() {
       })
 
       // Push to unified voice queue (will be spoken when model is available)
-      queueVoiceInjection(`[RESEARCH UPDATE] Here's what your research agent is doing: ${batchText}. Give a brief natural update — one or two sentences. Do NOT call any tools.`)
+      queueVoiceInjection(`[RESEARCH UPDATE — STILL IN PROGRESS] Your research agent is currently: ${batchText}. Give a brief progress update — one or two sentences. This research is NOT finished yet — do NOT say "complete", "done", or "finished". Say what's happening NOW, like "I'm looking into..." or "The agent is reading...". Do NOT call any tools.`)
     }, 8000) // 8s debounce: reduces voice queue flooding during research
   }
 
@@ -884,9 +883,15 @@ async function main() {
       return assembled
     }
 
-    // Extracted research execution — called by ask_agent and by pending task chain
+    // Extracted research execution — called by ask_agent, SDK handles queuing internally
     function executeResearch(task: string): string {
       sendToFrontend({ type: 'system', text: `Executing: ${task}` })
+
+      // Clean up previous research listeners to avoid duplicate event handlers
+      if (activeResearch) {
+        activeResearch.cleanup()
+        if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+      }
 
       // Set up research log batching — events push to queue for state-driven injection
       const researchLog: string[] = []
@@ -1006,15 +1011,6 @@ async function main() {
         if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
         activeResearch = null
 
-        // Chain next task if queued — SDK auto-resumes session context
-        if (pendingResearchTask) {
-          const nextTask = pendingResearchTask
-          pendingResearchTask = null
-          console.log(`📋 Starting queued task: "${nextTask.substring(0, 60)}"`)
-          // Brief delay to let voice model speak current results before starting next
-          setTimeout(() => executeResearch(nextTask), 2000)
-        }
-
         // Send final results to frontend for visibility
         await sendToFrontend({
           type: 'claude_output',
@@ -1078,13 +1074,6 @@ If the user wants specific details (examples, URLs, comparisons, step-by-step br
         }
         lastTaskRequest = task
         lastTaskTime = now
-
-        // If research is already active, queue the follow-up task
-        if (activeResearch) {
-          console.log(`📋 Research in progress, queuing: "${task.substring(0, 60)}"`)
-          pendingResearchTask = task
-          return 'Research is already running. I\'ll start on your follow-up next.'
-        }
 
         return executeResearch(task)
       },
@@ -1252,7 +1241,6 @@ When a permission request appears, tell the user what needs permission and ask: 
     // Clean up active research and voice queue
     voiceQueue.length = 0
     isProcessingQueue = false
-    pendingResearchTask = null
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     if (activeResearch) {
       activeResearch.cleanup()
@@ -1269,7 +1257,6 @@ When a permission request appears, tell the user what needs permission and ask: 
     // Clean up any existing session before creating a new one
     voiceQueue.length = 0
     isProcessingQueue = false
-    pendingResearchTask = null
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     if (activeResearch) {
       activeResearch.cleanup()
@@ -1469,7 +1456,6 @@ When a permission request appears, tell the user what needs permission and ask: 
           // Clear voice queue — stale injections from the crashed session
           voiceQueue.length = 0
           isProcessingQueue = false
-          pendingResearchTask = null
           if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
           if (activeResearch) { activeResearch.cleanup(); activeResearch = null }
 
@@ -1498,8 +1484,27 @@ When a permission request appears, tell the user what needs permission and ask: 
               currentLLM.setContinueSession(true)
             }
 
-            // Notify via voice
-            queueVoiceInjection('[NOTIFICATION] The voice session was briefly interrupted but has been recovered. Ask the user if they can hear you and continue where you left off. Do NOT call any tools.')
+            // Inject conversation context into the recovered session
+            const recoveredSessionId = currentLLM?.sessionId || recoverySessionId
+            if (recoveredSessionId) {
+              try {
+                const summary = await getSessionSummary(recoveredSessionId, workingDir)
+                const conversationHistory = await getConversationHistory(recoveredSessionId, workingDir, 30)
+                if (summary && conversationHistory.length > 0) {
+                  const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+                  queueVoiceInjection(`[SESSION RECOVERED] The voice session crashed and was auto-recovered. Here's the conversation context from before the crash:\n${contextBriefing}\n\nBriefly tell the user the connection was interrupted and you still have context from the conversation. Ask if they can hear you and what they'd like to continue with. Do NOT call any tools.`)
+                  console.log('📋 Injected conversation context into recovered session')
+                } else {
+                  queueVoiceInjection('[NOTIFICATION] The voice session was briefly interrupted but has been recovered. Ask the user if they can hear you and continue where you left off. Do NOT call any tools.')
+                }
+              } catch (err) {
+                console.log('⚠️ Failed to load conversation context for recovery:', err)
+                queueVoiceInjection('[NOTIFICATION] The voice session was briefly interrupted but has been recovered. Ask the user if they can hear you and continue where you left off. Do NOT call any tools.')
+              }
+            } else {
+              // No session ID — generic notification
+              queueVoiceInjection('[NOTIFICATION] The voice session was briefly interrupted but has been recovered. Ask the user if they can hear you and continue where you left off. Do NOT call any tools.')
+            }
 
             console.log('✅ Auto-recovery complete')
           } catch (err) {

@@ -10,7 +10,8 @@ Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SD
 - **Claude Agent SDK**: Full tool access (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch)
 - **Permission System**: Approve/deny operations via voice or UI
 - **Session Management**: Resume, switch, and browse previous conversations
-- **Follow-Up Research Queuing**: Ask follow-up questions while research is running — they chain automatically
+- **Non-Blocking Research**: Ask follow-up questions while research is running — the SDK queues tasks internally
+- **Parallel Sub-Agents**: Research agent spawns Task sub-agents for concurrent work (e.g., researching 3 topics simultaneously)
 - **Gemini Auto-Recovery**: Automatic session recovery from Gemini 1008 crashes with voice notification
 - **MCP Integration**: Extend with GitHub, YouTube, filesystem, and custom MCP servers (Smithery cloud proxy)
 - **Research Artifacts**: Plans, diagrams (mermaid), notes, and analysis files — persist across session resumes
@@ -159,7 +160,8 @@ osborn/
 | Research Mode | Working |
 | Session Management | Working |
 | Research Artifacts | Working |
-| Research Task Queuing (follow-up chains) | Working |
+| Non-blocking research (SDK-managed queuing) | Working |
+| Parallel sub-agents (Task tool for concurrent research) | Working |
 | Gemini Auto-Recovery (1008 crash) | Working |
 | Files Panel (always visible, persists on resume) | Working |
 | MCP Integration (Smithery cloud proxy) | Working |

@@ -26,20 +26,53 @@
 
 ## Version History
 
-### v0.4.8 (Current) — Strict Write Rules + Auto-Approve Workspace Writes
+### v0.4.9 (Current) — Remove Research Blocking, Parallel Sub-Agents, Fix False Completions
 
-#### Problem
-The agent sometimes hallucinated file writes (claiming "I updated spec.md" without calling Write) or used wrong paths from memory. Writer sub-agent delegation was tested but caused worse problems: sub-agent inherited `permissionMode: 'default'`, triggering permission prompts that blocked the voice queue and caused `generateReply timed out` cascades.
+#### Research Blocking Removed
+- **No more manual task queuing**: Removed `if (activeResearch)` blocking guard in `ask_agent` — new research tasks go directly to the Claude SDK instead of waiting in `pendingResearchTask`
+- **SDK handles queuing internally**: The Claude Agent SDK manages sequential queries via session resume — no need for our own queue on top
+- **Listener cleanup**: Old research event listeners are cleaned up before starting a new task to prevent duplicate handlers
+- **Removed**: `pendingResearchTask` variable, chaining logic in `.then()`, all 5 cleanup references
 
-#### Fixes
-- **Strict file writing prompt**: System prompt `FILE WRITING — STRICT RULES` section with explicit instructions: always use full absolute workspace path, read spec.md before editing, never hallucinate paths, never claim a write without calling Write/Edit
-- **Auto-approve workspace writes**: `canUseTool` callback auto-approves `Write`/`Edit` when path is within `.osborn/sessions/` or `.osborn/research/` — no permission prompt for workspace files
-- **Removed writer sub-agent**: Sub-agent delegation removed after testing showed it introduced permission blocking, extra latency, and voice queue crashes. Direct Write/Edit with strong prompts + PreToolUse safety hook is simpler and more reliable
+#### Parallel Sub-Agents
+- **System prompt guidance**: Research agent is now instructed to use the `Task` tool for parallel work — spawn multiple sub-agents in the same response for independent research (e.g., researching 3 technologies simultaneously)
+- **Sub-agent tools**: Read, Glob, Grep, Bash, WebSearch, WebFetch — all available to Task sub-agents
+- **No code changes needed**: `Task` was already in `RESEARCH_TOOLS` — this is prompt guidance so the agent actually uses it for parallelism
+
+#### False Completion Announcements Fixed
+- **Root cause**: `[RESEARCH UPDATE]` injections were spoken by Gemini as "research complete" even though the SDK was still running tools — the voice model interpreted batch content as final findings
+- **Fix**: Update prompt changed to `[RESEARCH UPDATE — STILL IN PROGRESS]` with explicit instructions: "This research is NOT finished yet — do NOT say complete, done, or finished. Say what's happening NOW"
+- **Result**: Voice model now says "I'm looking into..." or "The agent is reading..." instead of false completions
 
 #### Files Modified
 | File | Changes |
 |------|---------|
-| `agent/src/claude-llm.ts` | Strict file writing prompt, auto-approve workspace writes in `canUseTool`, removed `agents.writer` config |
+| `agent/src/index.ts` | Removed blocking guard + `pendingResearchTask`, cleanup old listeners in `executeResearch()`, fixed update prompt |
+| `agent/src/claude-llm.ts` | Added `PARALLEL SUB-AGENTS` section to research system prompt |
+
+---
+
+### v0.4.8 — Strict Write Rules, Auto-Approve, Recovery Context
+
+#### Write Safety
+- **Strict file writing prompt**: System prompt `FILE WRITING — STRICT RULES` section: always use full absolute workspace path, read spec.md before editing, never hallucinate paths/writes
+- **Auto-approve workspace writes**: `canUseTool` auto-approves `Write`/`Edit` to `.osborn/sessions/` or `.osborn/research/` — no permission prompt for workspace files
+- **Auto-deny plan mode tools**: `canUseTool` auto-denies `EnterPlanMode`/`ExitPlanMode` — research agent should never enter plan mode
+- **Removed writer sub-agent**: Tested but caused permission blocking, extra latency, and voice queue crashes
+
+#### Anti-Hallucination
+- **Code-specific delegation rule**: Realtime prompt rule #7: when the user asks about specific code details (variable names, line numbers, function signatures), MUST delegate to `ask_agent` — never guess
+
+#### Auto-Recovery Context Injection
+- **Conversation history preserved on crash recovery**: After Gemini 1011/1008 crash and auto-recovery, the new session now receives conversation context via `buildContextBriefing()` — loads last 10 exchanges from session history and injects as `[SESSION RECOVERED]` prompt
+- **Previously**: New session started blank, user had to manually paste conversation history
+- **Now**: Gemini model knows what was discussed before the crash and can continue naturally
+
+#### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/claude-llm.ts` | Strict write prompt, auto-approve workspace writes, auto-deny plan mode in `canUseTool` |
+| `agent/src/index.ts` | Recovery context injection via `buildContextBriefing()`, anti-hallucination rule #7 for code details |
 
 ---
 
@@ -49,9 +82,9 @@ The agent sometimes hallucinated file writes (claiming "I updated spec.md" witho
 - **Generalized fact-fidelity rules**: Removed tech-specific examples ("TypeScript/Python/Django") that Gemini treated as style hints rather than constraints. Replaced with universal rules: "only state facts from findings, don't add from your own knowledge"
 - Updated across 4 prompt locations: `[RESEARCH COMPLETE]` injection, anti-hallucination rules, research complete handling guidance, notifications quick-ref
 
-#### Follow-Up Research Task Queuing
-- **`pendingResearchTask` queue**: When research is already running, follow-up `ask_agent` calls store the task instead of rejecting. After current research completes, queued task auto-executes with 2s delay
-- **`executeResearch()` extraction**: Core research logic extracted from `ask_agent` execute body into a named function, callable by both `ask_agent` and the pending task chain
+#### Follow-Up Research Task Queuing (Replaced in v0.4.9)
+- **`pendingResearchTask` queue**: When research is already running, follow-up `ask_agent` calls store the task instead of rejecting. After current research completes, queued task auto-executes with 2s delay. *Note: Replaced in v0.4.9 — blocking removed entirely, SDK handles queuing internally.*
+- **`executeResearch()` extraction**: Core research logic extracted from `ask_agent` execute body into a named function
 - **SDK auto-context**: Claude Agent SDK auto-resumes via `sessionId` — follow-up tasks inherit all prior research context without manual session management
 
 #### Voice Queue Flooding Fix

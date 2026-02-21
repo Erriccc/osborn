@@ -1,4 +1,4 @@
-# Osborn v0.4.8 - Voice AI Research Assistant
+# Osborn v0.4.9 - Voice AI Research Assistant
 
 ## Architecture
 
@@ -54,8 +54,10 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | Specificity prompts (no vague summaries) | Working |
 | Adaptive verbosity (BRIEF/STANDARD/DETAILED/FULL) | Working |
 | Anti-hallucination prompt (realtime mode) | Working |
-| Gemini auto-recovery (1008 crash) | Working |
-| Research task queuing (follow-up chains) | Working |
+| Gemini auto-recovery (1008/1011 crash) + context injection | Working |
+| Non-blocking research (SDK-managed queuing) | Working |
+| Parallel sub-agents (Task tool for concurrent research) | Working |
+| Research progress prompt (no false completions) | Working |
 | Enriched research progress (file paths, commands) | Working |
 | Voice queue flood protection (`isProcessingQueue` + cap) | Working |
 | Markdown rendering in chat | Working |
@@ -79,21 +81,52 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 
 ---
 
-## v0.4.8 Changes — Strict Write Rules + Auto-Approve Workspace Writes
+## v0.4.9 Changes — Remove Research Blocking, Parallel Sub-Agents, Fix False Completions
 
-### Problem
-Agent hallucinated writes or used wrong paths. Sub-agent delegation tested but caused permission blocking and voice queue crashes.
+### Research Blocking Removed
+- Removed `if (activeResearch)` guard in `ask_agent` — new tasks go straight to the SDK
+- Removed `pendingResearchTask` variable and all chaining logic
+- Claude SDK handles sequential queries internally via session resume
+- Old research listeners cleaned up before starting new task (prevents duplicate event handlers)
 
-### Solution
-- Strict `FILE WRITING` prompt: full absolute paths, read before edit, never hallucinate writes
-- `canUseTool` auto-approves Write/Edit to `.osborn/sessions/` and `.osborn/research/`
-- Removed writer sub-agent (permission prompt + latency + voice queue issues)
-- PreToolUse hook retained as path safety net
+### Parallel Sub-Agents
+- System prompt now instructs research agent to use `Task` tool for parallel work
+- Multiple Task calls in same response spawn concurrent sub-agents
+- Example: researching 3 technologies simultaneously instead of sequentially
+
+### False Completion Fix
+- Research update prompt changed from `[RESEARCH UPDATE]` to `[RESEARCH UPDATE — STILL IN PROGRESS]`
+- Explicit instruction: "do NOT say complete, done, or finished" — prevents Gemini from announcing research as complete while SDK is still running tools
+- Voice model now says progress language ("I'm looking into...", "The agent is reading...") instead of false completion announcements
 
 ### Files Modified
 | File | Changes |
 |------|---------|
-| `agent/src/claude-llm.ts` | Removed Write/Edit from RESEARCH_TOOLS, mandatory delegation prompt, improved writer config |
+| `agent/src/index.ts` | Removed blocking guard, removed `pendingResearchTask`, cleanup old listeners, fixed update prompt |
+| `agent/src/claude-llm.ts` | Added `PARALLEL SUB-AGENTS` section to research system prompt |
+
+---
+
+## v0.4.8 Changes — Strict Write Rules, Auto-Approve, Recovery Context
+
+### Write Safety
+- Strict `FILE WRITING` prompt: full absolute paths, read before edit, never hallucinate writes
+- `canUseTool` auto-approves Write/Edit to `.osborn/sessions/` and `.osborn/research/`
+- `canUseTool` auto-denies `EnterPlanMode`/`ExitPlanMode`
+- Removed writer sub-agent (permission + latency + voice queue issues)
+
+### Anti-Hallucination
+- Realtime prompt rule #7: specific code questions (variable names, line numbers) MUST delegate to `ask_agent`
+
+### Auto-Recovery Context Injection
+- After Gemini crash recovery, `buildContextBriefing()` loads last 10 exchanges and injects as `[SESSION RECOVERED]`
+- Previously: new session started blank. Now: Gemini knows what was discussed before crash
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/claude-llm.ts` | Strict write prompt, auto-approve workspace writes, auto-deny plan mode |
+| `agent/src/index.ts` | Recovery context injection, anti-hallucination rule #7 |
 
 ---
 
