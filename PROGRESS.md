@@ -1,4 +1,4 @@
-# Osborn v0.4.9 - Voice AI Research Assistant
+# Osborn v0.5.1 - Voice AI Research Assistant
 
 ## Architecture
 
@@ -62,6 +62,14 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | Voice queue flood protection (`isProcessingQueue` + cap) | Working |
 | Markdown rendering in chat | Working |
 | Task deduplication guard | Working |
+| Fast brain (`ask_haiku` — ~2s session-aware Q&A) | Working |
+| Four-tier intelligence routing (`read_spec` → `ask_haiku` → `ask_agent`) | Working |
+| JSONL session access (full untruncated tool results) | Working |
+| Post-research spec consolidation via JSONL (`updateSpecFromJSONL`) | Working |
+| Bidirectional question tracking in spec.md | Working |
+| Centralized prompts (`prompts.ts`) | Working |
+| Multi-strategy JSON parsing (`parseChunkResponse`) | Working |
+| Fast brain JSONL tools (`read_agent_results`, `read_agent_text`) | Working |
 
 ---
 
@@ -77,7 +85,100 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | `frontend/src/components/VoiceRoom.tsx` | Main UI component |
 | `frontend/src/components/MarkdownMessage.tsx` | Markdown renderer |
 | `frontend/src/components/SessionBrowser.tsx` | Session browser component |
+| `agent/src/fast-brain.ts` | Fast brain: ~2s Q&A, post-research JSONL consolidation, spec updates |
+| `agent/src/session-access.ts` | JSONL session access: 14 functions for reading Claude session data |
+| `agent/src/prompts.ts` | Centralized prompt definitions (9 exports) |
 | `frontend/src/lib/sessions.ts` | Session utilities (formatTime, groupSessionsByDate) |
+
+---
+
+## v0.5.1 Changes — JSONL-Based Spec Consolidation + Prompt Extraction + Question Tracking
+
+### Centralized Prompts (`prompts.ts`)
+- All system prompts extracted from inline strings in `index.ts`, `claude-llm.ts`, and `fast-brain.ts` into `agent/src/prompts.ts`
+- 9 exports: `DIRECT_MODE_PROMPT`, `getRealtimeInstructions()`, `getResearchSystemPrompt()`, `FAST_BRAIN_SYSTEM_PROMPT`, `CHUNK_PROCESS_SYSTEM`, `REFINEMENT_PROCESS_SYSTEM`, `getResearchCompleteInjection()`, `getResearchUpdateInjection()`, `getNotificationInjection()`
+- Source files import from `prompts.ts` instead of defining prompts inline
+
+### JSONL Session Access (`session-access.ts`)
+- New module for programmatic access to Claude Agent SDK JSONL session files
+- 14 exported functions: `readSessionHistory()`, `getRecentToolResults()`, `getSubagentTranscripts()`, `getSessionTranscripts()`, `watchSessionFile()`, `getRawSessionJsonl()`, `readRawJsonl()`, etc.
+- All functions accept optional `SessionAccessOptions` with `claudeDir` override
+- Reads FULL untruncated tool results, agent reasoning, and sub-agent transcripts
+
+### Content Pipeline Replaced with JSONL Reads
+- **Deleted**: `contentBuffer[]`, `scheduleContentProcess()`, `contentProcessTimer` from `index.ts`
+- **New**: `updateSpecFromJSONL()` in `fast-brain.ts` — reads FULL data from JSONL on research completion
+- Reads `getRecentToolResults(sessionId, workingDir, 30)` (30 full tool results)
+- Reads `readSessionHistory(sessionId, workingDir, { lastN: 50, types: ['assistant'] })` (50 assistant messages)
+- Reads `getSubagentTranscripts(sessionId, workingDir)` (all sub-agent findings)
+- Passes to `processResearchChunk(isRefinement=true)` for spec consolidation
+
+### Fast Brain JSONL Tools
+- `read_agent_results` — reads recent tool results from JSONL during active research
+- `read_agent_text` — reads recent agent reasoning/analysis from JSONL
+- Both registered on Anthropic and Gemini tool definitions
+
+### Multi-Strategy JSON Parsing (`parseChunkResponse`)
+- Handles LLM output with code blocks, control characters, raw markdown
+- 4 strategies: direct JSON.parse → control char stripping → regex spec extraction → raw markdown detection
+
+### New Spec Template with Question Tracking
+- New sections: Goal, User Context, Open Questions (From User / From Agent), Decisions, Findings & Resources, Plan
+- Bidirectional question tracking with checkbox format
+- Spec.md designed as portable research output — transferable brief any agent or person can execute from
+
+### Fast-Brain-First Routing
+- Realtime prompt updated with `CRITICAL ROUTING RULE` enforcing `ask_haiku` before any non-trivial response
+- Structured response types: DIRECT ANSWER, PARTIAL + NEEDS_DEEPER_RESEARCH, QUESTION_FOR_USER, RECORDED
+
+### Research Agent Prompt Updated
+- Agent reads spec for context but does NOT write to it
+- Fast brain handles all spec.md and library/ maintenance
+- Removed "Track decisions in spec.md" instruction (fast brain does this now)
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/prompts.ts` | **NEW** — All prompts centralized here |
+| `agent/src/session-access.ts` | **NEW** — JSONL navigation utility |
+| `agent/src/fast-brain.ts` | `updateSpecFromJSONL()`, JSONL tools, `parseChunkResponse()`, removed `updateSpecFromResearch()` |
+| `agent/src/index.ts` | Import prompts, delete content pipeline, new completion flow |
+| `agent/src/config.ts` | New spec.md template with question tracking |
+| `agent/src/claude-llm.ts` | Import prompts from `prompts.ts` |
+
+---
+
+## v0.5.0 Changes — Fast Brain: Three-Tier Intelligence
+
+### Fast Brain (`fast-brain.ts`)
+- Middle-tier between realtime voice model and Claude SDK agent
+- ~2 second responses for questions answerable from session files or quick web search
+- Auth chain: `ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → Gemini Flash fallback
+- Tool loop: `read_file`, `write_file`, `list_library`, `web_search` (+ JSONL tools added in v0.5.1)
+
+### Four-Tier Intelligence Routing
+1. **Conversational** — direct voice response (greetings, simple yes/no)
+2. **`read_spec`** — instant spec.md read (no API call)
+3. **`ask_haiku`** — fast brain (~2s, session-aware Q&A)
+4. **`ask_agent`** — deep research (5-15s, full Claude SDK)
+
+### Post-Research Spec Updates
+- `updateSpecFromResearch()` (later replaced by `updateSpecFromJSONL()` in v0.5.1)
+- Haiku/Gemini reads current spec + research findings, writes updated spec
+- Mid-research `updateSpecActiveContext()` refreshes Active Context section every 8s
+
+### Research Agent Spec Ownership Change
+- Main agent reads spec for context but does NOT write to it
+- Fast brain handles all spec maintenance
+- Prevents spec.md write contention between agent and fast brain
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `agent/src/fast-brain.ts` | **NEW** — Fast brain agent with tool loop and spec updates |
+| `agent/src/index.ts` | `ask_haiku` + `read_spec` tools, `haikuInFlight` guard, `getSpecForVoiceModel()` |
+| `agent/src/claude-llm.ts` | System prompt: agent reads spec but doesn't write |
+| `agent/package.json` | Added `@anthropic-ai/sdk`, `@google/genai` |
 
 ---
 
@@ -264,4 +365,4 @@ mcpServers:
 
 ---
 
-Last Updated: 2026-02-21
+Last Updated: 2026-02-22

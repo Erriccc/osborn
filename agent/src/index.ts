@@ -9,10 +9,12 @@ import { AccessToken } from 'livekit-server-sdk'
 initializeLogger({ pretty: true, level: 'info' })
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listResearchArtifacts, listWorkspaceArtifacts, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listResearchArtifacts, listWorkspaceArtifacts, readSessionSpec, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
+import { askHaiku, updateSpecFromJSONL } from './fast-brain.js'
+import { DIRECT_MODE_PROMPT, getRealtimeInstructions, getResearchCompleteInjection, getResearchUpdateInjection, getNotificationInjection } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
@@ -195,6 +197,25 @@ function buildContextBriefing(
 }
 
 /**
+ * Read spec.md and format it for the realtime voice model.
+ * Truncates to avoid bloating the context window.
+ * Returns null if spec doesn't exist or session ID isn't available.
+ */
+function getSpecForVoiceModel(workingDir: string, sessionId: string | null | undefined): string | null {
+  if (!sessionId) return null
+  const specContent = readSessionSpec(workingDir, sessionId)
+  if (!specContent) return null
+  const MAX = 3000
+  if (specContent.length <= MAX) return specContent
+  const truncated = specContent.substring(0, MAX)
+  const lastHeading = truncated.lastIndexOf('\n## ')
+  if (lastHeading > MAX * 0.5) {
+    return truncated.substring(0, lastHeading) + '\n\n[... truncated — call read_spec for full content]'
+  }
+  return truncated + '\n\n[... truncated]'
+}
+
+/**
  * Load full session conversation history into the realtime model's ChatContext.
  * This gives the model persistent memory of what was discussed/researched,
  * enabling deeper follow-up conversations without re-delegating to ask_agent.
@@ -342,6 +363,9 @@ async function main() {
   let lastTaskRequest = ''
   let lastTaskTime = 0
 
+  // Fast brain (ask_haiku) in-flight tracking — prevents ask_agent double-calling
+  let haikuInFlight: { question: string, time: number } | null = null
+
   // Background research state - tracks async ask_agent execution
   let activeResearch: {
     researchLog: string[]
@@ -477,7 +501,7 @@ async function main() {
       })
 
       // Push to unified voice queue (will be spoken when model is available)
-      queueVoiceInjection(`[RESEARCH UPDATE — STILL IN PROGRESS] Your research agent is currently: ${batchText}. Give a brief progress update — one or two sentences. This research is NOT finished yet — do NOT say "complete", "done", or "finished". Say what's happening NOW, like "I'm looking into..." or "The agent is reading...". Do NOT call any tools.`)
+      queueVoiceInjection(getResearchUpdateInjection(batchText))
     }, 8000) // 8s debounce: reduces voice queue flooding during research
   }
 
@@ -520,7 +544,7 @@ async function main() {
   async function announceViaVoice(text: string) {
     if (!currentSession) return
     if (currentVoiceMode === 'realtime') {
-      queueVoiceInjection(`[NOTIFICATION] ${text}. Acknowledge briefly in one sentence. Do NOT call any tools.`)
+      queueVoiceInjection(getNotificationInjection(text))
     } else {
       try {
         await (currentSession as any).say(text)
@@ -668,7 +692,7 @@ async function main() {
 
     // Create the Agent with instructions, STT, LLM, TTS
     const agent = new voice.Agent({
-      instructions: "You are Osborn, a voice AI research assistant. Help users research, explore, and understand topics. Be concise in your spoken responses.",
+      instructions: DIRECT_MODE_PROMPT,
       stt,
       llm: directLLM,
       tts,
@@ -938,14 +962,19 @@ async function main() {
         // Only log to researchLog for the final summary — don't push to pendingUpdates
         // This prevents redundant "Reading config.ts. Read done." voice updates
         researchLog.push(`${data.name} completed`)
+        // Content is NOT captured here — JSONL has full untruncated tool results
+        // The fast brain reads JSONL directly on completion via updateSpecFromJSONL()
       }
       const onText = (data: any) => {
         if (data.text?.trim()) {
-          const preview = data.text.trim().substring(0, 150)
+          const text = data.text.trim()
+          const preview = text.substring(0, 150)
           const firstSentence = preview.match(/^[^.!?\n]+[.!?]/)?.[0] || preview
           researchLog.push(firstSentence)
           pendingUpdates.push(firstSentence)
           scheduleResearchBatch()
+          // Agent reasoning/analysis text is NOT captured here
+          // JSONL has full untruncated assistant text — read on completion
         }
       }
       realtimeClaudeHandler!.events.on('tool_use', onToolUse)
@@ -1007,7 +1036,7 @@ async function main() {
 
         const fullResult = (resultForVoice + logSummary) || 'Research completed successfully.'
 
-        // Clear active research and batch timer before injecting final results
+        // Clear active research and timers before injecting final results
         if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
         activeResearch = null
 
@@ -1021,11 +1050,46 @@ async function main() {
 
         // Queue final results for voice injection — the queue handles availability gating
         console.log(`📡 [realtime] Queuing final results (${fullResult.length} chars, agentState: ${agentState})`)
-        queueVoiceInjection(`[RESEARCH COMPLETE] Research on "${task}" is done.\n\n${fullResult}\n\nCRITICAL: ONLY state facts that appear VERBATIM in the text above. Do NOT add file names, paths, numbers, or details from your own knowledge. If a detail is not explicitly written above, do NOT say it. Relay these verified findings naturally — start with the headline finding. Do NOT re-delegate.`)
+        queueVoiceInjection(getResearchCompleteInjection(task, fullResult))
 
         // Inject FULL untruncated result into ChatCtx so voice model can answer
         // follow-up questions ("tell me more", "what were those links?") from memory
         injectIntoChatCtx(`[FULL RESEARCH DETAILS for "${task}"]\n${result}`)
+
+        // Fire-and-forget JSONL-based refinement pass via fast brain
+        // Reads FULL untruncated data from JSONL — no content buffer, no truncation
+        const postResearchSessionId = currentLLM?.sessionId || resumeSessionId
+        if (postResearchSessionId) {
+          updateSpecFromJSONL(workingDir, postResearchSessionId, task, researchLog)
+            .then(updateResult => {
+              if (!updateResult) return
+
+              // Notify frontend about spec.md update
+              if (updateResult.spec) {
+                const specPath = `${workingDir}/.osborn/sessions/${postResearchSessionId}/spec.md`
+                sendToFrontend({
+                  type: 'research_artifact_updated',
+                  filePath: specPath,
+                  fileName: 'spec.md',
+                })
+                const truncated = getSpecForVoiceModel(workingDir, postResearchSessionId)
+                if (truncated) {
+                  injectIntoChatCtx(`[UPDATED SESSION SPEC]\n${truncated}`)
+                  console.log(`📋 Re-injected spec.md into ChatCtx after fast brain update (${truncated.length} chars)`)
+                }
+              }
+
+              // Notify frontend about each library file written by the fast brain
+              for (const libFile of updateResult.libraryFiles) {
+                const libPath = `${workingDir}/.osborn/sessions/${postResearchSessionId}/library/${libFile}`
+                sendToFrontend({
+                  type: 'research_artifact_updated',
+                  filePath: libPath,
+                  fileName: libFile,
+                })
+              }
+            })
+        }
       }).catch(async (err) => {
         console.error(`❌ [realtime] Research failed:`, err)
 
@@ -1066,6 +1130,13 @@ If the user wants specific details (examples, URLs, comparisons, step-by-step br
       execute: async ({ request: task }) => {
         console.log(`\n🔨 [realtime] Task: "${task}"`)
 
+        // Guard: if ask_haiku is currently handling a similar question, skip ask_agent
+        // This prevents the double-calling pattern where Gemini fires both in rapid succession
+        if (haikuInFlight && (Date.now() - haikuInFlight.time) < 8000) {
+          console.log(`⏭️ Skipping ask_agent — ask_haiku is already handling: "${haikuInFlight.question.substring(0, 60)}"`)
+          return 'The fast brain is already looking into this. Wait for its answer first.'
+        }
+
         // Deduplication guard: prevent re-execution of same task within 10s
         const now = Date.now()
         if (task === lastTaskRequest && (now - lastTaskTime) < 10000) {
@@ -1096,117 +1167,103 @@ If the user wants specific details (examples, URLs, comparisons, step-by-step br
       },
     })
 
+    const readSpecTool = llm.tool({
+      description: `Read the session spec (spec.md) — shared state between you and your backend agent.
+Use when: checking decisions, reading open questions to ask the user, understanding architecture/context, seeing what research has been saved. Updated by your backend agent during research.`,
+      parameters: z.object({}),
+      execute: async () => {
+        const sessionId = currentLLM?.sessionId || resumeSessionId
+        if (!sessionId) return 'No session spec yet — session is still initializing.'
+        const specContent = readSessionSpec(workingDir, sessionId)
+        if (!specContent) return 'Spec is empty — no research done yet.'
+        const libraryFiles = listLibraryFiles(workingDir, sessionId)
+        const libSection = libraryFiles.length > 0
+          ? `\n\n[LIBRARY FILES: ${libraryFiles.join(', ')}]`
+          : ''
+        const MAX = 4000
+        const content = specContent.length > MAX
+          ? specContent.substring(0, MAX) + '\n\n[... truncated]'
+          : specContent
+        return content + libSection
+      },
+    })
+
+    const askHaikuTool = llm.tool({
+      description: `Ask your fast brain — a quick knowledge assistant with access to session files and web search (~2 seconds).
+
+Use for:
+- Questions answerable from the session spec or research library (much faster than ask_agent)
+- Quick web lookups for simple factual questions (definitions, current versions, basic how-to)
+- Recording user decisions: "User decided: [decision]. Update the spec."
+- Recording user preferences: "User prefers: [preference]. Update the spec."
+- Checking what research has been done on a topic
+- Reading specific library files for details
+
+Do NOT use for: deep research, code analysis, multi-file codebase exploration, complex investigations → use ask_agent.
+If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to look deeper, then call ask_agent with the context it provides.`,
+      parameters: z.object({
+        question: z.string().describe('The question to ask or instruction to execute'),
+      }),
+      execute: async ({ question }) => {
+        const sessionId = currentLLM?.sessionId || resumeSessionId
+        if (!sessionId) return 'Session not ready yet. Try ask_agent instead.'
+        console.log(`🧠 [fast brain] Question: "${question.substring(0, 80)}..."`)
+
+        // Track in-flight state to prevent ask_agent double-calling
+        haikuInFlight = { question, time: Date.now() }
+
+        // Build live research context if the agent is actively researching
+        // This is a READ of the existing researchLog array — safe, no race conditions
+        let researchContext: string | undefined
+        if (activeResearch && activeResearch.researchLog.length > 0) {
+          const recentLog = activeResearch.researchLog.slice(-15)
+          researchContext = `Research topic: "${lastTaskRequest || 'unknown'}"\nSteps completed (${activeResearch.researchLog.length} total, showing last ${recentLog.length}):\n${recentLog.join('\n')}`
+        }
+
+        try {
+          const answer = await askHaiku(workingDir, sessionId, question, researchContext)
+          haikuInFlight = null // Clear in-flight state
+          console.log(`🧠 [fast brain] Answer (${answer.length} chars)`)
+
+          // Notify frontend if the fast brain likely wrote to spec.md
+          // (fast brain writes bypass the SDK tool system, so no tool_result event fires)
+          if (answer.includes('Written: spec.md') || question.toLowerCase().includes('update the spec') || question.toLowerCase().includes('user decided') || question.toLowerCase().includes('user prefers')) {
+            const specPath = `${workingDir}/.osborn/sessions/${sessionId}/spec.md`
+            sendToFrontend({
+              type: 'research_artifact_updated',
+              filePath: specPath,
+              fileName: 'spec.md',
+            })
+          }
+
+          // If research is active and this was a user decision/direction,
+          // also queue it for the agent SDK so it picks up the context
+          // when its queue reaches the next query
+          if (activeResearch && (
+            question.toLowerCase().includes('user decided') ||
+            question.toLowerCase().includes('user prefers') ||
+            question.toLowerCase().includes('update the spec') ||
+            question.toLowerCase().includes('also check') ||
+            question.toLowerCase().includes('focus on') ||
+            question.toLowerCase().includes('redirect')
+          )) {
+            console.log(`📨 [fast brain] Passing user direction to agent SDK queue: "${question.substring(0, 60)}..."`)
+            // Queue as a lightweight context update — agent reads spec.md
+            // at the start of its next query and will see the updated direction
+            executeResearch(`[USER DIRECTION during active research] ${question}. The user's spec.md has been updated with this. Acknowledge briefly and incorporate into your current research context.`)
+          }
+
+          return answer
+        } catch (err) {
+          haikuInFlight = null // Clear in-flight state on error
+          console.error('❌ Fast brain failed:', err)
+          return 'Fast brain lookup failed. Try ask_agent for a deeper search.'
+        }
+      },
+    })
+
     // Instructions for realtime voice LLM
-    const realtimeInstructions = `You are Osborn, a voice AI research assistant.
-
-You have a powerful backend agent (Claude) that can read files, search the web, fetch docs,
-get YouTube transcripts, analyze codebases, run bash commands, use MCP tools (GitHub, YouTube, etc.),
-test implementations, and save findings to a session library.
-
-WORKING DIRECTORY: ${workingDir}
-
-== YOUR ROLE ==
-You are the voice interface. Listen, clarify, summarize, discuss, and relay findings.
-Your backend agent does the heavy lifting — research, reading, analysis, documentation.
-
-== WHEN TO USE ask_agent ==
-ALWAYS delegate when:
-- User asks a factual question you're not 100% confident about
-- User asks you to research, explore, compare, analyze, or explain a topic
-- User wants to read or discuss docs, articles, blog posts, YouTube videos
-- User asks about code, files, APIs, architecture, or technical topics
-- User wants to understand tradeoffs, knowledge gaps, or technical debt
-- User wants to run commands, test something, or check an implementation
-- User wants to use external tools (GitHub, YouTube, etc.)
-- Any question requiring current/accurate information or deeper reasoning
-
-NEVER delegate when:
-- Small talk or casual conversation
-- Feedback on your behavior
-- Yes/no confirmations, go ahead, stop
-- You can answer from info already retrieved this session
-
-== ANTI-HALLUCINATION RULES ==
-1. If uncertain about ANY factual detail, STOP and delegate to ask_agent
-2. Never make up names, numbers, dates, paths, versions, or details of any kind
-3. Never claim to have checked something unless the agent actually did
-4. "Let me look that up" is always preferred over guessing
-5. When you receive [RESEARCH COMPLETE], ONLY state facts from the provided text — do NOT add from your own knowledge
-6. If a detail is not in the research findings, do NOT say it — even if you think you know the answer
-7. CRITICAL: When the user asks about specific code/infile details (variable names, line numbers, snippets, quotes, function signatures, file contents, control flow), you MUST delegate to ask_agent or gathered resources/specifications. NEVER guess variable names or line numbers — always say "Let me check" and delegate. Even if you think you know from earlier context, verify with ask_agent if the user is asking for precision.
-
-== USING RETRIEVED INFO ==
-Remember findings from this session. Don't re-delegate for follow-ups about info
-already retrieved. DO re-delegate for new questions, deeper detail, or updates.
-
-== CLARIFYING QUESTIONS ==
-You can ask clarifying questions when it helps focus the research:
-- "What's your target platform?"
-- "Are you looking at self-hosted or cloud?"
-- "Do you have a preference between X and Y?"
-Don't force clarification every time — if the request is clear enough, just delegate.
-Clarification can also happen naturally as the conversation progresses.
-
-== LIVE RESEARCH UPDATES ==
-While your backend agent is working, you'll receive periodic [RESEARCH UPDATE] messages
-with status on what it's doing (tools used, pages fetched, files read). Use these to:
-- Give the user natural filler: "I'm checking the docs now..." / "Found some configs, still digging..."
-- Keep the conversation alive while research runs in the background
-- You don't need to repeat every detail — just give a natural sense of progress
-- Do NOT guess or preview findings before they arrive — only say what the updates actually report
-- NEVER fill in details yourself while waiting. Do NOT say specific file names, paths, or technical details until the research results arrive. Say "I'm looking into it" NOT "I can see files like X and Y"
-
-When the research finishes, you'll receive a [RESEARCH COMPLETE] message with VERIFIED findings.
-These findings are FACTS — treat them as ground truth. You MUST:
-- Read the findings carefully before speaking
-- ONLY state facts that appear WORD FOR WORD in the findings — do NOT add anything from your own knowledge
-- If a file name, path, tool, or detail appears in the findings, say it exactly as listed
-- If something is NOT in the findings, do NOT mention it — even if you think you know
-- Speak as if YOU found it — say "I found" not "the agent found"
-- If you're unsure about a detail, say "let me double-check" rather than guessing
-- NEVER invent file names, directory structures, or code details — this is the #1 source of errors
-NEVER add, invent, or substitute any facts not explicitly present in the findings text.
-
-== ADAPTIVE VERBOSITY ==
-Match your response length to what the user wants:
-- "What's the gist?" / "Quick summary" → 1-3 sentences (but still name specific items, not vague summaries)
-- Normal questions → 3-6 sentences
-- Research results ([RESEARCH COMPLETE]) → Share ALL key specifics from the findings. Use as many sentences as needed to cover every concrete name, version, pattern, and recommendation. Start with the headline finding, then cover details. Offer to go deeper on code examples or links if available.
-- "Tell me more" / "Go deeper" / "Explain the tradeoffs" → 10+ sentences with full detail
-- "Give me everything" / "Full breakdown" → share as much detail as reasonable
-
-Research results default to DETAILED, not brief. The user waited for these — give them the specifics.
-When in doubt for non-research responses, give a standard-length answer and let the user ask for more.
-
-== RELAYING DETAILS ==
-When presenting research findings, prioritize SPECIFICS over summaries:
-- Name the actual thing — never say "a number of solutions" or "several options exist"
-- Use concrete details: specific names, dates, numbers, comparisons, tradeoffs
-- Mention actual URLs when the findings include them
-- If findings include examples, data, or references, relay the key points first, then offer: "I have more details on that if you want them"
-- When the user asks "tell me more" or "go deeper", refer to context from this session rather than re-delegating
-
-== NOTIFICATIONS ==
-Messages with [NOTIFICATION], [RESEARCH UPDATE], or [RESEARCH COMPLETE] prefix are system messages.
-- [RESEARCH UPDATE]: Your agent is still working. Give a brief status filler to keep the user engaged.
-- [RESEARCH COMPLETE]: Research is done. Relay ONLY facts from the provided findings — do NOT add anything from your own knowledge.
-- [NOTIFICATION]: General system update. Acknowledge briefly.
-- Do NOT treat any of these as new user requests. Do NOT call ask_agent in response.
-
-== PERMISSIONS ==
-When a permission request appears, tell the user what needs permission and ask: "allow, deny, or always allow?" Then call respond_permission.
-
-== STYLE ==
-- Be direct and natural, like a smart colleague on a voice call
-- Say "On it" or "Looking into that" when starting research
-- Research runs in the background — you'll get progress updates and can chat with the user while it runs
-- When progress updates arrive, give brief natural status: "Still looking..." / "Found some interesting stuff..."
-- When results arrive, relay findings clearly — speak as if YOU found it
-- Let the user drive the conversation — you don't always need to end with a question
-- Use natural acknowledgments before longer answers: "Got it", "Right", "Sure"
-- When you have a lot of findings, start with the headline: "So the main thing is..." then build detail
-- It's OK to pause and say "let me think about how to explain this" before relaying complex findings
-- The user can interrupt you at any time — relay details clearly at a conversational pace, not rushed`
+    const realtimeInstructions = getRealtimeInstructions(workingDir)
 
     // Create realtime model
     const realtimeModel = createRealtimeModelFromConfig(rtConfig, realtimeInstructions)
@@ -1217,6 +1274,8 @@ When a permission request appears, tell the user what needs permission and ask: 
       llm: realtimeModel,
       tools: {
         ask_agent: askAgentTool,
+        ask_haiku: askHaikuTool,
+        read_spec: readSpecTool,
         respond_permission: respondPermissionTool,
       },
     })
@@ -1457,7 +1516,7 @@ When a permission request appears, tell the user what needs permission and ask: 
           voiceQueue.length = 0
           isProcessingQueue = false
           if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
-          if (activeResearch) { activeResearch.cleanup(); activeResearch = null }
+                if (activeResearch) { activeResearch.cleanup(); activeResearch = null }
 
           try {
             const recoveryConfig = { ...realtimeConfig, provider: currentProvider as 'gemini' | 'openai' }
@@ -1622,9 +1681,13 @@ When a permission request appears, tell the user what needs permission and ask: 
           if (summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
             const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+            const specContent = getSpecForVoiceModel(workingDir, preSelectedSessionId)
+            const specSection = specContent
+              ? `\n\n=== SESSION SPEC ===\n${specContent}\n=== END SPEC ===\nCheck "Open Questions" — if any are unanswered, ask the user about them.`
+              : ''
             try {
               if (sessionVoiceMode === 'realtime') {
-                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}${specSection}\n\nBriefly acknowledge the previous session. If there are open questions in the spec, ask the most important one. Otherwise ask what they'd like to continue with.`
                 await session.generateReply({ instructions: contextPrompt })
               } else {
                 await (session as any).say("Welcome back! Ready to continue our previous conversation.")
@@ -1750,10 +1813,14 @@ When a permission request appears, tell the user what needs permission and ask: 
           if (currentSession && summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
             const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+            const specContent = getSpecForVoiceModel(workingDir, sessionId)
+            const specSection = specContent
+              ? `\n\n=== SESSION SPEC ===\n${specContent}\n=== END SPEC ===\nCheck "Open Questions" — if any are unanswered, ask the user about them.`
+              : ''
             console.log('📋 Injecting session context into voice agent...')
             try {
               if (currentVoiceMode === 'realtime') {
-                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}${specSection}\n\nBriefly acknowledge the previous session. If there are open questions in the spec, ask the most important one. Otherwise ask what they'd like to continue with.`
                 await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 await (currentSession as any).say("Ready to continue our previous conversation.")
@@ -1806,10 +1873,14 @@ When a permission request appears, tell the user what needs permission and ask: 
           if (currentSession && summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
             const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+            const specContent = getSpecForVoiceModel(workingDir, recentId)
+            const specSection = specContent
+              ? `\n\n=== SESSION SPEC ===\n${specContent}\n=== END SPEC ===\nCheck "Open Questions" — if any are unanswered, ask the user about them.`
+              : ''
             console.log('📋 Injecting session context into voice agent...')
             try {
               if (currentVoiceMode === 'realtime') {
-                const contextPrompt = `[SESSION RESUMED] The user chose to continue their most recent research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue their most recent research session. Here's the context:\n${contextBriefing}${specSection}\n\nBriefly acknowledge the previous session. If there are open questions in the spec, ask the most important one. Otherwise ask what they'd like to continue with.`
                 await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 await (currentSession as any).say("Continuing where we left off.")
@@ -2075,9 +2146,13 @@ When a permission request appears, tell the user what needs permission and ask: 
           if (currentSession && summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
             const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+            const specContent = getSpecForVoiceModel(workingDir, sessionId)
+            const specSection = specContent
+              ? `\n\n=== SESSION SPEC ===\n${specContent}\n=== END SPEC ===\nCheck "Open Questions" — if any are unanswered, ask the user about them.`
+              : ''
             try {
               if (currentVoiceMode === 'realtime') {
-                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge you have context from the previous session and ask what they'd like to continue with.`
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}${specSection}\n\nBriefly acknowledge the previous session. If there are open questions in the spec, ask the most important one. Otherwise ask what they'd like to continue with.`
                 await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 await (currentSession as any).say("Welcome back! Ready to continue our previous conversation.")

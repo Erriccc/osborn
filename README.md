@@ -10,11 +10,15 @@ Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SD
 - **Claude Agent SDK**: Full tool access (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch)
 - **Permission System**: Approve/deny operations via voice or UI
 - **Session Management**: Resume, switch, and browse previous conversations
+- **Fast Brain**: ~2s session-aware Q&A via direct API calls (Anthropic Haiku / Gemini Flash fallback)
+- **Four-Tier Intelligence**: Conversational → `read_spec` (instant) → `ask_haiku` (~2s) → `ask_agent` (5-15s deep research)
+- **JSONL Session Access**: Full untruncated tool results read directly from Claude Agent SDK session files
 - **Non-Blocking Research**: Ask follow-up questions while research is running — the SDK queues tasks internally
 - **Parallel Sub-Agents**: Research agent spawns Task sub-agents for concurrent work (e.g., researching 3 topics simultaneously)
 - **Gemini Auto-Recovery**: Automatic session recovery from Gemini 1008 crashes with voice notification
 - **MCP Integration**: Extend with GitHub, YouTube, filesystem, and custom MCP servers (Smithery cloud proxy)
 - **Research Artifacts**: Plans, diagrams (mermaid), notes, and analysis files — persist across session resumes
+- **Bidirectional Question Tracking**: spec.md tracks questions from both user and agent with checkbox format
 - **Full-Width UI**: Responsive layout with always-visible Files panel and syntax-highlighted code
 
 ## Research Mode
@@ -126,15 +130,18 @@ mcpServers:
 
 ```
 osborn/
-├── agent/                  # LiveKit voice agent (backend)
+├── agent/                     # LiveKit voice agent (backend)
 │   ├── src/
-│   │   ├── index.ts        # Agent entry, room events, data handlers
-│   │   ├── claude-llm.ts   # Claude Agent SDK wrapper, mode filtering
+│   │   ├── index.ts           # Agent entry, room events, four-tier routing
+│   │   ├── claude-llm.ts      # Claude Agent SDK wrapper
+│   │   ├── fast-brain.ts      # Fast brain (~2s Q&A, JSONL consolidation)
+│   │   ├── session-access.ts  # JSONL session file reader (14 functions)
+│   │   ├── prompts.ts         # Centralized prompt definitions (9 exports)
 │   │   ├── config.ts          # Config, sessions, workspace helpers
 │   │   ├── smithery-proxy.ts  # Smithery cloud MCP proxy
-│   │   └── voice-io.ts       # STT/TTS/VAD/Realtime model factory
+│   │   └── voice-io.ts        # STT/TTS/VAD/Realtime model factory
 │   └── package.json
-├── frontend/               # Next.js web frontend
+├── frontend/                  # Next.js web frontend
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── VoiceRoom.tsx       # Main voice UI
@@ -143,7 +150,7 @@ osborn/
 │   │   └── lib/
 │   │       └── sessions.ts         # Session utilities
 │   └── package.json
-├── PROGRESS.md             # Development progress
+├── PROGRESS.md                # Development progress
 └── README.md
 ```
 
@@ -162,6 +169,12 @@ osborn/
 | Research Artifacts | Working |
 | Non-blocking research (SDK-managed queuing) | Working |
 | Parallel sub-agents (Task tool for concurrent research) | Working |
+| Fast Brain (~2s Q&A via ask_haiku) | Working |
+| Four-Tier Intelligence Routing | Working |
+| JSONL Session Access (full untruncated data) | Working |
+| Post-Research JSONL Consolidation | Working |
+| Bidirectional Question Tracking | Working |
+| Centralized Prompts (prompts.ts) | Working |
 | Gemini Auto-Recovery (1008 crash) | Working |
 | Files Panel (always visible, persists on resume) | Working |
 | MCP Integration (Smithery cloud proxy) | Working |
@@ -172,6 +185,7 @@ osborn/
 - **Voice**: LiveKit Agents SDK + RTCNode
 - **Realtime AI**: OpenAI Realtime API / Gemini Live API
 - **Coding Agent**: Claude via @anthropic-ai/claude-agent-sdk
+- **Fast Brain**: Anthropic Haiku / Gemini Flash (direct API calls)
 - **Frontend**: Next.js 14 + React + Tailwind CSS
 - **STT/TTS**: Deepgram (default), with OpenAI/ElevenLabs/Gemini options
 

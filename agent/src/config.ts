@@ -1020,24 +1020,40 @@ export function ensureSessionWorkspace(projectPath: string, sessionId: string): 
   // Create default spec.md if it doesn't exist (won't overwrite on resumed sessions)
   const specPath = join(dir, 'spec.md')
   if (!existsSync(specPath)) {
-    writeFileSync(specPath, `# Research Session
+    writeFileSync(specPath, `# Session Spec
 
-## Topic
+## Goal
+<!-- What the user wants to achieve — the driving purpose of this session -->
 
 ## User Context
-<!-- Preferences, current status, use case, preferred stack, resources -->
-
-## Architecture & Details
-<!-- Technical details, codebase structure, current state -->
-
-## Findings
-
-## Plan
-<!-- Actionable steps, full analysis, recommendations -->
+<!-- Where the user is at, what they have, their preferences, constraints, resources -->
+<!-- e.g., budget, tools available, skill level, timeline -->
 
 ## Open Questions
 
+### From User (unanswered)
+<!-- Questions the user has asked that research hasn't answered yet -->
+<!-- Format: - [ ] Question (asked at timestamp) -->
+<!-- When answered: - [x] Question → Answer (source) -->
+
+### From Agent (needs user input)
+<!-- Clarifying questions the agent needs answered to proceed -->
+<!-- Format: - [ ] Question (why it matters) [priority: high/medium/low] -->
+<!-- When answered: - [x] Question → User's answer -->
+
 ## Decisions
+<!-- Locked-in answers — moved from Open Questions when resolved -->
+<!-- Format: - Decision (rationale / source) -->
+
+## Findings & Resources
+<!-- Key facts, patterns, links, code examples discovered during research -->
+<!-- Concrete details: names, versions, URLs, configurations -->
+<!-- Resources: websites to visit, tools to use, documentation links -->
+
+## Plan
+<!-- Step-by-step execution guide — the portable output -->
+<!-- Actionable steps someone can follow to go from problem to solution -->
+<!-- Include: what to do, what tools/resources needed, in what order -->
 `, 'utf-8')
   }
   return dir

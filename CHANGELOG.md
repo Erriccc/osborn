@@ -26,7 +26,58 @@
 
 ## Version History
 
-### v0.4.9 (Current) — Remove Research Blocking, Parallel Sub-Agents, Fix False Completions
+### v0.5.1 (Current) — JSONL-Based Spec Consolidation + Prompt Extraction + Question Tracking
+
+#### Centralized Prompts
+- **`prompts.ts`**: All system prompts extracted from inline strings into dedicated module (9 exports)
+- Source files import from `prompts.ts` — single place to review and update all prompts
+
+#### JSONL Session Access
+- **`session-access.ts`**: 14 exported functions for reading Claude Agent SDK JSONL session files
+- Reads FULL untruncated tool results, agent reasoning, sub-agent transcripts
+- All functions accept optional `SessionAccessOptions` with `claudeDir` override
+
+#### Content Pipeline → JSONL Reads
+- **Deleted**: `contentBuffer[]`, `scheduleContentProcess()`, `contentProcessTimer` — entire parallel content capture pipeline removed
+- **New**: `updateSpecFromJSONL()` reads FULL data from JSONL on research completion (30 tool results, 50 assistant messages, all sub-agent findings)
+- No more truncation — models get complete tool outputs instead of 400-800 char snippets
+- Sub-agent findings now included via `getSubagentTranscripts()` (previously missed entirely)
+
+#### Fast Brain JSONL Tools
+- `read_agent_results` and `read_agent_text` tools — fast brain can read agent JSONL during active research
+- Multi-strategy JSON parser (`parseChunkResponse`) handles code blocks, control chars, raw markdown
+
+#### New Spec Template
+- Sections: Goal, User Context, Open Questions (From User / From Agent), Decisions, Findings & Resources, Plan
+- Bidirectional question tracking with checkbox format
+- Designed as portable research output
+
+#### Fast-Brain-First Routing
+- `CRITICAL ROUTING RULE` enforces `ask_haiku` before any non-trivial response
+- Structured response types for fast brain → realtime LLM communication
+
+---
+
+### v0.5.0 — Fast Brain: Three-Tier Intelligence
+
+#### Fast Brain (`fast-brain.ts`)
+- **New middle tier**: ~2s responses via direct Anthropic/Gemini API calls
+- **Auth chain**: `ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → Gemini Flash fallback
+- **Tool loop**: `read_file`, `write_file`, `list_library`, `web_search`
+- **`ask_haiku` tool**: Registered on realtime model, injects live research context during active research
+- **Post-research hook**: `updateSpecFromResearch()` consolidates findings into spec.md
+
+#### Four-Tier Intelligence
+1. Conversational (instant) → 2. `read_spec` (instant) → 3. `ask_haiku` (~2s) → 4. `ask_agent` (5-15s)
+
+#### Spec Ownership Change
+- Research agent reads spec for context but does NOT write to it
+- Fast brain handles all spec.md and library/ maintenance
+- `spec-agent.ts` deleted — replaced by `fast-brain.ts`
+
+---
+
+### v0.4.9 — Remove Research Blocking, Parallel Sub-Agents, Fix False Completions
 
 #### Research Blocking Removed
 - **No more manual task queuing**: Removed `if (activeResearch)` blocking guard in `ask_agent` — new research tasks go directly to the Claude SDK instead of waiting in `pendingResearchTask`

@@ -58,22 +58,25 @@ The agent operates in a single **research** mode. It can read any file, search t
 **Session workspace** (created per session, includes default `spec.md` template):
 ```
 <workingDir>/.osborn/sessions/<full-session-uuid>/
-  spec.md        # Living context doc: user preferences, architecture, status, decisions, plan
+  spec.md        # Portable research output: goal, user context, open questions (bidirectional), decisions, findings, plan
   library/       # Offloaded research: transcripts, guides, factual deep dives, code samples
 ```
 
-The agent proactively updates `spec.md` with user context (preferences, architecture, status) and saves detailed research findings to `library/` for later reference. This creates a persistent knowledge base that accumulates across the session.
+The fast brain (`fast-brain.ts`) maintains `spec.md` and `library/` — reading FULL untruncated data from Claude's JSONL session files via `session-access.ts` after research completes. The research agent focuses on thorough investigation; the fast brain consolidates findings into the workspace.
 
-**System prompt**: Always injected via `systemPrompt` field in `claude-llm.ts`. Describes research mode, workspace paths, write rules, and proactive knowledge management workflow.
+**System prompt**: Defined in `prompts.ts` via `getResearchSystemPrompt()`, injected via `systemPrompt` field in `claude-llm.ts`. The research agent reads `spec.md` for context but does NOT write to it — the fast brain handles all spec/library writes via `updateSpecFromJSONL()`.
 
 **Legacy types**: `EditMode` and `AgentMode` are still exported from `config.ts` for backward compatibility with old `.session-meta.json` files, but are not used in the active code path.
 
 ### Key Source Files
 
 **Agent:**
-- `agent/src/index.ts` — Main entry: LiveKit room events, session creation (`createDirectSession`/`createRealtimeSession`), all DataReceived handlers, HTTP API server (port 8741)
-- `agent/src/claude-llm.ts` — `ClaudeLLM` class extending `llm.LLM`: wraps Claude Agent SDK `query()`, research mode system prompt, session resume, MCP servers, checkpoints, permission flow, configurable model (default Sonnet), auto-approve workspace writes in `canUseTool`
-- `agent/src/config.ts` — `OsbornConfig` loading from `~/.osborn/config.yaml`, session management (list/get/history), session workspace helpers, `listWorkspaceArtifacts()` for file explorer persistence, MCP catalog with Smithery cloud support
+- `agent/src/index.ts` — Main entry: LiveKit room events, session creation (`createDirectSession`/`createRealtimeSession`), all DataReceived handlers, HTTP API server (port 8741). Four-tier intelligence routing: `read_spec` (instant), `ask_haiku` (~2s fast brain), `ask_agent` (deep research). Post-research JSONL refinement via `updateSpecFromJSONL()`
+- `agent/src/claude-llm.ts` — `ClaudeLLM` class extending `llm.LLM`: wraps Claude Agent SDK `query()`, session resume, MCP servers, checkpoints, permission flow, configurable model (default Sonnet), auto-approve workspace writes in `canUseTool`. Research system prompt imported from `prompts.ts`
+- `agent/src/fast-brain.ts` — Fast intermediary brain (~2s responses): `askHaiku()` for session-aware Q&A, `updateSpecFromJSONL()` for post-research spec consolidation via JSONL, `processResearchChunk()` for incremental updates. Auth chain: `ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → Gemini Flash fallback. Tools: `read_file`, `write_file`, `list_library`, `read_agent_results`, `read_agent_text`, `web_search`
+- `agent/src/session-access.ts` — Programmatic access to Claude Agent SDK JSONL session files. 14 exported functions: `readSessionHistory()`, `getRecentToolResults()`, `getSubagentTranscripts()`, `getSessionTranscripts()`, `watchSessionFile()`, `getRawSessionJsonl()`, etc. Reads FULL untruncated tool results and agent reasoning from `~/.claude/projects/`
+- `agent/src/prompts.ts` — Centralized prompt definitions. All system prompts extracted here: `DIRECT_MODE_PROMPT`, `getRealtimeInstructions()`, `getResearchSystemPrompt()`, `FAST_BRAIN_SYSTEM_PROMPT`, `CHUNK_PROCESS_SYSTEM`, `REFINEMENT_PROCESS_SYSTEM`, `getResearchCompleteInjection()`, `getResearchUpdateInjection()`, `getNotificationInjection()`
+- `agent/src/config.ts` — `OsbornConfig` loading from `~/.osborn/config.yaml`, session management (list/get/history), session workspace helpers (`getSessionWorkspace`, `ensureSessionWorkspace`, `readSessionSpec`, `listLibraryFiles`), `listWorkspaceArtifacts()` for file explorer persistence, MCP catalog with Smithery cloud support
 - `agent/src/smithery-proxy.ts` — In-process MCP proxy for Smithery cloud servers. Bypasses Claude Agent SDK HTTP bug (#18296) by using `@smithery/api/mcp` `createConnection()` + MCP SDK `Client` to get a working transport, then wraps in local `McpServer` as `type: 'sdk'`
 - `agent/src/voice-io.ts` — Factory functions for STT, TTS, VAD, and realtime model creation
 
@@ -87,8 +90,8 @@ The agent proactively updates `spec.md` with user context (preferences, architec
 ### Data Channel Protocol
 
 Frontend ↔ Agent communication uses LiveKit data channels:
-- **Agent → Frontend** (`topic: 'osborn-updates'`): `tool_use`, `tool_result`, `tool_blocked`, `agent_state`, `agent_ready`, `permission_request`, `claude_output`, `assistant_response`, `task_completed`, `plan_file_updated`, `research_artifact_updated`, `session_resume_set`, `session_artifacts`, `mcp_toggle_result`, `mcp_servers_changed`, `mcp_status`, `checkpoint_captured`
-- **Frontend → Agent** (`topic: 'user-input'`): `permission_response`, `user_text`, `resume_session`, `continue_session`, `switch_session`, `mcp_toggle`, `get_mcp_status`, `session_selected`, `get_plan_file`, `get_research_artifact`, `get_session_artifacts`
+- **Agent → Frontend** (`topic: 'osborn-updates'`): `tool_use`, `tool_result`, `tool_blocked`, `agent_state`, `agent_ready`, `permission_request`, `claude_output`, `assistant_response`, `task_completed`, `plan_file_updated`, `research_artifact_updated`, `session_resume_set`, `session_artifacts`, `mcp_toggle_result`, `mcp_servers_changed`, `mcp_status`, `checkpoint_captured`, `session_switched`, `current_session`
+- **Frontend → Agent** (`topic: 'user-input'`): `permission_response`, `user_text`, `resume_session`, `continue_session`, `switch_session`, `mcp_toggle`, `get_mcp_status`, `session_selected`, `get_plan_file`, `get_research_artifact`, `get_session_artifacts`, `get_current_session`
 
 ### Session & File Storage
 - Sessions: `~/.claude/projects/<project-path>/` as `.jsonl` files + `.session-meta.json`
@@ -140,6 +143,11 @@ MCP servers extend Claude with external tools (GitHub, YouTube, etc.). Three tra
 - **Smithery proxy for cloud MCP**: Claude Agent SDK's `type: 'http'` transport has a bug (#18296) that forces OAuth on all HTTP servers. Smithery servers are connected via in-process proxy (`smithery-proxy.ts`) using `createSmitheryProxy()` which returns `type: 'sdk'` config. The proxy uses `@smithery/api/mcp` `createConnection()` for the working transport. The proxy patches both `McpServer.connect` and `Server._server.connect` to handle reconnection across SDK `query()` calls.
 - **Research event batching**: During background `ask_agent` execution, `onToolUse` generates enriched entries with tool parameters (file paths, commands, search queries, hostnames) and pushes to both `researchLog` and `pendingUpdates`. `onToolResult` only pushes to `researchLog` (not `pendingUpdates`) to avoid "Read done" doubling. `scheduleResearchBatch()` debounces (8s), formats the batch as a `[RESEARCH UPDATE — STILL IN PROGRESS]`, and pushes to `voiceQueue`. The update prompt explicitly tells the voice model NOT to say "complete" or "done" — only progress language like "I'm looking into..." to prevent false completion announcements. Final result includes research log + 4000-char findings.
 - **SWC parser quirk**: Next.js SWC parser chokes on `> 0` inside template literals in JSX `className`. Use truthy checks (`arr.length` not `arr.length > 0`) in template expressions.
+- **`haikuInFlight` guard**: Prevents `ask_agent` from firing when `ask_haiku` is already processing. If the fast brain is already answering, `ask_agent` returns "The fast brain is already handling this." Prevents Gemini from double-calling both tools.
+- **`updateSpecFromJSONL()` post-research flow**: After `ask_agent` completes, fires `updateSpecFromJSONL()` as fire-and-forget. Reads FULL untruncated data from Claude JSONL via `getRecentToolResults()` (30 results), `readSessionHistory()` (50 messages), and `getSubagentTranscripts()`. Fast brain consolidates into spec.md + library/. On completion, re-injects updated spec into voice model's ChatCtx and notifies frontend via `research_artifact_updated`.
+- **`getSpecForVoiceModel()`**: Reads spec.md and truncates to a budget for injection into the realtime voice model's context. Truncates at section boundaries.
+- **`parseChunkResponse()` multi-strategy parser**: Handles LLM output that may contain code blocks, control characters, or raw markdown. Strategies: direct JSON.parse → control char stripping → regex spec extraction → raw markdown detection.
+- **Bidirectional question tracking**: spec.md `Open Questions` section has subsections `From User` and `From Agent`. Fast brain tracks which questions are answered and marks them done with checkboxes.
 
 ## Prompt System (for performance tracking)
 
@@ -147,12 +155,13 @@ The system has layered prompts at different levels:
 
 | Layer | Location | When | Content |
 |---|---|---|---|
-| **Realtime voice model** | `index.ts` | Realtime sessions | Large prompt: Osborn persona, `ask_agent` delegation rules, anti-hallucination rules, clarifying questions, live research updates (`[RESEARCH UPDATE]`/`[RESEARCH COMPLETE]`), adaptive verbosity (brief/standard/detailed/full), notification handling |
-| **Direct voice agent** | `index.ts` | Direct sessions | Short: "You are Osborn, a voice AI research assistant..." |
-| **Claude SDK research mode** | `claude-llm.ts` | Always | Injected via `systemPrompt` field: research mode rules, session workspace path, write rules, proactive knowledge management (spec.md as living context doc, library/ as research offload), writer sub-agent delegation |
-| **`ask_agent` tool desc** | `index.ts` | Realtime sessions | Full capability list (research, bash, MCP tools, code analysis). Non-blocking: returns immediately, injects progress + final results via `generateReply()` |
-| **Notifications** | `announceViaVoice()` → `queueVoiceInjection()` in `index.ts` | Any mode | `[NOTIFICATION] {text}. Acknowledge briefly. Do NOT call any tools.` |
-| **Research progress** | `scheduleResearchBatch()` + `queueVoiceInjection()` in `index.ts` | During research | `[RESEARCH UPDATE]` batched (8s debounce, max 3 per task) + `[RESEARCH COMPLETE]` with fact-fidelity mandate. All go through unified `voiceQueue`, gated on `listening` state. Uses `toolChoice: 'none'` |
+| **Realtime voice model** | `prompts.ts` (`getRealtimeInstructions()`) | Realtime sessions | Four-tier intelligence routing (conversational → `read_spec` → `ask_haiku` → `ask_agent`), anti-hallucination, adaptive verbosity, live research updates, notification handling |
+| **Direct voice agent** | `prompts.ts` (`DIRECT_MODE_PROMPT`) | Direct sessions | Short: "You are Osborn, a voice AI research assistant..." |
+| **Claude SDK research mode** | `prompts.ts` (`getResearchSystemPrompt()`) | Always | Injected via `systemPrompt` field in `claude-llm.ts`: research mode rules, workspace path, write rules. Agent reads spec for context but does NOT write — fast brain handles spec/library |
+| **Fast brain** | `prompts.ts` (`FAST_BRAIN_SYSTEM_PROMPT`) | During `ask_haiku` | Session file access, web search, question tracking, JSONL tool access, spec.md update rules |
+| **`ask_agent` tool desc** | `index.ts` | Realtime sessions | Full capability list. Non-blocking: returns immediately, injects progress + final results via `generateReply()` |
+| **Notifications** | `prompts.ts` (`getNotificationInjection()`) | Any mode | `[NOTIFICATION] {text}. Acknowledge briefly. Do NOT call any tools.` |
+| **Research progress** | `prompts.ts` (`getResearchUpdateInjection()`, `getResearchCompleteInjection()`) | During research | `[RESEARCH UPDATE — STILL IN PROGRESS]` batched (8s debounce, max 3) + `[RESEARCH COMPLETE]` with fact-fidelity mandate |
 | **Session context** | `buildContextBriefing()` → `generateReply()` | Session resume/switch | `[SESSION RESUMED]` or `[SESSION SWITCHED]` with conversation history summary |
 | **Fresh greeting** | `index.ts` | New connections | "The user just connected. Briefly greet them as Osborn..." |
 
