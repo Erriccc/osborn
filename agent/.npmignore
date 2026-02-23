@@ -6,6 +6,10 @@
 # Source (publish dist only)
 src/
 
+# Session/research data (private)
+.osborn/
+.next/
+
 # Dev files
 tsconfig.json
 *.log
@@ -13,3 +17,10 @@ tsconfig.json
 
 # Config
 config.ts
+
+# Backup/legacy dist files
+dist/bak.*
+dist/final.*
+dist/p1.*
+dist/legacyprompts.*
+dist/rest.*
