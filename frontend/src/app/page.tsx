@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import VoiceRoom from '@/components/VoiceRoom'
 import SessionBrowser from '@/components/SessionBrowser'
+import SetupWizard from '@/components/SetupWizard'
 
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'realtime' | 'pipelined' | 'direct'
@@ -20,6 +21,13 @@ export default function Home() {
   const [agentStatus, setAgentStatus] = useState<string>('waiting')
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [agentUrl, setAgentUrl] = useState<string>('http://localhost:8741')
+  const [showWizard, setShowWizard] = useState(false)
+
+  // Check if first visit (setup not completed)
+  useEffect(() => {
+    const completed = localStorage.getItem('osborn-setup-completed')
+    if (!completed) setShowWizard(true)
+  }, [])
 
   // Load stored preferences on mount
   useEffect(() => {
@@ -103,6 +111,21 @@ export default function Home() {
     setSelectedSessionId(null)
   }
 
+  const handleWizardComplete = useCallback((wizardAgentUrl: string) => {
+    localStorage.setItem('osborn-setup-completed', 'true')
+    setShowWizard(false)
+    if (wizardAgentUrl) setAgentUrl(wizardAgentUrl)
+  }, [])
+
+  const handleWizardSkip = useCallback(() => {
+    localStorage.setItem('osborn-setup-completed', 'true')
+    setShowWizard(false)
+  }, [])
+
+  const handleRerunSetup = useCallback(() => {
+    setShowWizard(true)
+  }, [])
+
   const copyCommand = () => {
     navigator.clipboard.writeText(`npx osborn-agent --room ${roomCode}`)
     setCopied(true)
@@ -111,8 +134,13 @@ export default function Home() {
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center p-8">
+      {/* Setup Wizard - first visit */}
+      {showWizard && connectionState === 'browsing' && (
+        <SetupWizard onComplete={handleWizardComplete} onSkip={handleWizardSkip} />
+      )}
+
       {/* Session Browser - landing page */}
-      {connectionState === 'browsing' && (
+      {!showWizard && connectionState === 'browsing' && (
         <SessionBrowser
           provider={provider}
           voiceArch={voiceArch}
@@ -125,6 +153,7 @@ export default function Home() {
           onJoinRoom={handleJoinRoom}
           onNewSession={handleNewSession}
           roomCode={roomCode}
+          onRerunSetup={handleRerunSetup}
         />
       )}
 

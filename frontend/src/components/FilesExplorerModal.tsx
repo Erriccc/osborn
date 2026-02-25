@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { MarkdownMessage } from './MarkdownMessage'
+import { MarkdownMessage, MermaidBlock } from './MarkdownMessage'
 
 // Matches GeneratedFile from VoiceRoom.tsx
 interface GeneratedFile {
@@ -255,6 +255,8 @@ export function FilesExplorerModal({
                         sandbox="allow-scripts"
                         title={selectedFile.fileName}
                       />
+                    ) : selectedFile.fileName?.endsWith('.mmd') || selectedFile.fileName?.endsWith('.mermaid') ? (
+                      <MermaidBlock code={selectedFile.content} />
                     ) : (
                       <div className="text-sm">
                         <MarkdownMessage content={selectedFile.content} />

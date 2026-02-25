@@ -21,6 +21,7 @@ interface SessionBrowserProps {
   onJoinRoom: (code: string, sessionId?: string | null) => void
   onNewSession: () => void
   roomCode: string | null
+  onRerunSetup?: () => void
 }
 
 const PROVIDER_LABELS: Record<Provider, string> = { gemini: 'Gemini',openai: 'OpenAI' }
@@ -39,6 +40,7 @@ export default function SessionBrowser({
   onJoinRoom,
   onNewSession,
   roomCode,
+  onRerunSetup,
 }: SessionBrowserProps) {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -130,7 +132,17 @@ export default function SessionBrowser({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Osborn</h1>
-          <p className="text-sm text-gray-400">Voice AI Coding Assistant</p>
+          <div className="flex items-center gap-2">
+            <p className="text-sm text-gray-400">Voice AI Coding Assistant</p>
+            {onRerunSetup && (
+              <button
+                onClick={onRerunSetup}
+                className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+              >
+                Setup
+              </button>
+            )}
+          </div>
         </div>
         <button
           onClick={handleNewSession}
@@ -314,6 +326,21 @@ export default function SessionBrowser({
                 </button>
               </div>
             </div>
+
+            {/* Re-run Setup Wizard */}
+            {onRerunSetup && (
+              <div className="pt-2 border-t border-gray-700/50">
+                <button
+                  onClick={onRerunSetup}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-700/50 hover:bg-gray-600/50 rounded-lg text-sm text-gray-300 hover:text-white transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Re-run Setup Wizard
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
