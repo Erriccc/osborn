@@ -13,7 +13,7 @@ import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getR
 import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { askHaiku, updateSpecFromJSONL } from './fast-brain.js'
+import { askHaiku, updateSpecFromJSONL, augmentResearchResult, writeQuestionToSpec, checkOutputAgainstQuestions, contextualizeResearchUpdate, generateProactivePrompt, generateVisualDocument, clearFastBrainHistory, type ConversationTurn } from './fast-brain.js'
 import { DIRECT_MODE_PROMPT, getRealtimeInstructions, getResearchCompleteInjection, getResearchUpdateInjection, getNotificationInjection } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { llm } from '@livekit/agents'
@@ -77,6 +77,16 @@ process.on('unhandledRejection', (reason: any) => {
   // OpenAI race: voice queue fired while server-side VAD already created a response
   if (msg.includes('conversation_already_has_active_response') || msg.includes('active_response')) {
     console.log('⚠️ OpenAI active response collision (will retry on next listening state)')
+    return
+  }
+  // LiveKit SDK internal error after participant disconnect — safe to suppress
+  if (msg.includes("reading 'source'") || msg.includes("reading 'type'")) {
+    console.log('⚠️ Post-disconnect cleanup error (harmless)')
+    return
+  }
+  // generateReply timeout — usually from racing concurrent injections
+  if (msg.includes('generateReply timed out') || msg.includes('generation_created')) {
+    console.log('⚠️ generateReply timed out (concurrent injection race)')
     return
   }
   console.error('❌ Unhandled Rejection:', msg)
@@ -479,6 +489,28 @@ async function main() {
     }
   }
 
+  // Extract recent voice conversation turns from the realtime LLM's in-memory ChatContext.
+  // Replaces the internal conversationHistory array in fast-brain.ts.
+  function getChatHistory(maxTurns: number = 20): ConversationTurn[] {
+    if (!currentAgent) return []
+    try {
+      const items = currentAgent.chatCtx.items
+      const turns: ConversationTurn[] = []
+      for (const item of items) {
+        if ((item as any).type !== 'message') continue
+        const msg = item as any
+        if (msg.role !== 'user' && msg.role !== 'assistant') continue
+        const text = msg.textContent ?? ''
+        if (!text.trim()) continue
+        turns.push({ role: msg.role, text: text.trim() })
+      }
+      return turns.slice(-maxTurns)
+    } catch (err) {
+      console.log('⚠️ getChatHistory: failed to read chatCtx:', err)
+      return []
+    }
+  }
+
   // Research event batching — debounce rapid-fire tool events into a single voice queue entry
   let researchBatchTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -500,9 +532,63 @@ async function main() {
         agentRole: 'research-progress',
       })
 
-      // Push to unified voice queue (will be spoken when model is available)
-      queueVoiceInjection(getResearchUpdateInjection(batchText))
+        // COMMENTED OUT — voice narration disabled, research progress goes to  -frontend logs only 
+        // // queueVoiceInjection(getResearchUpdateInjection(batchText))  
+      // Route through fast brain for contextual voice updates (capped at 3 per task)
+      if (activeResearch.voiceUpdateCount < 3) {
+        const voiceSid = currentLLM?.sessionId
+        if (voiceSid) {
+          contextualizeResearchUpdate(workingDir, voiceSid, lastTaskRequest || '', updates, activeResearch.researchLog)
+            .then(update => {
+              if (update && update !== 'NOTHING' && activeResearch) {
+                activeResearch.voiceUpdateCount++
+                queueVoiceInjection(getResearchUpdateInjection(update))
+              }
+            })
+            .catch(() => {}) // Silent fail — updates are optional
+        }
+      }
     }, 8000) // 8s debounce: reduces voice queue flooding during research
+  }
+
+  // Proactive conversational loop — keeps conversation alive during research
+  let proactiveTimer: ReturnType<typeof setInterval> | null = null
+  let proactivePromptHistory: string[] = []
+  const PROACTIVE_INTERVAL = 15000  // 15 seconds (offset from 8s batch timer)
+  const MAX_PROACTIVE_PROMPTS = 4   // Cap per research task
+
+  function startProactiveLoop(task: string, sessionId: string) {
+    stopProactiveLoop()
+    proactivePromptHistory = []
+    let proactiveCount = 0
+
+    proactiveTimer = setInterval(async () => {
+      if (!activeResearch) { stopProactiveLoop(); return }
+      if (proactiveCount >= MAX_PROACTIVE_PROMPTS) return
+      if (agentState !== 'listening' || userState === 'speaking') return
+      if (researchBatchTimer) return  // Don't collide with batch updates
+      if (isProcessingQueue) return   // Don't collide with voice queue
+
+      try {
+        const prompt = await generateProactivePrompt(
+          workingDir, sessionId, task,
+          activeResearch.researchLog,
+          proactivePromptHistory
+        )
+        if (prompt && prompt !== 'NOTHING') {
+          proactivePromptHistory.push(prompt)
+          proactiveCount++
+          queueVoiceInjection(
+            `[PROACTIVE CONTEXT] ${prompt}. Say this naturally to the user. Do NOT call any tools.`
+          )
+        }
+      } catch {} // Silent fail — proactive prompts are optional
+    }, PROACTIVE_INTERVAL)
+  }
+
+  function stopProactiveLoop() {
+    if (proactiveTimer) { clearInterval(proactiveTimer); proactiveTimer = null }
+    proactivePromptHistory = []
   }
 
   // Helper to send data to frontend (with size limit handling)
@@ -785,8 +871,10 @@ async function main() {
     })
 
     // Stream Claude's research text to frontend as progress updates
+    // Skips during active research to avoid duplication with per-task onText handler
     realtimeClaudeHandler.events.on('assistant_text', (data) => {
       if (data.text && data.text.trim()) {
+        if (activeResearch) return
         sendToFrontend({
           type: 'claude_output',
           text: data.text,
@@ -911,6 +999,14 @@ async function main() {
     function executeResearch(task: string): string {
       sendToFrontend({ type: 'system', text: `Executing: ${task}` })
 
+      // Fire-and-forget: write user question to spec.md BEFORE agent starts
+      const questionSid = currentLLM?.sessionId || resumeSessionId
+      if (questionSid) {
+        writeQuestionToSpec(workingDir, questionSid, task).catch(err =>
+          console.error('❌ writeQuestionToSpec failed:', err)
+        )
+      }
+
       // Clean up previous research listeners to avoid duplicate event handlers
       if (activeResearch) {
         activeResearch.cleanup()
@@ -958,12 +1054,31 @@ async function main() {
         pendingUpdates.push(entry)
         scheduleResearchBatch()
       }
+      const ANSWER_CHECK_THRESHOLD = 300 // chars — only check substantial outputs
       const onToolResult = (data: any) => {
         // Only log to researchLog for the final summary — don't push to pendingUpdates
         // This prevents redundant "Reading config.ts. Read done." voice updates
         researchLog.push(`${data.name} completed`)
-        // Content is NOT captured here — JSONL has full untruncated tool results
-        // The fast brain reads JSONL directly on completion via updateSpecFromJSONL()
+        // Fire-and-forget: check if substantial tool results answer any spec questions
+        // Note: PostToolUse emits { name, input, response } — use data.response (not data.result)
+        const resultText = typeof data.response === 'string' ? data.response : JSON.stringify(data.response || '')
+        if (resultText.length > ANSWER_CHECK_THRESHOLD) {
+          const sid = currentLLM?.sessionId || resumeSessionId
+          if (sid) checkOutputAgainstQuestions(workingDir, sid, resultText, 'tool_result').catch(() => {})
+        }
+        // When AskUserQuestion completes, the user's answer is a decision — track it in spec
+        if (data.name === 'AskUserQuestion' && data.response) {
+          const sid = currentLLM?.sessionId || resumeSessionId
+          if (sid) {
+            const questionText = JSON.stringify(data.input?.questions || data.input || {})
+            const answerText = typeof data.response === 'string' ? data.response : JSON.stringify(data.response)
+            const specUpdate = `User answered a clarifying question during research.\nQuestion: ${questionText}\nAnswer: ${answerText}\nRecord this as a user decision in spec.md.`
+            askHaiku(workingDir, sid, specUpdate).catch(err =>
+              console.error('❌ Failed to record AskUserQuestion answer in spec:', err)
+            )
+            console.log(`📝 AskUserQuestion answer forwarded to fast brain for spec tracking`)
+          }
+        }
       }
       const onText = (data: any) => {
         if (data.text?.trim()) {
@@ -973,8 +1088,11 @@ async function main() {
           researchLog.push(firstSentence)
           pendingUpdates.push(firstSentence)
           scheduleResearchBatch()
-          // Agent reasoning/analysis text is NOT captured here
-          // JSONL has full untruncated assistant text — read on completion
+          // Fire-and-forget: check if substantial agent reasoning answers any spec questions
+          if (text.length > ANSWER_CHECK_THRESHOLD) {
+            const sid = currentLLM?.sessionId || resumeSessionId
+            if (sid) checkOutputAgainstQuestions(workingDir, sid, text, 'assistant_text').catch(() => {})
+          }
         }
       }
       realtimeClaudeHandler!.events.on('tool_use', onToolUse)
@@ -993,6 +1111,12 @@ async function main() {
         pendingUpdates,
         cleanup: cleanupListeners,
         voiceUpdateCount: 0,
+      }
+
+      // Start proactive conversational loop
+      const proactiveSid = currentLLM?.sessionId || resumeSessionId
+      if (proactiveSid) {
+        startProactiveLoop(task, proactiveSid)
       }
 
       // Run research in the background (non-blocking)
@@ -1019,8 +1143,9 @@ async function main() {
         // Clean up
         cleanupListeners()
 
-        // Send to frontend
-        await sendToFrontend({ type: 'assistant_response', text: result })
+        // Send raw result to frontend as a log entry (not assistant_response — that's reserved
+        // for the voice model's spoken response, avoiding duplication in chat)
+        await sendToFrontend({ type: 'claude_output', text: result, isStreaming: false, agentRole: 'research-result' })
         const resultPreview = result.length > 150
           ? result.substring(0, 150) + '...'
           : result
@@ -1038,6 +1163,7 @@ async function main() {
 
         // Clear active research and timers before injecting final results
         if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+        stopProactiveLoop()
         activeResearch = null
 
         // Send final results to frontend for visibility
@@ -1048,9 +1174,22 @@ async function main() {
           agentRole: 'research-progress',
         })
 
-        // Queue final results for voice injection — the queue handles availability gating
-        console.log(`📡 [realtime] Queuing final results (${fullResult.length} chars, agentState: ${agentState})`)
-        queueVoiceInjection(getResearchCompleteInjection(task, fullResult))
+        // Route through fast brain for context augmentation before voice injection
+        // Fast brain adds spec context but does NOT summarize — passes details through verbatim
+        const voiceSid = currentLLM?.sessionId || resumeSessionId
+        console.log(`📡 [realtime] Augmenting results via fast brain (${fullResult.length} chars, agentState: ${agentState})`)
+        if (voiceSid) {
+          augmentResearchResult(workingDir, voiceSid, task, fullResult)
+            .then(augmented => {
+              queueVoiceInjection(getResearchCompleteInjection(task, augmented))
+            })
+            .catch(() => {
+              // Fallback: use result directly if fast brain fails
+              queueVoiceInjection(getResearchCompleteInjection(task, fullResult))
+            })
+        } else {
+          queueVoiceInjection(getResearchCompleteInjection(task, fullResult))
+        }
 
         // Inject FULL untruncated result into ChatCtx so voice model can answer
         // follow-up questions ("tell me more", "what were those links?") from memory
@@ -1096,6 +1235,7 @@ async function main() {
         // Clean up
         cleanupListeners()
         if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+        stopProactiveLoop()
         activeResearch = null
 
         // Queue error notification — will be spoken when model is available
@@ -1221,7 +1361,8 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
         }
 
         try {
-          const answer = await askHaiku(workingDir, sessionId, question, researchContext)
+          const chatHistory = getChatHistory(20)
+          const answer = await askHaiku(workingDir, sessionId, question, researchContext, chatHistory)
           haikuInFlight = null // Clear in-flight state
           console.log(`🧠 [fast brain] Answer (${answer.length} chars)`)
 
@@ -1262,6 +1403,41 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
       },
     })
 
+    const generateDocumentTool = llm.tool({
+      description: `Generate a visual document (comparison table, Mermaid diagram, structured analysis, summary) from research findings. Saved to the session library as a markdown file.
+
+Use when the user asks for:
+- "Compare X and Y" → type: 'comparison' (markdown table with features, pros, cons)
+- "Draw a diagram" / "Show the architecture" / "Map out the flow" → type: 'diagram' (Mermaid flowchart/sequence/architecture)
+- "Analyze the tradeoffs" / "Break down the options" → type: 'analysis' (structured pros/cons, decision matrix)
+- "Summarize what we found" / "Give me an overview document" → type: 'summary' (organized findings with key takeaways)
+
+For actual images (photos, illustrations, screenshots), use ask_agent instead — this tool generates text-based visual documents only.`,
+      parameters: z.object({
+        request: z.string().describe('What to generate — be specific about the topic and what aspects to cover'),
+        type: z.enum(['comparison', 'diagram', 'analysis', 'summary']).describe('Document type'),
+      }),
+      execute: async ({ request, type }) => {
+        const sid = currentLLM?.sessionId || resumeSessionId
+        if (!sid) return 'Session not ready yet.'
+        console.log(`📊 [generate_document] Type: ${type}, Request: "${request.substring(0, 60)}..."`)
+        try {
+          const result = await generateVisualDocument(workingDir, sid, request, type)
+          if (!result) return 'Could not generate document — not enough research context available.'
+          const fullPath = `${workingDir}/.osborn/sessions/${sid}/library/${result.fileName}`
+          sendToFrontend({
+            type: 'research_artifact_updated',
+            filePath: fullPath,
+            fileName: result.fileName,
+          })
+          return `Generated: ${result.fileName} (${result.content.length} chars) — saved to session library. The document contains a ${type} with the requested information.`
+        } catch (err) {
+          console.error('❌ Document generation failed:', err)
+          return 'Document generation failed. Try asking the research agent for a more detailed analysis.'
+        }
+      },
+    })
+
     // Instructions for realtime voice LLM
     const realtimeInstructions = getRealtimeInstructions(workingDir)
 
@@ -1276,6 +1452,7 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
         ask_agent: askAgentTool,
         ask_haiku: askHaikuTool,
         read_spec: readSpecTool,
+        generate_document: generateDocumentTool,
         respond_permission: respondPermissionTool,
       },
     })
@@ -1301,6 +1478,7 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
     voiceQueue.length = 0
     isProcessingQueue = false
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+    stopProactiveLoop()
     if (activeResearch) {
       activeResearch.cleanup()
       activeResearch = null
@@ -1308,6 +1486,7 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
     currentSession = null
     currentAgent = null
     currentLLM = null
+    clearFastBrainHistory()
   })
 
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
@@ -1317,6 +1496,8 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
     voiceQueue.length = 0
     isProcessingQueue = false
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+    stopProactiveLoop()
+    clearFastBrainHistory()
     if (activeResearch) {
       activeResearch.cleanup()
       activeResearch = null
@@ -1516,6 +1697,7 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
           voiceQueue.length = 0
           isProcessingQueue = false
           if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+          stopProactiveLoop()
                 if (activeResearch) { activeResearch.cleanup(); activeResearch = null }
 
           try {
@@ -1779,14 +1961,13 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
         }
       }
       else if (data.type === 'resume_session' && currentLLM) {
-        // Set session to resume
+        // Lightweight: set resume ID and send artifacts to frontend only
+        // Context injection (generateReply) happens in session_selected handler
+        // to avoid double generateReply calls that cause timeouts
         const sessionId = data.sessionId as string
         if (sessionId && sessionExists(sessionId, workingDir)) {
           currentLLM.setResumeSessionId(sessionId)
           console.log(`🔄 Will resume session: ${sessionId}`)
-
-          const summary = await getSessionSummary(sessionId, workingDir)
-          const conversationHistory = await getConversationHistory(sessionId, workingDir, 30)
 
           await sendToFrontend({
             type: 'session_resume_set',
@@ -1808,26 +1989,6 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
                 updatedAt: a.updatedAt,
               }))
             })
-          }
-
-          if (currentSession && summary) {
-            loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
-            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
-            const specContent = getSpecForVoiceModel(workingDir, sessionId)
-            const specSection = specContent
-              ? `\n\n=== SESSION SPEC ===\n${specContent}\n=== END SPEC ===\nCheck "Open Questions" — if any are unanswered, ask the user about them.`
-              : ''
-            console.log('📋 Injecting session context into voice agent...')
-            try {
-              if (currentVoiceMode === 'realtime') {
-                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}${specSection}\n\nBriefly acknowledge the previous session. If there are open questions in the spec, ask the most important one. Otherwise ask what they'd like to continue with.`
-                await currentSession.generateReply({ instructions: contextPrompt })
-              } else {
-                await (currentSession as any).say("Ready to continue our previous conversation.")
-              }
-            } catch (err) {
-              console.log('⚠️ Context injection failed:', err)
-            }
           }
         } else {
           console.error(`❌ Session not found: ${sessionId}`)
@@ -1911,6 +2072,7 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
           // Step 2: Reset LLM state and configure for new session
           currentLLM.resetForSessionSwitch()
           currentLLM.setResumeSessionId(sessionId)
+          clearFastBrainHistory()
           console.log(`🔄 Switched to session: ${sessionId}`)
 
           // Step 3: Send full context to frontend (including conversation history)
@@ -2012,7 +2174,7 @@ If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to
             const fs = await import('fs')
             const fileName = filePath.split('/').pop() || ''
             const ext = fileName.split('.').pop()?.toLowerCase() || ''
-            const isImage = ['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)
+            const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)
             if (isImage) {
               const base64 = fs.readFileSync(filePath, 'base64')
               await sendToFrontend({ type: 'research_artifact_content', filePath, content: base64, fileName, isImage: true, mimeType: `image/${ext}` })

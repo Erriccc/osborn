@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -11,6 +11,7 @@ import {
 } from '@livekit/components-react'
 import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
+import { LogsDrawer } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { formatTime, groupSessionsByDate } from '@/lib/sessions'
@@ -41,6 +42,7 @@ interface ChatMessage {
   toolName?: string
   parts?: MessagePart[]
   isStreaming?: boolean
+  category?: 'chat' | 'log'
 }
 
 interface PermissionRequest {
@@ -85,7 +87,7 @@ interface GeneratedFile {
   filePath: string
   fileName: string
   content?: string
-  type: 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'other'
+  type: 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'html' | 'other'
   source: 'plan' | 'research'  // .claude/plans/ vs .osborn/sessions/
   updatedAt: Date
   isImage?: boolean
@@ -223,19 +225,14 @@ function parseMessageParts(content: string): MessagePart[] {
 }
 
 // Modern chat message bubble with parts support
-function MessageBubble({ message }: { message: ChatMessage }) {
+const MessageBubble = React.memo(function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
-
-  // Debug: log message being rendered
-  console.log(`🎨 Rendering MessageBubble: role=${message.role}, contentLength=${message.content?.length}, content="${message.content?.substring(0, 60)}..."`)
 
   // Parse content into parts for assistant messages
   const parts = useMemo(() => {
     if (message.role === 'assistant' && !message.parts) {
       const parsed = parseMessageParts(message.content)
-      // Debug: log what we parsed
-      console.log(`🔍 Parsed assistant message: "${message.content?.substring(0, 50)}..." → ${parsed.length} parts:`, parsed.map(p => ({ type: p.type, len: p.content?.length, preview: p.content?.substring(0, 30) })))
       return parsed
     }
     return message.parts || [{ type: 'text' as const, content: message.content }]
@@ -282,8 +279,6 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 }
                 // Ensure we have content to render
                 if (part.content && part.content.trim()) {
-                  // Debug: log what we're rendering
-                  console.log(`🖼️ Rendering text part with content: "${part.content.substring(0, 50)}..."`)
                   // Check if content has markdown formatting (including tables with |)
                   const hasMarkdown = /[*#`\[\]|]/.test(part.content) || /^-{3,}$/m.test(part.content)
                   if (hasMarkdown) {
@@ -333,7 +328,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       )}
     </div>
   )
-}
+})
 
 // Suggestion prompts (AI SDK style)
 const SUGGESTIONS = [
@@ -400,7 +395,7 @@ function ChatPanel({
           </div>
         </div>
       )}
-      {messages.map((msg) => (
+      {messages.filter(m => m.category !== 'log').map((msg) => (
         <MessageBubble key={msg.id} message={msg} />
       ))}
     </div>
@@ -1202,10 +1197,10 @@ function VoiceRoomInner({
   const showResumePromptRef = useRef(showResumePrompt)
   showResumePromptRef.current = showResumePrompt
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string) => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log') => void>()
 
   // addMessage function with duplicate detection
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string) => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log') => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -1236,6 +1231,7 @@ function VoiceRoomInner({
       content,
       timestamp: new Date(),
       toolName,
+      category: category || 'chat',
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     setMessages((prev) => [...prev, newMessage])
@@ -1311,7 +1307,7 @@ function VoiceRoomInner({
         // System messages from agent (task info, etc.)
         if (data.text && data.text.trim()) {
           console.log('⚙️ Adding system message:', data.text.substring(0, 50))
-          addMessageRef.current?.('system', data.text)
+          addMessageRef.current?.('system', data.text, undefined, 'log')
         }
       } else if (data.type === 'tool_use') {
         // Show tool usage with status
@@ -1319,7 +1315,7 @@ function VoiceRoomInner({
         const msg = data.status === 'completed'
           ? `${status} ${data.tool} completed`
           : `${status} Using ${data.tool}...`
-        addMessageRef.current?.('system', msg, data.tool)
+        addMessageRef.current?.('system', msg, data.tool, 'log')
       } else if (data.type === 'claude_output') {
         // Raw Claude output for chat bubbles (full formatting preserved)
         console.log('🤖 Claude output:', {
@@ -1329,7 +1325,7 @@ function VoiceRoomInner({
           preview: data.text?.substring(0, 100)
         })
         if (data.text && data.text.trim()) {
-          addMessageRef.current?.('assistant', data.text)
+          addMessageRef.current?.('assistant', data.text, undefined, 'log')
         }
       } else if (data.type === 'permission_request') {
         setPendingPermission({
@@ -1346,14 +1342,14 @@ function VoiceRoomInner({
           console.log('📊 Status update:', data.summary.substring(0, 50))
           // Only show meaningful status updates, not "No active tasks"
           if (!data.summary.includes('No active tasks')) {
-            addMessageRef.current?.('system', data.summary)
+            addMessageRef.current?.('system', data.summary, undefined, 'log')
           }
         }
       } else if (data.type === 'progress_update') {
         // Real-time progress updates during research
         if (data.text && data.text.trim()) {
           console.log('🔄 Progress update:', data.text.substring(0, 50))
-          addMessageRef.current?.('system', `Progress: ${data.text}`)
+          addMessageRef.current?.('system', `Progress: ${data.text}`, undefined, 'log')
         }
       } else if (data.type === 'sessions_list') {
         // Received list of previous sessions
@@ -1457,8 +1453,10 @@ function VoiceRoomInner({
         let fileType: GeneratedFile['type'] = 'other'
         if (fileName.includes('plan')) fileType = 'plan'
         else if (ext === 'mmd' || ext === 'mermaid') fileType = 'diagram'
+        else if (ext === 'html' || ext === 'htm') fileType = 'html'
         else if (ext === 'md') fileType = 'notes'
-        else if (['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)) fileType = 'image'
+        else if (ext === 'svg') fileType = 'diagram'
+        else if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) fileType = 'image'
         else if (fileName.includes('summary')) fileType = 'summary'
 
         setGeneratedFiles((prev) => {
@@ -1972,6 +1970,9 @@ function VoiceRoomInner({
           onSuggestionClick={(text) => handleSendText(text)}
         />
 
+        {/* Logs drawer */}
+        <LogsDrawer messages={messages.filter(m => m.category === 'log')} />
+
         {/* Input */}
         <TextInput
           onSend={handleSendText}
@@ -2130,8 +2131,15 @@ function VoiceRoomInner({
                         alt={selectedFile.fileName}
                         className="max-w-full rounded-lg border border-gray-700"
                       />
-                    ) : selectedFile.type === 'diagram' ? (
-                      <pre className="text-xs text-gray-300 bg-gray-800/60 rounded-lg p-3 overflow-x-auto font-mono whitespace-pre-wrap">{selectedFile.content}</pre>
+                    ) : selectedFile.type === 'html' || selectedFile.fileName?.endsWith('.svg') ? (
+                      <iframe
+                        srcDoc={selectedFile.fileName?.endsWith('.svg')
+                          ? `<!DOCTYPE html><html><head><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1a2e;overflow:hidden}svg{width:100%;height:100%;max-width:100vw;max-height:100vh}</style></head><body>${selectedFile.content}</body></html>`
+                          : `<!DOCTYPE html><html><head><style>html{font-size:16px}body{margin:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#e2e8f0;background:#1a1a2e}table{border-collapse:collapse;width:100%}th,td{border:1px solid #475569;padding:8px 12px;text-align:left}th{background:#334155}h1,h2,h3{color:#f1f5f9}a{color:#60a5fa}code{background:#334155;padding:2px 6px;border-radius:4px;font-size:14px}pre{background:#0f172a;padding:16px;border-radius:8px;overflow-x:auto}</style></head><body>${selectedFile.content}</body></html>`}
+                        className="w-full h-full min-h-[400px] rounded-lg border border-gray-700"
+                        sandbox="allow-scripts"
+                        title={selectedFile.fileName}
+                      />
                     ) : (
                       <div className="text-sm">
                         <MarkdownMessage content={selectedFile.content} />

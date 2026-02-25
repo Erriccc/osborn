@@ -1116,7 +1116,7 @@ export function listLibraryFiles(projectPath: string, sessionId: string): string
 export interface ResearchArtifact {
   fileName: string
   filePath: string
-  type: 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'other'
+  type: 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'html' | 'other'
   size: number
   updatedAt: string
 }
@@ -1125,6 +1125,7 @@ function classifyFile(fileName: string): ResearchArtifact['type'] {
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   if (fileName.includes('plan')) return 'plan'
   if (ext === 'mmd' || ext === 'mermaid') return 'diagram'
+  if (ext === 'html' || ext === 'htm') return 'html'
   if (ext === 'md') return 'notes'
   if (['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)) return 'image'
   if (fileName.includes('summary')) return 'summary'

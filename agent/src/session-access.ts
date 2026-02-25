@@ -687,19 +687,21 @@ export function getSessionPlan(
  * Get recent tool use/result pairs from a session.
  * Returns matched pairs of (tool_use → tool_result) in chronological order.
  *
- * @param lastN - Number of recent pairs to return (default: 10)
+ * @param lastN - Number of recent pairs to return (default: 10, 0 = all)
+ * @param opts.toolNameFilter - Optional: only return results from these tool names (e.g., ['Read', 'WebSearch'])
  */
 export function getRecentToolResults(
   sessionId: string,
   projectDir: string,
   lastN: number = 10,
-  opts?: SessionAccessOptions
+  opts?: SessionAccessOptions & { toolNameFilter?: string[] }
 ): ToolResultEntry[] {
   const messages = readSessionHistory(sessionId, projectDir, { claudeDir: opts?.claudeDir })
 
   // Build a map of tool_use by tool ID
   const toolUseMap = new Map<string, SessionMessage>()
   const results: ToolResultEntry[] = []
+  const toolFilter = opts?.toolNameFilter?.map(t => t.toLowerCase())
 
   for (const msg of messages) {
     if (msg.type === 'tool_use' && msg.toolId) {
@@ -709,6 +711,10 @@ export function getRecentToolResults(
     if (msg.type === 'tool_result' && msg.toolUseId) {
       const toolUse = toolUseMap.get(msg.toolUseId)
       if (toolUse) {
+        // Apply tool name filter if provided
+        if (toolFilter && !toolFilter.includes(toolUse.toolName!.toLowerCase())) {
+          continue
+        }
         results.push({
           toolName: toolUse.toolName!,
           toolId: toolUse.toolId!,
@@ -721,7 +727,7 @@ export function getRecentToolResults(
     }
   }
 
-  return results.slice(-lastN)
+  return lastN > 0 ? results.slice(-lastN) : results
 }
 
 /**
@@ -829,6 +835,119 @@ export function getConversationText(
     }))
 
   return exchanges.slice(-lastN)
+}
+
+/**
+ * Search the session JSONL for entries matching a keyword (case-insensitive).
+ * Searches across text, toolResultContent, toolName, and toolInput.
+ * Returns matching entries with 500-char excerpts around the match.
+ *
+ * @param keyword - The search keyword (case-insensitive)
+ * @param opts.maxResults - Maximum number of results to return (default: 20)
+ */
+export function searchSessionJsonl(
+  sessionId: string,
+  projectDir: string,
+  keyword: string,
+  opts?: SessionAccessOptions & { maxResults?: number }
+): { type: string; text: string; timestamp?: string }[] {
+  const messages = readSessionHistory(sessionId, projectDir, { claudeDir: opts?.claudeDir })
+  const maxResults = opts?.maxResults || 20
+  const results: { type: string; text: string; timestamp?: string }[] = []
+  const lowerKeyword = keyword.toLowerCase()
+
+  for (const msg of messages) {
+    if (results.length >= maxResults) break
+
+    // Search in text content
+    if (msg.text && msg.text.toLowerCase().includes(lowerKeyword)) {
+      const idx = msg.text.toLowerCase().indexOf(lowerKeyword)
+      const start = Math.max(0, idx - 100)
+      const end = Math.min(msg.text.length, idx + keyword.length + 400)
+      const excerpt = (start > 0 ? '...' : '') + msg.text.substring(start, end) + (end < msg.text.length ? '...' : '')
+      results.push({ type: msg.type, text: excerpt, timestamp: msg.timestamp })
+      continue
+    }
+
+    // Search in tool result content
+    if (msg.toolResultContent && msg.toolResultContent.toLowerCase().includes(lowerKeyword)) {
+      const idx = msg.toolResultContent.toLowerCase().indexOf(lowerKeyword)
+      const start = Math.max(0, idx - 100)
+      const end = Math.min(msg.toolResultContent.length, idx + keyword.length + 400)
+      const excerpt = `[tool_result] ` + (start > 0 ? '...' : '') + msg.toolResultContent.substring(start, end) + (end < msg.toolResultContent.length ? '...' : '')
+      results.push({ type: msg.type, text: excerpt, timestamp: msg.timestamp })
+      continue
+    }
+
+    // Search in tool name
+    if (msg.toolName && msg.toolName.toLowerCase().includes(lowerKeyword)) {
+      const inputPreview = msg.toolInput ? JSON.stringify(msg.toolInput).substring(0, 200) : ''
+      results.push({ type: msg.type, text: `[${msg.toolName}: ${inputPreview}]`, timestamp: msg.timestamp })
+      continue
+    }
+
+    // Search in tool input
+    if (msg.toolInput) {
+      const inputStr = JSON.stringify(msg.toolInput)
+      if (inputStr.toLowerCase().includes(lowerKeyword)) {
+        results.push({ type: msg.type, text: `[${msg.toolName || 'tool'}: ${inputStr.substring(0, 500)}]`, timestamp: msg.timestamp })
+      }
+    }
+  }
+
+  return results
+}
+
+/**
+ * Get session stats: message counts, tool usage breakdown, data sizes.
+ * Helps the fast brain decide how much data to read and which tools to query.
+ */
+export function getSessionStats(sessionId: string, projectDir: string, opts?: SessionAccessOptions): {
+  totalMessages: number
+  userMessages: number
+  assistantMessages: number
+  toolUseCount: number
+  toolResultCount: number
+  toolBreakdown: Record<string, number>
+  subagentCount: number
+  fileSizeBytes: number
+  firstTimestamp?: string
+  lastTimestamp?: string
+} | null {
+  const paths = getSessionPaths(sessionId, projectDir, opts)
+  if (!paths.exists) return null
+
+  const messages = readJsonl(paths.conversation)
+  const toolBreakdown: Record<string, number> = {}
+
+  let userMessages = 0
+  let assistantMessages = 0
+  let toolUseCount = 0
+  let toolResultCount = 0
+
+  for (const msg of messages) {
+    if (msg.type === 'user') userMessages++
+    else if (msg.type === 'assistant') assistantMessages++
+    else if (msg.type === 'tool_use') {
+      toolUseCount++
+      const name = msg.toolName || 'unknown'
+      toolBreakdown[name] = (toolBreakdown[name] || 0) + 1
+    }
+    else if (msg.type === 'tool_result') toolResultCount++
+  }
+
+  return {
+    totalMessages: messages.length,
+    userMessages,
+    assistantMessages,
+    toolUseCount,
+    toolResultCount,
+    toolBreakdown,
+    subagentCount: paths.subagents.length,
+    fileSizeBytes: existsSync(paths.conversation) ? statSync(paths.conversation).size : 0,
+    firstTimestamp: messages.find(m => m.timestamp)?.timestamp,
+    lastTimestamp: [...messages].reverse().find(m => m.timestamp)?.timestamp,
+  }
 }
 
 /**

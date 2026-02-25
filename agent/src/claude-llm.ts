@@ -559,13 +559,24 @@ class ClaudeLLMStream extends llm.LLMStream {
         // Research mode system prompt — always injected
         systemPrompt: getResearchSystemPrompt(workspacePath),
         canUseTool: async (toolName, input, _options) => {
-          // Auto-approve writes to session workspace
+          // Auto-approve writes to session workspace (but block spec.md and library/ — fast brain manages those)
           if (toolName === 'Write' || toolName === 'Edit') {
             const filePath = String(input?.file_path || '')
             if (filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')) {
+              // Block writes to spec.md and library/ — the fast brain manages these
+              const fileName = filePath.split('/').pop() || ''
+              if (fileName === 'spec.md' || filePath.includes('/library/')) {
+                console.log(`🚫 Blocked research agent write to managed file: ${filePath} (fast brain handles spec.md and library/)`)
+                return { behavior: 'deny', message: 'spec.md and library/ are managed by the fast brain sub-agent. Do NOT write to them. Return your findings in your response text — the fast brain will organize them into spec.md and library/ automatically.' }
+              }
               console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
+          }
+          // Auto-approve AskUserQuestion — research agent should freely ask clarifying questions
+          if (toolName === 'AskUserQuestion') {
+            console.log(`✅ Auto-approved ${toolName}`)
+            return { behavior: 'allow', updatedInput: input }
           }
           // Auto-deny tools the research agent should never use
           if (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode') {

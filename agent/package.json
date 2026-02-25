@@ -1,6 +1,6 @@
 {
   "name": "osborn",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Voice AI coding assistant - local agent that connects to Osborn frontend",
   "type": "module",
   "bin": {
@@ -42,13 +42,17 @@
     "@smithery/api": "^0.48.0",
     "dotenv": "^16.4.0",
     "livekit-server-sdk": "^2.15.0",
+    "node-pty": "^1.1.0",
     "tsx": "^4.0.0",
+    "ws": "^8.19.0",
     "yaml": "^2.3.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "@vitest/coverage-v8": "^4.0.18",
+    "typescript": "^5.0.0",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=18.0.0"

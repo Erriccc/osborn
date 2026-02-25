@@ -27,8 +27,8 @@ import { GoogleGenAI } from '@google/genai'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs'
 import { dirname, basename } from 'path'
 import { getSessionWorkspace, readSessionSpec, listLibraryFiles } from './config.js'
-import { FAST_BRAIN_SYSTEM_PROMPT, CHUNK_PROCESS_SYSTEM, REFINEMENT_PROCESS_SYSTEM } from './prompts.js'
-import { getRecentToolResults, readSessionHistory, getSubagentTranscripts } from './session-access.js'
+import { FAST_BRAIN_SYSTEM_PROMPT, CHUNK_PROCESS_SYSTEM, REFINEMENT_PROCESS_SYSTEM, AUGMENT_RESULT_SYSTEM, CONTEXTUALIZE_UPDATE_SYSTEM, PROACTIVE_PROMPT_SYSTEM, VISUAL_DOCUMENT_SYSTEM } from './prompts.js'
+import { getRecentToolResults, readSessionHistory, getSubagentTranscripts, getConversationText, getSessionTranscripts, searchSessionJsonl, getSessionStats } from './session-access.js'
 
 // ============================================================
 // Content extraction — pulls useful snippets from tool responses
@@ -79,6 +79,21 @@ let initialized = false
 // Model IDs — configurable per provider
 const ANTHROPIC_FAST_MODEL = 'claude-haiku-4-5-20251001'
 const GEMINI_FAST_MODEL = 'gemini-2.0-flash'
+
+// ============================================================
+// Conversation history — sourced from agent.chatCtx (LiveKit in-memory context)
+// ============================================================
+
+/** A single voice conversation turn from the realtime LLM's chatCtx */
+export interface ConversationTurn {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+/** No-op — history is now sourced live from agent.chatCtx, passed per-call */
+export function clearFastBrainHistory(): void {
+  console.log('🧠 Fast brain: conversation history cleared (no-op — sourced from chatCtx)')
+}
 
 function initProvider(): void {
   if (initialized) return
@@ -166,25 +181,118 @@ function executeTool(
 
       case 'read_agent_results': {
         if (!sessionId || !workingDir) return 'Error: no active research session'
-        const lastN = (toolInput.lastN as number) || 5
-        const results = getRecentToolResults(sessionId, workingDir, lastN)
-        if (results.length === 0) return 'No tool results found in agent JSONL.'
-        return results.map(tr => {
-          const inputPreview = JSON.stringify(tr.toolInput).substring(0, 200)
-          return `[${tr.toolName}: ${inputPreview}]\n${tr.resultContent}`
-        }).join('\n\n---\n\n')
+        const lastN = (toolInput.lastN as number) || 40
+        const toolFilter = toolInput.toolFilter as string[] | undefined
+        const results = getRecentToolResults(sessionId, workingDir, lastN, { toolNameFilter: toolFilter })
+        if (results.length === 0) return `No tool results found${toolFilter ? ` for tools: ${toolFilter.join(', ')}` : ''}.`
+        return `[${results.length} results${toolFilter ? ` filtered by: ${toolFilter.join(', ')}` : ''}]\n\n` +
+          results.map(tr => {
+            const inputPreview = JSON.stringify(tr.toolInput).substring(0, 200)
+            return `[${tr.toolName}: ${inputPreview}]\n${tr.resultContent}`
+          }).join('\n\n---\n\n')
       }
 
       case 'read_agent_text': {
         if (!sessionId || !workingDir) return 'Error: no active research session'
-        const lastN = (toolInput.lastN as number) || 10
-        const messages = readSessionHistory(sessionId, workingDir, {
-          lastN,
-          types: ['assistant']
-        })
+        const lastN = (toolInput.lastN as number) || 60
+        const opts = lastN === 0
+          ? { types: ['assistant' as const] }
+          : { lastN, types: ['assistant' as const] }
+        const messages = readSessionHistory(sessionId, workingDir, opts)
         const texts = messages.filter(m => m.text && m.text.length > 20)
         if (texts.length === 0) return 'No agent reasoning text found in JSONL.'
-        return texts.map(m => m.text).join('\n\n---\n\n')
+        return `[${texts.length} agent messages]\n\n` + texts.map(m => m.text).join('\n\n---\n\n')
+      }
+
+      case 'read_subagents': {
+        if (!sessionId || !workingDir) return 'Error: no active research session'
+        const transcripts = getSubagentTranscripts(sessionId, workingDir)
+        if (transcripts.length === 0) return 'No sub-agent transcripts found.'
+        return transcripts.map(sa => {
+          const texts = sa.messages
+            .filter(m => m.text && m.text.length > 20)
+            .map(m => `[${m.type}] ${m.text}`)
+          return `=== Sub-agent ${sa.taskId} (${sa.messages.length} msgs) ===\n${texts.join('\n')}`
+        }).join('\n\n')
+      }
+
+      case 'search_jsonl': {
+        if (!sessionId || !workingDir) return 'Error: no active research session'
+        const keyword = toolInput.keyword as string
+        if (!keyword) return 'Error: keyword is required'
+        const maxResults = (toolInput.maxResults as number) || 20
+        const results = searchSessionJsonl(sessionId, workingDir, keyword, { maxResults })
+        if (results.length === 0) return `No matches for "${keyword}" in agent JSONL.`
+        return results.map(r => `[${r.type}${r.timestamp ? ` @ ${r.timestamp}` : ''}] ${r.text}`).join('\n\n---\n\n')
+      }
+
+      case 'read_conversation': {
+        if (!sessionId || !workingDir) return 'Error: no active research session'
+        const lastN = (toolInput.lastN as number) || 30
+        const exchanges = getConversationText(sessionId, workingDir, lastN, 2000)
+        if (exchanges.length === 0) return 'No conversation history found.'
+        return exchanges.map(e => `${e.role}: ${e.text}`).join('\n\n')
+      }
+
+      case 'get_session_stats': {
+        if (!sessionId || !workingDir) return 'Error: no active research session'
+        const stats = getSessionStats(sessionId, workingDir)
+        if (!stats) return 'No session data found.'
+        const toolList = Object.entries(stats.toolBreakdown)
+          .sort(([, a], [, b]) => b - a)
+          .map(([name, count]) => `  ${name}: ${count}`)
+          .join('\n')
+        return `Session Stats:
+Total messages: ${stats.totalMessages}
+User messages: ${stats.userMessages}
+Agent messages: ${stats.assistantMessages}
+Tool calls: ${stats.toolUseCount}
+Tool results: ${stats.toolResultCount}
+Sub-agents: ${stats.subagentCount}
+File size: ${(stats.fileSizeBytes / 1024).toFixed(1)} KB
+Time range: ${stats.firstTimestamp || '?'} → ${stats.lastTimestamp || '?'}
+
+Tool breakdown:
+${toolList}`
+      }
+
+      case 'deep_read_results': {
+        if (!sessionId || !workingDir) return 'Error: no active research session'
+        const toolFilter = toolInput.toolFilter as string[] | undefined
+        const allResults = getRecentToolResults(sessionId, workingDir, 0, { toolNameFilter: toolFilter })
+        if (allResults.length === 0) return `No tool results found${toolFilter ? ` for tools: ${toolFilter.join(', ')}` : ''}.`
+        return `[${allResults.length} total results${toolFilter ? ` filtered by: ${toolFilter.join(', ')}` : ' (all tools)'}]\n\n` +
+          allResults.map(tr => {
+            const inputPreview = JSON.stringify(tr.toolInput).substring(0, 200)
+            return `[${tr.toolName}: ${inputPreview}]\n${tr.resultContent}`
+          }).join('\n\n---\n\n')
+      }
+
+      case 'deep_read_text': {
+        if (!sessionId || !workingDir) return 'Error: no active research session'
+        const allMessages = readSessionHistory(sessionId, workingDir, {
+          types: ['assistant']
+        })
+        const allTexts = allMessages.filter(m => m.text && m.text.length > 20)
+        if (allTexts.length === 0) return 'No agent reasoning text found in JSONL.'
+        return `[${allTexts.length} total agent messages across entire session]\n\n` + allTexts.map(m => m.text).join('\n\n---\n\n')
+      }
+
+      case 'get_full_transcript': {
+        if (!sessionId || !workingDir) return 'Error: no active research session'
+        const transcripts = getSessionTranscripts(sessionId, workingDir)
+        const agentTexts = transcripts.agent.messages
+          .filter(m => m.text && m.text.length > 20)
+          .map(m => `[${m.type}${m.toolName ? ': ' + m.toolName : ''}] ${m.text}`)
+        let output = `=== Agent Transcript (${transcripts.agent.messages.length} msgs, ${transcripts.agent.fileSize} bytes) ===\n${agentTexts.join('\n\n')}`
+        if (transcripts.subagents.length > 0) {
+          const subTexts = transcripts.subagents.map(sa => {
+            const texts = sa.messages.filter(m => m.text).map(m => `[${m.type}] ${m.text}`)
+            return `=== Sub-agent ${sa.taskId} ===\n${texts.join('\n')}`
+          })
+          output += '\n\n' + subTexts.join('\n\n')
+        }
+        return output
       }
 
       default:
@@ -231,23 +339,79 @@ function buildAnthropicTools(): Anthropic.Messages.Tool[] {
     },
     {
       name: 'read_agent_results',
-      description: 'Read recent tool results from the research agent JSONL. Returns FULL untruncated tool outputs (file contents, command outputs, web search results).',
+      description: 'Read the research agent\'s FULL memory — complete untruncated tool outputs including entire file contents the agent read, full bash command outputs, web search results, and web page fetches. This is the agent\'s raw data. Use this FIRST when asked about anything the agent just researched. Default: last 40 results.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          lastN: { type: 'number', description: 'Number of recent results to return (default: 5)' }
+          lastN: { type: 'number', description: 'Number of recent results to return (default: 40, max: 80)' }
         }
       }
     },
     {
       name: 'read_agent_text',
-      description: 'Read recent agent reasoning and analysis text from JSONL. Returns the agent\'s thinking and conclusions.',
+      description: 'Read the research agent\'s reasoning, analysis, and conclusions from JSONL. Contains the agent\'s step-by-step thinking, synthesis of findings, comparisons, and recommendations. Use this alongside read_agent_results to get the COMPLETE picture of what the agent researched and concluded. Default: last 60 messages.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          lastN: { type: 'number', description: 'Number of recent text messages to return (default: 10)' }
+          lastN: { type: 'number', description: 'Number of recent text messages to return (default: 60, max: 100)' }
         }
       }
+    },
+    {
+      name: 'read_subagents',
+      description: 'Read all sub-agent (parallel Task) transcripts. Contains the detailed work done by sub-agents spawned during research. Use when the main agent delegated parts of the research to sub-agents working in parallel.',
+      input_schema: { type: 'object' as const, properties: {} }
+    },
+    {
+      name: 'search_jsonl',
+      description: 'Search the agent\'s JSONL transcript for a keyword. Returns matching entries across all tool results, agent reasoning, and conversation history. Use to find specific mentions of a topic, file, function, or concept.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          keyword: { type: 'string', description: 'The keyword to search for (case-insensitive)' },
+          maxResults: { type: 'number', description: 'Maximum number of results (default: 20)' }
+        },
+        required: ['keyword']
+      }
+    },
+    {
+      name: 'read_conversation',
+      description: 'Read the user/assistant conversation exchange history. Shows what the user asked and what the agent responded, without tool call details. Use for understanding conversation flow, user intent, and what was discussed.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          lastN: { type: 'number', description: 'Number of recent exchanges to return (default: 30)' }
+        }
+      }
+    },
+    {
+      name: 'get_full_transcript',
+      description: 'Read the COMPLETE agent transcript + all sub-agent transcripts. This is the most comprehensive view of everything the agent did — use when targeted tools (read_agent_results, read_agent_text) aren\'t enough and you need the full picture. Large output.',
+      input_schema: { type: 'object' as const, properties: {} }
+    },
+    {
+      name: 'get_session_stats',
+      description: 'Get session statistics: total messages, tool call counts by name, sub-agent count, data size, time range. Use this to understand how much data is in the session before deciding whether to use deep tools.',
+      input_schema: { type: 'object' as const, properties: {} }
+    },
+    {
+      name: 'deep_read_results',
+      description: 'Read ALL tool results across the ENTIRE session — not just recent ones. Returns every file read, bash output, web search, web fetch, etc. Use toolFilter to narrow by tool type. Use this for generating detailed analyses, overviews, diagrams, answering specific questions requiring full context, or when the user wants comprehensive details.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          toolFilter: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Only return results from these tools. E.g., ["Read"] for file reads, ["WebSearch","WebFetch"] for web data, ["Bash"] for commands, ["Grep","Glob"] for code searches. Omit for all tools.'
+          }
+        }
+      }
+    },
+    {
+      name: 'deep_read_text',
+      description: 'Read ALL agent reasoning and analysis across the ENTIRE session — not just recent messages. Returns every piece of thinking, synthesis, comparison, and recommendation the agent produced. Use this for generating comprehensive overviews or when the user asks for detailed explanations of what the agent found.',
+      input_schema: { type: 'object' as const, properties: {} }
     }
   ]
 }
@@ -310,23 +474,79 @@ function buildGeminiTools(): any[] {
         },
         {
           name: 'read_agent_results',
-          description: 'Read recent tool results from the research agent JSONL. Returns FULL untruncated tool outputs (file contents, command outputs, web search results).',
+          description: 'Read the research agent\'s FULL memory — complete untruncated tool outputs including entire file contents the agent read, full bash command outputs, web search results, and web page fetches. This is the agent\'s raw data. Use this FIRST when asked about anything the agent just researched. Default: last 40 results.',
           parameters: {
             type: 'object',
             properties: {
-              lastN: { type: 'number', description: 'Number of recent results to return (default: 5)' }
+              lastN: { type: 'number', description: 'Number of recent results to return (default: 40, max: 60)' }
             }
           }
         },
         {
           name: 'read_agent_text',
-          description: 'Read recent agent reasoning and analysis text from JSONL. Returns the agent\'s thinking and conclusions.',
+          description: 'Read the research agent\'s reasoning, analysis, and conclusions from JSONL. Contains the agent\'s step-by-step thinking, synthesis of findings, comparisons, and recommendations. Use this alongside read_agent_results to get the COMPLETE picture of what the agent researched and concluded. Default: last 60 messages.',
           parameters: {
             type: 'object',
             properties: {
-              lastN: { type: 'number', description: 'Number of recent text messages to return (default: 10)' }
+              lastN: { type: 'number', description: 'Number of recent text messages to return (default: 60, max: 100)' }
             }
           }
+        },
+        {
+          name: 'read_subagents',
+          description: 'Read all sub-agent (parallel Task) transcripts. Contains the detailed work done by sub-agents spawned during research.',
+          parameters: { type: 'object', properties: {} }
+        },
+        {
+          name: 'search_jsonl',
+          description: 'Search the agent\'s JSONL transcript for a keyword. Returns matching entries across all tool results, agent reasoning, and conversation history.',
+          parameters: {
+            type: 'object',
+            properties: {
+              keyword: { type: 'string', description: 'The keyword to search for (case-insensitive)' },
+              maxResults: { type: 'number', description: 'Maximum number of results (default: 20)' }
+            },
+            required: ['keyword']
+          }
+        },
+        {
+          name: 'read_conversation',
+          description: 'Read the user/assistant conversation exchange history. Shows what the user asked and what the agent responded.',
+          parameters: {
+            type: 'object',
+            properties: {
+              lastN: { type: 'number', description: 'Number of recent exchanges to return (default: 30)' }
+            }
+          }
+        },
+        {
+          name: 'get_full_transcript',
+          description: 'Read the COMPLETE agent transcript + all sub-agent transcripts. Most comprehensive view — use when targeted tools aren\'t enough.',
+          parameters: { type: 'object', properties: {} }
+        },
+        {
+          name: 'get_session_stats',
+          description: 'Get session statistics: total messages, tool call counts by name, sub-agent count, data size, time range. Use to understand how much data is in the session before using deep tools.',
+          parameters: { type: 'object', properties: {} }
+        },
+        {
+          name: 'deep_read_results',
+          description: 'Read ALL tool results across the ENTIRE session — not just recent ones. Use toolFilter to narrow by tool type. For detailed analyses, overviews, diagrams, specific questions requiring full context.',
+          parameters: {
+            type: 'object',
+            properties: {
+              toolFilter: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Only return results from these tools. E.g., ["Read"] for file reads, ["WebSearch","WebFetch"] for web data. Omit for all.'
+              }
+            }
+          }
+        },
+        {
+          name: 'deep_read_text',
+          description: 'Read ALL agent reasoning across the ENTIRE session. For comprehensive overviews or detailed explanations of what the agent found throughout the session.',
+          parameters: { type: 'object', properties: {} }
         }
       ]
     }
@@ -364,7 +584,8 @@ async function askViaAnthropic(
   workspace: string,
   researchContext?: string,
   sessionId?: string,
-  workingDir?: string
+  workingDir?: string,
+  chatHistory?: ConversationTurn[]
 ): Promise<string> {
   const client = anthropicClient!
   const tools = buildAnthropicTools()
@@ -373,9 +594,14 @@ async function askViaAnthropic(
     ? `${question}\n\n[LIVE RESEARCH CONTEXT — the research agent is currently working]\n${researchContext}`
     : question
 
-  const messages: Anthropic.Messages.MessageParam[] = [
-    { role: 'user', content: userContent }
-  ]
+  // Build messages from live voice conversation history (from agent.chatCtx)
+  const messages: Anthropic.Messages.MessageParam[] = []
+  if (chatHistory && chatHistory.length > 0) {
+    for (const turn of chatHistory) {
+      messages.push({ role: turn.role, content: turn.text })
+    }
+  }
+  messages.push({ role: 'user', content: userContent })
 
   const allTools: Anthropic.Messages.Tool[] | any[] = [...tools, ANTHROPIC_WEB_SEARCH]
 
@@ -430,7 +656,8 @@ async function askViaGemini(
   workspace: string,
   researchContext?: string,
   sessionId?: string,
-  workingDir?: string
+  workingDir?: string,
+  chatHistory?: ConversationTurn[]
 ): Promise<string> {
   const ai = geminiClient!
   const tools = buildGeminiTools()
@@ -439,10 +666,17 @@ async function askViaGemini(
     ? `${question}\n\n[LIVE RESEARCH CONTEXT — the research agent is currently working]\n${researchContext}`
     : question
 
-  // Gemini uses a different content format
-  const contents: any[] = [
-    { role: 'user', parts: [{ text: userContent }] }
-  ]
+  // Build contents from live voice conversation history (from agent.chatCtx)
+  const contents: any[] = []
+  if (chatHistory && chatHistory.length > 0) {
+    for (const turn of chatHistory) {
+      contents.push({
+        role: turn.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: turn.text }],
+      })
+    }
+  }
+  contents.push({ role: 'user', parts: [{ text: userContent }] })
 
   for (let i = 0; i < 10; i++) {
     const response = await ai.models.generateContent({
@@ -503,7 +737,8 @@ export async function askHaiku(
   workingDir: string,
   sessionId: string,
   question: string,
-  researchContext?: string
+  researchContext?: string,
+  chatHistory?: ConversationTurn[]
 ): Promise<string> {
   initProvider()
 
@@ -514,9 +749,9 @@ export async function askHaiku(
   const workspace = getSessionWorkspace(workingDir, sessionId)
 
   if (provider === 'anthropic') {
-    return askViaAnthropic(question, workspace, researchContext, sessionId, workingDir)
+    return askViaAnthropic(question, workspace, researchContext, sessionId, workingDir, chatHistory)
   } else {
-    return askViaGemini(question, workspace, researchContext, sessionId, workingDir)
+    return askViaGemini(question, workspace, researchContext, sessionId, workingDir, chatHistory)
   }
 }
 
@@ -717,6 +952,79 @@ function parseChunkResponse(
 }
 
 // ============================================================
+// augmentResearchResult — Fast brain adds spec context to agent results (NO summarization)
+// ============================================================
+
+/**
+ * Augment agent SDK research results with context from spec.md.
+ * Passes ALL specific details through verbatim — only ADDS context annotations.
+ * The voice model downstream handles summarization for speech.
+ *
+ * Falls back to returning the original result if the fast brain is unavailable.
+ */
+export async function augmentResearchResult(
+  workingDir: string,
+  sessionId: string,
+  task: string,
+  agentResult: string
+): Promise<string> {
+  initProvider()
+  if (provider === 'none') return agentResult
+
+  try {
+    // Read spec for context
+    const specContent = readSessionSpec(workingDir, sessionId)
+    const libraryFiles = listLibraryFiles(workingDir, sessionId)
+
+    const specSection = specContent
+      ? `\n\nCurrent spec.md:\n${specContent}`
+      : ''
+    const libSection = libraryFiles.length > 0
+      ? `\n\nLibrary files available: ${libraryFiles.join(', ')}`
+      : ''
+
+    const userMessage = `Research task: "${task}"
+
+Agent findings:
+${agentResult}
+${specSection}${libSection}
+
+Augment the agent's findings with relevant context from the spec. Pass ALL details through verbatim.`
+
+    let responseText: string | null = null
+
+    if (provider === 'anthropic') {
+      const response = await anthropicClient!.messages.create({
+        model: ANTHROPIC_FAST_MODEL,
+        max_tokens: 16000,
+        system: AUGMENT_RESULT_SYSTEM,
+        messages: [{ role: 'user', content: userMessage }]
+      })
+      responseText = response.content[0].type === 'text' ? response.content[0].text : null
+    } else {
+      const response = await geminiClient!.models.generateContent({
+        model: GEMINI_FAST_MODEL,
+        contents: userMessage,
+        config: { systemInstruction: AUGMENT_RESULT_SYSTEM }
+      })
+      responseText = response.text || null
+    }
+
+    if (!responseText || responseText.length < agentResult.length * 0.5) {
+      // If augmented result is suspiciously shorter, the LLM likely summarized — use original
+      console.log('⚠️ augmentResearchResult: augmented result too short, using original')
+      return agentResult
+    }
+
+    console.log(`🔄 augmentResearchResult: augmented ${agentResult.length} → ${responseText.length} chars`)
+    return responseText
+  } catch (err) {
+    console.error('❌ augmentResearchResult failed:', err)
+    return agentResult // Fallback to original on error
+  }
+}
+
+// ============================================================
 // updateSpecFromJSONL — Post-research spec consolidation via JSONL
 // ============================================================
 
@@ -800,6 +1108,482 @@ export async function updateSpecFromJSONL(
     return processResearchChunk(workingDir, sessionId, task, contentChunks, true)
   } catch (err) {
     console.error('❌ updateSpecFromJSONL failed:', err)
+    return null
+  }
+}
+
+// ============================================================
+// Fire-and-forget: Question Writer — writes user question to spec BEFORE agent starts
+// ============================================================
+
+/**
+ * Fire-and-forget: Write a user question to spec.md Open Questions > From User
+ * before the agent starts researching. Ensures every escalated question is tracked.
+ *
+ * Uses a simple LLM call to fuzzy-match existing questions and avoid duplicates.
+ * Skips if spec.md doesn't exist yet or no provider is available.
+ */
+export async function writeQuestionToSpec(
+  workingDir: string,
+  sessionId: string,
+  question: string
+): Promise<void> {
+  initProvider()
+  if (provider === 'none') return
+
+  try {
+    const workspace = getSessionWorkspace(workingDir, sessionId)
+    const specPath = `${workspace}/spec.md`
+    if (!existsSync(specPath)) return
+
+    const currentSpec = readFileSync(specPath, 'utf-8')
+
+    // Quick check: if the question (or something very similar) is already in the spec, skip
+    const normalizedQ = question.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim()
+    if (normalizedQ.length < 10) return // Too short to track
+
+    const systemPrompt = `You manage the "Open Questions" section of a research spec file.
+
+Given the current spec.md and a new user question, decide:
+1. Is this question (or something very similar) already tracked? If yes, output: SKIP
+2. If not, output the COMPLETE updated spec.md with the question added under "## Open Questions > ### From User (unanswered)" as a checkbox: - [ ] Question
+
+Rules:
+- Add a timestamp: (asked ${new Date().toLocaleTimeString()})
+- Do NOT modify any other section of the spec
+- Do NOT mark existing questions as answered
+- Output ONLY the full spec.md content or the word SKIP — nothing else`
+
+    const userMessage = `Current spec.md:\n\`\`\`\n${currentSpec}\n\`\`\`\n\nNew user question to track:\n"${question}"`
+
+    let responseText: string | null = null
+
+    if (provider === 'anthropic') {
+      const response = await anthropicClient!.messages.create({
+        model: ANTHROPIC_FAST_MODEL,
+        max_tokens: 8000,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }]
+      })
+      responseText = response.content[0].type === 'text' ? response.content[0].text : null
+    } else {
+      const response = await geminiClient!.models.generateContent({
+        model: GEMINI_FAST_MODEL,
+        contents: userMessage,
+        config: { systemInstruction: systemPrompt }
+      })
+      responseText = response.text || null
+    }
+
+    if (!responseText || responseText.trim() === 'SKIP') {
+      console.log(`📝 writeQuestionToSpec: question already tracked or skipped`)
+      return
+    }
+
+    // Strip code fences if present
+    let updatedSpec = responseText.trim()
+    if (updatedSpec.startsWith('```')) {
+      updatedSpec = updatedSpec.replace(/^```(?:markdown)?\n?/, '').replace(/\n?```$/, '')
+    }
+
+    // Sanity check: updated spec should be at least as long as current spec
+    if (updatedSpec.length >= currentSpec.length * 0.8) {
+      writeFileSync(specPath, updatedSpec, 'utf-8')
+      console.log(`📝 writeQuestionToSpec: added question to spec (${updatedSpec.length} chars)`)
+    }
+  } catch (err) {
+    console.error('❌ writeQuestionToSpec failed:', err)
+  }
+}
+
+// ============================================================
+// Fire-and-forget: Answer Checker — checks agent output against open questions
+// ============================================================
+
+// Debounce guard: prevent flooding during rapid tool_result sequences
+let answerCheckTimer: ReturnType<typeof setTimeout> | null = null
+let pendingAnswerCheck: { workingDir: string, sessionId: string, output: string, outputType: string } | null = null
+
+/**
+ * Fire-and-forget: Check if substantial agent output answers any open questions in spec.md.
+ * Debounced (3s) to prevent flooding during rapid tool_result sequences.
+ *
+ * When a question is answered, marks it with [x] and moves the answer to Findings.
+ */
+export async function checkOutputAgainstQuestions(
+  workingDir: string,
+  sessionId: string,
+  output: string,
+  outputType: 'tool_result' | 'assistant_text'
+): Promise<void> {
+  // Store the latest check request (newer output replaces older)
+  pendingAnswerCheck = { workingDir, sessionId, output, outputType }
+
+  // Debounce: only fire after 3s of quiet
+  if (answerCheckTimer) return
+  answerCheckTimer = setTimeout(async () => {
+    answerCheckTimer = null
+    const check = pendingAnswerCheck
+    pendingAnswerCheck = null
+    if (!check) return
+
+    await executeAnswerCheck(check.workingDir, check.sessionId, check.output, check.outputType)
+  }, 3000)
+}
+
+async function executeAnswerCheck(
+  workingDir: string,
+  sessionId: string,
+  output: string,
+  outputType: string
+): Promise<void> {
+  initProvider()
+  if (provider === 'none') return
+
+  try {
+    const workspace = getSessionWorkspace(workingDir, sessionId)
+    const specPath = `${workspace}/spec.md`
+    if (!existsSync(specPath)) return
+
+    const currentSpec = readFileSync(specPath, 'utf-8')
+
+    // Quick check: are there any open questions?
+    if (!currentSpec.includes('- [ ]')) {
+      return // No open questions to check against
+    }
+
+    const systemPrompt = `You check if research output answers any open questions in a spec file.
+
+Given the current spec.md and a piece of agent output (${outputType}), decide:
+1. Does this output answer (fully or partially) any "- [ ]" questions in "## Open Questions"?
+2. If YES: output the COMPLETE updated spec.md with:
+   - Answered questions marked: - [x] Question → Brief answer summary (from research)
+   - Key findings added to "## Findings & Resources" section
+3. If NO questions are answered: output NONE
+
+Rules:
+- Only mark a question answered if the output CLEARLY provides the answer
+- Keep the answer summary brief (1-2 sentences)
+- Do NOT modify questions that aren't answered by this output
+- Do NOT remove or rewrite existing Findings
+- Output ONLY the full spec.md content or the word NONE — nothing else`
+
+    // Truncate output to avoid overwhelming the model on very large tool results
+    const truncatedOutput = output.length > 15000 ? output.substring(0, 15000) + '\n[... truncated]' : output
+
+    const userMessage = `Current spec.md:\n\`\`\`\n${currentSpec}\n\`\`\`\n\nAgent output (${outputType}):\n\`\`\`\n${truncatedOutput}\n\`\`\``
+
+    let responseText: string | null = null
+
+    if (provider === 'anthropic') {
+      const response = await anthropicClient!.messages.create({
+        model: ANTHROPIC_FAST_MODEL,
+        max_tokens: 8000,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }]
+      })
+      responseText = response.content[0].type === 'text' ? response.content[0].text : null
+    } else {
+      const response = await geminiClient!.models.generateContent({
+        model: GEMINI_FAST_MODEL,
+        contents: userMessage,
+        config: { systemInstruction: systemPrompt }
+      })
+      responseText = response.text || null
+    }
+
+    if (!responseText || responseText.trim() === 'NONE') {
+      return
+    }
+
+    // Strip code fences if present
+    let updatedSpec = responseText.trim()
+    if (updatedSpec.startsWith('```')) {
+      updatedSpec = updatedSpec.replace(/^```(?:markdown)?\n?/, '').replace(/\n?```$/, '')
+    }
+
+    // Sanity check
+    if (updatedSpec.length >= currentSpec.length * 0.8) {
+      writeFileSync(specPath, updatedSpec, 'utf-8')
+      console.log(`✅ checkOutputAgainstQuestions: marked question(s) as answered in spec (${updatedSpec.length} chars)`)
+    }
+  } catch (err) {
+    console.error('❌ checkOutputAgainstQuestions failed:', err)
+  }
+}
+
+// ============================================================
+// contextualizeResearchUpdate — Fast brain generates natural voice updates during research
+// ============================================================
+
+/**
+ * Generate a natural, contextualized voice update from raw research events.
+ * Called by scheduleResearchBatch() instead of injecting raw events directly.
+ *
+ * Returns a natural 1-2 sentence update, or null if nothing interesting to say.
+ * 3-second timeout — returns null if the LLM is too slow.
+ */
+export async function contextualizeResearchUpdate(
+  workingDir: string,
+  sessionId: string,
+  task: string,
+  batchEvents: string[],
+  researchLog: string[]
+): Promise<string | null> {
+  initProvider()
+  if (provider === 'none') return null
+
+  try {
+    const specContent = readSessionSpec(workingDir, sessionId)
+    const specTruncated = specContent ? specContent.substring(0, 1500) : ''
+
+    // Read last 5 tool results for what was just found
+    const recentResults = getRecentToolResults(sessionId, workingDir, 5)
+    const resultsSummary = recentResults.map(tr => {
+      const inputPreview = JSON.stringify(tr.toolInput).substring(0, 100)
+      const resultPreview = tr.resultContent.substring(0, 200)
+      return `[${tr.toolName}: ${inputPreview}] ${resultPreview}`
+    }).join('\n')
+
+    const userMessage = `Research question: "${task}"
+
+Recent events: ${batchEvents.slice(-10).join('. ')}
+
+Research log (${researchLog.length} total steps): ${researchLog.slice(-15).join('. ')}
+
+Recent findings:
+${resultsSummary}
+
+${specTruncated ? `Spec context:\n${specTruncated}` : ''}`
+
+    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000))
+
+    let responsePromise: Promise<string | null>
+
+    if (provider === 'anthropic') {
+      responsePromise = anthropicClient!.messages.create({
+        model: ANTHROPIC_FAST_MODEL,
+        max_tokens: 200,
+        system: CONTEXTUALIZE_UPDATE_SYSTEM,
+        messages: [{ role: 'user', content: userMessage }]
+      }).then(r => r.content[0].type === 'text' ? r.content[0].text : null)
+    } else {
+      responsePromise = geminiClient!.models.generateContent({
+        model: GEMINI_FAST_MODEL,
+        contents: userMessage,
+        config: { systemInstruction: CONTEXTUALIZE_UPDATE_SYSTEM }
+      }).then(r => r.text || null)
+    }
+
+    const result = await Promise.race([responsePromise, timeoutPromise])
+    if (!result || result.trim() === 'NOTHING') return null
+    return result.trim()
+  } catch (err) {
+    console.error('❌ contextualizeResearchUpdate failed:', err)
+    return null
+  }
+}
+
+// ============================================================
+// generateProactivePrompt — Fast brain generates conversation during research silence
+// ============================================================
+
+/**
+ * Generate a proactive conversational prompt to keep the user engaged during research.
+ * Called periodically (every 15s) during active research.
+ *
+ * Can ask open questions, discuss implications of findings, or give progress with depth.
+ * Returns null/NOTHING if nothing interesting to say.
+ * 3-second timeout.
+ */
+export async function generateProactivePrompt(
+  workingDir: string,
+  sessionId: string,
+  task: string,
+  researchLog: string[],
+  previousPrompts: string[]
+): Promise<string | null> {
+  initProvider()
+  if (provider === 'none') return null
+
+  try {
+    const specContent = readSessionSpec(workingDir, sessionId)
+    const specTruncated = specContent ? specContent.substring(0, 2000) : ''
+
+    // Read recent discoveries from JSONL
+    const recentResults = getRecentToolResults(sessionId, workingDir, 8)
+    const resultsSummary = recentResults.map(tr => {
+      const inputPreview = JSON.stringify(tr.toolInput).substring(0, 100)
+      const resultPreview = tr.resultContent.substring(0, 300)
+      return `[${tr.toolName}: ${inputPreview}] ${resultPreview}`
+    }).join('\n')
+
+    // Read recent agent reasoning
+    const recentText = readSessionHistory(sessionId, workingDir, {
+      lastN: 5,
+      types: ['assistant']
+    })
+    const reasoningSummary = recentText
+      .filter(m => m.text && m.text.length > 20)
+      .map(m => m.text!.substring(0, 300))
+      .join('\n')
+
+    const userMessage = `Research question: "${task}"
+
+Research progress (${researchLog.length} steps so far): ${researchLog.slice(-10).join('. ')}
+
+Recent findings:
+${resultsSummary}
+
+Agent reasoning:
+${reasoningSummary}
+
+${specTruncated ? `Session spec:\n${specTruncated}` : ''}
+
+Previous things already said (DO NOT repeat):
+${previousPrompts.length > 0 ? previousPrompts.join('\n') : '(none yet)'}`
+
+    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000))
+
+    let responsePromise: Promise<string | null>
+
+    if (provider === 'anthropic') {
+      responsePromise = anthropicClient!.messages.create({
+        model: ANTHROPIC_FAST_MODEL,
+        max_tokens: 200,
+        system: PROACTIVE_PROMPT_SYSTEM,
+        messages: [{ role: 'user', content: userMessage }]
+      }).then(r => r.content[0].type === 'text' ? r.content[0].text : null)
+    } else {
+      responsePromise = geminiClient!.models.generateContent({
+        model: GEMINI_FAST_MODEL,
+        contents: userMessage,
+        config: { systemInstruction: PROACTIVE_PROMPT_SYSTEM }
+      }).then(r => r.text || null)
+    }
+
+    const result = await Promise.race([responsePromise, timeoutPromise])
+    if (!result || result.trim() === 'NOTHING') return null
+    return result.trim()
+  } catch (err) {
+    console.error('❌ generateProactivePrompt failed:', err)
+    return null
+  }
+}
+
+// ============================================================
+// generateVisualDocument — Fast brain generates structured visual documents
+// ============================================================
+
+/**
+ * Generate a structured visual document (comparison table, Mermaid diagram,
+ * analysis, or summary) from research findings.
+ *
+ * Reads spec.md, JSONL results, and library for context.
+ * Writes the result to library/ and returns the filename + content.
+ */
+export async function generateVisualDocument(
+  workingDir: string,
+  sessionId: string,
+  request: string,
+  documentType: 'comparison' | 'diagram' | 'analysis' | 'summary'
+): Promise<{ fileName: string; content: string } | null> {
+  initProvider()
+  if (provider === 'none') return null
+
+  try {
+    const workspace = getSessionWorkspace(workingDir, sessionId)
+    const specContent = readSessionSpec(workingDir, sessionId) || ''
+    const libraryFiles = listLibraryFiles(workingDir, sessionId)
+
+    // Read library contents for context
+    const libraryDir = `${workspace}/library`
+    const libraryContents: string[] = []
+    for (const file of libraryFiles.slice(0, 5)) {
+      const filePath = `${libraryDir}/${file}`
+      if (existsSync(filePath)) {
+        try {
+          const content = readFileSync(filePath, 'utf-8')
+          libraryContents.push(`--- ${file} ---\n${content.substring(0, 3000)}`)
+        } catch { /* skip */ }
+      }
+    }
+
+    // Read recent JSONL results for raw data
+    const toolResults = getRecentToolResults(sessionId, workingDir, 20)
+    const toolResultsSummary = toolResults.map(tr => {
+      const inputPreview = JSON.stringify(tr.toolInput).substring(0, 150)
+      return `[${tr.toolName}: ${inputPreview}]\n${tr.resultContent.substring(0, 1000)}`
+    }).join('\n\n---\n\n')
+
+    const userMessage = `Document request: "${request}"
+Document type: ${documentType}
+
+Session spec:
+${specContent}
+
+${libraryContents.length > 0 ? `Library files:\n${libraryContents.join('\n\n')}` : ''}
+
+Recent research data:
+${toolResultsSummary}
+
+Return JSON: {"fileName": "descriptive-name.md", "content": "full markdown content"}`
+
+    let responseText: string | null = null
+
+    if (provider === 'anthropic') {
+      const response = await anthropicClient!.messages.create({
+        model: ANTHROPIC_FAST_MODEL,
+        max_tokens: 16000,
+        system: VISUAL_DOCUMENT_SYSTEM,
+        messages: [{ role: 'user', content: userMessage }]
+      })
+      responseText = response.content[0].type === 'text' ? response.content[0].text : null
+    } else {
+      const response = await geminiClient!.models.generateContent({
+        model: GEMINI_FAST_MODEL,
+        contents: userMessage,
+        config: { systemInstruction: VISUAL_DOCUMENT_SYSTEM }
+      })
+      responseText = response.text || null
+    }
+
+    if (!responseText) return null
+
+    // Parse JSON response
+    const cleaned = responseText.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim()
+    let parsed: { fileName?: string; content?: string }
+    try {
+      parsed = JSON.parse(cleaned)
+    } catch {
+      // Try to extract from malformed response
+      const fnMatch = cleaned.match(/"fileName"\s*:\s*"([^"]+)"/)
+      const ctMatch = cleaned.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)"/s)
+      if (fnMatch && ctMatch) {
+        try {
+          parsed = { fileName: fnMatch[1], content: JSON.parse(`"${ctMatch[1]}"`) }
+        } catch {
+          console.error('⚠️ generateVisualDocument: failed to parse response')
+          return null
+        }
+      } else {
+        return null
+      }
+    }
+
+    if (!parsed.fileName || !parsed.content) return null
+
+    // Write to library
+    const safeName = parsed.fileName.replace(/[^a-zA-Z0-9._-]/g, '-')
+    const libraryPath = `${workspace}/library`
+    mkdirSync(libraryPath, { recursive: true })
+    const filePath = `${libraryPath}/${safeName}`
+    writeFileSync(filePath, parsed.content, 'utf-8')
+    console.log(`📊 generateVisualDocument: wrote ${safeName} (${parsed.content.length} chars)`)
+
+    return { fileName: safeName, content: parsed.content }
+  } catch (err) {
+    console.error('❌ generateVisualDocument failed:', err)
     return null
   }
 }
