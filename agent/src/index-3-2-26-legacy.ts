@@ -9,12 +9,12 @@ import { AccessToken } from 'livekit-server-sdk'
 initializeLogger({ pretty: true, level: 'info' })
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listResearchArtifacts, listWorkspaceArtifacts, readSessionSpec, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { askHaiku, askFastBrain, updateSpecFromJSONL, processResearchCompletion, handleResearchBatch, prepareBriefingScript, prepareRecoveryScript, writeQuestionToSpec, checkOutputAgainstQuestions, generateProactivePrompt, clearFastBrainSession, type ConversationTurn, type FastBrainCallbacks } from './fast-brain.js'
-import { DIRECT_MODE_PROMPT, getRealtimeInstructions, getScriptInjection, getProactiveInjection, getNotificationInjection, getResearchCompleteInjection, getResearchUpdateInjection } from './prompts.js'
+import { askHaiku, updateSpecFromJSONL, augmentResearchResult, writeQuestionToSpec, checkOutputAgainstQuestions, contextualizeResearchUpdate, generateProactivePrompt, generateVisualDocument, clearFastBrainHistory, type ConversationTurn } from './fast-brain.js'
+import { DIRECT_MODE_PROMPT, getRealtimeInstructions, getResearchCompleteInjection, getResearchUpdateInjection, getNotificationInjection } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
@@ -84,10 +84,9 @@ process.on('unhandledRejection', (reason: any) => {
     console.log('⚠️ Post-disconnect cleanup error (harmless)')
     return
   }
-  // generateReply timeout — realtime LLM called a tool instead of speaking (toolChoice:'none' ignored)
-  // or Superseded — new generateReply cancelled a pending one
-  if (msg.includes('generateReply timed out') || msg.includes('generation_created') || msg.includes('Superseded')) {
-    console.log('⚠️ generateReply failed:', msg.substring(0, 80))
+  // generateReply timeout — usually from racing concurrent injections
+  if (msg.includes('generateReply timed out') || msg.includes('generation_created')) {
+    console.log('⚠️ generateReply timed out (concurrent injection race)')
     return
   }
   console.error('❌ Unhandled Rejection:', msg)
@@ -178,6 +177,53 @@ function startApiServer(workingDir: string, port: number): void {
  * Gemini has smaller context limits — cap at 10 exchanges with 500 char content.
  * OpenAI handles full history (30 exchanges, 2000 char content).
  */
+function buildContextBriefing(
+  summary: SessionSummary,
+  history: ConversationExchange[],
+  provider?: string
+): string {
+  const isGemini = provider === 'gemini'
+  // Gemini: last 10 exchanges capped at 500 chars. OpenAI: full history.
+  const maxExchanges = isGemini ? 10 : history.length
+  const maxContentLen = isGemini ? 500 : 2000
+  const trimmedHistory = history.slice(-maxExchanges)
+
+  const lines = [
+    `Session ID: ${summary.sessionId.substring(0, 8)}`,
+    `Total messages: ${summary.messageCount}`,
+    '',
+    '=== SESSION CONVERSATION HISTORY ==='
+  ]
+
+  for (const exchange of trimmedHistory) {
+    const content = exchange.content.length > maxContentLen
+      ? exchange.content.substring(0, maxContentLen) + '...'
+      : exchange.content
+    lines.push(`${exchange.role === 'user' ? 'User' : 'Assistant'}: ${content}`)
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+/**
+ * Read spec.md and format it for the realtime voice model.
+ * Truncates to avoid bloating the context window.
+ * Returns null if spec doesn't exist or session ID isn't available.
+ */
+function getSpecForVoiceModel(workingDir: string, sessionId: string | null | undefined): string | null {
+  if (!sessionId) return null
+  const specContent = readSessionSpec(workingDir, sessionId)
+  if (!specContent) return null
+  const MAX = 3000
+  if (specContent.length <= MAX) return specContent
+  const truncated = specContent.substring(0, MAX)
+  const lastHeading = truncated.lastIndexOf('\n## ')
+  if (lastHeading > MAX * 0.5) {
+    return truncated.substring(0, lastHeading) + '\n\n[... truncated — call read_spec for full content]'
+  }
+  return truncated + '\n\n[... truncated]'
+}
 
 /**
  * Load full session conversation history into the realtime model's ChatContext.
@@ -250,20 +296,8 @@ async function main() {
     console.log(`🔌 Enabled MCP servers: ${enabledMcpNames.join(', ')}`)
   }
 
-  // Two directory concepts:
-  // 1. workingDir (cwd) — where Claude Code operates. Configurable per-session.
-  //    Priority: OSBORN_CWD env > config.workingDirectory > process.cwd()
-  // 2. sessionBaseDir — where session artifacts live (spec.md, library/).
-  //    Always the Osborn agent install directory (where this process started).
-  //    This ensures .osborn/sessions/ doesn't scatter across random directories.
-  const sessionBaseDir = process.cwd() // Always the Osborn install dir
-  const defaultWorkingDir = process.env.OSBORN_CWD || config.workingDirectory || process.cwd()
-  let workingDir = defaultWorkingDir
-  console.log(`📂 Working directory (cwd): ${workingDir}`)
-  console.log(`📂 Session base directory: ${sessionBaseDir}`)
-  if (process.env.OSBORN_CWD) {
-    console.log(`   (cwd from OSBORN_CWD env var)`)
-  }
+  const workingDir = config.workingDirectory || process.cwd()
+  console.log(`📂 Working directory: ${workingDir}`)
   console.log(`🔬 Mode: RESEARCH`)
 
   // Determine voice mode
@@ -386,15 +420,20 @@ async function main() {
       console.log(`⏸️ Voice queue: ${voiceQueue.length} items waiting (user speaking)`)
       return
     }
-    // Don't inject while fast brain tool call is in flight — the tool response will
-    // race with our generateReply, causing Gemini to drop our content and only speak
-    // the tool response. Wait for the tool call to complete first.
-    if (haikuInFlight) {
-      console.log(`⏸️ Voice queue: ${voiceQueue.length} items waiting (fast brain in flight: "${haikuInFlight.question.substring(0, 40)}...")`)
-      return // Will be retried when haikuInFlight clears (see tool execute handler)
-    }
 
     isProcessingQueue = true
+
+    // Safety timeout: if agent_state_changed never fires (e.g. Gemini state machine hang),
+    // clear the guard after 30s so the queue isn't permanently stuck
+    setTimeout(() => {
+      if (isProcessingQueue) {
+        console.log('⚠️ Voice queue: isProcessingQueue stuck for 30s, clearing')
+        isProcessingQueue = false
+        if (voiceQueue.length > 0 && agentState === 'listening') {
+          processVoiceQueue()
+        }
+      }
+    }, 30000)
 
     // Batch ALL queued items into one generateReply call
     const items = voiceQueue.splice(0)
@@ -404,18 +443,6 @@ async function main() {
 
     console.log(`📡 Voice queue: processing ${items.length} batched items (${batchedInstruction.length} chars)`)
 
-    // Safety timeout: if agent_state_changed never fires (edge case — e.g. Gemini
-    // WebSocket drops, or state machine hangs). 15s gives the model time to process.
-    setTimeout(() => {
-      if (isProcessingQueue) {
-        console.log('⚠️ Voice queue: safety timeout — clearing guard')
-        isProcessingQueue = false
-        if (voiceQueue.length > 0 && agentState === 'listening') {
-          processVoiceQueue()
-        }
-      }
-    }, 15000)
-
     try {
       // Skip interrupt for Gemini — disrupts Gemini's state machine, causing it to
       // never transition back to 'listening' (hangs in speaking state indefinitely)
@@ -423,34 +450,19 @@ async function main() {
         currentSession.interrupt()
       }
 
-      if (currentProvider === 'gemini') {
-        // Gemini Live Audio IGNORES toolChoice:'none' entirely — the plugin's
-        // updateOptions() has zero implementation for toolChoice. When we set it,
-        // Gemini still calls ask_fast_brain, but the SDK DROPS the tool call
-        // (because it sees toolChoice:'none'), so no speech is ever produced.
-        //
-        // FIX: Don't set toolChoice for Gemini. Let the tool call go through.
-        // The injection bypass guard in ask_fast_brain.execute() detects
-        // [SCRIPT]/[PROACTIVE]/[NOTIFICATION] prefixes and returns the content
-        // directly as a tool response. Gemini then speaks the tool response —
-        // this is the ONLY reliable speech delivery path for Gemini.
-        currentSession.generateReply({
-          instructions: batchedInstruction,
-        })
-      } else {
-        // OpenAI respects toolChoice:'none' — speaks instructions directly
-        currentSession.generateReply({
-          instructions: batchedInstruction,
-          toolChoice: 'none' as any,
-        })
-      }
+      currentSession.generateReply({
+        instructions: batchedInstruction,
+        toolChoice: 'none' as any,
+      })
       // Model transitions to thinking/speaking after this call.
       // When it returns to 'listening', agent_state_changed triggers processVoiceQueue() again.
 
       // Also inject into chatCtx as persistent context so the model remembers across turns
       injectIntoChatCtx(batchedInstruction)
     } catch (err) {
-      console.log('⚠️ Voice queue generateReply failed:', err)
+      console.log('⚠️ Voice queue generateReply failed, dropping items:', err)
+      // Do NOT re-queue — re-queuing causes infinite retry cascades
+      // The frontend still has the updates via claude_output events
       isProcessingQueue = false
     }
     // isProcessingQueue is cleared when agent_state_changed fires
@@ -520,16 +532,17 @@ async function main() {
         agentRole: 'research-progress',
       })
 
-      // Route through fast brain — it decides whether to speak (usually silent)
-      if (activeResearch.voiceUpdateCount < 2) {
+        // COMMENTED OUT — voice narration disabled, research progress goes to  -frontend logs only 
+        // // queueVoiceInjection(getResearchUpdateInjection(batchText))  
+      // Route through fast brain for contextual voice updates (capped at 3 per task)
+      if (activeResearch.voiceUpdateCount < 3) {
         const voiceSid = currentLLM?.sessionId
         if (voiceSid) {
-          const chatHistory = getChatHistory(10)
-          handleResearchBatch(workingDir, voiceSid, lastTaskRequest || '', updates, activeResearch.researchLog, chatHistory, sessionBaseDir)
-            .then(script => {
-              if (script && activeResearch) {
+          contextualizeResearchUpdate(workingDir, voiceSid, lastTaskRequest || '', updates, activeResearch.researchLog)
+            .then(update => {
+              if (update && update !== 'NOTHING' && activeResearch) {
                 activeResearch.voiceUpdateCount++
-                queueVoiceInjection(getScriptInjection(script))
+                queueVoiceInjection(getResearchUpdateInjection(update))
               }
             })
             .catch(() => {}) // Silent fail — updates are optional
@@ -542,7 +555,7 @@ async function main() {
   let proactiveTimer: ReturnType<typeof setInterval> | null = null
   let proactivePromptHistory: string[] = []
   const PROACTIVE_INTERVAL = 15000  // 15 seconds (offset from 8s batch timer)
-  const MAX_PROACTIVE_PROMPTS = 2   // Cap per research task (reduced from 4 to minimize realtime LLM tokens)
+  const MAX_PROACTIVE_PROMPTS = 4   // Cap per research task
 
   function startProactiveLoop(task: string, sessionId: string) {
     stopProactiveLoop()
@@ -565,7 +578,9 @@ async function main() {
         if (prompt && prompt !== 'NOTHING') {
           proactivePromptHistory.push(prompt)
           proactiveCount++
-          queueVoiceInjection(getProactiveInjection(prompt))
+          queueVoiceInjection(
+            `[PROACTIVE CONTEXT] ${prompt}. Say this naturally to the user. Do NOT call any tools.`
+          )
         }
       } catch {} // Silent fail — proactive prompts are optional
     }, PROACTIVE_INTERVAL)
@@ -636,7 +651,6 @@ async function main() {
     // Create Claude LLM wrapper in research mode
     const directLLM = createClaudeLLM({
       workingDirectory: workingDir,
-      sessionBaseDir,
       mcpServers,
       resumeSessionId,
     })
@@ -644,13 +658,13 @@ async function main() {
 
     // For resumed sessions, eagerly create workspace (we know the real ID)
     if (resumeSessionId) {
-      const workspace = ensureSessionWorkspace(sessionBaseDir, resumeSessionId)
+      const workspace = ensureSessionWorkspace(workingDir, resumeSessionId)
       console.log(`📁 Session workspace (resumed): ${workspace}`)
     }
 
     // For new sessions, create workspace when SDK assigns real session ID
     directLLM.events.once('session_id', ({ sessionId }: { sessionId: string }) => {
-      const workspace = ensureSessionWorkspace(sessionBaseDir, sessionId)
+      const workspace = ensureSessionWorkspace(workingDir, sessionId)
       console.log(`📁 Session workspace created: ${workspace}`)
     })
 
@@ -795,7 +809,6 @@ async function main() {
     // Create Claude LLM for tool execution (research tasks)
     realtimeClaudeHandler = createClaudeLLM({
       workingDirectory: workingDir,
-      sessionBaseDir,
       mcpServers,
       resumeSessionId,
     })
@@ -803,13 +816,13 @@ async function main() {
 
     // For resumed sessions, eagerly create workspace (we know the real ID)
     if (resumeSessionId) {
-      const workspace = ensureSessionWorkspace(sessionBaseDir, resumeSessionId)
+      const workspace = ensureSessionWorkspace(workingDir, resumeSessionId)
       console.log(`📁 Session workspace (resumed): ${workspace}`)
     }
 
     // For new sessions, create workspace when SDK assigns real session ID
     realtimeClaudeHandler.events.once('session_id', ({ sessionId }: { sessionId: string }) => {
-      const workspace = ensureSessionWorkspace(sessionBaseDir, sessionId)
+      const workspace = ensureSessionWorkspace(workingDir, sessionId)
       console.log(`📁 Session workspace created: ${workspace}`)
     })
 
@@ -917,6 +930,70 @@ async function main() {
       })
     })
 
+    // Extract priority content from research results — preserves URLs, code blocks, and key details
+    function extractPriorityContent(result: string, maxChars: number = 4000): string {
+      if (result.length <= maxChars) return result
+
+      // Extract URLs (preserve for voice relay)
+      const urlRegex = /https?:\/\/[^\s\)\"\'>\]]+/g
+      const urls = [...new Set(result.match(urlRegex) || [])]
+
+      // Extract code blocks (first 2, up to 400 chars each)
+      const codeBlockRegex = /```[\s\S]*?```/g
+      const codeBlocks: string[] = []
+      let match
+      while ((match = codeBlockRegex.exec(result)) !== null && codeBlocks.length < 2) {
+        const block = match[0].length > 400 ? match[0].substring(0, 397) + '```' : match[0]
+        codeBlocks.push(block)
+      }
+
+      // Build sections
+      const sections: string[] = []
+
+      // Take the first ~2500 chars of narrative (intro + main findings)
+      const narrativeEnd = Math.min(result.length, 2500)
+      const narrativeTruncated = result.substring(0, narrativeEnd)
+      const lastPeriod = narrativeTruncated.lastIndexOf('.')
+      const narrative = lastPeriod > narrativeEnd * 0.6
+        ? narrativeTruncated.substring(0, lastPeriod + 1)
+        : narrativeTruncated
+      sections.push(narrative)
+
+      // Append conclusion (last ~500 chars) if result is long enough
+      if (result.length > 3000) {
+        const tail = result.substring(result.length - 500)
+        const firstPeriod = tail.indexOf('.')
+        const conclusion = firstPeriod > 0 ? tail.substring(firstPeriod + 1).trim() : tail.trim()
+        if (conclusion.length > 50) {
+          sections.push(`\n\n[CONCLUSION]\n${conclusion}`)
+        }
+      }
+
+      // Append code blocks if not already in the narrative
+      if (codeBlocks.length > 0) {
+        const codeSection = codeBlocks.filter(cb => !narrative.includes(cb))
+        if (codeSection.length > 0) {
+          sections.push(`\n\n[CODE EXAMPLES]\n${codeSection.join('\n\n')}`)
+        }
+      }
+
+      // Append URLs if not already in the narrative
+      const newUrls = urls.filter(u => !narrative.includes(u))
+      if (newUrls.length > 0) {
+        sections.push(`\n\n[LINKS]\n${newUrls.slice(0, 5).join('\n')}`)
+      }
+
+      let assembled = sections.join('')
+
+      // Final safety truncation if assembled exceeds maxChars
+      if (assembled.length > maxChars) {
+        const truncated = assembled.substring(0, maxChars)
+        const lp = truncated.lastIndexOf('.')
+        assembled = lp > maxChars * 0.7 ? truncated.substring(0, lp + 1) : truncated + '...'
+      }
+
+      return assembled
+    }
 
     // Extracted research execution — called by ask_agent, SDK handles queuing internally
     function executeResearch(task: string): string {
@@ -925,7 +1002,7 @@ async function main() {
       // Fire-and-forget: write user question to spec.md BEFORE agent starts
       const questionSid = currentLLM?.sessionId || resumeSessionId
       if (questionSid) {
-        writeQuestionToSpec(sessionBaseDir, questionSid, task).catch(err =>
+        writeQuestionToSpec(workingDir, questionSid, task).catch(err =>
           console.error('❌ writeQuestionToSpec failed:', err)
         )
       }
@@ -987,7 +1064,7 @@ async function main() {
         const resultText = typeof data.response === 'string' ? data.response : JSON.stringify(data.response || '')
         if (resultText.length > ANSWER_CHECK_THRESHOLD) {
           const sid = currentLLM?.sessionId || resumeSessionId
-          if (sid) checkOutputAgainstQuestions(sessionBaseDir, sid, resultText, 'tool_result').catch(() => {})
+          if (sid) checkOutputAgainstQuestions(workingDir, sid, resultText, 'tool_result').catch(() => {})
         }
         // When AskUserQuestion completes, the user's answer is a decision — track it in spec
         if (data.name === 'AskUserQuestion' && data.response) {
@@ -996,7 +1073,7 @@ async function main() {
             const questionText = JSON.stringify(data.input?.questions || data.input || {})
             const answerText = typeof data.response === 'string' ? data.response : JSON.stringify(data.response)
             const specUpdate = `User answered a clarifying question during research.\nQuestion: ${questionText}\nAnswer: ${answerText}\nRecord this as a user decision in spec.md.`
-            askHaiku(workingDir, sid, specUpdate, undefined, undefined, undefined, sessionBaseDir).catch(err =>
+            askHaiku(workingDir, sid, specUpdate).catch(err =>
               console.error('❌ Failed to record AskUserQuestion answer in spec:', err)
             )
             console.log(`📝 AskUserQuestion answer forwarded to fast brain for spec tracking`)
@@ -1014,7 +1091,7 @@ async function main() {
           // Fire-and-forget: check if substantial agent reasoning answers any spec questions
           if (text.length > ANSWER_CHECK_THRESHOLD) {
             const sid = currentLLM?.sessionId || resumeSessionId
-            if (sid) checkOutputAgainstQuestions(sessionBaseDir, sid, text, 'assistant_text').catch(() => {})
+            if (sid) checkOutputAgainstQuestions(workingDir, sid, text, 'assistant_text').catch(() => {})
           }
         }
       }
@@ -1074,62 +1151,76 @@ async function main() {
           : result
         await sendToFrontend({ type: 'task_completed', task, resultPreview })
 
+        // Build enhanced return with research log
+        const logSummary = researchLog.length > 0
+          ? `\n\n[RESEARCH LOG]\n${researchLog.slice(0, 25).join('\n')}`
+          : ''
+
+        // Extract priority content — preserves URLs, code blocks, and key details (4000 char limit)
+        const resultForVoice = extractPriorityContent(result)
+
+        const fullResult = (resultForVoice + logSummary) || 'Research completed successfully.'
+
         // Clear active research and timers before injecting final results
         if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
         stopProactiveLoop()
         activeResearch = null
 
-        // Send research_task_complete to frontend for inline chat tracking
+        // Send final results to frontend for visibility
         await sendToFrontend({
-          type: 'research_task_complete',
-          task,
-          summary: result.substring(0, 500),
+          type: 'claude_output',
+          text: `[Research Complete] Injecting findings into voice model (${fullResult.length} chars)`,
+          isStreaming: false,
+          agentRole: 'research-progress',
         })
 
-        // Route through fast brain to generate a teleprompter script from the findings
-        // Fast brain reads full JSONL and writes a spoken monologue
+        // Route through fast brain for context augmentation before voice injection
+        // Fast brain adds spec context but does NOT summarize — passes details through verbatim
         const voiceSid = currentLLM?.sessionId || resumeSessionId
-        const chatHistory = getChatHistory(10)
-        console.log(`📡 [realtime] Generating teleprompter script via fast brain (result: ${result.length} chars, agentState: ${agentState})`)
-        // Create sendToChat for research completion to send structured data to frontend
-        const completionSendToChat = (text: string) => {
-          sendToFrontend({ type: 'assistant_response', text })
-        }
+        console.log(`📡 [realtime] Augmenting results via fast brain (${fullResult.length} chars, agentState: ${agentState})`)
         if (voiceSid) {
-          processResearchCompletion(workingDir, voiceSid, task, result, chatHistory, completionSendToChat, sessionBaseDir)
-            .then(script => {
-              queueVoiceInjection(getScriptInjection(script))
+          augmentResearchResult(workingDir, voiceSid, task, fullResult)
+            .then(augmented => {
+              queueVoiceInjection(getResearchCompleteInjection(task, augmented))
             })
             .catch(() => {
-              // Fallback: use truncated result directly if fast brain fails
-              queueVoiceInjection(getScriptInjection(result.substring(0, 500)))
+              // Fallback: use result directly if fast brain fails
+              queueVoiceInjection(getResearchCompleteInjection(task, fullResult))
             })
         } else {
-          queueVoiceInjection(getScriptInjection(result.substring(0, 500)))
+          queueVoiceInjection(getResearchCompleteInjection(task, fullResult))
         }
+
+        // Inject FULL untruncated result into ChatCtx so voice model can answer
+        // follow-up questions ("tell me more", "what were those links?") from memory
+        injectIntoChatCtx(`[FULL RESEARCH DETAILS for "${task}"]\n${result}`)
 
         // Fire-and-forget JSONL-based refinement pass via fast brain
         // Reads FULL untruncated data from JSONL — no content buffer, no truncation
         const postResearchSessionId = currentLLM?.sessionId || resumeSessionId
         if (postResearchSessionId) {
-          updateSpecFromJSONL(workingDir, postResearchSessionId, task, researchLog, sessionBaseDir)
+          updateSpecFromJSONL(workingDir, postResearchSessionId, task, researchLog)
             .then(updateResult => {
               if (!updateResult) return
 
               // Notify frontend about spec.md update
               if (updateResult.spec) {
-                const specPath = `${sessionBaseDir}/.osborn/sessions/${postResearchSessionId}/spec.md`
+                const specPath = `${workingDir}/.osborn/sessions/${postResearchSessionId}/spec.md`
                 sendToFrontend({
                   type: 'research_artifact_updated',
                   filePath: specPath,
                   fileName: 'spec.md',
                 })
-                // Voice model is a teleprompter — fast brain reads spec directly, no ChatCtx injection needed
+                const truncated = getSpecForVoiceModel(workingDir, postResearchSessionId)
+                if (truncated) {
+                  injectIntoChatCtx(`[UPDATED SESSION SPEC]\n${truncated}`)
+                  console.log(`📋 Re-injected spec.md into ChatCtx after fast brain update (${truncated.length} chars)`)
+                }
               }
 
               // Notify frontend about each library file written by the fast brain
               for (const libFile of updateResult.libraryFiles) {
-                const libPath = `${sessionBaseDir}/.osborn/sessions/${postResearchSessionId}/library/${libFile}`
+                const libPath = `${workingDir}/.osborn/sessions/${postResearchSessionId}/library/${libFile}`
                 sendToFrontend({
                   type: 'research_artifact_updated',
                   filePath: libPath,
@@ -1148,7 +1239,7 @@ async function main() {
         activeResearch = null
 
         // Queue error notification — will be spoken when model is available
-        queueVoiceInjection(getNotificationInjection(`Research encountered an error: ${(err as Error).message}. You could try asking again.`))
+        queueVoiceInjection(`[NOTIFICATION] The research task encountered an error: ${(err as Error).message}. Let the user know briefly and ask if they want to try again. Do NOT call any tools.`)
       })
 
       // Return immediately to unblock the voice model
@@ -1156,101 +1247,46 @@ async function main() {
     }
 
     // Create tools for the realtime voice LLM
-    // The realtime model is a thin teleprompter — only 2 tools:
-    // 1. ask_fast_brain: ALL user questions route here (the fast brain decides everything)
-    // 2. respond_permission: voice permission flow for Claude SDK blocked operations
+    const askAgentTool = llm.tool({
+      description: `Delegate a task to your backend agent (Claude), which has full research, analysis, reasoning, and coding capabilities.
 
-    const askFastBrainTool = llm.tool({
-      description: `Ask your brain. Call this for EVERY user message — greetings, questions, decisions, requests, everything. No exceptions. Returns what you should say.`,
+Use for:
+- Researching topics, technologies, concepts, or ideas in depth
+- Fetching and analyzing web pages, articles, blog posts, YouTube transcripts
+- Reading and summarizing documentation, papers, or reference materials
+- Exploring and analyzing codebases, configs, architecture
+- Comparing options, tools, approaches — with tradeoffs and recommendations
+- Running bash commands, testing implementations
+- Using MCP tools (GitHub, YouTube, and other external tools)
+- Saving findings to the session library and updating the spec
+- Any question requiring research, analysis, verification, or deeper reasoning
+
+Reformulate the user's spoken request into a clear, specific task.
+The more context you include (topic, constraints, what they want to learn), the better the results.
+If the user wants specific details (examples, URLs, comparisons, step-by-step breakdown), mention that in your request.`,
       parameters: z.object({
-        question: z.string().describe('The user\'s question or statement'),
+        request: z.string().describe('The task or question to delegate to the agent'),
       }),
-      execute: async ({ question }) => {
-        // INJECTION BYPASS: When Gemini receives a system injection via generateReply(),
-        // it calls ask_fast_brain with the injection content (Gemini always calls tools).
-        // For Gemini: this is the INTENDED path — we deliberately don't set toolChoice:'none'
-        //   so the tool call goes through and we return the content as a tool response.
-        // For OpenAI: this is a fallback guard — OpenAI normally speaks instructions directly
-        //   with toolChoice:'none', but if it somehow calls the tool, we handle it here.
-        const injectionMatch = question.match(/\[(SCRIPT|PROACTIVE|NOTIFICATION)\]\s*([\s\S]*)/)
-        if (injectionMatch) {
-          const content = injectionMatch[2].trim()
-          console.log(`⚡ [fast brain] BYPASS: injection [${injectionMatch[1]}] → returning content directly (${content.length} chars)`)
-          return content || question
+      execute: async ({ request: task }) => {
+        console.log(`\n🔨 [realtime] Task: "${task}"`)
+
+        // Guard: if ask_haiku is currently handling a similar question, skip ask_agent
+        // This prevents the double-calling pattern where Gemini fires both in rapid succession
+        if (haikuInFlight && (Date.now() - haikuInFlight.time) < 8000) {
+          console.log(`⏭️ Skipping ask_agent — ask_haiku is already handling: "${haikuInFlight.question.substring(0, 60)}"`)
+          return 'The fast brain is already looking into this. Wait for its answer first.'
         }
 
-        // Use pending sessionId for fresh sessions where SDK hasn't assigned one yet
-        const sessionId = currentLLM?.sessionId || resumeSessionId || 'pending'
-        console.log(`🧠 [fast brain] Question: "${question.substring(0, 80)}..."`)
-
-        // Track in-flight state
-        haikuInFlight = { question, time: Date.now() }
-
-        // Build live research context if agent is actively researching
-        let researchContext: string | undefined
-        if (activeResearch && activeResearch.researchLog.length > 0) {
-          const recentLog = activeResearch.researchLog.slice(-15)
-          researchContext = `Research topic: "${lastTaskRequest || 'unknown'}"\nSteps completed (${activeResearch.researchLog.length} total, showing last ${recentLog.length}):\n${recentLog.join('\n')}`
+        // Deduplication guard: prevent re-execution of same task within 10s
+        const now = Date.now()
+        if (task === lastTaskRequest && (now - lastTaskTime) < 10000) {
+          console.log('⏭️ Skipping duplicate task (within 10s window)')
+          return 'This task was just completed. The results were already relayed.'
         }
+        lastTaskRequest = task
+        lastTaskTime = now
 
-        const callbacks: FastBrainCallbacks = {
-          triggerResearch: (task: string) => {
-            // Deduplication guard
-            const now = Date.now()
-            if (task === lastTaskRequest && (now - lastTaskTime) < 10000) {
-              console.log('⏭️ Skipping duplicate research task (within 10s window)')
-              return
-            }
-            lastTaskRequest = task
-            lastTaskTime = now
-            executeResearch(task)
-          },
-          queueVoice: (script: string) => {
-            queueVoiceInjection(getScriptInjection(script))
-          },
-          sendToFrontend: (data: any) => {
-            sendToFrontend(data)
-          },
-        }
-
-        try {
-          const chatHistory = getChatHistory(20)
-          const result = await askFastBrain(workingDir, sessionId, question, {
-            chatHistory,
-            researchContext,
-            callbacks,
-            sessionBaseDir,
-          })
-          haikuInFlight = null
-          // Voice queue items may have been held while fast brain was in flight — retry now
-          if (voiceQueue.length > 0) {
-            setTimeout(() => processVoiceQueue(), 500)
-          }
-
-          console.log(`🧠 [fast brain] Response type: ${result.type}, script: ${result.script.length} chars`)
-
-          // If this was a user direction during active research,
-          // pass it to the agent SDK so it picks up the context
-          if (activeResearch && result.type === 'recorded' && (
-            question.toLowerCase().includes('decided') ||
-            question.toLowerCase().includes('prefers') ||
-            question.toLowerCase().includes('focus on') ||
-            question.toLowerCase().includes('redirect')
-          )) {
-            console.log(`📨 [fast brain] Passing user direction to agent SDK queue`)
-            executeResearch(`[USER DIRECTION during active research] ${question}. The user's spec.md has been updated. Acknowledge briefly and incorporate.`)
-          }
-
-          return result.script
-        } catch (err) {
-          haikuInFlight = null
-          // Voice queue items may have been held while fast brain was in flight — retry now
-          if (voiceQueue.length > 0) {
-            setTimeout(() => processVoiceQueue(), 500)
-          }
-          console.error('❌ Fast brain failed:', err)
-          return 'I\'m having trouble processing that. Could you try again?'
-        }
+        return executeResearch(task)
       },
     })
 
@@ -1271,18 +1307,152 @@ async function main() {
       },
     })
 
+    const readSpecTool = llm.tool({
+      description: `Read the session spec (spec.md) — shared state between you and your backend agent.
+Use when: checking decisions, reading open questions to ask the user, understanding architecture/context, seeing what research has been saved. Updated by your backend agent during research.`,
+      parameters: z.object({}),
+      execute: async () => {
+        const sessionId = currentLLM?.sessionId || resumeSessionId
+        if (!sessionId) return 'No session spec yet — session is still initializing.'
+        const specContent = readSessionSpec(workingDir, sessionId)
+        if (!specContent) return 'Spec is empty — no research done yet.'
+        const libraryFiles = listLibraryFiles(workingDir, sessionId)
+        const libSection = libraryFiles.length > 0
+          ? `\n\n[LIBRARY FILES: ${libraryFiles.join(', ')}]`
+          : ''
+        const MAX = 4000
+        const content = specContent.length > MAX
+          ? specContent.substring(0, MAX) + '\n\n[... truncated]'
+          : specContent
+        return content + libSection
+      },
+    })
+
+    const askHaikuTool = llm.tool({
+      description: `Ask your fast brain — a quick knowledge assistant with access to session files and web search (~2 seconds).
+
+Use for:
+- Questions answerable from the session spec or research library (much faster than ask_agent)
+- Quick web lookups for simple factual questions (definitions, current versions, basic how-to)
+- Recording user decisions: "User decided: [decision]. Update the spec."
+- Recording user preferences: "User prefers: [preference]. Update the spec."
+- Checking what research has been done on a topic
+- Reading specific library files for details
+
+Do NOT use for: deep research, code analysis, multi-file codebase exploration, complex investigations → use ask_agent.
+If the fast brain responds with NEEDS_DEEPER_RESEARCH, tell the user you need to look deeper, then call ask_agent with the context it provides.`,
+      parameters: z.object({
+        question: z.string().describe('The question to ask or instruction to execute'),
+      }),
+      execute: async ({ question }) => {
+        const sessionId = currentLLM?.sessionId || resumeSessionId
+        if (!sessionId) return 'Session not ready yet. Try ask_agent instead.'
+        console.log(`🧠 [fast brain] Question: "${question.substring(0, 80)}..."`)
+
+        // Track in-flight state to prevent ask_agent double-calling
+        haikuInFlight = { question, time: Date.now() }
+
+        // Build live research context if the agent is actively researching
+        // This is a READ of the existing researchLog array — safe, no race conditions
+        let researchContext: string | undefined
+        if (activeResearch && activeResearch.researchLog.length > 0) {
+          const recentLog = activeResearch.researchLog.slice(-15)
+          researchContext = `Research topic: "${lastTaskRequest || 'unknown'}"\nSteps completed (${activeResearch.researchLog.length} total, showing last ${recentLog.length}):\n${recentLog.join('\n')}`
+        }
+
+        try {
+          const chatHistory = getChatHistory(20)
+          const answer = await askHaiku(workingDir, sessionId, question, researchContext, chatHistory)
+          haikuInFlight = null // Clear in-flight state
+          console.log(`🧠 [fast brain] Answer (${answer.length} chars)`)
+
+          // Notify frontend if the fast brain likely wrote to spec.md
+          // (fast brain writes bypass the SDK tool system, so no tool_result event fires)
+          if (answer.includes('Written: spec.md') || question.toLowerCase().includes('update the spec') || question.toLowerCase().includes('user decided') || question.toLowerCase().includes('user prefers')) {
+            const specPath = `${workingDir}/.osborn/sessions/${sessionId}/spec.md`
+            sendToFrontend({
+              type: 'research_artifact_updated',
+              filePath: specPath,
+              fileName: 'spec.md',
+            })
+          }
+
+          // If research is active and this was a user decision/direction,
+          // also queue it for the agent SDK so it picks up the context
+          // when its queue reaches the next query
+          if (activeResearch && (
+            question.toLowerCase().includes('user decided') ||
+            question.toLowerCase().includes('user prefers') ||
+            question.toLowerCase().includes('update the spec') ||
+            question.toLowerCase().includes('also check') ||
+            question.toLowerCase().includes('focus on') ||
+            question.toLowerCase().includes('redirect')
+          )) {
+            console.log(`📨 [fast brain] Passing user direction to agent SDK queue: "${question.substring(0, 60)}..."`)
+            // Queue as a lightweight context update — agent reads spec.md
+            // at the start of its next query and will see the updated direction
+            executeResearch(`[USER DIRECTION during active research] ${question}. The user's spec.md has been updated with this. Acknowledge briefly and incorporate into your current research context.`)
+          }
+
+          return answer
+        } catch (err) {
+          haikuInFlight = null // Clear in-flight state on error
+          console.error('❌ Fast brain failed:', err)
+          return 'Fast brain lookup failed. Try ask_agent for a deeper search.'
+        }
+      },
+    })
+
+    const generateDocumentTool = llm.tool({
+      description: `Generate a visual document (comparison table, Mermaid diagram, structured analysis, summary) from research findings. Saved to the session library as a markdown file.
+
+Use when the user asks for:
+- "Compare X and Y" → type: 'comparison' (markdown table with features, pros, cons)
+- "Draw a diagram" / "Show the architecture" / "Map out the flow" → type: 'diagram' (Mermaid flowchart/sequence/architecture)
+- "Analyze the tradeoffs" / "Break down the options" → type: 'analysis' (structured pros/cons, decision matrix)
+- "Summarize what we found" / "Give me an overview document" → type: 'summary' (organized findings with key takeaways)
+
+For actual images (photos, illustrations, screenshots), use ask_agent instead — this tool generates text-based visual documents only.`,
+      parameters: z.object({
+        request: z.string().describe('What to generate — be specific about the topic and what aspects to cover'),
+        type: z.enum(['comparison', 'diagram', 'analysis', 'summary']).describe('Document type'),
+      }),
+      execute: async ({ request, type }) => {
+        const sid = currentLLM?.sessionId || resumeSessionId
+        if (!sid) return 'Session not ready yet.'
+        console.log(`📊 [generate_document] Type: ${type}, Request: "${request.substring(0, 60)}..."`)
+        try {
+          const result = await generateVisualDocument(workingDir, sid, request, type)
+          if (!result) return 'Could not generate document — not enough research context available.'
+          const fullPath = `${workingDir}/.osborn/sessions/${sid}/library/${result.fileName}`
+          sendToFrontend({
+            type: 'research_artifact_updated',
+            filePath: fullPath,
+            fileName: result.fileName,
+          })
+          return `Generated: ${result.fileName} (${result.content.length} chars) — saved to session library. The document contains a ${type} with the requested information.`
+        } catch (err) {
+          console.error('❌ Document generation failed:', err)
+          return 'Document generation failed. Try asking the research agent for a more detailed analysis.'
+        }
+      },
+    })
+
     // Instructions for realtime voice LLM
     const realtimeInstructions = getRealtimeInstructions(workingDir)
 
     // Create realtime model
     const realtimeModel = createRealtimeModelFromConfig(rtConfig, realtimeInstructions)
 
-    // Create the Agent with MINIMAL tools — fast brain handles all routing
+    // Create the Agent with realtime model and tools
     const agent = new voice.Agent({
       instructions: realtimeInstructions,
       llm: realtimeModel,
       tools: {
-        ask_fast_brain: askFastBrainTool,
+        ask_agent: askAgentTool,
+        ask_haiku: askHaikuTool,
+        read_spec: readSpecTool,
+        generate_document: generateDocumentTool,
         respond_permission: respondPermissionTool,
       },
     })
@@ -1307,7 +1477,6 @@ async function main() {
     // Clean up active research and voice queue
     voiceQueue.length = 0
     isProcessingQueue = false
-
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
     if (activeResearch) {
@@ -1317,7 +1486,7 @@ async function main() {
     currentSession = null
     currentAgent = null
     currentLLM = null
-    clearFastBrainSession()
+    clearFastBrainHistory()
   })
 
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
@@ -1326,10 +1495,9 @@ async function main() {
     // Clean up any existing session before creating a new one
     voiceQueue.length = 0
     isProcessingQueue = false
-
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
-    clearFastBrainSession()
+    clearFastBrainHistory()
     if (activeResearch) {
       activeResearch.cleanup()
       activeResearch = null
@@ -1370,14 +1538,6 @@ async function main() {
       if (metadata.sessionId && typeof metadata.sessionId === 'string' && metadata.sessionId.length > 0) {
         preSelectedSessionId = metadata.sessionId
         console.log(`📂 Pre-selected session from frontend: ${preSelectedSessionId}`)
-      }
-      // Read working directory override from frontend
-      if (metadata.workingDirectory && typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0) {
-        workingDir = metadata.workingDirectory
-        console.log(`📂 Working directory from frontend: ${workingDir}`)
-      } else {
-        // Reset to default for new connections (in case previous session changed it)
-        workingDir = defaultWorkingDir
       }
     } catch (err) {
       console.log('⚠️ Could not parse participant metadata, using config voiceMode:', voiceMode)
@@ -1536,7 +1696,6 @@ async function main() {
           // Clear voice queue — stale injections from the crashed session
           voiceQueue.length = 0
           isProcessingQueue = false
-      
           if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
           stopProactiveLoop()
                 if (activeResearch) { activeResearch.cleanup(); activeResearch = null }
@@ -1566,21 +1725,26 @@ async function main() {
               currentLLM.setContinueSession(true)
             }
 
-            // Generate recovery script via fast brain
+            // Inject conversation context into the recovered session
             const recoveredSessionId = currentLLM?.sessionId || recoverySessionId
             if (recoveredSessionId) {
               try {
-                const conversationHistory = await getConversationHistory(recoveredSessionId, workingDir, 10)
-                const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const script = await prepareRecoveryScript(historyForScript)
-                queueVoiceInjection(getScriptInjection(script))
-                console.log('📋 Injected recovery script into recovered session')
+                const summary = await getSessionSummary(recoveredSessionId, workingDir)
+                const conversationHistory = await getConversationHistory(recoveredSessionId, workingDir, 30)
+                if (summary && conversationHistory.length > 0) {
+                  const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+                  queueVoiceInjection(`[SESSION RECOVERED] The voice session crashed and was auto-recovered. Here's the conversation context from before the crash:\n${contextBriefing}\n\nBriefly tell the user the connection was interrupted and you still have context from the conversation. Ask if they can hear you and what they'd like to continue with. Do NOT call any tools.`)
+                  console.log('📋 Injected conversation context into recovered session')
+                } else {
+                  queueVoiceInjection('[NOTIFICATION] The voice session was briefly interrupted but has been recovered. Ask the user if they can hear you and continue where you left off. Do NOT call any tools.')
+                }
               } catch (err) {
-                console.log('⚠️ Failed to generate recovery script:', err)
-                queueVoiceInjection(getNotificationInjection('Voice session was briefly interrupted but I\'m back. What were we working on?'))
+                console.log('⚠️ Failed to load conversation context for recovery:', err)
+                queueVoiceInjection('[NOTIFICATION] The voice session was briefly interrupted but has been recovered. Ask the user if they can hear you and continue where you left off. Do NOT call any tools.')
               }
             } else {
-              queueVoiceInjection(getNotificationInjection('Voice session was briefly interrupted but I\'m back. What were we working on?'))
+              // No session ID — generic notification
+              queueVoiceInjection('[NOTIFICATION] The voice session was briefly interrupted but has been recovered. Ask the user if they can hear you and continue where you left off. Do NOT call any tools.')
             }
 
             console.log('✅ Auto-recovery complete')
@@ -1635,7 +1799,6 @@ async function main() {
           preSelectedSessionId,
           mcpServers: getMcpServerStatusList(config),
           enabledMcpServers: enabledMcpNames,
-          workingDirectory: workingDir,
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -1656,8 +1819,8 @@ async function main() {
       // For direct mode: use say() which goes through the configured TTS
       const greetViaVoice = async (text: string) => {
         if (sessionVoiceMode === 'realtime') {
-          // Use instructions (not userInput) to avoid system text appearing as user transcript
-          await session.generateReply({ instructions: getScriptInjection(text) })
+          // Realtime models handle their own speech generation
+          await session.generateReply({ userInput: text })
         } else {
           await (session as any).say(text)
         }
@@ -1681,7 +1844,7 @@ async function main() {
           })
 
           // Send existing workspace artifacts to frontend (session-scoped)
-          const preArtifacts = listWorkspaceArtifacts(sessionBaseDir, preSelectedSessionId!)
+          const preArtifacts = listWorkspaceArtifacts(workingDir, preSelectedSessionId!)
           if (preArtifacts.length > 0) {
             console.log(`📁 Sending ${preArtifacts.length} workspace artifacts to frontend`)
             await sendToFrontend({
@@ -1696,14 +1859,18 @@ async function main() {
             })
           }
 
-          // Generate briefing script via fast brain
+          // Load full session history into realtime model's context
           if (summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+            const specContent = getSpecForVoiceModel(workingDir, preSelectedSessionId)
+            const specSection = specContent
+              ? `\n\n=== SESSION SPEC ===\n${specContent}\n=== END SPEC ===\nCheck "Open Questions" — if any are unanswered, ask the user about them.`
+              : ''
             try {
               if (sessionVoiceMode === 'realtime') {
-                const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const script = await prepareBriefingScript(sessionBaseDir, preSelectedSessionId, historyForScript)
-                await session.generateReply({ instructions: getScriptInjection(script) })
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}${specSection}\n\nBriefly acknowledge the previous session. If there are open questions in the spec, ask the most important one. Otherwise ask what they'd like to continue with.`
+                await session.generateReply({ instructions: contextPrompt })
               } else {
                 await (session as any).say("Welcome back! Ready to continue our previous conversation.")
               }
@@ -1719,7 +1886,7 @@ async function main() {
         // No sessions at all (or new session chosen) — greet as new user
         try {
           console.log('👋 Sending greeting...')
-          await greetViaVoice("Hey! I'm Osborn, your AI research assistant. What are you working on today?")
+          await greetViaVoice("The user just connected for the first time. Briefly greet them as Osborn and ask what they're working on.")
           console.log('✅ Greeting sent')
         } catch (err) {
           console.log('⚠️ Greeting failed:', err)
@@ -1732,27 +1899,11 @@ async function main() {
 
   room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
     console.log(`👋 User left: ${participant.identity}`)
-
-    // Full cleanup — stop all background work to avoid accumulating API usage
-    voiceQueue.length = 0
-    isProcessingQueue = false
-
-    if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
-    stopProactiveLoop()
-    if (activeResearch) {
-      activeResearch.cleanup()
-      activeResearch = null
-    }
-
     if (currentSession) {
-      try { currentSession.close() } catch {}
       currentSession.removeAllListeners()
       currentSession = null
+      currentLLM = null
     }
-    currentAgent = null
-    currentLLM = null
-    clearFastBrainSession()
-
     console.log('⏳ Waiting for new user...\n')
   })
 
@@ -1825,7 +1976,7 @@ async function main() {
           })
 
           // Send existing session artifacts to frontend (session-scoped)
-          const artifacts = listWorkspaceArtifacts(sessionBaseDir, sessionId)
+          const artifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (artifacts.length > 0) {
             console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -1865,7 +2016,7 @@ async function main() {
           })
 
           // Send existing session artifacts to frontend (session-scoped)
-          const artifacts = listWorkspaceArtifacts(sessionBaseDir, recentId)
+          const artifacts = listWorkspaceArtifacts(workingDir, recentId)
           if (artifacts.length > 0) {
             console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -1882,12 +2033,16 @@ async function main() {
 
           if (currentSession && summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+            const specContent = getSpecForVoiceModel(workingDir, recentId)
+            const specSection = specContent
+              ? `\n\n=== SESSION SPEC ===\n${specContent}\n=== END SPEC ===\nCheck "Open Questions" — if any are unanswered, ask the user about them.`
+              : ''
             console.log('📋 Injecting session context into voice agent...')
             try {
               if (currentVoiceMode === 'realtime') {
-                const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const script = await prepareBriefingScript(sessionBaseDir, recentId, historyForScript)
-                await currentSession.generateReply({ instructions: getScriptInjection(script) })
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue their most recent research session. Here's the context:\n${contextBriefing}${specSection}\n\nBriefly acknowledge the previous session. If there are open questions in the spec, ask the most important one. Otherwise ask what they'd like to continue with.`
+                await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 await (currentSession as any).say("Continuing where we left off.")
               }
@@ -1917,7 +2072,7 @@ async function main() {
           // Step 2: Reset LLM state and configure for new session
           currentLLM.resetForSessionSwitch()
           currentLLM.setResumeSessionId(sessionId)
-          clearFastBrainSession()
+          clearFastBrainHistory()
           console.log(`🔄 Switched to session: ${sessionId}`)
 
           // Step 3: Send full context to frontend (including conversation history)
@@ -1930,7 +2085,7 @@ async function main() {
           })
 
           // Step 3.5: Send existing session artifacts to frontend (session-scoped)
-          const switchArtifacts = listWorkspaceArtifacts(sessionBaseDir, sessionId)
+          const switchArtifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (switchArtifacts.length > 0) {
             console.log(`📁 Sending ${switchArtifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -1945,14 +2100,14 @@ async function main() {
             })
           }
 
-          // Step 4: Voice agent acknowledges context via fast brain
+          // Step 4: Voice agent acknowledges context
           if (currentSession && summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
             try {
               if (currentVoiceMode === 'realtime') {
-                const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const briefingScript = await prepareBriefingScript(sessionBaseDir, sessionId, historyForScript, 'switch')
-                queueVoiceInjection(getScriptInjection(briefingScript))
+                const contextPrompt = `[SESSION SWITCHED] The user switched to a different research session. Here's the context:\n${contextBriefing}\n\nBriefly acknowledge the switch and summarize what was being worked on.`
+                await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 const acknowledgment = summary.lastMessages.length > 0
                   ? `I've switched to your previous session. You were working on: ${summary.lastMessages[summary.lastMessages.length - 1]?.substring(0, 100)}`
@@ -1983,7 +2138,7 @@ async function main() {
       else if (data.type === 'get_session_artifacts') {
         const sessionId = data.sessionId as string
         if (sessionId) {
-          const artifacts = listWorkspaceArtifacts(sessionBaseDir, sessionId)
+          const artifacts = listWorkspaceArtifacts(workingDir, sessionId)
           console.log(`📁 Sending ${artifacts.length} session artifacts for ${sessionId.substring(0, 8)}`)
           await sendToFrontend({
             type: 'session_artifacts',
@@ -2134,7 +2289,7 @@ async function main() {
           })
 
           // Send existing session artifacts to frontend (session-scoped)
-          const gateArtifacts = listWorkspaceArtifacts(sessionBaseDir, sessionId)
+          const gateArtifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (gateArtifacts.length > 0) {
             console.log(`📁 Sending ${gateArtifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -2149,14 +2304,18 @@ async function main() {
             })
           }
 
-          // Load full session history and greet with context via fast brain
+          // Load full session history and greet with context
           if (currentSession && summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)
+            const contextBriefing = buildContextBriefing(summary, conversationHistory, currentProvider)
+            const specContent = getSpecForVoiceModel(workingDir, sessionId)
+            const specSection = specContent
+              ? `\n\n=== SESSION SPEC ===\n${specContent}\n=== END SPEC ===\nCheck "Open Questions" — if any are unanswered, ask the user about them.`
+              : ''
             try {
               if (currentVoiceMode === 'realtime') {
-                const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const briefingScript = await prepareBriefingScript(sessionBaseDir, sessionId, historyForScript, 'resume')
-                queueVoiceInjection(getScriptInjection(briefingScript))
+                const contextPrompt = `[SESSION RESUMED] The user chose to continue a previous research session. Here's the context:\n${contextBriefing}${specSection}\n\nBriefly acknowledge the previous session. If there are open questions in the spec, ask the most important one. Otherwise ask what they'd like to continue with.`
+                await currentSession.generateReply({ instructions: contextPrompt })
               } else {
                 await (currentSession as any).say("Welcome back! Ready to continue our previous conversation.")
               }
@@ -2165,12 +2324,12 @@ async function main() {
             }
           }
         } else {
-          // Fresh start - greet via voice queue (not userInput, which creates a user transcript)
+          // Fresh start - just greet normally
           console.log('🆕 Starting fresh session')
           if (currentSession) {
             try {
               if (currentVoiceMode === 'realtime') {
-                queueVoiceInjection(getScriptInjection("Hey! I'm Osborn, your AI research assistant. What are you working on today?"))
+                await currentSession.generateReply({ userInput: "The user just connected and chose to start a fresh session. Briefly greet them as Osborn and ask what they're working on." })
               } else {
                 await (currentSession as any).say("Hey! I'm Osborn. What are you working on?")
               }

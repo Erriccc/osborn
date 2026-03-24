@@ -341,9 +341,11 @@ const SUGGESTIONS = [
 function ChatPanel({
   messages,
   onSuggestionClick,
+  activeResearch,
 }: {
   messages: ChatMessage[]
   onSuggestionClick?: (text: string) => void
+  activeResearch?: { taskId: string; task: string; toolCount: number } | null
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -351,14 +353,14 @@ function ChatPanel({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages])
+  }, [messages, activeResearch])
 
   return (
     <div
       ref={scrollRef}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
     >
-      {messages.length === 0 && (
+      {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
           {/* Logo / Icon */}
           <div className="relative mb-6">
@@ -398,6 +400,25 @@ function ChatPanel({
       {messages.filter(m => m.category !== 'log').map((msg) => (
         <MessageBubble key={msg.id} message={msg} />
       ))}
+      {/* Inline research tracking spinner */}
+      {activeResearch && (
+        <div className="flex items-start gap-3 px-2">
+          <div className="w-8 h-8 rounded-full bg-violet-500/20 flex items-center justify-center shrink-0 mt-0.5">
+            <svg className="w-4 h-4 text-violet-400 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-gray-300">
+              Researching: <span className="text-violet-300">{activeResearch.task}</span>
+            </p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {activeResearch.toolCount} tool{activeResearch.toolCount !== 1 ? 's' : ''} used
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1042,6 +1063,8 @@ function VoiceRoomInner({
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(true)
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
+  // Research tracking state
+  const [activeResearch, setActiveResearch] = useState<{ taskId: string; task: string; toolCount: number } | null>(null)
 
   // Derived: currently selected file for preview
   const selectedFile = useMemo(() => {
@@ -1309,6 +1332,17 @@ function VoiceRoomInner({
           console.log('⚙️ Adding system message:', data.text.substring(0, 50))
           addMessageRef.current?.('system', data.text, undefined, 'log')
         }
+      } else if (data.type === 'research_task_started') {
+        // Research started — show inline spinner in chat
+        console.log('🔬 Research started:', data.task)
+        setActiveResearch({ taskId: data.taskId, task: data.task, toolCount: 0 })
+      } else if (data.type === 'research_task_complete') {
+        // Research finished — replace spinner with summary
+        console.log('✅ Research complete:', data.taskId)
+        setActiveResearch(null)
+        if (data.summary) {
+          addMessageRef.current?.('system', data.summary, undefined, 'log')
+        }
       } else if (data.type === 'tool_use') {
         // Show tool usage with status
         const status = data.status === 'completed' ? '✓' : '⏳'
@@ -1316,6 +1350,8 @@ function VoiceRoomInner({
           ? `${status} ${data.tool} completed`
           : `${status} Using ${data.tool}...`
         addMessageRef.current?.('system', msg, data.tool, 'log')
+        // Increment research tool counter
+        setActiveResearch(prev => prev ? { ...prev, toolCount: prev.toolCount + 1 } : null)
       } else if (data.type === 'claude_output') {
         // Raw Claude output for chat bubbles (full formatting preserved)
         console.log('🤖 Claude output:', {
@@ -1968,6 +2004,7 @@ function VoiceRoomInner({
         <ChatPanel
           messages={messages}
           onSuggestionClick={(text) => handleSendText(text)}
+          activeResearch={activeResearch}
         />
 
         {/* Logs drawer */}

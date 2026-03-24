@@ -23,11 +23,12 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  // Get provider, voice architecture, coding agent, and optional sessionId from query params
+  // Get provider, voice architecture, coding agent, optional sessionId, and working directory from query params
   const provider = request.nextUrl.searchParams.get('provider') || 'openai'
   const voiceArch = request.nextUrl.searchParams.get('voiceArch') || 'realtime'
   const codingAgent = request.nextUrl.searchParams.get('codingAgent') || 'claude'
   const sessionId = request.nextUrl.searchParams.get('sessionId') || ''
+  const workingDirectory = request.nextUrl.searchParams.get('workingDirectory') || ''
 
   // Get or generate room code
   // If provided, use it (for reconnection); otherwise generate new
@@ -38,8 +39,8 @@ export async function GET(request: NextRequest) {
 
   const at = new AccessToken(apiKey, apiSecret, {
     identity: participantName,
-    // Include provider, voice architecture, coding agent, and sessionId in participant metadata
-    metadata: JSON.stringify({ provider, voiceArch, codingAgent, sessionId }),
+    // Include provider, voice architecture, coding agent, sessionId, and workingDirectory in participant metadata
+    metadata: JSON.stringify({ provider, voiceArch, codingAgent, sessionId, workingDirectory }),
   })
 
   at.addGrant({

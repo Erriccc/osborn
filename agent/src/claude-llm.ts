@@ -14,7 +14,8 @@ import { saveSessionMetadata } from './config.js'
 import { getResearchSystemPrompt } from './prompts.js'
 
 export interface ClaudeLLMOptions {
-  workingDirectory?: string
+  workingDirectory?: string      // cwd for Claude Code (where it reads/writes/runs commands)
+  sessionBaseDir?: string        // where .osborn/sessions/ lives (defaults to workingDirectory)
   permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions'
   allowedTools?: string[]
   eventEmitter?: EventEmitter
@@ -142,6 +143,7 @@ export class ClaudeLLM extends llm.LLM {
 
     this.#opts = {
       workingDirectory: opts.workingDirectory || process.cwd(),
+      sessionBaseDir: opts.sessionBaseDir || opts.workingDirectory || process.cwd(),
       permissionMode: opts.permissionMode || 'default',
       allowedTools: opts.allowedTools || RESEARCH_TOOLS,
       resumeSessionId: this.#resumeSessionId || undefined,
@@ -151,7 +153,10 @@ export class ClaudeLLM extends llm.LLM {
     this.#eventEmitter = opts.eventEmitter || new EventEmitter()
 
     console.log('🟠 ClaudeLLM initialized (Research Mode)')
-    console.log(`   📁 Working dir: ${this.#opts.workingDirectory}`)
+    console.log(`   📁 Working dir (cwd): ${this.#opts.workingDirectory}`)
+    if (this.#opts.sessionBaseDir !== this.#opts.workingDirectory) {
+      console.log(`   📁 Session base dir: ${this.#opts.sessionBaseDir}`)
+    }
     console.log(`   🔧 Allowed tools: ${this.#opts.allowedTools?.join(', ')}`)
     const mcpCount = Object.keys(this.#mcpServers).length
     if (mcpCount > 0) {
@@ -520,11 +525,13 @@ class ClaudeLLMStream extends llm.LLMStream {
       const resumeSessionId = this.#opts.resumeSessionId
       const continueSession = this.#opts.continueSession
 
-      // Session workspace path for system prompt — only available after SDK assigns a real session ID
+      // Session workspace path for system prompt — uses sessionBaseDir (not cwd) so
+      // workspace always lives in the Osborn install dir regardless of cwd setting
       const sessionId = this.#sessionId || this.#opts.resumeSessionId || null
+      const baseDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory
       const workspacePath = sessionId
-        ? (this.#opts.workingDirectory
-            ? `${this.#opts.workingDirectory}/.osborn/sessions/${sessionId}/`
+        ? (baseDir
+            ? `${baseDir}/.osborn/sessions/${sessionId}/`
             : `.osborn/sessions/${sessionId}/`)
         : null
 

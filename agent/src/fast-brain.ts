@@ -1,33 +1,36 @@
 /**
- * Fast Brain Agent — Middle-tier intelligence for the Voice AI System
+ * Fast Brain — Central Orchestrator for the Voice AI System
  *
- * A fast intermediary between the realtime voice model and the Claude SDK agent.
- * Uses direct API calls for ~2 second responses.
+ * The sole intelligence layer between the user and all backend capabilities.
+ * The realtime voice model is a thin teleprompter — it speaks what this module returns.
  *
  * Capabilities:
  * - Read/write session files (spec.md + library/)
  * - Web search for quick factual lookups
  * - Record user decisions and preferences into spec.md
- * - Post-research: synthesize findings into spec.md
- * - Escalate to ask_agent when deeper research is needed
+ * - Trigger deep research (via callbacks to index.ts)
+ * - Generate teleprompter scripts for ALL voice output
+ * - Post-research: synthesize findings from JSONL into spec.md + voice scripts
+ * - Generate visual documents (comparison, diagram, analysis, summary)
  *
- * Key constraint: The fast brain NEVER calls ask_agent. The realtime model is always the router.
+ * Central function: askFastBrain() — ALL user questions route here.
+ * It returns a FastBrainResponse with a teleprompter script the voice model reads verbatim.
  *
  * Auth chain (tried in order):
  * 1. ANTHROPIC_API_KEY env var → Anthropic SDK (Haiku)
  * 2. ANTHROPIC_AUTH_TOKEN env var → Anthropic SDK (Haiku)
  * 3. GOOGLE_API_KEY env var → Gemini Flash fallback
- *
- * Note: Claude Code OAuth (macOS Keychain) was tested but Anthropic's Messages API
- * rejects OAuth tokens with 401 "OAuth authentication is currently not supported."
  */
 
 import Anthropic from '@anthropic-ai/sdk'
+import { query as sdkQuery, tool as sdkTool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { GoogleGenAI } from '@google/genai'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs'
-import { dirname, basename } from 'path'
+import { dirname, basename, join } from 'path'
+import { homedir } from 'os'
+import { z } from 'zod'
 import { getSessionWorkspace, readSessionSpec, listLibraryFiles } from './config.js'
-import { FAST_BRAIN_SYSTEM_PROMPT, CHUNK_PROCESS_SYSTEM, REFINEMENT_PROCESS_SYSTEM, AUGMENT_RESULT_SYSTEM, CONTEXTUALIZE_UPDATE_SYSTEM, PROACTIVE_PROMPT_SYSTEM, VISUAL_DOCUMENT_SYSTEM } from './prompts.js'
+import { FAST_BRAIN_SYSTEM_PROMPT, CHUNK_PROCESS_SYSTEM, REFINEMENT_PROCESS_SYSTEM, AUGMENT_RESULT_SYSTEM, CONTEXTUALIZE_UPDATE_SYSTEM, PROACTIVE_PROMPT_SYSTEM, VISUAL_DOCUMENT_SYSTEM, RESEARCH_COMPLETION_SYSTEM } from './prompts.js'
 import { getRecentToolResults, readSessionHistory, getSubagentTranscripts, getConversationText, getSessionTranscripts, searchSessionJsonl, getSessionStats } from './session-access.js'
 
 // ============================================================
@@ -90,9 +93,18 @@ export interface ConversationTurn {
   text: string
 }
 
-/** No-op — history is now sourced live from agent.chatCtx, passed per-call */
+// Agent SDK session tracking — resume across voice questions for context continuity
+let fastBrainSessionId: string | null = null
+
+/** Clear fast brain session state — call on disconnect/reconnect/session switch */
+export function clearFastBrainSession(): void {
+  fastBrainSessionId = null
+  console.log('🧠 Fast brain: session cleared')
+}
+
+/** @deprecated Use clearFastBrainSession() instead */
 export function clearFastBrainHistory(): void {
-  console.log('🧠 Fast brain: conversation history cleared (no-op — sourced from chatCtx)')
+  clearFastBrainSession()
 }
 
 function initProvider(): void {
@@ -139,12 +151,18 @@ function initProvider(): void {
 // Tool execution (shared across providers)
 // ============================================================
 
+// Track whether send_to_chat was called during a fast brain conversation.
+// If the LLM calls send_to_chat but returns no text, we use a fallback
+// instead of "No answer found."
+let sendToChatCalledThisTurn = false
+
 function executeTool(
   toolName: string,
   toolInput: Record<string, any>,
   workspace: string,
   sessionId?: string,
-  workingDir?: string
+  workingDir?: string,
+  sendToChat?: (text: string) => void
 ): string {
   try {
     switch (toolName) {
@@ -295,6 +313,18 @@ ${toolList}`
         return output
       }
 
+      case 'send_to_chat': {
+        const text = toolInput.text as string
+        if (!text) return 'Error: text is required'
+        if (sendToChat) {
+          console.log(`💬 [fast brain] send_to_chat: ${text.substring(0, 80)}...`)
+          sendToChat(text)
+          sendToChatCalledThisTurn = true
+          return `Sent to chat successfully. Now return a brief spoken summary — do NOT repeat the content you just sent.`
+        }
+        return 'Error: chat sending not available'
+      }
+
       default:
         return `Unknown tool: ${toolName}`
     }
@@ -412,6 +442,17 @@ function buildAnthropicTools(): Anthropic.Messages.Tool[] {
       name: 'deep_read_text',
       description: 'Read ALL agent reasoning and analysis across the ENTIRE session — not just recent messages. Returns every piece of thinking, synthesis, comparison, and recommendation the agent produced. Use this for generating comprehensive overviews or when the user asks for detailed explanations of what the agent found.',
       input_schema: { type: 'object' as const, properties: {} }
+    },
+    {
+      name: 'send_to_chat',
+      description: 'Send formatted content to the user\'s chat panel. Use for URLs, links, lists, prices, code snippets, or anything that\'s better read than spoken. The content appears as a chat message in the frontend. You should STILL speak a brief summary — use this tool for the detailed/visual content.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          text: { type: 'string', description: 'The formatted text to display in chat. Supports markdown.' }
+        },
+        required: ['text']
+      }
     }
   ]
 }
@@ -547,6 +588,17 @@ function buildGeminiTools(): any[] {
           name: 'deep_read_text',
           description: 'Read ALL agent reasoning across the ENTIRE session. For comprehensive overviews or detailed explanations of what the agent found throughout the session.',
           parameters: { type: 'object', properties: {} }
+        },
+        {
+          name: 'send_to_chat',
+          description: 'Send formatted content to the user\'s chat panel. Use for URLs, links, lists, prices, code snippets, or anything better read than spoken. Still speak a brief summary — use this for the detailed/visual content.',
+          parameters: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'The formatted text to display in chat. Supports markdown.' }
+            },
+            required: ['text']
+          }
         }
       ]
     }
@@ -576,7 +628,226 @@ async function geminiWebSearch(query: string): Promise<string> {
 }
 
 // ============================================================
-// Anthropic Q&A implementation
+// Agent SDK Q&A implementation — replaces direct Anthropic API for Q&A
+// ============================================================
+
+/**
+ * Build the system prompt for the Agent SDK fast brain.
+ * Includes computed paths so the agent knows where to find JSONL files and workspace.
+ */
+function buildFastBrainSdkPrompt(
+  workingDir: string,
+  sessionId: string,
+  sessionBaseDir: string,
+): string {
+  const workspace = getSessionWorkspace(sessionBaseDir, sessionId)
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+  const slug = workingDir.replace(/\//g, '-')
+  const jsonlDir = join(claudeDir, 'projects', slug)
+  const jsonlPath = join(jsonlDir, `${sessionId}.jsonl`)
+
+  return `You are Osborn's fast brain — the central intelligence for a voice AI research assistant.
+Your output will be spoken aloud by a voice model as a teleprompter script.
+
+== YOUR ROLE ==
+- Answer questions using session workspace files, research JSONL data, and web search
+- Update spec.md with user decisions, answered questions, and research findings
+- Maintain library/ files with detailed reference material
+- When you cannot answer from available data, signal escalation to deep research
+
+== SESSION WORKSPACE ==
+Path: ${workspace}
+- spec.md: ${workspace}/spec.md (living research document — read before answering)
+- library/: ${workspace}/library/ (detailed reference files)
+
+== RESEARCH AGENT JSONL DATA ==
+The deep research agent stores full session data at:
+- Main JSONL: ${jsonlPath}
+- Sub-agents: ${join(jsonlDir, sessionId, 'subagents')}/
+- Tool results: ${join(jsonlDir, sessionId, 'tool-results')}/
+
+The JSONL file has newline-delimited JSON. Each line has a "type" field:
+- "assistant" messages contain the agent's reasoning in content[].text blocks
+- "tool_use" entries show what tools the agent called
+- "tool_result" entries contain full untruncated tool outputs
+
+Strategy: Use Grep to search JSONL for keywords. Use Read for specific sections.
+
+== DECISION PROCESS ==
+For every question:
+1. Read spec.md for current project context
+2. Check if you can answer from spec.md, library/ files, or JSONL data
+3. If yes: answer comprehensively with specific details from the data
+4. For factual lookups (versions, definitions, current info): use WebSearch
+5. If you need deeper investigation than available data supports, respond with ONLY:
+   NEEDS_DEEPER_RESEARCH: <concise task description>
+   CONTEXT: <relevant context from what you found>
+   If you have a partial answer, prefix with: PARTIAL: <your partial answer>
+6. If the user states a preference or decision: update spec.md, then respond with:
+   RECORDED: <brief confirmation of what was recorded>
+
+== OUTPUT FORMAT ==
+Your final text response is the teleprompter script — spoken aloud verbatim.
+- Natural spoken sentences only. No markdown, bullets, headers, or code blocks.
+- Lead with the answer. No preamble ("Great question!", "Sure!").
+- Be specific: names, numbers, versions, file paths from the actual data.
+- 4-8 sentences for simple answers, 8-15 for detailed explanations.
+- If you used send_to_chat for structured content, speak a brief summary referencing the chat.
+
+== SPEC.MD MANAGEMENT ==
+- Update Findings & Resources with new information you discover
+- Mark answered questions with [x] and add brief answer
+- Add new user questions under Open Questions > From User
+- Record user decisions under Decisions
+- Keep the spec concise — remove outdated information`
+}
+
+/**
+ * Create an in-process MCP server with the send_to_chat tool for the Agent SDK fast brain.
+ */
+function createFastBrainMcpServer(sendToChat?: (text: string) => void) {
+  const tools: any[] = []
+
+  if (sendToChat) {
+    tools.push(
+      sdkTool(
+        'send_to_chat',
+        'Send formatted content to the user\'s chat panel. Use for URLs, links, lists, prices, code snippets, tables, or anything better read than spoken. Supports markdown. You should STILL speak a brief summary — the chat content is supplementary.',
+        { text: z.string().describe('The formatted text to display in chat. Supports markdown.') },
+        async ({ text }) => {
+          sendToChat(text)
+          sendToChatCalledThisTurn = true
+          return { content: [{ type: 'text' as const, text: 'Sent to chat. Now give a brief spoken summary of what you sent.' }] }
+        }
+      )
+    )
+  }
+
+  return createSdkMcpServer({
+    name: 'osborn-fast-brain',
+    version: '1.0.0',
+    tools,
+  })
+}
+
+/**
+ * Ask via Claude Agent SDK — the agent traverses JSONL files natively using Read/Grep/Glob.
+ * Falls back to Gemini on timeout or error.
+ */
+async function askViaAgentSdk(
+  question: string,
+  workspace: string,
+  researchContext?: string,
+  sessionId?: string,
+  workingDir?: string,
+  chatHistory?: ConversationTurn[],
+  sendToChat?: (text: string) => void,
+  sessionBaseDir?: string,
+): Promise<string> {
+  sendToChatCalledThisTurn = false
+
+  // Build the prompt with conversation context
+  let prompt = question
+  if (researchContext) {
+    prompt += `\n\n[LIVE RESEARCH CONTEXT — the deep research agent is currently working]\n${researchContext}`
+  }
+  if (chatHistory && chatHistory.length > 0) {
+    const historyStr = chatHistory.slice(-15).map(t => `${t.role}: ${t.text}`).join('\n')
+    prompt = `[Recent voice conversation]\n${historyStr}\n\n[Current question]\n${prompt}`
+  }
+
+  // Create MCP server for send_to_chat
+  const mcpServer = createFastBrainMcpServer(sendToChat)
+
+  // Build system prompt with computed paths
+  const systemPrompt = buildFastBrainSdkPrompt(
+    workingDir || workspace,
+    sessionId || '',
+    sessionBaseDir || workingDir || workspace,
+  )
+
+  // Tools: Read/Write/Edit for files, Grep/Glob for search, WebSearch/WebFetch for web
+  const toolNames = ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'WebSearch', 'WebFetch']
+  const mcpToolPatterns = sendToChat ? ['mcp__osborn-fast-brain__*'] : []
+
+  const options: any = {
+    model: ANTHROPIC_FAST_MODEL,
+    cwd: workingDir,
+    systemPrompt,
+    maxTurns: 8,
+    tools: toolNames,
+    allowedTools: [...toolNames, ...mcpToolPatterns],
+    mcpServers: { 'osborn-fast-brain': mcpServer },
+  }
+
+  if (fastBrainSessionId) {
+    options.resume = fastBrainSessionId
+  }
+
+  // Run with 15s timeout — falls back to Gemini on timeout
+  const TIMEOUT_MS = 15000
+  let timeoutHandle: ReturnType<typeof setTimeout>
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error('fast-brain-timeout')), TIMEOUT_MS)
+  })
+
+  const queryPromise = (async () => {
+    let result = ''
+    let capturedSessionId: string | null = null
+
+    try {
+      for await (const message of sdkQuery({ prompt, options })) {
+        if (message.type === 'result') {
+          result = (message as any).result || ''
+        }
+        if (message.type === 'assistant' && (message as any).session_id) {
+          capturedSessionId = (message as any).session_id
+        }
+      }
+    } catch (err) {
+      console.error('❌ Agent SDK query error:', err)
+      throw err
+    }
+
+    if (capturedSessionId) {
+      fastBrainSessionId = capturedSessionId
+    }
+
+    clearTimeout(timeoutHandle!)
+    return result
+  })()
+
+  try {
+    const result = await Promise.race([queryPromise, timeoutPromise])
+    if (!result || result.trim().length === 0) {
+      if (sendToChatCalledThisTurn) return "I've sent the details to your chat panel."
+      return 'No answer found.'
+    }
+    console.log(`🧠 Agent SDK fast brain: ${result.length} chars (session: ${fastBrainSessionId?.substring(0, 8) || 'new'})`)
+    return result
+  } catch (err: any) {
+    clearTimeout(timeoutHandle!)
+    if (err.message === 'fast-brain-timeout') {
+      console.log('⏱️ Agent SDK fast brain timed out (15s), falling back to Gemini')
+    } else {
+      console.error('❌ Agent SDK fast brain error:', err.message || err)
+    }
+    // Fall back to Gemini if available
+    if (geminiClient) {
+      console.log('🔄 Falling back to Gemini fast brain')
+      return askViaGemini(question, workspace, researchContext, sessionId, workingDir, chatHistory, sendToChat)
+    }
+    // Fall back to direct Anthropic API if no Gemini
+    if (anthropicClient) {
+      console.log('🔄 Falling back to direct Anthropic API')
+      return askViaAnthropic(question, workspace, researchContext, sessionId, workingDir, chatHistory, sendToChat)
+    }
+    return 'Fast brain unavailable. Try asking me to research it.'
+  }
+}
+
+// ============================================================
+// Direct Anthropic API Q&A — kept as fallback for Agent SDK failures
 // ============================================================
 
 async function askViaAnthropic(
@@ -585,10 +856,12 @@ async function askViaAnthropic(
   researchContext?: string,
   sessionId?: string,
   workingDir?: string,
-  chatHistory?: ConversationTurn[]
+  chatHistory?: ConversationTurn[],
+  sendToChat?: (text: string) => void
 ): Promise<string> {
   const client = anthropicClient!
   const tools = buildAnthropicTools()
+  sendToChatCalledThisTurn = false
 
   const userContent = researchContext
     ? `${question}\n\n[LIVE RESEARCH CONTEXT — the research agent is currently working]\n${researchContext}`
@@ -604,6 +877,9 @@ async function askViaAnthropic(
   messages.push({ role: 'user', content: userContent })
 
   const allTools: Anthropic.Messages.Tool[] | any[] = [...tools, ANTHROPIC_WEB_SEARCH]
+  const noAnswerFallback = () => sendToChatCalledThisTurn
+    ? "I've sent the details to your chat panel."
+    : 'No answer found.'
 
   for (let i = 0; i < 10; i++) {
     const response = await client.messages.create({
@@ -618,7 +894,7 @@ async function askViaAnthropic(
       const textBlock = response.content.find(
         (b): b is Anthropic.Messages.TextBlock => b.type === 'text'
       )
-      return textBlock?.text || 'No answer found.'
+      return textBlock?.text || noAnswerFallback()
     }
 
     const toolUseBlocks = response.content.filter(
@@ -629,7 +905,7 @@ async function askViaAnthropic(
       const textBlock = response.content.find(
         (b): b is Anthropic.Messages.TextBlock => b.type === 'text'
       )
-      return textBlock?.text || 'No answer found.'
+      return textBlock?.text || noAnswerFallback()
     }
 
     messages.push({ role: 'assistant', content: response.content as any })
@@ -638,12 +914,15 @@ async function askViaAnthropic(
       const toolResults: Anthropic.Messages.ToolResultBlockParam[] = toolUseBlocks.map(toolUse => ({
         type: 'tool_result' as const,
         tool_use_id: toolUse.id,
-        content: executeTool(toolUse.name, toolUse.input as Record<string, any>, workspace, sessionId, workingDir),
+        content: executeTool(toolUse.name, toolUse.input as Record<string, any>, workspace, sessionId, workingDir, sendToChat),
       }))
       messages.push({ role: 'user', content: toolResults })
     }
   }
 
+  if (sendToChatCalledThisTurn) {
+    return "I've sent the full details to your chat. Let me know if you want to dive deeper into anything."
+  }
   return 'Fast brain reached maximum tool iterations. Try ask_agent for a deeper search.'
 }
 
@@ -657,10 +936,12 @@ async function askViaGemini(
   researchContext?: string,
   sessionId?: string,
   workingDir?: string,
-  chatHistory?: ConversationTurn[]
+  chatHistory?: ConversationTurn[],
+  sendToChat?: (text: string) => void
 ): Promise<string> {
   const ai = geminiClient!
   const tools = buildGeminiTools()
+  sendToChatCalledThisTurn = false
 
   const userContent = researchContext
     ? `${question}\n\n[LIVE RESEARCH CONTEXT — the research agent is currently working]\n${researchContext}`
@@ -690,7 +971,11 @@ async function askViaGemini(
 
     const functionCalls = response.functionCalls
     if (!functionCalls || functionCalls.length === 0) {
-      return response.text || 'No answer found.'
+      const text = response.text
+      if (text) return text
+      // If LLM returned empty text but sent content to chat, use fallback
+      if (sendToChatCalledThisTurn) return "I've sent the details to your chat panel."
+      return 'No answer found.'
     }
 
     // Add model response to conversation
@@ -704,7 +989,7 @@ async function askViaGemini(
       if (call.name === 'web_search') {
         result = await geminiWebSearch(call.args?.query || question)
       } else {
-        result = executeTool(call.name, call.args || {}, workspace, sessionId, workingDir)
+        result = executeTool(call.name, call.args || {}, workspace, sessionId, workingDir, sendToChat)
       }
       return {
         functionResponse: {
@@ -717,6 +1002,9 @@ async function askViaGemini(
     contents.push({ role: 'user', parts: functionResponses })
   }
 
+  if (sendToChatCalledThisTurn) {
+    return "I've sent the full details to your chat. Let me know if you want to dive deeper into anything."
+  }
   return 'Fast brain reached maximum tool iterations. Try ask_agent for a deeper search.'
 }
 
@@ -738,7 +1026,9 @@ export async function askHaiku(
   sessionId: string,
   question: string,
   researchContext?: string,
-  chatHistory?: ConversationTurn[]
+  chatHistory?: ConversationTurn[],
+  sendToChat?: (text: string) => void,
+  sessionBaseDir?: string,
 ): Promise<string> {
   initProvider()
 
@@ -746,13 +1036,184 @@ export async function askHaiku(
     return 'NEEDS_DEEPER_RESEARCH: Fast brain unavailable (no API key). Try ask_agent instead.'
   }
 
-  const workspace = getSessionWorkspace(workingDir, sessionId)
+  // workspace uses sessionBaseDir (Osborn install dir) for spec.md/library
+  // workingDir is for JSONL access (matches Claude SDK cwd)
+  const wsDir = sessionBaseDir || workingDir
+  const workspace = getSessionWorkspace(wsDir, sessionId)
 
   if (provider === 'anthropic') {
-    return askViaAnthropic(question, workspace, researchContext, sessionId, workingDir, chatHistory)
+    // Use Agent SDK for JSONL traversal — falls back to direct API or Gemini on error
+    return askViaAgentSdk(question, workspace, researchContext, sessionId, workingDir, chatHistory, sendToChat, wsDir)
   } else {
-    return askViaGemini(question, workspace, researchContext, sessionId, workingDir, chatHistory)
+    return askViaGemini(question, workspace, researchContext, sessionId, workingDir, chatHistory, sendToChat)
   }
+}
+
+// ============================================================
+// Central orchestrator — askFastBrain
+// ============================================================
+
+/** Callbacks for the fast brain to trigger side effects in index.ts */
+export interface FastBrainCallbacks {
+  triggerResearch: (task: string) => void
+  queueVoice: (script: string) => void
+  sendToFrontend: (data: any) => void
+}
+
+/** Structured response from the fast brain orchestrator */
+export interface FastBrainResponse {
+  /** Teleprompter script for the voice model to speak */
+  script: string
+  /** Response type for caller routing */
+  type: 'answer' | 'research_started' | 'recorded' | 'question'
+}
+
+let researchTaskCounter = 0
+
+/**
+ * Central orchestrator — ALL user questions from the realtime model come here.
+ * Routes to: direct answer, research triggering, decision recording, or document generation.
+ * Returns a teleprompter script the voice model reads verbatim.
+ */
+export async function askFastBrain(
+  workingDir: string,
+  sessionId: string,
+  question: string,
+  opts: {
+    chatHistory?: ConversationTurn[]
+    researchContext?: string
+    callbacks: FastBrainCallbacks
+    sessionBaseDir?: string
+  }
+): Promise<FastBrainResponse> {
+  const { chatHistory, researchContext, callbacks } = opts
+  const wsDir = opts.sessionBaseDir || workingDir
+
+  // Detect document generation requests
+  const docMatch = detectDocumentRequest(question)
+  if (docMatch) {
+    try {
+      const result = await generateVisualDocument(workingDir, sessionId, question, docMatch, wsDir)
+      if (result) {
+        const fullPath = `${wsDir}/.osborn/sessions/${sessionId}/library/${result.fileName}`
+        callbacks.sendToFrontend({
+          type: 'research_artifact_updated',
+          filePath: fullPath,
+          fileName: result.fileName,
+        })
+        return {
+          script: `I've created a ${docMatch} document called ${result.fileName}. You can see it in the files panel.`,
+          type: 'answer',
+        }
+      }
+    } catch (err) {
+      console.error('❌ askFastBrain: document generation failed:', err)
+    }
+    // Fall through to regular handling if document gen fails
+  }
+
+  // Create sendToChat wrapper that sends assistant_response to frontend
+  const sendToChat = (text: string) => {
+    callbacks.sendToFrontend({ type: 'assistant_response', text })
+  }
+
+  // Core: ask the fast brain LLM
+  const answer = await askHaiku(workingDir, sessionId, question, researchContext, chatHistory, sendToChat, wsDir)
+
+  // Parse the response to determine routing
+  if (answer.startsWith('RECORDED:') || answer.includes('\nRECORDED:')) {
+    // Decision was recorded — extract the confirmation
+    const recordedLine = answer.split('\n').find(l => l.startsWith('RECORDED:'))
+    const confirmation = recordedLine
+      ? recordedLine.replace('RECORDED:', '').trim()
+      : 'Got it, noted.'
+
+    // Notify frontend about spec update
+    const specPath = `${wsDir}/.osborn/sessions/${sessionId}/spec.md`
+    callbacks.sendToFrontend({
+      type: 'research_artifact_updated',
+      filePath: specPath,
+      fileName: 'spec.md',
+    })
+
+    return { script: confirmation, type: 'recorded' }
+  }
+
+  if (answer.includes('NEEDS_DEEPER_RESEARCH')) {
+    // Extract the research task context
+    const needsLine = answer.split('\n').find(l => l.includes('NEEDS_DEEPER_RESEARCH'))
+    const contextLine = answer.split('\n').find(l => l.startsWith('CONTEXT:'))
+    const researchTask = needsLine
+      ? needsLine.replace(/^(PARTIAL:\s*)?NEEDS_DEEPER_RESEARCH:\s*/, '').trim()
+      : question
+    const contextStr = contextLine ? contextLine.replace('CONTEXT:', '').trim() : ''
+    const fullTask = contextStr ? `${researchTask}\n\nContext: ${contextStr}` : researchTask
+
+    // Extract any partial answer (spoken script before NEEDS_DEEPER_RESEARCH)
+    const partialMatch = answer.match(/^PARTIAL:\s*([\s\S]*?)(?=\nNEEDS_DEEPER_RESEARCH)/m)
+    const partialScript = partialMatch ? partialMatch[1].trim() : ''
+
+    // Generate a task ID for frontend tracking
+    researchTaskCounter++
+    const taskId = `research-${researchTaskCounter}-${Date.now()}`
+
+    // Trigger research in background
+    callbacks.triggerResearch(fullTask)
+    callbacks.sendToFrontend({
+      type: 'research_task_started',
+      task: researchTask.substring(0, 200),
+      taskId,
+    })
+
+    // Generate acknowledgment script
+    let script: string
+    if (partialScript) {
+      script = `${partialScript} Let me dig deeper on the rest.`
+    } else {
+      // Generate a contextual ack based on conversation flow
+      script = generateResearchAck(question, chatHistory)
+    }
+
+    return { script, type: 'research_started' }
+  }
+
+  // Direct answer — the response IS the teleprompter script
+  return { script: answer, type: 'answer' }
+}
+
+/** Detect if the user's question is an EXPLICIT document generation request.
+ * Must be very specific — don't catch general questions about analysis or comparisons.
+ * Only triggers when the user explicitly asks for a written document/artifact. */
+function detectDocumentRequest(question: string): 'comparison' | 'diagram' | 'analysis' | 'summary' | null {
+  const q = question.toLowerCase()
+  // Only match explicit document requests — "create a comparison", "make a diagram", "write a summary"
+  // Do NOT match: "compare X and Y", "analyze the code", "give me an overview"
+  const docVerbs = /(create|make|generate|write|build|produce|draw)\s+(a\s+|an\s+|the\s+)?/
+  if (!docVerbs.test(q)) return null
+  if (q.includes('comparison') || q.includes('comparison table') || q.includes('comparison document')) return 'comparison'
+  if (q.includes('diagram') || q.includes('flow chart') || q.includes('architecture diagram')) return 'diagram'
+  if (q.includes('analysis document') || q.includes('tradeoff document')) return 'analysis'
+  if (q.includes('summary document') || q.includes('overview document')) return 'summary'
+  return null
+}
+
+/** Generate a natural research acknowledgment based on conversation context */
+function generateResearchAck(question: string, chatHistory?: ConversationTurn[]): string {
+  // Use simple heuristics for a natural ack — no LLM call needed
+  const q = question.toLowerCase()
+  if (q.includes('how') && (q.includes('work') || q.includes('implement'))) {
+    return "Let me look into how that works. I'll have the details for you shortly."
+  }
+  if (q.includes('what') && (q.includes('option') || q.includes('available') || q.includes('choice'))) {
+    return "Let me research the options for you."
+  }
+  if (q.includes('why') || q.includes('explain')) {
+    return "Good question. Let me dig into that."
+  }
+  if (q.includes('find') || q.includes('search') || q.includes('look')) {
+    return "On it. Give me a moment to look into that."
+  }
+  return "Let me research that for you. I'll have findings shortly."
 }
 
 // ============================================================
@@ -770,7 +1231,8 @@ export async function processResearchChunk(
   sessionId: string,
   task: string,
   contentChunks: string[],
-  isRefinement?: boolean
+  isRefinement?: boolean,
+  sessionBaseDir?: string,
 ): Promise<{ spec: string | null, libraryFiles: string[] } | null> {
   initProvider()
   if (provider === 'none') return null
@@ -783,8 +1245,9 @@ export async function processResearchChunk(
   }
 
   specUpdateInProgress = true
+  const wsDir = sessionBaseDir || workingDir
   try {
-    const workspace = getSessionWorkspace(workingDir, sessionId)
+    const workspace = getSessionWorkspace(wsDir, sessionId)
     const specPath = `${workspace}/spec.md`
     if (!existsSync(specPath)) {
       console.log('⚠️ processResearchChunk: spec.md not found, skipping')
@@ -1044,7 +1507,8 @@ export async function updateSpecFromJSONL(
   workingDir: string,
   sessionId: string,
   task: string,
-  researchLog: string[]
+  researchLog: string[],
+  sessionBaseDir?: string,
 ): Promise<{ spec: string | null, libraryFiles: string[] } | null> {
   initProvider()
   if (provider === 'none') return null
@@ -1105,7 +1569,7 @@ export async function updateSpecFromJSONL(
     console.log(`📖 updateSpecFromJSONL: read ${toolResults.length} tool results, ${agentTexts.length} agent messages, ${subagents.length} sub-agents (${totalChars} total chars)`)
 
     // 3. Pass to processResearchChunk with isRefinement=true
-    return processResearchChunk(workingDir, sessionId, task, contentChunks, true)
+    return processResearchChunk(workingDir, sessionId, task, contentChunks, true, sessionBaseDir)
   } catch (err) {
     console.error('❌ updateSpecFromJSONL failed:', err)
     return null
@@ -1328,13 +1792,16 @@ export async function contextualizeResearchUpdate(
   sessionId: string,
   task: string,
   batchEvents: string[],
-  researchLog: string[]
+  researchLog: string[],
+  chatHistory?: ConversationTurn[],
+  sessionBaseDir?: string,
 ): Promise<string | null> {
   initProvider()
   if (provider === 'none') return null
 
+  const wsDir = sessionBaseDir || workingDir
   try {
-    const specContent = readSessionSpec(workingDir, sessionId)
+    const specContent = readSessionSpec(wsDir, sessionId)
     const specTruncated = specContent ? specContent.substring(0, 1500) : ''
 
     // Read last 5 tool results for what was just found
@@ -1486,15 +1953,17 @@ export async function generateVisualDocument(
   workingDir: string,
   sessionId: string,
   request: string,
-  documentType: 'comparison' | 'diagram' | 'analysis' | 'summary'
+  documentType: 'comparison' | 'diagram' | 'analysis' | 'summary',
+  sessionBaseDir?: string,
 ): Promise<{ fileName: string; content: string } | null> {
   initProvider()
   if (provider === 'none') return null
 
+  const wsDir = sessionBaseDir || workingDir
   try {
-    const workspace = getSessionWorkspace(workingDir, sessionId)
-    const specContent = readSessionSpec(workingDir, sessionId) || ''
-    const libraryFiles = listLibraryFiles(workingDir, sessionId)
+    const workspace = getSessionWorkspace(wsDir, sessionId)
+    const specContent = readSessionSpec(wsDir, sessionId) || ''
+    const libraryFiles = listLibraryFiles(wsDir, sessionId)
 
     // Read library contents for context
     const libraryDir = `${workspace}/library`
@@ -1586,4 +2055,224 @@ Return JSON: {"fileName": "descriptive-name.md", "content": "full markdown conte
     console.error('❌ generateVisualDocument failed:', err)
     return null
   }
+}
+
+// ============================================================
+// processResearchCompletion — Generate teleprompter script from research results
+// ============================================================
+
+/**
+ * Generate a complete teleprompter script from research results.
+ * Replaces augmentResearchResult + extractPriorityContent.
+ * Reads full JSONL and produces a spoken monologue.
+ */
+export async function processResearchCompletion(
+  workingDir: string,
+  sessionId: string,
+  task: string,
+  agentResult: string,
+  chatHistory?: ConversationTurn[],
+  sendToChat?: (text: string) => void,
+  sessionBaseDir?: string,
+): Promise<string> {
+  initProvider()
+  if (provider === 'none') return agentResult.substring(0, 500)
+
+  const wsDir = sessionBaseDir || workingDir
+  try {
+    // Read spec for context
+    const specContent = readSessionSpec(wsDir, sessionId) || ''
+
+    // Read FULL JSONL data — not truncated. The user waited for this research;
+    // give the completion generator the complete picture.
+    const toolResults = getRecentToolResults(sessionId, workingDir, 30)
+    const toolSummary = toolResults.map(tr => {
+      const inputPreview = JSON.stringify(tr.toolInput).substring(0, 200)
+      return `[${tr.toolName}: ${inputPreview}]\n${tr.resultContent}`
+    }).join('\n\n---\n\n')
+
+    // Also read agent reasoning for synthesis context
+    const agentTexts = readSessionHistory(sessionId, workingDir, {
+      lastN: 20,
+      types: ['assistant']
+    }).filter(m => m.text && m.text.length > 30)
+      .map(m => m.text!)
+      .join('\n\n')
+
+    // Read sub-agent findings if any
+    const subagents = getSubagentTranscripts(sessionId, workingDir)
+    const subagentSummary = subagents.length > 0
+      ? subagents.map(sa => {
+          const texts = sa.messages.filter(m => m.text && m.text.length > 30).map(m => m.text!)
+          return `[Sub-agent ${sa.taskId}]\n${texts.join('\n')}`
+        }).join('\n\n')
+      : ''
+
+    const historyStr = chatHistory
+      ? chatHistory.slice(-10).map(t => `${t.role}: ${t.text}`).join('\n')
+      : ''
+
+    const userMessage = `Research task: "${task}"
+
+Agent's headline findings:
+${agentResult}
+
+Full tool outputs (${toolResults.length} results):
+${toolSummary}
+
+${agentTexts ? `Agent reasoning and analysis:\n${agentTexts.substring(0, 8000)}` : ''}
+
+${subagentSummary ? `Sub-agent findings:\n${subagentSummary.substring(0, 4000)}` : ''}
+
+${specContent ? `Session spec (for context):\n${specContent.substring(0, 3000)}` : ''}
+
+${historyStr ? `Recent conversation (match this vocabulary):\n${historyStr}` : ''}
+
+Write the spoken monologue now. The user waited for this research — be comprehensive.${sendToChat ? ' If you have structured data (lists, URLs, code, steps), include a CHAT_CONTENT section at the end after a line "---CHAT---" with markdown content to send to the chat panel.' : ''}`
+
+    let script: string | null = null
+
+    if (provider === 'anthropic') {
+      const response = await anthropicClient!.messages.create({
+        model: ANTHROPIC_FAST_MODEL,
+        max_tokens: 4000,
+        system: RESEARCH_COMPLETION_SYSTEM,
+        messages: [{ role: 'user', content: userMessage }]
+      })
+      script = response.content[0].type === 'text' ? response.content[0].text : null
+    } else {
+      const response = await geminiClient!.models.generateContent({
+        model: GEMINI_FAST_MODEL,
+        contents: userMessage,
+        config: { systemInstruction: RESEARCH_COMPLETION_SYSTEM }
+      })
+      script = response.text || null
+    }
+
+    if (!script) return agentResult.substring(0, 500)
+
+    // Check for chat content section
+    if (sendToChat && script.includes('---CHAT---')) {
+      const parts = script.split('---CHAT---')
+      const spokenPart = parts[0].trim()
+      const chatPart = parts[1]?.trim()
+      if (chatPart) {
+        console.log(`💬 processResearchCompletion: sending ${chatPart.length} chars to chat`)
+        sendToChat(chatPart)
+      }
+      console.log(`🎙️ processResearchCompletion: generated ${spokenPart.length} char script + ${chatPart?.length || 0} char chat content`)
+      return spokenPart
+    }
+
+    console.log(`🎙️ processResearchCompletion: generated ${script.length} char script`)
+    return script
+  } catch (err) {
+    console.error('❌ processResearchCompletion failed:', err)
+    // Fallback: return truncated agent result as-is
+    return agentResult.substring(0, 500)
+  }
+}
+
+// ============================================================
+// handleResearchBatch — Decide whether research events are worth speaking
+// ============================================================
+
+/**
+ * Process a batch of research events and decide whether to speak.
+ * Replaces contextualizeResearchUpdate — but usually returns null (silent).
+ * Only speaks when something genuinely critical is found.
+ */
+export async function handleResearchBatch(
+  workingDir: string,
+  sessionId: string,
+  task: string,
+  batchEvents: string[],
+  researchLog: string[],
+  chatHistory?: ConversationTurn[],
+  sessionBaseDir?: string,
+): Promise<string | null> {
+  // Usually: stay silent. The frontend spinner handles visual feedback.
+  // Only speak if the batch contains something genuinely interesting.
+
+  // Quick heuristic: if fewer than 5 research steps, too early to say anything useful
+  if (researchLog.length < 5) return null
+
+  // Check if any event mentions something critical (error, user-impacting finding)
+  const hasCritical = batchEvents.some(e =>
+    e.toLowerCase().includes('error') ||
+    e.toLowerCase().includes('warning') ||
+    e.toLowerCase().includes('breaking') ||
+    e.toLowerCase().includes('deprecated')
+  )
+
+  if (!hasCritical) return null
+
+  // Something interesting — generate a brief spoken update via contextualizeResearchUpdate
+  return contextualizeResearchUpdate(workingDir, sessionId, task, batchEvents, researchLog, chatHistory, sessionBaseDir)
+}
+
+// ============================================================
+// prepareBriefingScript — Session resume/switch spoken briefing
+// ============================================================
+
+/**
+ * Generate a brief spoken script for session resume or switch.
+ * Replaces buildContextBriefing + getSpecForVoiceModel.
+ */
+export async function prepareBriefingScript(
+  workingDir: string,
+  sessionId: string,
+  conversationHistory?: { role: string; text: string }[],
+  type: 'resume' | 'switch' | 'default' = 'default'
+): Promise<string> {
+  initProvider()
+
+  // Read spec for context
+  const specContent = readSessionSpec(workingDir, sessionId)
+
+  if (!specContent && (!conversationHistory || conversationHistory.length === 0)) {
+    return type === 'switch'
+      ? 'Switched sessions. What would you like to work on?'
+      : 'Welcome back. What would you like to work on?'
+  }
+
+  // Extract goal and last topic from spec
+  const goalMatch = specContent?.match(/## Goal\s*\n([\s\S]*?)(?=\n##|$)/)
+  const goal = goalMatch ? goalMatch[1].trim().substring(0, 200) : ''
+
+  const prefix = type === 'switch' ? 'Switched over.' : 'Welcome back.'
+
+  // If we have a goal, generate a brief spoken briefing
+  if (goal) {
+    const lastExchanges = conversationHistory
+      ? conversationHistory.slice(-3).map(e => `${e.role}: ${e.text.substring(0, 100)}`).join('. ')
+      : ''
+
+    if (lastExchanges) {
+      return `${prefix} We were working on ${goal}. Last time we discussed ${lastExchanges.substring(0, 150)}. Where would you like to pick up?`
+    }
+    return `${prefix} We were working on ${goal}. Where would you like to pick up?`
+  }
+
+  return type === 'switch'
+    ? 'Switched sessions. What would you like to work on?'
+    : 'Session resumed. What would you like to work on?'
+}
+
+// ============================================================
+// prepareRecoveryScript — Gemini crash recovery spoken script
+// ============================================================
+
+/**
+ * Generate a spoken script after Gemini auto-recovery.
+ * Replaces inline recovery logic in index.ts.
+ */
+export async function prepareRecoveryScript(
+  conversationHistory?: { role: string; text: string }[]
+): Promise<string> {
+  if (conversationHistory && conversationHistory.length > 0) {
+    const lastTopic = conversationHistory[conversationHistory.length - 1]
+    return `Voice session was briefly interrupted but I'm back. We were talking about ${lastTopic.text.substring(0, 100)}. Where were we?`
+  }
+  return 'Voice session was briefly interrupted but I\'m back. What were we working on?'
 }
