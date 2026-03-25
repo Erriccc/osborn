@@ -335,6 +335,10 @@ async function main() {
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
   let currentProvider: string = realtimeConfig.provider  // Track active realtime provider
 
+  // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
+  // Updated by resume_session, session_selected, continue_session, switch_session handlers
+  let currentResumeSessionId: string | undefined
+
   // Task deduplication guard - prevents Gemini re-execution loops
   let lastTaskRequest = ''
   let lastTaskTime = 0
@@ -348,6 +352,15 @@ async function main() {
     pendingUpdates: string[] // Queue of updates waiting to be injected
     cleanup: () => void
     voiceUpdateCount: number // Track voice injection count (no cap — 8s debounce prevents flooding)
+    abortController: AbortController // Abort SDK query on disconnect
+  } | null = null
+
+  // Persist last completed research context so follow-up questions can reference it
+  // (activeResearch is set to null on completion — this preserves the context)
+  let lastCompletedResearch: {
+    task: string
+    researchLog: string[]
+    completedAt: number
   } | null = null
 
   // No manual queuing — the Claude SDK handles sequential queries internally
@@ -429,13 +442,16 @@ async function main() {
         // Gemini still calls ask_fast_brain, but the SDK DROPS the tool call
         // (because it sees toolChoice:'none'), so no speech is ever produced.
         //
-        // FIX: Don't set toolChoice for Gemini. Let the tool call go through.
-        // The injection bypass guard in ask_fast_brain.execute() detects
+        // FIX: Explicitly set toolChoice:'auto'. This prevents the LiveKit SDK's
+        // AsyncLocalStorage guard (agent_activity.ts:970-973) from auto-forcing
+        // toolChoice='none' when processVoiceQueue() is called from within a tool
+        // execution context (e.g. setTimeout inside askFastBrainTool.execute()).
+        // The injection bypass in ask_fast_brain.execute() detects
         // [SCRIPT]/[PROACTIVE]/[NOTIFICATION] prefixes and returns the content
-        // directly as a tool response. Gemini then speaks the tool response —
-        // this is the ONLY reliable speech delivery path for Gemini.
+        // directly as a tool response. Gemini then speaks the tool response.
         currentSession.generateReply({
           instructions: batchedInstruction,
+          toolChoice: 'auto' as any,
         })
       } else {
         // OpenAI respects toolChoice:'none' — speaks instructions directly
@@ -560,7 +576,8 @@ async function main() {
         const prompt = await generateProactivePrompt(
           workingDir, sessionId, task,
           activeResearch.researchLog,
-          proactivePromptHistory
+          proactivePromptHistory,
+          sessionBaseDir,
         )
         if (prompt && prompt !== 'NOTHING') {
           proactivePromptHistory.push(prompt)
@@ -930,10 +947,13 @@ async function main() {
         )
       }
 
-      // Clean up previous research listeners to avoid duplicate event handlers
+      // Clean up previous research UI tracking — but let the SDK query complete in background.
+      // The SDK has an internal queue: new query() calls enqueue behind running ones.
+      // Old research results land in JSONL and fast brain can access them later.
       if (activeResearch) {
-        activeResearch.cleanup()
+        activeResearch.cleanup() // Remove event listeners so UI tracks new task
         if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+        // NOTE: NOT aborting — old SDK process continues writing to JSONL
       }
 
       // Set up research log batching — events push to queue for state-driven injection
@@ -1018,23 +1038,39 @@ async function main() {
           }
         }
       }
+      // Capture the SDK's requestId for this query — identifies this research task
+      // in the JSONL file for targeted retrieval by fast brain
+      let sdkRequestId: string | null = null
+      const onQueryRequestId = (data: any) => {
+        if (!sdkRequestId && data.requestId) {
+          sdkRequestId = data.requestId
+          console.log(`📋 [research] SDK requestId: ${sdkRequestId}`)
+        }
+      }
       realtimeClaudeHandler!.events.on('tool_use', onToolUse)
       realtimeClaudeHandler!.events.on('tool_result', onToolResult)
       realtimeClaudeHandler!.events.on('assistant_text', onText)
+      realtimeClaudeHandler!.events.on('query_request_id', onQueryRequestId)
 
       const cleanupListeners = () => {
         realtimeClaudeHandler?.events.off('tool_use', onToolUse)
         realtimeClaudeHandler?.events.off('tool_result', onToolResult)
         realtimeClaudeHandler?.events.off('assistant_text', onText)
+        realtimeClaudeHandler?.events.off('query_request_id', onQueryRequestId)
       }
 
+      // Create AbortController for this research task — abort on disconnect/cleanup
+      const researchAbortController = new AbortController()
+
       // Track active research — updates drain when model enters 'listening' state
-      activeResearch = {
+      const thisResearch = {
         researchLog,
         pendingUpdates,
         cleanup: cleanupListeners,
         voiceUpdateCount: 0,
+        abortController: researchAbortController,
       }
+      activeResearch = thisResearch
 
       // Start proactive conversational loop
       const proactiveSid = currentLLM?.sessionId || resumeSessionId
@@ -1043,11 +1079,13 @@ async function main() {
       }
 
       // Run research in the background (non-blocking)
+      // Pass AbortController so research can be stopped on disconnect
       const researchPromise = (async () => {
         const stream = realtimeClaudeHandler!.chat({
           chatCtx: {
             items: [{ type: 'message', role: 'user', content: [task] }],
           } as any,
+          abortController: researchAbortController,
         })
 
         let result = ''
@@ -1061,7 +1099,18 @@ async function main() {
 
       // Handle completion asynchronously
       researchPromise.then(async (result) => {
-        console.log(`✅ [realtime] Research complete (${result.length} chars)`)
+        // Check if aborted — empty result means clean abort, skip pipeline
+        if (researchAbortController.signal.aborted || !result.trim()) {
+          console.log(`🛑 [realtime] Research aborted or empty: ${task.substring(0, 60)}`)
+          cleanupListeners()
+          if (activeResearch === thisResearch) {
+            activeResearch = null
+          }
+          return
+        }
+
+        const isStillCurrent = activeResearch === thisResearch
+        console.log(`✅ [realtime] Research complete (${result.length} chars${isStillCurrent ? '' : ', superseded by newer task'})`)
 
         // Clean up
         cleanupListeners()
@@ -1074,10 +1123,24 @@ async function main() {
           : result
         await sendToFrontend({ type: 'task_completed', task, resultPreview })
 
-        // Clear active research and timers before injecting final results
-        if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
-        stopProactiveLoop()
-        activeResearch = null
+        // Only modify global state if we're still the current research task.
+        // If a newer task replaced us, don't clobber its timers/state.
+        if (isStillCurrent) {
+          if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+          stopProactiveLoop()
+        }
+
+        // Preserve research context for follow-up questions
+        lastCompletedResearch = {
+          task,
+          researchLog: [...researchLog],
+          completedAt: Date.now(),
+        }
+
+        // Only clear activeResearch if we're still the current task
+        if (isStillCurrent) {
+          activeResearch = null
+        }
 
         // Send research_task_complete to frontend for inline chat tracking
         await sendToFrontend({
@@ -1139,14 +1202,22 @@ async function main() {
             })
         }
       }).catch(async (err) => {
-        console.error(`❌ [realtime] Research failed:`, err)
-
         // Clean up
         cleanupListeners()
-        if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
-        stopProactiveLoop()
-        activeResearch = null
+        const isStillCurrent = activeResearch === thisResearch
+        if (isStillCurrent) {
+          if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+          stopProactiveLoop()
+          activeResearch = null
+        }
 
+        // If aborted (user disconnected), log quietly
+        if (researchAbortController.signal.aborted) {
+          console.log(`🛑 [realtime] Research aborted: ${task.substring(0, 60)}`)
+          return
+        }
+
+        console.error(`❌ [realtime] Research failed:`, err)
         // Queue error notification — will be spoken when model is available
         queueVoiceInjection(getNotificationInjection(`Research encountered an error: ${(err as Error).message}. You could try asking again.`))
       })
@@ -1180,17 +1251,21 @@ async function main() {
         }
 
         // Use pending sessionId for fresh sessions where SDK hasn't assigned one yet
-        const sessionId = currentLLM?.sessionId || resumeSessionId || 'pending'
+        const sessionId = currentLLM?.sessionId || currentResumeSessionId || resumeSessionId || 'pending'
         console.log(`🧠 [fast brain] Question: "${question.substring(0, 80)}..."`)
 
         // Track in-flight state
         haikuInFlight = { question, time: Date.now() }
 
-        // Build live research context if agent is actively researching
+        // Build research context — from active research or last completed research
         let researchContext: string | undefined
         if (activeResearch && activeResearch.researchLog.length > 0) {
           const recentLog = activeResearch.researchLog.slice(-15)
           researchContext = `Research topic: "${lastTaskRequest || 'unknown'}"\nSteps completed (${activeResearch.researchLog.length} total, showing last ${recentLog.length}):\n${recentLog.join('\n')}`
+        } else if (lastCompletedResearch && (Date.now() - lastCompletedResearch.completedAt) < 600000) {
+          // Include context from last completed research (within 10 minutes)
+          const recentLog = lastCompletedResearch.researchLog.slice(-15)
+          researchContext = `[COMPLETED RESEARCH] Topic: "${lastCompletedResearch.task}"\nSteps completed (${lastCompletedResearch.researchLog.length} total, showing last ${recentLog.length}):\n${recentLog.join('\n')}\n\n(Research completed — results are in JSONL and spec.md. Answer from those, do NOT trigger new research on this topic.)`
         }
 
         const callbacks: FastBrainCallbacks = {
@@ -1311,6 +1386,7 @@ async function main() {
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
     if (activeResearch) {
+      activeResearch.abortController.abort()
       activeResearch.cleanup()
       activeResearch = null
     }
@@ -1331,6 +1407,7 @@ async function main() {
     stopProactiveLoop()
     clearFastBrainSession()
     if (activeResearch) {
+      activeResearch.abortController.abort()
       activeResearch.cleanup()
       activeResearch = null
     }
@@ -1389,6 +1466,7 @@ async function main() {
 
     // Resume session ID — only set when resuming an existing session
     const resumeSessionId = preSelectedSessionId || undefined
+    currentResumeSessionId = resumeSessionId
     if (resumeSessionId) {
       console.log(`🆔 Resuming session: ${resumeSessionId}`)
     } else {
@@ -1539,7 +1617,7 @@ async function main() {
       
           if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
           stopProactiveLoop()
-                if (activeResearch) { activeResearch.cleanup(); activeResearch = null }
+                if (activeResearch) { activeResearch.abortController.abort(); activeResearch.cleanup(); activeResearch = null }
 
           try {
             const recoveryConfig = { ...realtimeConfig, provider: currentProvider as 'gemini' | 'openai' }
@@ -1740,6 +1818,7 @@ async function main() {
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
     if (activeResearch) {
+      activeResearch.abortController.abort()
       activeResearch.cleanup()
       activeResearch = null
     }
@@ -1816,6 +1895,7 @@ async function main() {
         const sessionId = data.sessionId as string
         if (sessionId && sessionExists(sessionId, workingDir)) {
           currentLLM.setResumeSessionId(sessionId)
+          currentResumeSessionId = sessionId
           console.log(`🔄 Will resume session: ${sessionId}`)
 
           await sendToFrontend({
@@ -1853,6 +1933,7 @@ async function main() {
         const recentId = await getMostRecentSessionId(workingDir)
         if (recentId) {
           currentLLM.setResumeSessionId(recentId)
+          currentResumeSessionId = recentId
           console.log(`🔄 Continuing most recent session: ${recentId}`)
 
           const summary = await getSessionSummary(recentId, workingDir)
@@ -1917,6 +1998,7 @@ async function main() {
           // Step 2: Reset LLM state and configure for new session
           currentLLM.resetForSessionSwitch()
           currentLLM.setResumeSessionId(sessionId)
+          currentResumeSessionId = sessionId
           clearFastBrainSession()
           console.log(`🔄 Switched to session: ${sessionId}`)
 
@@ -2121,6 +2203,7 @@ async function main() {
         if (sessionId && currentLLM && sessionExists(sessionId, workingDir)) {
           // Resume the selected session
           currentLLM.setResumeSessionId(sessionId)
+          currentResumeSessionId = sessionId
           console.log(`🔄 Resuming session: ${sessionId}`)
 
           // Fetch context and greet with it

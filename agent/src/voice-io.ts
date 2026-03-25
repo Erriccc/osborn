@@ -153,7 +153,7 @@ export interface RealtimeModelConfig {
   openaiVoice?: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer'
   openaiModel?: string
   // Gemini options
-  geminiVoice?: 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Aoede'
+  geminiVoice?: 'Charon' | 'Puck' | 'Kore' | 'Fenrir' | 'Aoede'
   geminiModel?: string
   // Shared options
   instructions?: string
@@ -172,7 +172,7 @@ export function createRealtimeModel(config: RealtimeModelConfig) {
     // with tool calls. No newer model available yet — auto-recovery in index.ts handles this.
     return new google.beta.realtime.RealtimeModel({
       model: config.geminiModel || 'gemini-2.5-flash-native-audio-preview-12-2025',
-      voice: config.geminiVoice || 'Puck',
+      voice: config.geminiVoice || 'Charon',
       // Gemini supports instructions at model level
       instructions: config.instructions,
       // Enable transcription so we get text of what the agent says

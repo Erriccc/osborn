@@ -30,7 +30,7 @@ import { dirname, basename, join } from 'path'
 import { homedir } from 'os'
 import { z } from 'zod'
 import { getSessionWorkspace, readSessionSpec, listLibraryFiles } from './config.js'
-import { FAST_BRAIN_SYSTEM_PROMPT, CHUNK_PROCESS_SYSTEM, REFINEMENT_PROCESS_SYSTEM, AUGMENT_RESULT_SYSTEM, CONTEXTUALIZE_UPDATE_SYSTEM, PROACTIVE_PROMPT_SYSTEM, VISUAL_DOCUMENT_SYSTEM, RESEARCH_COMPLETION_SYSTEM } from './prompts.js'
+import { FAST_BRAIN_SYSTEM_PROMPT, CHUNK_PROCESS_SYSTEM, REFINEMENT_PROCESS_SYSTEM, AUGMENT_RESULT_SYSTEM, CONTEXTUALIZE_UPDATE_SYSTEM, PROACTIVE_PROMPT_SYSTEM, VISUAL_DOCUMENT_SYSTEM, RESEARCH_COMPLETION_SYSTEM, buildFastBrainSdkPrompt } from './prompts.js'
 import { getRecentToolResults, readSessionHistory, getSubagentTranscripts, getConversationText, getSessionTranscripts, searchSessionJsonl, getSessionStats } from './session-access.js'
 
 // ============================================================
@@ -72,7 +72,7 @@ export function extractToolContent(toolName: string, toolInput: any, toolRespons
 // Provider detection and client initialization
 // ============================================================
 
-type FastBrainProvider = 'anthropic' | 'gemini' | 'none'
+type FastBrainProvider = 'agent-sdk' | 'anthropic' | 'gemini' | 'none'
 
 let provider: FastBrainProvider = 'none'
 let anthropicClient: Anthropic | null = null
@@ -111,40 +111,37 @@ function initProvider(): void {
   if (initialized) return
   initialized = true
 
-  // 1. ANTHROPIC_API_KEY
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (apiKey) {
-    anthropicClient = new Anthropic({ apiKey })
-    provider = 'anthropic'
-    console.log('🧠 Fast brain: using Anthropic API (ANTHROPIC_API_KEY)')
-    return
-  }
-
-  // 2. ANTHROPIC_AUTH_TOKEN (if user sets it explicitly)
-  const authToken = process.env.ANTHROPIC_AUTH_TOKEN
-  if (authToken) {
-    anthropicClient = new Anthropic({ authToken })
-    provider = 'anthropic'
-    console.log('🧠 Fast brain: using Anthropic API (ANTHROPIC_AUTH_TOKEN)')
-    return
-  }
-
-  // NOTE: Claude Code OAuth (macOS Keychain) was tested but Anthropic's Messages API
-  // returns 401 "OAuth authentication is currently not supported." — cannot reuse it.
-
-  // 3. Gemini Flash fallback (uses GOOGLE_API_KEY already in .env)
+  // Initialize fallback clients (Gemini for fallback, Anthropic direct API if key available)
   const googleKey = process.env.GOOGLE_API_KEY
   if (googleKey) {
     geminiClient = new GoogleGenAI({ apiKey: googleKey })
-    provider = 'gemini'
-    console.log(`🧠 Fast brain: using Gemini Flash fallback (${GEMINI_FAST_MODEL})`)
-    return
+  }
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (apiKey) {
+    anthropicClient = new Anthropic({ apiKey })
+  } else {
+    const authToken = process.env.ANTHROPIC_AUTH_TOKEN
+    if (authToken) {
+      anthropicClient = new Anthropic({ authToken })
+    }
   }
 
-  // No provider available
-  provider = 'none'
-  console.error('⚠️ Fast brain: no API key available — fast brain disabled')
-  console.error('   Set ANTHROPIC_API_KEY or GOOGLE_API_KEY in agent/.env')
+  // PRIMARY: Gemini Flash — fastest (~1-2s), handles 1M tokens, no cold start.
+  // Agent SDK Haiku is too slow (~10-15s) due to CLI process spawn + session overhead.
+  if (geminiClient) {
+    provider = 'gemini'
+    console.log(`🧠 Fast brain: using Gemini Flash (primary) — fastest response time`)
+    if (anthropicClient) {
+      console.log(`🧠 Fast brain: Direct Anthropic API available as fallback`)
+    }
+  } else if (anthropicClient) {
+    provider = 'anthropic'
+    console.log(`🧠 Fast brain: using Anthropic API (primary) — no Gemini key available`)
+  } else {
+    // Last resort: Agent SDK is slow but functional
+    provider = 'agent-sdk'
+    console.log(`🧠 Fast brain: using Claude Agent SDK (fallback) — no API keys available`)
+  }
 }
 
 // ============================================================
@@ -632,77 +629,6 @@ async function geminiWebSearch(query: string): Promise<string> {
 // ============================================================
 
 /**
- * Build the system prompt for the Agent SDK fast brain.
- * Includes computed paths so the agent knows where to find JSONL files and workspace.
- */
-function buildFastBrainSdkPrompt(
-  workingDir: string,
-  sessionId: string,
-  sessionBaseDir: string,
-): string {
-  const workspace = getSessionWorkspace(sessionBaseDir, sessionId)
-  const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
-  const slug = workingDir.replace(/\//g, '-')
-  const jsonlDir = join(claudeDir, 'projects', slug)
-  const jsonlPath = join(jsonlDir, `${sessionId}.jsonl`)
-
-  return `You are Osborn's fast brain — the central intelligence for a voice AI research assistant.
-Your output will be spoken aloud by a voice model as a teleprompter script.
-
-== YOUR ROLE ==
-- Answer questions using session workspace files, research JSONL data, and web search
-- Update spec.md with user decisions, answered questions, and research findings
-- Maintain library/ files with detailed reference material
-- When you cannot answer from available data, signal escalation to deep research
-
-== SESSION WORKSPACE ==
-Path: ${workspace}
-- spec.md: ${workspace}/spec.md (living research document — read before answering)
-- library/: ${workspace}/library/ (detailed reference files)
-
-== RESEARCH AGENT JSONL DATA ==
-The deep research agent stores full session data at:
-- Main JSONL: ${jsonlPath}
-- Sub-agents: ${join(jsonlDir, sessionId, 'subagents')}/
-- Tool results: ${join(jsonlDir, sessionId, 'tool-results')}/
-
-The JSONL file has newline-delimited JSON. Each line has a "type" field:
-- "assistant" messages contain the agent's reasoning in content[].text blocks
-- "tool_use" entries show what tools the agent called
-- "tool_result" entries contain full untruncated tool outputs
-
-Strategy: Use Grep to search JSONL for keywords. Use Read for specific sections.
-
-== DECISION PROCESS ==
-For every question:
-1. Read spec.md for current project context
-2. Check if you can answer from spec.md, library/ files, or JSONL data
-3. If yes: answer comprehensively with specific details from the data
-4. For factual lookups (versions, definitions, current info): use WebSearch
-5. If you need deeper investigation than available data supports, respond with ONLY:
-   NEEDS_DEEPER_RESEARCH: <concise task description>
-   CONTEXT: <relevant context from what you found>
-   If you have a partial answer, prefix with: PARTIAL: <your partial answer>
-6. If the user states a preference or decision: update spec.md, then respond with:
-   RECORDED: <brief confirmation of what was recorded>
-
-== OUTPUT FORMAT ==
-Your final text response is the teleprompter script — spoken aloud verbatim.
-- Natural spoken sentences only. No markdown, bullets, headers, or code blocks.
-- Lead with the answer. No preamble ("Great question!", "Sure!").
-- Be specific: names, numbers, versions, file paths from the actual data.
-- 4-8 sentences for simple answers, 8-15 for detailed explanations.
-- If you used send_to_chat for structured content, speak a brief summary referencing the chat.
-
-== SPEC.MD MANAGEMENT ==
-- Update Findings & Resources with new information you discover
-- Mark answered questions with [x] and add brief answer
-- Add new user questions under Open Questions > From User
-- Record user decisions under Decisions
-- Keep the spec concise — remove outdated information`
-}
-
-/**
  * Create an in-process MCP server with the send_to_chat tool for the Agent SDK fast brain.
  */
 function createFastBrainMcpServer(sendToChat?: (text: string) => void) {
@@ -793,24 +719,24 @@ async function askViaAgentSdk(
 
   const queryPromise = (async () => {
     let result = ''
-    let capturedSessionId: string | null = null
 
     try {
       for await (const message of sdkQuery({ prompt, options })) {
         if (message.type === 'result') {
           result = (message as any).result || ''
         }
+        // Capture session ID eagerly — even if we timeout, next call can resume
         if (message.type === 'assistant' && (message as any).session_id) {
-          capturedSessionId = (message as any).session_id
+          const sid = (message as any).session_id
+          if (sid !== fastBrainSessionId) {
+            fastBrainSessionId = sid
+            console.log(`🧠 Fast brain session: ${sid.substring(0, 12)}... (${options.resume ? 'resumed' : 'new'})`)
+          }
         }
       }
     } catch (err) {
       console.error('❌ Agent SDK query error:', err)
       throw err
-    }
-
-    if (capturedSessionId) {
-      fastBrainSessionId = capturedSessionId
     }
 
     clearTimeout(timeoutHandle!)
@@ -937,7 +863,8 @@ async function askViaGemini(
   sessionId?: string,
   workingDir?: string,
   chatHistory?: ConversationTurn[],
-  sendToChat?: (text: string) => void
+  sendToChat?: (text: string) => void,
+  sessionBaseDir?: string,
 ): Promise<string> {
   const ai = geminiClient!
   const tools = buildGeminiTools()
@@ -959,12 +886,14 @@ async function askViaGemini(
   }
   contents.push({ role: 'user', parts: [{ text: userContent }] })
 
+  const systemPrompt = FAST_BRAIN_SYSTEM_PROMPT
+
   for (let i = 0; i < 10; i++) {
     const response = await ai.models.generateContent({
       model: GEMINI_FAST_MODEL,
       contents,
       config: {
-        systemInstruction: FAST_BRAIN_SYSTEM_PROMPT,
+        systemInstruction: systemPrompt,
         tools,
       }
     })
@@ -1032,20 +961,19 @@ export async function askHaiku(
 ): Promise<string> {
   initProvider()
 
-  if (provider === 'none') {
-    return 'NEEDS_DEEPER_RESEARCH: Fast brain unavailable (no API key). Try ask_agent instead.'
-  }
-
   // workspace uses sessionBaseDir (Osborn install dir) for spec.md/library
   // workingDir is for JSONL access (matches Claude SDK cwd)
   const wsDir = sessionBaseDir || workingDir
   const workspace = getSessionWorkspace(wsDir, sessionId)
 
-  if (provider === 'anthropic') {
-    // Use Agent SDK for JSONL traversal — falls back to direct API or Gemini on error
+  // Primary: Gemini Flash (~1-2s) with pre-loaded JSONL context
+  // Fallback: Anthropic direct API or Agent SDK (slower but functional)
+  if (provider === 'gemini') {
+    return askViaGemini(question, workspace, researchContext, sessionId, workingDir, chatHistory, sendToChat, wsDir)
+  } else if (provider === 'anthropic' || provider === 'agent-sdk') {
     return askViaAgentSdk(question, workspace, researchContext, sessionId, workingDir, chatHistory, sendToChat, wsDir)
   } else {
-    return askViaGemini(question, workspace, researchContext, sessionId, workingDir, chatHistory, sendToChat)
+    return 'NEEDS_DEEPER_RESEARCH: Fast brain unavailable (no API key or CLI auth). Try ask_agent instead.'
   }
 }
 
@@ -1139,6 +1067,15 @@ export async function askFastBrain(
     return { script: confirmation, type: 'recorded' }
   }
 
+  // Handle ASK_USER — questions directed at the user (not research tasks)
+  if (answer.startsWith('ASK_USER:') || answer.includes('\nASK_USER:')) {
+    const askLine = answer.split('\n').find(l => l.includes('ASK_USER:'))
+    const userQuestion = askLine
+      ? askLine.replace(/^ASK_USER:\s*/, '').trim()
+      : answer.replace(/^ASK_USER:\s*/, '').trim()
+    return { script: userQuestion, type: 'question' }
+  }
+
   if (answer.includes('NEEDS_DEEPER_RESEARCH')) {
     // Extract the research task context
     const needsLine = answer.split('\n').find(l => l.includes('NEEDS_DEEPER_RESEARCH'))
@@ -1147,6 +1084,33 @@ export async function askFastBrain(
       ? needsLine.replace(/^(PARTIAL:\s*)?NEEDS_DEEPER_RESEARCH:\s*/, '').trim()
       : question
     const contextStr = contextLine ? contextLine.replace('CONTEXT:', '').trim() : ''
+
+    // Safety check: if the "research task" looks like a question for the user
+    // (ends with ?, asks about preferences/needs, is very short), treat it as ASK_USER instead.
+    // This catches the common Gemini bug where clarification questions are formatted as research tasks.
+    const taskLower = researchTask.toLowerCase()
+    const looksLikeUserQuestion = (
+      researchTask.endsWith('?') && (
+        taskLower.includes('would you') ||
+        taskLower.includes('do you') ||
+        taskLower.includes('could you') ||
+        taskLower.includes('what kind of') ||
+        taskLower.includes('which') ||
+        taskLower.includes('your needs') ||
+        taskLower.includes('your preference') ||
+        taskLower.includes('more details') ||
+        taskLower.includes('clarif') ||
+        taskLower.includes('specify') ||
+        taskLower.includes('interested in') ||
+        researchTask.length < 80 // Very short "tasks" ending in ? are almost always user questions
+      )
+    )
+
+    if (looksLikeUserQuestion) {
+      console.log(`🧠 [fast brain] Caught question-as-research-task, redirecting to ASK_USER: "${researchTask.substring(0, 100)}"`)
+      return { script: researchTask, type: 'question' }
+    }
+
     const fullTask = contextStr ? `${researchTask}\n\nContext: ${contextStr}` : researchTask
 
     // Extract any partial answer (spoken script before NEEDS_DEEPER_RESEARCH)
@@ -1261,7 +1225,7 @@ export async function processResearchChunk(
     // Mid-research: skip library entirely to stay fast and avoid file proliferation
     let existingSection = ''
     if (isRefinement) {
-      const existingFiles = listLibraryFiles(workingDir, sessionId)
+      const existingFiles = listLibraryFiles(wsDir, sessionId)
       const existingContents: string[] = []
       for (const file of existingFiles) {
         const filePath = `${libraryDir}/${file}`
@@ -1298,16 +1262,16 @@ Return ONLY valid JSON — no code fences, no explanation.`
 
     let responseText: string | null = null
 
-    if (provider === 'anthropic') {
-      const response = await anthropicClient!.messages.create({
+    if (anthropicClient) {
+      const response = await anthropicClient.messages.create({
         model: ANTHROPIC_FAST_MODEL,
         max_tokens: isRefinement ? 20000 : 10000,
         system: systemPrompt,
         messages: [{ role: 'user', content: userMessage }]
       })
       responseText = response.content[0].type === 'text' ? response.content[0].text : null
-    } else {
-      const response = await geminiClient!.models.generateContent({
+    } else if (geminiClient) {
+      const response = await geminiClient.models.generateContent({
         model: GEMINI_FAST_MODEL,
         contents: userMessage,
         config: { systemInstruction: systemPrompt }
@@ -1456,16 +1420,16 @@ Augment the agent's findings with relevant context from the spec. Pass ALL detai
 
     let responseText: string | null = null
 
-    if (provider === 'anthropic') {
-      const response = await anthropicClient!.messages.create({
+    if (anthropicClient) {
+      const response = await anthropicClient.messages.create({
         model: ANTHROPIC_FAST_MODEL,
         max_tokens: 16000,
         system: AUGMENT_RESULT_SYSTEM,
         messages: [{ role: 'user', content: userMessage }]
       })
       responseText = response.content[0].type === 'text' ? response.content[0].text : null
-    } else {
-      const response = await geminiClient!.models.generateContent({
+    } else if (geminiClient) {
+      const response = await geminiClient.models.generateContent({
         model: GEMINI_FAST_MODEL,
         contents: userMessage,
         config: { systemInstruction: AUGMENT_RESULT_SYSTEM }
@@ -1622,16 +1586,16 @@ Rules:
 
     let responseText: string | null = null
 
-    if (provider === 'anthropic') {
-      const response = await anthropicClient!.messages.create({
+    if (anthropicClient) {
+      const response = await anthropicClient.messages.create({
         model: ANTHROPIC_FAST_MODEL,
         max_tokens: 8000,
         system: systemPrompt,
         messages: [{ role: 'user', content: userMessage }]
       })
       responseText = response.content[0].type === 'text' ? response.content[0].text : null
-    } else {
-      const response = await geminiClient!.models.generateContent({
+    } else if (geminiClient) {
+      const response = await geminiClient.models.generateContent({
         model: GEMINI_FAST_MODEL,
         contents: userMessage,
         config: { systemInstruction: systemPrompt }
@@ -1739,16 +1703,16 @@ Rules:
 
     let responseText: string | null = null
 
-    if (provider === 'anthropic') {
-      const response = await anthropicClient!.messages.create({
+    if (anthropicClient) {
+      const response = await anthropicClient.messages.create({
         model: ANTHROPIC_FAST_MODEL,
         max_tokens: 8000,
         system: systemPrompt,
         messages: [{ role: 'user', content: userMessage }]
       })
       responseText = response.content[0].type === 'text' ? response.content[0].text : null
-    } else {
-      const response = await geminiClient!.models.generateContent({
+    } else if (geminiClient) {
+      const response = await geminiClient.models.generateContent({
         model: GEMINI_FAST_MODEL,
         contents: userMessage,
         config: { systemInstruction: systemPrompt }
@@ -1827,19 +1791,21 @@ ${specTruncated ? `Spec context:\n${specTruncated}` : ''}`
 
     let responsePromise: Promise<string | null>
 
-    if (provider === 'anthropic') {
-      responsePromise = anthropicClient!.messages.create({
+    if (anthropicClient) {
+      responsePromise = anthropicClient.messages.create({
         model: ANTHROPIC_FAST_MODEL,
         max_tokens: 200,
         system: CONTEXTUALIZE_UPDATE_SYSTEM,
         messages: [{ role: 'user', content: userMessage }]
       }).then(r => r.content[0].type === 'text' ? r.content[0].text : null)
-    } else {
-      responsePromise = geminiClient!.models.generateContent({
+    } else if (geminiClient) {
+      responsePromise = geminiClient.models.generateContent({
         model: GEMINI_FAST_MODEL,
         contents: userMessage,
         config: { systemInstruction: CONTEXTUALIZE_UPDATE_SYSTEM }
       }).then(r => r.text || null)
+    } else {
+      return null
     }
 
     const result = await Promise.race([responsePromise, timeoutPromise])
@@ -1868,13 +1834,15 @@ export async function generateProactivePrompt(
   sessionId: string,
   task: string,
   researchLog: string[],
-  previousPrompts: string[]
+  previousPrompts: string[],
+  sessionBaseDir?: string,
 ): Promise<string | null> {
   initProvider()
   if (provider === 'none') return null
 
+  const wsDir = sessionBaseDir || workingDir
   try {
-    const specContent = readSessionSpec(workingDir, sessionId)
+    const specContent = readSessionSpec(wsDir, sessionId)
     const specTruncated = specContent ? specContent.substring(0, 2000) : ''
 
     // Read recent discoveries from JSONL
@@ -1914,19 +1882,21 @@ ${previousPrompts.length > 0 ? previousPrompts.join('\n') : '(none yet)'}`
 
     let responsePromise: Promise<string | null>
 
-    if (provider === 'anthropic') {
-      responsePromise = anthropicClient!.messages.create({
+    if (anthropicClient) {
+      responsePromise = anthropicClient.messages.create({
         model: ANTHROPIC_FAST_MODEL,
         max_tokens: 200,
         system: PROACTIVE_PROMPT_SYSTEM,
         messages: [{ role: 'user', content: userMessage }]
       }).then(r => r.content[0].type === 'text' ? r.content[0].text : null)
-    } else {
-      responsePromise = geminiClient!.models.generateContent({
+    } else if (geminiClient) {
+      responsePromise = geminiClient.models.generateContent({
         model: GEMINI_FAST_MODEL,
         contents: userMessage,
         config: { systemInstruction: PROACTIVE_PROMPT_SYSTEM }
       }).then(r => r.text || null)
+    } else {
+      return null
     }
 
     const result = await Promise.race([responsePromise, timeoutPromise])
@@ -2000,16 +1970,16 @@ Return JSON: {"fileName": "descriptive-name.md", "content": "full markdown conte
 
     let responseText: string | null = null
 
-    if (provider === 'anthropic') {
-      const response = await anthropicClient!.messages.create({
+    if (anthropicClient) {
+      const response = await anthropicClient.messages.create({
         model: ANTHROPIC_FAST_MODEL,
         max_tokens: 16000,
         system: VISUAL_DOCUMENT_SYSTEM,
         messages: [{ role: 'user', content: userMessage }]
       })
       responseText = response.content[0].type === 'text' ? response.content[0].text : null
-    } else {
-      const response = await geminiClient!.models.generateContent({
+    } else if (geminiClient) {
+      const response = await geminiClient.models.generateContent({
         model: GEMINI_FAST_MODEL,
         contents: userMessage,
         config: { systemInstruction: VISUAL_DOCUMENT_SYSTEM }
@@ -2132,16 +2102,16 @@ Write the spoken monologue now. The user waited for this research — be compreh
 
     let script: string | null = null
 
-    if (provider === 'anthropic') {
-      const response = await anthropicClient!.messages.create({
+    if (anthropicClient) {
+      const response = await anthropicClient.messages.create({
         model: ANTHROPIC_FAST_MODEL,
         max_tokens: 4000,
         system: RESEARCH_COMPLETION_SYSTEM,
         messages: [{ role: 'user', content: userMessage }]
       })
       script = response.content[0].type === 'text' ? response.content[0].text : null
-    } else {
-      const response = await geminiClient!.models.generateContent({
+    } else if (geminiClient) {
+      const response = await geminiClient.models.generateContent({
         model: GEMINI_FAST_MODEL,
         contents: userMessage,
         config: { systemInstruction: RESEARCH_COMPLETION_SYSTEM }

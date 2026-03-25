@@ -402,6 +402,7 @@ export class ClaudeLLM extends llm.LLM {
     chatCtx,
     toolCtx,
     connOptions = DEFAULT_API_CONNECT_OPTIONS,
+    abortController,
   }: {
     chatCtx: llm.ChatContext
     toolCtx?: llm.ToolContext
@@ -409,6 +410,7 @@ export class ClaudeLLM extends llm.LLM {
     parallelToolCalls?: boolean
     toolChoice?: llm.ToolChoice
     extraKwargs?: Record<string, unknown>
+    abortController?: AbortController
   }): llm.LLMStream {
     return new ClaudeLLMStream(this, {
       chatCtx,
@@ -416,6 +418,7 @@ export class ClaudeLLM extends llm.LLM {
       connOptions,
       opts: this.#opts,
       sessionId: this.#sessionId,
+      abortController,
       onSessionId: (id) => {
         const isFirst = !this.#sessionId
         this.#sessionId = id
@@ -454,6 +457,7 @@ class ClaudeLLMStream extends llm.LLMStream {
   #eventEmitter: EventEmitter
   #onPermissionRequest: (toolName: string, input: Record<string, unknown>) => Promise<PermissionResult>
   #onCheckpoint: (checkpointId: string) => void
+  #abortController?: AbortController
 
   constructor(
     llmInstance: ClaudeLLM,
@@ -467,6 +471,7 @@ class ClaudeLLMStream extends llm.LLMStream {
       eventEmitter,
       onCheckpoint,
       onPermissionRequest,
+      abortController,
     }: {
       chatCtx: llm.ChatContext
       toolCtx?: llm.ToolContext
@@ -477,6 +482,7 @@ class ClaudeLLMStream extends llm.LLMStream {
       eventEmitter: EventEmitter
       onCheckpoint: (checkpointId: string) => void
       onPermissionRequest: (toolName: string, input: Record<string, unknown>) => Promise<PermissionResult>
+      abortController?: AbortController
     },
   ) {
     super(llmInstance, { chatCtx, toolCtx, connOptions })
@@ -486,6 +492,7 @@ class ClaudeLLMStream extends llm.LLMStream {
     this.#eventEmitter = eventEmitter
     this.#onCheckpoint = onCheckpoint
     this.#onPermissionRequest = onPermissionRequest
+    this.#abortController = abortController
   }
 
   protected async run(): Promise<void> {
@@ -550,6 +557,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         model: this.#opts.model || 'claude-sonnet-4-6',
         enableFileCheckpointing: true,
         extraArgs: { 'replay-user-messages': null },
+        ...(this.#abortController && { abortController: this.#abortController }),
         ...(resumeSessionId && { resume: resumeSessionId }),
         ...(continueSession && !resumeSessionId && { continue: true }),
         ...(this.#sessionId && !resumeSessionId && !continueSession && { resume: this.#sessionId }),
@@ -688,6 +696,13 @@ class ClaudeLLMStream extends llm.LLMStream {
 
         // Stream text chunks
         if ((message as any).type === 'assistant' && (message as any).message?.content) {
+          // Emit SDK requestId on first assistant message — identifies this query()
+          // in the JSONL for tracking which research task produced which output
+          const sdkRequestId = (message as any).requestId
+          if (sdkRequestId) {
+            this.#eventEmitter.emit('query_request_id', { requestId: sdkRequestId })
+          }
+
           for (const block of (message as any).message.content) {
             if (block.type === 'text' && block.text) {
               hasOutput = true
@@ -734,6 +749,16 @@ class ClaudeLLMStream extends llm.LLMStream {
       console.log('✅ Claude response complete')
 
     } catch (error) {
+      // AbortError = clean abort (disconnect, new research, recovery) — don't push
+      // garbage text that would flow through the post-research pipeline
+      if (this.#abortController?.signal.aborted) {
+        console.log('🛑 Claude Agent SDK query aborted')
+        this.queue.put({
+          id: requestId,
+          delta: { role: 'assistant', content: '' },
+        })
+        return
+      }
       console.error('❌ Claude Agent SDK error:', error)
       this.queue.put({
         id: requestId,
