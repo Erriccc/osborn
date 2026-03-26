@@ -8,6 +8,11 @@ import { AccessToken } from 'livekit-server-sdk'
 // Initialize logger before anything else
 initializeLogger({ pretty: true, level: 'info' })
 
+// Prevent MaxListenersExceededWarning on AbortSignal from Claude SDK query() calls
+// Each resumed query() adds listeners to the shared signal; default limit is 10
+import { setMaxListeners } from 'node:events'
+setMaxListeners(50)
+
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -464,21 +469,14 @@ async function main() {
       }
 
       if (currentProvider === 'gemini') {
-        // Gemini Live Audio IGNORES toolChoice:'none' entirely — the plugin's
-        // updateOptions() has zero implementation for toolChoice. When we set it,
-        // Gemini still calls ask_fast_brain, but the SDK DROPS the tool call
-        // (because it sees toolChoice:'none'), so no speech is ever produced.
-        //
-        // FIX: Explicitly set toolChoice:'auto'. This prevents the LiveKit SDK's
-        // AsyncLocalStorage guard (agent_activity.ts:970-973) from auto-forcing
-        // toolChoice='none' when processVoiceQueue() is called from within a tool
-        // execution context (e.g. setTimeout inside askFastBrainTool.execute()).
-        // The injection bypass in ask_fast_brain.execute() detects
-        // [SCRIPT]/[PROACTIVE]/[NOTIFICATION] prefixes and returns the content
-        // directly as a tool response. Gemini then speaks the tool response.
+        // LiveKit SDK v1.0.51: generateReply({ instructions }) sends a system turn +
+        // synthetic "." user turn. After Gemini processes a tool call in this flow,
+        // autoToolReplyGeneration does NOT trigger continuation (system-only limitation).
+        // Using userInput instead makes it a "user-initiated" request where auto-continuation
+        // works. The ask_fast_brain injection bypass handles [SCRIPT]/[PROACTIVE]/[NOTIFICATION]
+        // prefixes and returns the content directly as a tool response.
         currentSession.generateReply({
-          instructions: batchedInstruction,
-          toolChoice: 'auto' as any,
+          userInput: batchedInstruction,
         })
       } else {
         // OpenAI respects toolChoice:'none' — speaks instructions directly
@@ -1585,6 +1583,9 @@ async function main() {
         const normalized = transcript.trim().replace(/\s+/g, ' ')
         if (normalized === lastSentUserTranscript) return
         if (normalized === '<noise>' || normalized.toLowerCase() === 'thank you') return
+        // Filter out voice injection content that appears as user transcript
+        // (Gemini v1.0.51: userInput in generateReply creates a user conversation item)
+        if (normalized.startsWith('[SCRIPT]') || normalized.startsWith('[PROACTIVE]') || normalized.startsWith('[NOTIFICATION]')) return
 
         console.log(`📝 User (${source}): "${transcript.substring(0, 60)}..."`)
         sendToFrontend({ type: 'user_transcript', text: transcript })
@@ -1645,6 +1646,10 @@ async function main() {
       sess.on('user_state_changed' as any, (ev: any) => {
         userState = ev.newState
         console.log(`👤 User state: ${ev.newState}`)
+        // When user stops speaking, retry voice queue — items may be waiting
+        if (ev.newState === 'listening' && voiceQueue.length > 0) {
+          setTimeout(() => processVoiceQueue(), 500)
+        }
       })
 
       // FALLBACK: playout_completed
@@ -1666,26 +1671,44 @@ async function main() {
         console.error('❌ Session error:', ev.error)
       })
 
+      // Capture voice mode at session creation — prevents state confusion
+      // if currentVoiceMode changes between session start and crash recovery
+      const sessionVoiceMode = currentVoiceMode
+
       // Close handler with auto-recovery for crashes (both realtime and direct modes)
       sess.on('close' as any, async (ev: any) => {
         console.log('🚪 Session closed:', ev.reason)
 
-        // Auto-recover from crashes in direct mode (TTS timeout, etc.)
-        if (ev.reason === 'error' && currentVoiceMode === 'direct') {
+        // Auto-recover from crashes in direct mode (TTS timeout, speech interruption, disconnect, etc.)
+        if ((ev.reason === 'error' || ev.reason === 'disconnected') && sessionVoiceMode === 'direct') {
           const now = Date.now()
           if (now - lastRecoveryTime < MIN_RECOVERY_INTERVAL) {
-            console.log('⚠️ Recovery too frequent — skipping to prevent loop')
-            sendToFrontend({ type: 'agent_state', state: 'error' })
+            console.log(`⚠️ Recovery too frequent — scheduling retry in ${MIN_RECOVERY_INTERVAL}ms`)
+            setTimeout(async () => {
+              // Re-check: if session was already recovered or user left, skip
+              if (currentSession || !room.remoteParticipants.size) return
+              console.log('🔄 Retrying direct mode recovery after guard interval...')
+              // Trigger recovery by emitting a synthetic close
+              sess.emit('close' as any, { reason: 'error' })
+            }, MIN_RECOVERY_INTERVAL)
             return
           }
           lastRecoveryTime = now
 
-          console.log('🔄 Auto-recovering direct mode session from TTS crash...')
+          console.log(`🔄 Auto-recovering direct mode session (reason: ${ev.reason})...`)
 
-          // Clean up dead session
+          // Clean up dead session — match realtime recovery's thoroughness
           try { sess.removeAllListeners() } catch {}
           currentSession = null
           currentAgent = null
+
+          // Clear stale state from crashed session
+          voiceQueue.length = 0
+          isProcessingQueue = false
+          haikuInFlight = null
+          if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+          stopProactiveLoop()
+          if (activeResearch) { activeResearch.abortController.abort(); activeResearch.cleanup(); activeResearch = null }
 
           try {
             // Reuse existing session ID so Claude SDK resumes where it left off
@@ -1705,7 +1728,29 @@ async function main() {
             agentState = 'listening'
             sendToFrontend({ type: 'agent_state', state: 'listening' })
 
+            // Resume Claude session if one was active
+            if (currentLLM?.sessionId) {
+              currentLLM.setContinueSession(true)
+            }
+
             console.log('✅ Direct mode auto-recovery complete')
+
+            // Notify user via TTS
+            try {
+              const recoveredId = currentLLM?.sessionId || recoverySessionId
+              if (recoveredId) {
+                const conversationHistory = await getConversationHistory(recoveredId, workingDir, 10)
+                const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
+                const script = await prepareRecoveryScript(historyForScript)
+                // Direct mode: use session.say() for recovery notification
+                newSession.say(script, { allowInterruptions: true })
+              } else {
+                newSession.say('Voice session was briefly interrupted but I\'m back. What were we working on?', { allowInterruptions: true })
+              }
+            } catch (err) {
+              console.log('⚠️ Failed to generate recovery script:', err)
+              try { newSession.say('I\'m back after a brief interruption. What were we working on?', { allowInterruptions: true }) } catch {}
+            }
           } catch (err) {
             console.error('❌ Direct mode auto-recovery failed:', err)
             sendToFrontend({ type: 'agent_state', state: 'error' })
@@ -1714,7 +1759,7 @@ async function main() {
         }
 
         // Auto-recover from crashes in realtime mode
-        if (ev.reason === 'error' && currentVoiceMode === 'realtime') {
+        if (ev.reason === 'error' && sessionVoiceMode === 'realtime') {
           const now = Date.now()
           if (now - lastRecoveryTime < MIN_RECOVERY_INTERVAL) {
             console.log('⚠️ Recovery too frequent — skipping to prevent loop')
