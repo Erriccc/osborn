@@ -24,7 +24,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { query as sdkQuery, tool as sdkTool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
-import { GoogleGenAI } from '@google/genai'
+import { GoogleGenAI, type Chat as GeminiChat } from '@google/genai'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs'
 import { dirname, basename, join } from 'path'
 import { homedir } from 'os'
@@ -96,10 +96,26 @@ export interface ConversationTurn {
 // Agent SDK session tracking — resume across voice questions for context continuity
 let fastBrainSessionId: string | null = null
 
+// Gemini Chat session — persists across voice questions for context continuity.
+// The Chat object auto-manages full conversation history (messages + tool calls).
+// Cleared on disconnect/reconnect/session switch via clearFastBrainSession().
+let geminiChat: GeminiChat | null = null
+
+// Anthropic direct API conversation history — persists across calls.
+// Stores condensed Q&A pairs (tool internals excluded for efficiency).
+interface FastBrainExchange {
+  question: string
+  answer: string
+}
+const MAX_FAST_BRAIN_HISTORY = 30
+let fastBrainHistory: FastBrainExchange[] = []
+
 /** Clear fast brain session state — call on disconnect/reconnect/session switch */
 export function clearFastBrainSession(): void {
   fastBrainSessionId = null
-  console.log('🧠 Fast brain: session cleared')
+  geminiChat = null
+  fastBrainHistory = []
+  console.log('🧠 Fast brain: session cleared (SDK + Gemini chat + Anthropic history)')
 }
 
 /** @deprecated Use clearFastBrainSession() instead */
@@ -793,13 +809,23 @@ async function askViaAnthropic(
     ? `${question}\n\n[LIVE RESEARCH CONTEXT — the research agent is currently working]\n${researchContext}`
     : question
 
-  // Build messages from live voice conversation history (from agent.chatCtx)
+  // Build messages: persistent fast brain history + live voice history + current question
   const messages: Anthropic.Messages.MessageParam[] = []
+
+  // 1. Inject persistent fast brain history (prior exchanges from this session)
+  for (const exchange of fastBrainHistory) {
+    messages.push({ role: 'user', content: exchange.question })
+    messages.push({ role: 'assistant', content: exchange.answer })
+  }
+
+  // 2. Inject live voice conversation history (from agent.chatCtx — what user/model actually said)
   if (chatHistory && chatHistory.length > 0) {
     for (const turn of chatHistory) {
       messages.push({ role: turn.role, content: turn.text })
     }
   }
+
+  // 3. Current question
   messages.push({ role: 'user', content: userContent })
 
   const allTools: Anthropic.Messages.Tool[] | any[] = [...tools, ANTHROPIC_WEB_SEARCH]
@@ -820,7 +846,11 @@ async function askViaAnthropic(
       const textBlock = response.content.find(
         (b): b is Anthropic.Messages.TextBlock => b.type === 'text'
       )
-      return textBlock?.text || noAnswerFallback()
+      const answer = textBlock?.text || noAnswerFallback()
+      // Persist this exchange for future calls
+      fastBrainHistory.push({ question: userContent, answer })
+      if (fastBrainHistory.length > MAX_FAST_BRAIN_HISTORY) fastBrainHistory.shift()
+      return answer
     }
 
     const toolUseBlocks = response.content.filter(
@@ -831,7 +861,10 @@ async function askViaAnthropic(
       const textBlock = response.content.find(
         (b): b is Anthropic.Messages.TextBlock => b.type === 'text'
       )
-      return textBlock?.text || noAnswerFallback()
+      const answer = textBlock?.text || noAnswerFallback()
+      fastBrainHistory.push({ question: userContent, answer })
+      if (fastBrainHistory.length > MAX_FAST_BRAIN_HISTORY) fastBrainHistory.shift()
+      return answer
     }
 
     messages.push({ role: 'assistant', content: response.content as any })
@@ -847,7 +880,10 @@ async function askViaAnthropic(
   }
 
   if (sendToChatCalledThisTurn) {
-    return "I've sent the full details to your chat. Let me know if you want to dive deeper into anything."
+    const answer = "I've sent the full details to your chat. Let me know if you want to dive deeper into anything."
+    fastBrainHistory.push({ question: userContent, answer })
+    if (fastBrainHistory.length > MAX_FAST_BRAIN_HISTORY) fastBrainHistory.shift()
+    return answer
   }
   return 'Fast brain reached maximum tool iterations. Try ask_agent for a deeper search.'
 }
@@ -874,45 +910,46 @@ async function askViaGemini(
     ? `${question}\n\n[LIVE RESEARCH CONTEXT — the research agent is currently working]\n${researchContext}`
     : question
 
-  // Build contents from live voice conversation history (from agent.chatCtx)
-  const contents: any[] = []
-  if (chatHistory && chatHistory.length > 0) {
-    for (const turn of chatHistory) {
-      contents.push({
-        role: turn.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: turn.text }],
-      })
-    }
-  }
-  contents.push({ role: 'user', parts: [{ text: userContent }] })
-
-  const systemPrompt = FAST_BRAIN_SYSTEM_PROMPT
-
-  for (let i = 0; i < 10; i++) {
-    const response = await ai.models.generateContent({
-      model: GEMINI_FAST_MODEL,
-      contents,
-      config: {
-        systemInstruction: systemPrompt,
-        tools,
+  // Create or reuse persistent Gemini Chat session.
+  // The Chat object auto-manages full conversation history (messages + tool calls).
+  // Cleared on disconnect/reconnect/session switch via clearFastBrainSession().
+  if (!geminiChat) {
+    // Seed with live voice conversation history so Gemini knows what user/model said
+    const history: any[] = []
+    if (chatHistory && chatHistory.length > 0) {
+      for (const turn of chatHistory) {
+        history.push({
+          role: turn.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: turn.text }],
+        })
       }
+    }
+    geminiChat = ai.chats.create({
+      model: GEMINI_FAST_MODEL,
+      config: {
+        systemInstruction: FAST_BRAIN_SYSTEM_PROMPT,
+        tools,
+      },
+      history,
     })
+    console.log(`🧠 Gemini fast brain: new chat session (history: ${history.length} turns)`)
+  }
 
+  // Send user message via the persistent chat — history accumulates automatically.
+  // The Chat object tracks all messages + tool calls internally.
+  let response = await geminiChat.sendMessage({ message: userContent })
+
+  // Tool call loop: execute tools and send results back, up to 10 rounds
+  for (let i = 0; i < 10; i++) {
     const functionCalls = response.functionCalls
     if (!functionCalls || functionCalls.length === 0) {
       const text = response.text
       if (text) return text
-      // If LLM returned empty text but sent content to chat, use fallback
       if (sendToChatCalledThisTurn) return "I've sent the details to your chat panel."
       return 'No answer found.'
     }
 
-    // Add model response to conversation
-    if (response.candidates?.[0]?.content) {
-      contents.push(response.candidates[0].content)
-    }
-
-    // Execute tools and send results back (web_search is async, others are sync)
+    // Execute tools
     const functionResponses = await Promise.all(functionCalls.map(async (call: any) => {
       let result: string
       if (call.name === 'web_search') {
@@ -928,7 +965,8 @@ async function askViaGemini(
       }
     }))
 
-    contents.push({ role: 'user', parts: functionResponses })
+    // Send tool results back — chat auto-tracks the full exchange
+    response = await geminiChat.sendMessage({ message: functionResponses })
   }
 
   if (sendToChatCalledThisTurn) {

@@ -585,6 +585,14 @@ function ControlMenu({
   mcpServers,
   onMcpToggle,
   onLoadMcpStatus,
+  skills,
+  onAddSkill,
+  showAddSkill,
+  setShowAddSkill,
+  newSkillName,
+  setNewSkillName,
+  newSkillContent,
+  setNewSkillContent,
 }: {
   sessions: SessionInfo[]
   currentSessionId?: string | null
@@ -596,6 +604,14 @@ function ControlMenu({
   mcpServers?: McpServerStatus[]
   onMcpToggle?: (serverKey: string, enabled: boolean) => void
   onLoadMcpStatus?: () => void
+  skills?: { name: string; description: string }[]
+  onAddSkill?: (name: string, content: string) => void
+  showAddSkill?: boolean
+  setShowAddSkill?: (show: boolean) => void
+  newSkillName?: string
+  setNewSkillName?: (name: string) => void
+  newSkillContent?: string
+  setNewSkillContent?: (content: string) => void
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'history' | 'tools'>('history')
@@ -603,6 +619,8 @@ function ControlMenu({
   const [pendingSwitchSessionId, setPendingSwitchSessionId] = useState<string | null>(null)
 
   const enabledMcpCount = (mcpServers || []).filter(s => s.enabled).length
+  const skillCount = (skills || []).length
+  const toolsBadgeCount = enabledMcpCount + skillCount
 
   // Load data when tabs are opened
   const handleTabChange = (tab: 'history' | 'tools') => {
@@ -654,9 +672,9 @@ function ControlMenu({
               }`}
             >
               Tools
-              {enabledMcpCount > 0 && (
+              {toolsBadgeCount > 0 && (
                 <span className="ml-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-green-500/20 text-green-400">
-                  {enabledMcpCount}
+                  {toolsBadgeCount}
                 </span>
               )}
             </button>
@@ -726,6 +744,66 @@ function ControlMenu({
           {/* Tools Tab */}
           {activeTab === 'tools' && (
             <div className="max-h-96 overflow-y-auto p-3 space-y-3">
+              {/* Skills Section */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Skills</h4>
+                  <button
+                    onClick={() => setShowAddSkill?.(!showAddSkill)}
+                    className="text-[10px] text-violet-400 hover:text-violet-300 transition-colors"
+                  >
+                    {showAddSkill ? 'Cancel' : '+ Add'}
+                  </button>
+                </div>
+                {showAddSkill && (
+                  <div className="mb-2 p-2 rounded-lg bg-gray-800/50 border border-gray-700/30 space-y-2">
+                    <input
+                      type="text"
+                      value={newSkillName || ''}
+                      onChange={(e) => setNewSkillName?.(e.target.value)}
+                      placeholder="Skill name (e.g. deploy-check)"
+                      className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-violet-500"
+                    />
+                    <textarea
+                      value={newSkillContent || ''}
+                      onChange={(e) => setNewSkillContent?.(e.target.value)}
+                      placeholder="# Skill: Name&#10;&#10;Description...&#10;&#10;## When to use&#10;...&#10;&#10;## How to execute&#10;..."
+                      rows={5}
+                      className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-violet-500 resize-none font-mono"
+                    />
+                    <button
+                      onClick={() => {
+                        if (newSkillName?.trim() && newSkillContent?.trim()) {
+                          onAddSkill?.(newSkillName.trim(), newSkillContent.trim())
+                        }
+                      }}
+                      disabled={!newSkillName?.trim() || !newSkillContent?.trim()}
+                      className="w-full py-1.5 text-xs bg-violet-500/20 text-violet-400 rounded hover:bg-violet-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Save Skill
+                    </button>
+                  </div>
+                )}
+                {skills && skills.length > 0 ? (
+                  <div className="space-y-1">
+                    {skills.map((skill) => (
+                      <div
+                        key={skill.name}
+                        className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
+                      >
+                        <span className="text-sm font-medium text-gray-200">{skill.name}</span>
+                        {skill.description && (
+                          <p className="text-[11px] text-gray-500 truncate">{skill.description}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-gray-500">No skills installed</p>
+                )}
+              </div>
+
+              {/* MCP Servers Section */}
               {(!mcpServers || mcpServers.length === 0) ? (
                 <p className="text-center py-4 text-gray-500 text-xs">No MCP tools available</p>
               ) : (
@@ -1063,6 +1141,11 @@ function VoiceRoomInner({
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(true)
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
+  // Skills state
+  const [skills, setSkills] = useState<{ name: string; description: string }[]>([])
+  const [showAddSkill, setShowAddSkill] = useState(false)
+  const [newSkillName, setNewSkillName] = useState('')
+  const [newSkillContent, setNewSkillContent] = useState('')
   // Research tracking state
   const [activeResearch, setActiveResearch] = useState<{ taskId: string; task: string; toolCount: number } | null>(null)
 
@@ -1284,6 +1367,10 @@ function VoiceRoomInner({
           }))
           setMcpServers(merged)
         }
+        // Store skills from agent_ready
+        if (data.skills && Array.isArray(data.skills)) {
+          setSkills(data.skills)
+        }
         // Only process session gate logic on the FIRST agent_ready (skip retries)
         if (!sessionGateCompletedRef.current && !showResumePromptRef.current) {
           // If a session was pre-selected from the session browser, skip the gate entirely
@@ -1358,10 +1445,14 @@ function VoiceRoomInner({
           textLength: data.text?.length,
           isStreaming: data.isStreaming,
           isFinal: data.isFinal,
+          agentRole: data.agentRole,
           preview: data.text?.substring(0, 100)
         })
         if (data.text && data.text.trim()) {
-          addMessageRef.current?.('assistant', data.text, undefined, 'log')
+          // Direct mode: show as main chat message (visible immediately)
+          // Realtime mode: show as log (research agent output, not primary chat)
+          const category = data.agentRole === 'direct' ? 'chat' : 'log'
+          addMessageRef.current?.('assistant', data.text, undefined, category)
         }
       } else if (data.type === 'permission_request') {
         setPendingPermission({
@@ -1587,6 +1678,17 @@ function VoiceRoomInner({
           }))
           setMcpServers(merged)
         }
+      } else if (data.type === 'skills_status') {
+        if (data.skills && Array.isArray(data.skills)) {
+          setSkills(data.skills)
+        }
+      } else if (data.type === 'skill_add_result') {
+        if (data.success && data.skills) {
+          setSkills(data.skills)
+          setShowAddSkill(false)
+          setNewSkillName('')
+          setNewSkillContent('')
+        }
       } else {
         console.log('❓ Unknown message type:', data.type)
       }
@@ -1768,6 +1870,17 @@ function VoiceRoomInner({
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent])
 
+  // Add a new skill
+  const handleAddSkill = useCallback((name: string, content: string) => {
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'skill_add',
+      name,
+      content,
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [sendToAgent])
+
   // Helper: complete the session gate (unmute mic, send session_selected to backend)
   const completeSessionGate = useCallback((sessionId: string | null) => {
     setShowResumePrompt(false)
@@ -1911,6 +2024,14 @@ function VoiceRoomInner({
               mcpServers={mcpServers}
               onMcpToggle={handleMcpToggle}
               onLoadMcpStatus={handleLoadMcpStatus}
+              skills={skills}
+              onAddSkill={handleAddSkill}
+              showAddSkill={showAddSkill}
+              setShowAddSkill={setShowAddSkill}
+              newSkillName={newSkillName}
+              setNewSkillName={setNewSkillName}
+              newSkillContent={newSkillContent}
+              setNewSkillContent={setNewSkillContent}
             />
 
             {/* Spacer */}

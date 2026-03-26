@@ -9,8 +9,10 @@ import { AccessToken } from 'livekit-server-sdk'
 initializeLogger({ pretty: true, level: 'info' })
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
-import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig } from './voice-io.js'
+import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { askHaiku, askFastBrain, updateSpecFromJSONL, processResearchCompletion, handleResearchBatch, prepareBriefingScript, prepareRecoveryScript, writeQuestionToSpec, checkOutputAgainstQuestions, generateProactivePrompt, clearFastBrainSession, type ConversationTurn, type FastBrainCallbacks } from './fast-brain.js'
@@ -32,6 +34,31 @@ import { z } from 'zod'
 //   - Voice LLM with tool calling (ask_agent, respond_permission)
 //   - Routes tasks to Claude agents for execution
 // ============================================================
+
+// Load skills list with name + description for frontend display
+function loadSkillsList(agentDir: string): { name: string; description: string }[] {
+  const skillsDir = join(agentDir, '.claude', 'skills')
+  if (!existsSync(skillsDir)) return []
+  const skills: { name: string; description: string }[] = []
+  try {
+    for (const skillName of readdirSync(skillsDir)) {
+      const skillFile = join(skillsDir, skillName, 'SKILL.md')
+      if (existsSync(skillFile)) {
+        const content = readFileSync(skillFile, 'utf-8')
+        // Extract title from first # heading, or use folder name
+        const titleMatch = content.match(/^#\s+(?:Skill:\s*)?(.+)/m)
+        const name = titleMatch ? titleMatch[1].trim() : skillName
+        // Extract description from first paragraph after heading
+        const descMatch = content.match(/^#[^\n]+\n+([^\n#]+)/m)
+        const description = descMatch ? descMatch[1].trim() : ''
+        skills.push({ name, description })
+      }
+    }
+  } catch (err) {
+    console.warn('⚠️ Failed to load skills list:', err)
+  }
+  return skills
+}
 
 // Generate a short, user-friendly room code
 function generateRoomCode(): string {
@@ -646,16 +673,19 @@ async function main() {
   async function createDirectSession(resumeSessionId?: string): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
     console.log('🎯 Creating direct session...')
 
-    const stt = createSTT({ provider: 'deepgram' })
-    const tts = createTTS({ provider: 'deepgram', voice: 'aura-asteria-en' })
+    const stt = createSTT(DIRECT_MODE_STT)
+    const tts = createTTS(DIRECT_MODE_TTS)
     const vad = await createVAD()
 
-    // Create Claude LLM wrapper in research mode
+    // Create Claude LLM wrapper — direct mode uses speech-optimized system prompt
+    // skipTTSQueue: bypass LiveKit's BufferedTokenStream, use session.say() instead
     const directLLM = createClaudeLLM({
       workingDirectory: workingDir,
       sessionBaseDir,
       mcpServers,
       resumeSessionId,
+      voiceMode: 'direct',
+      skipTTSQueue: true,
     })
     currentLLM = directLLM
 
@@ -760,6 +790,44 @@ async function main() {
       }
     })
 
+    // Wire up TTS say — bypass LiveKit's BufferedTokenStream, speak directly via session.say()
+    // Each text block from Claude gets spoken immediately as it arrives, no internal buffering
+    directLLM.events.on('tts_say', (data) => {
+      // Guard: session must be alive — TTS errors can kill the session while background query runs
+      if (!currentSession) {
+        console.warn(`⚠️ tts_say fired but currentSession is null — text dropped: "${data.text?.substring(0, 60)}"`)
+        return
+      }
+      if (!data.text?.trim()) {
+        console.log(`🔇 tts_say fired but text is empty — skipping`)
+        return
+      }
+
+      const sayId = Date.now() // simple ID to correlate start/end logs
+      console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text.substring(0, 60)}..."`)
+
+      try {
+        const handle = (currentSession as any).say(data.text)
+
+        // Log when speech completes successfully
+        if (handle && typeof handle.then === 'function') {
+          handle
+            .then(() => {
+              console.log(`✅ [${sayId}] session.say DONE`)
+            })
+            .catch((err: any) => {
+              console.error(`❌ [${sayId}] session.say FAILED:`, err?.message || err)
+            })
+        } else if (handle && handle._markDone) {
+          // say() returned a SpeechHandle (not a Promise)
+          console.log(`🗣️ [${sayId}] session.say queued (SpeechHandle returned)`)
+        }
+      } catch (err: any) {
+        // Catch synchronous "AgentSession is not running" errors
+        console.warn(`⚠️ [${sayId}] session.say threw — session likely dead: ${err?.message}`)
+      }
+    })
+
     // Wire up session resume failure - notify frontend when SDK creates new session instead
     directLLM.events.on('session_resume_failed', (data) => {
       console.error(`❌ Session resume failed: ${data.requestedSessionId} → ${data.actualSessionId}`)
@@ -789,9 +857,15 @@ async function main() {
       turnDetection: 'vad',
     })
 
-    // Create the session (no longer passes STT/LLM/TTS here)
+    // Create the session
+    // minEndpointingDelay: After STT finalizes a transcript, wait this long before
+    // considering the turn complete. Default is 500ms which cuts off mid-thought.
+    // 3000ms matches our VAD minSilenceDuration so both agree on when the user is done.
     const session = new voice.AgentSession({
       turnDetection: 'vad',
+      voiceOptions: {
+        minEndpointingDelay: 3000, // 3s - gives user more time to finish speaking before we cut off
+      },
     })
 
     return { session, agent }
@@ -1390,6 +1464,7 @@ async function main() {
       activeResearch.cleanup()
       activeResearch = null
     }
+    lastCompletedResearch = null
     currentSession = null
     currentAgent = null
     currentLLM = null
@@ -1411,6 +1486,7 @@ async function main() {
       activeResearch.cleanup()
       activeResearch = null
     }
+    lastCompletedResearch = null
     if (currentSession) {
       console.log('🧹 Cleaning up previous session...')
       try {
@@ -1590,9 +1666,52 @@ async function main() {
         console.error('❌ Session error:', ev.error)
       })
 
-      // Close handler with auto-recovery for Gemini 1008 crashes
+      // Close handler with auto-recovery for crashes (both realtime and direct modes)
       sess.on('close' as any, async (ev: any) => {
         console.log('🚪 Session closed:', ev.reason)
+
+        // Auto-recover from crashes in direct mode (TTS timeout, etc.)
+        if (ev.reason === 'error' && currentVoiceMode === 'direct') {
+          const now = Date.now()
+          if (now - lastRecoveryTime < MIN_RECOVERY_INTERVAL) {
+            console.log('⚠️ Recovery too frequent — skipping to prevent loop')
+            sendToFrontend({ type: 'agent_state', state: 'error' })
+            return
+          }
+          lastRecoveryTime = now
+
+          console.log('🔄 Auto-recovering direct mode session from TTS crash...')
+
+          // Clean up dead session
+          try { sess.removeAllListeners() } catch {}
+          currentSession = null
+          currentAgent = null
+
+          try {
+            // Reuse existing session ID so Claude SDK resumes where it left off
+            const recoverySessionId = currentLLM?.sessionId || resumeSessionId
+            const result = await createDirectSession(recoverySessionId)
+            const newSession = result.session
+            const newAgent = result.agent
+            currentSession = newSession
+            currentAgent = newAgent
+
+            // Re-wire event listeners on the new session
+            wireSessionEvents(newSession, newAgent)
+
+            await newSession.start({ agent: newAgent, room })
+
+            // Sync state
+            agentState = 'listening'
+            sendToFrontend({ type: 'agent_state', state: 'listening' })
+
+            console.log('✅ Direct mode auto-recovery complete')
+          } catch (err) {
+            console.error('❌ Direct mode auto-recovery failed:', err)
+            sendToFrontend({ type: 'agent_state', state: 'error' })
+          }
+          return
+        }
 
         // Auto-recover from crashes in realtime mode
         if (ev.reason === 'error' && currentVoiceMode === 'realtime') {
@@ -1714,6 +1833,7 @@ async function main() {
           mcpServers: getMcpServerStatusList(config),
           enabledMcpServers: enabledMcpNames,
           workingDirectory: workingDir,
+          skills: loadSkillsList(sessionBaseDir),
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -2196,6 +2316,31 @@ async function main() {
           enabledKeys,
         })
       }
+      else if (data.type === 'get_skills') {
+        await sendToFrontend({
+          type: 'skills_status',
+          skills: loadSkillsList(sessionBaseDir),
+        })
+      }
+      else if (data.type === 'skill_add') {
+        const skillName = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+        const skillContent = (data.content as string || '').trim()
+        if (!skillName || !skillContent) {
+          await sendToFrontend({ type: 'skill_add_result', success: false, error: 'Name and content are required' })
+        } else {
+          try {
+            const skillDir = join(sessionBaseDir, '.claude', 'skills', skillName)
+            mkdirSync(skillDir, { recursive: true })
+            writeFileSync(join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
+            console.log(`📚 Skill added: ${skillName}`)
+            const skills = loadSkillsList(sessionBaseDir)
+            await sendToFrontend({ type: 'skill_add_result', success: true, skills })
+          } catch (err) {
+            console.error('❌ Failed to add skill:', err)
+            await sendToFrontend({ type: 'skill_add_result', success: false, error: String(err) })
+          }
+        }
+      }
       else if (data.type === 'session_selected') {
         const sessionId = data.sessionId as string | null
         console.log(`🚪 Session gate completed: ${sessionId ? `resume ${sessionId}` : 'fresh start'}`)
@@ -2249,6 +2394,7 @@ async function main() {
           }
         } else {
           // Fresh start - greet via voice queue (not userInput, which creates a user transcript)
+          currentResumeSessionId = undefined
           console.log('🆕 Starting fresh session')
           if (currentSession) {
             try {

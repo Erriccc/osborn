@@ -11,7 +11,9 @@ import { llm, shortuuid, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } f
 import { query, type Options, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
 import { saveSessionMetadata } from './config.js'
-import { getResearchSystemPrompt } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 export interface ClaudeLLMOptions {
   workingDirectory?: string      // cwd for Claude Code (where it reads/writes/runs commands)
@@ -23,6 +25,8 @@ export interface ClaudeLLMOptions {
   continueSession?: boolean
   mcpServers?: Record<string, McpServerConfig>
   model?: string  // Claude model ID (default: claude-sonnet-4-6)
+  voiceMode?: 'direct' | 'realtime'  // Which voice pipeline — controls system prompt selection
+  skipTTSQueue?: boolean  // When true, emit 'tts_say' events instead of queue.put() — for session.say() bypass
 }
 
 /**
@@ -61,44 +65,31 @@ function stripMarkdownForTTS(text: string): string {
     .trim()
 }
 
+
 /**
- * Summarize text for TTS - create short spoken summaries
- * Full output goes to frontend, this condensed version is spoken
+ * Load skill files from agent/.claude/skills/{name}/SKILL.md
+ * Injects into system prompt so Claude sees them as available capabilities.
+ * Skills execute via Bash — no SDK settingSources needed.
  */
-function summarizeForTTS(text: string, maxLength: number = 500): string {
-  // First strip markdown
-  let summary = stripMarkdownForTTS(text)
+function loadSkillsFromDir(agentDir: string): string {
+  const skillsDir = join(agentDir, '.claude', 'skills')
+  if (!existsSync(skillsDir)) return ''
 
-  // Remove file paths (keep just filename)
-  summary = summary.replace(/\/[\w\-\.\/]+\/([\w\-\.]+)/g, '$1')
-
-  // Remove code block placeholders if too many
-  const codeBlockCount = (summary.match(/\[code block\]/g) || []).length
-  if (codeBlockCount > 1) {
-    summary = summary.replace(/\[code block\]/g, '').replace(/\s+/g, ' ')
-    summary = summary.trim() + ` I've included ${codeBlockCount} code examples.`
-  }
-
-  // If still too long, take first sentence(s) up to maxLength
-  if (summary.length > maxLength) {
-    // Try to break at sentence boundaries
-    const sentences = summary.match(/[^.!?]+[.!?]+/g) || [summary]
-    let result = ''
-    for (const sentence of sentences) {
-      if ((result + sentence).length <= maxLength) {
-        result += sentence
-      } else {
-        break
+  const skills: string[] = []
+  try {
+    for (const skillName of readdirSync(skillsDir)) {
+      const skillFile = join(skillsDir, skillName, 'SKILL.md')
+      if (existsSync(skillFile)) {
+        skills.push(readFileSync(skillFile, 'utf-8').trim())
       }
     }
-    // If no complete sentence fits, truncate with ellipsis
-    if (!result) {
-      result = summary.substring(0, maxLength - 3) + '...'
-    }
-    summary = result.trim()
+  } catch (err) {
+    console.warn('⚠️ Failed to load skills:', err)
   }
 
-  return summary || 'Done.'
+  if (skills.length === 0) return ''
+  console.log(`📚 Loaded ${skills.length} skill(s) from ${skillsDir}`)
+  return `<available-skills>\n${skills.join('\n\n---\n\n')}\n</available-skills>`
 }
 
 // Research mode tools — full research capabilities
@@ -149,6 +140,8 @@ export class ClaudeLLM extends llm.LLM {
       resumeSessionId: this.#resumeSessionId || undefined,
       continueSession: this.#continueSession,
       mcpServers: this.#mcpServers,
+      voiceMode: opts.voiceMode || 'realtime',
+      skipTTSQueue: opts.skipTTSQueue || false,
     }
     this.#eventEmitter = opts.eventEmitter || new EventEmitter()
 
@@ -542,13 +535,7 @@ class ClaudeLLMStream extends llm.LLMStream {
             : `.osborn/sessions/${sessionId}/`)
         : null
 
-      // Build allowedTools with MCP wildcard patterns
-      const mcpKeys = Object.keys(this.#opts.mcpServers || {})
-      const mcpPatterns = mcpKeys.map(key => `mcp__${key}__*`)
-      const allowedTools = [
-        ...(this.#opts.allowedTools || []),
-        ...mcpPatterns,
-      ]
+      const allowedTools = this.#opts.allowedTools || []
 
       const sdkOptions: Options = {
         cwd: this.#opts.workingDirectory,
@@ -561,18 +548,14 @@ class ClaudeLLMStream extends llm.LLMStream {
         ...(resumeSessionId && { resume: resumeSessionId }),
         ...(continueSession && !resumeSessionId && { continue: true }),
         ...(this.#sessionId && !resumeSessionId && !continueSession && { resume: this.#sessionId }),
-        ...(mcpKeys.length > 0 && {
-          mcpServers: this.#opts.mcpServers,
-        }),
-        ...(mcpKeys.length > 0 && (() => {
-          for (const [key, cfg] of Object.entries(this.#opts.mcpServers || {})) {
-            const cfgType = (cfg as any).type || 'stdio'
-            console.log(`🔌 SDK query MCP: ${key} [type=${cfgType}]`)
-          }
-          return {}
-        })()),
-        // Research mode system prompt — always injected
-        systemPrompt: getResearchSystemPrompt(workspacePath),
+        // System prompt — direct mode gets speech-optimized prompt, realtime gets structured research prompt
+        // Skills from agent/.claude/skills/ are appended if present
+        systemPrompt: [
+          this.#opts.voiceMode === 'direct'
+            ? getDirectModeResearchPrompt(workspacePath)
+            : getResearchSystemPrompt(workspacePath),
+          loadSkillsFromDir(this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()),
+        ].filter(Boolean).join('\n\n'),
         canUseTool: async (toolName, input, _options) => {
           // Auto-approve writes to session workspace (but block spec.md and library/ — fast brain manages those)
           if (toolName === 'Write' || toolName === 'Edit') {
@@ -641,6 +624,124 @@ class ClaudeLLMStream extends llm.LLMStream {
       let hasOutput = false
       let fullResponse = '' // Collect full response for frontend
 
+      // DIRECT MODE OPTIMIZATION: When skipTTSQueue is true, we run the Claude query
+      // in the background and return from run() immediately. This is critical because:
+      //
+      // LiveKit's main speech loop (agent_activity.ts) processes one SpeechHandle at a time.
+      // The LLM's SpeechHandle blocks the queue until run() returns (which closes the queue
+      // → pipeline completes → _markGenerationDone()). If we await the full query() here,
+      // the pipeline is blocked for the entire duration of tool execution (10-30s).
+      // Meanwhile, session.say() SpeechHandles queue up but can't play.
+      //
+      // By returning early, the pipeline completes in milliseconds. The say() handles
+      // created by tts_say events get processed by the main loop immediately.
+      // The query continues in the background — text arrives via tts_say, tools via hooks.
+      if (this.#opts.skipTTSQueue) {
+        const bgAbortController = this.#abortController
+        const bgEventEmitter = this.#eventEmitter
+        const bgOpts = this.#opts
+        const bgOnSessionId = this.#onSessionId
+        const bgOnCheckpoint = this.#onCheckpoint
+        const self = this
+
+        // Fire-and-forget: query runs in background, emits tts_say events as text arrives
+        ;(async () => {
+          try {
+            for await (const message of query({ prompt: userText, options: sdkOptions })) {
+              // Abort check
+              if (bgAbortController?.signal.aborted) break
+
+              // Session ID capture (same as synchronous path)
+              if ((message as any).type === 'system' && (message as any).subtype === 'init') {
+                const mcpServers = (message as any).mcp_servers
+                if (mcpServers && Array.isArray(mcpServers)) {
+                  for (const s of mcpServers) {
+                    const status = s.status === 'connected' ? '✅' : '❌'
+                    console.log(`${status} MCP server ${s.name}: ${s.status}`)
+                    if (s.status !== 'connected') {
+                      console.log(`   🔍 MCP error:`, JSON.stringify(s))
+                    }
+                  }
+                }
+                const newSessionId = (message as any).session_id
+                if (newSessionId) {
+                  bgOnSessionId(newSessionId)
+                  const isNewSession = !self.#sessionId
+                  if (isNewSession) console.log(`📋 New session: ${newSessionId}`)
+                  self.#sessionId = newSessionId
+                  if (isNewSession && bgOpts.workingDirectory) {
+                    saveSessionMetadata(bgOpts.workingDirectory, {
+                      sessionId: newSessionId,
+                      lastUpdated: new Date().toISOString(),
+                      projectPath: bgOpts.workingDirectory,
+                    })
+                  }
+                  const requestedResumeId = bgOpts.resumeSessionId
+                  if (requestedResumeId && newSessionId !== requestedResumeId) {
+                    console.error(`❌ Session resume FAILED: Expected ${requestedResumeId.substring(0, 8)}..., got ${newSessionId.substring(0, 8)}...`)
+                    bgEventEmitter.emit('session_resume_failed', { requestedSessionId: requestedResumeId, actualSessionId: newSessionId })
+                  } else if (requestedResumeId && newSessionId === requestedResumeId) {
+                    console.log(`✅ Session resumed successfully: ${newSessionId.substring(0, 8)}...`)
+                  }
+                }
+              }
+
+              // Checkpoint capture
+              if ((message as any).type === 'user' && (message as any).uuid) {
+                bgOnCheckpoint((message as any).uuid)
+              }
+
+              // Stream text → tts_say events (the whole point of background mode)
+              if ((message as any).type === 'assistant' && (message as any).message?.content) {
+                const sdkRequestId = (message as any).requestId
+                if (sdkRequestId) bgEventEmitter.emit('query_request_id', { requestId: sdkRequestId })
+
+                for (const block of (message as any).message.content) {
+                  if (block.type === 'text' && block.text) {
+                    hasOutput = true
+                    bgEventEmitter.emit('assistant_text', { text: block.text })
+                    const ttsChunk = stripMarkdownForTTS(block.text)
+                    if (ttsChunk.trim()) {
+                      console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk.substring(0, 60)}..."`)
+                      bgEventEmitter.emit('tts_say', { text: ttsChunk })
+                    }
+                  }
+                }
+              }
+
+              // Final result
+              if ((message as any).type === 'result' && (message as any).result) {
+                bgEventEmitter.emit('assistant_result', { text: (message as any).result })
+                if (!hasOutput) {
+                  hasOutput = true
+                  const ttsText = stripMarkdownForTTS((message as any).result)
+                  if (ttsText.trim()) {
+                    console.log(`🔊 TTS say result (${ttsText.length} chars): "${ttsText.substring(0, 60)}..."`)
+                    bgEventEmitter.emit('tts_say', { text: ttsText })
+                  }
+                }
+              }
+            }
+
+            if (!hasOutput) {
+              bgEventEmitter.emit('tts_say', { text: 'Done.' })
+            }
+            console.log('✅ Claude response complete (background)')
+          } catch (error) {
+            if (bgAbortController?.signal.aborted) {
+              console.log('🛑 Claude Agent SDK query aborted (background)')
+              return
+            }
+            console.error('❌ Claude Agent SDK error (background):', error)
+            bgEventEmitter.emit('tts_say', { text: 'Sorry, I encountered an error.' })
+          }
+        })()
+
+        // Return immediately — queue closes, pipeline completes, say() handles play
+        console.log('🚀 Direct mode: Claude query running in background, pipeline released')
+        return
+      }
+
       for await (const message of query({ prompt: userText, options: sdkOptions })) {
         // Capture session ID for context continuity
         if ((message as any).type === 'system' && (message as any).subtype === 'init') {
@@ -694,7 +795,7 @@ class ClaudeLLMStream extends llm.LLMStream {
           this.#onCheckpoint(checkpointId)
         }
 
-        // Stream text chunks
+        // Stream text chunks — send each assistant text block to TTS
         if ((message as any).type === 'assistant' && (message as any).message?.content) {
           // Emit SDK requestId on first assistant message — identifies this query()
           // in the JSONL for tracking which research task produced which output
@@ -711,13 +812,28 @@ class ClaudeLLMStream extends llm.LLMStream {
               // Emit RAW text to frontend (for chat bubbles with full formatting)
               this.#eventEmitter.emit('assistant_text', { text: rawText })
 
-              // Collect for final TTS summary
-              fullResponse += rawText + ' '
+              // Strip markdown for clean speech
+              const ttsChunk = stripMarkdownForTTS(rawText)
+              if (ttsChunk.trim()) {
+                if (this.#opts.skipTTSQueue) {
+                  // Direct mode: emit event for session.say() — bypasses LiveKit's
+                  // BufferedTokenStream which causes stuck/delayed/out-of-order audio
+                  console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk.substring(0, 60)}..."`)
+                  this.#eventEmitter.emit('tts_say', { text: ttsChunk })
+                } else {
+                  // Realtime mode: use LLM stream queue (framework handles TTS)
+                  console.log(`🔊 TTS stream (${ttsChunk.length} chars): "${ttsChunk.substring(0, 60)}..."`)
+                  this.queue.put({
+                    id: requestId,
+                    delta: { role: 'assistant', content: ttsChunk },
+                  })
+                }
+              }
             }
           }
         }
 
-        // Final result
+        // Final result — only speak if no text blocks were streamed already
         if ((message as any).type === 'result' && (message as any).result) {
           const rawResult = (message as any).result
 
@@ -725,25 +841,34 @@ class ClaudeLLMStream extends llm.LLMStream {
           this.#eventEmitter.emit('assistant_result', { text: rawResult })
 
           if (!hasOutput) {
-            fullResponse = rawResult
             hasOutput = true
+            const ttsText = stripMarkdownForTTS(rawResult)
+            if (ttsText.trim()) {
+              if (this.#opts.skipTTSQueue) {
+                console.log(`🔊 TTS say result (${ttsText.length} chars): "${ttsText.substring(0, 60)}..."`)
+                this.#eventEmitter.emit('tts_say', { text: ttsText })
+              } else {
+                console.log(`🔊 TTS result (${ttsText.length} chars): "${ttsText.substring(0, 60)}..."`)
+                this.queue.put({
+                  id: requestId,
+                  delta: { role: 'assistant', content: ttsText },
+                })
+              }
+            }
           }
         }
       }
 
-      // Send SUMMARIZED output to TTS (spoken)
-      if (hasOutput && fullResponse.trim()) {
-        const ttsText = summarizeForTTS(fullResponse.trim())
-        console.log(`🔊 TTS (summarized ${fullResponse.length} → ${ttsText.length} chars): "${ttsText.substring(0, 80)}..."`)
-        this.queue.put({
-          id: requestId,
-          delta: { role: 'assistant', content: ttsText },
-        })
-      } else {
-        this.queue.put({
-          id: requestId,
-          delta: { role: 'assistant', content: 'Done.' },
-        })
+      // If Claude produced no output at all, say "Done."
+      if (!hasOutput) {
+        if (this.#opts.skipTTSQueue) {
+          this.#eventEmitter.emit('tts_say', { text: 'Done.' })
+        } else {
+          this.queue.put({
+            id: requestId,
+            delta: { role: 'assistant', content: 'Done.' },
+          })
+        }
       }
 
       console.log('✅ Claude response complete')
@@ -753,17 +878,20 @@ class ClaudeLLMStream extends llm.LLMStream {
       // garbage text that would flow through the post-research pipeline
       if (this.#abortController?.signal.aborted) {
         console.log('🛑 Claude Agent SDK query aborted')
-        this.queue.put({
-          id: requestId,
-          delta: { role: 'assistant', content: '' },
-        })
+        if (!this.#opts.skipTTSQueue) {
+          this.queue.put({ id: requestId, delta: { role: 'assistant', content: '' } })
+        }
         return
       }
       console.error('❌ Claude Agent SDK error:', error)
-      this.queue.put({
-        id: requestId,
-        delta: { role: 'assistant', content: 'Sorry, I encountered an error.' },
-      })
+      if (this.#opts.skipTTSQueue) {
+        this.#eventEmitter.emit('tts_say', { text: 'Sorry, I encountered an error.' })
+      } else {
+        this.queue.put({
+          id: requestId,
+          delta: { role: 'assistant', content: 'Sorry, I encountered an error.' },
+        })
+      }
     }
   }
 }

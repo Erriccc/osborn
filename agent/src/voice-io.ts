@@ -20,7 +20,7 @@ export interface STTConfig {
 }
 
 export interface TTSConfig {
-  provider: 'gemini' | 'openai' | 'elevenlabs' | 'deepgram'
+  provider: 'gemini' | 'openai' | 'elevenlabs' | 'deepgram' | 'groq-orpheus'
   voice?: string
   model?: string
 }
@@ -82,8 +82,19 @@ export function createTTS(config: TTSConfig) {
 
     case 'deepgram':
       tts = new deepgram.TTS({
-        model: (config.model || 'aura-asteria-en') as any,
+        model: (config.model || 'aura-2-asteria-en') as any,
       })
+      break
+
+    case 'groq-orpheus':
+      // Groq Orpheus TTS via OpenAI-compatible API ($22/M chars)
+      // Voices: autumn, diana, hannah, austin, daniel, troy
+      tts = new openai.TTS({
+        model: config.model || 'canopylabs/orpheus-v1-english',
+        voice: (config.voice as any) || 'autumn',
+        apiKey: process.env.GROQ_API_KEY,
+        baseURL: 'https://api.groq.com/openai/v1',
+      } as any)
       break
 
     default:
@@ -111,24 +122,24 @@ export async function createVAD() {
   return silero.VAD.load({
     // Minimum 0.5s speech before triggering - prevents noise/short sounds
     // Higher value = more complete utterances before processing
-    minSpeechDuration: 0.5,
+    minSpeechDuration: 2.5,
 
-    // Wait 1.2s of silence before considering speech "done"
-    // Allows natural pauses mid-sentence without triggering STT
-    // (increased from 0.8s to reduce sentence splitting)
-    minSilenceDuration: 1.2,
+    // Wait 5s of silence before considering speech "done"
+    // Allows natural thinking pauses and multi-sentence input without splitting
+    // (increased from 1.2s — user reported speech getting fragmented into tiny turns)
+    minSilenceDuration: 2.5,
 
     // Add 0.2s padding to start of speech chunks for cleaner audio
     prefixPaddingDuration: 0.2,
 
     // Higher threshold = less sensitive to quiet sounds/noise
     // Default is 0.5, using 0.65 to reduce false positives
-    activationThreshold: 0.65,
+    activationThreshold: 0.95,
   })
 }
 
 /**
- * Default voice I/O configuration
+ * Default voice I/O configuration (used by realtime mode fallback)
  * Uses Deepgram STT (fast, accurate) + Deepgram TTS (fast, good)
  */
 export const DEFAULT_VOICE_IO_CONFIG: VoiceIOConfig = {
@@ -139,8 +150,25 @@ export const DEFAULT_VOICE_IO_CONFIG: VoiceIOConfig = {
   },
   tts: {
     provider: 'deepgram',
-    voice: 'aura-asteria-en',
+    voice: 'aura-2-asteria-en',
   },
+}
+
+/**
+ * Direct mode voice config — centralized here for easy provider swapping.
+ * To switch providers: comment out the active line, uncomment the alternative.
+ */
+export const DIRECT_MODE_STT: STTConfig = {
+  // provider: 'groq-whisper', model: 'whisper-large-v3-turbo',
+  // provider: 'openai-whisper', model: 'whisper-1',
+  provider: 'deepgram', model: 'nova-3', language: 'en',
+}
+
+export const DIRECT_MODE_TTS: TTSConfig = {
+  // provider: 'deepgram', model: 'aura-2-asteria-en',
+  // provider: 'gemini', model: 'gemini-2.5-flash-preview-tts', voice: 'apollo',
+  provider: 'openai', model: 'tts-1', voice: 'fable', // Fable, alloy
+  // provider: 'groq-orpheus', model: 'canopylabs/orpheus-v1-english', voice: 'autumn',  // $22/M chars — voices: autumn, diana, hannah, austin, daniel, troy
 }
 
 // ============================================================

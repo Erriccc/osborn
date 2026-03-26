@@ -194,7 +194,7 @@ const DEFAULT_CONFIG: OsbornConfig = {
     },
     tts: {
       provider: 'deepgram',
-      voice: 'aura-asteria-en',
+      voice: 'aura-2-asteria-en',
     },
   },
   mcpServers: {
