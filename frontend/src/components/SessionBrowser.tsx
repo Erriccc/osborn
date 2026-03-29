@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { formatTime, groupSessionsByDate, type SessionInfo } from '@/lib/sessions'
 
 type Provider = 'gemini' | 'openai'
-type VoiceArch = 'realtime' | 'pipelined' | 'direct'
+type VoiceArch = 'realtime' | 'pipelined' | 'direct' | 'pipeline'
 type CodingAgent = 'claude' | 'codex'
 
 const PAGE_SIZE = 10
@@ -25,7 +25,7 @@ interface SessionBrowserProps {
 }
 
 const PROVIDER_LABELS: Record<Provider, string> = { gemini: 'Gemini',openai: 'OpenAI' }
-const VOICE_LABELS: Record<VoiceArch, string> = { direct: 'Direct', realtime: 'Realtime', pipelined: 'Pipelined' }
+const VOICE_LABELS: Record<VoiceArch, string> = { direct: 'Direct', realtime: 'Realtime', pipelined: 'Pipelined', pipeline: 'Pipeline' }
 const AGENT_LABELS: Record<CodingAgent, string> = { claude: 'Claude', codex: 'Codex' }
 
 export default function SessionBrowser({
@@ -288,14 +288,14 @@ export default function SessionBrowser({
                   Realtime
                 </button>
                 <button
-                  onClick={() => onVoiceArchChange('pipelined')}
+                  onClick={() => onVoiceArchChange('pipeline')}
                   className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    voiceArch === 'pipelined'
-                      ? 'bg-pink-600 text-white'
+                    voiceArch === 'pipeline'
+                      ? 'bg-purple-600 text-white'
                       : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                   }`}
                 >
-                  Pipelined
+                  Pipeline
                 </button>
               </div>
             </div>

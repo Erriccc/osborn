@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
+import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { askHaiku, askFastBrain, updateSpecFromJSONL, processResearchCompletion, handleResearchBatch, prepareBriefingScript, prepareRecoveryScript, writeQuestionToSpec, checkOutputAgainstQuestions, generateProactivePrompt, clearFastBrainSession, type ConversationTurn, type FastBrainCallbacks } from './fast-brain.js'
 import { DIRECT_MODE_PROMPT, getRealtimeInstructions, getScriptInjection, getProactiveInjection, getNotificationInjection, getResearchCompleteInjection, getResearchUpdateInjection } from './prompts.js'
@@ -668,7 +669,7 @@ async function main() {
   }
 
   // Create DIRECT session (STT + Claude Agent SDK + TTS)
-  async function createDirectSession(resumeSessionId?: string): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
+  async function createDirectSession(resumeSessionId?: string, llmOverride?: any): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
     console.log('🎯 Creating direct session...')
 
     const stt = createSTT(DIRECT_MODE_STT)
@@ -677,7 +678,8 @@ async function main() {
 
     // Create Claude LLM wrapper — direct mode uses speech-optimized system prompt
     // skipTTSQueue: bypass LiveKit's BufferedTokenStream, use session.say() instead
-    const directLLM = createClaudeLLM({
+    // llmOverride: pipeline mode passes PipelineDirectLLM which wraps its own ClaudeLLM
+    const directLLM = llmOverride || createClaudeLLM({
       workingDirectory: workingDir,
       sessionBaseDir,
       mcpServers,
@@ -697,7 +699,16 @@ async function main() {
     directLLM.events.once('session_id', ({ sessionId }: { sessionId: string }) => {
       const workspace = ensureSessionWorkspace(sessionBaseDir, sessionId)
       console.log(`📁 Session workspace created: ${workspace}`)
+      // Pipeline mode: pre-warm BM25 index so first fast brain query is fast
+      if (currentVoiceMode === 'pipeline') {
+        prewarmBM25Index(sessionId, workingDir).catch(() => {})
+      }
     })
+
+    // Also pre-warm for resumed sessions (sessionId already known)
+    if (resumeSessionId && currentVoiceMode === 'pipeline') {
+      prewarmBM25Index(resumeSessionId, workingDir).catch(() => {})
+    }
 
     // Wire up MCP server changes to frontend
     directLLM.events.on('mcp_servers_changed', (data) => {
@@ -1467,6 +1478,7 @@ async function main() {
     currentAgent = null
     currentLLM = null
     clearFastBrainSession()
+    clearPipelineFastBrainSession()
   })
 
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
@@ -1479,6 +1491,7 @@ async function main() {
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
     clearFastBrainSession()
+    clearPipelineFastBrainSession()
     if (activeResearch) {
       activeResearch.abortController.abort()
       activeResearch.cleanup()
@@ -1506,7 +1519,7 @@ async function main() {
     try {
       const metadata = JSON.parse(participant.metadata || '{}')
       console.log(`📋 Participant metadata:`, metadata)
-      if (metadata.voiceArch === 'realtime' || metadata.voiceArch === 'direct') {
+      if (metadata.voiceArch === 'realtime' || metadata.voiceArch === 'direct' || metadata.voiceArch === 'pipeline') {
         sessionVoiceMode = metadata.voiceArch
         console.log(`🎙️ Using voice mode from frontend: ${sessionVoiceMode}`)
       } else if (metadata.voiceArch) {
@@ -1556,6 +1569,44 @@ async function main() {
       const sessionRealtimeConfig = { ...realtimeConfig, provider: sessionRealtimeProvider }
       console.log(`🎙️ REALTIME MODE: ${sessionRealtimeConfig.provider} native speech-to-speech`)
       const result = await createRealtimeSession(sessionRealtimeConfig, resumeSessionId)
+      session = result.session
+      agent = result.agent
+    } else if (sessionVoiceMode === 'pipeline') {
+      console.log(`🎯 PIPELINE MODE: Claude SDK + parallel Gemini fast brain observer`)
+      // Pipeline mode = direct mode underneath + parallel fast brain
+      // Fast brain runs in PipelineDirectLLM.chat() — fires Gemini alongside Claude
+      const { createPipelineDirectLLM } = await import('./pipeline-direct-llm.js')
+      const pipelineLLM = createPipelineDirectLLM({
+        workingDirectory: workingDir,
+        sessionBaseDir,
+        mcpServers,
+        resumeSessionId,
+        voiceMode: 'direct',
+        skipTTSQueue: true,
+        getChatHistory: () => getChatHistory(20).map(t => ({ role: t.role, content: t.text })),
+        getResearchContext: () => {
+          if (activeResearch?.researchLog.length) {
+            return `Research: "${lastTaskRequest}"\n${activeResearch.researchLog.slice(-15).join('\n')}`
+          }
+          if (lastCompletedResearch && Date.now() - lastCompletedResearch.completedAt < 600000) {
+            return `[COMPLETED] "${lastCompletedResearch.task}"\n${lastCompletedResearch.researchLog.slice(-15).join('\n')}`
+          }
+        },
+        onFastBrainResult: (result) => {
+          console.log(`🧠⚡ [FAST_BRAIN ${result.type.toUpperCase()} +${result.elapsedMs}ms]: "${result.answer.substring(0, 60)}"`)
+          sendToFrontend({
+            type: 'fast_brain_response',
+            text: result.answer,
+            responseType: result.type,
+            elapsedMs: result.elapsedMs,
+            question: result.question,
+            toolsUsed: result.toolsUsed,
+            agentRole: 'pipeline-fast-brain',
+          })
+        },
+      })
+      // Pass pipelineLLM to createDirectSession so it uses it instead of creating a new ClaudeLLM
+      const result = await createDirectSession(resumeSessionId, pipelineLLM)
       session = result.session
       agent = result.agent
     } else {
@@ -1679,8 +1730,8 @@ async function main() {
       sess.on('close' as any, async (ev: any) => {
         console.log('🚪 Session closed:', ev.reason)
 
-        // Auto-recover from crashes in direct mode (TTS timeout, speech interruption, disconnect, etc.)
-        if ((ev.reason === 'error' || ev.reason === 'disconnected') && sessionVoiceMode === 'direct') {
+        // Auto-recover from crashes in direct/pipeline mode (TTS timeout, speech interruption, disconnect, etc.)
+        if ((ev.reason === 'error' || ev.reason === 'disconnected') && (sessionVoiceMode === 'direct' || sessionVoiceMode === 'pipeline')) {
           const now = Date.now()
           if (now - lastRecoveryTime < MIN_RECOVERY_INTERVAL) {
             console.log(`⚠️ Recovery too frequent — scheduling retry in ${MIN_RECOVERY_INTERVAL}ms`)
@@ -1996,6 +2047,7 @@ async function main() {
     currentAgent = null
     currentLLM = null
     clearFastBrainSession()
+    clearPipelineFastBrainSession()
 
     console.log('⏳ Waiting for new user...\n')
   })
@@ -2165,6 +2217,7 @@ async function main() {
           currentLLM.setResumeSessionId(sessionId)
           currentResumeSessionId = sessionId
           clearFastBrainSession()
+    clearPipelineFastBrainSession()
           console.log(`🔄 Switched to session: ${sessionId}`)
 
           // Step 3: Send full context to frontend (including conversation history)

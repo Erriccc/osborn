@@ -11,7 +11,7 @@ const CONFIG_FILE = join(CONFIG_DIR, 'config.yaml')
 // Voice mode options
 // - 'direct': STT → Claude Agent SDK → TTS (current default, uses Claude for everything)
 // - 'realtime': OpenAI/Gemini native speech-to-speech models (faster, no coding tools)
-export type VoiceMode = 'direct' | 'realtime'
+export type VoiceMode = 'direct' | 'realtime' | 'pipeline'
 
 // Legacy type aliases — kept for backward compatibility with session metadata
 export type EditMode = 'read-only' | 'edit'
@@ -54,6 +54,11 @@ export interface DirectConfig {
   }
 }
 
+// Pipeline-direct mode configuration (STT → Claude + parallel fast brain)
+export interface PipelineDirectConfig extends DirectConfig {
+  enableCollisionGuard?: boolean  // default false = monitoring only
+}
+
 // Legacy pipelined mode configuration (kept for backwards compatibility)
 export interface PipelinedConfig {
   stt?: {
@@ -93,6 +98,9 @@ export interface OsbornConfig {
 
   // Direct mode configuration (used when voiceMode='direct')
   direct?: DirectConfig
+
+  // Pipeline-direct mode configuration (used when voiceMode='pipeline-direct')
+  'pipeline-direct'?: PipelineDirectConfig
 
   // Legacy pipelined mode configuration (deprecated, use 'direct' instead)
   pipelined?: PipelinedConfig
@@ -1142,6 +1150,8 @@ function scanDirForArtifacts(dir: string): ResearchArtifact[] {
         if (stat.isDirectory()) {
           scan(fullPath)
         } else {
+          // Skip internal index files and .index/ folder
+          if (entry.startsWith('search-index') || entry === '.index') continue
           results.push({
             fileName: entry,
             filePath: fullPath,

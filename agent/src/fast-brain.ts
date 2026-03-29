@@ -182,6 +182,9 @@ function executeTool(
       case 'read_file': {
         const relPath = toolInput.path as string
         if (relPath.includes('..')) return 'Error: path traversal not allowed'
+        const ext = relPath.toLowerCase().split('.').pop() || ''
+        const BINARY_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'mp3', 'wav', 'mp4', 'mov']
+        if (BINARY_EXTS.includes(ext)) return `Binary file (${ext}) — cannot read as text.`
         const fullPath = `${workspace}/${relPath}`
         if (!existsSync(fullPath)) return `File not found: ${relPath}`
         const content = readFileSync(fullPath, 'utf-8')

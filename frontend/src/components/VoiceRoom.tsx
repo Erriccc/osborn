@@ -240,13 +240,19 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} group`}>
-      {/* Avatar for assistant */}
+      {/* Avatar for assistant — purple lightning for fast-brain, monitor icon for Claude */}
       {!isUser && !isSystem && (
-        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
-          <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-          </svg>
-        </div>
+        message.toolName === 'fast-brain' ? (
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-fuchsia-600 flex items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
+            <span className="text-sm">&#9889;</span>
+          </div>
+        ) : (
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
+            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+        )
       )}
 
       <div
@@ -255,11 +261,13 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
             ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-br-md'
             : isSystem
             ? 'bg-amber-500/10 text-amber-200 border border-amber-500/30 rounded-bl-md'
+            : message.toolName === 'fast-brain'
+            ? 'bg-purple-900/40 text-purple-100 border border-purple-500/40 rounded-bl-md backdrop-blur-sm'
             : 'bg-gray-800/80 text-gray-100 border border-gray-700/50 rounded-bl-md backdrop-blur-sm'
         } ${message.isStreaming ? 'ring-2 ring-violet-500/30' : ''}`}
       >
-        {/* Tool name badge */}
-        {message.toolName && (
+        {/* Tool name badge — skip for fast-brain (has its own label in content) */}
+        {message.toolName && message.toolName !== 'fast-brain' && (
           <ToolCallBlock
             toolName={message.toolName}
             status={message.isStreaming ? 'running' : 'completed'}
@@ -1655,6 +1663,14 @@ function VoiceRoomInner({
               sendToAgent(payload, { reliable: true })
             }
           }
+        }
+      } else if (data.type === 'fast_brain_response') {
+        // Pipeline mode: Gemini fast brain parallel response — show in main chat for monitoring
+        if (data.text && data.text.trim()) {
+          const tools = data.toolsUsed?.length ? ` [${data.toolsUsed.join(',')}]` : ''
+          const label = `\u26A1 Fast Brain (${data.elapsedMs}ms) [${data.responseType}]${tools}`
+          console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
+          addMessageRef.current?.('assistant', `${label}\n${data.text}`, 'fast-brain', 'chat')
         }
       } else if (data.type === 'mcp_status' || data.type === 'mcp_servers_changed') {
         // MCP server status update

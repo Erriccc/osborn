@@ -332,6 +332,100 @@ export function getSessionPaths(sessionId: string, projectDir: string, opts?: Se
 }
 
 // ============================================================
+// SUB-AGENT DISCOVERY
+// ============================================================
+
+export interface SubAgentInfo {
+  agentId: string
+  description: string
+  status: string
+  agentFile: string       // Full path to agent-{id}.jsonl
+  agentFileExists: boolean
+  totalTokens: number
+  totalToolUseCount: number
+  durationMs: number
+}
+
+/**
+ * Find all sub-agents spawned by a session.
+ * Extracts agentId from toolUseResult fields in the main JSONL,
+ * then checks for corresponding agent-{id}.jsonl files at the project level.
+ *
+ * Sub-agent files live at: ~/.claude/projects/{slug}/agent-{id}.jsonl
+ * (NOT inside the session subdirectory — that's only for the Osborn agent SDK path)
+ */
+export function getSessionSubAgents(sessionId: string, projectDir: string, opts?: SessionAccessOptions): SubAgentInfo[] {
+  const claudeDir = resolveClaudeDir(opts)
+  const slug = projectPathToSlug(projectDir)
+  const projectsDir = join(claudeDir, 'projects', slug)
+  const conversationPath = join(projectsDir, `${sessionId}.jsonl`)
+
+  if (!existsSync(conversationPath)) return []
+
+  const agents: SubAgentInfo[] = []
+  const seenIds = new Set<string>()
+
+  try {
+    const content = readFileSync(conversationPath, 'utf-8')
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const obj = JSON.parse(line)
+        const tur = obj.toolUseResult
+        if (tur && typeof tur === 'object' && tur.agentId) {
+          const id = tur.agentId as string
+          if (seenIds.has(id)) continue
+          seenIds.add(id)
+
+          const agentFile = join(projectsDir, `agent-${id}.jsonl`)
+          agents.push({
+            agentId: id,
+            description: (tur.prompt || '').substring(0, 200),
+            status: tur.status || '',
+            agentFile,
+            agentFileExists: existsSync(agentFile),
+            totalTokens: tur.totalTokens || 0,
+            totalToolUseCount: tur.totalToolUseCount || 0,
+            durationMs: tur.totalDurationMs || 0,
+          })
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return agents
+}
+
+/**
+ * Get all searchable file paths for a session — main JSONL + all sub-agent JSOLs.
+ * This is what the pipeline fast brain should ripgrep across.
+ */
+export function getSessionSearchPaths(sessionId: string, projectDir: string, opts?: SessionAccessOptions): string[] {
+  const paths = getSessionPaths(sessionId, projectDir, opts)
+  const files: string[] = []
+
+  // Main conversation
+  if (existsSync(paths.conversation)) {
+    files.push(paths.conversation)
+  }
+
+  // Sub-agents from session subdirectory (Osborn agent SDK path)
+  for (const f of paths.subagents) {
+    if (existsSync(f)) files.push(f)
+  }
+
+  // Sub-agents at project level (Claude Code CLI path)
+  const agents = getSessionSubAgents(sessionId, projectDir, opts)
+  for (const a of agents) {
+    if (a.agentFileExists && !files.includes(a.agentFile)) {
+      files.push(a.agentFile)
+    }
+  }
+
+  return files
+}
+
+// ============================================================
 // JSONL PARSING
 // ============================================================
 

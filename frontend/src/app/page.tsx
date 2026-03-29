@@ -6,7 +6,7 @@ import SessionBrowser from '@/components/SessionBrowser'
 import SetupWizard from '@/components/SetupWizard'
 
 type Provider = 'gemini' | 'openai'
-type VoiceArch = 'realtime' | 'pipelined' | 'direct'
+type VoiceArch = 'realtime' | 'pipelined' | 'direct' | 'pipeline'
 type CodingAgent = 'claude' | 'codex'
 type ConnectionState = 'browsing' | 'waiting' | 'connected'
 
