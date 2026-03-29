@@ -1719,6 +1719,11 @@ async function main() {
           console.log('⚠️ OpenAI active response collision — queue will retry on next listening state')
           return
         }
+        // TTS abort from user interruption is normal — not an error
+        if (msg.includes('Request was aborted') || msg.includes('APIUserAbortError') || msg.includes('aborted')) {
+          console.log('⚠️ LLM request aborted (user interrupted)')
+          return
+        }
         console.error('❌ Session error:', ev.error)
       })
 
@@ -1730,7 +1735,16 @@ async function main() {
       sess.on('close' as any, async (ev: any) => {
         console.log('🚪 Session closed:', ev.reason)
 
-        // Auto-recover from crashes in direct/pipeline mode (TTS timeout, speech interruption, disconnect, etc.)
+        // TTS abort from user interruption — SDK already killed the session internally,
+        // so we MUST recover (can't just reset state — STT pipeline is dead).
+        // Log it distinctly so we know it's an interrupt recovery, not a real crash.
+        const errorMsg = ev.error?.message || ev.error?.error?.message || ''
+        const isTTSAbort = errorMsg.includes('aborted') || errorMsg.includes('APIUserAbortError')
+        if (isTTSAbort) {
+          console.log('⚠️ TTS abort from user interruption — recovering session (SDK killed it internally)')
+        }
+
+        // Auto-recover from crashes in direct/pipeline mode (includes TTS abort)
         if ((ev.reason === 'error' || ev.reason === 'disconnected') && (sessionVoiceMode === 'direct' || sessionVoiceMode === 'pipeline')) {
           const now = Date.now()
           if (now - lastRecoveryTime < MIN_RECOVERY_INTERVAL) {
@@ -1764,7 +1778,46 @@ async function main() {
           try {
             // Reuse existing session ID so Claude SDK resumes where it left off
             const recoverySessionId = currentLLM?.sessionId || resumeSessionId
-            const result = await createDirectSession(recoverySessionId)
+
+            // Stop old index watcher if it exists
+            if (currentLLM && 'stopIndexWatcher' in currentLLM) {
+              (currentLLM as any).stopIndexWatcher()
+            }
+
+            let result
+            if (sessionVoiceMode === 'pipeline') {
+              // Pipeline mode: recreate PipelineDirectLLM wrapper with fast brain
+              console.log('🔄 Rebuilding pipeline mode (PipelineDirectLLM + fast brain)...')
+              const { createPipelineDirectLLM } = await import('./pipeline-direct-llm.js')
+              const pipelineLLM = createPipelineDirectLLM({
+                workingDirectory: workingDir,
+                sessionBaseDir,
+                mcpServers,
+                resumeSessionId: recoverySessionId,
+                voiceMode: 'direct',
+                skipTTSQueue: true,
+                getChatHistory: () => getChatHistory(20).map(t => ({ role: t.role, content: t.text })),
+                getResearchContext: () => {
+                  if (activeResearch?.researchLog.length) {
+                    return `Research: "${lastTaskRequest}"\n${activeResearch.researchLog.slice(-15).join('\n')}`
+                  }
+                  if (lastCompletedResearch && Date.now() - lastCompletedResearch.completedAt < 600000) {
+                    return `[COMPLETED] "${lastCompletedResearch.task}"\n${lastCompletedResearch.researchLog.slice(-15).join('\n')}`
+                  }
+                },
+                onFastBrainResult: (r) => {
+                  console.log(`🧠⚡ [FAST_BRAIN ${r.type.toUpperCase()} +${r.elapsedMs}ms]: "${r.answer.substring(0, 60)}"`)
+                  sendToFrontend({
+                    type: 'fast_brain_response', text: r.answer, responseType: r.type,
+                    elapsedMs: r.elapsedMs, question: r.question, toolsUsed: r.toolsUsed,
+                    agentRole: 'pipeline-fast-brain',
+                  })
+                },
+              })
+              result = await createDirectSession(recoverySessionId, pipelineLLM)
+            } else {
+              result = await createDirectSession(recoverySessionId)
+            }
             const newSession = result.session
             const newAgent = result.agent
             currentSession = newSession
