@@ -30,6 +30,7 @@ export interface PipelineFastBrainOptions {
   chatHistory?: { role: string; content: string }[]
   researchContext?: string
   sessionBaseDir?: string
+  agentControl?: AgentControlCallbacks
 }
 
 // ============================================================
@@ -64,10 +65,19 @@ export async function prewarmBM25Index(_sessionId: string, _workingDir: string) 
  * Create a CallableTool that wraps ripgrep search of the summary index
  * + byte-offset full content reads from raw JSONL.
  */
+export interface AgentControlCallbacks {
+  interrupt: () => Promise<boolean>
+  abort: () => void
+  hasActiveAgent: () => boolean
+  getRecentUserMessages: (count: number) => string[]  // raw user STT transcripts only
+  sendPrompt: (prompt: string) => void                 // send new message to Claude via chat()
+}
+
 function createSearchTool(
   sessionId: string,
   workingDir: string,
   sessionBaseDir: string,
+  agentControl?: AgentControlCallbacks,
 ): { tool: CallableTool; searchCount: number; getSearchCount: () => number } {
   let searchCount = 0
 
@@ -103,6 +113,27 @@ function createSearchTool(
               },
             },
           },
+          ...(agentControl ? [{
+            name: 'emergency_stop',
+            description: [
+              'Kill and restart the main agent with new instructions.',
+              'ONLY call this when BOTH conditions are met:',
+              '  1. The agent is performing a DESTRUCTIVE or ALTERING action (write, edit, delete, overwrite, install, deploy, push, drop, remove, modify files/data).',
+              '  2. The user signals they want it stopped (high intent: "stop", "don\'t", "cancel that", "wait no", "not that").',
+              'NEVER call for: research, reading, exploring, searching, fetching, or conversation.',
+              'Priority: how destructive/unrecoverable the action is > how strongly the user signals.',
+            ].join(' '),
+            parameters: {
+              type: 'OBJECT' as any,
+              properties: {
+                reason: {
+                  type: 'STRING' as any,
+                  description: 'What destructive action is being stopped and what the user wants instead. Use their exact words.',
+                },
+              },
+              required: ['reason'],
+            },
+          }] : []),
         ],
       }
     },
@@ -128,6 +159,35 @@ function createSearchTool(
           console.log(`🧠⚡ [pipeline-fb] AFC get_recent: ${count}`)
           const recent = await getRecentEntries(sessionId, workingDir, sessionBaseDir, count)
           results.push({ functionResponse: { name: 'get_recent', response: { result: recent } } } as any)
+
+        } else if (call.name === 'emergency_stop' && agentControl) {
+          const reason = (call.args?.reason as string) || 'user requested stop'
+          console.log(`🧠⚡ [pipeline-fb] AFC emergency_stop: ${reason}`)
+
+          // Gather context
+          const recentUserMessages = agentControl.getRecentUserMessages(10)
+          const recentActivity = await getRecentEntries(sessionId, workingDir, sessionBaseDir, 10)
+
+          // Kill the destructive process and restart with new instructions
+          agentControl.abort()
+
+          const restartPrompt = [
+            `[EMERGENCY STOP] A destructive action was stopped by the user.`,
+            ``,
+            `Reason: ${reason}`,
+            ``,
+            `Recent user messages:`,
+            ...recentUserMessages.map((m, i) => `  ${i + 1}. ${m}`),
+            ``,
+            `What was happening before the stop:`,
+            recentActivity.substring(0, 2000),
+            ``,
+            `Review any changes already made. The user wants to change course.`,
+          ].join('\n')
+
+          agentControl.sendPrompt(restartPrompt)
+
+          results.push({ functionResponse: { name: 'emergency_stop', response: { result: `Agent stopped and restarted. Reason: ${reason}` } } } as any)
         }
       }
 
@@ -392,7 +452,7 @@ export async function askPipelineFastBrain(
     const sessionBaseDir = opts?.sessionBaseDir || workingDir
 
     // Create the search tool for this session
-    const { tool: searchTool, getSearchCount } = createSearchTool(sessionId, workingDir, sessionBaseDir)
+    const { tool: searchTool, getSearchCount } = createSearchTool(sessionId, workingDir, sessionBaseDir, opts?.agentControl)
 
     // Add question to persistent history
     persistentContents.push({ role: 'user', parts: [{ text: question }] })

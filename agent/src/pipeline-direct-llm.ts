@@ -15,10 +15,17 @@ import { askPipelineFastBrain, type PipelineFastBrainResult } from './pipeline-f
 import { buildSummaryIndex, startIndexWatcher, type IndexWatcher } from './summary-index.js'
 import { EventEmitter } from 'events'
 
+export interface InterruptionContext {
+  spokenText: string       // what user heard (word-accurate from LiveKit synchronizedTranscript)
+  recentMessages: string   // last 10 assistant messages from JSONL (full untruncated)
+}
+
 export interface PipelineDirectOptions extends ClaudeLLMOptions {
   onFastBrainResult?: (result: FastBrainPanelResult) => void
   getChatHistory?: () => { role: string; content: string }[]
   getResearchContext?: () => string | undefined
+  /** Returns pending interruption context and clears it (consumed once). null = no pending interruption. */
+  getAndConsumeInterruptionContext?: () => InterruptionContext | null
 }
 
 export interface FastBrainPanelResult {
@@ -67,6 +74,20 @@ export class PipelineDirectLLM extends llm.LLM {
   getPendingPermission() { return this.#claudeLLM.getPendingPermission() }
   getMcpServers() { return this.#claudeLLM.getMcpServers() }
   setMcpServers(s: any) { this.#claudeLLM.setMcpServers(s) }
+
+  // Agent control — proxied to ClaudeLLM for fast brain access
+  async interruptAgent() { return this.#claudeLLM.interruptQuery() }
+  abortAgent() { this.#claudeLLM.abortQuery() }
+  async rewindAgent(checkpointId?: string) { return this.#claudeLLM.rewindToCheckpoint(checkpointId) }
+  hasActiveAgent() { return this.#claudeLLM.hasActiveQuery() }
+
+  /** Send a new prompt to Claude via direct chat() — event listeners stay attached */
+  sendPrompt(prompt: string) {
+    console.log(`📋 [pipeline] Sending prompt to Claude (${prompt.length} chars)`)
+    const chatCtx = new llm.ChatContext()
+    chatCtx.addMessage({ role: 'user', content: prompt })
+    this.#claudeLLM.chat({ chatCtx })
+  }
   enableMcpServer(k: string, c: any) { this.#claudeLLM.enableMcpServer(k, c) }
   disableMcpServer(k: string) { this.#claudeLLM.disableMcpServer(k) }
   getLatestCheckpoint() { return this.#claudeLLM.getLatestCheckpoint() }
@@ -96,7 +117,41 @@ export class PipelineDirectLLM extends llm.LLM {
       }
     }
 
-    // Fire Claude — unchanged
+    // Check for pending interruption context — enrich user message if interrupted
+    const interruptCtx = this.#opts.getAndConsumeInterruptionContext?.()
+    if (interruptCtx && userText.trim()) {
+      console.log(`🔇 [pipeline] Enriching user message with interruption context`)
+      // Interrupt Claude's current work before sending enriched message
+      this.#claudeLLM.interruptQuery().catch(() => {})
+      // Replace user message in chatCtx with context-enriched version
+      const enrichedMessage = [
+        `[INTERRUPTED] The user interrupted your response mid-speech.`,
+        ``,
+        `What the user heard before cutoff:`,
+        `"${interruptCtx.spokenText}"`,
+        ``,
+        `Your recent messages (full untruncated — you wrote these):`,
+        interruptCtx.recentMessages || '(no recent messages found)',
+        ``,
+        `User's message: "${userText}"`,
+        ``,
+        `Handle naturally:`,
+        `- If it's a quick side question, answer it then continue where you left off (restart sub-agents if needed)`,
+        `- If they want to change direction, follow their lead`,
+        `- Don't repeat what was already spoken unless it makes sense to clarify`,
+        `- Reference unspoken content naturally if relevant`,
+      ].join('\n')
+      // Modify the last user message in chatCtx
+      for (let i = chatCtx.items.length - 1; i >= 0; i--) {
+        const item = chatCtx.items[i] as any
+        if (item.type === 'message' && item.role === 'user') {
+          item.content = [enrichedMessage]
+          break
+        }
+      }
+    }
+
+    // Fire Claude
     const claudeStream = this.#claudeLLM.chat({ chatCtx, toolCtx, connOptions, abortController })
 
     // Fire pipeline fast brain in background — no await, no blocking
@@ -156,6 +211,26 @@ export class PipelineDirectLLM extends llm.LLM {
         chatHistory: this.#opts.getChatHistory?.() || [],
         researchContext: this.#opts.getResearchContext?.(),
         sessionBaseDir,
+        agentControl: {
+          interrupt: () => this.#claudeLLM.interruptQuery(),
+          abort: () => this.#claudeLLM.abortQuery(),
+          hasActiveAgent: () => this.#claudeLLM.hasActiveQuery(),
+          getRecentUserMessages: (count: number) => {
+            const history = this.#opts.getChatHistory?.() || []
+            return history
+              .filter(t => t.role === 'user')
+              .slice(-count)
+              .map(t => t.content)
+          },
+          sendPrompt: (prompt: string) => {
+            // Direct call to ClaudeLLM.chat() — event listeners (tts_say, tool_use, etc.) still attached
+            // skipTTSQueue mode: tts_say events → index.ts → session.say() — works independently
+            console.log(`🧠⚡ [control] Sending new prompt to Claude (${prompt.length} chars)`)
+            const chatCtx = new llm.ChatContext()
+            chatCtx.addMessage({ role: 'user', content: prompt })
+            this.#claudeLLM.chat({ chatCtx })
+          },
+        },
       })
 
       if (signal.aborted) return

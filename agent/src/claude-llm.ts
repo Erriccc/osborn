@@ -122,6 +122,11 @@ export class ClaudeLLM extends llm.LLM {
     resolve: (decision: { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }) => void
   } | null = null
 
+  // Persistent session: single process, no JSONL replay on follow-up messages
+  // Active queries — multiple can be running (SDK queues them internally).
+  // We keep ALL references so interrupt() can stop whatever is currently executing.
+  #activeQueries: Set<any> = new Set()
+
   constructor(opts: ClaudeLLMOptions = {}) {
     super()
 
@@ -391,6 +396,91 @@ export class ClaudeLLM extends llm.LLM {
     return this.#checkpoints.length > 0
   }
 
+  // ============================================================
+  // AGENT CONTROL — interrupt, abort, rewind (for fast brain)
+  // ============================================================
+
+  /**
+   * Interrupt the current Claude query gracefully (like pressing Esc).
+   * Stops current tool execution but keeps the process alive.
+   * Returns true if interrupted, false if no active query.
+   */
+  async interruptQuery(): Promise<boolean> {
+    if (this.#activeQueries.size === 0) return false
+    let interrupted = false
+    // Interrupt ALL active queries — stops the current task + any queued ones
+    for (const q of this.#activeQueries) {
+      if (typeof q.interrupt === 'function') {
+        try {
+          await q.interrupt()
+          interrupted = true
+        } catch (err: any) {
+          console.error('⚠️ Interrupt failed:', err?.message)
+        }
+      }
+    }
+    if (interrupted) {
+      console.log(`🛑 Interrupted ${this.#activeQueries.size} active query(s) (Esc equivalent)`)
+    }
+    return interrupted
+  }
+
+  /**
+   * Hard abort all active queries (like Ctrl+C).
+   * Kills subprocesses. Next message will spawn new processes.
+   */
+  abortQuery(): void {
+    for (const q of this.#activeQueries) {
+      try { q.return?.() } catch {}
+    }
+    this.#activeQueries.clear()
+    console.log('🛑 All queries aborted (Ctrl+C equivalent)')
+  }
+
+  /**
+   * Rewind file changes to a specific checkpoint.
+   * Uses the most recently added query (most likely to have the rewind capability).
+   */
+  async rewindToCheckpoint(checkpointId?: string): Promise<boolean> {
+    const id = checkpointId || this.#latestCheckpoint
+    if (!id) {
+      console.log('⚠️ No checkpoint available for rewind')
+      return false
+    }
+    // Try rewind on the latest query
+    const queries = [...this.#activeQueries]
+    const latest = queries[queries.length - 1]
+    if (latest && typeof latest.rewindFiles === 'function') {
+      try {
+        await latest.rewindFiles(id)
+        console.log(`🔄 Files rewound to checkpoint: ${id.substring(0, 8)}...`)
+        return true
+      } catch (err: any) {
+        console.error('⚠️ Rewind failed:', err?.message)
+      }
+    }
+    return false
+  }
+
+  /**
+   * Check if there are active queries that can be interrupted
+   */
+  hasActiveQuery(): boolean {
+    return this.#activeQueries.size > 0
+  }
+
+  /** Add an active query (called from ClaudeLLMStream when query starts) */
+  setActiveQuery(q: any): void {
+    if (q) {
+      this.#activeQueries.add(q)
+    }
+  }
+
+  /** Remove an active query (called from ClaudeLLMStream when query completes) */
+  removeActiveQuery(q: any): void {
+    this.#activeQueries.delete(q)
+  }
+
   chat({
     chatCtx,
     toolCtx,
@@ -451,6 +541,7 @@ class ClaudeLLMStream extends llm.LLMStream {
   #onPermissionRequest: (toolName: string, input: Record<string, unknown>) => Promise<PermissionResult>
   #onCheckpoint: (checkpointId: string) => void
   #abortController?: AbortController
+  #llmRef: ClaudeLLM
 
   constructor(
     llmInstance: ClaudeLLM,
@@ -479,6 +570,7 @@ class ClaudeLLMStream extends llm.LLMStream {
     },
   ) {
     super(llmInstance, { chatCtx, toolCtx, connOptions })
+    this.#llmRef = llmInstance
     this.#opts = opts
     this.#sessionId = sessionId
     this.#onSessionId = onSessionId
@@ -490,6 +582,7 @@ class ClaudeLLMStream extends llm.LLMStream {
 
   protected async run(): Promise<void> {
     const requestId = `claude_${shortuuid()}`
+    let activeQuery: any = null
 
     try {
       // Extract user's message from chat context
@@ -646,8 +739,13 @@ class ClaudeLLMStream extends llm.LLMStream {
 
         // Fire-and-forget: query runs in background, emits tts_say events as text arrives
         ;(async () => {
+          // Declare outside try so finally can access it
+          const activeQuery = query({ prompt: userText, options: sdkOptions })
+          self.#llmRef.setActiveQuery(activeQuery)
+
           try {
-            for await (const message of query({ prompt: userText, options: sdkOptions })) {
+
+            for await (const message of activeQuery) {
               // Abort check
               if (bgAbortController?.signal.aborted) break
 
@@ -734,6 +832,8 @@ class ClaudeLLMStream extends llm.LLMStream {
             }
             console.error('❌ Claude Agent SDK error (background):', error)
             bgEventEmitter.emit('tts_say', { text: 'Sorry, I encountered an error.' })
+          } finally {
+            self.#llmRef.removeActiveQuery(activeQuery)
           }
         })()
 
@@ -742,7 +842,11 @@ class ClaudeLLMStream extends llm.LLMStream {
         return
       }
 
-      for await (const message of query({ prompt: userText, options: sdkOptions })) {
+      // Store active query for interrupt/rewind access
+      activeQuery = query({ prompt: userText, options: sdkOptions })
+      this.#llmRef.setActiveQuery(activeQuery)
+
+      for await (const message of activeQuery) {
         // Capture session ID for context continuity
         if ((message as any).type === 'system' && (message as any).subtype === 'init') {
           // Log MCP server connection status
@@ -892,6 +996,8 @@ class ClaudeLLMStream extends llm.LLMStream {
           delta: { role: 'assistant', content: 'Sorry, I encountered an error.' },
         })
       }
+    } finally {
+      this.#llmRef.removeActiveQuery(activeQuery)
     }
   }
 }

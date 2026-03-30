@@ -2,6 +2,7 @@
 import 'dotenv/config'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
+import { CloudTurnDetector } from './turn-detector-shim.js'
 import { Room, RoomEvent, RemoteParticipant, LocalParticipant } from '@livekit/rtc-node'
 import { AccessToken } from 'livekit-server-sdk'
 
@@ -397,6 +398,107 @@ async function main() {
   } | null = null
 
   // No manual queuing — the Claude SDK handles sequential queries internally
+
+  // ============================================================
+  // Interruption Tracking (Content Ledger)
+  // ============================================================
+  // When user interrupts TTS, LiveKit truncates chatCtx to what was spoken.
+  // We capture the spoken text (synchronizedTranscript) and on the next user
+  // message, read Claude's full output from JSONL + inject context so Claude
+  // knows what was heard vs lost. Claude decides: side question → answer +
+  // continue, or redirect → follow new direction.
+
+  // Current SpeechHandle from session.say() — only the latest one matters
+  let currentSpeechHandle: any = null
+
+  // Last interruption context — gathered at interrupt time, consumed when user's message arrives
+  let lastInterruption: {
+    spokenText: string       // synchronizedTranscript — what user heard (word-accurate)
+    recentMessages: string   // last 10 assistant messages from JSONL (full untruncated)
+    timestamp: number
+  } | null = null
+
+  /**
+   * Called when a SpeechHandle finishes (interrupted or not).
+   * If interrupted: gather spoken text + JSONL context. Does NOT send to Claude yet —
+   * that happens when the user's transcribed message arrives via chat().
+   */
+  async function handleSpeechDone(handle: any) {
+    if (!handle.interrupted) {
+      lastInterruption = null
+      return
+    }
+
+    // --- INTERRUPTED: gather data ---
+    const chatItems = handle.chatItems || []
+    let spokenText = ''
+    for (const item of chatItems) {
+      if (item.role === 'assistant' && item.interrupted) {
+        if (typeof item.content === 'string') {
+          spokenText = item.content
+        } else if (Array.isArray(item.content)) {
+          spokenText = item.content
+            .map((c: any) => typeof c === 'string' ? c : c?.text || '')
+            .filter(Boolean)
+            .join(' ')
+        } else if (item.textContent) {
+          spokenText = item.textContent
+        }
+        break
+      }
+    }
+
+    console.log(`🔇 Speech interrupted. Spoken: "${spokenText.substring(0, 80)}..."`)
+
+    // Read last 10 assistant messages from JSONL (Claude's full untruncated output)
+    let recentMessages = ''
+    const sessionId = currentLLM?.sessionId
+    if (sessionId) {
+      try {
+        const { readSessionHistory } = await import('./session-access.js')
+        const history = readSessionHistory(sessionId, workingDir, {
+          lastN: 10,
+          types: ['assistant'],
+        })
+        recentMessages = history
+          .map((m: any) => {
+            if (typeof m.content === 'string') return m.content
+            if (Array.isArray(m.content)) {
+              return m.content
+                .map((c: any) => typeof c === 'string' ? c : c?.text || '')
+                .filter(Boolean)
+                .join(' ')
+            }
+            return ''
+          })
+          .filter(Boolean)
+          .join('\n---\n')
+      } catch (err) {
+        console.warn('⚠️ Failed to read JSONL for interruption context:', err)
+      }
+    }
+
+    // Store — consumed when user's next message arrives via chat()
+    lastInterruption = { spokenText, recentMessages, timestamp: Date.now() }
+    console.log(`📋 Interruption context stored (spoken: ${spokenText.length} chars, JSONL: ${recentMessages.length} chars)`)
+  }
+
+  /**
+   * Callback for PipelineDirectLLM — returns pending interruption context and clears it.
+   * Called in chat() when user's transcribed message arrives.
+   * PipelineDirectLLM enriches the user message with this context before sending to Claude.
+   */
+  function getAndConsumeInterruptionContext() {
+    if (!lastInterruption) return null
+    // Expire after 60s — user may have waited too long
+    if (Date.now() - lastInterruption.timestamp > 60_000) {
+      lastInterruption = null
+      return null
+    }
+    const ctx = { spokenText: lastInterruption.spokenText, recentMessages: lastInterruption.recentMessages }
+    lastInterruption = null
+    return ctx
+  }
 
   // ============================================================
   // Unified Voice Injection Queue
@@ -818,18 +920,24 @@ async function main() {
       try {
         const handle = (currentSession as any).say(data.text)
 
-        // Log when speech completes successfully
-        if (handle && typeof handle.then === 'function') {
-          handle
-            .then(() => {
+        if (handle && typeof handle.addDoneCallback === 'function') {
+          // SpeechHandle — track it and register interruption callback
+          currentSpeechHandle = handle
+          handle.addDoneCallback((sh: any) => {
+            if (sh.interrupted) {
+              console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
+              handleSpeechDone(sh)
+            } else {
               console.log(`✅ [${sayId}] session.say DONE`)
-            })
-            .catch((err: any) => {
-              console.error(`❌ [${sayId}] session.say FAILED:`, err?.message || err)
-            })
-        } else if (handle && handle._markDone) {
-          // say() returned a SpeechHandle (not a Promise)
-          console.log(`🗣️ [${sayId}] session.say queued (SpeechHandle returned)`)
+              if (currentSpeechHandle === sh) lastInterruption = null
+            }
+          })
+          console.log(`🗣️ [${sayId}] session.say queued (SpeechHandle tracked)`)
+        } else if (handle && typeof handle.then === 'function') {
+          // Promise-based fallback (older SDK path)
+          handle
+            .then(() => console.log(`✅ [${sayId}] session.say DONE`))
+            .catch((err: any) => console.error(`❌ [${sayId}] session.say FAILED:`, err?.message || err))
         }
       } catch (err: any) {
         // Catch synchronous "AgentSession is not running" errors
@@ -863,17 +971,20 @@ async function main() {
       llm: directLLM,
       tts,
       vad,
-      turnDetection: 'vad',
+      turnDetection: 'stt',
     })
 
-    // Create the session
-    // minEndpointingDelay: After STT finalizes a transcript, wait this long before
-    // considering the turn complete. Default is 500ms which cuts off mid-thought.
-    // 3000ms matches our VAD minSilenceDuration so both agree on when the user is done.
     const session = new voice.AgentSession({
-      turnDetection: 'vad',
-      voiceOptions: {
-        minEndpointingDelay: 3000, // 3s - gives user more time to finish speaking before we cut off
+      turnDetection: 'stt',
+      turnHandling: {
+        interruption: {
+          // Don't force 'adaptive' — let SDK auto-detect. It tries adaptive first,
+          // falls back to VAD if LiveKit Cloud doesn't support it for this config.
+          minDuration: 500,               // 500ms minimum overlap before triggering
+          minWords: 0,                    // don't require words — audio-based detection
+          falseInterruptionTimeout: 2000, // 2s — if no transcript after interrupt, resume speaking
+          resumeFalseInterruption: true,  // auto-resume on false positive
+        },
       },
     })
 
@@ -1465,6 +1576,8 @@ async function main() {
     // Clean up active research and voice queue
     voiceQueue.length = 0
     isProcessingQueue = false
+    currentSpeechHandle = null
+    lastInterruption = null
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -1487,6 +1600,8 @@ async function main() {
     // Clean up any existing session before creating a new one
     voiceQueue.length = 0
     isProcessingQueue = false
+    currentSpeechHandle = null
+    lastInterruption = null
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -1592,6 +1707,7 @@ async function main() {
             return `[COMPLETED] "${lastCompletedResearch.task}"\n${lastCompletedResearch.researchLog.slice(-15).join('\n')}`
           }
         },
+        getAndConsumeInterruptionContext,
         onFastBrainResult: (result) => {
           console.log(`🧠⚡ [FAST_BRAIN ${result.type.toUpperCase()} +${result.elapsedMs}ms]: "${result.answer.substring(0, 60)}"`)
           sendToFrontend({
@@ -1703,6 +1819,20 @@ async function main() {
         }
       })
 
+      // Adaptive interruption monitoring — log ML model decisions
+      sess.on('overlapping_speech' as any, (ev: any) => {
+        if (ev.isInterruption) {
+          console.log(`🔇 Adaptive: REAL interruption (p=${ev.probability?.toFixed(2)}, delay=${ev.detectionDelayInS?.toFixed(2)}s)`)
+        } else {
+          console.log(`🗣️ Adaptive: backchannel/false positive (p=${ev.probability?.toFixed(2)}) — speech continues`)
+        }
+      })
+
+      // False interruption recovery
+      sess.on('agent_false_interruption' as any, (ev: any) => {
+        console.log(`🔄 False interruption detected — ${ev.resumed ? 'resumed speaking' : 'not resumed'}`)
+      })
+
       // FALLBACK: playout_completed
       sess.on('playout_completed' as any, (ev: any) => {
         const message = ev.message || ev.text || ev.content
@@ -1805,6 +1935,7 @@ async function main() {
                     return `[COMPLETED] "${lastCompletedResearch.task}"\n${lastCompletedResearch.researchLog.slice(-15).join('\n')}`
                   }
                 },
+                getAndConsumeInterruptionContext,
                 onFastBrainResult: (r) => {
                   console.log(`🧠⚡ [FAST_BRAIN ${r.type.toUpperCase()} +${r.elapsedMs}ms]: "${r.answer.substring(0, 60)}"`)
                   sendToFrontend({
@@ -2083,6 +2214,8 @@ async function main() {
     // Full cleanup — stop all background work to avoid accumulating API usage
     voiceQueue.length = 0
     isProcessingQueue = false
+    currentSpeechHandle = null
+    lastInterruption = null
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()

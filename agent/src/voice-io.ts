@@ -119,22 +119,13 @@ export function createTTS(config: TTSConfig) {
  * - False triggers from ambient noise
  */
 export async function createVAD() {
+  // VAD now only handles interruption detection — turn detection moved to Deepgram STT (server-side).
+  // Lighter settings = less local CPU from ONNX inference.
   return silero.VAD.load({
-    // Minimum 0.5s speech before triggering - prevents noise/short sounds
-    // Higher value = more complete utterances before processing
-    minSpeechDuration: 2.5,
-
-    // Wait 5s of silence before considering speech "done"
-    // Allows natural thinking pauses and multi-sentence input without splitting
-    // (increased from 1.2s — user reported speech getting fragmented into tiny turns)
-    minSilenceDuration: 2.5,
-
-    // Add 0.2s padding to start of speech chunks for cleaner audio
-    prefixPaddingDuration: 0.2,
-
-    // Higher threshold = less sensitive to quiet sounds/noise
-    // Default is 0.5, using 0.65 to reduce false positives
-    activationThreshold: 0.95,
+    minSpeechDuration: 0.3,       // 400ms — quick interruption detection
+    minSilenceDuration: 0.5,      // 500ms — responsive
+    prefixPaddingDuration: 0.1,
+    activationThreshold: 0.6,     // default — balanced for interruptions only
   })
 }
 
