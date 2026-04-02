@@ -117,11 +117,13 @@ function createSearchTool(
             name: 'emergency_stop',
             description: [
               'Kill and restart the main agent with new instructions.',
-              'ONLY call this when BOTH conditions are met:',
-              '  1. The agent is performing a DESTRUCTIVE or ALTERING action (write, edit, delete, overwrite, install, deploy, push, drop, remove, modify files/data).',
-              '  2. The user signals they want it stopped (high intent: "stop", "don\'t", "cancel that", "wait no", "not that").',
-              'NEVER call for: research, reading, exploring, searching, fetching, or conversation.',
-              'Priority: how destructive/unrecoverable the action is > how strongly the user signals.',
+              'Call when the user clearly wants the agent to STOP what a  DESTRUCTIVE or ALTERING action:',
+              '  - Destructive actions: write, edit, delete, install, deploy, push, modify files/data',
+              '  - Wrong direction: agent is doing something the user didn\'t ask for or explicitly rejects',
+              'User signals: "stop", "don\'t", "cancel", "wait no", "not that", "no no no", "I said stop".',
+              'NEVER call for: research, reading, exploring, searching, fetching, or casual conversation, questions about what the agent is doing, or research the user initiated.',
+              'When in doubt about whether to stop: check get_recent first to see what the agent is actually doing. ',
+              'Priority: how destructive/unrecoverable the action is > how strongly the user signals.'
             ].join(' '),
             parameters: {
               type: 'OBJECT' as any,
@@ -172,7 +174,7 @@ function createSearchTool(
           agentControl.abort()
 
           const restartPrompt = [
-            `[EMERGENCY STOP] A destructive action was stopped by the user.`,
+            `[EMERGENCY STOP] The user stopped your previous action.`,
             ``,
             `Reason: ${reason}`,
             ``,
@@ -182,7 +184,11 @@ function createSearchTool(
             `What was happening before the stop:`,
             recentActivity.substring(0, 2000),
             ``,
-            `Review any changes already made. The user wants to change course.`,
+            `RESPOND IMMEDIATELY with speech:`,
+            `1. Acknowledge what you were doing and that you've stopped`,
+            `2. If the user gave a new direction, confirm what you'll do instead`,
+            `3. If unclear, ask what they'd like to do next`,
+            `Do NOT silently do tool calls — speak first.`,
           ].join('\n')
 
           agentControl.sendPrompt(restartPrompt)

@@ -52,12 +52,12 @@ export function createSTT(config: STTConfig) {
       // Uses TurnInfo events: StartOfTurn, Update, EagerEndOfTurn, TurnResumed, EndOfTurn
       // TurnResumed prevents premature commits when user pauses mid-sentence
       // All processing is server-side (Deepgram), zero local CPU
-      console.log(`🎙️ Using Deepgram Flux STT (semantic turn detection, eotThreshold=${config.eotThreshold ?? 0.7})`)
+      console.log(`🎙️ Using Deepgram Flux STT (semantic turn detection, eotThreshold=${config.eotThreshold ?? 0.85}, eotTimeoutMs=${config.eotTimeoutMs ?? 3000})`)
       return new deepgram.STTv2({
         model: config.model || 'flux-general-en',
         language: config.language || 'en',
-        eotThreshold: config.eotThreshold ?? 0.7,
-        eotTimeoutMs: config.eotTimeoutMs ?? 3000,
+        eotThreshold: config.eotThreshold ?? 0.85,  // 0.0-1.0 — lower = more aggressive turn detection (more false positives), higher = more lenient (more false negatives)
+        eotTimeoutMs: config.eotTimeoutMs ?? 3000, // Max ms to wait before forcing end of turn — helps when user pauses for a long time mid-sentence (default 3000ms)
       })
 
     case 'groq-whisper':
@@ -168,10 +168,10 @@ export const DEFAULT_VOICE_IO_CONFIG: VoiceIOConfig = {
  * To switch providers: comment out the active line, uncomment the alternative.
  */
 export const DIRECT_MODE_STT: STTConfig = {
-  // provider: 'groq-whisper', model: 'whisper-large-v3-turbo',
-  // provider: 'openai-whisper', model: 'whisper-1',
-  // provider: 'deepgram', model: 'nova-3', language: 'en',
-  provider: 'deepgram-flux', model: 'flux-general-en', language: 'en',  // V2: semantic turn detection +(ML-based, server-side) 
+  // provider: 'groq-whisper', model: 'whisper-large-v3-turbo',          // Batch — needs VAD
+  // provider: 'openai-whisper', model: 'whisper-1',                     // Batch — needs VAD
+  // provider: 'deepgram', model: 'nova-3', language: 'en',             // Streaming, silence-based endpointing
+  provider: 'deepgram-flux', model: 'flux-general-en', language: 'en',  // Streaming, ML-based turn detection (requires Deepgram V2 access)
 }
 
 export const DIRECT_MODE_TTS: TTSConfig = {

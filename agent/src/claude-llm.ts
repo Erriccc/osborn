@@ -407,9 +407,12 @@ export class ClaudeLLM extends llm.LLM {
    */
   async interruptQuery(): Promise<boolean> {
     if (this.#activeQueries.size === 0) return false
+    // Snapshot current queries — new queries added during await must NOT be interrupted
+    // (race: pipeline-direct-llm calls interruptQuery() then chat() without awaiting,
+    //  so the new query can get added to #activeQueries before this loop finishes)
+    const queriesToInterrupt = [...this.#activeQueries]
     let interrupted = false
-    // Interrupt ALL active queries — stops the current task + any queued ones
-    for (const q of this.#activeQueries) {
+    for (const q of queriesToInterrupt) {
       if (typeof q.interrupt === 'function') {
         try {
           await q.interrupt()
@@ -420,7 +423,7 @@ export class ClaudeLLM extends llm.LLM {
       }
     }
     if (interrupted) {
-      console.log(`🛑 Interrupted ${this.#activeQueries.size} active query(s) (Esc equivalent)`)
+      console.log(`🛑 Interrupted ${queriesToInterrupt.length} active query(s) (Esc equivalent)`)
     }
     return interrupted
   }
@@ -822,7 +825,10 @@ class ClaudeLLMStream extends llm.LLMStream {
             }
 
             if (!hasOutput) {
-              bgEventEmitter.emit('tts_say', { text: 'Done.' })
+              // Silent completion — don't say "Done." in voice pipeline
+              // This fires on interruptions, fast brain aborts, and tool-only responses
+              // where Claude produces no speech. Silence is better than a confusing "Done."
+              console.log('🔇 Claude completed with no speech output (silent)')
             }
             console.log('✅ Claude response complete (background)')
           } catch (error) {

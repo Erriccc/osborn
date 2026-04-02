@@ -140,10 +140,11 @@ export class PipelineDirectLLM extends llm.LLM {
         ``,
         `User's message: "${userText}"`,
         ``,
-        `Handle naturally:`,
-        `- If it's a quick side question, answer it then continue where you left off (restart sub-agents if needed)`,
-        `- If they want to change direction, follow their lead`,
-        `- Don't repeat what was already spoken unless it makes sense to clarify`,
+        `RESPOND with speech first, then act:`,
+        `- ALWAYS reply with at least one spoken sentence before doing any tool calls`,
+        `- If it's a quick side question, answer it then continue where you left off`,
+        `- If they want to change direction, acknowledge and follow their lead`,
+        `- Clarify when asked to or the question requires going over what you just said`,
         `- Reference unspoken content naturally if relevant`,
       ].join('\n')
       // Modify the last user message in chatCtx
