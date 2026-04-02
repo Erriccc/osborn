@@ -959,6 +959,13 @@ async function main() {
     const session = new voice.AgentSession({
       turnDetection: 'stt',
       preemptiveGeneration: false,  // Only fire LLM on final committed transcript, not partial preemptives
+      turnHandling: {
+        endpointing: {
+          mode: 'fixed' as any,
+          minDelay: 500,    // Wait 500ms after STT commits before generating reply
+          maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
+        },
+      },
     })
 
     return { session, agent }

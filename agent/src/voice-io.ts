@@ -14,9 +14,13 @@ import * as silero from '@livekit/agents-plugin-silero'
 import type { RealtimeConfig } from './config.js'
 
 export interface STTConfig {
-  provider: 'deepgram' | 'groq-whisper' | 'openai-whisper'
+  provider: 'deepgram' | 'deepgram-flux' | 'groq-whisper' | 'openai-whisper'
   model?: string
   language?: string
+  /** Deepgram Flux: end-of-turn confidence threshold (0.0-1.0, default 0.7) */
+  eotThreshold?: number
+  /** Deepgram Flux: max ms to wait before forcing turn end (default 3000) */
+  eotTimeoutMs?: number
 }
 
 export interface TTSConfig {
@@ -40,7 +44,20 @@ export function createSTT(config: STTConfig) {
       return new deepgram.STT({
         model: (config.model || 'nova-3') as any,
         language: config.language || 'en',
-        endpointing: 600,  // Wait 650ms of silence before committing final transcript (default 25ms causes mid-sentence fragments)
+        endpointing: 550,  // Wait 550ms of silence before committing final transcript (default 25ms causes mid-sentence fragments)
+      })
+
+    case 'deepgram-flux':
+      // Deepgram Flux (V2 API) — semantic turn detection via ML model
+      // Uses TurnInfo events: StartOfTurn, Update, EagerEndOfTurn, TurnResumed, EndOfTurn
+      // TurnResumed prevents premature commits when user pauses mid-sentence
+      // All processing is server-side (Deepgram), zero local CPU
+      console.log(`🎙️ Using Deepgram Flux STT (semantic turn detection, eotThreshold=${config.eotThreshold ?? 0.7})`)
+      return new deepgram.STTv2({
+        model: config.model || 'flux-general-en',
+        language: config.language || 'en',
+        eotThreshold: config.eotThreshold ?? 0.7,
+        eotTimeoutMs: config.eotTimeoutMs ?? 3000,
       })
 
     case 'groq-whisper':
@@ -153,7 +170,8 @@ export const DEFAULT_VOICE_IO_CONFIG: VoiceIOConfig = {
 export const DIRECT_MODE_STT: STTConfig = {
   // provider: 'groq-whisper', model: 'whisper-large-v3-turbo',
   // provider: 'openai-whisper', model: 'whisper-1',
-  provider: 'deepgram', model: 'nova-3', language: 'en',
+  // provider: 'deepgram', model: 'nova-3', language: 'en',
+  provider: 'deepgram-flux', model: 'flux-general-en', language: 'en',  // V2: semantic turn detection +(ML-based, server-side) 
 }
 
 export const DIRECT_MODE_TTS: TTSConfig = {
