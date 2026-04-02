@@ -1126,6 +1126,8 @@ function VoiceRoomInner({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
+  const [claudeAuthUrl, setClaudeAuthUrl] = useState<string | null>(null)
+  const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'complete' | 'error'>('none')
   const [agentConnected, setAgentConnected] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [agentState, setAgentState] = useState<string>('idle')
@@ -1705,6 +1707,22 @@ function VoiceRoomInner({
           setNewSkillName('')
           setNewSkillContent('')
         }
+      } else if (data.type === 'claude_auth_required') {
+        console.log('🔑 Claude auth required')
+        setClaudeAuthStatus('required')
+      } else if (data.type === 'claude_auth_url') {
+        console.log('🔗 Claude auth URL received')
+        setClaudeAuthUrl(data.url)
+        setClaudeAuthStatus('waiting')
+      } else if (data.type === 'claude_auth_complete') {
+        console.log('✅ Claude auth complete')
+        setClaudeAuthUrl(null)
+        setClaudeAuthStatus('complete')
+        // Auto-dismiss after 3 seconds
+        setTimeout(() => setClaudeAuthStatus('none'), 3000)
+      } else if (data.type === 'claude_auth_error') {
+        console.log('❌ Claude auth error:', data.message)
+        setClaudeAuthStatus('error')
       } else {
         console.log('❓ Unknown message type:', data.type)
       }
@@ -1942,6 +1960,58 @@ function VoiceRoomInner({
 
   return (
     <>
+      {/* Claude Auth Modal — shown during first-time OAuth flow in cloud deployments */}
+      {(claudeAuthStatus === 'required' || claudeAuthStatus === 'waiting' || claudeAuthStatus === 'error') && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
+                <span className="text-xl">🔑</span>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-white">Claude Authentication</h3>
+                <p className="text-sm text-gray-400">
+                  {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
+                </p>
+              </div>
+            </div>
+
+            {claudeAuthStatus === 'required' && (
+              <div className="flex items-center gap-2 text-gray-300 text-sm">
+                <div className="animate-spin w-4 h-4 border-2 border-gray-500 border-t-amber-400 rounded-full" />
+                <span>Preparing login...</span>
+              </div>
+            )}
+
+            {claudeAuthStatus === 'waiting' && claudeAuthUrl && (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-300">
+                  Click the button below to sign in with your Anthropic account. This will open in a new tab.
+                </p>
+                <a
+                  href={claudeAuthUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block w-full text-center px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-medium rounded-lg transition-colors"
+                >
+                  Sign in to Claude
+                </a>
+                <div className="flex items-center gap-2 text-gray-400 text-xs">
+                  <div className="animate-spin w-3 h-3 border-2 border-gray-600 border-t-amber-400 rounded-full" />
+                  <span>Waiting for authentication...</span>
+                </div>
+              </div>
+            )}
+
+            {claudeAuthStatus === 'error' && (
+              <p className="text-sm text-red-400">
+                Authentication failed. Check the agent logs for details. The agent will fall back to API key authentication if available.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {pendingPermission && (
         <PermissionModal
           permission={pendingPermission}

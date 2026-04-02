@@ -1,0 +1,13 @@
+node_modules
+dist
+.osborn
+.env
+.env.*
+*.log
+.git
+.playwright-cli
+
+# Exclude sensitive Claude config but keep skills (shipped as defaults)
+.claude/settings*
+.claude/projects
+.claude/credentials*

@@ -21,6 +21,7 @@ import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getR
 import { createSTT, createTTS, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
+import { ensureClaudeAuth } from './claude-auth.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { askHaiku, askFastBrain, updateSpecFromJSONL, processResearchCompletion, handleResearchBatch, prepareBriefingScript, prepareRecoveryScript, writeQuestionToSpec, checkOutputAgainstQuestions, generateProactivePrompt, clearFastBrainSession, type ConversationTurn, type FastBrainCallbacks } from './fast-brain.js'
 import { DIRECT_MODE_PROMPT, getRealtimeInstructions, getScriptInjection, getProactiveInjection, getNotificationInjection, getResearchCompleteInjection, getResearchUpdateInjection } from './prompts.js'
@@ -1660,6 +1661,19 @@ async function main() {
       console.log(`🆔 Resuming session: ${resumeSessionId}`)
     } else {
       console.log(`🆔 New session (ID assigned by SDK)`)
+    }
+
+    // Ensure Claude is authenticated before creating voice session
+    // In cloud deployments (Fly.io), this triggers OAuth flow on first boot:
+    // captures login URL → sends to frontend → user clicks → auth completes
+    try {
+      await ensureClaudeAuth((type, payload) => {
+        sendToFrontend({ type, ...payload as object })
+      })
+    } catch (err: any) {
+      console.error('❌ Claude authentication failed:', err?.message)
+      sendToFrontend({ type: 'claude_auth_error', message: err?.message || 'Authentication failed' })
+      // Continue anyway — the agent SDK will use ANTHROPIC_API_KEY if available
     }
 
     // Create session based on voice mode (from frontend or config)

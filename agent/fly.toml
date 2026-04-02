@@ -1,0 +1,30 @@
+# Osborn Agent — Fly.io Configuration
+# Change app name per user: osborn-agent-<username>
+# Deploy: fly deploy
+
+app = "osborn-agent"
+primary_region = "iad"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8741"
+  HOST = "0.0.0.0"
+  OSBORN_CWD = "/workspace"
+
+[http_service]
+  internal_port = 8741
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[mounts]
+  source = "workspace"
+  destination = "/workspace"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
