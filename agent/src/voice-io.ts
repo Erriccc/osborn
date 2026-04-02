@@ -40,6 +40,7 @@ export function createSTT(config: STTConfig) {
       return new deepgram.STT({
         model: (config.model || 'nova-3') as any,
         language: config.language || 'en',
+        endpointing: 600,  // Wait 650ms of silence before committing final transcript (default 25ms causes mid-sentence fragments)
       })
 
     case 'groq-whisper':
@@ -122,10 +123,10 @@ export async function createVAD() {
   // VAD now only handles interruption detection — turn detection moved to Deepgram STT (server-side).
   // Lighter settings = less local CPU from ONNX inference.
   return silero.VAD.load({
-    minSpeechDuration: 0.3,       // 400ms — quick interruption detection
-    minSilenceDuration: 0.5,      // 500ms — responsive
+    minSpeechDuration: 0.4,       // 400ms — quick interruption detection
+    minSilenceDuration: 1.2,      // 1200ms — responsive
     prefixPaddingDuration: 0.1,
-    activationThreshold: 0.6,     // default — balanced for interruptions only
+    activationThreshold: 0.85,     // default — balanced for interruptions only
   })
 }
 
@@ -156,9 +157,9 @@ export const DIRECT_MODE_STT: STTConfig = {
 }
 
 export const DIRECT_MODE_TTS: TTSConfig = {
-  // provider: 'deepgram', model: 'aura-2-asteria-en',
+  // provider: 'deepgram', model: 'aura-2-asteria-en',  // WebSocket-based: handles TTS abort cleanly (no unrecoverable crash on interruption)
   // provider: 'gemini', model: 'gemini-2.5-flash-preview-tts', voice: 'apollo',
-  provider: 'openai', model: 'tts-1', voice: 'fable', // Fable, alloy
+  provider: 'openai', model: 'tts-1', voice: 'fable',  // HTTP streaming: throws APIUserAbortError on interrupt → unrecoverable session crash
   // provider: 'groq-orpheus', model: 'canopylabs/orpheus-v1-english', voice: 'autumn',  // $22/M chars — voices: autumn, diana, hannah, austin, daniel, troy
 }
 

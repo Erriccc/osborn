@@ -18,7 +18,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
-import { createSTT, createTTS, createVAD, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
+import { createSTT, createTTS, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -122,6 +122,11 @@ process.on('unhandledRejection', (reason: any) => {
   // or Superseded — new generateReply cancelled a pending one
   if (msg.includes('generateReply timed out') || msg.includes('generation_created') || msg.includes('Superseded')) {
     console.log('⚠️ generateReply failed:', msg.substring(0, 80))
+    return
+  }
+  // AdaptiveInterruptionDetector crash — LiveKit Cloud returns string instead of JSON.
+  // SDK handles this internally (retries → VAD fallback). Suppress residual noise.
+  if (msg.includes('interruption prediction') || msg.includes('AdaptiveInterruptionDetector')) {
     return
   }
   console.error('❌ Unhandled Rejection:', msg)
@@ -360,6 +365,7 @@ async function main() {
   room.setMaxListeners(50)  // Prevent MaxListenersExceeded warnings on reconnect
 
   // Track state
+  let pendingSessionClose: Promise<void> | null = null  // Tracks async session close for reconnect safety
   let currentSession: voice.AgentSession | null = null
   let currentAgent: voice.Agent | null = null  // For updateChatCtx() context injection
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
@@ -423,34 +429,19 @@ async function main() {
    * If interrupted: gather spoken text + JSONL context. Does NOT send to Claude yet —
    * that happens when the user's transcribed message arrives via chat().
    */
-  async function handleSpeechDone(handle: any) {
+  async function handleSpeechDone(handle: any, fullText: string) {
     if (!handle.interrupted) {
       lastInterruption = null
       return
     }
 
-    // --- INTERRUPTED: gather data ---
-    const chatItems = handle.chatItems || []
-    let spokenText = ''
-    for (const item of chatItems) {
-      if (item.role === 'assistant' && item.interrupted) {
-        if (typeof item.content === 'string') {
-          spokenText = item.content
-        } else if (Array.isArray(item.content)) {
-          spokenText = item.content
-            .map((c: any) => typeof c === 'string' ? c : c?.text || '')
-            .filter(Boolean)
-            .join(' ')
-        } else if (item.textContent) {
-          spokenText = item.textContent
-        }
-        break
-      }
-    }
+    // fullText is what was being spoken when interrupted (passed from tts_say handler).
+    // No word-level cutoff for say() — only generateReply pipeline has that — but Claude
+    // knows its own output from JSONL, so the full block is enough context.
+    console.log(`🔇 Speech interrupted. Was speaking: "${fullText.substring(0, 80)}..."`)
 
-    console.log(`🔇 Speech interrupted. Spoken: "${spokenText.substring(0, 80)}..."`)
-
-    // Read last 10 assistant messages from JSONL (Claude's full untruncated output)
+    // Read last 10 assistant messages from JSONL (Claude's full untruncated output).
+    // SessionMessage.text is pre-joined from all text content blocks.
     let recentMessages = ''
     const sessionId = currentLLM?.sessionId
     if (sessionId) {
@@ -461,17 +452,8 @@ async function main() {
           types: ['assistant'],
         })
         recentMessages = history
-          .map((m: any) => {
-            if (typeof m.content === 'string') return m.content
-            if (Array.isArray(m.content)) {
-              return m.content
-                .map((c: any) => typeof c === 'string' ? c : c?.text || '')
-                .filter(Boolean)
-                .join(' ')
-            }
-            return ''
-          })
-          .filter(Boolean)
+          .filter((m: any) => m.text)
+          .map((m: any) => m.text)
           .join('\n---\n')
       } catch (err) {
         console.warn('⚠️ Failed to read JSONL for interruption context:', err)
@@ -479,8 +461,8 @@ async function main() {
     }
 
     // Store — consumed when user's next message arrives via chat()
-    lastInterruption = { spokenText, recentMessages, timestamp: Date.now() }
-    console.log(`📋 Interruption context stored (spoken: ${spokenText.length} chars, JSONL: ${recentMessages.length} chars)`)
+    lastInterruption = { spokenText: fullText, recentMessages, timestamp: Date.now() }
+    console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars)`)
   }
 
   /**
@@ -776,7 +758,6 @@ async function main() {
 
     const stt = createSTT(DIRECT_MODE_STT)
     const tts = createTTS(DIRECT_MODE_TTS)
-    const vad = await createVAD()
 
     // Create Claude LLM wrapper — direct mode uses speech-optimized system prompt
     // skipTTSQueue: bypass LiveKit's BufferedTokenStream, use session.say() instead
@@ -926,7 +907,7 @@ async function main() {
           handle.addDoneCallback((sh: any) => {
             if (sh.interrupted) {
               console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
-              handleSpeechDone(sh)
+              handleSpeechDone(sh, data.text)
             } else {
               console.log(`✅ [${sayId}] session.say DONE`)
               if (currentSpeechHandle === sh) lastInterruption = null
@@ -965,27 +946,19 @@ async function main() {
     })
 
     // Create the Agent with instructions, STT, LLM, TTS
+    // VAD (Silero ONNX) removed — caused 2-5s inference lag on CPU, making interruption detection worse
+    // Turn detection is server-side (Deepgram endpointing), interruptions handled by STT
     const agent = new voice.Agent({
       instructions: DIRECT_MODE_PROMPT,
       stt,
       llm: directLLM,
       tts,
-      vad,
       turnDetection: 'stt',
     })
 
     const session = new voice.AgentSession({
       turnDetection: 'stt',
-      turnHandling: {
-        interruption: {
-          // Don't force 'adaptive' — let SDK auto-detect. It tries adaptive first,
-          // falls back to VAD if LiveKit Cloud doesn't support it for this config.
-          minDuration: 500,               // 500ms minimum overlap before triggering
-          minWords: 0,                    // don't require words — audio-based detection
-          falseInterruptionTimeout: 2000, // 2s — if no transcript after interrupt, resume speaking
-          resumeFalseInterruption: true,  // auto-resume on false positive
-        },
-      },
+      preemptiveGeneration: false,  // Only fire LLM on final committed transcript, not partial preemptives
     })
 
     return { session, agent }
@@ -1597,6 +1570,13 @@ async function main() {
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
 
+    // Wait for previous session's byte stream handler to fully deregister.
+    // Quick reconnects (< ~6s) crash with "byte stream handler already set" without this.
+    if (pendingSessionClose) {
+      console.log('⏳ Waiting for previous session to fully close...')
+      await pendingSessionClose
+    }
+
     // Clean up any existing session before creating a new one
     voiceQueue.length = 0
     isProcessingQueue = false
@@ -1738,7 +1718,7 @@ async function main() {
     // Session event wiring — extracted into function for auto-recovery
     // ============================================================
     let lastRecoveryTime = 0
-    const MIN_RECOVERY_INTERVAL = 10000  // 10 seconds between recovery attempts
+    const MIN_RECOVERY_INTERVAL = 3000  // 3 seconds between recovery attempts
 
     function wireSessionEvents(sess: voice.AgentSession, agt: voice.Agent) {
       // Transcript dedup state (reset per wiring)
@@ -1819,19 +1799,6 @@ async function main() {
         }
       })
 
-      // Adaptive interruption monitoring — log ML model decisions
-      sess.on('overlapping_speech' as any, (ev: any) => {
-        if (ev.isInterruption) {
-          console.log(`🔇 Adaptive: REAL interruption (p=${ev.probability?.toFixed(2)}, delay=${ev.detectionDelayInS?.toFixed(2)}s)`)
-        } else {
-          console.log(`🗣️ Adaptive: backchannel/false positive (p=${ev.probability?.toFixed(2)}) — speech continues`)
-        }
-      })
-
-      // False interruption recovery
-      sess.on('agent_false_interruption' as any, (ev: any) => {
-        console.log(`🔄 False interruption detected — ${ev.resumed ? 'resumed speaking' : 'not resumed'}`)
-      })
 
       // FALLBACK: playout_completed
       sess.on('playout_completed' as any, (ev: any) => {
@@ -2226,9 +2193,14 @@ async function main() {
     }
 
     if (currentSession) {
-      try { currentSession.close() } catch {}
-      currentSession.removeAllListeners()
+      const sessionToClose = currentSession
       currentSession = null
+      // Track async close so new connections can wait for byte stream handler to be released
+      pendingSessionClose = (async () => {
+        try { await sessionToClose.close() } catch {}
+        try { sessionToClose.removeAllListeners() } catch {}
+        pendingSessionClose = null
+      })()
     }
     currentAgent = null
     currentLLM = null

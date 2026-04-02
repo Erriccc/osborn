@@ -96,6 +96,8 @@ export class PipelineDirectLLM extends llm.LLM {
   clearCheckpoints() { this.#claudeLLM.clearCheckpoints() }
   hasCheckpoints() { return this.#claudeLLM.hasCheckpoints() }
 
+  #chatCallCount = 0
+
   chat({
     chatCtx, toolCtx, connOptions = DEFAULT_API_CONNECT_OPTIONS, abortController,
   }: {
@@ -104,6 +106,7 @@ export class PipelineDirectLLM extends llm.LLM {
     connOptions?: APIConnectOptions
     abortController?: AbortController
   }): llm.LLMStream {
+    const callN = ++this.#chatCallCount
 
     // Extract user text for fast brain
     let userText = ''
@@ -116,6 +119,8 @@ export class PipelineDirectLLM extends llm.LLM {
         break
       }
     }
+
+    console.log(`📥 [pipeline] chat() call #${callN}: "${userText.substring(0, 60)}"`)
 
     // Check for pending interruption context — enrich user message if interrupted
     const interruptCtx = this.#opts.getAndConsumeInterruptionContext?.()
