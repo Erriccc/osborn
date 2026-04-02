@@ -3,6 +3,8 @@
 .env.local
 .env.*.local
 
+.playwright-cli/
+
 # Source (publish dist only)
 src/
 
