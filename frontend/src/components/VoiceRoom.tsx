@@ -1127,7 +1127,8 @@ function VoiceRoomInner({
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   const [claudeAuthUrl, setClaudeAuthUrl] = useState<string | null>(null)
-  const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'complete' | 'error'>('none')
+  const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'waiting_code' | 'complete' | 'error'>('none')
+  const [claudeAuthCode, setClaudeAuthCode] = useState('')
   const [agentConnected, setAgentConnected] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [agentState, setAgentState] = useState<string>('idle')
@@ -1714,6 +1715,9 @@ function VoiceRoomInner({
         console.log('🔗 Claude auth URL received')
         setClaudeAuthUrl(data.url)
         setClaudeAuthStatus('waiting')
+      } else if (data.type === 'claude_auth_waiting_code') {
+        console.log('🔑 Claude waiting for auth code')
+        setClaudeAuthStatus('waiting_code')
       } else if (data.type === 'claude_auth_complete') {
         console.log('✅ Claude auth complete')
         setClaudeAuthUrl(null)
@@ -1946,15 +1950,118 @@ function VoiceRoomInner({
 
   if (waitingMode) {
     return (
-      <div className="w-full p-6 text-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="relative">
-            <div className="w-3 h-3 bg-violet-500 rounded-full animate-ping absolute" />
-            <div className="w-3 h-3 bg-violet-500 rounded-full" />
+      <>
+        {/* Claude Auth Modal — must render even in waiting mode for cloud deployments */}
+        {claudeAuthStatus !== 'none' && claudeAuthStatus !== 'complete' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md mx-4 shadow-2xl">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
+                  <span className="text-xl">🔑</span>
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Claude Authentication</h3>
+                  <p className="text-sm text-gray-400">
+                    {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
+                  </p>
+                </div>
+              </div>
+              {claudeAuthStatus === 'required' && (
+                <div className="flex items-center gap-2 text-gray-300 text-sm">
+                  <div className="animate-spin w-4 h-4 border-2 border-gray-500 border-t-amber-400 rounded-full" />
+                  <span>Preparing login...</span>
+                </div>
+              )}
+              {claudeAuthStatus === 'waiting' && claudeAuthUrl && (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-300">
+                    Click below to sign in, then paste the authentication code you receive.
+                  </p>
+                  <a
+                    href={claudeAuthUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block w-full text-center px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-medium rounded-lg transition-colors"
+                  >
+                    Sign in to Claude
+                  </a>
+                  <div className="mt-3">
+                    <label className="block text-xs text-gray-400 mb-1">Paste authentication code:</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={claudeAuthCode}
+                        onChange={(e) => setClaudeAuthCode(e.target.value)}
+                        placeholder="Paste code here..."
+                        className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                      />
+                      <button
+                        onClick={() => {
+                          if (claudeAuthCode.trim()) {
+                            const payload = new TextEncoder().encode(JSON.stringify({ type: 'claude_auth_code', code: claudeAuthCode.trim() }))
+                            sendToAgent(payload, { reliable: true })
+                            setClaudeAuthCode('')
+                          }
+                        }}
+                        disabled={!claudeAuthCode.trim()}
+                        className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-lg transition-colors"
+                      >
+                        Submit
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {claudeAuthStatus === 'waiting_code' && (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-300">
+                    Paste the authentication code from the browser:
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={claudeAuthCode}
+                      onChange={(e) => setClaudeAuthCode(e.target.value)}
+                      placeholder="Paste code here..."
+                      autoFocus
+                      className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                    />
+                    <button
+                      onClick={() => {
+                        if (claudeAuthCode.trim()) {
+                          const payload = new TextEncoder().encode(JSON.stringify({ type: 'claude_auth_code', code: claudeAuthCode.trim() }))
+                          sendToAgent(payload, { reliable: true })
+                          setClaudeAuthCode('')
+                        }
+                      }}
+                      disabled={!claudeAuthCode.trim()}
+                      className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-lg transition-colors"
+                    >
+                      Submit
+                    </button>
+                  </div>
+                </div>
+              )}
+              {claudeAuthStatus === 'error' && (
+                <p className="text-sm text-red-400">
+                  Authentication failed. Check the agent logs for details. The agent will fall back to API key authentication if available.
+                </p>
+              )}
+            </div>
           </div>
-          <span className="text-gray-400 text-sm">Connecting to agent...</span>
+        )}
+        <div className="w-full p-6 text-center">
+          <div className="flex flex-col items-center gap-3">
+            <div className="relative">
+              <div className="w-3 h-3 bg-violet-500 rounded-full animate-ping absolute" />
+              <div className="w-3 h-3 bg-violet-500 rounded-full" />
+            </div>
+            <span className="text-gray-400 text-sm">
+              {claudeAuthStatus !== 'none' ? 'Authenticating Claude...' : 'Connecting to agent...'}
+            </span>
+          </div>
         </div>
-      </div>
+      </>
     )
   }
 

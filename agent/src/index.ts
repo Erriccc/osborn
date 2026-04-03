@@ -193,9 +193,10 @@ function startApiServer(workingDir: string, port: number): void {
     res.end(JSON.stringify({ error: 'Not found' }))
   })
 
-  server.listen(port, () => {
-    console.log(`🌐 API server listening on http://localhost:${port}`)
-    console.log(`   Sessions: http://localhost:${port}/sessions`)
+  const host = process.env.HOST || '0.0.0.0'
+  server.listen(port, host, () => {
+    console.log(`🌐 API server listening on http://${host}:${port}`)
+    console.log(`   Sessions: http://${host}:${port}/sessions`)
   })
 
   server.on('error', (err: NodeJS.ErrnoException) => {
@@ -1665,11 +1666,31 @@ async function main() {
 
     // Ensure Claude is authenticated before creating voice session
     // In cloud deployments (Fly.io), this triggers OAuth flow on first boot:
-    // captures login URL → sends to frontend → user clicks → auth completes
+    // captures login URL → sends to frontend → user clicks → gets code → pastes in frontend → auth completes
     try {
-      await ensureClaudeAuth((type, payload) => {
+      const authResult = await ensureClaudeAuth((type, payload) => {
         sendToFrontend({ type, ...payload as object })
       })
+      // If auth flow is running, store the submitCode handler and wait for completion
+      if (authResult.submitCode && authResult.done) {
+        // Wire up the data channel handler for auth code submission
+        const submitCode = authResult.submitCode
+        const codeHandler = (data: any) => {
+          if (data.type === 'claude_auth_code' && data.code) {
+            console.log('🔑 Received auth code from frontend')
+            submitCode(data.code)
+          }
+        }
+        // Temporarily listen for the code on the room's data channel
+        room.on(RoomEvent.DataReceived as any, (payload: Uint8Array) => {
+          try {
+            const msg = JSON.parse(new TextDecoder().decode(payload))
+            codeHandler(msg)
+          } catch {}
+        })
+        // Wait for auth to complete
+        await authResult.done
+      }
     } catch (err: any) {
       console.error('❌ Claude authentication failed:', err?.message)
       sendToFrontend({ type: 'claude_auth_error', message: err?.message || 'Authentication failed' })

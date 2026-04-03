@@ -23,8 +23,8 @@ import { join } from 'path'
 
 const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json')
 
-// Matches the OAuth URL Claude CLI prints to stdout
-const URL_PATTERN = /https:\/\/claude\.ai\/oauth\/authorize[^\s\x1B\r\n]*/
+// Matches the OAuth URL Claude CLI prints to stdout (claude.ai or claude.com)
+const URL_PATTERN = /https:\/\/[^\s\x1B\r\n]*oauth\/authorize[^\s\x1B\r\n]*/
 
 // Matches successful login confirmation
 const SUCCESS_PATTERN = /Login successful|Logged in as\s+\S+/
@@ -39,12 +39,19 @@ const AUTH_TIMEOUT_MS = 5 * 60 * 1000
 export interface ClaudeAuthCallbacks {
   /** Called when the OAuth URL is captured — send this to the frontend */
   onUrl: (url: string) => void
+  /** Called when the CLI is waiting for the auth code paste */
+  onWaitingForCode: () => void
   /** Called when login completes successfully */
   onComplete: () => void
   /** Called on error or timeout */
   onError: (message: string) => void
   /** Optional: called for raw terminal output (for debugging) */
   onOutput?: (text: string) => void
+}
+
+export interface ClaudeAuthHandle {
+  /** Write the OAuth code to the CLI's stdin */
+  submitCode: (code: string) => void
 }
 
 // ─────────────────────────────────────────
@@ -116,16 +123,33 @@ export async function checkClaudeAuthStatus(): Promise<boolean> {
 /**
  * Run the Claude CLI OAuth flow in a pseudo-terminal.
  * Captures the login URL and sends it via callbacks.
+ * Returns a handle to submit the auth code back to the CLI.
+ *
+ * Flow:
+ *   1. CLI prints OAuth URL → onUrl callback
+ *   2. User opens URL, logs in, gets auth code
+ *   3. Frontend sends code → submitCode() writes to pty stdin
+ *   4. CLI validates → onComplete callback
  *
  * Uses `claude auth login --claudeai` to trigger the OAuth flow.
- *
- * @returns Promise that resolves when auth completes, rejects on error/timeout
  */
-export async function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): Promise<void> {
-  return new Promise((resolve, reject) => {
+export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: ClaudeAuthHandle; done: Promise<void> } {
+  let procRef: ReturnType<typeof pty.spawn> | null = null
+
+  const handle: ClaudeAuthHandle = {
+    submitCode: (code: string) => {
+      if (procRef) {
+        console.log(`🔑 Submitting auth code to Claude CLI (${code.length} chars)`)
+        procRef.write(code + '\r')
+      } else {
+        console.error('❌ Cannot submit code — Claude CLI process not running')
+      }
+    },
+  }
+
+  const done = new Promise<void>((resolve, reject) => {
     console.log('🔑 Starting Claude Code authentication flow...')
 
-    // `claude auth login --claudeai` triggers OAuth for Claude subscription users
     const proc = pty.spawn('claude', ['auth', 'login', '--claudeai'], {
       name: 'xterm-color',
       cols: 120,
@@ -136,15 +160,18 @@ export async function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): Promise
         TERM: 'xterm-color',
       },
     })
+    procRef = proc
 
     let buffer = ''
     let urlSent = false
+    let codeSolicited = false
     let completed = false
 
     // Timeout guard
     const timeout = setTimeout(() => {
       if (!completed) {
         proc.kill()
+        procRef = null
         const msg = 'Claude authentication timed out after 5 minutes'
         console.error('❌', msg)
         callbacks.onError(msg)
@@ -169,14 +196,24 @@ export async function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): Promise
           console.log(`🔗 Claude auth URL captured (${url.length} chars)`)
           urlSent = true
           callbacks.onUrl(url)
-          buffer = '' // clear to avoid re-matching
+          buffer = ''
         }
+      }
+
+      // Detect when CLI is waiting for the auth code paste
+      // Claude CLI prompts: "Paste code:" or "Enter code:" or just waits for input after URL
+      if (urlSent && !codeSolicited && /paste|enter.*code|authentication code/i.test(buffer)) {
+        codeSolicited = true
+        console.log('🔑 Claude CLI waiting for auth code')
+        callbacks.onWaitingForCode()
+        buffer = ''
       }
 
       // Detect successful login
       if (!completed && SUCCESS_PATTERN.test(buffer)) {
         completed = true
         clearTimeout(timeout)
+        procRef = null
         console.log('✅ Claude authentication complete')
         callbacks.onComplete()
         proc.kill()
@@ -186,6 +223,7 @@ export async function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): Promise
 
     proc.onExit(({ exitCode }: { exitCode: number }) => {
       clearTimeout(timeout)
+      procRef = null
       if (!completed) {
         const msg = `Claude CLI exited with code ${exitCode} before auth completed`
         console.error('❌', msg)
@@ -194,6 +232,8 @@ export async function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): Promise
       }
     })
   })
+
+  return { handle, done }
 }
 
 // ─────────────────────────────────────────
@@ -209,18 +249,18 @@ export async function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): Promise
  */
 export async function ensureClaudeAuth(
   sendToFrontend: (type: string, payload: unknown) => void
-): Promise<void> {
+): Promise<{ submitCode?: (code: string) => void; done?: Promise<void> }> {
   // Quick file-based check first
   if (isClaudeAuthenticated()) {
     console.log('✅ Claude already authenticated (credentials file valid)')
-    return
+    return {}
   }
 
   // Deeper check via CLI status command
   const cliStatus = await checkClaudeAuthStatus()
   if (cliStatus) {
     console.log('✅ Claude already authenticated (CLI status confirmed)')
-    return
+    return {}
   }
 
   console.log('🔑 Claude not authenticated — starting OAuth flow')
@@ -228,10 +268,16 @@ export async function ensureClaudeAuth(
     message: 'Claude authentication required. A login URL will appear shortly.',
   })
 
-  await runClaudeAuthFlow({
+  const { handle, done } = runClaudeAuthFlow({
     onUrl: (url) => {
       console.log('📤 Sending Claude auth URL to frontend')
       sendToFrontend('claude_auth_url', { url })
+    },
+    onWaitingForCode: () => {
+      console.log('📤 Sending code prompt to frontend')
+      sendToFrontend('claude_auth_waiting_code', {
+        message: 'Paste the authentication code from the browser.',
+      })
     },
     onComplete: () => {
       sendToFrontend('claude_auth_complete', {
@@ -246,4 +292,9 @@ export async function ensureClaudeAuth(
       // sendToFrontend('claude_auth_output', { text })
     },
   })
+
+  // Return handle immediately so index.ts can wire up the code submission
+  // The `done` promise resolves when auth completes
+  // Don't await here — let index.ts handle both the handle and the promise
+  return { submitCode: handle.submitCode, done }
 }
