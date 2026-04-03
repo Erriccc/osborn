@@ -26,6 +26,7 @@ import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmithery
 import { askHaiku, askFastBrain, updateSpecFromJSONL, processResearchCompletion, handleResearchBatch, prepareBriefingScript, prepareRecoveryScript, writeQuestionToSpec, checkOutputAgainstQuestions, generateProactivePrompt, clearFastBrainSession, type ConversationTurn, type FastBrainCallbacks } from './fast-brain.js'
 import { DIRECT_MODE_PROMPT, getRealtimeInstructions, getScriptInjection, getProactiveInjection, getNotificationInjection, getResearchCompleteInjection, getResearchUpdateInjection } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
+import { getRecallClient } from './recall-client.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -149,7 +150,7 @@ function startApiServer(workingDir: string, port: number): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // CORS headers for cloud frontend
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
     if (req.method === 'OPTIONS') {
@@ -186,6 +187,40 @@ function startApiServer(workingDir: string, port: number): void {
     if (req.method === 'GET' && url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ status: 'ok', workingDir }))
+      return
+    }
+
+    // POST /webhook/recall — Recall.ai real-time transcript webhooks
+    if (req.method === 'POST' && url.pathname === '/webhook/recall') {
+      // Respond 200 immediately — never block or Node delays next webhooks
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{"ok":true}')
+
+      let body = ''
+      req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body)
+          const recall = getRecallClient()
+          if (recall) recall.handleWebhook(payload)
+        } catch (e) {
+          console.error('Recall webhook parse error:', e)
+        }
+      })
+      return
+    }
+
+    // GET /meeting-output — Output Media webpage for Recall.ai bot audio
+    if (req.method === 'GET' && url.pathname === '/meeting-output') {
+      const htmlPath = join(process.cwd(), 'src', 'meeting-output.html')
+      try {
+        const html = readFileSync(htmlPath, 'utf-8')
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end(html)
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'text/plain' })
+        res.end('meeting-output.html not found')
+      }
       return
     }
 
@@ -409,6 +444,31 @@ async function main() {
   } | null = null
 
   // No manual queuing — the Claude SDK handles sequential queries internally
+
+  // ============================================================
+  // Recall.ai — Meeting Transcript Routing
+  // ============================================================
+  const recall = getRecallClient()
+  if (recall) {
+    console.log('🎥 Recall.ai client initialized (RECALL_API_KEY present)')
+    recall.on('transcript', ({ botId, speaker, text }: { botId: string, speaker: string, text: string }) => {
+      console.log(`📝 Meeting transcript [${speaker}]: ${text}`)
+      // Route meeting transcripts to Claude as user text with speaker attribution
+      if (currentLLM && currentSession) {
+        const meetingText = `[Meeting — ${speaker}]: ${text}`
+        // Use the same pipeline as user_text data channel messages
+        try {
+          if (currentVoiceMode === 'pipeline' || currentVoiceMode === 'direct') {
+            const chatCtx = new llm.ChatContext()
+            chatCtx.addMessage({ role: 'user', content: meetingText })
+            ;(currentLLM as any).chat({ chatCtx })
+          }
+        } catch (err) {
+          console.error('❌ Failed to route meeting transcript:', err)
+        }
+      }
+    })
+  }
 
   // ============================================================
   // Interruption Tracking (Content Ledger)
@@ -2251,6 +2311,7 @@ async function main() {
 
       if (data.type === 'claude_auth_code' && pendingAuthSubmitCode) {
         console.log('🔑 Received auth code from frontend')
+        sendToFrontend({ type: 'claude_auth_submitting', message: 'Submitting code to Claude CLI...' })
         pendingAuthSubmitCode(data.code)
       } else if (data.type === 'permission_response') {
         // Handle permission response for direct mode
@@ -2629,6 +2690,42 @@ async function main() {
           } catch (err) {
             console.error('❌ Failed to add skill:', err)
             await sendToFrontend({ type: 'skill_add_result', success: false, error: String(err) })
+          }
+        }
+      }
+      else if (data.type === 'join_meeting') {
+        const meetingUrl = data.url as string
+        if (meetingUrl) {
+          const recallJoin = getRecallClient()
+          if (!recallJoin) {
+            await sendToFrontend({ type: 'meeting_error', message: 'Recall.ai not configured — set RECALL_API_KEY in .env' })
+          } else {
+            try {
+              const webhookBase = process.env.FLY_APP_NAME
+                ? `https://${process.env.FLY_APP_NAME}.fly.dev`
+                : `http://localhost:${apiPort}`
+              await sendToFrontend({ type: 'meeting_joining', message: 'Osborn is joining your meeting...' })
+              const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase)
+              const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
+              recallJoin.registerBot(botId, sessionId)
+              await sendToFrontend({ type: 'meeting_joined', botId, message: 'Osborn has joined the meeting' })
+            } catch (err: any) {
+              console.error('❌ Recall.ai join error:', err)
+              await sendToFrontend({ type: 'meeting_error', message: err.message })
+            }
+          }
+        }
+      }
+      else if (data.type === 'leave_meeting') {
+        const botId = data.botId as string
+        const recallLeave = getRecallClient()
+        if (recallLeave && botId) {
+          try {
+            await recallLeave.leaveMeeting(botId)
+            await sendToFrontend({ type: 'meeting_left', botId })
+          } catch (err: any) {
+            console.error('❌ Recall.ai leave error:', err)
+            await sendToFrontend({ type: 'meeting_error', message: err.message })
           }
         }
       }

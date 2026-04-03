@@ -1127,7 +1127,7 @@ function VoiceRoomInner({
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   const [claudeAuthUrl, setClaudeAuthUrl] = useState<string | null>(null)
-  const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'waiting_code' | 'complete' | 'error'>('none')
+  const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'waiting_code' | 'submitting' | 'complete' | 'error'>('none')
   const [claudeAuthCode, setClaudeAuthCode] = useState('')
   const [agentConnected, setAgentConnected] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
@@ -1159,6 +1159,10 @@ function VoiceRoomInner({
   const [newSkillContent, setNewSkillContent] = useState('')
   // Research tracking state
   const [activeResearch, setActiveResearch] = useState<{ taskId: string; task: string; toolCount: number } | null>(null)
+  // Meeting state (Recall.ai)
+  const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
+  const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
+  const [meetingError, setMeetingError] = useState<string | null>(null)
 
   // Derived: currently selected file for preview
   const selectedFile = useMemo(() => {
@@ -1718,6 +1722,9 @@ function VoiceRoomInner({
       } else if (data.type === 'claude_auth_waiting_code') {
         console.log('🔑 Claude waiting for auth code')
         setClaudeAuthStatus('waiting_code')
+      } else if (data.type === 'claude_auth_submitting') {
+        console.log('🔑 Claude submitting auth code')
+        setClaudeAuthStatus('submitting')
       } else if (data.type === 'claude_auth_complete') {
         console.log('✅ Claude auth complete')
         setClaudeAuthUrl(null)
@@ -1727,6 +1734,23 @@ function VoiceRoomInner({
       } else if (data.type === 'claude_auth_error') {
         console.log('❌ Claude auth error:', data.message)
         setClaudeAuthStatus('error')
+      } else if (data.type === 'meeting_joining') {
+        console.log('🎥 Meeting: joining...')
+        setMeetingStatus('joining')
+        setMeetingError(null)
+      } else if (data.type === 'meeting_joined') {
+        console.log('🎥 Meeting: joined, botId:', data.botId)
+        setMeetingBotId(data.botId)
+        setMeetingStatus('joined')
+      } else if (data.type === 'meeting_left') {
+        console.log('🎥 Meeting: left')
+        setMeetingBotId(null)
+        setMeetingStatus('idle')
+      } else if (data.type === 'meeting_error') {
+        console.log('❌ Meeting error:', data.message)
+        setMeetingError(data.message)
+        setMeetingStatus('error')
+        setTimeout(() => { setMeetingStatus('idle'); setMeetingError(null) }, 5000)
       } else {
         console.log('❓ Unknown message type:', data.type)
       }
@@ -1908,6 +1932,26 @@ function VoiceRoomInner({
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent])
 
+  // Meeting (Recall.ai) handlers
+  const handleJoinMeeting = useCallback((meetingUrl: string) => {
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'join_meeting',
+      url: meetingUrl,
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [sendToAgent])
+
+  const handleLeaveMeeting = useCallback(() => {
+    if (!meetingBotId) return
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'leave_meeting',
+      botId: meetingBotId,
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [sendToAgent, meetingBotId])
+
   // Add a new skill
   const handleAddSkill = useCallback((name: string, content: string) => {
     const encoder = new TextEncoder()
@@ -2040,6 +2084,12 @@ function VoiceRoomInner({
                       Submit
                     </button>
                   </div>
+                </div>
+              )}
+              {claudeAuthStatus === 'submitting' && (
+                <div className="flex items-center gap-2 text-gray-300 text-sm">
+                  <div className="animate-spin w-4 h-4 border-2 border-gray-500 border-t-amber-400 rounded-full" />
+                  <span>Submitting code to Claude...</span>
                 </div>
               )}
               {claudeAuthStatus === 'error' && (
@@ -2240,6 +2290,46 @@ function VoiceRoomInner({
 
             {/* Compact Controls */}
             <div className="flex items-center gap-1.5">
+              {/* Meeting button */}
+              {meetingStatus === 'joined' ? (
+                <button
+                  onClick={handleLeaveMeeting}
+                  className="px-2.5 py-1.5 rounded-lg transition-all bg-green-500/20 text-green-400 hover:bg-red-500/20 hover:text-red-400 text-xs font-medium flex items-center gap-1.5 border border-green-500/30 hover:border-red-500/30"
+                  title="Leave meeting"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  In Meeting
+                </button>
+              ) : meetingStatus === 'joining' ? (
+                <span className="px-2.5 py-1.5 rounded-lg bg-yellow-500/20 text-yellow-400 text-xs font-medium flex items-center gap-1.5 border border-yellow-500/30">
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                  </svg>
+                  Joining...
+                </span>
+              ) : (
+                <button
+                  onClick={() => {
+                    const url = prompt('Paste your Zoom or Google Meet URL:')
+                    if (url?.trim()) handleJoinMeeting(url.trim())
+                  }}
+                  disabled={!agentConnected}
+                  className={`p-2 rounded-lg transition-all ${
+                    !agentConnected
+                      ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
+                      : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                  }`}
+                  title={meetingError || 'Join a meeting'}
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                </button>
+              )}
+
               {/* Files button - always visible */}
               <button
                 onClick={() => setIsFilesModalOpen(!isFilesModalOpen)}

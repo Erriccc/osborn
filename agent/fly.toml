@@ -3,7 +3,7 @@
 # Deploy: fly deploy
 
 app = "osborn-agent"
-primary_region = "iad"
+primary_region = "ewr"
 
 [build]
 

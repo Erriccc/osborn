@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head><title>Osborn Meeting Output</title></head>
+<body>
+<script>
+  const botId = new URLSearchParams(window.location.search).get('bot_id') || 'unknown'
+
+  function connect() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${protocol}//${window.location.host}/meeting-audio?bot_id=${botId}`)
+
+    ws.onmessage = async (event) => {
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+        const arrayBuffer = await event.data.arrayBuffer()
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer)
+        const source = audioCtx.createBufferSource()
+        source.buffer = audioBuffer
+        source.connect(audioCtx.destination)
+        source.start()
+      } catch (e) {
+        console.error('Audio playback error:', e)
+      }
+    }
+
+    ws.onclose = () => setTimeout(connect, 1000)
+  }
+
+  connect()
+</script>
+</body>
+</html>

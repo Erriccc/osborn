@@ -130,9 +130,27 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
   const handle: ClaudeAuthHandle = {
     submitCode: (code: string) => {
       if (procRef) {
-        console.log(`🔑 Submitting auth code to Claude CLI (${code.length} chars)`)
-        // Write code + newline to pty stdin (simulates paste + Enter)
-        procRef.write(code.trim() + '\n')
+        const trimmed = code.trim()
+        console.log(`🔑 Submitting auth code to Claude CLI (${trimmed.length} chars)`)
+        // Claude CLI uses Ink (React terminal UI) which reads raw keypresses, not line-buffered stdin.
+        // Write chars in small chunks to simulate real typing, then send Enter.
+        const CHUNK_SIZE = 10
+        let offset = 0
+        const writeChunk = () => {
+          if (!procRef || offset >= trimmed.length) {
+            // All chars written — send Enter
+            if (procRef) {
+              console.log('🔑 Auth code fully written, sending Enter')
+              procRef.write('\r')
+            }
+            return
+          }
+          const chunk = trimmed.slice(offset, offset + CHUNK_SIZE)
+          procRef.write(chunk)
+          offset += CHUNK_SIZE
+          setTimeout(writeChunk, 50)
+        }
+        writeChunk()
       } else {
         console.error('❌ Cannot submit code — Claude CLI process not running')
       }
@@ -142,9 +160,11 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
   const done = new Promise<void>((resolve, reject) => {
     console.log('🔑 Starting Claude Code authentication flow...')
 
-    const proc = pty.spawn('claude', ['auth', 'login', '--claudeai'], {
+    // setup-token provides Ink UI with "Paste code here if prompted >" input
+    // Unlike `auth login` which ignores pty stdin, setup-token reads input correctly
+    const proc = pty.spawn('claude', ['setup-token'], {
       name: 'xterm-color',
-      cols: 120,
+      cols: 500,  // Wide enough to prevent Ink from wrapping the OAuth URL
       rows: 30,
       cwd: homedir(),
       env: {
@@ -213,6 +233,13 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
         callbacks.onComplete()
         proc.kill()
         resolve()
+      }
+
+      // Detect OAuth error (invalid code, expired, etc.)
+      if (/OAuth error|Invalid code|expired/i.test(buffer)) {
+        console.log('⚠️ Claude auth error detected in CLI output')
+        callbacks.onError(buffer.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').trim().substring(0, 200))
+        buffer = ''
       }
     })
 

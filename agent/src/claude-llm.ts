@@ -8,7 +8,7 @@
  */
 
 import { llm, shortuuid, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
-import { query, type Options, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
+import { query, unstable_v2_createSession, unstable_v2_resumeSession, type Options, type McpServerConfig, type SDKSession, type SDKSessionOptions, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
 import { saveSessionMetadata } from './config.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
@@ -122,7 +122,12 @@ export class ClaudeLLM extends llm.LLM {
     resolve: (decision: { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }) => void
   } | null = null
 
-  // Persistent session: single process, no JSONL replay on follow-up messages
+  // V2 Persistent Session — single subprocess, no JSONL replay after first init.
+  // On first chat(), creates/resumes a session. Subsequent chat() calls use send().
+  #v2Session: SDKSession | null = null
+  #v2StreamLoop: AsyncGenerator<SDKMessage, void> | null = null
+  #v2Initialized = false
+
   // Active queries — multiple can be running (SDK queues them internally).
   // We keep ALL references so interrupt() can stop whatever is currently executing.
   #activeQueries: Set<any> = new Set()
@@ -265,7 +270,7 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   get model(): string {
-    return this.#opts.model || 'claude-sonnet-4-6'
+    return this.#opts.model || 'claude-sonnet-4-6' // claude-sonnet-4-6 || claude-haiku-4-5-20251001
   }
 
   get sessionId(): string | null {
@@ -484,6 +489,118 @@ export class ClaudeLLM extends llm.LLM {
     this.#activeQueries.delete(q)
   }
 
+  // ============================================================
+  // V2 PERSISTENT SESSION — single subprocess per voice session
+  // ============================================================
+
+  /**
+   * Get or create a V2 persistent session.
+   * First call: spawns subprocess, does JSONL replay (cold start).
+   * Subsequent calls: returns the same session (no replay).
+   */
+  getOrCreateSession(): SDKSession {
+    if (this.#v2Session) return this.#v2Session
+
+    const sessionOpts: SDKSessionOptions = {
+      model: this.#opts.model || 'claude-sonnet-4-6',
+      allowedTools: this.#opts.allowedTools || RESEARCH_TOOLS,
+      permissionMode: this.#opts.permissionMode as any || 'default',
+      canUseTool: async (toolName, input, _options) => {
+        // Auto-approve writes to session workspace (block spec.md/library — fast brain manages)
+        if (toolName === 'Write' || toolName === 'Edit') {
+          const filePath = String(input?.file_path || '')
+          if (filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')) {
+            const fileName = filePath.split('/').pop() || ''
+            if (fileName === 'spec.md' || filePath.includes('/library/')) {
+              console.log(`🚫 Blocked research agent write to managed file: ${filePath}`)
+              return { behavior: 'deny' as const, message: 'spec.md and library/ are managed by the fast brain. Return findings in text.' }
+            }
+            console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
+            return { behavior: 'allow' as const, updatedInput: input }
+          }
+        }
+        if (toolName === 'AskUserQuestion') {
+          return { behavior: 'allow' as const, updatedInput: input }
+        }
+        if (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode') {
+          return { behavior: 'deny' as const, message: 'Research mode does not use plan mode.' }
+        }
+        // Fall through to permission flow — emit event, wait for response
+        console.log(`⚠️ Permission needed: ${toolName}`)
+        return new Promise((resolve) => {
+          this.#pendingPermission = { toolName, input, resolve: resolve as any }
+          this.#eventEmitter.emit('permission_request', { toolName, input })
+        })
+      },
+      hooks: {
+        PreToolUse: [{
+          matcher: '.*',
+          hooks: [async (input: any) => {
+            const toolName = input?.tool_name || 'unknown'
+            const toolInput = input?.tool_input || {}
+            if (toolName === 'Write' || toolName === 'Edit') {
+              const filePath = String(toolInput.file_path || '')
+              if (filePath && !filePath.includes('.osborn/sessions/') && !filePath.includes('.osborn/research/')) {
+                console.log(`🚫 Research mode: blocked write to ${filePath}`)
+                this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Research mode: writes restricted to session workspace' })
+                return { decision: 'block', reason: 'Research mode: write to .osborn/sessions/ only.' }
+              }
+            }
+            console.log(`🔧 Claude: ${toolName}`)
+            this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput })
+            return {}
+          }]
+        }],
+        PostToolUse: [{
+          matcher: '.*',
+          hooks: [async (input: any) => {
+            const toolName = input?.tool_name || 'unknown'
+            const toolInput = input?.tool_input || {}
+            const toolResponse = input?.tool_response
+            console.log(`✅ Done: ${toolName}`)
+            this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse })
+            return {}
+          }]
+        }]
+      },
+    }
+
+    const resumeId = this.#resumeSessionId || this.#sessionId
+    if (resumeId) {
+      console.log(`🔄 V2 persistent session: resuming ${resumeId.substring(0, 8)}...`)
+      this.#v2Session = unstable_v2_resumeSession(resumeId, sessionOpts)
+    } else if (this.#continueSession) {
+      // TODO: V2 doesn't have a direct 'continue' equivalent yet
+      // For now, create a new session — the next message will establish context
+      console.log('🆕 V2 persistent session: creating new')
+      this.#v2Session = unstable_v2_createSession(sessionOpts)
+    } else {
+      console.log('🆕 V2 persistent session: creating new')
+      this.#v2Session = unstable_v2_createSession(sessionOpts)
+    }
+
+    return this.#v2Session
+  }
+
+  /**
+   * Close the V2 session (kills subprocess).
+   * Call on disconnect, session switch, or recovery.
+   */
+  closeSession(): void {
+    if (this.#v2Session) {
+      try { this.#v2Session.close() } catch {}
+      console.log('🔒 V2 persistent session closed')
+    }
+    this.#v2Session = null
+    this.#v2StreamLoop = null
+    this.#v2Initialized = false
+  }
+
+  /** Check if a V2 persistent session is alive */
+  hasSession(): boolean {
+    return this.#v2Session !== null
+  }
+
   chat({
     chatCtx,
     toolCtx,
@@ -637,7 +754,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
         allowedTools,
-        model: this.#opts.model || 'claude-sonnet-4-6',
+        model: this.#opts.model || 'claude-sonnet-4-6', // claude-sonnet-4-6 || claude-haiku-4-5-20251001
         enableFileCheckpointing: true,
         extraArgs: { 'replay-user-messages': null },
         ...(this.#abortController && { abortController: this.#abortController }),
@@ -713,7 +830,53 @@ class ClaudeLLMStream extends llm.LLMStream {
               return {}
             }]
           }]
-        }
+        },
+        // Writer sub-agent — has write/edit permissions, delegates from main research agent.
+        // The main agent handles research, planning, and user interaction.
+        // When changes need to be made (code, config, docs, any file), it delegates here.
+        agents: {
+          writer: {
+            description: [
+              'Sub-agent with file write and edit permissions.',
+              'Delegate here when the user has approved changes and you need to create, modify, or update files.',
+              'This is NOT just for code — use it for any file operation: config changes, documentation, scripts, data files, etc.',
+              'Pass it a clear, specific plan of what to change. If your instructions are vague, it will ask you clarifying questions before proceeding.',
+              'The writer will ask you (the main agent) for clarification if details are missing — answer from your research context if you can, or relay the question to the user if you cannot.',
+            ].join(' '),
+            tools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Glob', 'Grep', 'NotebookRead', 'NotebookEdit'],
+            model: 'sonnet',
+            prompt: [
+              'You are Osborn\'s writer sub-agent. You have file write and edit permissions. The main agent delegates file operations to you after the user approves a plan.',
+              '',
+              '## Your role',
+              '',
+              'You handle ALL file operations — code, config, documentation, scripts, data files, anything that needs to be created or modified. You are not limited to code.',
+              '',
+              '## Before making changes',
+              '',
+              '1. Review the plan you were given. If it is clear and specific, proceed.',
+              '2. If ANYTHING is vague, ambiguous, or missing — ask the main agent a specific clarifying question BEFORE touching any files. Examples:',
+              '   - "Which config format should I use — YAML or JSON?"',
+              '   - "Should this go in the existing auth.ts or a new file?"',
+              '   - "The plan says \'update the API\' — which endpoints specifically?"',
+              '   The main agent will either answer from its research context or ask the user.',
+              '3. Restate what you will do before doing it: which files, what changes, in what order.',
+              '',
+              '## While making changes',
+              '',
+              '- Make ONLY the changes described in the plan. Do not:',
+              '  - Refactor adjacent code',
+              '  - Fix unrelated issues you notice',
+              '  - Add comments or docs unless asked',
+              '  - Change formatting beyond what\'s needed',
+              '- If you hit an unexpected issue (file missing, structure doesn\'t match expectations), STOP and report it to the main agent. Do not improvise.',
+              '',
+              '## After changes',
+              '',
+              'Provide a concise summary: files changed, what changed in each, and any notes.',
+            ].join('\n'),
+          },
+        },
       }
 
       // Run Claude Agent SDK query() and stream results
