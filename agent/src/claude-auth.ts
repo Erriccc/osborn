@@ -26,8 +26,8 @@ const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json')
 // Matches the OAuth URL Claude CLI prints to stdout (claude.ai or claude.com)
 const URL_PATTERN = /https:\/\/[^\s\x1B\r\n]*oauth\/authorize[^\s\x1B\r\n]*/
 
-// Matches successful login confirmation
-const SUCCESS_PATTERN = /Login successful|Logged in as\s+\S+/
+// Matches successful login confirmation (various Claude CLI versions)
+const SUCCESS_PATTERN = /Login successful|Logged in as|Successfully authenticated|authenticated as|auth.*success/i
 
 // How long to wait for auth before timing out (5 minutes)
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000
@@ -86,34 +86,25 @@ export function isClaudeAuthenticated(): boolean {
 
 /**
  * Check auth status via `claude auth status` — more reliable than file parsing.
+ * Uses execSync instead of node-pty to avoid posix_spawnp PATH issues on macOS with NVM.
  * Returns true if logged in, false otherwise.
  */
 export async function checkClaudeAuthStatus(): Promise<boolean> {
-  return new Promise((resolve) => {
-    const proc = pty.spawn('claude', ['auth', 'status'], {
-      name: 'xterm-color',
-      cols: 120,
-      rows: 10,
-      cwd: homedir(),
+  try {
+    const { execSync } = await import('child_process')
+    const output = execSync('claude auth status', {
+      encoding: 'utf-8',
+      timeout: 10_000,
       env: { ...process.env },
     })
-
-    let output = ''
-    const timeout = setTimeout(() => {
-      proc.kill()
-      resolve(false)
-    }, 10_000)
-
-    proc.onData((data: string) => {
-      output += data.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '')
-    })
-
-    proc.onExit(() => {
-      clearTimeout(timeout)
-      // If output contains "Logged in" or similar, they're authenticated
-      resolve(/logged in|authenticated|active/i.test(output))
-    })
-  })
+    // CLI outputs JSON with "loggedIn": true/false
+    if (output.includes('"loggedIn": true') || output.includes('"loggedIn":true')) {
+      return true
+    }
+    return /logged in|authenticated|active/i.test(output)
+  } catch {
+    return false
+  }
 }
 
 // ─────────────────────────────────────────
@@ -140,7 +131,8 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
     submitCode: (code: string) => {
       if (procRef) {
         console.log(`🔑 Submitting auth code to Claude CLI (${code.length} chars)`)
-        procRef.write(code + '\r')
+        // Write code + newline to pty stdin (simulates paste + Enter)
+        procRef.write(code.trim() + '\n')
       } else {
         console.error('❌ Cannot submit code — Claude CLI process not running')
       }
@@ -184,6 +176,9 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
       const clean = data.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '')
                         .replace(/\x1B\][^\x07]*\x07/g, '')
       buffer += clean
+
+      // Log all CLI output for debugging auth flow
+      console.log(`🔑 [claude-cli] ${clean.trim().substring(0, 200)}`)
 
       // Forward raw output for debugging if requested
       callbacks.onOutput?.(data)

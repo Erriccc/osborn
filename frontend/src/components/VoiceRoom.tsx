@@ -2043,9 +2043,17 @@ function VoiceRoomInner({
                 </div>
               )}
               {claudeAuthStatus === 'error' && (
-                <p className="text-sm text-red-400">
-                  Authentication failed. Check the agent logs for details. The agent will fall back to API key authentication if available.
-                </p>
+                <div className="space-y-3">
+                  <p className="text-sm text-red-400">
+                    Authentication failed. The agent will fall back to API key authentication if available.
+                  </p>
+                  <button
+                    onClick={() => setClaudeAuthStatus('none')}
+                    className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                </div>
               )}
             </div>
           </div>

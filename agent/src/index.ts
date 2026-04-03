@@ -381,6 +381,9 @@ async function main() {
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
   let currentResumeSessionId: string | undefined
 
+  // Claude auth code submission handler (set during OAuth flow, cleared after)
+  let pendingAuthSubmitCode: ((code: string) => void) | null = null
+
   // Task deduplication guard - prevents Gemini re-execution loops
   let lastTaskRequest = ''
   let lastTaskTime = 0
@@ -1671,29 +1674,16 @@ async function main() {
       const authResult = await ensureClaudeAuth((type, payload) => {
         sendToFrontend({ type, ...payload as object })
       })
-      // If auth flow is running, store the submitCode handler and wait for completion
+      // If auth flow is running, store the submitCode handler for the DataReceived handler
       if (authResult.submitCode && authResult.done) {
-        // Wire up the data channel handler for auth code submission
-        const submitCode = authResult.submitCode
-        const codeHandler = (data: any) => {
-          if (data.type === 'claude_auth_code' && data.code) {
-            console.log('🔑 Received auth code from frontend')
-            submitCode(data.code)
-          }
-        }
-        // Temporarily listen for the code on the room's data channel
-        room.on(RoomEvent.DataReceived as any, (payload: Uint8Array) => {
-          try {
-            const msg = JSON.parse(new TextDecoder().decode(payload))
-            codeHandler(msg)
-          } catch {}
-        })
-        // Wait for auth to complete
+        pendingAuthSubmitCode = authResult.submitCode
         await authResult.done
+        pendingAuthSubmitCode = null
       }
     } catch (err: any) {
       console.error('❌ Claude authentication failed:', err?.message)
       sendToFrontend({ type: 'claude_auth_error', message: err?.message || 'Authentication failed' })
+      pendingAuthSubmitCode = null
       // Continue anyway — the agent SDK will use ANTHROPIC_API_KEY if available
     }
 
@@ -2259,7 +2249,10 @@ async function main() {
       const data = JSON.parse(new TextDecoder().decode(payload))
       console.log('📨 Data:', data.type)
 
-      if (data.type === 'permission_response') {
+      if (data.type === 'claude_auth_code' && pendingAuthSubmitCode) {
+        console.log('🔑 Received auth code from frontend')
+        pendingAuthSubmitCode(data.code)
+      } else if (data.type === 'permission_response') {
         // Handle permission response for direct mode
         if (currentLLM && currentLLM.hasPendingPermission?.()) {
           const allow = data.response === 'allow' || data.response === 'always_allow'
