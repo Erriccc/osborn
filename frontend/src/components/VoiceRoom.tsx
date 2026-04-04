@@ -932,6 +932,7 @@ function PermissionModal({
     high: 'text-red-400 bg-red-500/10 border-red-500/30',
   }
   const riskLevel = permission.riskLevel || 'medium'
+  const [showFullDiff, setShowFullDiff] = useState(false)
 
   // Extract key details from input for display
   const getInputDetails = () => {
@@ -1000,28 +1001,42 @@ function PermissionModal({
             )}
           </div>
           {/* Git-style diff viewer */}
-          {permission.diff && (
-            <div className="mt-3">
-              <div className="text-xs text-slate-400 mb-1 font-medium">Changes</div>
-              <div className="max-h-72 overflow-y-auto rounded border border-slate-700 bg-slate-950 font-mono text-xs">
-                {permission.diff.split('\n').map((line, i) => {
-                  if (line.startsWith('+++') || line.startsWith('---')) {
-                    return <div key={i} className="px-2 py-0 text-slate-500">{line}</div>
-                  }
-                  if (line.startsWith('@@')) {
-                    return <div key={i} className="px-2 py-0.5 text-blue-400 bg-slate-800">{line}</div>
-                  }
-                  if (line.startsWith('+')) {
-                    return <div key={i} className="px-2 py-0 text-green-400 bg-green-950/50">{line}</div>
-                  }
-                  if (line.startsWith('-')) {
-                    return <div key={i} className="px-2 py-0 text-red-400 bg-red-950/50">{line}</div>
-                  }
-                  return <div key={i} className="px-2 py-0 text-slate-300">{line}</div>
-                })}
+          {permission.diff && (() => {
+            const diffLines = permission.diff!.split('\n')
+            const COLLAPSED_LINES = 8
+            const hasMore = diffLines.length > COLLAPSED_LINES
+            const visibleLines = showFullDiff ? diffLines : diffLines.slice(0, COLLAPSED_LINES)
+            return (
+              <div className="mt-3">
+                <div className="text-xs text-slate-400 mb-1 font-medium">Changes</div>
+                <div className={`rounded border border-slate-700 bg-slate-950 font-mono text-xs${showFullDiff ? ' max-h-96 overflow-y-auto' : ''}`}>
+                  {visibleLines.map((line, i) => {
+                    if (line.startsWith('+++') || line.startsWith('---')) {
+                      return <div key={i} className="px-2 py-0 text-slate-500">{line}</div>
+                    }
+                    if (line.startsWith('@@')) {
+                      return <div key={i} className="px-2 py-0.5 text-blue-400 bg-slate-800">{line}</div>
+                    }
+                    if (line.startsWith('+')) {
+                      return <div key={i} className="px-2 py-0 text-green-400 bg-green-950/50">{line}</div>
+                    }
+                    if (line.startsWith('-')) {
+                      return <div key={i} className="px-2 py-0 text-red-400 bg-red-950/50">{line}</div>
+                    }
+                    return <div key={i} className="px-2 py-0 text-slate-300">{line}</div>
+                  })}
+                </div>
+                {hasMore && (
+                  <button
+                    onClick={() => setShowFullDiff(v => !v)}
+                    className="mt-1 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+                  >
+                    {showFullDiff ? '▲ Show less' : `▼ Show more (${diffLines.length - COLLAPSED_LINES} more lines)`}
+                  </button>
+                )}
               </div>
-            </div>
-          )}
+            )
+          })()}
         </div>
 
         <div className="flex gap-2">
