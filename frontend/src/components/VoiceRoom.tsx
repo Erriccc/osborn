@@ -50,6 +50,7 @@ interface PermissionRequest {
   description: string
   input?: Record<string, unknown>
   riskLevel?: 'low' | 'medium' | 'high'
+  diff?: string
 }
 
 // Helper to determine tool risk level
@@ -954,9 +955,11 @@ function PermissionModal({
 
   const inputDetails = getInputDetails()
 
+  console.log(`🔍 [modal] rendering PermissionModal: diff=${permission.diff ? `✅ ${permission.diff.length} chars` : '❌ NONE'}`)
+
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-900 rounded-2xl p-6 max-w-md w-full border border-gray-700/50 shadow-2xl">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start justify-center z-50 p-4 pt-8 overflow-y-auto">
+      <div className="bg-gray-900 rounded-2xl p-6 max-w-xl w-full border border-gray-700/50 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
             <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -996,6 +999,29 @@ function PermissionModal({
               </div>
             )}
           </div>
+          {/* Git-style diff viewer */}
+          {permission.diff && (
+            <div className="mt-3">
+              <div className="text-xs text-slate-400 mb-1 font-medium">Changes</div>
+              <div className="max-h-72 overflow-y-auto rounded border border-slate-700 bg-slate-950 font-mono text-xs">
+                {permission.diff.split('\n').map((line, i) => {
+                  if (line.startsWith('+++') || line.startsWith('---')) {
+                    return <div key={i} className="px-2 py-0 text-slate-500">{line}</div>
+                  }
+                  if (line.startsWith('@@')) {
+                    return <div key={i} className="px-2 py-0.5 text-blue-400 bg-slate-800">{line}</div>
+                  }
+                  if (line.startsWith('+')) {
+                    return <div key={i} className="px-2 py-0 text-green-400 bg-green-950/50">{line}</div>
+                  }
+                  if (line.startsWith('-')) {
+                    return <div key={i} className="px-2 py-0 text-red-400 bg-red-950/50">{line}</div>
+                  }
+                  return <div key={i} className="px-2 py-0 text-slate-300">{line}</div>
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex gap-2">
@@ -1475,7 +1501,9 @@ function VoiceRoomInner({
           description: data.description,
           input: data.input,
           riskLevel: getToolRiskLevel(data.toolName),
+          diff: data.diff,
         })
+        console.log(`🔍 [perm] received permission_request: diff=${data.diff ? `✅ ${data.diff.length} chars` : '❌ NONE'} toolName=${data.toolName}`)
       } else if (data.type === 'permission_response') {
         setPendingPermission(null)
       } else if (data.type === 'status_update') {
@@ -1897,6 +1925,7 @@ function VoiceRoomInner({
 
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
     const toolName = pendingPermission?.toolName || 'tool'
+    const filePath = pendingPermission?.input?.file_path
     setPendingPermission(null)
     addMessageRef.current?.('system', `Permission ${response}: ${toolName}`)
 
@@ -1904,6 +1933,7 @@ function VoiceRoomInner({
     const payload = encoder.encode(JSON.stringify({
       type: 'permission_response',
       response,
+      ...(filePath ? { filePath: String(filePath) } : {}),
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, pendingPermission])

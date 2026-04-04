@@ -17,6 +17,7 @@ setMaxListeners(50)
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createPatch } from 'diff'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
@@ -408,6 +409,8 @@ async function main() {
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
+  // Session-level always-allow list: paths the user has approved for this session without prompting
+  let sessionAlwaysAllowPaths = new Set<string>()
   let userState = 'listening'  // Track user speech state for queue safety
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
   let currentProvider: string = realtimeConfig.provider  // Track active realtime provider
@@ -837,6 +840,9 @@ async function main() {
     })
     currentLLM = directLLM
 
+    // Reset the session always-allow list for each new direct session
+    sessionAlwaysAllowPaths = new Set<string>()
+
     // For resumed sessions, eagerly create workspace (we know the real ID)
     if (resumeSessionId) {
       const workspace = ensureSessionWorkspace(sessionBaseDir, resumeSessionId)
@@ -920,6 +926,16 @@ async function main() {
       const toolName = data.toolName
       const input = data.input || {}
 
+      // Check session always-allow list before showing dialog
+      if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
+        const filePath = String(input?.file_path || '')
+        if (filePath && sessionAlwaysAllowPaths.has(filePath)) {
+          console.log(`✅ Session always-allow: ${filePath}`)
+          directLLM.respondToPermission(true)
+          return
+        }
+      }
+
       // Build descriptive message based on tool type
       let description = `I need permission to use ${toolName}.`
       if (toolName === 'Bash' && input.command) {
@@ -933,12 +949,69 @@ async function main() {
         description = `I want to fetch content from: ${input.url}`
       }
 
+      // Generate diff for Write/Edit/MultiEdit tools
+      let diffString: string | undefined
+      if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
+        const diffStart = performance.now()
+        try {
+          const filePath = String(input?.file_path || '')
+          let beforeContent = ''
+
+          const readStart = performance.now()
+          try {
+            beforeContent = readFileSync(filePath, 'utf-8')
+          } catch {
+            beforeContent = '' // new file
+          }
+          const readMs = (performance.now() - readStart).toFixed(2)
+          console.log(`⏱️ diff read: ${readMs}ms (${beforeContent.length} chars, ${filePath.split('/').pop()})`)
+
+          let afterContent = beforeContent
+          if (toolName === 'Write') {
+            afterContent = String(input?.content || '')
+          } else if (toolName === 'Edit') {
+            const oldStr = String(input?.old_string || '')
+            const newStr = String(input?.new_string || '')
+            const replaceAll = Boolean(input?.replace_all)
+            if (replaceAll) {
+              afterContent = beforeContent.split(oldStr).join(newStr)
+            } else {
+              afterContent = beforeContent.replace(oldStr, newStr)
+            }
+          } else if (toolName === 'MultiEdit') {
+            afterContent = beforeContent
+            const edits = Array.isArray(input?.edits) ? input.edits as Array<{old_string: string, new_string: string, replace_all?: boolean}> : []
+            for (const edit of edits) {
+              if (edit.replace_all) {
+                afterContent = afterContent.split(edit.old_string).join(edit.new_string)
+              } else {
+                afterContent = afterContent.replace(edit.old_string, edit.new_string)
+              }
+            }
+          }
+
+          const patchStart = performance.now()
+          const fileName = filePath.split('/').pop() || filePath
+          diffString = createPatch(fileName, beforeContent, afterContent, '', '', { context: 4 })
+          const patchMs = (performance.now() - patchStart).toFixed(2)
+          const totalMs = (performance.now() - diffStart).toFixed(2)
+          console.log(`⏱️ diff patch: ${patchMs}ms | total: ${totalMs}ms (before: ${beforeContent.length} chars, after: ${afterContent.length} chars, diff: ${diffString.length} chars)`)
+        } catch (e) {
+          const totalMs = (performance.now() - diffStart).toFixed(2)
+          console.log(`⏱️ diff failed after ${totalMs}ms:`, e)
+          // diff generation failed — proceed without diff
+          diffString = undefined
+        }
+      }
+
+      console.log(`🔍 perm payload: diff=${diffString ? `✅ ${diffString.length} chars` : '❌ NONE'} toolName=${toolName}`)
       sendToFrontend({
         type: 'permission_request',
         toolName: data.toolName,
         input: data.input,
         description,
         agentRole: 'direct',
+        diff: diffString,
       })
       // Speak the descriptive request so user knows to respond
       if (currentSession) {
@@ -2318,6 +2391,11 @@ async function main() {
         // Handle permission response for direct mode
         if (currentLLM && currentLLM.hasPendingPermission?.()) {
           const allow = data.response === 'allow' || data.response === 'always_allow'
+          // Track always_allow paths for this session so future requests auto-approve
+          if (data.response === 'always_allow' && data.filePath) {
+            sessionAlwaysAllowPaths.add(String(data.filePath))
+            console.log(`🔒 Always-allow added for session: ${data.filePath}`)
+          }
           currentLLM.respondToPermission(allow)
           console.log(`✅ Permission: ${data.response}`)
         }
