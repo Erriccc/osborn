@@ -8,7 +8,7 @@
  */
 
 import { llm, shortuuid, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
-import { query, unstable_v2_createSession, unstable_v2_resumeSession, type Options, type McpServerConfig, type SDKSession, type SDKSessionOptions, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUserMessage, type Query as SDKQuery } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
 import { saveSessionMetadata } from './config.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
@@ -100,6 +100,52 @@ const RESEARCH_TOOLS = [
 ]
 
 /**
+ * Pushable async iterable — allows pushing SDKUserMessages into a query's
+ * streaming input. The query subprocess stays alive between pushes (no JSONL replay).
+ */
+class MessageChannel<T> {
+  #queue: T[] = []
+  #waiting: ((value: IteratorResult<T>) => void) | null = null
+  #done = false
+
+  push(item: T): void {
+    if (this.#done) return
+    if (this.#waiting) {
+      const resolve = this.#waiting
+      this.#waiting = null
+      resolve({ value: item, done: false })
+    } else {
+      this.#queue.push(item)
+    }
+  }
+
+  close(): void {
+    this.#done = true
+    if (this.#waiting) {
+      const resolve = this.#waiting
+      this.#waiting = null
+      resolve({ value: undefined as any, done: true })
+    }
+  }
+
+  get closed(): boolean { return this.#done }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: (): Promise<IteratorResult<T>> => {
+        if (this.#queue.length > 0) {
+          return Promise.resolve({ value: this.#queue.shift()!, done: false })
+        }
+        if (this.#done) {
+          return Promise.resolve({ value: undefined as any, done: true })
+        }
+        return new Promise(resolve => { this.#waiting = resolve })
+      },
+    }
+  }
+}
+
+/**
  * Claude LLM - Wraps Claude Agent SDK for LiveKit
  * Research mode: reads anything, writes only to session workspace
  */
@@ -122,11 +168,12 @@ export class ClaudeLLM extends llm.LLM {
     resolve: (decision: { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }) => void
   } | null = null
 
-  // V2 Persistent Session — single subprocess, no JSONL replay after first init.
-  // On first chat(), creates/resumes a session. Subsequent chat() calls use send().
-  #v2Session: SDKSession | null = null
-  #v2StreamLoop: AsyncGenerator<SDKMessage, void> | null = null
-  #v2Initialized = false
+  // Persistent session — single query() with AsyncIterable<SDKUserMessage> input.
+  // Subprocess spawns once on first chat(), stays alive for all subsequent messages.
+  // No JSONL replay after the first cold start.
+  #persistentQuery: SDKQuery | null = null
+  #messageChannel: MessageChannel<SDKUserMessage> | null = null
+  #backgroundConsumerRunning = false
 
   // Active queries — multiple can be running (SDK queues them internally).
   // We keep ALL references so interrupt() can stop whatever is currently executing.
@@ -270,7 +317,7 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   get model(): string {
-    return this.#opts.model || 'claude-sonnet-4-6' // claude-sonnet-4-6 || claude-haiku-4-5-20251001
+    return this.#opts.model || 'claude-sonnet-4-6' // Sonnet orchestrator with named sub-agents
   }
 
   get sessionId(): string | null {
@@ -296,9 +343,11 @@ export class ClaudeLLM extends llm.LLM {
    * Clears pending permissions and resets conversation tracking
    */
   resetForSessionSwitch(): void {
+    // Kill persistent session — new session needs fresh subprocess
+    this.closeSession()
+
     // Clear any pending permission request from previous session
     if (this.#pendingPermission) {
-      // Deny the pending permission to clean up
       this.#pendingPermission.resolve({
         behavior: 'deny',
         message: 'Session switched - permission request cancelled',
@@ -411,10 +460,18 @@ export class ClaudeLLM extends llm.LLM {
    * Returns true if interrupted, false if no active query.
    */
   async interruptQuery(): Promise<boolean> {
+    // Prefer persistent query's interrupt() — graceful Esc that keeps subprocess alive
+    if (this.#persistentQuery && typeof this.#persistentQuery.interrupt === 'function') {
+      try {
+        await this.#persistentQuery.interrupt()
+        console.log('🛑 Interrupted persistent session (Esc equivalent — subprocess stays alive)')
+        return true
+      } catch (err: any) {
+        console.error('⚠️ Persistent interrupt failed:', err?.message)
+      }
+    }
+    // Fallback: interrupt any active one-shot queries (realtime mode research)
     if (this.#activeQueries.size === 0) return false
-    // Snapshot current queries — new queries added during await must NOT be interrupted
-    // (race: pipeline-direct-llm calls interruptQuery() then chat() without awaiting,
-    //  so the new query can get added to #activeQueries before this loop finishes)
     const queriesToInterrupt = [...this.#activeQueries]
     let interrupted = false
     for (const q of queriesToInterrupt) {
@@ -438,6 +495,9 @@ export class ClaudeLLM extends llm.LLM {
    * Kills subprocesses. Next message will spawn new processes.
    */
   abortQuery(): void {
+    // Kill persistent session first (if alive)
+    this.closeSession()
+    // Also kill any one-shot queries (realtime research)
     for (const q of this.#activeQueries) {
       try { q.return?.() } catch {}
     }
@@ -455,7 +515,17 @@ export class ClaudeLLM extends llm.LLM {
       console.log('⚠️ No checkpoint available for rewind')
       return false
     }
-    // Try rewind on the latest query
+    // Prefer persistent query (has the full session context)
+    if (this.#persistentQuery && typeof this.#persistentQuery.rewindFiles === 'function') {
+      try {
+        await this.#persistentQuery.rewindFiles(id)
+        console.log(`🔄 Files rewound to checkpoint: ${id.substring(0, 8)}...`)
+        return true
+      } catch (err: any) {
+        console.error('⚠️ Rewind failed:', err?.message)
+      }
+    }
+    // Fallback: try latest one-shot query
     const queries = [...this.#activeQueries]
     const latest = queries[queries.length - 1]
     if (latest && typeof latest.rewindFiles === 'function') {
@@ -490,115 +560,174 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   // ============================================================
-  // V2 PERSISTENT SESSION — single subprocess per voice session
+  // PERSISTENT SESSION — V1 query() with AsyncIterable<SDKUserMessage>
+  // Single subprocess per voice session. First chat() does JSONL cold
+  // start; subsequent chat() calls push messages to the existing
+  // subprocess via the MessageChannel — no JSONL replay.
   // ============================================================
 
-  /**
-   * Get or create a V2 persistent session.
-   * First call: spawns subprocess, does JSONL replay (cold start).
-   * Subsequent calls: returns the same session (no replay).
-   */
-  getOrCreateSession(): SDKSession {
-    if (this.#v2Session) return this.#v2Session
-
-    const sessionOpts: SDKSessionOptions = {
-      model: this.#opts.model || 'claude-sonnet-4-6',
-      allowedTools: this.#opts.allowedTools || RESEARCH_TOOLS,
-      permissionMode: this.#opts.permissionMode as any || 'default',
-      canUseTool: async (toolName, input, _options) => {
-        // Auto-approve writes to session workspace (block spec.md/library — fast brain manages)
-        if (toolName === 'Write' || toolName === 'Edit') {
-          const filePath = String(input?.file_path || '')
-          if (filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')) {
-            const fileName = filePath.split('/').pop() || ''
-            if (fileName === 'spec.md' || filePath.includes('/library/')) {
-              console.log(`🚫 Blocked research agent write to managed file: ${filePath}`)
-              return { behavior: 'deny' as const, message: 'spec.md and library/ are managed by the fast brain. Return findings in text.' }
-            }
-            console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
-            return { behavior: 'allow' as const, updatedInput: input }
-          }
-        }
-        if (toolName === 'AskUserQuestion') {
-          return { behavior: 'allow' as const, updatedInput: input }
-        }
-        if (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode') {
-          return { behavior: 'deny' as const, message: 'Research mode does not use plan mode.' }
-        }
-        // Fall through to permission flow — emit event, wait for response
-        console.log(`⚠️ Permission needed: ${toolName}`)
-        return new Promise((resolve) => {
-          this.#pendingPermission = { toolName, input, resolve: resolve as any }
-          this.#eventEmitter.emit('permission_request', { toolName, input })
-        })
-      },
-      hooks: {
-        PreToolUse: [{
-          matcher: '.*',
-          hooks: [async (input: any) => {
-            const toolName = input?.tool_name || 'unknown'
-            const toolInput = input?.tool_input || {}
-            if (toolName === 'Write' || toolName === 'Edit') {
-              const filePath = String(toolInput.file_path || '')
-              if (filePath && !filePath.includes('.osborn/sessions/') && !filePath.includes('.osborn/research/')) {
-                console.log(`🚫 Research mode: blocked write to ${filePath}`)
-                this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Research mode: writes restricted to session workspace' })
-                return { decision: 'block', reason: 'Research mode: write to .osborn/sessions/ only.' }
-              }
-            }
-            console.log(`🔧 Claude: ${toolName}`)
-            this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput })
-            return {}
-          }]
-        }],
-        PostToolUse: [{
-          matcher: '.*',
-          hooks: [async (input: any) => {
-            const toolName = input?.tool_name || 'unknown'
-            const toolInput = input?.tool_input || {}
-            const toolResponse = input?.tool_response
-            console.log(`✅ Done: ${toolName}`)
-            this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse })
-            return {}
-          }]
-        }]
-      },
-    }
-
-    const resumeId = this.#resumeSessionId || this.#sessionId
-    if (resumeId) {
-      console.log(`🔄 V2 persistent session: resuming ${resumeId.substring(0, 8)}...`)
-      this.#v2Session = unstable_v2_resumeSession(resumeId, sessionOpts)
-    } else if (this.#continueSession) {
-      // TODO: V2 doesn't have a direct 'continue' equivalent yet
-      // For now, create a new session — the next message will establish context
-      console.log('🆕 V2 persistent session: creating new')
-      this.#v2Session = unstable_v2_createSession(sessionOpts)
-    } else {
-      console.log('🆕 V2 persistent session: creating new')
-      this.#v2Session = unstable_v2_createSession(sessionOpts)
-    }
-
-    return this.#v2Session
+  /** Whether a persistent session is alive and consuming messages */
+  hasSession(): boolean {
+    return this.#persistentQuery !== null && !this.#messageChannel?.closed
   }
 
   /**
-   * Close the V2 session (kills subprocess).
+   * Close the persistent session (kills subprocess).
    * Call on disconnect, session switch, or recovery.
    */
   closeSession(): void {
-    if (this.#v2Session) {
-      try { this.#v2Session.close() } catch {}
-      console.log('🔒 V2 persistent session closed')
+    if (this.#messageChannel) {
+      this.#messageChannel.close()
     }
-    this.#v2Session = null
-    this.#v2StreamLoop = null
-    this.#v2Initialized = false
+    if (this.#persistentQuery) {
+      try { this.#persistentQuery.close() } catch {}
+      this.#activeQueries.delete(this.#persistentQuery)
+    }
+    this.#persistentQuery = null
+    this.#messageChannel = null
+    this.#backgroundConsumerRunning = false
+    console.log('🔒 Persistent session closed')
   }
 
-  /** Check if a V2 persistent session is alive */
-  hasSession(): boolean {
-    return this.#v2Session !== null
+  /**
+   * Push a user message into the persistent session.
+   * If no session exists yet, creates one (cold start with JSONL replay).
+   * If a session exists, instantly delivers the message (no replay).
+   *
+   * @param userText - The user's message text
+   * @param sdkOptions - Full V1 Options (only used on first call to create the query)
+   * @param callbacks - Event callbacks for the background consumer
+   */
+  pushMessage(
+    userText: string,
+    sdkOptions: Options,
+    callbacks: {
+      onSessionId: (id: string) => void
+      onCheckpoint: (checkpointId: string) => void
+      eventEmitter: EventEmitter
+    },
+  ): void {
+    const userMessage: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: userText }] } as any,
+      parent_tool_use_id: null,
+      session_id: this.#sessionId || '',
+    }
+
+    if (this.#persistentQuery && this.#messageChannel && !this.#messageChannel.closed) {
+      // Fast path — push to existing subprocess (no cold start)
+      console.log('⚡ Persistent session: pushing message (no JSONL replay)')
+      this.#messageChannel.push(userMessage)
+      return
+    }
+
+    // Cold start — create channel, push first message, start query + background consumer
+    console.log('🔄 Persistent session: cold start (first message, JSONL replay)')
+    this.#messageChannel = new MessageChannel()
+    this.#messageChannel.push(userMessage)
+
+    this.#persistentQuery = query({ prompt: this.#messageChannel as any, options: sdkOptions })
+    this.#activeQueries.add(this.#persistentQuery)
+
+    this.#startBackgroundConsumer(callbacks)
+  }
+
+  /**
+   * Background consumer — runs for the lifetime of the persistent session.
+   * Consumes all SDKMessage events from the query and routes them to
+   * the event emitter (same events as the old per-query skipTTSQueue path).
+   */
+  async #startBackgroundConsumer(callbacks: {
+    onSessionId: (id: string) => void
+    onCheckpoint: (checkpointId: string) => void
+    eventEmitter: EventEmitter
+  }): Promise<void> {
+    if (this.#backgroundConsumerRunning) return
+    this.#backgroundConsumerRunning = true
+    const pq = this.#persistentQuery!
+
+    try {
+      for await (const message of pq) {
+        const msg = message as any
+
+        // Session ID capture
+        if (msg.type === 'system' && msg.subtype === 'init') {
+          const mcpServers = msg.mcp_servers
+          if (mcpServers && Array.isArray(mcpServers)) {
+            for (const s of mcpServers) {
+              const status = s.status === 'connected' ? '✅' : '❌'
+              console.log(`${status} MCP server ${s.name}: ${s.status}`)
+            }
+          }
+          const newSessionId = msg.session_id
+          if (newSessionId) {
+            callbacks.onSessionId(newSessionId)
+            const isNew = !this.#sessionId
+            if (isNew) console.log(`📋 New session: ${newSessionId}`)
+            this.#sessionId = newSessionId
+            if (isNew && this.#opts.workingDirectory) {
+              saveSessionMetadata(this.#opts.workingDirectory, {
+                sessionId: newSessionId,
+                lastUpdated: new Date().toISOString(),
+                projectPath: this.#opts.workingDirectory,
+              })
+            }
+            const requestedResumeId = this.#opts.resumeSessionId
+            if (requestedResumeId && newSessionId !== requestedResumeId) {
+              console.error(`❌ Session resume FAILED: Expected ${requestedResumeId.substring(0, 8)}..., got ${newSessionId.substring(0, 8)}...`)
+              callbacks.eventEmitter.emit('session_resume_failed', { requestedSessionId: requestedResumeId, actualSessionId: newSessionId })
+            } else if (requestedResumeId && newSessionId === requestedResumeId) {
+              console.log(`✅ Session resumed successfully: ${newSessionId.substring(0, 8)}...`)
+            }
+          }
+        }
+
+        // Checkpoint capture
+        if (msg.type === 'user' && msg.uuid) {
+          callbacks.onCheckpoint(msg.uuid)
+        }
+
+        // SDK request ID
+        if (msg.requestId) {
+          callbacks.eventEmitter.emit('query_request_id', { requestId: msg.requestId })
+        }
+
+        // Stream assistant text → tts_say events
+        if (msg.type === 'assistant' && msg.message?.content) {
+          for (const block of msg.message.content) {
+            if (block.type === 'text' && block.text) {
+              callbacks.eventEmitter.emit('assistant_text', { text: block.text })
+              const ttsChunk = stripMarkdownForTTS(block.text)
+              if (ttsChunk.trim()) {
+                console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk.substring(0, 60)}..."`)
+                callbacks.eventEmitter.emit('tts_say', { text: ttsChunk })
+              }
+            }
+          }
+        }
+
+        // Result — marks end of a turn (but we keep consuming for next turn)
+        if (msg.type === 'result') {
+          if (msg.result) {
+            callbacks.eventEmitter.emit('assistant_result', { text: msg.result })
+          }
+          console.log('✅ Claude turn complete (persistent session stays alive)')
+        }
+      }
+    } catch (error: any) {
+      if (error?.message?.includes('aborted') || error?.message?.includes('AbortError')) {
+        console.log('🛑 Persistent session query aborted')
+      } else {
+        console.error('❌ Persistent session error:', error)
+        callbacks.eventEmitter.emit('tts_say', { text: 'Sorry, I encountered an error.' })
+      }
+    } finally {
+      this.#backgroundConsumerRunning = false
+      this.#activeQueries.delete(pq)
+      this.#persistentQuery = null
+      this.#messageChannel = null
+      console.log('🔒 Persistent session background consumer exited')
+    }
   }
 
   chat({
@@ -754,8 +883,9 @@ class ClaudeLLMStream extends llm.LLMStream {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
         allowedTools,
-        model: this.#opts.model || 'claude-sonnet-4-6', // claude-sonnet-4-6 || claude-haiku-4-5-20251001
+        model: this.#opts.model || 'claude-sonnet-4-6', // Sonnet orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
         enableFileCheckpointing: true,
+        agentProgressSummaries: true,
         extraArgs: { 'replay-user-messages': null },
         ...(this.#abortController && { abortController: this.#abortController }),
         ...(resumeSessionId && { resume: resumeSessionId }),
@@ -803,12 +933,21 @@ class ClaudeLLMStream extends llm.LLMStream {
             hooks: [async (input: any) => {
               const toolName = input?.tool_name || 'unknown'
               const toolInput = input?.tool_input || {}
+              const agentType = input?.agent_type || null
 
-              // Safety: block Write/Edit outside session workspace
-              if (toolName === 'Write' || toolName === 'Edit') {
+              // Write/Edit/MultiEdit access control
+              if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
+                // Writer sub-agent gets full write access everywhere
+                if (agentType === 'writer') {
+                  console.log(`✍️ Writer agent: allowing ${toolName}`)
+                  this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput })
+                  return {}
+                }
+
+                // All other agents (main, researcher, reasoner, etc.): workspace only
                 const filePath = String(toolInput.file_path || '')
                 if (filePath && !filePath.includes('.osborn/sessions/') && !filePath.includes('.osborn/research/')) {
-                  console.log(`🚫 Research mode: blocked write to ${filePath}`)
+                  console.log(`🚫 Research mode: blocked write to ${filePath} (agent_type: ${agentType ?? 'main'})`)
                   this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Research mode: writes restricted to session workspace' })
                   return { decision: 'block', reason: 'Research mode: write to .osborn/sessions/ only.' }
                 }
@@ -831,49 +970,123 @@ class ClaudeLLMStream extends llm.LLMStream {
             }]
           }]
         },
-        // Writer sub-agent — has write/edit permissions, delegates from main research agent.
-        // The main agent handles research, planning, and user interaction.
-        // When changes need to be made (code, config, docs, any file), it delegates here.
+        // Named sub-agents — Haiku overseer delegates to these specialists.
+        // Each has a specific role, model, and tool set.
         agents: {
+          researcher: {
+            description: [
+              'Information gathering agent (Sonnet). Use for: codebase exploration, web research,',
+              'finding patterns, reading multiple files, searching for examples.',
+              'Returns structured findings — does NOT make decisions or edit files.',
+              'Use this for ANY task that needs more than 2 tool calls to gather information.',
+            ].join(' '),
+            tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebSearch', 'WebFetch', 'Task'],
+            model: 'sonnet',
+            prompt: [
+              'You are Osborn\'s research agent. Your job is information gathering — thorough, structured, factual.',
+              '',
+              '## Your role',
+              'Gather information the main agent needs to answer the user\'s question or make a decision.',
+              'You are a scout — go find things, read them carefully, and report back.',
+              '',
+              '## How to work',
+              '1. Understand what information is needed and why.',
+              '2. Search broadly first (Glob, Grep, WebSearch), then read deeply (Read specific files).',
+              '3. For large investigations, use the Task tool to run parallel searches.',
+              '4. Cap yourself at 5-8 tool calls unless the task clearly requires more.',
+              '',
+              '## What to return',
+              'Structured findings with specifics:',
+              '- File paths and line numbers where you found relevant code',
+              '- Exact values, configs, versions — not paraphrases',
+              '- Direct quotes from documentation or web sources',
+              '- What you looked for but did NOT find (negative results matter)',
+              '',
+              '## What NOT to do',
+              '- Do NOT make recommendations or decisions — just surface facts',
+              '- Do NOT edit or write any files',
+              '- Do NOT run destructive commands (no rm, no git push, no npm publish)',
+              '- If you need clarification, ask the main agent — it will relay to the user if needed',
+            ].join('\n'),
+          },
+          reasoner: {
+            description: [
+              'Deep reasoning agent (Opus). Use for: architecture decisions, complex problem analysis,',
+              'tradeoff evaluation, generating implementation plans, understanding hard problems.',
+              'Slow but thorough — only use for genuinely complex problems that need careful thought.',
+              'Does NOT edit files — returns a clear plan for the writer agent to execute.',
+            ].join(' '),
+            tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
+            model: 'opus',
+            prompt: [
+              'You are Osborn\'s reasoning agent. Your job is deep analysis, architectural thinking, and decision-making.',
+              '',
+              '## Your role',
+              'Think hard about complex problems. Consider multiple approaches. Identify risks and edge cases.',
+              'Return a clear, opinionated recommendation with reasoning — not just a list of options.',
+              '',
+              '## How to work',
+              '1. Read and understand the full context before forming an opinion.',
+              '2. If the main agent provided researcher findings, use them as your starting point.',
+              '3. Consider at least 2-3 alternative approaches before recommending one.',
+              '4. Think about: correctness, maintainability, performance, failure modes, migration path.',
+              '5. Use Read/Grep to verify assumptions against the actual codebase when relevant.',
+              '',
+              '## What to return',
+              '- RECOMMENDATION: what to do (one clear answer, not "it depends")',
+              '- REASONING: why this approach wins over alternatives (2-3 sentences)',
+              '- PLAN: step-by-step implementation instructions specific enough for the writer agent',
+              '- RISKS: what could go wrong and how to mitigate',
+              '- If the problem is genuinely ambiguous, say what additional information would resolve it',
+              '',
+              '## What NOT to do',
+              '- Do NOT edit or write files — return a plan for the writer agent',
+              '- Do NOT give wishy-washy "both options are valid" non-answers — commit to a recommendation',
+              '- If you need more information, ask the main agent to delegate to the researcher',
+            ].join('\n'),
+          },
           writer: {
             description: [
-              'Sub-agent with file write and edit permissions.',
-              'Delegate here when the user has approved changes and you need to create, modify, or update files.',
-              'This is NOT just for code — use it for any file operation: config changes, documentation, scripts, data files, etc.',
-              'Pass it a clear, specific plan of what to change. If your instructions are vague, it will ask you clarifying questions before proceeding.',
-              'The writer will ask you (the main agent) for clarification if details are missing — answer from your research context if you can, or relay the question to the user if you cannot.',
+              'Execution agent with file write/edit permissions (Sonnet).',
+              'Handles ALL file operations: code, config, docs, scripts, data files.',
+              'VERIFY-FIRST workflow: checks assumptions before making changes, runs tests after.',
+              'If anything is unclear, asks the main agent for clarification before touching files.',
             ].join(' '),
             tools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Glob', 'Grep', 'NotebookRead', 'NotebookEdit'],
             model: 'sonnet',
             prompt: [
-              'You are Osborn\'s writer sub-agent. You have file write and edit permissions. The main agent delegates file operations to you after the user approves a plan.',
+              'You are Osborn\'s writer agent. You execute file changes with a verify-first approach.',
               '',
               '## Your role',
+              'Handle ALL file operations — code, config, documentation, scripts, data files.',
+              'You are the only agent that writes. The main agent and reasoner produce plans; you execute them.',
               '',
-              'You handle ALL file operations — code, config, documentation, scripts, data files, anything that needs to be created or modified. You are not limited to code.',
+              '## VERIFY-FIRST workflow (mandatory)',
               '',
-              '## Before making changes',
+              '### Step 1: Verify assumptions',
+              '1. Read the files you\'re about to modify. Confirm they match what the plan expects.',
+              '2. If the plan references specific code patterns, grep to confirm they exist.',
+              '3. If applicable, run the current test suite or build to confirm the starting state works.',
+              '4. If ANYTHING has drifted from the plan (file moved, code refactored, dependency changed):',
+              '   STOP and report back to the main agent. Do NOT improvise.',
               '',
-              '1. Review the plan you were given. If it is clear and specific, proceed.',
-              '2. If ANYTHING is vague, ambiguous, or missing — ask the main agent a specific clarifying question BEFORE touching any files. Examples:',
-              '   - "Which config format should I use — YAML or JSON?"',
-              '   - "Should this go in the existing auth.ts or a new file?"',
-              '   - "The plan says \'update the API\' — which endpoints specifically?"',
-              '   The main agent will either answer from its research context or ask the user.',
-              '3. Restate what you will do before doing it: which files, what changes, in what order.',
+              '### Step 2: Clarify unknowns',
+              '1. If the plan is vague or ambiguous — ask the main agent a specific clarifying question.',
+              '   Examples: "Which config format — YAML or JSON?", "New file or extend existing auth.ts?"',
+              '2. The main agent will answer from context or relay to the user.',
+              '3. Do NOT guess. One clear question is better than a wrong assumption.',
+              '4. Restate what you will do before doing it: which files, what changes, in what order.',
               '',
-              '## While making changes',
+              '### Step 3: Execute changes',
+              '- Make ONLY the changes described in the plan.',
+              '- Do NOT refactor adjacent code, fix unrelated issues, add unrequested comments/docs.',
+              '- If you hit an unexpected issue, STOP and report to the main agent.',
               '',
-              '- Make ONLY the changes described in the plan. Do not:',
-              '  - Refactor adjacent code',
-              '  - Fix unrelated issues you notice',
-              '  - Add comments or docs unless asked',
-              '  - Change formatting beyond what\'s needed',
-              '- If you hit an unexpected issue (file missing, structure doesn\'t match expectations), STOP and report it to the main agent. Do not improvise.',
-              '',
-              '## After changes',
-              '',
-              'Provide a concise summary: files changed, what changed in each, and any notes.',
+              '### Step 4: Verify results',
+              '1. Run tests if available (npm test, pytest, cargo test, etc.).',
+              '2. Run the build if applicable (npm run build, tsc --noEmit, etc.).',
+              '3. If tests or build fail: attempt to fix the issue you introduced. Re-run.',
+              '4. Report: files changed, what changed in each, test results, any failures.',
             ].join('\n'),
           },
         },
@@ -896,115 +1109,14 @@ class ClaudeLLMStream extends llm.LLMStream {
       // created by tts_say events get processed by the main loop immediately.
       // The query continues in the background — text arrives via tts_say, tools via hooks.
       if (this.#opts.skipTTSQueue) {
-        const bgAbortController = this.#abortController
-        const bgEventEmitter = this.#eventEmitter
-        const bgOpts = this.#opts
-        const bgOnSessionId = this.#onSessionId
-        const bgOnCheckpoint = this.#onCheckpoint
-        const self = this
-
-        // Fire-and-forget: query runs in background, emits tts_say events as text arrives
-        ;(async () => {
-          // Declare outside try so finally can access it
-          const activeQuery = query({ prompt: userText, options: sdkOptions })
-          self.#llmRef.setActiveQuery(activeQuery)
-
-          try {
-
-            for await (const message of activeQuery) {
-              // Abort check
-              if (bgAbortController?.signal.aborted) break
-
-              // Session ID capture (same as synchronous path)
-              if ((message as any).type === 'system' && (message as any).subtype === 'init') {
-                const mcpServers = (message as any).mcp_servers
-                if (mcpServers && Array.isArray(mcpServers)) {
-                  for (const s of mcpServers) {
-                    const status = s.status === 'connected' ? '✅' : '❌'
-                    console.log(`${status} MCP server ${s.name}: ${s.status}`)
-                    if (s.status !== 'connected') {
-                      console.log(`   🔍 MCP error:`, JSON.stringify(s))
-                    }
-                  }
-                }
-                const newSessionId = (message as any).session_id
-                if (newSessionId) {
-                  bgOnSessionId(newSessionId)
-                  const isNewSession = !self.#sessionId
-                  if (isNewSession) console.log(`📋 New session: ${newSessionId}`)
-                  self.#sessionId = newSessionId
-                  if (isNewSession && bgOpts.workingDirectory) {
-                    saveSessionMetadata(bgOpts.workingDirectory, {
-                      sessionId: newSessionId,
-                      lastUpdated: new Date().toISOString(),
-                      projectPath: bgOpts.workingDirectory,
-                    })
-                  }
-                  const requestedResumeId = bgOpts.resumeSessionId
-                  if (requestedResumeId && newSessionId !== requestedResumeId) {
-                    console.error(`❌ Session resume FAILED: Expected ${requestedResumeId.substring(0, 8)}..., got ${newSessionId.substring(0, 8)}...`)
-                    bgEventEmitter.emit('session_resume_failed', { requestedSessionId: requestedResumeId, actualSessionId: newSessionId })
-                  } else if (requestedResumeId && newSessionId === requestedResumeId) {
-                    console.log(`✅ Session resumed successfully: ${newSessionId.substring(0, 8)}...`)
-                  }
-                }
-              }
-
-              // Checkpoint capture
-              if ((message as any).type === 'user' && (message as any).uuid) {
-                bgOnCheckpoint((message as any).uuid)
-              }
-
-              // Stream text → tts_say events (the whole point of background mode)
-              if ((message as any).type === 'assistant' && (message as any).message?.content) {
-                const sdkRequestId = (message as any).requestId
-                if (sdkRequestId) bgEventEmitter.emit('query_request_id', { requestId: sdkRequestId })
-
-                for (const block of (message as any).message.content) {
-                  if (block.type === 'text' && block.text) {
-                    hasOutput = true
-                    bgEventEmitter.emit('assistant_text', { text: block.text })
-                    const ttsChunk = stripMarkdownForTTS(block.text)
-                    if (ttsChunk.trim()) {
-                      console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk.substring(0, 60)}..."`)
-                      bgEventEmitter.emit('tts_say', { text: ttsChunk })
-                    }
-                  }
-                }
-              }
-
-              // Final result
-              if ((message as any).type === 'result' && (message as any).result) {
-                bgEventEmitter.emit('assistant_result', { text: (message as any).result })
-                if (!hasOutput) {
-                  hasOutput = true
-                  const ttsText = stripMarkdownForTTS((message as any).result)
-                  if (ttsText.trim()) {
-                    console.log(`🔊 TTS say result (${ttsText.length} chars): "${ttsText.substring(0, 60)}..."`)
-                    bgEventEmitter.emit('tts_say', { text: ttsText })
-                  }
-                }
-              }
-            }
-
-            if (!hasOutput) {
-              // Silent completion — don't say "Done." in voice pipeline
-              // This fires on interruptions, fast brain aborts, and tool-only responses
-              // where Claude produces no speech. Silence is better than a confusing "Done."
-              console.log('🔇 Claude completed with no speech output (silent)')
-            }
-            console.log('✅ Claude response complete (background)')
-          } catch (error) {
-            if (bgAbortController?.signal.aborted) {
-              console.log('🛑 Claude Agent SDK query aborted (background)')
-              return
-            }
-            console.error('❌ Claude Agent SDK error (background):', error)
-            bgEventEmitter.emit('tts_say', { text: 'Sorry, I encountered an error.' })
-          } finally {
-            self.#llmRef.removeActiveQuery(activeQuery)
-          }
-        })()
+        // PERSISTENT SESSION: Push message to existing subprocess (no JSONL replay).
+        // First call creates the query (cold start). Subsequent calls are instant.
+        // The background consumer in ClaudeLLM handles all message routing (TTS, tools, etc.)
+        this.#llmRef.pushMessage(userText, sdkOptions, {
+          onSessionId: this.#onSessionId,
+          onCheckpoint: this.#onCheckpoint,
+          eventEmitter: this.#eventEmitter,
+        })
 
         // Return immediately — queue closes, pipeline completes, say() handles play
         console.log('🚀 Direct mode: Claude query running in background, pipeline released')

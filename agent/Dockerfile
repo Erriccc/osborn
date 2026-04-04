@@ -50,10 +50,6 @@ COPY --from=build /app /app
 # Persistent workspace volume mount point (Fly.io mounts here)
 RUN mkdir -p /workspace
 
-# Symlink ~/.claude → /workspace/.claude so sessions + credentials persist across deploys
-# The volume at /workspace survives container restarts; ~/.claude is ephemeral without this
-RUN mkdir -p /workspace/.claude && ln -sf /workspace/.claude /root/.claude
-
 # Config
 ENV HOST=0.0.0.0
 ENV PORT=8741
@@ -61,6 +57,31 @@ ENV OSBORN_CWD=/workspace
 
 EXPOSE 8741
 
-# Entrypoint: ensure symlink exists (volume may not be mounted at build time),
-# then start the agent
-CMD sh -c "mkdir -p /workspace/.claude && ln -sf /workspace/.claude /root/.claude && node --import tsx/esm src/index.ts"
+# Entrypoint script: sets up Claude credential symlinks, onboarding bypass, then starts agent
+COPY <<'ENTRYPOINT' /entrypoint.sh
+#!/bin/sh
+set -e
+
+# ── Claude credential persistence ──
+# /workspace is the Fly.io persistent volume. Credentials survive deploys/restarts.
+# Remove any stale symlink or directory, then create fresh symlink.
+mkdir -p /workspace/.claude
+rm -rf /root/.claude
+ln -sf /workspace/.claude /root/.claude
+
+# ── Claude onboarding suppression (learned from claudebox) ──
+# Claude Code shows 5+ interactive prompts on first run. Pre-write config to skip all of them.
+# Must write to ALL THREE config paths (different CLI versions check different files).
+ONBOARDING_JSON='{"numStartups":10,"installMethod":"npm","autoUpdates":false,"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true,"hasAcknowledgedCostThreshold":true,"effortCalloutV2Dismissed":true,"theme":"dark","projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true}}}'
+
+echo "$ONBOARDING_JSON" > /root/.claude.json
+mkdir -p /workspace/.claude
+echo "$ONBOARDING_JSON" > /workspace/.claude/.config.json
+echo "$ONBOARDING_JSON" > /workspace/.claude/claude.json
+
+# ── Start Osborn agent ──
+exec node --import tsx/esm src/index.ts
+ENTRYPOINT
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]

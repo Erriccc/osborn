@@ -729,8 +729,8 @@ async function askViaAgentSdk(
     options.resume = fastBrainSessionId
   }
 
-  // Run with 15s timeout — falls back to Gemini on timeout
-  const TIMEOUT_MS = 15000
+  // Run with 30s timeout — allows time for large JSONL replay on session resume
+  const TIMEOUT_MS = 30000
   let timeoutHandle: ReturnType<typeof setTimeout>
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => reject(new Error('fast-brain-timeout')), TIMEOUT_MS)
