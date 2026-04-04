@@ -44,6 +44,9 @@ RUN apt-get update -qq && \
 # Claude Code CLI — installed globally so it's on PATH for the agent SDK
 RUN npm install -g @anthropic-ai/claude-code
 
+# Playwright Chromium browser for browser automation skill
+RUN npx playwright install chromium --with-deps 2>/dev/null || true
+
 # Copy built app from build stage
 COPY --from=build /app /app
 
@@ -78,6 +81,19 @@ echo "$ONBOARDING_JSON" > /root/.claude.json
 mkdir -p /workspace/.claude
 echo "$ONBOARDING_JSON" > /workspace/.claude/.config.json
 echo "$ONBOARDING_JSON" > /workspace/.claude/claude.json
+
+# ── Session workspace persistence ──
+# Session workspace (.osborn/sessions/) defaults to sessionBaseDir (/app).
+# Symlink to volume so spec.md, library/ files survive deploys.
+mkdir -p /workspace/.osborn
+rm -rf /app/.osborn
+ln -sf /workspace/.osborn /app/.osborn
+
+# ── Restore CLAUDE_CODE_OAUTH_TOKEN from persisted volume ──
+if [ -f /workspace/.claude/.oauth-token ]; then
+  export CLAUDE_CODE_OAUTH_TOKEN="$(cat /workspace/.claude/.oauth-token)"
+  echo "✅ Restored CLAUDE_CODE_OAUTH_TOKEN from volume"
+fi
 
 # ── Start Osborn agent ──
 exec node --import tsx/esm src/index.ts

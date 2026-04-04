@@ -943,7 +943,8 @@ async function main() {
       // Speak the descriptive request so user knows to respond
       if (currentSession) {
         const ttsMessage = `${description} Say yes, no, or always.`
-        ;(currentSession as any).say?.(ttsMessage).catch(() => {})
+        // ;(currentSession as any).say?.(ttsMessage).catch(() => {})
+        ;(currentSession as any).say?.(ttsMessage)
       }
     })
 

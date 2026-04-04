@@ -791,6 +791,7 @@ class ClaudeLLMStream extends llm.LLMStream {
   #onCheckpoint: (checkpointId: string) => void
   #abortController?: AbortController
   #llmRef: ClaudeLLM
+  #approvedWriterToolUseIds = new Set<string>()
 
   constructor(
     llmInstance: ClaudeLLM,
@@ -885,7 +886,6 @@ class ClaudeLLMStream extends llm.LLMStream {
         allowedTools,
         model: this.#opts.model || 'claude-sonnet-4-6', // Sonnet orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
         enableFileCheckpointing: true,
-        agentProgressSummaries: true,
         extraArgs: { 'replay-user-messages': null },
         ...(this.#abortController && { abortController: this.#abortController }),
         ...(resumeSessionId && { resume: resumeSessionId }),
@@ -903,6 +903,12 @@ class ClaudeLLMStream extends llm.LLMStream {
           // Auto-approve writes to session workspace (but block spec.md and library/ — fast brain manages those)
           if (toolName === 'Write' || toolName === 'Edit') {
             const filePath = String(input?.file_path || '')
+            const agentType = input?.agent_type || null
+            const toolUseId = (_options as any)?.toolUseID
+              const toolInput = input?.tool_input || {}
+              console.log('input,', input, 'input.file_path', filePath, 'agent_type', agentType)
+            console.log(`🔍 canUseTool: ${toolName} filePath="${filePath}" keys=${Object.keys(input || {}).join(',')}`)
+            console.log(`🔍 canUseTool _options keys=[${Object.keys(_options || {}).join(', ')}] title="${(_options as any)?.title || ''}" decisionReason="${(_options as any)?.decisionReason || ''}" blockedPath="${(_options as any)?.blockedPath || ''}"`)
             if (filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')) {
               // Block writes to spec.md and library/ — the fast brain manages these
               const fileName = filePath.split('/').pop() || ''
@@ -911,6 +917,11 @@ class ClaudeLLMStream extends llm.LLMStream {
                 return { behavior: 'deny', message: 'spec.md and library/ are managed by the fast brain sub-agent. Do NOT write to them. Return your findings in your response text — the fast brain will organize them into spec.md and library/ automatically.' }
               }
               console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
+              return { behavior: 'allow', updatedInput: input }
+            }
+            if (toolUseId && this.#approvedWriterToolUseIds.has(toolUseId)) {
+              this.#approvedWriterToolUseIds.delete(toolUseId)
+              console.log(`✅ Writer pre-approved ${toolName}: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
           }
@@ -924,6 +935,7 @@ class ClaudeLLMStream extends llm.LLMStream {
             console.log(`🚫 Auto-denied ${toolName} (not used in research mode)`)
             return { behavior: 'deny', message: 'Research mode does not use plan mode. Just proceed with the research directly.' }
           }
+          
           console.log(`⚠️ Permission needed: ${toolName}`)
           return this.#onPermissionRequest(toolName, input)
         },
@@ -934,14 +946,18 @@ class ClaudeLLMStream extends llm.LLMStream {
               const toolName = input?.tool_name || 'unknown'
               const toolInput = input?.tool_input || {}
               const agentType = input?.agent_type || null
+              console.log(`🔍 PreToolUse: toolName=${toolName} agent_type=${agentType} agent_id=${(input as any)?.agent_id || 'none'} all_keys=[${Object.keys(input || {}).join(', ')}]`)
 
               // Write/Edit/MultiEdit access control
               if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
                 // Writer sub-agent gets full write access everywhere
+                console.log('verifying agent_type', agentType)
                 if (agentType === 'writer') {
                   console.log(`✍️ Writer agent: allowing ${toolName}`)
                   this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput })
-                  return {}
+                  const toolUseId = (input as any)?.tool_use_id
+                  if (toolUseId) this.#approvedWriterToolUseIds.add(toolUseId)
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } }
                 }
 
                 // All other agents (main, researcher, reasoner, etc.): workspace only
@@ -949,7 +965,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (filePath && !filePath.includes('.osborn/sessions/') && !filePath.includes('.osborn/research/')) {
                   console.log(`🚫 Research mode: blocked write to ${filePath} (agent_type: ${agentType ?? 'main'})`)
                   this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Research mode: writes restricted to session workspace' })
-                  return { decision: 'block', reason: 'Research mode: write to .osborn/sessions/ only.' }
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: 'Research mode: write to .osborn/sessions/ only.' }
                 }
               }
 
