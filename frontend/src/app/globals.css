@@ -3,12 +3,42 @@
 @tailwind utilities;
 
 :root {
-  --foreground: #ededed;
-  --background: #0a0a0a;
+  --foreground: #e8e4de;
+  --background: #0c0b09;
+  --surface: #141310;
+  --surface-raised: #1a1914;
+  --border: #2a2720;
+  --border-subtle: #1f1d18;
+  --accent: #d4a853;
+  --accent-dim: #b8922e;
+  --accent-glow: #d4a85322;
+  --text-primary: #e8e4de;
+  --text-secondary: #8a857a;
+  --text-muted: #4a4740;
+  --font-sans: var(--font-sans-loaded), 'DM Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-mono-loaded), 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Focus ring */
+:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
 }

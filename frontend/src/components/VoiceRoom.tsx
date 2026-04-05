@@ -99,9 +99,9 @@ interface GeneratedFile {
 function StreamingDots() {
   return (
     <span className="inline-flex gap-1 ml-1">
-      <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-      <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-      <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+      <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+      <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+      <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
     </span>
   )
 }
@@ -122,7 +122,7 @@ function ReasoningBlock({ content, isStreaming }: { content: string; isStreaming
     <div className="mb-2">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="flex items-center gap-2 text-xs text-violet-400 hover:text-violet-300 transition-colors"
+        className="flex items-center gap-2 text-xs text-amber-400 hover:text-amber-300 transition-colors"
       >
         <svg
           className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
@@ -131,12 +131,12 @@ function ReasoningBlock({ content, isStreaming }: { content: string; isStreaming
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
         </svg>
         <span className="flex items-center gap-1.5">
-          {isStreaming && <span className="w-2 h-2 bg-violet-400 rounded-full animate-pulse" />}
+          {isStreaming && <span className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />}
           Reasoning
         </span>
       </button>
       {isExpanded && (
-        <div className="mt-2 pl-4 border-l-2 border-violet-500/30">
+        <div className="mt-2 pl-4 border-l-2 border-amber-500/30">
           <p className="text-xs text-gray-400 italic whitespace-pre-wrap">{content}</p>
         </div>
       )}
@@ -241,31 +241,29 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} group`}>
-      {/* Avatar for assistant — purple lightning for fast-brain, monitor icon for Claude */}
+      {/* Avatar for assistant — hidden on mobile to save space */}
       {!isUser && !isSystem && (
-        message.toolName === 'fast-brain' ? (
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-fuchsia-600 flex items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
+        <div className="hidden sm:flex w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-amber-600 items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
+          {message.toolName === 'fast-brain' ? (
             <span className="text-sm">&#9889;</span>
-          </div>
-        ) : (
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
+          ) : (
             <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
             </svg>
-          </div>
-        )
+          )}
+        </div>
       )}
 
       <div
-        className={`max-w-[80%] rounded-2xl px-4 py-2.5 shadow-md transition-all ${
+        className={`max-w-[92%] sm:max-w-[80%] rounded-2xl px-3 sm:px-4 py-2 sm:py-2.5 shadow-md transition-all ${
           isUser
-            ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-br-md'
+            ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-br-md'
             : isSystem
             ? 'bg-amber-500/10 text-amber-200 border border-amber-500/30 rounded-bl-md'
             : message.toolName === 'fast-brain'
-            ? 'bg-purple-900/40 text-purple-100 border border-purple-500/40 rounded-bl-md backdrop-blur-sm'
+            ? 'bg-amber-900/30 text-amber-100 border border-amber-500/30 rounded-bl-md backdrop-blur-sm'
             : 'bg-gray-800/80 text-gray-100 border border-gray-700/50 rounded-bl-md backdrop-blur-sm'
-        } ${message.isStreaming ? 'ring-2 ring-violet-500/30' : ''}`}
+        } ${message.isStreaming ? 'ring-2 ring-amber-500/30' : ''}`}
       >
         {/* Tool name badge — skip for fast-brain (has its own label in content) */}
         {message.toolName && message.toolName !== 'fast-brain' && (
@@ -322,14 +320,14 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
             {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </p>
           {message.isStreaming && (
-            <span className="text-[10px] text-violet-400">streaming</span>
+            <span className="text-[10px] text-amber-400">streaming</span>
           )}
         </div>
       </div>
 
-      {/* Avatar for user */}
+      {/* Avatar for user — hidden on mobile */}
       {isUser && (
-        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center ml-2 mt-1 shrink-0 shadow-lg">
+        <div className="hidden sm:flex w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-yellow-500 items-center justify-center ml-2 mt-1 shrink-0 shadow-lg">
           <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
           </svg>
@@ -367,14 +365,14 @@ function ChatPanel({
   return (
     <div
       ref={scrollRef}
-      className="flex-1 overflow-y-auto px-4 py-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+      className="flex-1 overflow-y-auto px-2 sm:px-4 py-3 sm:py-4 space-y-3 sm:space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
     >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
           {/* Logo / Icon */}
           <div className="relative mb-6">
-            <div className="absolute inset-0 rounded-full bg-violet-500/20 blur-xl" />
-            <div className="relative w-20 h-20 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg">
+            <div className="absolute inset-0 rounded-full bg-amber-500/20 blur-xl" />
+            <div className="relative w-20 h-20 rounded-full bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center shadow-lg">
               <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
               </svg>
@@ -390,12 +388,12 @@ function ChatPanel({
           </p>
 
           {/* Suggestions grid */}
-          <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-sm">
             {SUGGESTIONS.map((suggestion, idx) => (
               <button
                 key={idx}
                 onClick={() => onSuggestionClick?.(suggestion.text)}
-                className="flex items-center gap-2 p-3 bg-gray-800/50 hover:bg-gray-700/50 border border-gray-700/50 hover:border-violet-500/30 rounded-xl transition-all text-left group"
+                className="flex items-center gap-2 p-3 bg-gray-800/50 hover:bg-gray-700/50 border border-gray-700/50 hover:border-amber-500/30 rounded-xl transition-all text-left group"
               >
                 <span className="text-lg">{suggestion.icon}</span>
                 <span className="text-xs text-gray-300 group-hover:text-white transition-colors line-clamp-2">
@@ -412,15 +410,15 @@ function ChatPanel({
       {/* Inline research tracking spinner */}
       {activeResearch && (
         <div className="flex items-start gap-3 px-2">
-          <div className="w-8 h-8 rounded-full bg-violet-500/20 flex items-center justify-center shrink-0 mt-0.5">
-            <svg className="w-4 h-4 text-violet-400 animate-spin" viewBox="0 0 24 24" fill="none">
+          <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5">
+            <svg className="w-4 h-4 text-amber-400 animate-spin" viewBox="0 0 24 24" fill="none">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm text-gray-300">
-              Researching: <span className="text-violet-300">{activeResearch.task}</span>
+              Researching: <span className="text-amber-300">{activeResearch.task}</span>
             </p>
             <p className="text-xs text-gray-500 mt-0.5">
               {activeResearch.toolCount} tool{activeResearch.toolCount !== 1 ? 's' : ''} used
@@ -533,7 +531,7 @@ function TextInput({
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="flex items-center gap-2 p-3">
+      <form onSubmit={handleSubmit} className="flex items-center gap-1.5 sm:gap-2 p-2 sm:p-3">
         <input
           ref={fileInputRef}
           type="file"
@@ -563,7 +561,7 @@ function TextInput({
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="Type a message..."
-            className="w-full bg-gray-800/50 text-white px-4 py-2.5 rounded-xl border border-gray-700/50 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all placeholder:text-gray-500"
+            className="w-full bg-gray-800/50 text-white px-4 py-2.5 rounded-xl border border-gray-700/50 focus:border-amber-500/50 focus:ring-2 focus:ring-amber-500/20 focus:outline-none transition-all placeholder:text-gray-500"
           />
         </div>
 
@@ -571,7 +569,7 @@ function TextInput({
         <button
           type="submit"
           disabled={!text.trim() && attachedFiles.length === 0}
-          className="p-2.5 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl transition-all shadow-lg disabled:shadow-none"
+          className="p-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl transition-all shadow-lg disabled:shadow-none"
         >
           <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -643,12 +641,12 @@ function ControlMenu({
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="relative flex items-center gap-2">
       {/* Research mode indicator - always visible */}
       <button
         onClick={() => setIsOpen(!isOpen)}
         disabled={disabled}
-        className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all text-xs bg-violet-500/10 border-violet-500/30 text-violet-400 ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:opacity-80'}`}
+        className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all text-xs bg-amber-500/10 border-amber-500/30 text-amber-400 ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:opacity-80'}`}
         title="Open settings"
       >
         <span className="font-medium">Research</span>
@@ -659,14 +657,14 @@ function ControlMenu({
 
       {/* Dropdown menu */}
       {isOpen && (
-        <div className="absolute top-14 left-4 right-4 sm:left-auto sm:right-auto sm:w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+        <div className="absolute top-10 left-0 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] overflow-hidden">
           {/* Tabs */}
           <div className="flex border-b border-gray-700">
             <button
               onClick={() => handleTabChange('history')}
               className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
                 activeTab === 'history'
-                  ? 'text-violet-400 border-b-2 border-violet-400 bg-violet-500/10'
+                  ? 'text-amber-400 border-b-2 border-amber-400 bg-amber-500/10'
                   : 'text-gray-400 hover:text-gray-200'
               }`}
             >
@@ -676,7 +674,7 @@ function ControlMenu({
               onClick={() => handleTabChange('tools')}
               className={`flex-1 px-3 py-2 text-xs font-medium transition-colors relative ${
                 activeTab === 'tools'
-                  ? 'text-violet-400 border-b-2 border-violet-400 bg-violet-500/10'
+                  ? 'text-amber-400 border-b-2 border-amber-400 bg-amber-500/10'
                   : 'text-gray-400 hover:text-gray-200'
               }`}
             >
@@ -698,7 +696,7 @@ function ControlMenu({
                     onContinueSession()
                     setIsOpen(false)
                   }}
-                  className="w-full py-2 text-xs bg-violet-500/20 text-violet-400 rounded-lg hover:bg-violet-500/30 transition-colors"
+                  className="w-full py-2 text-xs bg-amber-500/20 text-amber-400 rounded-lg hover:bg-amber-500/30 transition-colors"
                 >
                   Continue Last Session
                 </button>
@@ -731,7 +729,7 @@ function ControlMenu({
                         }}
                         className={`w-full text-left p-2 rounded-lg transition-colors text-xs ${
                           currentSessionId === session.sessionId
-                            ? 'bg-violet-500/20 border border-violet-500/30'
+                            ? 'bg-amber-500/20 border border-amber-500/30'
                             : 'hover:bg-gray-800'
                         }`}
                       >
@@ -759,7 +757,7 @@ function ControlMenu({
                   <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Skills</h4>
                   <button
                     onClick={() => setShowAddSkill?.(!showAddSkill)}
-                    className="text-[10px] text-violet-400 hover:text-violet-300 transition-colors"
+                    className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
                   >
                     {showAddSkill ? 'Cancel' : '+ Add'}
                   </button>
@@ -771,14 +769,14 @@ function ControlMenu({
                       value={newSkillName || ''}
                       onChange={(e) => setNewSkillName?.(e.target.value)}
                       placeholder="Skill name (e.g. deploy-check)"
-                      className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-violet-500"
+                      className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500"
                     />
                     <textarea
                       value={newSkillContent || ''}
                       onChange={(e) => setNewSkillContent?.(e.target.value)}
                       placeholder="# Skill: Name&#10;&#10;Description...&#10;&#10;## When to use&#10;...&#10;&#10;## How to execute&#10;..."
                       rows={5}
-                      className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-violet-500 resize-none font-mono"
+                      className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500 resize-none font-mono"
                     />
                     <button
                       onClick={() => {
@@ -787,7 +785,7 @@ function ControlMenu({
                         }
                       }}
                       disabled={!newSkillName?.trim() || !newSkillContent?.trim()}
-                      className="w-full py-1.5 text-xs bg-violet-500/20 text-violet-400 rounded hover:bg-violet-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="w-full py-1.5 text-xs bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Save Skill
                     </button>
@@ -905,7 +903,7 @@ function ControlMenu({
                       setShowSwitchConfirm(false)
                       setIsOpen(false)
                     }}
-                    className="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 rounded text-sm"
+                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 rounded text-sm"
                   >
                     Switch
                   </button>
@@ -976,7 +974,7 @@ function PermissionModal({
         <div className="mb-5">
           <div className="flex items-center gap-2 mb-2">
             <span className="text-xs text-gray-500 uppercase tracking-wide">Tool</span>
-            <span className="px-2 py-0.5 bg-violet-500/20 text-violet-300 text-sm font-mono rounded-md">
+            <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 text-sm font-mono rounded-md">
               {permission.toolName}
             </span>
             {/* Risk level indicator */}
@@ -992,7 +990,7 @@ function PermissionModal({
             {inputDetails && (
               <div className="mt-2 pt-2 border-t border-gray-700/50">
                 <span className="text-xs text-gray-500">{inputDetails.label}:</span>
-                <code className="block mt-1 text-xs text-violet-300 bg-gray-800 p-2 rounded-lg overflow-x-auto">
+                <code className="block mt-1 text-xs text-amber-300 bg-gray-800 p-2 rounded-lg overflow-x-auto">
                   {inputDetails.value.length > 100
                     ? inputDetails.value.substring(0, 100) + '...'
                     : inputDetails.value}
@@ -1054,7 +1052,7 @@ function PermissionModal({
           </button>
           <button
             onClick={() => onRespond('always_allow')}
-            className="flex-1 px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 rounded-xl transition-all text-white font-medium shadow-lg shadow-violet-500/20"
+            className="flex-1 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 rounded-xl transition-all text-white font-medium shadow-lg shadow-amber-500/20"
           >
             Always
           </button>
@@ -1091,7 +1089,7 @@ function StatusIndicator({ state, isMuted }: { state: string; isMuted: boolean }
       label: 'Thinking',
     },
     speaking: {
-      gradient: 'from-blue-400 to-cyan-500',
+      gradient: 'from-amber-400 to-yellow-500',
       icon: (
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
@@ -1133,23 +1131,34 @@ function VoiceVisualizer({ state, audioTrack }: { state: string; audioTrack: any
     : 'disconnected'
 
   return (
-    <div className="relative">
-      {/* Glow effect */}
-      <div className={`absolute inset-0 rounded-2xl blur-xl transition-opacity duration-300 ${
-        state === 'speaking' ? 'bg-blue-500/30 opacity-100' :
-        state === 'listening' ? 'bg-green-500/20 opacity-100' : 'opacity-0'
-      }`} />
-
-      {/* Visualizer container */}
-      <div className="relative h-16 w-32 bg-gray-800/50 rounded-2xl border border-gray-700/50 flex items-center justify-center overflow-hidden backdrop-blur-sm">
-        <BarVisualizer
-          state={visualizerState}
-          trackRef={audioTrack}
-          barCount={7}
-          options={{ minHeight: 4 }}
-        />
+    <>
+      {/* Desktop: full visualizer */}
+      <div className="relative hidden sm:block">
+        <div className={`absolute inset-0 rounded-2xl blur-xl transition-opacity duration-300 ${
+          state === 'speaking' ? 'bg-amber-500/30 opacity-100' :
+          state === 'listening' ? 'bg-green-500/20 opacity-100' : 'opacity-0'
+        }`} />
+        <div className="relative h-16 w-32 bg-gray-800/50 rounded-2xl border border-gray-700/50 flex items-center justify-center overflow-hidden backdrop-blur-sm">
+          <BarVisualizer
+            state={visualizerState}
+            trackRef={audioTrack}
+            barCount={7}
+            options={{ minHeight: 4 }}
+          />
+        </div>
       </div>
-    </div>
+      {/* Mobile: compact mini visualizer */}
+      <div className="relative sm:hidden">
+        <div className="relative h-8 w-16 bg-gray-800/50 rounded-xl border border-gray-700/50 flex items-center justify-center overflow-hidden">
+          <BarVisualizer
+            state={visualizerState}
+            trackRef={audioTrack}
+            barCount={4}
+            options={{ minHeight: 2 }}
+          />
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -1190,12 +1199,13 @@ function VoiceRoomInner({
   const [showFilesPanel, setShowFilesPanel] = useState(false)
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
   const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
-  const [isFilesModalOpen, setIsFilesModalOpen] = useState(true)
+  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false) // Default closed — opens via button (desktop only)
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
   // Skills state
   const [skills, setSkills] = useState<{ name: string; description: string }[]>([])
   const [showAddSkill, setShowAddSkill] = useState(false)
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
   const [newSkillName, setNewSkillName] = useState('')
   const [newSkillContent, setNewSkillContent] = useState('')
   // Research tracking state
@@ -2045,15 +2055,22 @@ function VoiceRoomInner({
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md mx-4 shadow-2xl">
               <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
+                <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
                   <span className="text-xl">🔑</span>
                 </div>
-                <div>
+                <div className="flex-1 min-w-0">
                   <h3 className="text-lg font-semibold text-white">Claude Authentication</h3>
                   <p className="text-sm text-gray-400">
                     {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
                   </p>
                 </div>
+                <button onClick={() => setClaudeAuthStatus('none')}
+                  className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all shrink-0"
+                  title="Dismiss">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
               {claudeAuthStatus === 'required' && (
                 <div className="flex items-center gap-2 text-gray-300 text-sm">
@@ -2156,8 +2173,8 @@ function VoiceRoomInner({
         <div className="w-full p-6 text-center">
           <div className="flex flex-col items-center gap-3">
             <div className="relative">
-              <div className="w-3 h-3 bg-violet-500 rounded-full animate-ping absolute" />
-              <div className="w-3 h-3 bg-violet-500 rounded-full" />
+              <div className="w-3 h-3 bg-amber-500 rounded-full animate-ping absolute" />
+              <div className="w-3 h-3 bg-amber-500 rounded-full" />
             </div>
             <span className="text-gray-400 text-sm">
               {claudeAuthStatus !== 'none' ? 'Authenticating Claude...' : 'Connecting to agent...'}
@@ -2234,7 +2251,7 @@ function VoiceRoomInner({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md mx-4 shadow-2xl max-h-[80vh] flex flex-col">
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-violet-500/20 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
                 <span className="text-xl">📂</span>
               </div>
               <div>
@@ -2261,14 +2278,14 @@ function VoiceRoomInner({
                           }}
                           className={`w-full text-left p-3 rounded-lg border transition-colors ${
                             group.label === 'Today' && index === 0
-                              ? 'border-violet-500 bg-violet-500/10'
+                              ? 'border-amber-500 bg-amber-500/10'
                               : 'border-gray-700 hover:border-gray-500'
                           }`}
                         >
                           <div className="flex justify-between items-start">
                             <span className="text-sm font-medium text-white">
                               {formatTime(session.timestamp)}
-                              {group.label === 'Today' && index === 0 && <span className="ml-2 text-violet-400">(Latest)</span>}
+                              {group.label === 'Today' && index === 0 && <span className="ml-2 text-amber-400">(Latest)</span>}
                             </span>
                             <span className="text-xs text-gray-500">{session.messageCount} msgs</span>
                           </div>
@@ -2297,19 +2314,19 @@ function VoiceRoomInner({
         </div>
       )}
 
-      <div className="w-full h-[85vh] flex gap-3 transition-all duration-300 max-w-[90rem]">
-      <div className="flex-1 min-w-0 flex flex-col bg-gradient-to-b from-gray-900 to-gray-950 rounded-2xl overflow-hidden border border-gray-800/50 shadow-2xl">
+      <div className="w-full h-[100dvh] sm:h-[85vh] flex gap-3 transition-all duration-300 max-w-[90rem]">
+      <div className="flex-1 min-w-0 flex flex-col bg-gradient-to-b from-gray-900 to-gray-950 sm:rounded-2xl overflow-hidden border-0 sm:border border-gray-800/50 shadow-2xl">
         {/* Header - Streamlined */}
-        <div className="relative px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
-          <div className="flex items-center gap-3">
-            {/* Visualizer */}
-            <VoiceVisualizer state={state} audioTrack={audioTrack} />
+        <div className="relative z-30 px-2 sm:px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Visualizer — only visible when speaking */}
+            {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
 
             {/* Status */}
             <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} />
 
-            {/* Control Menu (Mode + History + Tools) */}
-            <ControlMenu
+            {/* Control Menu (Mode + History + Tools) — hidden on mobile */}
+            <div className="hidden sm:block"><ControlMenu
               sessions={sessions}
               currentSessionId={currentSessionId}
               onLoadSessions={handleLoadSessions}
@@ -2328,18 +2345,26 @@ function VoiceRoomInner({
               setNewSkillName={setNewSkillName}
               newSkillContent={newSkillContent}
               setNewSkillContent={setNewSkillContent}
-            />
+            /></div>
+
+            {/* Mobile menu button */}
+            <button onClick={() => setShowMobileMenu(true)}
+              className="sm:hidden p-2 rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
 
             {/* Spacer */}
             <div className="flex-1" />
 
-            {/* Compact Controls */}
+            {/* Compact Controls — meeting/files/copy hidden on mobile */}
             <div className="flex items-center gap-1.5">
-              {/* Meeting button */}
+              {/* Meeting button — hidden on mobile */}
               {meetingStatus === 'joined' ? (
                 <button
                   onClick={handleLeaveMeeting}
-                  className="px-2.5 py-1.5 rounded-lg transition-all bg-green-500/20 text-green-400 hover:bg-red-500/20 hover:text-red-400 text-xs font-medium flex items-center gap-1.5 border border-green-500/30 hover:border-red-500/30"
+                  className="hidden sm:flex px-2.5 py-1.5 rounded-lg transition-all bg-green-500/20 text-green-400 hover:bg-red-500/20 hover:text-red-400 text-xs font-medium items-center gap-1.5 border border-green-500/30 hover:border-red-500/30"
                   title="Leave meeting"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2348,7 +2373,7 @@ function VoiceRoomInner({
                   In Meeting
                 </button>
               ) : meetingStatus === 'joining' ? (
-                <span className="px-2.5 py-1.5 rounded-lg bg-yellow-500/20 text-yellow-400 text-xs font-medium flex items-center gap-1.5 border border-yellow-500/30">
+                <span className="hidden sm:flex px-2.5 py-1.5 rounded-lg bg-yellow-500/20 text-yellow-400 text-xs font-medium items-center gap-1.5 border border-yellow-500/30">
                   <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
@@ -2362,7 +2387,7 @@ function VoiceRoomInner({
                     if (url?.trim()) handleJoinMeeting(url.trim())
                   }}
                   disabled={!agentConnected}
-                  className={`p-2 rounded-lg transition-all ${
+                  className={`hidden sm:block p-2 rounded-lg transition-all ${
                     !agentConnected
                       ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
                       : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
@@ -2375,12 +2400,12 @@ function VoiceRoomInner({
                 </button>
               )}
 
-              {/* Files button - always visible */}
+              {/* Files button - hidden on mobile */}
               <button
                 onClick={() => setIsFilesModalOpen(!isFilesModalOpen)}
-                className={`relative p-2 rounded-lg transition-all ${
+                className={`hidden sm:block relative p-2 rounded-lg transition-all ${
                   isFilesModalOpen
-                    ? 'bg-violet-500/20 text-violet-400'
+                    ? 'bg-amber-500/20 text-amber-400'
                     : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
                 }`}
                 title="Toggle files explorer"
@@ -2389,17 +2414,17 @@ function VoiceRoomInner({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                 </svg>
                 {generatedFiles.length > 0 && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-violet-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
+                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
                     {generatedFiles.length}
                   </span>
                 )}
               </button>
 
-              {/* Copy All Messages button */}
+              {/* Copy All Messages button — hidden on mobile */}
               <button
                 onClick={handleCopyAllMessages}
                 disabled={messages.length === 0}
-                className={`p-2 rounded-lg transition-all ${
+                className={`hidden sm:block p-2 rounded-lg transition-all ${
                   copyFeedback
                     ? 'bg-green-500/20 text-green-400'
                     : messages.length === 0
@@ -2476,13 +2501,13 @@ function VoiceRoomInner({
         />
       </div>
 
-      {/* Inline files preview panel */}
+      {/* Inline files preview panel — hidden on mobile */}
       {showFilesPanel && (
-        <div className="w-[28rem] shrink-0 flex flex-col bg-gray-900 rounded-2xl overflow-hidden border border-gray-800/50 shadow-2xl">
+        <div className="hidden sm:flex w-[28rem] shrink-0 flex-col bg-gray-900 rounded-2xl overflow-hidden border border-gray-800/50 shadow-2xl">
           {/* Panel header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700/50">
             <div className="flex items-center gap-2">
-              <svg className="w-4 h-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
               </svg>
               <span className="text-sm font-semibold text-white">Files</span>
@@ -2534,11 +2559,11 @@ function VoiceRoomInner({
                     onClick={() => setSelectedFilePath(file.filePath)}
                     className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
                       selectedFile?.filePath === file.filePath
-                        ? 'bg-violet-500/15 border-l-2 border-violet-400'
+                        ? 'bg-amber-500/15 border-l-2 border-amber-400'
                         : 'hover:bg-gray-800/50 border-l-2 border-transparent'
                     }`}
                   >
-                    <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-violet-500/20 text-violet-400">Plan</span>
+                    <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-amber-500/20 text-amber-400">Plan</span>
                     <span className="text-xs font-mono text-gray-300 truncate flex-1">{file.fileName}</span>
                     {!file.content && (
                       <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
@@ -2561,7 +2586,7 @@ function VoiceRoomInner({
                     notes: { label: 'Notes', color: 'bg-emerald-500/20 text-emerald-400' },
                     image: { label: 'Image', color: 'bg-amber-500/20 text-amber-400' },
                     summary: { label: 'Summary', color: 'bg-cyan-500/20 text-cyan-400' },
-                    plan: { label: 'Plan', color: 'bg-violet-500/20 text-violet-400' },
+                    plan: { label: 'Plan', color: 'bg-amber-500/20 text-amber-400' },
                     other: { label: 'File', color: 'bg-gray-500/20 text-gray-400' },
                   }
                   const badge = typeBadge[file.type] || typeBadge.other
@@ -2571,7 +2596,7 @@ function VoiceRoomInner({
                       onClick={() => setSelectedFilePath(file.filePath)}
                       className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
                         selectedFile?.filePath === file.filePath
-                          ? 'bg-violet-500/15 border-l-2 border-violet-400'
+                          ? 'bg-amber-500/15 border-l-2 border-amber-400'
                           : 'hover:bg-gray-800/50 border-l-2 border-transparent'
                       }`}
                     >
@@ -2603,7 +2628,7 @@ function VoiceRoomInner({
             ) : selectedFile ? (
               <div>
                 <div className="sticky top-0 flex items-center justify-between px-4 py-2 bg-gray-800/80 backdrop-blur-sm border-b border-gray-700/30 z-10">
-                  <span className="text-xs font-mono text-violet-300 truncate">{selectedFile.fileName}</span>
+                  <span className="text-xs font-mono text-amber-300 truncate">{selectedFile.fileName}</span>
                   {!selectedFile.isImage && (
                     <button
                       onClick={() => handleCopyFile(selectedFile.filePath)}
@@ -2659,6 +2684,76 @@ function VoiceRoomInner({
         </div>
       )}
       </div>
+
+      {/* Mobile Menu Drawer */}
+      {showMobileMenu && (
+        <div className="fixed inset-0 z-50 sm:hidden">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowMobileMenu(false)} />
+          <div className="absolute bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 rounded-t-2xl max-h-[70vh] overflow-y-auto animate-in slide-in-from-bottom">
+            <div className="p-4 space-y-1">
+              {/* Handle bar */}
+              <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-4" />
+
+              {/* Files */}
+              <button onClick={() => { setIsFilesModalOpen(true); setShowMobileMenu(false) }}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                <span className="text-sm text-gray-200">Files Explorer</span>
+                {generatedFiles.length > 0 && (
+                  <span className="ml-auto text-xs bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full">{generatedFiles.length}</span>
+                )}
+              </button>
+
+              {/* Copy messages */}
+              <button onClick={() => { handleCopyAllMessages(); setShowMobileMenu(false) }}
+                disabled={messages.length === 0}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left disabled:opacity-40">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span className="text-sm text-gray-200">Copy All Messages</span>
+              </button>
+
+              {/* Meeting */}
+              <button onClick={() => {
+                const url = prompt('Paste your Zoom or Google Meet URL:')
+                if (url?.trim()) { handleJoinMeeting(url.trim()); setShowMobileMenu(false) }
+              }}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span className="text-sm text-gray-200">Join Meeting</span>
+              </button>
+
+              {/* Sessions */}
+              <button onClick={() => { handleLoadSessions(); setShowMobileMenu(false) }}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-sm text-gray-200">Session History</span>
+              </button>
+
+              {/* Divider */}
+              <div className="h-px bg-gray-800 my-2" />
+
+              {/* Disconnect */}
+              {onDisconnect && (
+                <button onClick={() => { onDisconnect(); setShowMobileMenu(false) }}
+                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-red-500/10 transition-colors text-left">
+                  <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
+                  </svg>
+                  <span className="text-sm text-red-400">Disconnect</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Files Explorer Modal */}
       <FilesExplorerModal

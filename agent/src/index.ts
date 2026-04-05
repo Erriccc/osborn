@@ -147,6 +147,9 @@ process.on('uncaughtException', (error) => {
 // HTTP API SERVER - Exposes session data to cloud-deployed frontend
 // ============================================================
 
+// Module-level room code so the HTTP server can expose it via GET /room-code
+let currentRoomCode: string | null = null
+
 function startApiServer(workingDir: string, port: number): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // CORS headers for cloud frontend
@@ -222,6 +225,12 @@ function startApiServer(workingDir: string, port: number): void {
         res.writeHead(404, { 'Content-Type': 'text/plain' })
         res.end('meeting-output.html not found')
       }
+      return
+    }
+
+    if (req.method === 'GET' && url.pathname === '/room-code') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ roomCode: currentRoomCode }))
       return
     }
 
@@ -358,6 +367,7 @@ async function main() {
 
   // Determine room code
   const roomCode = cliArgs.roomCode || generateRoomCode()
+  currentRoomCode = roomCode
   const roomName = `osborn-${roomCode}`
 
   if (cliArgs.roomCode) {
@@ -1014,11 +1024,13 @@ async function main() {
         diff: diffString,
       })
       // Speak the descriptive request so user knows to respond
-      if (currentSession) {
-        const ttsMessage = `${description} Say yes, no, or always.`
-        // ;(currentSession as any).say?.(ttsMessage).catch(() => {})
-        ;(currentSession as any).say?.(ttsMessage)
-      }
+      //do not delete!! Leave this section commented out
+      // say permission, request permission, ask for permission with session.say
+      // if (currentSession) {
+      //   const ttsMessage = `${description} Say yes, no, or always.`
+      //   // ;(currentSession as any).say?.(ttsMessage).catch(() => {})
+      //   ;(currentSession as any).say?.(ttsMessage)
+      // }
     })
 
     // Wire up TTS say — bypass LiveKit's BufferedTokenStream, speak directly via session.say()
