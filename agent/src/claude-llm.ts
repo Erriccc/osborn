@@ -919,11 +919,11 @@ class ClaudeLLMStream extends llm.LLMStream {
               console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
-            if (toolUseId && this.#approvedWriterToolUseIds.has(toolUseId)) {
-              this.#approvedWriterToolUseIds.delete(toolUseId)
-              console.log(`✅ Writer pre-approved ${toolName}: ${filePath}`)
-              return { behavior: 'allow', updatedInput: input }
-            }
+            // if (toolUseId && this.#approvedWriterToolUseIds.has(toolUseId)) {
+            //   this.#approvedWriterToolUseIds.delete(toolUseId)
+            //   console.log(`✅ Writer pre-approved ${toolName}: ${filePath}`)
+            //   return { behavior: 'allow', updatedInput: input }
+            // }
           }
           // Auto-approve AskUserQuestion — research agent should freely ask clarifying questions
           if (toolName === 'AskUserQuestion') {
@@ -952,12 +952,11 @@ class ClaudeLLMStream extends llm.LLMStream {
               if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
                 // Writer sub-agent gets full write access everywhere
                 console.log('verifying agent_type', agentType)
+                // Writer agent: no longer auto-approved — falls through to canUseTool for permission dialog
                 if (agentType === 'writer') {
-                  console.log(`✍️ Writer agent: allowing ${toolName}`)
+                  console.log(`✍️ Writer agent: deferring to canUseTool for permission`)
                   this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput })
-                  const toolUseId = (input as any)?.tool_use_id
-                  if (toolUseId) this.#approvedWriterToolUseIds.add(toolUseId)
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } }
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
                 }
 
                 // All other agents (main, researcher, reasoner, etc.): workspace only

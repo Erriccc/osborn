@@ -68,7 +68,11 @@ export class PipelineDirectLLM extends llm.LLM {
   // Proxy all methods
   setResumeSessionId(id: string | null) { this.#claudeLLM.setResumeSessionId(id) }
   setContinueSession(e: boolean) { this.#claudeLLM.setContinueSession(e) }
-  resetForSessionSwitch() { this.#claudeLLM.resetForSessionSwitch() }
+  resetForSessionSwitch() {
+    this.stopIndexWatcher()
+    this.#indexBuilding = false
+    this.#claudeLLM.resetForSessionSwitch()
+  }
   respondToPermission(allow: boolean, msg?: string) { this.#claudeLLM.respondToPermission(allow, msg) }
   hasPendingPermission() { return this.#claudeLLM.hasPendingPermission() }
   getPendingPermission() { return this.#claudeLLM.getPendingPermission() }

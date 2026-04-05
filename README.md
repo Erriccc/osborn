@@ -5,21 +5,24 @@ Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SD
 ## Features
 
 - **Voice Interface**: Real-time voice conversation using LiveKit
-- **Multi-Provider Voice**: OpenAI Realtime, Gemini Live, or Direct (STT + Claude + TTS)
+- **Multi-Provider Voice**: OpenAI Realtime, Gemini Live, Direct (STT + Claude + TTS), or Pipeline (Direct + parallel fast brain)
+- **Persistent Session**: Single Claude subprocess per voice session — no JSONL replay after first message. Uses `query()` with `AsyncIterable<SDKUserMessage>` for instant follow-up messages.
+- **Multi-Agent Orchestration**: Sonnet orchestrator delegates to three named sub-agents — researcher (Sonnet), reasoner (Opus), writer (Sonnet with verify-first workflow)
 - **Research Mode**: Read code, search web, run commands, fetch YouTube transcripts, save findings to session workspace
-- **Claude Agent SDK**: Full tool access (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch)
-- **Permission System**: Approve/deny operations via voice or UI
+- **Claude Agent SDK v0.2.91**: Full tool access (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch) with `agentProgressSummaries` for background Task progress
+- **Permission System**: Approve/deny operations via voice or UI. Writer sub-agent gets full write access; all others restricted to workspace.
 - **Session Management**: Resume, switch, and browse previous conversations
 - **Fast Brain**: ~2s session-aware Q&A via direct API calls (Anthropic Haiku / Gemini Flash fallback)
-- **Four-Tier Intelligence**: Conversational → `read_spec` (instant) → `ask_haiku` (~2s) → `ask_agent` (5-15s deep research)
+- **Pipeline Fast Brain**: Gemini Flash AFC observer runs in parallel with Claude — emergency stop + agent restart capability
+- **Meeting Integration**: Recall.ai bot joins Zoom/Google Meet, routes real-time transcripts to Claude
 - **JSONL Session Access**: Full untruncated tool results read directly from Claude Agent SDK session files
 - **Non-Blocking Research**: Ask follow-up questions while research is running — the SDK queues tasks internally
-- **Parallel Sub-Agents**: Research agent spawns Task sub-agents for concurrent work (e.g., researching 3 topics simultaneously)
-- **Gemini Auto-Recovery**: Automatic session recovery from Gemini 1008 crashes with voice notification
+- **Parallel Sub-Agents**: Orchestrator spawns Task sub-agents for concurrent work (e.g., researching 3 topics simultaneously)
+- **Gemini Auto-Recovery**: Automatic session recovery from crashes (3s interval) with voice notification
 - **MCP Integration**: Extend with GitHub, YouTube, filesystem, and custom MCP servers (Smithery cloud proxy)
 - **Research Artifacts**: Plans, diagrams (mermaid), notes, and analysis files — persist across session resumes
-- **Bidirectional Question Tracking**: spec.md tracks questions from both user and agent with checkbox format
-- **Full-Width UI**: Responsive layout with always-visible Files panel and syntax-highlighted code
+- **OAuth Token Persistence**: `claude setup-token` output captured and persisted to volume for Fly.io deployments
+- **Full-Width UI**: Responsive layout with always-visible Files panel, meeting controls, and syntax-highlighted code
 
 ## Research Mode
 
@@ -29,8 +32,13 @@ The agent operates in a single **research** mode. It reads code, searches the we
 
 ```
 Frontend (Next.js)  <-->  LiveKit Cloud  <-->  Agent (local machine)
-                                                ├── Claude Agent SDK (tools)
+                                                ├── Claude Agent SDK v0.2.91 (persistent session)
+                                                │   ├── researcher sub-agent (Sonnet)
+                                                │   ├── reasoner sub-agent (Opus)
+                                                │   └── writer sub-agent (Sonnet)
+                                                ├── Pipeline Fast Brain (Gemini Flash observer)
                                                 ├── OpenAI/Gemini Realtime (voice)
+                                                ├── Recall.ai (meeting bot integration)
                                                 └── MCP Servers (extensions)
 ```
 
@@ -67,6 +75,9 @@ LIVEKIT_API_SECRET=your-api-secret
 OPENAI_API_KEY=your-openai-key
 GOOGLE_API_KEY=your-google-key
 ANTHROPIC_API_KEY=your-anthropic-key
+# Optional:
+RECALL_API_KEY=your-recall-key    # For Zoom/Google Meet bot integration
+SMITHERY_API_KEY=your-smithery-key # For cloud MCP servers
 ```
 
 **frontend/.env.local:**
@@ -130,27 +141,35 @@ mcpServers:
 
 ```
 osborn/
-├── agent/                     # LiveKit voice agent (backend)
+├── agent/                          # LiveKit voice agent (backend)
 │   ├── src/
-│   │   ├── index.ts           # Agent entry, room events, four-tier routing
-│   │   ├── claude-llm.ts      # Claude Agent SDK wrapper
-│   │   ├── fast-brain.ts      # Fast brain (~2s Q&A, JSONL consolidation)
-│   │   ├── session-access.ts  # JSONL session file reader (14 functions)
-│   │   ├── prompts.ts         # Centralized prompt definitions (9 exports)
-│   │   ├── config.ts          # Config, sessions, workspace helpers
-│   │   ├── smithery-proxy.ts  # Smithery cloud MCP proxy
-│   │   └── voice-io.ts        # STT/TTS/VAD/Realtime model factory
+│   │   ├── index.ts                # Agent entry, room events, meeting webhooks, voice queue
+│   │   ├── claude-llm.ts           # Claude Agent SDK persistent session wrapper, multi-agent config
+│   │   ├── pipeline-direct-llm.ts  # Pipeline mode: ClaudeLLM + parallel Gemini fast brain
+│   │   ├── pipeline-fastbrain.ts   # Gemini Flash AFC agent with emergency stop
+│   │   ├── summary-index.ts        # BM25 searchable index over JSONL session files
+│   │   ├── fast-brain.ts           # Fast brain (~2s Q&A, JSONL consolidation)
+│   │   ├── session-access.ts       # JSONL session file reader (15 functions)
+│   │   ├── prompts.ts              # Centralized prompt definitions (13+ exports)
+│   │   ├── config.ts               # Config, sessions, workspace helpers
+│   │   ├── recall-client.ts        # Recall.ai meeting bot integration
+│   │   ├── claude-auth.ts          # OAuth token capture + volume persistence
+│   │   ├── smithery-proxy.ts       # Smithery cloud MCP proxy
+│   │   ├── voice-io.ts             # STT/TTS/VAD/Realtime model factory
+│   │   └── meeting-output.html     # Recall.ai bot audio output page
 │   └── package.json
-├── frontend/                  # Next.js web frontend
+├── frontend/                       # Next.js web frontend
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── VoiceRoom.tsx       # Main voice UI
+│   │   │   ├── VoiceRoom.tsx       # Main voice UI + meeting controls
 │   │   │   ├── MarkdownMessage.tsx # Markdown renderer
 │   │   │   └── SessionBrowser.tsx  # Session browser
-│   │   └── lib/
-│   │       └── sessions.ts         # Session utilities
+│   │   └── app/
+│   │       ├── api/token/route.ts  # LiveKit JWT token generation
+│   │       └── page.tsx            # Landing page
 │   └── package.json
-├── PROGRESS.md                # Development progress
+├── CLAUDE.md                       # AI coding assistant guidance
+├── CHANGELOG.md                    # Version history
 └── README.md
 ```
 
@@ -159,35 +178,40 @@ osborn/
 | Component | Status |
 |-----------|--------|
 | Voice Interface (LiveKit) | Working |
+| Persistent Session (no per-message JSONL replay) | Working |
+| Multi-Agent Orchestration (researcher/reasoner/writer) | Working |
+| Pipeline Mode (Claude + Gemini fast brain observer) | Working |
 | OpenAI Realtime | Working |
 | Gemini Live | Working |
 | Direct Mode (STT + Claude + TTS) | Working |
-| Claude Agent SDK Tools | Working |
-| Permission System | Working |
+| Claude Agent SDK v0.2.91 | Working |
+| Permission System (agent_type-aware) | Working |
 | Research Mode | Working |
 | Session Management | Working |
 | Research Artifacts | Working |
+| Recall.ai Meeting Integration | Working |
 | Non-blocking research (SDK-managed queuing) | Working |
-| Parallel sub-agents (Task tool for concurrent research) | Working |
+| Named sub-agents (researcher, reasoner, writer) | Working |
 | Fast Brain (~2s Q&A via ask_haiku) | Working |
-| Four-Tier Intelligence Routing | Working |
+| Pipeline Fast Brain (Gemini observer + emergency stop) | Working |
 | JSONL Session Access (full untruncated data) | Working |
 | Post-Research JSONL Consolidation | Working |
-| Bidirectional Question Tracking | Working |
-| Centralized Prompts (prompts.ts) | Working |
-| Gemini Auto-Recovery (1008 crash) | Working |
+| OAuth Token Persistence (Fly.io volume) | Working |
+| Gemini Auto-Recovery (3s interval) | Working |
 | Files Panel (always visible, persists on resume) | Working |
 | MCP Integration (Smithery cloud proxy) | Working |
-| Full-Width Responsive Layout | Working |
 
 ## Tech Stack
 
 - **Voice**: LiveKit Agents SDK + RTCNode
 - **Realtime AI**: OpenAI Realtime API / Gemini Live API
-- **Coding Agent**: Claude via @anthropic-ai/claude-agent-sdk
-- **Fast Brain**: Anthropic Haiku / Gemini Flash (direct API calls)
+- **Coding Agent**: Claude via @anthropic-ai/claude-agent-sdk v0.2.91
+- **Sub-Agents**: researcher (Sonnet), reasoner (Opus), writer (Sonnet)
+- **Fast Brain**: Anthropic Haiku / Gemini Flash (direct API + pipeline AFC observer)
+- **Meeting**: Recall.ai (Zoom/Google Meet bot integration)
 - **Frontend**: Next.js 14 + React + Tailwind CSS
-- **STT/TTS**: Deepgram (default), with OpenAI/ElevenLabs/Gemini options
+- **STT**: Deepgram Flux (semantic turn detection)
+- **TTS**: OpenAI TTS-1, with Deepgram/ElevenLabs/Gemini options
 
 ## License
 

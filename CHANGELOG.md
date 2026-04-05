@@ -26,7 +26,54 @@
 
 ## Version History
 
-### v0.5.1 (Current) — JSONL-Based Spec Consolidation + Prompt Extraction + Question Tracking
+### v0.5.5 (Current) — Persistent Session + Multi-Agent Orchestration + SDK v0.2.91
+
+#### Persistent Session Architecture
+- **No per-message JSONL replay**: `query()` called with `AsyncIterable<SDKUserMessage>` — subprocess stays alive between messages
+- **`MessageChannel<T>` class**: Pushable async iterable feeding user messages to the persistent subprocess via stdin
+- **`#startBackgroundConsumer()`**: Long-running `for await` loop routing SDK events (assistant text, tool use, checkpoints) to TTS and frontend
+- **Control operations**: `persistentQuery.interrupt()` (graceful Esc, subprocess stays alive), `closeSession()` (kills subprocess), `rewindFiles()` (file checkpointing)
+- **First message**: Cold start (JSONL replay). Subsequent messages: instant push (no replay)
+
+#### Multi-Agent Orchestration
+- **Sonnet orchestrator**: Main agent delegates to three named sub-agents via Task tool
+- **`researcher`** (Sonnet): Information gathering — codebase, web, multi-file exploration. Read-only.
+- **`reasoner`** (Opus): Deep thinking — architecture decisions, tradeoffs, implementation planning. Read-only.
+- **`writer`** (Sonnet): Verify-first execution — check assumptions → clarify → execute → verify (run tests/build). Full write access.
+- **`agent_type` in PreToolUse**: Writer agent (`agent_type === 'writer'`) gets full write access. All others restricted to workspace. `MultiEdit` now included in check.
+- **Prompt enforcement**: Hard limit of 2-3 direct tool calls per turn; Bash/Write/Edit restricted to writer sub-agent
+
+#### Claude Agent SDK Upgrade (v0.1.76 → v0.2.91)
+- `@anthropic-ai/claude-agent-sdk` 0.1.76 → 0.2.91 (persistent query, `agentProgressSummaries`, background Task support)
+- `@anthropic-ai/sdk` 0.52 → 0.80
+- `@modelcontextprotocol/sdk` 1.26 → 1.29
+- `zod` 3 → 4 (backward-compatible for existing usage)
+- V2 `SDKSessionOptions` now includes `canUseTool`, `hooks`, `allowedTools`, `permissionMode`
+
+#### Recall.ai Meeting Integration
+- **`recall-client.ts`**: New file — `RecallClient` class for joining Zoom/Google Meet as a bot
+- **`meeting-output.html`**: New file — Output Media webpage for bot audio (WebSocket client)
+- **Webhook route**: `POST /webhook/recall` in HTTP server receives real-time transcripts
+- **Transcript routing**: Meeting speech routed to Claude via data channel as `[Meeting — Speaker]: text`
+- **Frontend UI**: Join Meeting button with joining/joined/error states, leave meeting support
+
+#### Voice Pipeline Changes
+- **TTS provider**: Switched from Deepgram (`aura-2-asteria-en`) to OpenAI (`tts-1`, voice `fable`) — note: HTTP streaming, throws `APIUserAbortError` on interrupt
+- **Recovery interval**: `MIN_RECOVERY_INTERVAL` reduced from 10s to 3s for faster crash recovery
+- **STT endpointing**: Deepgram set to 550ms (was 25ms default) to reduce mid-sentence fragment commits
+- **Deepgram Flux STT**: Semantic turn detection with `eotThreshold=0.85`, `eotTimeoutMs=3000`
+
+#### Authentication Flow
+- **Token capture**: `claude setup-token` output parsed for `sk-ant-oat01-*` token after "created successfully"
+- **Token persistence**: Written to `~/.claude/.oauth-token` (simple file) and `~/.claude/.credentials.json` for volume persistence
+- **Startup restore**: `ensureClaudeAuth()` checks `~/.claude/.oauth-token` before prompting for interactive auth
+
+#### Fast Brain Timeout
+- `TIMEOUT_MS` increased from 15s to 30s to handle large JSONL replay on session resume
+
+---
+
+### v0.5.1 — JSONL-Based Spec Consolidation + Prompt Extraction + Question Tracking
 
 #### Centralized Prompts
 - **`prompts.ts`**: All system prompts extracted from inline strings into dedicated module (9 exports)

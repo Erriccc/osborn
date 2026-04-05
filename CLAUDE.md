@@ -32,7 +32,7 @@ Frontend deploys to Railway (nixpacks, Node 22). Build: `cd frontend && npm inst
 
 ### Required Environment
 
-Agent needs: `agent/.env` with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, and at least one of `OPENAI_API_KEY` / `GOOGLE_API_KEY`. Optional: `SMITHERY_API_KEY` for cloud-hosted MCP servers (YouTube, GitHub via Smithery).
+Agent needs: `agent/.env` with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, and at least one of `OPENAI_API_KEY` / `GOOGLE_API_KEY`. Optional: `SMITHERY_API_KEY` for cloud-hosted MCP servers (YouTube, GitHub via Smithery). Optional: `RECALL_API_KEY` for Zoom/Google Meet bot integration via Recall.ai.
 
 Frontend needs: `frontend/.env.local` with `NEXT_PUBLIC_LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`.
 
@@ -45,15 +45,36 @@ Frontend (Next.js 14) <-> LiveKit Cloud <-> Agent (Node.js/tsx on local machine)
                                               └── MCP Servers (extensions)
 ```
 
-### Two Voice Modes
-- **direct**: STT (Deepgram) → Claude Agent SDK → TTS (Deepgram). Full tool access, all research capabilities.
+### Three Voice Modes
+- **direct**: STT (Deepgram) → Claude Agent SDK → TTS (OpenAI). Full tool access, all research capabilities.
+- **pipeline** (default): Same as direct, plus a parallel Gemini fast brain observer that races to classify intent. Fast brain results go to the frontend panel; Claude's full response goes to TTS. The fast brain also has an emergency stop tool that can kill/restart the main agent.
 - **realtime**: OpenAI/Gemini native speech-to-speech. Low-latency voice; delegates research tasks to Claude via `ask_agent` tool.
+
+### Persistent Session Architecture
+
+The Claude Agent SDK `query()` function accepts `AsyncIterable<SDKUserMessage>` as its prompt. Instead of spawning a fresh subprocess per message (which replays the full JSONL history each time), a single `query()` is created on the first `chat()` call with a `MessageChannel` (pushable async iterable). Subsequent messages are pushed to the channel — the subprocess stays alive, no JSONL replay. This is implemented in `claude-llm.ts`:
+- `MessageChannel<T>` class — pushable async iterable feeding the subprocess stdin
+- `#persistentQuery: SDKQuery` — singleton query reference, kept alive for the voice session
+- `pushMessage()` — first call does cold start (JSONL replay), subsequent calls are instant
+- `#startBackgroundConsumer()` — long-running `for await` loop routing SDK events to TTS/frontend
+- `closeSession()` — kills subprocess on disconnect/session switch/recovery
+- `interruptQuery()` — calls `persistentQuery.interrupt()` (graceful Esc, subprocess stays alive)
+- `abortQuery()` → `closeSession()` (kills subprocess, next call cold starts)
+
+### Multi-Agent Orchestration
+
+The main agent (Sonnet) is an orchestrator with three named sub-agents defined in the `agents` config in `claude-llm.ts`:
+- **researcher** (Sonnet) — information gathering: codebase, web, multi-file reads. Tools: Read, Glob, Grep, Bash, WebSearch, WebFetch, Task. Does NOT edit files.
+- **reasoner** (Opus) — deep thinking: architecture decisions, tradeoffs, implementation planning. Read-only tools. Returns plans for the writer.
+- **writer** (Sonnet) — execution with verify-first workflow: check assumptions → clarify unknowns → execute → verify (run tests/build). Tools: Read, Write, Edit, MultiEdit, Bash, Glob, Grep. Only agent with write access outside workspace.
+
+The `PreToolUse` hook checks `input.agent_type` — the writer agent (`agent_type === 'writer'`) gets full write access everywhere. All other agents are restricted to workspace-only writes. The prompt enforces a hard limit of 2-3 direct tool calls per turn for the main agent; anything more must be delegated.
 
 ### Research Mode
 
 The agent operates in a single **research** mode. It can read any file, search the web, run commands, fetch YouTube transcripts, and save findings to a per-session workspace. There are no plan/execute or read-only/edit mode toggles.
 
-**Write safety**: A `PreToolUse` hook in `claude-llm.ts` blocks `Write`/`Edit` outside `.osborn/sessions/` (and legacy `.osborn/research/`). The `canUseTool` callback auto-approves writes to the session workspace (no permission prompt), while all other tools use `permissionMode: 'default'`. The system prompt has strict file writing rules (full absolute paths, no hallucinated writes).
+**Write safety**: A `PreToolUse` hook in `claude-llm.ts` blocks `Write`/`Edit`/`MultiEdit` outside `.osborn/sessions/` (and legacy `.osborn/research/`), UNLESS the calling agent is the `writer` sub-agent (`agent_type === 'writer'`). The `canUseTool` callback auto-approves writes to the session workspace (no permission prompt), while all other tools use `permissionMode: 'default'`. The system prompt has strict file writing rules (full absolute paths, no hallucinated writes).
 
 **Session workspace** (created per session, includes default `spec.md` template):
 ```
@@ -72,13 +93,18 @@ The fast brain (`fast-brain.ts`) maintains `spec.md` and `library/` — reading 
 
 **Agent:**
 - `agent/src/index.ts` — Main entry: LiveKit room events, session creation (`createDirectSession`/`createRealtimeSession`), all DataReceived handlers, HTTP API server (port 8741). Five-tier intelligence routing: `read_spec` (instant), `ask_haiku` (~2s fast brain), `generate_document` (~3s visual docs), `ask_agent` (deep research). Post-research JSONL refinement via `updateSpecFromJSONL()`. Proactive conversational loop during research (15s interval, 4-prompt cap). Research updates contextualized through fast brain before voice relay.
-- `agent/src/claude-llm.ts` — `ClaudeLLM` class extending `llm.LLM`: wraps Claude Agent SDK `query()`, session resume, MCP servers, checkpoints, permission flow, configurable model (default Sonnet), auto-approve workspace writes in `canUseTool`. Research system prompt imported from `prompts.ts`
+- `agent/src/claude-llm.ts` — `ClaudeLLM` class extending `llm.LLM`: persistent session via `query()` with `AsyncIterable<SDKUserMessage>` (no per-message JSONL replay), `MessageChannel` pushable async iterable, `#persistentQuery`/`#backgroundConsumer` for long-lived subprocess, three named sub-agents (`researcher`/`reasoner`/`writer`), `agent_type`-aware PreToolUse hook, session resume, MCP servers, checkpoints, permission flow, configurable model (default Sonnet), auto-approve workspace writes in `canUseTool`. Research system prompt imported from `prompts.ts`
 - `agent/src/fast-brain.ts` — Fast intermediary brain (~2s responses): `askHaiku()` for session-aware Q&A, `updateSpecFromJSONL()` for post-research spec consolidation via JSONL, `contextualizeResearchUpdate()` for natural voice progress updates, `generateProactivePrompt()` for conversation during research silence, `generateVisualDocument()` for structured markdown docs (Mermaid diagrams, comparison tables, analysis). Auth chain: `ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → Gemini Flash fallback. 10 tools: `read_file`, `write_file`, `list_library`, `read_agent_results`, `read_agent_text`, `web_search`, `read_subagents`, `search_jsonl`, `read_conversation`, `get_full_transcript`
 - `agent/src/session-access.ts` — Programmatic access to Claude Agent SDK JSONL session files. 15 exported functions: `readSessionHistory()`, `getRecentToolResults()`, `getSubagentTranscripts()`, `getSessionTranscripts()`, `searchSessionJsonl()`, `getConversationText()`, `watchSessionFile()`, `getRawSessionJsonl()`, etc. Reads FULL untruncated tool results and agent reasoning from `~/.claude/projects/`
 - `agent/src/prompts.ts` — Centralized prompt definitions. All system prompts extracted here: `DIRECT_MODE_PROMPT`, `getRealtimeInstructions()`, `getResearchSystemPrompt()`, `FAST_BRAIN_SYSTEM_PROMPT`, `CHUNK_PROCESS_SYSTEM`, `REFINEMENT_PROCESS_SYSTEM`, `AUGMENT_RESULT_SYSTEM`, `CONTEXTUALIZE_UPDATE_SYSTEM`, `PROACTIVE_PROMPT_SYSTEM`, `VISUAL_DOCUMENT_SYSTEM`, `getResearchCompleteInjection()`, `getResearchUpdateInjection()`, `getNotificationInjection()`
 - `agent/src/config.ts` — `OsbornConfig` loading from `~/.osborn/config.yaml`, session management (list/get/history), session workspace helpers (`getSessionWorkspace`, `ensureSessionWorkspace`, `readSessionSpec`, `listLibraryFiles`), `listWorkspaceArtifacts()` for file explorer persistence, MCP catalog with Smithery cloud support
 - `agent/src/smithery-proxy.ts` — In-process MCP proxy for Smithery cloud servers. Bypasses Claude Agent SDK HTTP bug (#18296) by using `@smithery/api/mcp` `createConnection()` + MCP SDK `Client` to get a working transport, then wraps in local `McpServer` as `type: 'sdk'`
+- `agent/src/recall-client.ts` — Recall.ai API wrapper for meeting bot integration. `RecallClient` class: `joinMeeting()`, `leaveMeeting()`, `handleWebhook()`. Singleton via `getRecallClient()` (returns null if `RECALL_API_KEY` not set). Meeting transcripts routed to Claude via data channel.
+- `agent/src/pipeline-direct-llm.ts` — Pipeline mode wrapper: `PipelineDirectLLM` wraps `ClaudeLLM` + parallel Gemini fast brain observer. Handles interruption context enrichment, index watching, agent control callbacks (interrupt/abort/sendPrompt).
+- `agent/src/pipeline-fastbrain.ts` — Pipeline fast brain: Gemini Flash AFC agent with `search_session`, `get_recent`, `control_agent` (emergency stop) tools. Uses `summary-index.ts` for BM25 search over JSONL.
+- `agent/src/summary-index.ts` — Compact searchable index with byte-offset reads over JSONL session files.
 - `agent/src/voice-io.ts` — Factory functions for STT, TTS, VAD, and realtime model creation
+- `agent/src/meeting-output.html` — Output Media webpage for Recall.ai bot audio (WebSocket client)
 
 **Frontend:**
 - `frontend/src/components/VoiceRoom.tsx` — Main UI component (~2000 lines): voice visualization, chat, permission UI, session management, MCP toggles, always-visible files panel with session artifact persistence
@@ -90,8 +116,8 @@ The fast brain (`fast-brain.ts`) maintains `spec.md` and `library/` — reading 
 ### Data Channel Protocol
 
 Frontend ↔ Agent communication uses LiveKit data channels:
-- **Agent → Frontend** (`topic: 'osborn-updates'`): `tool_use`, `tool_result`, `tool_blocked`, `agent_state`, `agent_ready`, `permission_request`, `claude_output`, `assistant_response`, `task_completed`, `plan_file_updated`, `research_artifact_updated`, `session_resume_set`, `session_artifacts`, `mcp_toggle_result`, `mcp_servers_changed`, `mcp_status`, `checkpoint_captured`, `session_switched`, `current_session`
-- **Frontend → Agent** (`topic: 'user-input'`): `permission_response`, `user_text`, `resume_session`, `continue_session`, `switch_session`, `mcp_toggle`, `get_mcp_status`, `session_selected`, `get_plan_file`, `get_research_artifact`, `get_session_artifacts`, `get_current_session`
+- **Agent → Frontend** (`topic: 'osborn-updates'`): `tool_use`, `tool_result`, `tool_blocked`, `agent_state`, `agent_ready`, `permission_request`, `claude_output`, `assistant_response`, `task_completed`, `plan_file_updated`, `research_artifact_updated`, `session_resume_set`, `session_artifacts`, `mcp_toggle_result`, `mcp_servers_changed`, `mcp_status`, `checkpoint_captured`, `session_switched`, `current_session`, `fast_brain_response`, `meeting_joining`, `meeting_joined`, `meeting_left`, `meeting_error`
+- **Frontend → Agent** (`topic: 'user-input'`): `permission_response`, `user_text`, `resume_session`, `continue_session`, `switch_session`, `mcp_toggle`, `get_mcp_status`, `session_selected`, `get_plan_file`, `get_research_artifact`, `get_session_artifacts`, `get_current_session`, `join_meeting`, `leave_meeting`
 
 ### Session & File Storage
 - Sessions: `~/.claude/projects/<project-path>/` as `.jsonl` files + `.session-meta.json`
