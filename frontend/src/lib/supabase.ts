@@ -6,7 +6,7 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // Storage bucket name for file uploads
-const BUCKET_NAME = 'osborn-uploads'
+const BUCKET_NAME = 'osborn-storage'
 
 export interface UploadResult {
   success: boolean
