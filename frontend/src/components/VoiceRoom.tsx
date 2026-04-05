@@ -225,6 +225,60 @@ function parseMessageParts(content: string): MessagePart[] {
   return parts
 }
 
+// Render text content with inline image support
+function MessageContent({ content }: { content: string }) {
+  // Match markdown image links: [Image: name](url) or [File: name](url) or plain image URLs
+  const imageRegex = /\[(?:Image|File):\s*([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g
+  const plainUrlRegex = /(https?:\/\/\S+\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?\S*)?)/gi
+
+  const parts: { type: 'text' | 'image'; text?: string; url?: string; alt?: string }[] = []
+  let lastIndex = 0
+
+  // Find markdown image links
+  let match
+  const allContent = content
+  imageRegex.lastIndex = 0
+  while ((match = imageRegex.exec(allContent)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: 'text', text: allContent.slice(lastIndex, match.index) })
+    }
+    parts.push({ type: 'image', url: match[2], alt: match[1] })
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < allContent.length) {
+    parts.push({ type: 'text', text: allContent.slice(lastIndex) })
+  }
+
+  // If no images found, just render text
+  if (parts.length === 0 || (parts.length === 1 && parts[0].type === 'text')) {
+    return <p className="text-sm leading-relaxed whitespace-pre-wrap">{content}</p>
+  }
+
+  return (
+    <div className="space-y-2">
+      {parts.map((p, i) => {
+        if (p.type === 'image') {
+          return (
+            <div key={i} className="rounded-lg overflow-hidden">
+              <img
+                src={p.url}
+                alt={p.alt || 'Attached image'}
+                className="max-w-full max-h-64 sm:max-h-80 rounded-lg object-contain cursor-pointer hover:opacity-90 transition-opacity"
+                onClick={() => window.open(p.url, '_blank')}
+                loading="lazy"
+              />
+              {p.alt && <p className="text-[10px] text-gray-500 mt-1 truncate">{p.alt}</p>}
+            </div>
+          )
+        }
+        const text = p.text?.trim()
+        if (!text) return null
+        return <p key={i} className="text-sm leading-relaxed whitespace-pre-wrap">{text}</p>
+      })}
+    </div>
+  )
+}
+
 // Modern chat message bubble with parts support
 const MessageBubble = React.memo(function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user'
@@ -311,7 +365,7 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
             {message.isStreaming && <StreamingDots />}
           </div>
         ) : (
-          <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+          <MessageContent content={message.content} />
         )}
 
         {/* Timestamp */}
@@ -1013,7 +1067,7 @@ function PermissionModal({
           {/* Description */}
           <div className="bg-gray-800/50 rounded-xl p-3 border border-gray-700/50">
             <p className="text-gray-300 text-sm leading-relaxed">{permission.description}</p>
-            {inputDetails && (
+            {inputDetails && !permission.description.includes(inputDetails.value) && (
               <div className="mt-2 pt-2 border-t border-gray-700/50">
                 <span className="text-[10px] text-gray-500 uppercase tracking-wider">{inputDetails.label}</span>
                 <code className="block mt-1 text-xs text-amber-300 bg-gray-900 p-2 rounded-lg overflow-x-auto whitespace-nowrap">
@@ -1042,17 +1096,19 @@ function PermissionModal({
                   <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Changes</span>
                   <span className="text-[10px] text-gray-600">{parsed.filter(p => p.type === 'add').length} additions, {parsed.filter(p => p.type === 'del').length} deletions</span>
                 </div>
-                <div className={`rounded-xl border border-gray-700/50 bg-gray-950 font-mono text-[11px] sm:text-xs overflow-hidden ${showFullDiff ? 'max-h-80 overflow-y-auto' : ''}`}>
+                <div className={`rounded-xl border border-gray-700/50 bg-gray-950 font-mono text-[11px] sm:text-xs overflow-x-auto ${showFullDiff ? 'max-h-80 overflow-y-auto' : ''}`}>
+                  <div className="min-w-max">
                   {visible.map((p, i) => (
                     <div key={i} className={`flex ${lineColors[p.type]} border-b border-gray-800/30 last:border-0`}>
                       {/* Line number gutter */}
-                      <span className="w-10 sm:w-12 shrink-0 text-right pr-2 py-px text-gray-600 select-none border-r border-gray-800/50 bg-gray-900/50">
+                      <span className="w-10 sm:w-12 shrink-0 text-right pr-2 py-px text-gray-600 select-none border-r border-gray-800/50 bg-gray-900/50 sticky left-0">
                         {p.num}
                       </span>
                       {/* Code content */}
-                      <pre className="flex-1 px-2 sm:px-3 py-px overflow-x-auto whitespace-pre"><code>{p.line}</code></pre>
+                      <span className="px-2 sm:px-3 py-px whitespace-pre">{p.line}</span>
                     </div>
                   ))}
+                  </div>
                 </div>
                 {hasMore && (
                   <button
@@ -1341,7 +1397,7 @@ function VoiceRoomInner({
 
           if (!result.success) {
             console.error('Upload failed:', result.error)
-            addMessageRef.current?.('system', `Upload failed: ${result.error || 'Unknown error'}. Create "osborn-uploads" bucket in Supabase Dashboard → Storage.`)
+            addMessageRef.current?.('system', `Upload failed: ${result.error || 'Unknown error'}. Check Supabase Dashboard → Storage → osborn-storage bucket policies.`)
           }
 
           setAttachedFiles((prev) => prev.map((f, idx) =>
@@ -1972,7 +2028,7 @@ function VoiceRoomInner({
     // Send via data channel
     if (payloadStr.length > 60000) {
       console.warn(`⚠️ Payload too large (${payloadStr.length} bytes), sending text only`)
-      addMessageRef.current?.('system', 'File too large for data channel. Create the "osborn-uploads" bucket in Supabase Dashboard → Storage to enable image uploads.')
+      addMessageRef.current?.('system', 'File too large for data channel. Check Supabase Dashboard → Storage → osborn-storage bucket policies.')
       // Still send the text portion
       const smallPayload = JSON.stringify({ type: 'user_text', content: text || '(file attachment failed — too large)' })
       const encoder = new TextEncoder()
