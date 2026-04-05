@@ -2412,12 +2412,28 @@ async function main() {
           console.log(`✅ Permission: ${data.response}`)
         }
       } else if (data.type === 'user_text' && currentSession) {
-        console.log(`📝 Text: "${data.content}"`)
+        // Build message content — include attached files (URLs, text content)
+        let fullContent = String(data.content || '')
+        const files = data.files as Array<{ name: string; type: string; content?: string; url?: string }> | undefined
+        if (files && files.length > 0) {
+          for (const f of files) {
+            if (f.url) {
+              fullContent += `\n\n[${f.type === 'image' ? 'Image' : 'File'}: ${f.name}](${f.url})`
+            } else if (f.type === 'text' && f.content) {
+              fullContent += `\n\n[File: ${f.name}]\n${f.content}`
+            } else if (f.type === 'image' && f.content) {
+              fullContent += `\n\n[Image attached: ${f.name}]`
+            }
+          }
+          console.log(`📝 Text + ${files.length} file(s): "${fullContent.substring(0, 100)}"`)
+        } else {
+          console.log(`📝 Text: "${fullContent.substring(0, 100)}"`)
+        }
         // Skip interrupt for Gemini — disrupts state machine (hangs in speaking state)
         if (currentProvider !== 'gemini') {
           currentSession.interrupt()
         }
-        await currentSession.generateReply({ userInput: data.content })
+        await currentSession.generateReply({ userInput: fullContent })
       }
       // ============================================================
       // SESSION MANAGEMENT HANDLERS

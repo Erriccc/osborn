@@ -227,29 +227,29 @@ function parseMessageParts(content: string): MessagePart[] {
 
 // Render text content with inline image support
 function MessageContent({ content }: { content: string }) {
-  // Match markdown image links: [Image: name](url) or [File: name](url) or plain image URLs
-  const imageRegex = /\[(?:Image|File):\s*([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g
-  const plainUrlRegex = /(https?:\/\/\S+\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?\S*)?)/gi
+  const IMAGE_EXTS = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i
+  // Match [Image: name](url) and [File: name](url)
+  const attachRegex = /\[(?:Image|File):\s*([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g
 
-  const parts: { type: 'text' | 'image'; text?: string; url?: string; alt?: string }[] = []
+  const parts: { type: 'text' | 'image' | 'file'; text?: string; url?: string; name?: string }[] = []
   let lastIndex = 0
-
-  // Find markdown image links
   let match
-  const allContent = content
-  imageRegex.lastIndex = 0
-  while ((match = imageRegex.exec(allContent)) !== null) {
+
+  attachRegex.lastIndex = 0
+  while ((match = attachRegex.exec(content)) !== null) {
     if (match.index > lastIndex) {
-      parts.push({ type: 'text', text: allContent.slice(lastIndex, match.index) })
+      parts.push({ type: 'text', text: content.slice(lastIndex, match.index) })
     }
-    parts.push({ type: 'image', url: match[2], alt: match[1] })
+    const name = match[1]
+    const url = match[2]
+    const isImage = IMAGE_EXTS.test(name) || IMAGE_EXTS.test(url)
+    parts.push({ type: isImage ? 'image' : 'file', url, name })
     lastIndex = match.index + match[0].length
   }
-  if (lastIndex < allContent.length) {
-    parts.push({ type: 'text', text: allContent.slice(lastIndex) })
+  if (lastIndex < content.length) {
+    parts.push({ type: 'text', text: content.slice(lastIndex) })
   }
 
-  // If no images found, just render text
   if (parts.length === 0 || (parts.length === 1 && parts[0].type === 'text')) {
     return <p className="text-sm leading-relaxed whitespace-pre-wrap">{content}</p>
   }
@@ -260,15 +260,30 @@ function MessageContent({ content }: { content: string }) {
         if (p.type === 'image') {
           return (
             <div key={i} className="rounded-lg overflow-hidden">
-              <img
-                src={p.url}
-                alt={p.alt || 'Attached image'}
+              <img src={p.url} alt={p.name || 'Image'}
                 className="max-w-full max-h-64 sm:max-h-80 rounded-lg object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                onClick={() => window.open(p.url, '_blank')}
-                loading="lazy"
-              />
-              {p.alt && <p className="text-[10px] text-gray-500 mt-1 truncate">{p.alt}</p>}
+                onClick={() => window.open(p.url, '_blank')} loading="lazy" />
+              {p.name && <p className="text-[10px] text-gray-500 mt-1 truncate">{p.name}</p>}
             </div>
+          )
+        }
+        if (p.type === 'file') {
+          return (
+            <a key={i} href={p.url} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-2.5 p-2.5 rounded-xl bg-gray-800/60 border border-gray-700/50 hover:bg-gray-700/50 transition-colors group">
+              <div className="w-9 h-9 rounded-lg bg-amber-500/20 flex items-center justify-center shrink-0">
+                <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-gray-200 truncate group-hover:text-white transition-colors">{p.name || 'File'}</p>
+                <p className="text-[10px] text-gray-500">Click to open</p>
+              </div>
+              <svg className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
           )
         }
         const text = p.text?.trim()
