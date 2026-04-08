@@ -31,20 +31,34 @@ function ChatInner() {
   const [lastActivityAt, setLastActivityAt] = useState(Date.now())
   const [authRequired, setAuthRequired] = useState(false)
 
-  // Keepalive ping while user is connected to a cloud sandbox
+  // Keepalive ping while user is connected to a cloud sandbox.
+  //
+  // IMPORTANT: this must hit the sandbox's `/health` endpoint through the Daytona
+  // reverse proxy — not the Next.js `/api/sandbox` management endpoint. Daytona's
+  // auto-stop timer (`autoStopInterval: 15`) only resets when real traffic reaches
+  // the sandbox container via the proxy. A GET on Daytona's management API
+  // (`keepAliveSandbox()` in daytona.ts) doesn't count — we verified this the hard
+  // way when a sandbox auto-stopped mid-conversation despite the old keepalive
+  // firing every 5 minutes. Voice traffic through LiveKit Cloud also doesn't
+  // count because it flows outbound from the container, not inbound through
+  // Daytona's proxy — from Daytona's perspective the container looks idle even
+  // during a full voice conversation with multi-minute tool runs.
+  //
+  // Hitting `{agentUrl}/health` pushes a real HTTP request through
+  // `https://8741-{sandboxId}.daytona.voice-native.com/health`, which goes
+  // through Daytona's reverse proxy and resets the activity timer correctly.
   useEffect(() => {
-    if (!connected || !activeSandboxId) return
+    if (!connected) return
+    if (!agentUrl) return
+    // Only ping cloud sandboxes — local agents don't auto-stop
+    if (!activeSandboxId) return
     const ping = () => {
-      fetch('/api/sandbox', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'keepalive', sandboxId: activeSandboxId }),
-      }).catch(() => {})
+      fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(5000) }).catch(() => {})
     }
-    const interval = setInterval(ping, 5 * 60 * 1000) // every 5 min
+    const interval = setInterval(ping, 5 * 60 * 1000) // every 5 min (well under 15-min auto-stop)
     ping() // immediate ping
     return () => clearInterval(interval)
-  }, [connected, activeSandboxId])
+  }, [connected, agentUrl, activeSandboxId])
 
   // Auto-disconnect after 20 min of no user activity (preserves LiveKit + cloud)
   useEffect(() => {

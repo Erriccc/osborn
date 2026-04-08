@@ -227,15 +227,27 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
       10,
     )
 
-    // Step 4: Start the agent as a daemon via systemd-style nohup with disowned process
-    // Run osborn as ROOT via sudo to avoid permission issues spawning subprocesses
-    // (the daytona user hits EACCES when child_process.spawn() tries to exec node).
-    // sudo -E preserves env vars (LIVEKIT_*, OPENAI_*, DEEPGRAM_*) injected via sandbox `env` field.
-    // HOME=/home/daytona keeps the OAuth token persistence in the same place across daytona/root contexts.
-    console.log(`🚀 Starting osborn agent (as root)...`)
+    // Step 4: Start the agent as a daemon via systemd-style nohup with disowned process,
+    // wrapped in a bash supervisor loop so it self-restarts on exit.
+    //
+    // Why the supervisor loop: osborn has an internal "restart requested via HTTP" path
+    // that deliberately calls process.exit(), expecting a process manager (systemd, pm2)
+    // to bring it back. Daytona sandboxes have no process manager — a plain `nohup osborn`
+    // would die on first restart request and leave the sandbox responding 502 Bad Gateway
+    // until manually rescued. The `while true` wrapper is the poor-man's supervisor that
+    // catches every exit and restarts osborn after a 2-second cooldown.
+    //
+    // Why sudo -E: preserves env vars (LIVEKIT_*, OPENAI_*, DEEPGRAM_*) from the sandbox
+    // `env` field. OSBORN_CWD is overridden inline to defeat any stale value that old
+    // sandboxes may have baked into their persisted env field (existing sandboxes were
+    // provisioned with /root/workspace which doesn't exist — see memory/cloud_sandboxes_v8.md).
+    // HOME=/home/daytona keeps OAuth token persistence in the same place across user/root.
+    //
+    // Log is APPENDED (>>) not truncated so supervisor restart history is preserved.
+    console.log(`🚀 Starting osborn agent (as root, supervised)...`)
     await execInSandbox(
       sandbox.id,
-      'mkdir -p /home/daytona/workspace && cd /home/daytona/workspace && sudo -E setsid nohup env HOME=/home/daytona PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn >/tmp/osborn.log 2>&1 </dev/null & disown; sleep 1; echo started',
+      `mkdir -p /home/daytona/workspace && cd /home/daytona/workspace && sudo -E setsid nohup bash -c 'while true; do env HOME=/home/daytona OSBORN_CWD=/home/daytona/workspace PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn >>/tmp/osborn.log 2>&1; echo "[supervisor] osborn exited $?, restart in 2s" >> /tmp/osborn.log; sleep 2; done' </dev/null & disown; sleep 1; echo started`,
       15,
     )
 
@@ -319,10 +331,13 @@ export async function startSandbox(sandboxId: string): Promise<SandboxInfo | nul
     }
     if (state !== 'started') return null
 
-    // Restart agent as root (same reasoning as create path)
+    // Restart agent as root, wrapped in a bash supervisor loop (see createSandbox for why).
+    // The supervisor loop catches osborn's "Restart requested via HTTP" self-exits and
+    // brings it back up automatically — without this, a single restart request leaves the
+    // sandbox dead with no process listening on 8741 and nothing to bring it back.
     await execInSandbox(
       sandboxId,
-      'cd /home/daytona/workspace && sudo -E setsid nohup env HOME=/home/daytona PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn >/tmp/osborn.log 2>&1 </dev/null & disown; sleep 1; echo started',
+      `mkdir -p /home/daytona/workspace && cd /home/daytona/workspace && sudo -E setsid nohup bash -c 'while true; do env HOME=/home/daytona OSBORN_CWD=/home/daytona/workspace PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn >>/tmp/osborn.log 2>&1; echo "[supervisor] osborn exited $?, restart in 2s" >> /tmp/osborn.log; sleep 2; done' </dev/null & disown; sleep 1; echo started`,
       15,
     )
 
