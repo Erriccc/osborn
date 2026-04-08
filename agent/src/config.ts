@@ -181,8 +181,13 @@ export interface McpServerStatus {
 }
 
 // Default config template
+// Note: workingDirectory is intentionally OMITTED here. Baking process.cwd() into the
+// default config at module-load time freezes whatever directory osborn happened to be
+// invoked from on first boot — which on cloud sandboxes can be the npm install dir
+// (`/usr/local/nvm/.../osborn`) and gets persisted to ~/.osborn/config.yaml forever.
+// Leaving it undefined lets the runtime self-heal in index.ts resolve it on every boot
+// from OSBORN_CWD → process.cwd() at the actual time the agent starts.
 const DEFAULT_CONFIG: OsbornConfig = {
-  workingDirectory: process.cwd(),
   defaultProvider: 'gemini',
   defaultCodingAgent: 'claude',
   // Voice mode: 'direct' (Claude Agent SDK) or 'realtime' (OpenAI/Gemini native)

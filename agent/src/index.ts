@@ -357,13 +357,33 @@ async function main() {
   //    Always the Osborn agent install directory (where this process started).
   //    This ensures .osborn/sessions/ doesn't scatter across random directories.
   const sessionBaseDir = process.cwd() // Always the Osborn install dir
-  const defaultWorkingDir = process.env.OSBORN_CWD || config.workingDirectory || process.cwd()
+  // Self-healing fallback: blindly trusting OSBORN_CWD without checking that the directory
+  // exists has bitten us in cloud sandboxes where the env var was set to a path that didn't
+  // exist (e.g. `/root/workspace` on a daytona/* user). The Claude SDK then fails its spawn
+  // call with ENOENT and reports the misleading "Claude Code executable not found" error.
+  // Walk the candidate list in priority order and pick the first one that ACTUALLY exists.
+  // process.cwd() is the ultimate safety net — it always exists by definition.
+  const cwdCandidates: Array<{ source: string; value: string | undefined }> = [
+    { source: 'OSBORN_CWD env var', value: process.env.OSBORN_CWD },
+    { source: 'config.workingDirectory', value: config.workingDirectory },
+    { source: 'process.cwd()', value: process.cwd() },
+  ]
+  let defaultWorkingDir = process.cwd()
+  let cwdSource = 'process.cwd() (last-resort fallback)'
+  for (const c of cwdCandidates) {
+    if (c.value && existsSync(c.value)) {
+      defaultWorkingDir = c.value
+      cwdSource = c.source
+      break
+    }
+    if (c.value) {
+      console.log(`   ⚠️ ${c.source} = ${c.value} (does not exist, skipping)`)
+    }
+  }
   let workingDir = defaultWorkingDir
   console.log(`📂 Working directory (cwd): ${workingDir}`)
   console.log(`📂 Session base directory: ${sessionBaseDir}`)
-  if (process.env.OSBORN_CWD) {
-    console.log(`   (cwd from OSBORN_CWD env var)`)
-  }
+  console.log(`   (cwd from ${cwdSource})`)
   console.log(`🔬 Mode: RESEARCH`)
 
   // Determine voice mode
