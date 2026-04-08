@@ -70,8 +70,20 @@ export default function Dashboard() {
     localStorage.setItem('osborn-voice-arch', voiceArch)
   }, [agentUrl, connectionMode, provider, voiceArch])
 
+  // Mixed-content guard: a deployed HTTPS frontend cannot fetch http://localhost from
+  // the browser — Chrome blocks it AND flags the entire page "Not Secure". Skip the fetch
+  // entirely in that case so we don't pollute the page with mixed-content warnings.
+  // Returns true when the (frontend protocol, agent protocol) pair is reachable.
+  const canFetchAgent = useCallback(() => {
+    if (typeof window === 'undefined') return false
+    if (!agentUrl) return false
+    if (window.location.protocol === 'https:' && agentUrl.startsWith('http://')) return false
+    return true
+  }, [agentUrl])
+
   // Fetch sessions
   const fetchSessions = useCallback(async () => {
+    if (!canFetchAgent()) { setAgentOnline(false); setSessions([]); return }
     setSessionsLoading(true)
     try {
       const r = await fetch(`${agentUrl}/sessions`)
@@ -84,18 +96,19 @@ export default function Dashboard() {
     } finally {
       setSessionsLoading(false)
     }
-  }, [agentUrl])
+  }, [agentUrl, canFetchAgent])
 
   useEffect(() => { if (!loading) fetchSessions() }, [loading, fetchSessions])
 
   // Health check
   useEffect(() => {
     if (loading) return
+    if (!canFetchAgent()) { setAgentOnline(false); return }
     const check = () => fetch(`${agentUrl}/health`).then(() => setAgentOnline(true)).catch(() => setAgentOnline(false))
     check()
     const i = setInterval(check, 15000)
     return () => clearInterval(i)
-  }, [agentUrl, loading])
+  }, [agentUrl, loading, canFetchAgent])
 
   // Sandbox status
   useEffect(() => {

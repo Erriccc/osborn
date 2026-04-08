@@ -128,13 +128,21 @@ function ChatInner() {
 
       setStatusMsg('Connecting to agent...')
 
-      // Step 2: Get room code from agent
+      // Step 2: Get room code from agent.
+      // Mixed-content guard: skip the fetch if frontend is HTTPS but the agent URL is HTTP —
+      // the browser will block the request and flag the page "Not Secure" otherwise.
+      // Without a room code we fall through to letting the API generate one fresh.
       let code: string | null = null
-      try {
-        const r = await fetch(`${resolvedUrl}/room-code`)
-        const d = await r.json()
-        if (d.roomCode) code = d.roomCode
-      } catch {}
+      const isMixedContent = typeof window !== 'undefined' &&
+        window.location.protocol === 'https:' &&
+        resolvedUrl.startsWith('http://')
+      if (!isMixedContent) {
+        try {
+          const r = await fetch(`${resolvedUrl}/room-code`)
+          const d = await r.json()
+          if (d.roomCode) code = d.roomCode
+        } catch {}
+      }
 
       // Step 3: Get LiveKit token
       let url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}`

@@ -915,6 +915,17 @@ class ClaudeLLMStream extends llm.LLMStream {
               console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
+            // Auto-approve writer sub-agent writes to skill installation directories.
+            // Pattern matches `.claude/skills/<skillname>/<file>` in any osborn install location
+            // (npm global, dev tree, cloud sandbox), so installing a multi-file skill via the
+            // writer agent doesn't blow up into a per-file permission cascade.
+            // Requires agent_type === 'writer' — main/researcher/reasoner are blocked by PreToolUse
+            // before they ever reach canUseTool, so this check is the only path that lets a
+            // skill install through silently.
+            if (agentType === 'writer' && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
+              console.log(`✅ Auto-approved writer ${toolName} to skill dir: ${filePath}`)
+              return { behavior: 'allow', updatedInput: input }
+            }
             // if (toolUseId && this.#approvedWriterToolUseIds.has(toolUseId)) {
             //   this.#approvedWriterToolUseIds.delete(toolUseId)
             //   console.log(`✅ Writer pre-approved ${toolName}: ${filePath}`)
