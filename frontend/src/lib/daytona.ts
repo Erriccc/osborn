@@ -270,15 +270,32 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
       10,
     )
 
-    // Step 4: Start the agent as a daemon via systemd-style nohup with disowned process,
-    // wrapped in a bash supervisor loop so it self-restarts on exit.
+    // Step 4: Start the agent as a daemon via systemd-style nohup with disowned process.
     //
-    // Why the supervisor loop: osborn has an internal "restart requested via HTTP" path
-    // that deliberately calls process.exit(), expecting a process manager (systemd, pm2)
-    // to bring it back. Daytona sandboxes have no process manager — a plain `nohup osborn`
-    // would die on first restart request and leave the sandbox responding 502 Bad Gateway
-    // until manually rescued. The `while true` wrapper is the poor-man's supervisor that
-    // catches every exit and restarts osborn after a 2-second cooldown.
+    // ⚠️ DO NOT wrap this in `bash -c 'while true; do osborn; done'` — even though that
+    // looks like a clean way to auto-restart osborn on exit, it has a fatal bug:
+    //
+    //   When the immediate child of `nohup` is `bash -c '...'` (instead of `osborn`
+    //   directly), the bash process inherits the toolbox's stdout/stderr pipe and never
+    //   closes it. Daytona's `process/execute` endpoint waits indefinitely for that pipe
+    //   to close before returning the HTTP response. The fetch from this Next.js route
+    //   then hangs for the full 5-minute undici headers timeout (`UND_ERR_HEADERS_TIMEOUT`)
+    //   and `startSandbox()` returns null with the misleading message "fetch failed".
+    //
+    //   The deployed Stop/Resume flow was completely broken from this exact bug for as
+    //   long as the supervisor wrapper existed. Symptoms: Resume click hangs forever,
+    //   refresh shows "running" (because the /start API call DID succeed earlier), but
+    //   connecting to /room-code returns 502 because the supervisor exec call timed out
+    //   before launching osborn.
+    //
+    //   When osborn is the immediate child of nohup, Node properly closes the inherited
+    //   stdio fds when it sets up its own logging, the toolbox sees the close, and
+    //   process/execute returns in ~2s instead of ~5min.
+    //
+    // Trade-off: no auto-restart on osborn's `process.exit('Restart requested via HTTP')`
+    // self-exit path. That self-exit is itself a separate bug from a LiveKit publisher
+    // timeout — it should be fixed in osborn (don't self-exit when no process manager
+    // exists), not worked around here with a wrapper that breaks startup entirely.
     //
     // Why sudo -E: preserves env vars (LIVEKIT_*, OPENAI_*, DEEPGRAM_*) from the sandbox
     // `env` field. OSBORN_CWD is overridden inline to defeat any stale value that old
@@ -286,12 +303,12 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
     // provisioned with /root/workspace which doesn't exist — see memory/cloud_sandboxes_v8.md).
     // HOME=/home/daytona keeps OAuth token persistence in the same place across user/root.
     //
-    // Log is APPENDED (>>) not truncated so supervisor restart history is preserved.
-    console.log(`🚀 Starting osborn agent (as root, supervised)...`)
+    // Log is APPENDED (>>) not truncated so prior boot history is preserved across restarts.
+    console.log(`🚀 Starting osborn agent (as root)...`)
     await execInSandbox(
       sandbox.id,
-      `mkdir -p /home/daytona/workspace && cd /home/daytona/workspace && sudo -E setsid nohup bash -c 'while true; do env HOME=/home/daytona OSBORN_CWD=/home/daytona/workspace PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn >>/tmp/osborn.log 2>&1; echo "[supervisor] osborn exited $?, restart in 2s" >> /tmp/osborn.log; sleep 2; done' </dev/null & disown; sleep 1; echo started`,
-      15,
+      `mkdir -p /home/daytona/workspace && cd /home/daytona/workspace && sudo -E setsid nohup env HOME=/home/daytona OSBORN_CWD=/home/daytona/workspace PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn >> /tmp/osborn.log 2>&1 </dev/null & disown; sleep 2; echo launched`,
+      10,
     )
 
     // Wait for agent to bind port 8741 (gives it time to do auth/init)
@@ -388,14 +405,16 @@ export async function startSandbox(sandboxId: string): Promise<SandboxInfo | nul
       return null
     }
 
-    // Restart agent as root, wrapped in a bash supervisor loop (see createSandbox for why).
-    // The supervisor loop catches osborn's "Restart requested via HTTP" self-exits and
-    // brings it back up automatically — without this, a single restart request leaves the
-    // sandbox dead with no process listening on 8741 and nothing to bring it back.
+    // Restart agent as root. See createSandbox for the full explanation of why this
+    // is NOT wrapped in a `bash -c 'while true; do osborn; done'` supervisor loop —
+    // short version: the bash outer process holds the toolbox pipe open and Daytona's
+    // process/execute hangs for the full undici 5-minute headers timeout, breaking the
+    // entire Resume flow. osborn must be the immediate child of nohup so it can close
+    // its inherited stdio fds via Node's runtime.
     await execInSandbox(
       sandboxId,
-      `mkdir -p /home/daytona/workspace && cd /home/daytona/workspace && sudo -E setsid nohup bash -c 'while true; do env HOME=/home/daytona OSBORN_CWD=/home/daytona/workspace PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn >>/tmp/osborn.log 2>&1; echo "[supervisor] osborn exited $?, restart in 2s" >> /tmp/osborn.log; sleep 2; done' </dev/null & disown; sleep 1; echo started`,
-      15,
+      `mkdir -p /home/daytona/workspace && cd /home/daytona/workspace && sudo -E setsid nohup env HOME=/home/daytona OSBORN_CWD=/home/daytona/workspace PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn >> /tmp/osborn.log 2>&1 </dev/null & disown; sleep 2; echo launched`,
+      10,
     )
 
     // Wait for port
