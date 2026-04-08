@@ -152,14 +152,14 @@ function createSearchTool(
             continue
           }
           console.log(`🧠⚡ [pipeline-fb] AFC search: [${phrases.join(', ')}]`)
-          const searchResult = await executeSearch(phrases, sessionId, workingDir, sessionBaseDir)
+          const searchResult = await executeSearch(phrases, sessionId, workingDir)
           results.push({ functionResponse: { name: 'search_session', response: { result: searchResult } } } as any)
 
         } else if (call.name === 'get_recent') {
           searchCount++
           const count = Math.min(Math.max((call.args?.count as number) || 20, 5), 50)
           console.log(`🧠⚡ [pipeline-fb] AFC get_recent: ${count}`)
-          const recent = await getRecentEntries(sessionId, workingDir, sessionBaseDir, count)
+          const recent = await getRecentEntries(sessionId, workingDir, undefined, count)
           results.push({ functionResponse: { name: 'get_recent', response: { result: recent } } } as any)
 
         } else if (call.name === 'emergency_stop' && agentControl) {
@@ -168,7 +168,7 @@ function createSearchTool(
 
           // Gather context
           const recentUserMessages = agentControl.getRecentUserMessages(10)
-          const recentActivity = await getRecentEntries(sessionId, workingDir, sessionBaseDir, 10)
+          const recentActivity = await getRecentEntries(sessionId, workingDir, undefined, 10)
 
           // Kill the destructive process and restart with new instructions
           agentControl.abort()
@@ -211,12 +211,12 @@ async function executeSearch(
   phrases: string[],
   sessionId: string,
   workingDir: string,
-  sessionBaseDir: string,
+  _sessionBaseDir?: string,  // deprecated — workingDir used for index path
 ): Promise<string> {
   const { ripgrepSearch } = await import('./jsonl-search.js')
   const { getIndexPath, readFullContent } = await import('./summary-index.js')
 
-  const indexPath = getIndexPath(sessionId, sessionBaseDir)
+  const indexPath = getIndexPath(sessionId, workingDir)
 
   if (indexPath) {
     // ── Fast path: search summary index + targeted byte-offset reads ──
@@ -257,7 +257,7 @@ async function executeSearch(
     // Read full content for matched entries (byte-offset reads, ~0.5ms each)
     if (matchedRefs.length > 0) {
       try {
-        const fullTexts = readFullContent(matchedRefs, sessionId, workingDir, sessionBaseDir, 2000)
+        const fullTexts = readFullContent(matchedRefs, sessionId, workingDir, undefined, 2000)
         if (fullTexts.length > 0) {
           sections.push('', `[FULL CONTENT — ${fullTexts.length} entries]`, ...fullTexts)
         }
@@ -298,13 +298,13 @@ async function executeSearch(
 async function getRecentEntries(
   sessionId: string,
   workingDir: string,
-  sessionBaseDir: string,
+  _sessionBaseDir: string | undefined,  // deprecated — workingDir used for index path
   count: number,
 ): Promise<string> {
   const { readFileSync } = await import('fs')
   const { getIndexPath, readFullContent } = await import('./summary-index.js')
 
-  const indexPath = getIndexPath(sessionId, sessionBaseDir)
+  const indexPath = getIndexPath(sessionId, workingDir)
   if (!indexPath) return 'Index not built yet.'
 
   // Read last N lines
@@ -331,7 +331,7 @@ async function getRecentEntries(
   // Read full content for each entry
   if (refs.length > 0) {
     try {
-      const fullTexts = readFullContent(refs, sessionId, workingDir, sessionBaseDir, 1500)
+      const fullTexts = readFullContent(refs, sessionId, workingDir, undefined, 1500)
       if (fullTexts.length > 0) {
         summaries.push('', `[FULL CONTENT — ${fullTexts.length} entries]`, ...fullTexts)
       }

@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@daytonaio/sdk": "^0.161.0",
     "@livekit/components-react": "^2.0.0",
     "@livekit/components-styles": "^1.0.0",
     "@supabase/ssr": "^0.10.0",

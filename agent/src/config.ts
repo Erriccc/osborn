@@ -708,6 +708,132 @@ export function sessionExists(sessionId: string, projectPath?: string): boolean 
   return existsSync(sessionFile)
 }
 
+// ============================================================
+// ALL-PROJECTS SESSION SCANNER — Lists every Claude session on the machine
+// ============================================================
+
+export interface ClaudeSessionEntry {
+  sessionId: string
+  projectSlug: string     // e.g., "-Users-foo-my-project"
+  projectPath: string     // reverse slug → original path (best-effort)
+  cwd: string             // actual cwd from JSONL first-line metadata
+  timestamp: Date         // file mtime (most recent write)
+  lastMessage?: string    // last user message
+  messageCount: number    // user+assistant message count
+  filePath: string        // full path to the .jsonl file
+  fileSize: number        // bytes
+}
+
+/**
+ * Reverse a project slug back to a path (best-effort — replace leading dash, then dashes→slashes).
+ * "-Users-foo-bar" → "/Users/foo/bar"
+ */
+function slugToPath(slug: string): string {
+  return slug.replace(/^-/, '/').replace(/-/g, '/')
+}
+
+const UUID_JSONL_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
+
+/**
+ * Extract cwd from first user message in a JSONL file.
+ * Reuses the existing readline-based parsing pattern.
+ */
+async function extractCwd(filePath: string): Promise<string> {
+  return new Promise((resolve) => {
+    const fileStream = createReadStream(filePath, { end: 8192 }) // first 8KB
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity })
+    rl.on('line', (line) => {
+      if (!line.trim()) return
+      try {
+        const obj = JSON.parse(line)
+        if (obj.type === 'user' && obj.cwd) {
+          rl.close()
+          fileStream.destroy()
+          resolve(obj.cwd)
+        }
+      } catch {}
+    })
+    rl.on('close', () => resolve(''))
+    rl.on('error', () => resolve(''))
+  })
+}
+
+/**
+ * Scan ALL Claude Code projects for sessions.
+ * Returns lightweight metadata for every main session JSONL across all projects.
+ * Uses existing getSessionPreview() for last message + message count.
+ *
+ * @param limit - Max sessions to return (default 100, sorted by recency)
+ */
+export async function listAllClaudeSessions(limit = 100): Promise<ClaudeSessionEntry[]> {
+  const projectsDir = getClaudeProjectsDir()
+  if (!existsSync(projectsDir)) return []
+
+  // 1. Discover all project folders
+  const projectFolders = readdirSync(projectsDir).filter(name => {
+    const fullPath = join(projectsDir, name)
+    try { return statSync(fullPath).isDirectory() } catch { return false }
+  })
+
+  // 2. Collect all JSONL files with stat info (fast — no file reads yet)
+  const candidates: { filePath: string; slug: string; sessionId: string; mtime: Date; size: number }[] = []
+
+  for (const slug of projectFolders) {
+    const projectDir = join(projectsDir, slug)
+    try {
+      const files = readdirSync(projectDir)
+      for (const file of files) {
+        if (!UUID_JSONL_RE.test(file)) continue
+        const fullPath = join(projectDir, file)
+        try {
+          const stats = statSync(fullPath)
+          if (stats.size > 500) { // Skip trivially small files
+            candidates.push({
+              filePath: fullPath,
+              slug,
+              sessionId: file.replace('.jsonl', ''),
+              mtime: stats.mtime,
+              size: stats.size,
+            })
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // 3. Sort by mtime descending, take top N for detailed reads
+  candidates.sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
+  const topCandidates = candidates.slice(0, limit)
+
+  // 4. Read metadata using existing getSessionPreview + cwd extraction
+  const sessions: ClaudeSessionEntry[] = []
+
+  for (const c of topCandidates) {
+    try {
+      const [preview, cwd] = await Promise.all([
+        getSessionPreview(c.filePath),
+        extractCwd(c.filePath),
+      ])
+
+      if (preview.messageCount < 2) continue
+
+      sessions.push({
+        sessionId: c.sessionId,
+        projectSlug: c.slug,
+        projectPath: cwd || slugToPath(c.slug),
+        cwd: cwd || slugToPath(c.slug),
+        timestamp: c.mtime,
+        lastMessage: preview.lastMessage,
+        messageCount: preview.messageCount,
+        filePath: c.filePath,
+        fileSize: c.size,
+      })
+    } catch {}
+  }
+
+  return sessions
+}
+
 /**
  * Session summary for context briefing when switching sessions
  */
@@ -1014,17 +1140,24 @@ export async function cleanupOrphanedMetadata(projectPath: string): Promise<numb
 }
 
 // ============================================================
-// SESSION WORKSPACE - For research artifacts and session library
+// SESSION WORKSPACE — Co-located with Claude's native JSONL
+// ~/.claude/projects/{slug}/osb/{sessionId}/
 // ============================================================
 
-export function getSessionWorkspace(projectPath: string, sessionId: string): string {
-  return join(projectPath, '.osborn', 'sessions', sessionId)
+/**
+ * Get the session workspace path.
+ * @param workingDir - The project working directory (used to compute project slug)
+ * @param sessionId - The session UUID
+ */
+export function getSessionWorkspace(workingDir: string, sessionId: string): string {
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+  const slug = projectPathToClaudeFolderName(workingDir)
+  return join(claudeDir, 'projects', slug, 'osb', sessionId)
 }
 
-export function ensureSessionWorkspace(projectPath: string, sessionId: string): string {
-  const dir = getSessionWorkspace(projectPath, sessionId)
-  const libraryDir = join(dir, 'library')
-  mkdirSync(libraryDir, { recursive: true })
+export function ensureSessionWorkspace(workingDir: string, sessionId: string): string {
+  const dir = getSessionWorkspace(workingDir, sessionId)
+  mkdirSync(dir, { recursive: true })
   // Create default spec.md if it doesn't exist (won't overwrite on resumed sessions)
   const specPath = join(dir, 'spec.md')
   if (!existsSync(specPath)) {
@@ -1071,35 +1204,35 @@ export function ensureSessionWorkspace(projectPath: string, sessionId: string): 
  * Rename a session workspace folder to match the SDK session ID.
  * Returns the new path, or null if rename was not needed/possible.
  */
-export function renameSessionWorkspace(projectPath: string, oldSessionId: string, newSessionId: string): string | null {
+export function renameSessionWorkspace(workingDir: string, oldSessionId: string, newSessionId: string): string | null {
   if (oldSessionId === newSessionId) return null
-  const oldDir = getSessionWorkspace(projectPath, oldSessionId)
-  const newDir = getSessionWorkspace(projectPath, newSessionId)
+  const oldDir = getSessionWorkspace(workingDir, oldSessionId)
+  const newDir = getSessionWorkspace(workingDir, newSessionId)
   if (!existsSync(oldDir)) return null
   if (existsSync(newDir)) return null // target already exists
   try {
     renameSync(oldDir, newDir)
     return newDir
   } catch (err) {
-    console.error(`⚠️ Failed to rename workspace ${oldSessionId} → ${newSessionId}:`, err)
+    console.error(`Failed to rename workspace ${oldSessionId} → ${newSessionId}:`, err)
     return null
   }
 }
 
 // Deprecated aliases for backward compatibility
-export function getResearchDir(projectPath: string, sessionId: string): string {
-  return getSessionWorkspace(projectPath, sessionId)
+export function getResearchDir(workingDir: string, sessionId: string): string {
+  return getSessionWorkspace(workingDir, sessionId)
 }
 
-export function ensureResearchDir(projectPath: string, sessionId: string): string {
-  return ensureSessionWorkspace(projectPath, sessionId)
+export function ensureResearchDir(workingDir: string, sessionId: string): string {
+  return ensureSessionWorkspace(workingDir, sessionId)
 }
 
 /**
  * Read the session spec document (spec.md) if it exists
  */
-export function readSessionSpec(projectPath: string, sessionId: string): string | null {
-  const specPath = join(getSessionWorkspace(projectPath, sessionId), 'spec.md')
+export function readSessionSpec(workingDir: string, sessionId: string): string | null {
+  const specPath = join(getSessionWorkspace(workingDir, sessionId), 'spec.md')
   if (!existsSync(specPath)) return null
   try {
     return readFileSync(specPath, 'utf-8')
@@ -1109,16 +1242,10 @@ export function readSessionSpec(projectPath: string, sessionId: string): string 
 }
 
 /**
- * List files in the session library directory
+ * List files in the session library directory (deprecated — library removed)
  */
-export function listLibraryFiles(projectPath: string, sessionId: string): string[] {
-  const libraryDir = join(getSessionWorkspace(projectPath, sessionId), 'library')
-  if (!existsSync(libraryDir)) return []
-  try {
-    return readdirSync(libraryDir)
-  } catch {
-    return []
-  }
+export function listLibraryFiles(_workingDir: string, _sessionId: string): string[] {
+  return []
 }
 
 export interface ResearchArtifact {
@@ -1150,8 +1277,8 @@ function scanDirForArtifacts(dir: string): ResearchArtifact[] {
         if (stat.isDirectory()) {
           scan(fullPath)
         } else {
-          // Skip internal index files and .index/ folder
-          if (entry.startsWith('search-index') || entry === '.index') continue
+          // Skip internal index files
+          if (entry.startsWith('search-index')) continue
           results.push({
             fileName: entry,
             filePath: fullPath,
@@ -1167,18 +1294,15 @@ function scanDirForArtifacts(dir: string): ResearchArtifact[] {
   return results
 }
 
-export function listResearchArtifacts(projectPath: string, sessionId: string): ResearchArtifact[] {
-  return scanDirForArtifacts(getSessionWorkspace(projectPath, sessionId))
+export function listResearchArtifacts(workingDir: string, sessionId: string): ResearchArtifact[] {
+  return scanDirForArtifacts(getSessionWorkspace(workingDir, sessionId))
 }
 
 /**
- * List artifacts in a session workspace.
- * When sessionId is provided, scans the per-session folder (.osborn/sessions/{sessionId}/).
- * Without sessionId, falls back to the flat .osborn/sessions/ directory (legacy).
+ * List artifacts in a session workspace (osb/{sessionId}/ under Claude's project dir).
  */
-export function listWorkspaceArtifacts(projectPath: string, sessionId?: string): ResearchArtifact[] {
-  const dir = sessionId
-    ? join(projectPath, '.osborn', 'sessions', sessionId)
-    : join(projectPath, '.osborn', 'sessions')
+export function listWorkspaceArtifacts(workingDir: string, sessionId?: string): ResearchArtifact[] {
+  if (!sessionId) return []
+  const dir = getSessionWorkspace(workingDir, sessionId)
   return scanDirForArtifacts(dir)
 }

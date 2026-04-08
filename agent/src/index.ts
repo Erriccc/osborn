@@ -18,7 +18,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createPatch } from 'diff'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, listAllClaudeSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
 import { createClaudeLLM } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
@@ -167,14 +167,18 @@ function startApiServer(workingDir: string, port: number): void {
 
     if (req.method === 'GET' && url.pathname === '/sessions') {
       try {
-        await cleanupOrphanedMetadata(workingDir)
-        const sessions = await listSessions(workingDir)
+        const limit = parseInt(url.searchParams.get('limit') || '100', 10)
+        const sessions = await listAllClaudeSessions(limit)
         const payload = {
           sessions: sessions.map(s => ({
             sessionId: s.sessionId,
+            projectSlug: s.projectSlug,
+            projectPath: s.projectPath,
+            cwd: s.cwd,
             timestamp: s.timestamp.toISOString(),
             lastMessage: s.lastMessage,
             messageCount: s.messageCount,
+            fileSize: s.fileSize,
           })),
           total: sessions.length,
         }
@@ -233,6 +237,16 @@ function startApiServer(workingDir: string, port: number): void {
       res.end(JSON.stringify({ roomCode: currentRoomCode }))
       return
     }
+
+    // POST /restart — graceful process restart (process manager will restart)
+    if (req.method === 'POST' && url.pathname === '/restart') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true, message: 'Agent restarting...' }))
+      console.log('🔄 Restart requested via HTTP — exiting for process manager restart')
+      setTimeout(() => process.exit(0), 150)
+      return
+    }
+
 
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: 'Not found' }))
@@ -729,7 +743,7 @@ async function main() {
         const voiceSid = currentLLM?.sessionId
         if (voiceSid) {
           const chatHistory = getChatHistory(10)
-          handleResearchBatch(workingDir, voiceSid, lastTaskRequest || '', updates, activeResearch.researchLog, chatHistory, sessionBaseDir)
+          handleResearchBatch(workingDir, voiceSid, lastTaskRequest || '', updates, activeResearch.researchLog, chatHistory, workingDir)
             .then(script => {
               if (script && activeResearch) {
                 activeResearch.voiceUpdateCount++
@@ -855,13 +869,13 @@ async function main() {
 
     // For resumed sessions, eagerly create workspace (we know the real ID)
     if (resumeSessionId) {
-      const workspace = ensureSessionWorkspace(sessionBaseDir, resumeSessionId)
+      const workspace = ensureSessionWorkspace(workingDir, resumeSessionId)
       console.log(`📁 Session workspace (resumed): ${workspace}`)
     }
 
     // For new sessions, create workspace when SDK assigns real session ID
     directLLM.events.once('session_id', ({ sessionId }: { sessionId: string }) => {
-      const workspace = ensureSessionWorkspace(sessionBaseDir, sessionId)
+      const workspace = ensureSessionWorkspace(workingDir, sessionId)
       console.log(`📁 Session workspace created: ${workspace}`)
       // Pipeline mode: pre-warm BM25 index so first fast brain query is fast
       if (currentVoiceMode === 'pipeline') {
@@ -897,7 +911,7 @@ async function main() {
       // Detect research artifact writes (session workspace or legacy research dir)
       if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {
         const fp = data.input.file_path
-        if (fp.includes('.osborn/sessions/') || fp.includes('.osborn/research/')) {
+        if (fp.includes('/osb/') || fp.includes('.osborn/sessions/') || fp.includes('.osborn/research/')) {
           sendToFrontend({
             type: 'research_artifact_updated',
             filePath: fp,
@@ -1145,13 +1159,13 @@ async function main() {
 
     // For resumed sessions, eagerly create workspace (we know the real ID)
     if (resumeSessionId) {
-      const workspace = ensureSessionWorkspace(sessionBaseDir, resumeSessionId)
+      const workspace = ensureSessionWorkspace(workingDir, resumeSessionId)
       console.log(`📁 Session workspace (resumed): ${workspace}`)
     }
 
     // For new sessions, create workspace when SDK assigns real session ID
     realtimeClaudeHandler.events.once('session_id', ({ sessionId }: { sessionId: string }) => {
-      const workspace = ensureSessionWorkspace(sessionBaseDir, sessionId)
+      const workspace = ensureSessionWorkspace(workingDir, sessionId)
       console.log(`📁 Session workspace created: ${workspace}`)
     })
 
@@ -1178,7 +1192,7 @@ async function main() {
       // Detect research artifact writes (session workspace or legacy research dir)
       if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {
         const fp = data.input.file_path
-        if (fp.includes('.osborn/sessions/') || fp.includes('.osborn/research/')) {
+        if (fp.includes('/osb/') || fp.includes('.osborn/sessions/') || fp.includes('.osborn/research/')) {
           sendToFrontend({
             type: 'research_artifact_updated',
             filePath: fp,
@@ -1267,7 +1281,7 @@ async function main() {
       // Fire-and-forget: write user question to spec.md BEFORE agent starts
       const questionSid = currentLLM?.sessionId || resumeSessionId
       if (questionSid) {
-        writeQuestionToSpec(sessionBaseDir, questionSid, task).catch(err =>
+        writeQuestionToSpec(workingDir, questionSid, task).catch(err =>
           console.error('❌ writeQuestionToSpec failed:', err)
         )
       }
@@ -1332,7 +1346,7 @@ async function main() {
         const resultText = typeof data.response === 'string' ? data.response : JSON.stringify(data.response || '')
         if (resultText.length > ANSWER_CHECK_THRESHOLD) {
           const sid = currentLLM?.sessionId || resumeSessionId
-          if (sid) checkOutputAgainstQuestions(sessionBaseDir, sid, resultText, 'tool_result').catch(() => {})
+          if (sid) checkOutputAgainstQuestions(workingDir, sid, resultText, 'tool_result').catch(() => {})
         }
         // When AskUserQuestion completes, the user's answer is a decision — track it in spec
         if (data.name === 'AskUserQuestion' && data.response) {
@@ -1341,7 +1355,7 @@ async function main() {
             const questionText = JSON.stringify(data.input?.questions || data.input || {})
             const answerText = typeof data.response === 'string' ? data.response : JSON.stringify(data.response)
             const specUpdate = `User answered a clarifying question during research.\nQuestion: ${questionText}\nAnswer: ${answerText}\nRecord this as a user decision in spec.md.`
-            askHaiku(workingDir, sid, specUpdate, undefined, undefined, undefined, sessionBaseDir).catch(err =>
+            askHaiku(workingDir, sid, specUpdate, undefined, undefined, undefined, workingDir).catch(err =>
               console.error('❌ Failed to record AskUserQuestion answer in spec:', err)
             )
             console.log(`📝 AskUserQuestion answer forwarded to fast brain for spec tracking`)
@@ -1359,7 +1373,7 @@ async function main() {
           // Fire-and-forget: check if substantial agent reasoning answers any spec questions
           if (text.length > ANSWER_CHECK_THRESHOLD) {
             const sid = currentLLM?.sessionId || resumeSessionId
-            if (sid) checkOutputAgainstQuestions(sessionBaseDir, sid, text, 'assistant_text').catch(() => {})
+            if (sid) checkOutputAgainstQuestions(workingDir, sid, text, 'assistant_text').catch(() => {})
           }
         }
       }
@@ -1484,7 +1498,7 @@ async function main() {
           sendToFrontend({ type: 'assistant_response', text })
         }
         if (voiceSid) {
-          processResearchCompletion(workingDir, voiceSid, task, result, chatHistory, completionSendToChat, sessionBaseDir)
+          processResearchCompletion(workingDir, voiceSid, task, result, chatHistory, completionSendToChat, workingDir)
             .then(script => {
               queueVoiceInjection(getScriptInjection(script))
             })
@@ -1500,28 +1514,17 @@ async function main() {
         // Reads FULL untruncated data from JSONL — no content buffer, no truncation
         const postResearchSessionId = currentLLM?.sessionId || resumeSessionId
         if (postResearchSessionId) {
-          updateSpecFromJSONL(workingDir, postResearchSessionId, task, researchLog, sessionBaseDir)
+          updateSpecFromJSONL(workingDir, postResearchSessionId, task, researchLog, workingDir)
             .then(updateResult => {
               if (!updateResult) return
 
               // Notify frontend about spec.md update
               if (updateResult.spec) {
-                const specPath = `${sessionBaseDir}/.osborn/sessions/${postResearchSessionId}/spec.md`
+                const specPath = join(getSessionWorkspace(workingDir, postResearchSessionId), 'spec.md')
                 sendToFrontend({
                   type: 'research_artifact_updated',
                   filePath: specPath,
                   fileName: 'spec.md',
-                })
-                // Voice model is a teleprompter — fast brain reads spec directly, no ChatCtx injection needed
-              }
-
-              // Notify frontend about each library file written by the fast brain
-              for (const libFile of updateResult.libraryFiles) {
-                const libPath = `${sessionBaseDir}/.osborn/sessions/${postResearchSessionId}/library/${libFile}`
-                sendToFrontend({
-                  type: 'research_artifact_updated',
-                  filePath: libPath,
-                  fileName: libFile,
                 })
               }
             })
@@ -2232,17 +2235,21 @@ async function main() {
       let readySent = false
       const provider = sessionVoiceMode === 'realtime' ? realtimeConfig.provider : 'claude'
 
-      // Fetch full session list for startup session browser
-      const allSessions = await listSessions(workingDir)
+      // Fetch full session list for startup session browser (all Claude projects)
+      const allSessions = await listAllClaudeSessions(50)
       const recentSessionId = allSessions.length > 0 ? allSessions[0].sessionId : null
       const hasRecentSession = allSessions.length > 0
 
       // Prepare sessions for frontend (up to 50)
       const sessionsForFrontend = allSessions.slice(0, 50).map(s => ({
         sessionId: s.sessionId,
+        projectSlug: s.projectSlug,
+        projectPath: s.projectPath,
+        cwd: s.cwd,
         timestamp: s.timestamp.toISOString(),
         lastMessage: s.lastMessage,
         messageCount: s.messageCount,
+        fileSize: s.fileSize,
       }))
 
       const sendReady = async () => {
@@ -2304,7 +2311,7 @@ async function main() {
           })
 
           // Send existing workspace artifacts to frontend (session-scoped)
-          const preArtifacts = listWorkspaceArtifacts(sessionBaseDir, preSelectedSessionId!)
+          const preArtifacts = listWorkspaceArtifacts(workingDir, preSelectedSessionId!)
           if (preArtifacts.length > 0) {
             console.log(`📁 Sending ${preArtifacts.length} workspace artifacts to frontend`)
             await sendToFrontend({
@@ -2325,7 +2332,7 @@ async function main() {
             try {
               if (sessionVoiceMode === 'realtime') {
                 const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const script = await prepareBriefingScript(sessionBaseDir, preSelectedSessionId, historyForScript)
+                const script = await prepareBriefingScript(workingDir, preSelectedSessionId, historyForScript)
                 await session.generateReply({ instructions: getScriptInjection(script) })
               } else {
                 await (session as any).say("Welcome back! Ready to continue our previous conversation.")
@@ -2439,20 +2446,21 @@ async function main() {
       // SESSION MANAGEMENT HANDLERS
       // ============================================================
       else if (data.type === 'list_sessions') {
-        // List available sessions for this project
-        console.log('📋 Listing available sessions...')
+        // List available sessions across all Claude projects
+        console.log('📋 Listing available sessions (all projects)...')
         try {
-          // Clean up orphaned metadata entries before listing
-          await cleanupOrphanedMetadata(workingDir)
-
-          const sessions = await listSessions(workingDir)
+          const sessions = await listAllClaudeSessions(100)
           await sendToFrontend({
             type: 'sessions_list',
             sessions: sessions.map(s => ({
               sessionId: s.sessionId,
+              projectSlug: s.projectSlug,
+              projectPath: s.projectPath,
+              cwd: s.cwd,
               timestamp: s.timestamp.toISOString(),
               lastMessage: s.lastMessage,
               messageCount: s.messageCount,
+              fileSize: s.fileSize,
             })),
             count: sessions.length,
           })
@@ -2483,7 +2491,7 @@ async function main() {
           })
 
           // Send existing session artifacts to frontend (session-scoped)
-          const artifacts = listWorkspaceArtifacts(sessionBaseDir, sessionId)
+          const artifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (artifacts.length > 0) {
             console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -2524,7 +2532,7 @@ async function main() {
           })
 
           // Send existing session artifacts to frontend (session-scoped)
-          const artifacts = listWorkspaceArtifacts(sessionBaseDir, recentId)
+          const artifacts = listWorkspaceArtifacts(workingDir, recentId)
           if (artifacts.length > 0) {
             console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -2545,7 +2553,7 @@ async function main() {
             try {
               if (currentVoiceMode === 'realtime') {
                 const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const script = await prepareBriefingScript(sessionBaseDir, recentId, historyForScript)
+                const script = await prepareBriefingScript(workingDir, recentId, historyForScript)
                 await currentSession.generateReply({ instructions: getScriptInjection(script) })
               } else {
                 await (currentSession as any).say("Continuing where we left off.")
@@ -2591,7 +2599,7 @@ async function main() {
           })
 
           // Step 3.5: Send existing session artifacts to frontend (session-scoped)
-          const switchArtifacts = listWorkspaceArtifacts(sessionBaseDir, sessionId)
+          const switchArtifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (switchArtifacts.length > 0) {
             console.log(`📁 Sending ${switchArtifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -2612,7 +2620,7 @@ async function main() {
             try {
               if (currentVoiceMode === 'realtime') {
                 const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const briefingScript = await prepareBriefingScript(sessionBaseDir, sessionId, historyForScript, 'switch')
+                const briefingScript = await prepareBriefingScript(workingDir, sessionId, historyForScript, 'switch')
                 queueVoiceInjection(getScriptInjection(briefingScript))
               } else {
                 const acknowledgment = summary.lastMessages.length > 0
@@ -2644,7 +2652,7 @@ async function main() {
       else if (data.type === 'get_session_artifacts') {
         const sessionId = data.sessionId as string
         if (sessionId) {
-          const artifacts = listWorkspaceArtifacts(sessionBaseDir, sessionId)
+          const artifacts = listWorkspaceArtifacts(workingDir, sessionId)
           console.log(`📁 Sending ${artifacts.length} session artifacts for ${sessionId.substring(0, 8)}`)
           await sendToFrontend({
             type: 'session_artifacts',
@@ -2675,7 +2683,7 @@ async function main() {
       }
       else if (data.type === 'get_research_artifact') {
         const filePath = data.filePath as string
-        if (filePath && (filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/'))) {
+        if (filePath && (filePath.includes('/osb/') || filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/'))) {
           try {
             const fs = await import('fs')
             const fileName = filePath.split('/').pop() || ''
@@ -2857,7 +2865,7 @@ async function main() {
           })
 
           // Send existing session artifacts to frontend (session-scoped)
-          const gateArtifacts = listWorkspaceArtifacts(sessionBaseDir, sessionId)
+          const gateArtifacts = listWorkspaceArtifacts(workingDir, sessionId)
           if (gateArtifacts.length > 0) {
             console.log(`📁 Sending ${gateArtifacts.length} session artifacts to frontend`)
             await sendToFrontend({
@@ -2878,7 +2886,7 @@ async function main() {
             try {
               if (currentVoiceMode === 'realtime') {
                 const historyForScript = conversationHistory.map(e => ({ role: e.role, text: e.content }))
-                const briefingScript = await prepareBriefingScript(sessionBaseDir, sessionId, historyForScript, 'resume')
+                const briefingScript = await prepareBriefingScript(workingDir, sessionId, historyForScript, 'resume')
                 queueVoiceInjection(getScriptInjection(briefingScript))
               } else {
                 await (currentSession as any).say("Welcome back! Ready to continue our previous conversation.")

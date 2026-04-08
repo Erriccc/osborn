@@ -25,16 +25,24 @@ export default function Dashboard() {
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [restarting, setRestarting] = useState(false)
+  const [sandboxAvailable, setSandboxAvailable] = useState(false)
+  const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
+  const [sandboxId, setSandboxId] = useState<string | null>(null)
+  const [provisioning, setProvisioning] = useState(false)
   const PAGE_SIZE = 20
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+
+  const [localAgentUrl] = useState('http://localhost:8741')
+  const [connectionMode, setConnectionMode] = useState<'local' | 'cloud'>('local')
 
   // Prefs
   const [provider, setProvider] = useState<Provider>('gemini')
   const [voiceArch, setVoiceArch] = useState<VoiceArch>('pipeline')
 
-  // Auth check — allow unauthenticated access (shows limited UI)
+  // Auth check
   useEffect(() => {
-    const timeout = setTimeout(() => setLoading(false), 3000) // Don't hang on slow Supabase
+    const timeout = setTimeout(() => setLoading(false), 3000)
     supabase.auth.getUser().then(({ data: { user } }) => {
       clearTimeout(timeout)
       setUser(user)
@@ -47,19 +55,22 @@ export default function Dashboard() {
     const u = localStorage.getItem('osborn-agent-url')
     const p = localStorage.getItem('osborn-provider') as Provider | null
     const v = localStorage.getItem('osborn-voice-arch') as VoiceArch | null
+    const m = localStorage.getItem('osborn-connection-mode') as 'local' | 'cloud' | null
     if (u) setAgentUrl(u)
     if (p) setProvider(p)
     if (v) setVoiceArch(v)
+    if (m) setConnectionMode(m)
   }, [])
 
   // Persist prefs
   useEffect(() => {
     localStorage.setItem('osborn-agent-url', agentUrl)
+    localStorage.setItem('osborn-connection-mode', connectionMode)
     localStorage.setItem('osborn-provider', provider)
     localStorage.setItem('osborn-voice-arch', voiceArch)
-  }, [agentUrl, provider, voiceArch])
+  }, [agentUrl, connectionMode, provider, voiceArch])
 
-  // Fetch sessions from agent
+  // Fetch sessions
   const fetchSessions = useCallback(async () => {
     setSessionsLoading(true)
     try {
@@ -86,29 +97,128 @@ export default function Dashboard() {
     return () => clearInterval(i)
   }, [agentUrl, loading])
 
+  // Sandbox status
+  useEffect(() => {
+    if (loading || !user) return
+    fetch('/api/sandbox').then(r => r.json())
+      .then(d => {
+        setSandboxAvailable(d.available || false)
+        if (d.sandbox) {
+          setSandboxId(d.sandbox.id)
+          setSandboxStatus(d.sandbox.status)
+          const savedMode = localStorage.getItem('osborn-connection-mode')
+          if (savedMode === 'cloud' && d.sandbox.previewUrl) {
+            setConnectionMode('cloud')
+            setAgentUrl(d.sandbox.previewUrl)
+          }
+        }
+      })
+      .catch(() => setSandboxAvailable(false))
+  }, [user, loading])
+
+  // ── Actions ──
+
+  const handleProvisionSandbox = async () => {
+    if (!user) return
+    setProvisioning(true)
+    setSandboxStatus('creating')
+    try {
+      const r = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create' }),
+      })
+      const data = await r.json()
+      if (data.status === 'running' && data.previewUrl) {
+        setSandboxId(data.id)
+        setSandboxStatus('running')
+        setAgentUrl(data.previewUrl)
+        setConnectionMode('cloud')
+      } else {
+        setSandboxStatus('error')
+      }
+    } catch {
+      setSandboxStatus('error')
+    } finally {
+      setProvisioning(false)
+    }
+  }
+
+  const handleStopSandbox = async () => {
+    if (!sandboxId) return
+    try {
+      await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop', sandboxId }),
+      })
+      setSandboxStatus('stopped')
+    } catch {}
+  }
+
+  const handleStartSandbox = async () => {
+    if (!sandboxId) return
+    setProvisioning(true)
+    try {
+      const r = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start', sandboxId }),
+      })
+      const data = await r.json()
+      if (data.previewUrl) {
+        setSandboxStatus('running')
+        setAgentUrl(data.previewUrl)
+        setConnectionMode('cloud')
+      }
+    } catch {} finally {
+      setProvisioning(false)
+    }
+  }
+
+  const handleDeleteSandbox = async () => {
+    if (!sandboxId) return
+    try { await fetch('/api/sandbox', { method: 'DELETE' }) } catch {}
+    setSandboxId(null)
+    setSandboxStatus(null)
+    setConnectionMode('local')
+    setAgentUrl(localAgentUrl)
+  }
+
+  const handleRestart = async () => {
+    setRestarting(true)
+    try { await fetch(`${agentUrl}/restart`, { method: 'POST' }) } catch {}
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(2000) })
+        if (r.ok) { clearInterval(poll); setRestarting(false); setAgentOnline(true) }
+      } catch {}
+    }, 2000)
+    setTimeout(() => { clearInterval(poll); setRestarting(false) }, 60000)
+  }
+
   const signOut = async () => {
     await supabase.auth.signOut()
     window.location.href = '/'
   }
 
   const startChat = (sessionId?: string) => {
-    const params = new URLSearchParams({
-      provider, voiceArch, agent: 'claude', agentUrl,
-    })
+    const params = new URLSearchParams({ provider, voiceArch, agent: 'claude', agentUrl })
     if (sessionId) params.set('session', sessionId)
     router.push(`/chat?${params.toString()}`)
   }
 
   const formatDate = (ts: string) => {
     const d = new Date(ts)
-    const now = new Date()
-    const diff = now.getTime() - d.getTime()
+    const diff = Date.now() - d.getTime()
     if (diff < 60000) return 'Just now'
     if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
     if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
     if (diff < 604800000) return d.toLocaleDateString('en', { weekday: 'short' })
     return d.toLocaleDateString('en', { month: 'short', day: 'numeric' })
   }
+
+  const isCloud = connectionMode === 'cloud'
 
   if (loading) {
     return (
@@ -123,13 +233,13 @@ export default function Dashboard() {
       <style>{`
         @keyframes enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
       `}</style>
       <main className="min-h-screen bg-[var(--background)] flex flex-col">
-        {/* ── Top bar ─────────────────────────────────── */}
+        {/* ── Header ──────────────────────────────── */}
         <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
           <div className="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {/* Orb */}
               <div className="w-7 h-7 rounded-full flex items-center justify-center"
                 style={{ background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)' }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--background)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -140,18 +250,24 @@ export default function Dashboard() {
               <span className="text-[var(--text-primary)] font-semibold text-[15px] tracking-tight">Osborn</span>
             </div>
 
-            <div className="flex items-center gap-2">
-              {/* Status dot */}
-              <div className="flex items-center gap-1.5 mr-2">
-                <div className={`w-1.5 h-1.5 rounded-full ${agentOnline === true ? 'bg-emerald-400' : agentOnline === false ? 'bg-red-400' : 'bg-[var(--text-muted)]'}`} />
+            <div className="flex items-center gap-1.5">
+              {/* Connection badge */}
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--surface)] border border-[var(--border-subtle)]">
+                <div className={`w-1.5 h-1.5 rounded-full transition-colors ${
+                  agentOnline ? 'bg-emerald-400' : agentOnline === false ? 'bg-red-400' : 'bg-[var(--text-muted)]'
+                }`} />
                 <span className="text-[11px] text-[var(--text-muted)]">
-                  {agentOnline === true ? 'Online' : agentOnline === false ? 'Offline' : '...'}
+                  {isCloud ? 'Cloud' : 'Local'}{agentOnline ? '' : agentOnline === false ? ' (offline)' : ''}
                 </span>
               </div>
 
-              {/* Settings */}
+              {/* Settings gear */}
               <button onClick={() => setShowSettings(s => !s)}
-                className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-all">
+                className={`p-2 rounded-lg transition-all ${
+                  showSettings
+                    ? 'text-[var(--accent)] bg-[var(--accent-dim)]/20'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface)]'
+                }`}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                 </svg>
@@ -159,7 +275,7 @@ export default function Dashboard() {
 
               {/* Avatar */}
               <button onClick={signOut} title="Sign out"
-                className="flex items-center gap-2 p-1 rounded-lg hover:bg-[var(--surface)] transition-all group">
+                className="p-1 rounded-lg hover:bg-[var(--surface)] transition-all">
                 {user?.user_metadata?.avatar_url ? (
                   <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full ring-1 ring-[var(--border)]" />
                 ) : (
@@ -172,38 +288,145 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {/* ── Settings panel (slides down) ──────────── */}
-        <div className="overflow-hidden transition-all duration-200 border-b border-[var(--border-subtle)]"
-          style={{ maxHeight: showSettings ? 280 : 0, opacity: showSettings ? 1 : 0 }}>
-          <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--text-secondary)] text-xs font-medium uppercase tracking-wider">Settings</span>
-              <button onClick={signOut} className="text-red-400/70 text-xs hover:text-red-400 transition-colors">Sign out</button>
+        {/* ── Settings panel ──────────────────────── */}
+        <div className="overflow-hidden transition-all duration-300 ease-out"
+          style={{ maxHeight: showSettings ? 420 : 0, opacity: showSettings ? 1 : 0 }}>
+          <div className="border-b border-[var(--border-subtle)]">
+            <div className="max-w-2xl mx-auto px-4 py-5 space-y-5">
+
+              {/* ── Environment ── */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Environment</span>
+                  {agentOnline && !restarting && (
+                    <button onClick={handleRestart}
+                      className="text-[11px] text-[var(--text-muted)] hover:text-red-400 transition-colors">
+                      Restart agent
+                    </button>
+                  )}
+                  {restarting && <span className="text-[11px] text-amber-400 animate-pulse">Restarting...</span>}
+                </div>
+
+                {/* Segmented control: Local / Cloud */}
+                <div className="flex rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] p-1 gap-1">
+                  {/* Local option */}
+                  <button
+                    onClick={() => { setConnectionMode('local'); setAgentUrl(localAgentUrl) }}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-[13px] font-medium transition-all ${
+                      !isCloud
+                        ? 'bg-[var(--background)] text-[var(--text-primary)] shadow-sm border border-[var(--border-subtle)]'
+                        : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                    }`}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    Local
+                  </button>
+
+                  {/* Cloud option */}
+                  <button
+                    onClick={() => {
+                      if (sandboxId && sandboxStatus === 'running') {
+                        setConnectionMode('cloud')
+                      } else if (sandboxId && sandboxStatus === 'stopped') {
+                        handleStartSandbox()
+                      } else if (sandboxAvailable) {
+                        handleProvisionSandbox()
+                      }
+                    }}
+                    disabled={provisioning || (!sandboxAvailable && !sandboxId)}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-[13px] font-medium transition-all disabled:opacity-30 ${
+                      isCloud
+                        ? 'bg-[var(--background)] text-[var(--text-primary)] shadow-sm border border-[var(--border-subtle)]'
+                        : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                    }`}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+                    </svg>
+                    {provisioning ? 'Setting up...' : 'Cloud'}
+                  </button>
+                </div>
+
+                {/* Context info below the toggle */}
+                {!isCloud && (
+                  <input type="text" value={agentUrl}
+                    onChange={e => setAgentUrl(e.target.value)}
+                    placeholder="http://localhost:8741"
+                    className="w-full h-9 bg-[var(--surface)] border border-[var(--border-subtle)] rounded-xl text-[var(--text-secondary)] text-[12px] px-3 font-mono outline-none focus:border-[var(--accent)]/50 transition-colors placeholder:text-[var(--text-muted)]/40" />
+                )}
+
+                {isCloud && sandboxId && (
+                  <div className="flex items-center justify-between bg-[var(--surface)] rounded-xl px-3 py-2.5 border border-[var(--border-subtle)]">
+                    <div className="flex items-center gap-2.5">
+                      <div className={`w-2 h-2 rounded-full ${
+                        sandboxStatus === 'running' ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]'
+                        : sandboxStatus === 'stopped' ? 'bg-orange-400'
+                        : sandboxStatus === 'creating' ? 'bg-amber-400 animate-pulse'
+                        : 'bg-gray-500'
+                      }`} />
+                      <span className="text-[12px] text-[var(--text-secondary)] font-mono">{sandboxId.substring(0, 8)}</span>
+                      <span className="text-[11px] text-[var(--text-muted)] capitalize">{sandboxStatus}</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {sandboxStatus === 'stopped' && (
+                        <button onClick={handleStartSandbox} disabled={provisioning}
+                          className="text-[11px] text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded-lg hover:bg-emerald-400/10 transition-all disabled:opacity-50">
+                          Resume
+                        </button>
+                      )}
+                      {sandboxStatus === 'running' && (
+                        <button onClick={handleStopSandbox}
+                          className="text-[11px] text-[var(--text-muted)] hover:text-orange-400 px-2 py-1 rounded-lg hover:bg-orange-400/10 transition-all">
+                          Stop
+                        </button>
+                      )}
+                      <button onClick={handleDeleteSandbox}
+                        className="text-[11px] text-[var(--text-muted)] hover:text-red-400 px-2 py-1 rounded-lg hover:bg-red-400/10 transition-all"
+                        title="Delete sandbox and switch to local">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Provisioning progress */}
+                {provisioning && (
+                  <div className="h-1 rounded-full overflow-hidden bg-[var(--surface)]">
+                    <div className="h-full rounded-full" style={{
+                      background: 'linear-gradient(90deg, transparent, var(--accent), transparent)',
+                      backgroundSize: '200% 100%',
+                      animation: 'shimmer 1.5s ease-in-out infinite',
+                    }} />
+                  </div>
+                )}
+              </div>
+
+              {/* ── Voice & Provider ── */}
+              <div className="flex gap-6">
+                <ToggleCompact label="Voice" options={[['pipeline','Pipeline'],['direct','Direct'],['realtime','Realtime']]}
+                  value={voiceArch} onChange={v => setVoiceArch(v as VoiceArch)} />
+                <ToggleCompact label="Provider" options={[['gemini','Gemini'],['openai','OpenAI']]}
+                  value={provider} onChange={v => setProvider(v as Provider)} />
+              </div>
+
+              {/* ── Account ── */}
+              {user && (
+                <div className="flex items-center justify-between pt-1 border-t border-[var(--border-subtle)]">
+                  <span className="text-[var(--text-muted)] text-[11px]">
+                    {user.email}
+                  </span>
+                  <button onClick={signOut} className="text-[11px] text-[var(--text-muted)] hover:text-red-400 transition-colors">
+                    Sign out
+                  </button>
+                </div>
+              )}
             </div>
-
-            <label className="flex flex-col gap-1">
-              <span className="text-[var(--text-muted)] text-[11px] uppercase tracking-wider">Agent URL</span>
-              <input type="text" value={agentUrl}
-                onChange={e => setAgentUrl(e.target.value)}
-                className="w-full h-9 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[13px] px-3 font-mono outline-none focus:border-[var(--accent)] transition-colors" />
-            </label>
-
-            <div className="flex gap-4">
-              <ToggleCompact label="Voice" options={[['pipeline','Pipeline'],['direct','Direct'],['realtime','Realtime']]}
-                value={voiceArch} onChange={v => setVoiceArch(v as VoiceArch)} />
-              <ToggleCompact label="Provider" options={[['gemini','Gemini'],['openai','OpenAI']]}
-                value={provider} onChange={v => setProvider(v as Provider)} />
-            </div>
-
-            {user && (
-              <p className="text-[var(--text-muted)] text-[11px]">
-                {user.email} &middot; {user.app_metadata?.provider || 'email'}
-              </p>
-            )}
           </div>
         </div>
 
-        {/* ── Content ──────────────────────────────────── */}
+        {/* ── Content ──────────────────────────────── */}
         <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-6">
 
           {/* New chat button */}
@@ -231,23 +454,44 @@ export default function Dashboard() {
               )}
             </div>
 
-            {agentOnline === false && (
+            {agentOnline === false && isCloud && provisioning && (
+              <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
+                <div className="w-10 h-10 rounded-full bg-[var(--accent-dim)]/20 flex items-center justify-center mx-auto mb-3">
+                  <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+                </div>
+                <p className="text-[var(--accent)] text-sm">Setting up your cloud workspace</p>
+                <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">
+                  Installing osborn + claude-code (~60s on first launch)
+                </p>
+              </div>
+            )}
+
+            {agentOnline === false && !provisioning && (
               <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
                 <div className="w-10 h-10 rounded-full bg-[var(--surface)] flex items-center justify-center mx-auto mb-3">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
                   </svg>
                 </div>
-                <p className="text-[var(--text-muted)] text-sm">Agent is offline</p>
-                <p className="text-[var(--text-muted)] text-xs mt-1">Check that your agent is running at</p>
-                <code className="text-[var(--text-muted)] text-xs font-mono">{agentUrl}</code>
+                <p className="text-[var(--text-muted)] text-sm">
+                  {isCloud
+                    ? sandboxStatus === 'stopped' ? 'Cloud workspace is stopped' : 'Cloud workspace is offline'
+                    : 'Local agent is offline'}
+                </p>
+                <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">
+                  {isCloud
+                    ? sandboxStatus === 'stopped'
+                      ? 'Open Settings → Resume to start it again'
+                      : 'Open Settings to manage your workspace'
+                    : `Check that your agent is running at ${agentUrl}`}
+                </p>
               </div>
             )}
 
             {agentOnline && sessions.length === 0 && !sessionsLoading && (
               <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
                 <p className="text-[var(--text-muted)] text-sm">No conversations yet</p>
-                <p className="text-[var(--text-muted)] text-xs mt-1">Start a new conversation to begin</p>
+                <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">Start a new conversation to begin</p>
               </div>
             )}
 
@@ -256,7 +500,6 @@ export default function Dashboard() {
                 className="w-full text-left p-4 rounded-2xl bg-[var(--surface)] border border-[var(--border-subtle)] hover:border-[var(--border)] transition-all group"
                 style={{ animation: `enter 0.3s ease ${Math.min(i, 10) * 0.04}s both` }}>
                 <div className="flex items-start gap-3">
-                  {/* Avatar orb */}
                   <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
                     style={{ background: 'linear-gradient(135deg, var(--surface-raised) 0%, var(--border) 100%)' }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -264,11 +507,9 @@ export default function Dashboard() {
                     </svg>
                   </div>
                   <div className="flex-1 min-w-0">
-                    {/* Message preview */}
                     <p className="text-[var(--text-primary)] text-[14px] leading-relaxed line-clamp-2">
                       {s.lastMessage || 'New conversation'}
                     </p>
-                    {/* Meta row */}
                     <div className="flex items-center gap-2 mt-2">
                       <span className="text-[var(--text-muted)] text-[11px]">{formatDate(s.timestamp)}</span>
                       {s.messageCount ? (
@@ -278,7 +519,6 @@ export default function Dashboard() {
                       ) : null}
                     </div>
                   </div>
-                  {/* Arrow on hover */}
                   <svg className="w-4 h-4 text-[var(--text-muted)] opacity-0 group-hover:opacity-60 transition-opacity shrink-0 mt-3"
                     viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <polyline points="9 18 15 12 9 6"/>
@@ -287,7 +527,6 @@ export default function Dashboard() {
               </button>
             ))}
 
-            {/* Pagination */}
             {sessions.length > visibleCount && (
               <button onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
                 className="w-full py-3 mt-2 rounded-xl text-[var(--text-secondary)] text-sm hover:text-[var(--text-primary)] hover:bg-[var(--surface)] transition-all">
@@ -311,17 +550,16 @@ function ToggleCompact({ label, options, value, onChange }: {
   label: string; options: [string, string][]; value: string; onChange: (v: string) => void
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[var(--text-muted)] text-[11px] uppercase tracking-wider">{label}</span>
-      <div className="inline-flex rounded-full border border-[var(--border)] overflow-hidden">
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">{label}</span>
+      <div className="inline-flex rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] p-0.5 gap-0.5">
         {options.map(([v, l]) => (
           <button key={v} onClick={() => onChange(v)}
-            className="px-2.5 py-1 text-[11px] border-none cursor-pointer transition-all"
-            style={{
-              background: value === v ? 'var(--accent)' : 'transparent',
-              color: value === v ? 'var(--background)' : 'var(--text-muted)',
-              fontWeight: value === v ? 600 : 400,
-            }}>
+            className={`px-3 py-1.5 text-[11px] rounded-lg transition-all ${
+              value === v
+                ? 'bg-[var(--accent)] text-[var(--background)] font-semibold shadow-sm'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+            }`}>
             {l}
           </button>
         ))}

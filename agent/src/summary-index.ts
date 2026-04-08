@@ -12,12 +12,23 @@
  *   user → raw text (already short from voice)
  *   assistant → first 500 chars of text
  *
- * Per-session index stored at: .osborn/sessions/{sessionId}/.index/search-index.txt
+ * Per-session index stored at: ~/.claude/projects/{slug}/osb/{sessionId}/search-index.txt
  */
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, openSync, readSync, closeSync, mkdirSync } from 'fs'
 import { join, basename, dirname } from 'path'
-import { getSessionPaths, getSessionSubAgents } from './session-access.js'
+import { homedir } from 'os'
+import { getSessionPaths, getSessionSubAgents, projectPathToSlug } from './session-access.js'
+
+/**
+ * Compute the osb index directory for a session.
+ * Lives alongside Claude's native JSONL: ~/.claude/projects/{slug}/osb/{sessionId}/
+ */
+function getOsbDir(sessionId: string, workingDir: string): string {
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+  const slug = projectPathToSlug(workingDir)
+  return join(claudeDir, 'projects', slug, 'osb', sessionId)
+}
 
 // ============================================================
 // TYPES
@@ -247,18 +258,16 @@ function formatLine(entry: IndexEntry): string {
 export function buildSummaryIndex(
   sessionId: string,
   workingDir: string,
-  sessionBaseDir: string,
+  _sessionBaseDir?: string,  // deprecated — kept for backward compat, ignored
   onProgress?: (msg: string) => void,
 ): SummaryIndexState {
-  // getSessionPaths and getSessionSubAgents imported at top level
-
   const paths = getSessionPaths(sessionId, workingDir)
   if (!paths.exists) {
     onProgress?.('No session files found')
-    return emptyState(sessionId, sessionBaseDir, paths.conversation)
+    return emptyState(sessionId, workingDir, paths.conversation)
   }
 
-  const workspace = join(sessionBaseDir, '.osborn', 'sessions', sessionId, '.index')
+  const workspace = getOsbDir(sessionId, workingDir)
   mkdirSync(workspace, { recursive: true })
   const indexPath = join(workspace, 'search-index.txt')
   const metaPath = join(workspace, 'search-index-meta.json')
@@ -444,7 +453,7 @@ function countLines(filePath: string, upToBytes: number): number {
 export function startIndexWatcher(
   sessionId: string,
   workingDir: string,
-  sessionBaseDir: string,
+  _sessionBaseDir: string | undefined,  // deprecated — kept for backward compat, ignored
   state: SummaryIndexState,
 ): IndexWatcher {
   let stopped = false
@@ -504,7 +513,10 @@ export function startIndexWatcher(
         saveMeta(state, sessionId, state.metaPath)
       }
     } catch (err: any) {
-      console.error('🔍 [index] Poll error:', err?.message)
+      // Suppress ENOENT — index file doesn't exist yet, normal for new/unindexed sessions
+      if (err?.code !== 'ENOENT') {
+        console.error('🔍 [index] Poll error:', err?.message)
+      }
     }
   }, 10_000)
 
@@ -522,8 +534,8 @@ export function startIndexWatcher(
 // STATE MANAGEMENT
 // ============================================================
 
-function emptyState(sessionId: string, sessionBaseDir: string, mainJsonlPath: string): SummaryIndexState {
-  const workspace = join(sessionBaseDir, '.osborn', 'sessions', sessionId, '.index')
+function emptyState(sessionId: string, workingDir: string, mainJsonlPath: string): SummaryIndexState {
+  const workspace = getOsbDir(sessionId, workingDir)
   return {
     indexPath: join(workspace, 'search-index.txt'),
     metaPath: join(workspace, 'search-index-meta.json'),
@@ -585,8 +597,8 @@ function saveMeta(state: SummaryIndexState, sessionId: string, metaPath: string)
 // PUBLIC: Check if index exists for a session
 // ============================================================
 
-export function getIndexPath(sessionId: string, sessionBaseDir: string): string | null {
-  const indexPath = join(sessionBaseDir, '.osborn', 'sessions', sessionId, '.index', 'search-index.txt')
+export function getIndexPath(sessionId: string, workingDir: string): string | null {
+  const indexPath = join(getOsbDir(sessionId, workingDir), 'search-index.txt')
   return existsSync(indexPath) && statSync(indexPath).size > 0 ? indexPath : null
 }
 
@@ -603,7 +615,7 @@ export function readFullContent(
   results: { lineNum: number; byteOffset: number; source: string }[],
   sessionId: string,
   workingDir: string,
-  sessionBaseDir: string,
+  _sessionBaseDir?: string,  // deprecated — kept for backward compat, ignored
   maxCharsPerResult = 2000,
 ): string[] {
   const paths = getSessionPaths(sessionId, workingDir)

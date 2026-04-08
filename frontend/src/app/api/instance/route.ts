@@ -29,7 +29,7 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json()
-  const { serverUrl, instanceType = 'local' } = body
+  const { serverUrl, instanceType = 'local', sandboxId, sandboxUrl, sandboxStatus } = body
 
   if (!serverUrl) {
     return NextResponse.json({ error: 'serverUrl is required' }, { status: 400 })
@@ -39,16 +39,22 @@ export async function POST(request: Request) {
   const livekitRoom = `osborn-${user.id.substring(0, 8)}`
 
   // Upsert — create if not exists, update if exists
+  const upsertData: Record<string, any> = {
+    user_id: user.id,
+    server_url: serverUrl,
+    instance_type: instanceType,
+    status: 'running',
+    livekit_room: livekitRoom,
+    last_seen: new Date().toISOString(),
+  }
+  // Include sandbox fields if provided (cloud provisioning)
+  if (sandboxId !== undefined) upsertData.sandbox_id = sandboxId
+  if (sandboxUrl !== undefined) upsertData.sandbox_url = sandboxUrl
+  if (sandboxStatus !== undefined) upsertData.sandbox_status = sandboxStatus
+
   const { data: instance, error } = await supabase
     .from('instances')
-    .upsert({
-      user_id: user.id,
-      server_url: serverUrl,
-      instance_type: instanceType,
-      status: 'running',
-      livekit_room: livekitRoom,
-      last_seen: new Date().toISOString(),
-    }, {
+    .upsert(upsertData, {
       onConflict: 'user_id',
     })
     .select()

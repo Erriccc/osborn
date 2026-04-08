@@ -1,28 +1,48 @@
-# Osborn v0.5.1 - Voice AI Research Assistant
+# Osborn v0.7.0 - Voice AI Research Assistant
 
 ## Architecture
 
-Osborn is a voice AI assistant for software research and development. It uses LiveKit for real-time voice communication, Claude Agent SDK for research capabilities, and OpenAI/Gemini for native speech-to-speech interaction.
+Osborn is a voice AI assistant for research and development. It uses LiveKit for real-time voice communication, Claude Agent SDK for research capabilities, and OpenAI/Gemini for native speech-to-speech interaction.
 
-### Dual Voice Modes
+### Three Voice Modes
 
 | Mode | Stack | Best For |
 |------|-------|----------|
+| **Pipeline** (default) | STT (Deepgram) → Claude Agent SDK + parallel Gemini fast brain → TTS | Full research + fast recall, emergency stop |
 | **Direct** | STT (Deepgram) → Claude Agent SDK → TTS (Deepgram) | Full research tasks, maximum tool access |
 | **Realtime** | OpenAI Realtime / Gemini Live native speech-to-speech | Fast conversation, voice-first UX, delegates to Claude via `ask_agent` |
 
 ### Single Research Mode
 
-No plan/execute/edit mode toggles. The agent operates in a single **research** mode with write safety (Write/Edit blocked outside `.osborn/sessions/`).
+No plan/execute/edit mode toggles. The agent operates in a single **research** mode with write safety (Write/Edit blocked outside workspace).
 
 ### System Diagram
 
 ```
 Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
-                                              ├── Claude Agent SDK (research tools)
+                                              ├── Claude Agent SDK v0.2.91 (persistent session)
+                                              │   ├── researcher sub-agent (Sonnet)
+                                              │   ├── reasoner sub-agent (Opus)
+                                              │   └── writer sub-agent (Sonnet)
+                                              ├── Pipeline Fast Brain (Gemini Flash observer)
                                               ├── OpenAI/Gemini Realtime (voice)
+                                              ├── Recall.ai (meeting bot integration)
                                               └── MCP Servers (GitHub, YouTube, etc.)
 ```
+
+### Storage Architecture
+
+```
+~/.claude/projects/{slug}/           ← Claude's native project folder
+  {session-uuid}.jsonl               ← Claude's conversation data (unchanged)
+  {session-uuid}/subagents/          ← Sub-agent conversations
+  osb/{session-uuid}/                ← Osborn's workspace (NEW in v0.7.0)
+    spec.md                          ← Session spec (goals, decisions, findings)
+    search-index.txt                 ← Compact summary index for fast search
+    search-index-meta.json           ← Index metadata (byte offsets, timestamps)
+```
+
+Session picker scans ALL `~/.claude/projects/*/` folders — browse and resume any Claude conversation from any project.
 
 ---
 
@@ -34,42 +54,33 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 | OpenAI Realtime voice | Working |
 | Gemini Live voice | Working |
 | Direct mode (STT → Claude → TTS) | Working |
-| Claude Agent SDK tools (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch) | Working |
-| Auto-approve workspace writes (no permission prompt) | Working |
-| Permission system (voice + UI approval) | Working |
-| Room code connection system | Working |
-| Text input fallback | Working |
-| Session management (resume, switch, browse) | Working |
-| Session gate (startup session selection) | Working |
-| Single research mode (write-safe) | Working |
-| Session workspace (`.osborn/sessions/`) | Working |
-| File explorer persistence on resume | Working |
-| Full-width responsive UI layout | Working |
-| MCP server integration (GitHub, YouTube, etc.) | Working |
-| Smithery cloud MCP proxy (`type: 'sdk'`) | Working |
-| MCP proxy reconnection across queries | Working |
-| `ask_agent` tool (non-blocking, realtime → Claude) | Working |
-| Unified voice injection queue | Working |
-| Research event batching + voice queue | Working |
-| Specificity prompts (no vague summaries) | Working |
-| Adaptive verbosity (BRIEF/STANDARD/DETAILED/FULL) | Working |
-| Anti-hallucination prompt (realtime mode) | Working |
-| Gemini auto-recovery (1008/1011 crash) + context injection | Working |
+| Pipeline mode (Claude + Gemini fast brain observer) | Working |
+| Persistent session (no per-message JSONL replay) | Working |
+| Multi-agent orchestration (researcher/reasoner/writer) | Working |
+| Claude Agent SDK v0.2.91 tools | Working |
+| Auto-approve workspace writes | Working |
+| Permission system (voice + UI, git-style diff viewer) | Working |
+| All-projects session scanner (browse all Claude conversations) | Working |
+| Session workspace (`~/.claude/projects/{slug}/osb/`) | Working |
+| Summary index (byte-offset reads, <5ms search) | Working |
+| On-demand session indexing | Working |
+| Fast brain (`ask_haiku` — ~2s session-aware Q&A) | Working |
+| Pipeline fast brain (Gemini AFC + emergency stop) | Working |
+| Teleprompter architecture (fast brain as central orchestrator) | Working |
 | Non-blocking research (SDK-managed queuing) | Working |
 | Parallel sub-agents (Task tool for concurrent research) | Working |
-| Research progress prompt (no false completions) | Working |
-| Enriched research progress (file paths, commands) | Working |
-| Voice queue flood protection (`isProcessingQueue` + cap) | Working |
-| Markdown rendering in chat | Working |
-| Task deduplication guard | Working |
-| Fast brain (`ask_haiku` — ~2s session-aware Q&A) | Working |
-| Four-tier intelligence routing (`read_spec` → `ask_haiku` → `ask_agent`) | Working |
+| Unified voice injection queue | Working |
+| Gemini auto-recovery (1008/1011 crash) | Working |
 | JSONL session access (full untruncated tool results) | Working |
-| Post-research spec consolidation via JSONL (`updateSpecFromJSONL`) | Working |
-| Bidirectional question tracking in spec.md | Working |
-| Centralized prompts (`prompts.ts`) | Working |
-| Multi-strategy JSON parsing (`parseChunkResponse`) | Working |
-| Fast brain JSONL tools (`read_agent_results`, `read_agent_text`) | Working |
+| Post-research spec consolidation via JSONL | Working |
+| MCP server integration (Smithery cloud proxy) | Working |
+| Recall.ai meeting bot integration (Zoom/Google Meet) | Working |
+| Supabase Auth (Google + GitHub OAuth) | Working |
+| Dashboard with recent chats, settings, agent health | Working |
+| File attachments (Supabase Storage, inline rendering) | Working |
+| Mobile-first responsive UI (amber/charcoal theme) | Working |
+| Markdown rendering in chat | Working |
+| OAuth token persistence (Fly.io volume) | Working |
 
 ---
 
@@ -77,253 +88,62 @@ Frontend (Next.js)  ←→  LiveKit Cloud  ←→  Agent (local machine)
 
 | File | Purpose |
 |------|---------|
-| `agent/src/index.ts` | Main entry, room events, session creation, voice queue, data handlers |
-| `agent/src/claude-llm.ts` | Claude Agent SDK wrapper, research mode systemPrompt, PreToolUse write safety, auto-approve workspace writes |
-| `agent/src/config.ts` | Config loading, session management, workspace helpers |
+| `agent/src/index.ts` | Main entry, room events, session creation, voice queue, HTTP API, data handlers |
+| `agent/src/claude-llm.ts` | Claude Agent SDK persistent session wrapper, multi-agent config, write safety |
+| `agent/src/pipeline-direct-llm.ts` | Pipeline mode: ClaudeLLM + parallel Gemini fast brain + index watcher |
+| `agent/src/pipeline-fastbrain.ts` | Gemini Flash AFC agent with search_session, get_recent, emergency_stop |
+| `agent/src/summary-index.ts` | JSONL summary index builder with byte-offset reads (<5ms search) |
+| `agent/src/fast-brain.ts` | Central orchestrator: askFastBrain(), research orchestration, spec updates |
+| `agent/src/session-access.ts` | JSONL session file reader (15 functions, full untruncated data) |
+| `agent/src/prompts.ts` | All prompts centralized (~15 exports) |
+| `agent/src/config.ts` | Config, all-projects session scanner, workspace helpers |
+| `agent/src/recall-client.ts` | Recall.ai meeting bot integration |
 | `agent/src/smithery-proxy.ts` | In-process MCP proxy for Smithery cloud servers |
 | `agent/src/voice-io.ts` | STT/TTS/VAD/Realtime model factory |
-| `frontend/src/components/VoiceRoom.tsx` | Main UI component |
-| `frontend/src/components/MarkdownMessage.tsx` | Markdown renderer |
-| `frontend/src/components/SessionBrowser.tsx` | Session browser component |
-| `agent/src/fast-brain.ts` | Fast brain: ~2s Q&A, post-research JSONL consolidation, spec updates |
-| `agent/src/session-access.ts` | JSONL session access: 14 functions for reading Claude session data |
-| `agent/src/prompts.ts` | Centralized prompt definitions (9 exports) |
-| `frontend/src/lib/sessions.ts` | Session utilities (formatTime, groupSessionsByDate) |
+| `frontend/src/components/VoiceRoom.tsx` | Main UI component (~2000 lines) |
+| `frontend/src/app/dashboard/page.tsx` | Recent conversations, settings, agent health |
+| `frontend/src/app/chat/page.tsx` | Auto-connect voice chat wrapper |
 
 ---
 
-## v0.5.1 Changes — JSONL-Based Spec Consolidation + Prompt Extraction + Question Tracking
+## v0.7.0 Changes — Storage Architecture Refactor: Native Claude Session Integration
 
-### Centralized Prompts (`prompts.ts`)
-- All system prompts extracted from inline strings in `index.ts`, `claude-llm.ts`, and `fast-brain.ts` into `agent/src/prompts.ts`
-- 9 exports: `DIRECT_MODE_PROMPT`, `getRealtimeInstructions()`, `getResearchSystemPrompt()`, `FAST_BRAIN_SYSTEM_PROMPT`, `CHUNK_PROCESS_SYSTEM`, `REFINEMENT_PROCESS_SYSTEM`, `getResearchCompleteInjection()`, `getResearchUpdateInjection()`, `getNotificationInjection()`
-- Source files import from `prompts.ts` instead of defining prompts inline
+### All-Projects Session Scanner
+- `listAllClaudeSessions()` scans every `~/.claude/projects/*/` folder for UUID `.jsonl` files
+- Returns sessions across ALL Claude Code projects, sorted by most-recently-modified first
+- Lightweight metadata via existing `getSessionPreview()` — last user message, message count, cwd
+- API endpoint `GET /sessions?limit=N` returns `projectSlug`, `cwd`, `projectPath`, `fileSize`
 
-### JSONL Session Access (`session-access.ts`)
-- New module for programmatic access to Claude Agent SDK JSONL session files
-- 14 exported functions: `readSessionHistory()`, `getRecentToolResults()`, `getSubagentTranscripts()`, `getSessionTranscripts()`, `watchSessionFile()`, `getRawSessionJsonl()`, `readRawJsonl()`, etc.
-- All functions accept optional `SessionAccessOptions` with `claudeDir` override
-- Reads FULL untruncated tool results, agent reasoning, and sub-agent transcripts
+### Index + Workspace Relocated
+- Index output: `~/.claude/projects/{slug}/osb/{sessionId}/search-index.txt` (was `.osborn/sessions/{id}/.index/`)
+- Workspace: `~/.claude/projects/{slug}/osb/{sessionId}/` (was `.osborn/sessions/{id}/`)
+- Co-located with Claude's native JSONL files
+- On-demand indexing: index built when user selects a session, not during picker load
 
-### Content Pipeline Replaced with JSONL Reads
-- **Deleted**: `contentBuffer[]`, `scheduleContentProcess()`, `contentProcessTimer` from `index.ts`
-- **New**: `updateSpecFromJSONL()` in `fast-brain.ts` — reads FULL data from JSONL on research completion
-- Reads `getRecentToolResults(sessionId, workingDir, 30)` (30 full tool results)
-- Reads `readSessionHistory(sessionId, workingDir, { lastN: 50, types: ['assistant'] })` (50 assistant messages)
-- Reads `getSubagentTranscripts(sessionId, workingDir)` (all sub-agent findings)
-- Passes to `processResearchChunk(isRefinement=true)` for spec consolidation
-
-### Fast Brain JSONL Tools
-- `read_agent_results` — reads recent tool results from JSONL during active research
-- `read_agent_text` — reads recent agent reasoning/analysis from JSONL
-- Both registered on Anthropic and Gemini tool definitions
-
-### Multi-Strategy JSON Parsing (`parseChunkResponse`)
-- Handles LLM output with code blocks, control characters, raw markdown
-- 4 strategies: direct JSON.parse → control char stripping → regex spec extraction → raw markdown detection
-
-### New Spec Template with Question Tracking
-- New sections: Goal, User Context, Open Questions (From User / From Agent), Decisions, Findings & Resources, Plan
-- Bidirectional question tracking with checkbox format
-- Spec.md designed as portable research output — transferable brief any agent or person can execute from
-
-### Fast-Brain-First Routing
-- Realtime prompt updated with `CRITICAL ROUTING RULE` enforcing `ask_haiku` before any non-trivial response
-- Structured response types: DIRECT ANSWER, PARTIAL + NEEDS_DEEPER_RESEARCH, QUESTION_FOR_USER, RECORDED
-
-### Research Agent Prompt Updated
-- Agent reads spec for context but does NOT write to it
-- Fast brain handles all spec.md and library/ maintenance
-- Removed "Track decisions in spec.md" instruction (fast brain does this now)
+### Library System Removed
+- No more `library/` directory or library file management
+- `REFINEMENT_PROCESS_SYSTEM` produces spec.md only (was spec + library files)
+- `generateVisualDocument()` writes to workspace root
+- All library references removed from prompts.ts (~15 sections)
 
 ### Files Modified
 | File | Changes |
 |------|---------|
-| `agent/src/prompts.ts` | **NEW** — All prompts centralized here |
-| `agent/src/session-access.ts` | **NEW** — JSONL navigation utility |
-| `agent/src/fast-brain.ts` | `updateSpecFromJSONL()`, JSONL tools, `parseChunkResponse()`, removed `updateSpecFromResearch()` |
-| `agent/src/index.ts` | Import prompts, delete content pipeline, new completion flow |
-| `agent/src/config.ts` | New spec.md template with question tracking |
-| `agent/src/claude-llm.ts` | Import prompts from `prompts.ts` |
+| `agent/src/config.ts` | `listAllClaudeSessions()`, `getSessionWorkspace()` → new path, `ensureSessionWorkspace()` no library, `listLibraryFiles()` deprecated |
+| `agent/src/summary-index.ts` | `getOsbDir()`, updated `buildSummaryIndex`/`getIndexPath`/`readFullContent` paths |
+| `agent/src/claude-llm.ts` | Workspace from `getSessionWorkspace()`, write safety checks `/osb/` |
+| `agent/src/prompts.ts` | All library/ references removed, workspace path updated |
+| `agent/src/fast-brain.ts` | Removed `list_library` tool, library reads/writes, library context |
+| `agent/src/pipeline-fastbrain.ts` | Updated `executeSearch`/`getRecentEntries` to use workingDir |
+| `agent/src/pipeline-direct-llm.ts` | Updated `buildSummaryIndex`/`startIndexWatcher` calls |
+| `agent/src/session-access.ts` | Exported `projectPathToSlug()` |
+| `agent/src/index.ts` | All callers updated, `/sessions` uses new scanner |
 
----
+### v0.6.0 — Multi-User Auth + UI Redesign + File Attachments
+See CHANGELOG.md for full details. Highlights: Supabase Auth, dashboard/chat routes, amber/charcoal theme, file attachments, permission modal redesign.
 
-## v0.5.0 Changes — Fast Brain: Three-Tier Intelligence
-
-### Fast Brain (`fast-brain.ts`)
-- Middle-tier between realtime voice model and Claude SDK agent
-- ~2 second responses for questions answerable from session files or quick web search
-- Auth chain: `ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → Gemini Flash fallback
-- Tool loop: `read_file`, `write_file`, `list_library`, `web_search` (+ JSONL tools added in v0.5.1)
-
-### Four-Tier Intelligence Routing
-1. **Conversational** — direct voice response (greetings, simple yes/no)
-2. **`read_spec`** — instant spec.md read (no API call)
-3. **`ask_haiku`** — fast brain (~2s, session-aware Q&A)
-4. **`ask_agent`** — deep research (5-15s, full Claude SDK)
-
-### Post-Research Spec Updates
-- `updateSpecFromResearch()` (later replaced by `updateSpecFromJSONL()` in v0.5.1)
-- Haiku/Gemini reads current spec + research findings, writes updated spec
-- Mid-research `updateSpecActiveContext()` refreshes Active Context section every 8s
-
-### Research Agent Spec Ownership Change
-- Main agent reads spec for context but does NOT write to it
-- Fast brain handles all spec maintenance
-- Prevents spec.md write contention between agent and fast brain
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `agent/src/fast-brain.ts` | **NEW** — Fast brain agent with tool loop and spec updates |
-| `agent/src/index.ts` | `ask_haiku` + `read_spec` tools, `haikuInFlight` guard, `getSpecForVoiceModel()` |
-| `agent/src/claude-llm.ts` | System prompt: agent reads spec but doesn't write |
-| `agent/package.json` | Added `@anthropic-ai/sdk`, `@google/genai` |
-
----
-
-## v0.4.9 Changes — Remove Research Blocking, Parallel Sub-Agents, Fix False Completions
-
-### Research Blocking Removed
-- Removed `if (activeResearch)` guard in `ask_agent` — new tasks go straight to the SDK
-- Removed `pendingResearchTask` variable and all chaining logic
-- Claude SDK handles sequential queries internally via session resume
-- Old research listeners cleaned up before starting new task (prevents duplicate event handlers)
-
-### Parallel Sub-Agents
-- System prompt now instructs research agent to use `Task` tool for parallel work
-- Multiple Task calls in same response spawn concurrent sub-agents
-- Example: researching 3 technologies simultaneously instead of sequentially
-
-### False Completion Fix
-- Research update prompt changed from `[RESEARCH UPDATE]` to `[RESEARCH UPDATE — STILL IN PROGRESS]`
-- Explicit instruction: "do NOT say complete, done, or finished" — prevents Gemini from announcing research as complete while SDK is still running tools
-- Voice model now says progress language ("I'm looking into...", "The agent is reading...") instead of false completion announcements
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `agent/src/index.ts` | Removed blocking guard, removed `pendingResearchTask`, cleanup old listeners, fixed update prompt |
-| `agent/src/claude-llm.ts` | Added `PARALLEL SUB-AGENTS` section to research system prompt |
-
----
-
-## v0.4.8 Changes — Strict Write Rules, Auto-Approve, Recovery Context
-
-### Write Safety
-- Strict `FILE WRITING` prompt: full absolute paths, read before edit, never hallucinate writes
-- `canUseTool` auto-approves Write/Edit to `.osborn/sessions/` and `.osborn/research/`
-- `canUseTool` auto-denies `EnterPlanMode`/`ExitPlanMode`
-- Removed writer sub-agent (permission + latency + voice queue issues)
-
-### Anti-Hallucination
-- Realtime prompt rule #7: specific code questions (variable names, line numbers) MUST delegate to `ask_agent`
-
-### Auto-Recovery Context Injection
-- After Gemini crash recovery, `buildContextBriefing()` loads last 10 exchanges and injects as `[SESSION RECOVERED]`
-- Previously: new session started blank. Now: Gemini knows what was discussed before crash
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `agent/src/claude-llm.ts` | Strict write prompt, auto-approve workspace writes, auto-deny plan mode |
-| `agent/src/index.ts` | Recovery context injection, anti-hallucination rule #7 |
-
----
-
-## v0.4.6 Changes — Gemini Research Relay Fixes
-
-### Anti-Hallucination
-- Generalized fact-fidelity rules across 4 prompt locations (removed tech-specific examples)
-
-### Research Task Queuing
-- `pendingResearchTask` stores follow-up tasks while research is running
-- `executeResearch()` extracted from `ask_agent` body — called by both tool and pending chain
-- Queued task auto-executes after current completes (2s delay, SDK auto-resumes context)
-
-### Voice Queue Fix
-- `isProcessingQueue` guard prevents concurrent `generateReply` calls
-- 30s safety timeout clears stuck guard (Gemini state machine hang edge case)
-- Drop items on error instead of re-queuing (prevents infinite cascades)
-- Research debounce 3s → 8s, capped at 3 voice updates per task
-
-### Enriched Research Updates
-- `onToolUse` includes file paths, commands, search queries instead of generic tool names
-- `onToolResult` removed from voice updates (eliminates "Read done" doubling)
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `agent/src/index.ts` | `executeResearch()` extraction, `pendingResearchTask` queue, `isProcessingQueue` guard, enriched `onToolUse`/`onToolResult`, generalized anti-hallucination prompts, 8s debounce, 3-update cap |
-
----
-
-## v0.4.5 Changes — Gemini 1008 Crash Fix + Auto-Recovery
-
-### Problem
-Gemini Live API crashes with WebSocket code 1008 during interruptions. SDK kills the session with no auto-reconnect.
-
-### Solution
-- Skip `interrupt()` for Gemini provider in `processVoiceQueue()` and `user_text` handler
-- `wireSessionEvents()` extracted for reuse during auto-recovery
-- On crash: auto-recreates realtime session, re-wires events, notifies user via voice
-- `lastRecoveryTime` guard (10s min between recoveries) prevents infinite loops
-- Skip `updateChatCtx` for Gemini (crashes with 1008)
-- LiveKit SDK update 1.0.31→1.0.45
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `agent/src/index.ts` | Gemini interrupt guard, `wireSessionEvents()` extraction, auto-recovery handler, ChatCtx skip for Gemini |
-
----
-
-## v0.4.4 Changes — Full-Width UI, File Explorer Persistence, MCP Fix
-
-### UI Layout
-- Removed `max-w-2xl` parent constraint (672px cap) → full viewport width
-- Files panel always visible with empty state; toggle button always shown
-- Fixed `[object Object]` in code blocks — `CodeBlock` accepts React nodes, `extractText()` for copy
-
-### File Explorer Persistence
-- `listWorkspaceArtifacts()` scans flat `.osborn/sessions/` recursively (where Claude actually writes)
-- `session_artifacts` event sent on all 4 resume paths (session gate, resume, continue, switch)
-- `get_session_artifacts` handler for on-demand requests
-- Files cleared on session switch before loading new session's artifacts
-
-### MCP Proxy Fix
-- Smithery proxy patches `McpServer.connect()` + inner `Server._server.connect()` for reconnection
-- Fixes "Already connected to a transport" on second `query()` call
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `agent/src/index.ts` | Import `listWorkspaceArtifacts`, emit `session_artifacts` on 4 resume paths, add `get_session_artifacts` handler |
-| `agent/src/config.ts` | Add `listWorkspaceArtifacts()`, refactor `listResearchArtifacts()` to use shared `scanDirForArtifacts()` |
-| `agent/src/smithery-proxy.ts` | Patch `McpServer.connect` + `Server._server.connect` for reconnection |
-| `frontend/src/app/page.tsx` | Remove `max-w-2xl` constraint |
-| `frontend/src/components/VoiceRoom.tsx` | Full-width layout, files panel default on, `session_artifacts` handler, file clearing on switch |
-| `frontend/src/components/MarkdownMessage.tsx` | `CodeBlock` accepts `React.ReactNode`, add `extractText()` for copy |
-
----
-
-## v0.4.3 Changes — Unified Voice Injection Queue
-
-### Problem
-Multiple code paths called `generateReply` independently (research updates, research complete, notifications, errors) without checking model availability. This caused `generateReply timed out waiting for generation_created event` errors when the model was busy speaking. The old system used `drainResearchQueue()` with `drainInFlight` guards and separate immediate/deferred `[RESEARCH COMPLETE]` injection paths, but these still raced.
-
-### Solution
-- **Unified `voiceQueue[]`**: Single queue for ALL system injections. `queueVoiceInjection()` adds items, `processVoiceQueue()` drains them.
-- **State-machine gating**: `processVoiceQueue()` only calls `generateReply` when `agentState === 'listening'`. After the call, the model transitions to `thinking/speaking` → `listening`, which triggers `processVoiceQueue()` again via `agent_state_changed`.
-- **Batched delivery**: Multiple queued items are combined into one `generateReply({ instructions, toolChoice: 'none' })` call.
-- **Research batching**: `scheduleResearchBatch()` debounces rapid tool events (3s), formats as `[RESEARCH UPDATE]`, pushes to voice queue.
-- **Specificity prompts**: `[RESEARCH COMPLETE]` mandates naming specific tools, packages, URLs. Adaptive verbosity defaults research to DETAILED tier (6-10 sentences).
-- **Removed**: `drainResearchQueue()`, `scheduleDrain()`, `drainDebounceTimer`, `drainInFlight`, immediate/deferred dual paths, `.catch()` workarounds.
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `agent/src/index.ts` | Replaced drain system with `voiceQueue`/`queueVoiceInjection`/`processVoiceQueue`/`scheduleResearchBatch`. Updated `announceViaVoice()`, `[RESEARCH COMPLETE]`, error handler, cleanup paths. Added specificity prompts. |
+### v0.5.x — Fast Brain + Teleprompter Architecture + Pipeline Mode
+See CHANGELOG.md for full details. Highlights: fast brain central orchestrator, pipeline Gemini observer, summary index, persistent sessions, multi-agent orchestration.
 
 ---
 
@@ -365,4 +185,4 @@ mcpServers:
 
 ---
 
-Last Updated: 2026-02-22
+Last Updated: 2026-04-05

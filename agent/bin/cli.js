@@ -41,10 +41,6 @@ Example:
   process.exit(0)
 }
 
-// Run the agent using tsx
-const agentPath = join(__dirname, '..', 'src', 'index.ts')
-const tsxPath = join(__dirname, '..', 'node_modules', '.bin', 'tsx')
-
 // Determine mode (default to 'dev' if no mode specified)
 let mode = 'dev'
 if (args.includes('start')) {
@@ -54,11 +50,31 @@ if (args.includes('start')) {
   args.splice(args.indexOf('dev'), 1)
 }
 
-const child = spawn(tsxPath, [agentPath, mode, ...args], {
-  stdio: 'inherit',
-  cwd: join(__dirname, '..'),
-  env: process.env,
-})
+// Use src/index.ts (dev) if available, otherwise dist/index.js (npm install)
+import { existsSync } from 'fs'
+const srcPath = join(__dirname, '..', 'src', 'index.ts')
+const distPath = join(__dirname, '..', 'dist', 'index.js')
+
+let child
+if (existsSync(srcPath)) {
+  // Dev mode: run via tsx
+  const tsxPath = join(__dirname, '..', 'node_modules', '.bin', 'tsx')
+  child = spawn(tsxPath, [srcPath, mode, ...args], {
+    stdio: 'inherit',
+    cwd: join(__dirname, '..'),
+    env: process.env,
+  })
+} else if (existsSync(distPath)) {
+  // Production: run compiled JS directly
+  child = spawn('node', [distPath, mode, ...args], {
+    stdio: 'inherit',
+    cwd: join(__dirname, '..'),
+    env: process.env,
+  })
+} else {
+  console.error('Error: Neither src/index.ts nor dist/index.js found')
+  process.exit(1)
+}
 
 child.on('error', (err) => {
   console.error('Failed to start agent:', err.message)

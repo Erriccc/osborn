@@ -20,6 +20,7 @@ interface VoiceRoomProps {
   token: string
   onDisconnect?: () => void
   onAgentReady?: () => void
+  onAuthRequired?: () => void
   waitingMode?: boolean
   provider?: string
   preSelectedSessionId?: string | null
@@ -1266,11 +1267,13 @@ function VoiceVisualizer({ state, audioTrack }: { state: string; audioTrack: any
 function VoiceRoomInner({
   onDisconnect,
   onAgentReady,
+  onAuthRequired,
   waitingMode,
   preSelectedSessionId,
 }: {
   onDisconnect?: () => void
   onAgentReady?: () => void
+  onAuthRequired?: () => void
   waitingMode?: boolean
   preSelectedSessionId?: string | null
 }) {
@@ -1873,6 +1876,7 @@ function VoiceRoomInner({
       } else if (data.type === 'claude_auth_required') {
         console.log('🔑 Claude auth required')
         setClaudeAuthStatus('required')
+        onAuthRequired?.()
       } else if (data.type === 'claude_auth_url') {
         console.log('🔗 Claude auth URL received')
         setClaudeAuthUrl(data.url)
@@ -2042,10 +2046,32 @@ function VoiceRoomInner({
 
     // Send via data channel
     if (payloadStr.length > 60000) {
-      console.warn(`⚠️ Payload too large (${payloadStr.length} bytes), sending text only`)
-      addMessageRef.current?.('system', 'File too large for data channel. Check Supabase Dashboard → Storage → osborn-storage bucket policies.')
-      // Still send the text portion
-      const smallPayload = JSON.stringify({ type: 'user_text', content: text || '(file attachment failed — too large)' })
+      console.warn(`⚠️ Payload too large (${payloadStr.length} bytes)`)
+      if (isSupabaseConfigured()) {
+        // Upload large text/payload to Supabase and send URL instead
+        try {
+          const blob = new Blob([text], { type: 'text/plain' })
+          const uploadFile_ = new File([blob], `paste-${Date.now()}.txt`, { type: 'text/plain' })
+          const result = await uploadFile(uploadFile_, 'files')
+          if (result.success && result.url) {
+            const uploadedPayload = JSON.stringify({
+              type: 'user_text',
+              content: text.substring(0, 200) + (text.length > 200 ? '...[full content in attached file]' : ''),
+              files: [{ name: uploadFile_.name, type: 'text', content: '', url: result.url }],
+            })
+            const encoder = new TextEncoder()
+            sendToAgent(encoder.encode(uploadedPayload), { reliable: true })
+            addMessageRef.current?.('system', `Large message uploaded (${(text.length / 1024).toFixed(1)} KB)`)
+            return
+          }
+        } catch (err) {
+          console.error('Failed to upload large text to Supabase:', err)
+        }
+      }
+      // Fallback: truncate with clear error
+      addMessageRef.current?.('system', `Message too large for data channel (${(payloadStr.length / 1024).toFixed(0)} KB). Configure Supabase Storage to enable large messages.`)
+      const truncated = text.substring(0, 50000) + '\n...[truncated — message exceeded size limit]'
+      const smallPayload = JSON.stringify({ type: 'user_text', content: truncated })
       const encoder = new TextEncoder()
       sendToAgent(encoder.encode(smallPayload), { reliable: true })
     } else {
@@ -2294,19 +2320,26 @@ function VoiceRoomInner({
   return (
     <>
       {/* Claude Auth Modal — shown during first-time OAuth flow in cloud deployments */}
-      {(claudeAuthStatus === 'required' || claudeAuthStatus === 'waiting' || claudeAuthStatus === 'error') && (
+      {claudeAuthStatus !== 'none' && claudeAuthStatus !== 'complete' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md mx-4 shadow-2xl">
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
                 <span className="text-xl">🔑</span>
               </div>
-              <div>
+              <div className="flex-1 min-w-0">
                 <h3 className="text-lg font-semibold text-white">Claude Authentication</h3>
                 <p className="text-sm text-gray-400">
                   {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
                 </p>
               </div>
+              <button onClick={() => setClaudeAuthStatus('none')}
+                className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all shrink-0"
+                title="Dismiss">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
 
             {claudeAuthStatus === 'required' && (
@@ -2319,7 +2352,7 @@ function VoiceRoomInner({
             {claudeAuthStatus === 'waiting' && claudeAuthUrl && (
               <div className="space-y-3">
                 <p className="text-sm text-gray-300">
-                  Click the button below to sign in with your Anthropic account. This will open in a new tab.
+                  Click below to sign in, then paste the authentication code you receive.
                 </p>
                 <a
                   href={claudeAuthUrl}
@@ -2329,10 +2362,70 @@ function VoiceRoomInner({
                 >
                   Sign in to Claude
                 </a>
-                <div className="flex items-center gap-2 text-gray-400 text-xs">
-                  <div className="animate-spin w-3 h-3 border-2 border-gray-600 border-t-amber-400 rounded-full" />
-                  <span>Waiting for authentication...</span>
+                <div className="mt-3">
+                  <label className="block text-xs text-gray-400 mb-1">Paste authentication code:</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={claudeAuthCode}
+                      onChange={(e) => setClaudeAuthCode(e.target.value)}
+                      placeholder="Paste code here..."
+                      autoFocus
+                      className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                    />
+                    <button
+                      onClick={() => {
+                        if (claudeAuthCode.trim()) {
+                          const payload = new TextEncoder().encode(JSON.stringify({ type: 'claude_auth_code', code: claudeAuthCode.trim() }))
+                          sendToAgent(payload, { reliable: true })
+                          setClaudeAuthCode('')
+                        }
+                      }}
+                      disabled={!claudeAuthCode.trim()}
+                      className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-lg transition-colors"
+                    >
+                      Submit
+                    </button>
+                  </div>
                 </div>
+              </div>
+            )}
+
+            {claudeAuthStatus === 'waiting_code' && (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-300">
+                  Paste the authentication code from the browser:
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={claudeAuthCode}
+                    onChange={(e) => setClaudeAuthCode(e.target.value)}
+                    placeholder="Paste code here..."
+                    autoFocus
+                    className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                  />
+                  <button
+                    onClick={() => {
+                      if (claudeAuthCode.trim()) {
+                        const payload = new TextEncoder().encode(JSON.stringify({ type: 'claude_auth_code', code: claudeAuthCode.trim() }))
+                        sendToAgent(payload, { reliable: true })
+                        setClaudeAuthCode('')
+                      }
+                    }}
+                    disabled={!claudeAuthCode.trim()}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-lg transition-colors"
+                  >
+                    Submit
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {claudeAuthStatus === 'submitting' && (
+              <div className="flex items-center gap-2 text-gray-300 text-sm">
+                <div className="animate-spin w-4 h-4 border-2 border-gray-500 border-t-amber-400 rounded-full" />
+                <span>Submitting code to Claude...</span>
               </div>
             )}
 
@@ -2880,6 +2973,7 @@ export default function VoiceRoom({
   token,
   onDisconnect,
   onAgentReady,
+  onAuthRequired,
   waitingMode,
   provider,
   preSelectedSessionId,
@@ -2901,6 +2995,7 @@ export default function VoiceRoom({
       <VoiceRoomInner
         onDisconnect={onDisconnect}
         onAgentReady={onAgentReady}
+        onAuthRequired={onAuthRequired}
         waitingMode={waitingMode}
         preSelectedSessionId={preSelectedSessionId}
       />

@@ -26,7 +26,125 @@
 
 ## Version History
 
-### v0.5.5 (Current) — Persistent Session + Multi-Agent Orchestration + SDK v0.2.91
+### v0.8.3 (Current) — Per-User Cloud Sandboxes (Self-Hosted Daytona)
+
+#### Cloud Sandbox Provisioning
+- **Self-hosted Daytona on Hostinger VPS**: `daytona.voice-native.com` (KVM 2, ~$11/mo all-in). Caddy-fronted HTTPS via Let's Encrypt, on-demand TLS for sandbox subdomains
+- **`frontend/src/lib/daytona.ts`**: Server-only sandbox provisioning library. Uses raw HTTP (bypasses buggy `@daytonaio/sdk`). Functions: `createSandbox`, `findUserSandbox`, `startSandbox`, `stopSandbox`, `keepAliveSandbox`, `deleteSandbox`
+- **`/api/sandbox` route**: Next.js endpoint for create/list/start/stop/delete + keepalive ping. Backed by Supabase auth — each user gets exactly one sandbox labeled with their `userId`
+- **Provisioning steps**: create sandbox (image: `node:22`) → poll for `started` → `sudo env PATH=... npm install -g osborn @anthropic-ai/claude-code` → symlink `node`/`osborn`/`claude` into `/usr/local/bin` → start agent as root via `sudo -E setsid nohup` → wait for `:8741/health` 200
+- **Auto-stop / archive**: 15min idle → auto-stop ($0 compute, fs preserved). 7 days stopped → auto-archive to MinIO. Keepalive ping every 5min while user is connected
+- **Idle disconnect**: Chat page auto-disconnects after 20min of no user activity (preserves usage)
+
+#### Per-User Claude OAuth (No Shared API Key)
+- **OAuth flow inside sandbox**: First user message in a fresh sandbox triggers `claude setup-token` pty inside the sandbox. Auth URL surfaces via data channel → user opens it, pastes code back → token persists at `/home/daytona/.claude/.credentials.json`
+- **Token persistence across stop/resume**: Sandbox filesystem survives auto-stop, so the OAuth token persists indefinitely. Only re-auth needed if the credentials file is deleted or expires
+- **`HOME=/home/daytona` for root context**: osborn runs as root via `sudo -E` but `HOME` is forced to `/home/daytona` so OAuth credentials land in the same place across user/root contexts
+
+#### Local vs Cloud Mode Toggle
+- **`connectionMode` localStorage key**: Dashboard settings let user choose `local` or `cloud`. Persisted in `localStorage['osborn-connection-mode']`
+- **Chat page respects mode**: Only fetches `/api/sandbox` and resolves cloud preview URL when `connectionMode === 'cloud'`. In local mode, uses `agentUrl` query param / localStorage as-is. Fixes a bug where local mode was unconditionally using the cloud sandbox if one existed
+
+#### Sandbox Provisioning Fixes
+- **`OSBORN_CWD` bug**: Was injecting `OSBORN_CWD=/root/workspace` into the sandbox env, but `/root/workspace` doesn't exist (and `/root` is `drwx------` so unreadable). The Claude SDK does `child_process.spawn(node, [cli.js], { cwd })` — when cwd doesn't exist, spawn errors ENOENT and the SDK reports it as the misleading `Claude Code executable not found at .../cli.js`. Fixed: `OSBORN_CWD=/home/daytona/workspace` to match the directory we `mkdir -p` and `cd` into when launching osborn
+- **`/usr/local/bin` symlinks**: Symlink `node`/`osborn`/`claude` into `/usr/local/bin` during provisioning so they're in every user's default PATH (including root's). Convenience for interactive shells and any subprocess that does PATH-based lookup without inheriting nvm's bin dir
+- **osborn runs as root**: Earlier attempt to run as `daytona` user hit EACCES on `child_process.spawn`. Run as root via `sudo -E setsid nohup env HOME=/home/daytona PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH osborn` — `-E` preserves env vars, `HOME` forced for OAuth persistence
+- **`sudo` strips PATH workaround**: All install/start commands explicitly preserve PATH via `sudo env PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH ...`. Without this, `npm`, `node`, `osborn` aren't found because nvm's bin dir isn't in root's default PATH
+- **`setsid nohup ... & disown`**: Plain `nohup ... &` doesn't survive the toolbox `executeCommand` returning. Need `setsid` to detach from controlling terminal AND `disown` to detach from the parent shell
+
+#### Daytona SDK Workarounds
+- **`@daytonaio/sdk` bypassed entirely** — multiple bugs with self-hosted: `daytona.list/create/get` throw on undefined fields; SDK uses `envVars`/`region`, API expects **`env`/`target`**; toolbox URL differs (`:4000` cloud vs `/toolbox` path self-hosted); `list()` returns `[]` self-hosted but `{items: []}` cloud
+- **Raw HTTP only**: `daytona.ts` uses `fetch` directly with the documented field names. Toolbox proxy detection: HTTPS uses `/toolbox` path, HTTP falls back to `:4000` port
+
+#### Outstanding Issues
+- **Chrome `ERR_CERTIFICATE_TRANSPARENCY_REQUIRED` on sandbox subdomains**: Some browsers cache CT enforcement state for `*.daytona.voice-native.com` and reject Caddy's on-demand certs. Mitigations under discussion: wildcard cert via DNS-01, Cloudflare proxy in front of Caddy, or moving to a CT-logged CA path. See `DAYTONA-SETUP.md` troubleshooting section
+
+---
+
+### v0.7.0 — Storage Architecture Refactor: Native Claude Session Integration
+
+#### All-Projects Session Scanner
+- **`listAllClaudeSessions()`**: Scans every `~/.claude/projects/*/` folder for UUID `.jsonl` files. Returns sessions across ALL Claude Code projects on the machine, sorted by most-recently-modified first
+- **Lightweight metadata**: For each session, reads first line for `cwd` and tail for last user message via existing `getSessionPreview()`. No full-file parsing for initial picker
+- **`GET /sessions?limit=N`**: API endpoint now returns sessions from all projects with `projectSlug`, `cwd`, `projectPath`, `fileSize` fields
+- **Data channel**: `agent_ready` and `list_sessions` responses include project metadata so frontend can group/filter by project
+
+#### Index Output Relocated
+- **New path**: `~/.claude/projects/{slug}/osb/{sessionId}/search-index.txt` (was `.osborn/sessions/{id}/.index/`)
+- **Co-located with Claude's data**: Index files live alongside the native JSONL files they index
+- **`getOsbDir()`**: New helper in `summary-index.ts` computes the osb directory from session ID + working directory
+- **On-demand indexing**: Index built when user selects a specific session, not during initial picker load
+
+#### Session Workspace Relocated
+- **New path**: `~/.claude/projects/{slug}/osb/{sessionId}/` (was `.osborn/sessions/{id}/`)
+- **`getSessionWorkspace()`**: Now computes path from `workingDir` (project slug) instead of `sessionBaseDir`
+- **`ensureSessionWorkspace()`**: Creates dir + spec.md only (no more `library/` directory)
+- **Write safety updated**: `canUseTool` and `PreToolUse` hook check `/osb/` in path (plus backward compat with `.osborn/sessions/`)
+
+#### Library System Removed
+- **No more `library/` directory**: Research artifacts no longer written to per-session library folders
+- **`listLibraryFiles()`**: Returns empty array (deprecated)
+- **`REFINEMENT_PROCESS_SYSTEM`**: Now produces spec.md only (was spec + 1-3 library files)
+- **`generateVisualDocument()`**: Writes to workspace root instead of `library/` subfolder
+- **`fast-brain.ts`**: Removed `list_library` tool, library read/write logic, library context from all functions
+- **`prompts.ts`**: All `library/` references removed from ~15 prompt sections (system prompts, write rules, tool descriptions, audience definitions)
+
+#### Backward Compatibility
+- Existing `.osborn/sessions/` folders remain in place — no migration needed, old sessions just won't appear in new picker
+- Write safety still allows `.osborn/sessions/` and `.osborn/research/` paths for any lingering references
+- `sessionBaseDir` parameters kept as deprecated optional args to avoid breaking callers
+
+---
+
+### v0.6.0 — Multi-User Auth + UI Redesign + File Attachments
+
+#### Supabase Authentication & Multi-User Foundation
+- **Google + GitHub OAuth**: `signInWithProvider()` via Supabase Auth, callback at `/auth/callback`
+- **Database schema**: `instances` (user→server mapping), `agent_sessions`, `always_allow_paths` with RLS policies
+- **Instance API**: `GET/POST /api/instance` — stores user's agent server URL + LiveKit room
+- **Middleware**: Session refresh with 2s timeout to avoid blocking page loads
+- **Supabase clients**: `supabase-server.ts` (API routes) + `supabase-browser.ts` (client components)
+
+#### New Route Architecture
+- **`/` (landing)**: Login page with Google/GitHub OAuth + guest "Connect without account". Authenticated users auto-redirect to `/dashboard`
+- **`/dashboard`**: Recent conversations list with pagination (20 per page), agent health indicator (online/offline), settings panel (agent URL, voice mode, provider), user avatar + sign out
+- **`/chat`**: Auto-connects to agent on mount, wraps VoiceRoom. Disconnect → back to `/dashboard`
+- **No room codes**: Manual room code entry removed. Auto-connect flow via agent `/room-code` endpoint
+
+#### UI Redesign — Mobile-First
+- **Design system**: Amber/gold (`#d4a853`) on deep charcoal (`#0c0b09`). CSS variables for consistency (`--accent`, `--surface`, `--border`, `--text-*`)
+- **Typography**: DM Sans (body) + JetBrains Mono (code) via `next/font/google`
+- **VoiceRoom mobile fixes**: `h-[100dvh]` viewport, avatars hidden on mobile (`hidden sm:flex`), compact header (`px-2`), single-column suggestion grid, files/meeting/copy/ControlMenu hidden on mobile
+- **Mobile menu drawer**: Hamburger button → slide-up drawer with Files, Copy, Meeting, Sessions, Disconnect
+- **VoiceVisualizer**: Hidden when not speaking (empty gray box removed). Compact `h-8 w-16` on mobile
+- **Color unification**: All violet/purple/blue replaced with amber across VoiceRoom (bubbles, buttons, indicators, gradients)
+
+#### File Attachments
+- **Supabase Storage**: Bucket `osborn-storage` for image/file uploads. Public URLs sent via data channel
+- **`user_text` handler**: Now processes `data.files` array — appends `[Image: name](url)` or `[File: name]\ncontent` to message before `generateReply`
+- **MessageContent component**: Renders images inline (`<img>` with click-to-open) and non-image files as styled download cards with file icon
+- **Upload error handling**: Shows system message on failure with guidance to create storage bucket
+
+#### Permission Modal Redesign
+- **Line numbers**: Diff viewer parses `@@` hunk headers to show line numbers in gutter
+- **Addition/deletion counts**: Header shows "N additions, M deletions"
+- **Responsive**: Slides up from bottom on mobile (sheet-style), centered card on desktop
+- **Sticky buttons**: Deny/Allow/Always fixed at bottom, diff content scrolls above
+- **Expand/collapse**: Full-width button with chevron, shows remaining line count
+- **Dismiss button**: Auth modal and error dialogs now have X close button
+
+#### Chat Cards Dashboard
+- **Session cards**: Elevated card design with chat icon, message preview (2-line clamp), timestamp, message count badge
+- **Pagination**: Shows 20 at a time, "Show more (N remaining)" button
+- **Staggered animation**: Cards fade in with delay
+
+#### Auth Modal
+- **Dismissable**: X button added to Claude Authentication modal (no longer blocks chat)
+- **Auto-close on error**: Auth errors auto-dismiss after 5 seconds
+
+---
+
+### v0.5.5 — Persistent Session + Multi-Agent Orchestration + SDK v0.2.91
 
 #### Persistent Session Architecture
 - **No per-message JSONL replay**: `query()` called with `AsyncIterable<SDKUserMessage>` — subprocess stays alive between messages

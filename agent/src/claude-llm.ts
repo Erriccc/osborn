@@ -10,7 +10,7 @@
 import { llm, shortuuid, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
 import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUserMessage, type Query as SDKQuery } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
-import { saveSessionMetadata } from './config.js'
+import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -868,14 +868,10 @@ class ClaudeLLMStream extends llm.LLMStream {
       const resumeSessionId = this.#opts.resumeSessionId
       const continueSession = this.#opts.continueSession
 
-      // Session workspace path for system prompt — uses sessionBaseDir (not cwd) so
-      // workspace always lives in the Osborn install dir regardless of cwd setting
+      // Session workspace path for system prompt — lives under ~/.claude/projects/{slug}/osb/{sessionId}/
       const sessionId = this.#sessionId || this.#opts.resumeSessionId || null
-      const baseDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory
-      const workspacePath = sessionId
-        ? (baseDir
-            ? `${baseDir}/.osborn/sessions/${sessionId}/`
-            : `.osborn/sessions/${sessionId}/`)
+      const workspacePath = sessionId && this.#opts.workingDirectory
+        ? getSessionWorkspace(this.#opts.workingDirectory, sessionId)
         : null
 
       const allowedTools = this.#opts.allowedTools || []
@@ -909,12 +905,12 @@ class ClaudeLLMStream extends llm.LLMStream {
               console.log('input,', input, 'input.file_path', filePath, 'agent_type', agentType)
             console.log(`🔍 canUseTool: ${toolName} filePath="${filePath}" keys=${Object.keys(input || {}).join(',')}`)
             console.log(`🔍 canUseTool _options keys=[${Object.keys(_options || {}).join(', ')}] title="${(_options as any)?.title || ''}" decisionReason="${(_options as any)?.decisionReason || ''}" blockedPath="${(_options as any)?.blockedPath || ''}"`)
-            if (filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')) {
-              // Block writes to spec.md and library/ — the fast brain manages these
+            if (filePath.includes('/osb/') || filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')) {
+              // Block writes to spec.md — the fast brain manages it
               const fileName = filePath.split('/').pop() || ''
-              if (fileName === 'spec.md' || filePath.includes('/library/')) {
-                console.log(`🚫 Blocked research agent write to managed file: ${filePath} (fast brain handles spec.md and library/)`)
-                return { behavior: 'deny', message: 'spec.md and library/ are managed by the fast brain sub-agent. Do NOT write to them. Return your findings in your response text — the fast brain will organize them into spec.md and library/ automatically.' }
+              if (fileName === 'spec.md') {
+                console.log(`🚫 Blocked research agent write to managed file: ${filePath} (fast brain handles spec.md)`)
+                return { behavior: 'deny', message: 'spec.md is managed by the fast brain. Do NOT write to it. Return your findings in your response text — the fast brain will organize them into spec.md automatically.' }
               }
               console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
@@ -961,10 +957,10 @@ class ClaudeLLMStream extends llm.LLMStream {
 
                 // All other agents (main, researcher, reasoner, etc.): workspace only
                 const filePath = String(toolInput.file_path || '')
-                if (filePath && !filePath.includes('.osborn/sessions/') && !filePath.includes('.osborn/research/')) {
+                if (filePath && !filePath.includes('/osb/') && !filePath.includes('.osborn/sessions/') && !filePath.includes('.osborn/research/')) {
                   console.log(`🚫 Research mode: blocked write to ${filePath} (agent_type: ${agentType ?? 'main'})`)
                   this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Research mode: writes restricted to session workspace' })
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: 'Research mode: write to .osborn/sessions/ only.' }
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: 'Research mode: writes restricted to session workspace.' }
                 }
               }
 

@@ -13,14 +13,60 @@ function ChatInner() {
   const provider = params.get('provider') || 'gemini'
   const voiceArch = params.get('voiceArch') || 'pipeline'
   const codingAgent = params.get('agent') || 'claude'
-  const agentUrl = params.get('agentUrl') || localStorage.getItem('osborn-agent-url') || 'http://localhost:8741'
+  const initialAgentUrl = params.get('agentUrl') || localStorage.getItem('osborn-agent-url') || 'http://localhost:8741'
   const sessionId = params.get('session') || null
 
+  const [agentUrl, setAgentUrl] = useState(initialAgentUrl)
   const [token, setToken] = useState<string | null>(null)
   const [roomCode, setRoomCode] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
+  const [statusMsg, setStatusMsg] = useState<string | null>(null)
+  const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null)
+  const [lastActivityAt, setLastActivityAt] = useState(Date.now())
+  const [authRequired, setAuthRequired] = useState(false)
+
+  // Keepalive ping while user is connected to a cloud sandbox
+  useEffect(() => {
+    if (!connected || !activeSandboxId) return
+    const ping = () => {
+      fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'keepalive', sandboxId: activeSandboxId }),
+      }).catch(() => {})
+    }
+    const interval = setInterval(ping, 5 * 60 * 1000) // every 5 min
+    ping() // immediate ping
+    return () => clearInterval(interval)
+  }, [connected, activeSandboxId])
+
+  // Auto-disconnect after 20 min of no user activity (preserves LiveKit + cloud)
+  useEffect(() => {
+    if (!connected) return
+    const checkIdle = setInterval(() => {
+      const idleMs = Date.now() - lastActivityAt
+      if (idleMs > 20 * 60 * 1000) {
+        console.log('🛌 Idle for 20min — disconnecting to preserve usage')
+        router.push('/dashboard')
+      }
+    }, 60 * 1000) // check every minute
+    return () => clearInterval(checkIdle)
+  }, [connected, lastActivityAt, router])
+
+  // Track user activity (clicks, key presses, voice events)
+  useEffect(() => {
+    const update = () => setLastActivityAt(Date.now())
+    window.addEventListener('click', update)
+    window.addEventListener('keydown', update)
+    window.addEventListener('mousemove', update)
+    return () => {
+      window.removeEventListener('click', update)
+      window.removeEventListener('keydown', update)
+      window.removeEventListener('mousemove', update)
+    }
+  }, [])
 
   // Auth guard
   useEffect(() => {
@@ -40,16 +86,57 @@ function ChatInner() {
   const connect = async () => {
     setConnecting(true)
     setError(null)
+    let resolvedUrl = agentUrl
+
     try {
-      // Try to get room code from agent first
+      // Step 1: Respect the user's connection mode preference from the dashboard
+      const connectionMode = typeof window !== 'undefined'
+        ? localStorage.getItem('osborn-connection-mode') || 'local'
+        : 'local'
+
+      // Only check/start cloud sandbox if user explicitly chose cloud mode
+      if (connectionMode === 'cloud') {
+        try {
+          const sandboxRes = await fetch('/api/sandbox')
+          const sandboxData = await sandboxRes.json()
+
+          if (sandboxData.available && sandboxData.sandbox) {
+            const sb = sandboxData.sandbox
+            setActiveSandboxId(sb.id)
+            if (sb.status === 'stopped') {
+              setStatusMsg('Resuming your workspace...')
+              const startRes = await fetch('/api/sandbox', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'start', sandboxId: sb.id }),
+              })
+              const startData = await startRes.json()
+              if (startData.previewUrl) {
+                resolvedUrl = startData.previewUrl
+                setAgentUrl(resolvedUrl)
+              }
+            } else if (sb.status === 'running' && sb.previewUrl) {
+              resolvedUrl = sb.previewUrl
+              setAgentUrl(resolvedUrl)
+            }
+          }
+        } catch {
+          // No sandbox API or not configured — fall back to local URL
+        }
+      }
+      // If connectionMode === 'local', use the agentUrl from query param / localStorage as-is
+
+      setStatusMsg('Connecting to agent...')
+
+      // Step 2: Get room code from agent
       let code: string | null = null
       try {
-        const r = await fetch(`${agentUrl}/room-code`)
+        const r = await fetch(`${resolvedUrl}/room-code`)
         const d = await r.json()
         if (d.roomCode) code = d.roomCode
       } catch {}
 
-      // Get token
+      // Step 3: Get LiveKit token
       let url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}`
       if (code) url += `&roomCode=${code}`
       if (sessionId) url += `&sessionId=${encodeURIComponent(sessionId)}`
@@ -59,8 +146,10 @@ function ChatInner() {
 
       setToken(data.token)
       setRoomCode(data.roomCode)
+      setStatusMsg(null)
     } catch (e) {
       setError('Failed to connect to agent')
+      setStatusMsg(null)
     } finally {
       setConnecting(false)
     }
@@ -72,6 +161,11 @@ function ChatInner() {
 
   const handleAgentReady = useCallback(() => {
     setConnected(true)
+  }, [])
+
+  const handleAuthRequired = useCallback(() => {
+    setAuthRequired(true)
+    setConnected(true) // surface the VoiceRoom UI so user can see + complete auth
   }, [])
 
   // ─── Connecting state ────────────────────────────
@@ -90,7 +184,7 @@ function ChatInner() {
               <div className="absolute inset-0 rounded-full border border-[var(--accent)]"
                 style={{ animation: 'ring 2.4s ease-out infinite', opacity: 0.3 }} />
             </div>
-            <p className="text-[var(--text-secondary)] text-sm">Connecting...</p>
+            <p className="text-[var(--text-secondary)] text-sm">{statusMsg || 'Connecting...'}</p>
             <button onClick={handleDisconnect}
               className="text-[var(--text-muted)] text-sm hover:text-[var(--text-secondary)] underline underline-offset-2 transition-colors">
               Cancel
@@ -104,6 +198,7 @@ function ChatInner() {
                 token={token}
                 onDisconnect={handleDisconnect}
                 onAgentReady={handleAgentReady}
+                onAuthRequired={handleAuthRequired}
                 waitingMode={true}
                 provider={provider}
                 preSelectedSessionId={sessionId}
@@ -141,6 +236,7 @@ function ChatInner() {
         token={token}
         onDisconnect={handleDisconnect}
         onAgentReady={handleAgentReady}
+        onAuthRequired={handleAuthRequired}
         waitingMode={false}
         provider={provider}
         preSelectedSessionId={sessionId}

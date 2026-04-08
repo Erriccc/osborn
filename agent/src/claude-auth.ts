@@ -16,8 +16,63 @@
 
 import * as pty from 'node-pty'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { join } from 'path'
+
+/**
+ * Resolve the full path to the `claude` binary.
+ * node-pty uses posix_spawnp which may not find binaries in nvm/homebrew paths.
+ * Shell-based `which` resolves the full PATH including .zshrc/.bashrc additions.
+ * Also checks Docker/Linux global npm paths for Fly.io/container deployments.
+ */
+let _cachedClaudePath: string | null = null
+function resolveClaudePath(): string {
+  if (_cachedClaudePath) return _cachedClaudePath
+
+  // 1. Shell-based resolution — picks up nvm, homebrew, etc.
+  try {
+    const resolved = execSync('which claude', { encoding: 'utf-8', timeout: 5000 }).trim()
+    if (resolved && existsSync(resolved)) {
+      _cachedClaudePath = resolved
+      return resolved
+    }
+  } catch {}
+
+  // 2. Fallback: check common locations (macOS, Linux, Docker, nvm)
+  const candidates = [
+    // Linux / Docker / Fly.io (npm install -g @anthropic-ai/claude-code)
+    '/usr/local/bin/claude',
+    '/usr/bin/claude',
+    // macOS Homebrew (Apple Silicon)
+    '/opt/homebrew/bin/claude',
+    // nvm (current node version — macOS/Linux)
+    join(homedir(), '.nvm/versions/node', process.version, 'bin/claude'),
+    // macOS Homebrew cask (Intel)
+    '/usr/local/Caskroom/claude-code/latest/claude',
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      console.log(`🔑 Found claude at: ${p}`)
+      _cachedClaudePath = p
+      return p
+    }
+  }
+
+  // 3. Try npm global bin directory (covers custom npm prefix, Docker variants)
+  try {
+    const npmBin = execSync('npm bin -g', { encoding: 'utf-8', timeout: 5000 }).trim()
+    const npmClaudePath = join(npmBin, 'claude')
+    if (existsSync(npmClaudePath)) {
+      console.log(`🔑 Found claude at: ${npmClaudePath} (via npm bin -g)`)
+      _cachedClaudePath = npmClaudePath
+      return npmClaudePath
+    }
+  } catch {}
+
+  console.warn('⚠️ Could not resolve claude binary path — falling back to "claude"')
+  return 'claude' // last resort — let posix_spawnp try
+}
 
 // ─────────────────────────────────────────
 // Constants
@@ -95,13 +150,14 @@ export function isClaudeAuthenticated(): boolean {
 }
 
 /**
- * Check auth via `claude auth status --json` (most reliable).
- * Uses execSync to avoid node-pty PATH issues on macOS.
+ * Check auth via `claude auth status` (most reliable).
+ * Uses resolved path to avoid posix_spawnp PATH issues.
  */
 export async function checkClaudeAuthStatus(): Promise<boolean> {
   try {
-    const { execSync } = await import('child_process')
-    const output = execSync('claude auth status', {
+    const claudePath = resolveClaudePath()
+    console.log(`🔑 Checking auth via: ${claudePath} auth status`)
+    const output = execSync(`"${claudePath}" auth status`, {
       encoding: 'utf-8',
       timeout: 10_000,
       env: { ...process.env },
@@ -189,9 +245,10 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
   }
 
   const done = new Promise<void>((resolve, reject) => {
-    console.log('🔑 Starting Claude Code authentication flow (setup-token)...')
+    const claudePath = resolveClaudePath()
+    console.log(`🔑 Starting Claude Code authentication flow: ${claudePath} setup-token`)
 
-    const proc = pty.spawn('claude', ['setup-token'], {
+    const proc = pty.spawn(claudePath, ['setup-token'], {
       name: 'xterm-color',
       cols: 500,  // Wide to prevent Ink URL wrapping
       rows: 30,

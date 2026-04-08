@@ -281,7 +281,7 @@ function resolveClaudeDir(opts?: SessionAccessOptions): string {
   return opts?.claudeDir || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 }
 
-function projectPathToSlug(projectPath: string): string {
+export function projectPathToSlug(projectPath: string): string {
   return projectPath.replace(/\//g, '-')
 }
 

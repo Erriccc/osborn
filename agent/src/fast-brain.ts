@@ -5,7 +5,7 @@
  * The realtime voice model is a thin teleprompter — it speaks what this module returns.
  *
  * Capabilities:
- * - Read/write session files (spec.md + library/)
+ * - Read/write session files (spec.md)
  * - Web search for quick factual lookups
  * - Record user decisions and preferences into spec.md
  * - Trigger deep research (via callbacks to index.ts)
@@ -29,7 +29,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 
 import { dirname, basename, join } from 'path'
 import { homedir } from 'os'
 import { z } from 'zod'
-import { getSessionWorkspace, readSessionSpec, listLibraryFiles } from './config.js'
+import { getSessionWorkspace, readSessionSpec } from './config.js'
 import { FAST_BRAIN_SYSTEM_PROMPT, CHUNK_PROCESS_SYSTEM, REFINEMENT_PROCESS_SYSTEM, AUGMENT_RESULT_SYSTEM, CONTEXTUALIZE_UPDATE_SYSTEM, PROACTIVE_PROMPT_SYSTEM, VISUAL_DOCUMENT_SYSTEM, RESEARCH_COMPLETION_SYSTEM, buildFastBrainSdkPrompt } from './prompts.js'
 import { getRecentToolResults, readSessionHistory, getSubagentTranscripts, getConversationText, getSessionTranscripts, searchSessionJsonl, getSessionStats } from './session-access.js'
 
@@ -202,17 +202,6 @@ function executeTool(
         return `Written: ${relPath} (${content.length} chars)`
       }
 
-      case 'list_library': {
-        const libraryDir = `${workspace}/library`
-        if (!existsSync(libraryDir)) return 'Library is empty — no research files yet.'
-        try {
-          const items = readdirSync(libraryDir)
-          return items.length > 0 ? items.join('\n') : 'Library is empty — no research files yet.'
-        } catch {
-          return 'Library is empty — no research files yet.'
-        }
-      }
-
       case 'read_agent_results': {
         if (!sessionId || !workingDir) return 'Error: no active research session'
         const lastN = (toolInput.lastN as number) || 40
@@ -357,7 +346,7 @@ function buildAnthropicTools(): Anthropic.Messages.Tool[] {
   return [
     {
       name: 'read_file',
-      description: 'Read a file from the session workspace. Use relative paths like "spec.md" or "library/react-guide.md".',
+      description: 'Read a file from the session workspace. Use "spec.md" to read the session spec.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -377,11 +366,6 @@ function buildAnthropicTools(): Anthropic.Messages.Tool[] {
         },
         required: ['path', 'content']
       }
-    },
-    {
-      name: 'list_library',
-      description: 'List all files in the research library directory.',
-      input_schema: { type: 'object' as const, properties: {} }
     },
     {
       name: 'read_agent_results',
@@ -492,7 +476,7 @@ function buildGeminiTools(): any[] {
       functionDeclarations: [
         {
           name: 'read_file',
-          description: 'Read a file from the session workspace. Use relative paths like "spec.md" or "library/react-guide.md".',
+          description: 'Read a file from the session workspace. Use "spec.md" to read the session spec.',
           parameters: {
             type: 'object',
             properties: {
@@ -512,11 +496,6 @@ function buildGeminiTools(): any[] {
             },
             required: ['path', 'content']
           }
-        },
-        {
-          name: 'list_library',
-          description: 'List all files in the research library directory.',
-          parameters: { type: 'object', properties: {} }
         },
         {
           name: 'web_search',
@@ -1002,7 +981,7 @@ export async function askHaiku(
 ): Promise<string> {
   initProvider()
 
-  // workspace uses sessionBaseDir (Osborn install dir) for spec.md/library
+  // workspace uses workingDir for spec.md (under ~/.claude/projects/{slug}/osb/)
   // workingDir is for JSONL access (matches Claude SDK cwd)
   const wsDir = sessionBaseDir || workingDir
   const workspace = getSessionWorkspace(wsDir, sessionId)
@@ -1064,7 +1043,7 @@ export async function askFastBrain(
     try {
       const result = await generateVisualDocument(workingDir, sessionId, question, docMatch, wsDir)
       if (result) {
-        const fullPath = `${wsDir}/.osborn/sessions/${sessionId}/library/${result.fileName}`
+        const fullPath = `${getSessionWorkspace(wsDir, sessionId)}/${result.fileName}`
         callbacks.sendToFrontend({
           type: 'research_artifact_updated',
           filePath: fullPath,
@@ -1227,7 +1206,7 @@ function generateResearchAck(question: string, chatHistory?: ConversationTurn[])
 
 /**
  * Process a batch of research content chunks through the fast brain.
- * Updates spec.md and library/ files incrementally during research.
+ * Updates spec.md incrementally during research.
  *
  * @param isRefinement - true for the final post-research consolidation pass (higher token budget)
  */
@@ -1260,32 +1239,10 @@ export async function processResearchChunk(
     }
 
     const currentSpec = readFileSync(specPath, 'utf-8')
-    const libraryDir = `${workspace}/library`
-
-    // Only read library files during refinement pass (final consolidation)
-    // Mid-research: skip library entirely to stay fast and avoid file proliferation
-    let existingSection = ''
-    if (isRefinement) {
-      const existingFiles = listLibraryFiles(wsDir, sessionId)
-      const existingContents: string[] = []
-      for (const file of existingFiles) {
-        const filePath = `${libraryDir}/${file}`
-        if (existsSync(filePath)) {
-          try {
-            const content = readFileSync(filePath, 'utf-8')
-            existingContents.push(`--- ${file} ---\n${content}`)
-          } catch { /* skip */ }
-        }
-      }
-      existingSection = existingContents.length > 0
-        ? `\n\nExisting library/ files:\n${existingContents.join('\n\n')}`
-        : ''
-    }
 
     // No content capping — models handle 200K+ tokens (Haiku) / 1M+ (Gemini Flash)
     const chunksText = contentChunks.join('\n\n---\n\n')
 
-    // Use different prompts: mid-research = spec only, refinement = spec + library
     const systemPrompt = isRefinement ? REFINEMENT_PROCESS_SYSTEM : CHUNK_PROCESS_SYSTEM
 
     const userMessage = `Research task: "${task}"
@@ -1294,7 +1251,6 @@ Current spec.md:
 \`\`\`markdown
 ${currentSpec}
 \`\`\`
-${existingSection}
 
 Content chunks from research:
 ${chunksText}
@@ -1327,7 +1283,6 @@ Return ONLY valid JSON — no code fences, no explanation.`
     if (!parsed) return null
 
     let updatedSpec: string | null = null
-    const writtenFiles: string[] = []
 
     // Write spec.md
     if (parsed.spec && typeof parsed.spec === 'string' && parsed.spec.length > 50) {
@@ -1337,23 +1292,10 @@ Return ONLY valid JSON — no code fences, no explanation.`
       console.log(`📋 Fast brain processed research ${label} — spec.md updated (${parsed.spec.length} chars)`)
     }
 
-    // Write library files — ONLY during refinement pass (prevents file proliferation)
-    if (isRefinement && parsed.library && Array.isArray(parsed.library) && parsed.library.length > 0) {
-      mkdirSync(libraryDir, { recursive: true })
-      for (const file of parsed.library) {
-        if (!file.filename || !file.content) continue
-        const safeName = file.filename.replace(/[^a-zA-Z0-9._-]/g, '-')
-        const filePath = `${libraryDir}/${safeName}`
-        writeFileSync(filePath, file.content, 'utf-8')
-        console.log(`📝 Fast brain wrote library/${safeName} (${file.content.length} chars)`)
-        writtenFiles.push(safeName)
-      }
-    }
-
     const label = isRefinement ? 'refinement' : `${contentChunks.length} content items`
     console.log(`📋 Fast brain processed research chunk (${label})`)
 
-    return { spec: updatedSpec, libraryFiles: writtenFiles }
+    return { spec: updatedSpec, libraryFiles: [] }
   } catch (err) {
     console.error('❌ processResearchChunk failed:', err)
     return null
@@ -1381,7 +1323,7 @@ let specUpdateInProgress = false
  */
 function parseChunkResponse(
   responseText: string
-): { spec?: string, library?: { filename: string, content: string }[] } | null {
+): { spec?: string } | null {
   const cleaned = responseText.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim()
 
   // Strategy 1: Direct parse
@@ -1442,20 +1384,16 @@ export async function augmentResearchResult(
   try {
     // Read spec for context
     const specContent = readSessionSpec(workingDir, sessionId)
-    const libraryFiles = listLibraryFiles(workingDir, sessionId)
 
     const specSection = specContent
       ? `\n\nCurrent spec.md:\n${specContent}`
-      : ''
-    const libSection = libraryFiles.length > 0
-      ? `\n\nLibrary files available: ${libraryFiles.join(', ')}`
       : ''
 
     const userMessage = `Research task: "${task}"
 
 Agent findings:
 ${agentResult}
-${specSection}${libSection}
+${specSection}
 
 Augment the agent's findings with relevant context from the spec. Pass ALL details through verbatim.`
 
@@ -1497,7 +1435,7 @@ Augment the agent's findings with relevant context from the spec. Pass ALL detai
 // ============================================================
 
 /**
- * Update spec.md and library/ files after research completes.
+ * Update spec.md after research completes.
  * Reads FULL untruncated data directly from Claude Agent SDK JSONL files
  * instead of receiving pre-truncated content chunks.
  *
@@ -1506,7 +1444,7 @@ Augment the agent's findings with relevant context from the spec. Pass ALL detai
  * - readSessionHistory() — last 50 assistant messages (agent reasoning/analysis)
  * - getSubagentTranscripts() — all sub-agent findings
  *
- * Returns { spec, libraryFiles } or null if update failed.
+ * Returns { spec } or null if update failed.
  */
 export async function updateSpecFromJSONL(
   workingDir: string,
@@ -1957,8 +1895,8 @@ ${previousPrompts.length > 0 ? previousPrompts.join('\n') : '(none yet)'}`
  * Generate a structured visual document (comparison table, Mermaid diagram,
  * analysis, or summary) from research findings.
  *
- * Reads spec.md, JSONL results, and library for context.
- * Writes the result to library/ and returns the filename + content.
+ * Reads spec.md and JSONL results for context.
+ * Writes the result to workspace and returns the filename + content.
  */
 export async function generateVisualDocument(
   workingDir: string,
@@ -1974,20 +1912,6 @@ export async function generateVisualDocument(
   try {
     const workspace = getSessionWorkspace(wsDir, sessionId)
     const specContent = readSessionSpec(wsDir, sessionId) || ''
-    const libraryFiles = listLibraryFiles(wsDir, sessionId)
-
-    // Read library contents for context
-    const libraryDir = `${workspace}/library`
-    const libraryContents: string[] = []
-    for (const file of libraryFiles.slice(0, 5)) {
-      const filePath = `${libraryDir}/${file}`
-      if (existsSync(filePath)) {
-        try {
-          const content = readFileSync(filePath, 'utf-8')
-          libraryContents.push(`--- ${file} ---\n${content.substring(0, 3000)}`)
-        } catch { /* skip */ }
-      }
-    }
 
     // Read recent JSONL results for raw data
     const toolResults = getRecentToolResults(sessionId, workingDir, 20)
@@ -2001,8 +1925,6 @@ Document type: ${documentType}
 
 Session spec:
 ${specContent}
-
-${libraryContents.length > 0 ? `Library files:\n${libraryContents.join('\n\n')}` : ''}
 
 Recent research data:
 ${toolResultsSummary}
@@ -2053,11 +1975,10 @@ Return JSON: {"fileName": "descriptive-name.md", "content": "full markdown conte
 
     if (!parsed.fileName || !parsed.content) return null
 
-    // Write to library
+    // Write to workspace
     const safeName = parsed.fileName.replace(/[^a-zA-Z0-9._-]/g, '-')
-    const libraryPath = `${workspace}/library`
-    mkdirSync(libraryPath, { recursive: true })
-    const filePath = `${libraryPath}/${safeName}`
+    mkdirSync(workspace, { recursive: true })
+    const filePath = `${workspace}/${safeName}`
     writeFileSync(filePath, parsed.content, 'utf-8')
     console.log(`📊 generateVisualDocument: wrote ${safeName} (${parsed.content.length} chars)`)
 

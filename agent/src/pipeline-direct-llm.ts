@@ -204,9 +204,9 @@ export class PipelineDirectLLM extends llm.LLM {
       this.#indexBuilding = true
       try {
         const startBuild = Date.now()
-        const state = buildSummaryIndex(sessionId, workingDir, sessionBaseDir,
+        const state = buildSummaryIndex(sessionId, workingDir, undefined,
           (msg) => console.log(`🔍 [index] ${msg}`))
-        this.#indexWatcher = startIndexWatcher(sessionId, workingDir, sessionBaseDir, state)
+        this.#indexWatcher = startIndexWatcher(sessionId, workingDir, undefined, state)
         console.log(`🔍 [index] Built + watching in ${Date.now() - startBuild}ms`)
       } catch (err: any) {
         console.error('🔍 [index] Build failed:', err?.message)

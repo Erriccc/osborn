@@ -11,7 +11,7 @@ Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SD
 - **Research Mode**: Read code, search web, run commands, fetch YouTube transcripts, save findings to session workspace
 - **Claude Agent SDK v0.2.91**: Full tool access (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch) with `agentProgressSummaries` for background Task progress
 - **Permission System**: Approve/deny operations via voice or UI. Writer sub-agent gets full write access; all others restricted to workspace.
-- **Session Management**: Resume, switch, and browse previous conversations
+- **Session Management**: Browse and resume conversations from ALL Claude Code projects on your machine — sorted by most recent
 - **Fast Brain**: ~2s session-aware Q&A via direct API calls (Anthropic Haiku / Gemini Flash fallback)
 - **Pipeline Fast Brain**: Gemini Flash AFC observer runs in parallel with Claude — emergency stop + agent restart capability
 - **Meeting Integration**: Recall.ai bot joins Zoom/Google Meet, routes real-time transcripts to Claude
@@ -22,11 +22,15 @@ Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SD
 - **MCP Integration**: Extend with GitHub, YouTube, filesystem, and custom MCP servers (Smithery cloud proxy)
 - **Research Artifacts**: Plans, diagrams (mermaid), notes, and analysis files — persist across session resumes
 - **OAuth Token Persistence**: `claude setup-token` output captured and persisted to volume for Fly.io deployments
-- **Full-Width UI**: Responsive layout with always-visible Files panel, meeting controls, and syntax-highlighted code
+- **Per-User Cloud Sandboxes**: Self-hosted Daytona on a Hostinger VPS provisions isolated Linux sandboxes per user (Claude Code + osborn pre-installed). Each user authenticates Claude via their own OAuth flow inside the sandbox; tokens persist on the sandbox filesystem across stop/resume cycles. Local vs Cloud toggle in dashboard settings — see `DAYTONA-SETUP.md`
+- **Multi-User Auth**: Google + GitHub OAuth via Supabase. Dashboard with recent chats, settings, agent health. Auto-connect on login.
+- **File Attachments**: Upload images/files to Supabase Storage. Images render inline in chat, files as download cards.
+- **Mobile-First UI**: Responsive dark theme (amber/charcoal), hamburger menu drawer, compact visualizer, sheet-style permission modals
+- **Permission Modal**: Git-style diff viewer with line numbers, addition/deletion counts, expand/collapse, dismissable auth errors
 
 ## Research Mode
 
-The agent operates in a single **research** mode. It reads code, searches the web, runs commands, fetches YouTube transcripts, and saves findings to a session workspace (`.osborn/sessions/`). Write operations are restricted to the workspace directory for safety. Research artifacts (plans, diagrams, notes) appear in the always-visible Files panel.
+The agent operates in a single **research** mode. It reads code, searches the web, runs commands, fetches YouTube transcripts, and saves findings to a session workspace co-located with Claude's native JSONL files (`~/.claude/projects/{slug}/osb/{sessionId}/`). Write operations are restricted to the workspace directory for safety. Research artifacts appear in the always-visible Files panel.
 
 ## Architecture
 
@@ -200,6 +204,9 @@ osborn/
 | Gemini Auto-Recovery (3s interval) | Working |
 | Files Panel (always visible, persists on resume) | Working |
 | MCP Integration (Smithery cloud proxy) | Working |
+| Cloud Sandboxes (self-hosted Daytona) | Working |
+| Per-User Claude OAuth (sandbox-side) | Working |
+| Local/Cloud mode toggle | Working |
 
 ## Tech Stack
 
