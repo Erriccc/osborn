@@ -10,6 +10,11 @@ interface SessionInfo {
   timestamp: string
   lastMessage?: string
   messageCount?: number
+  // The cwd the session was originally created with. Critical for resume:
+  // sessions live at ~/.claude/projects/<slug>/<sessionId>.jsonl where <slug>
+  // is derived from the cwd, so the agent must boot with the matching cwd or
+  // the session lookup goes to the wrong directory ("Session not found").
+  cwd?: string
 }
 
 type Provider = 'gemini' | 'openai'
@@ -215,9 +220,13 @@ export default function Dashboard() {
     window.location.href = '/'
   }
 
-  const startChat = (sessionId?: string) => {
+  const startChat = (sessionId?: string, sessionCwd?: string) => {
     const params = new URLSearchParams({ provider, voiceArch, agent: 'claude', agentUrl })
     if (sessionId) params.set('session', sessionId)
+    // Forward the session's original cwd so the agent boots with the matching directory.
+    // Without this the agent falls through to OSBORN_CWD or process.cwd(), which produces
+    // the wrong project slug and a "Session not found" error on resume.
+    if (sessionCwd) params.set('workingDirectory', sessionCwd)
     router.push(`/chat?${params.toString()}`)
   }
 
@@ -509,7 +518,7 @@ export default function Dashboard() {
             )}
 
             {sessions.slice(0, visibleCount).map((s, i) => (
-              <button key={s.sessionId} onClick={() => startChat(s.sessionId)}
+              <button key={s.sessionId} onClick={() => startChat(s.sessionId, s.cwd)}
                 className="w-full text-left p-4 rounded-2xl bg-[var(--surface)] border border-[var(--border-subtle)] hover:border-[var(--border)] transition-all group"
                 style={{ animation: `enter 0.3s ease ${Math.min(i, 10) * 0.04}s both` }}>
                 <div className="flex items-start gap-3">

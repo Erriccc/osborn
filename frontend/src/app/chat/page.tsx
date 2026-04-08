@@ -15,6 +15,10 @@ function ChatInner() {
   const codingAgent = params.get('agent') || 'claude'
   const initialAgentUrl = params.get('agentUrl') || localStorage.getItem('osborn-agent-url') || 'http://localhost:8741'
   const sessionId = params.get('session') || null
+  // Optional: cwd the selected session was originally created with. Forwarded to the
+  // token API so the agent boots with the matching directory and the session lookup
+  // path resolves correctly. Empty when starting a fresh conversation.
+  const workingDirectory = params.get('workingDirectory') || ''
 
   const [agentUrl, setAgentUrl] = useState(initialAgentUrl)
   const [token, setToken] = useState<string | null>(null)
@@ -148,6 +152,10 @@ function ChatInner() {
       let url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}`
       if (code) url += `&roomCode=${code}`
       if (sessionId) url += `&sessionId=${encodeURIComponent(sessionId)}`
+      // Forward the session's cwd into the token metadata so the agent boots with
+      // the matching directory. Required for session resume to find the JSONL file
+      // (which lives at ~/.claude/projects/<slug-derived-from-cwd>/<sessionId>.jsonl).
+      if (workingDirectory) url += `&workingDirectory=${encodeURIComponent(workingDirectory)}`
 
       const res = await fetch(url)
       const data = await res.json()
