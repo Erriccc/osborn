@@ -149,6 +149,41 @@ async function execInSandbox(sandboxId: string, command: string, timeoutSec = 30
   return { exitCode: data.exitCode || 0, output: data.result || '' }
 }
 
+/**
+ * Poll the toolbox proxy until it can route to the container.
+ *
+ * Daytona's metadata API (`GET /api/sandbox/{id}`) flips the `state` field to
+ * `started` BEFORE its toolbox reverse-proxy has resolved the container's IP.
+ * If you immediately call `process/execute` after seeing `state: started`, the
+ * toolbox returns `400 "failed to resolve container IP after 3 attempts: no IP
+ * address found. Is the Sandbox started?"` and `execInSandbox()` throws. The
+ * race window is typically 2–6 seconds wide on a warm runner.
+ *
+ * Without this poll, every `startSandbox()` call would run the supervisor exec
+ * in that race window and silently fail: Daytona reports `running` but the
+ * exec never landed, leaving the container empty on port 8741 and the user
+ * facing 502 Bad Gateway when they try to connect. This was the root cause
+ * behind dashboard Resume appearing to "work" (state flips to running) while
+ * the chat page hangs on /room-code with 502.
+ *
+ * The helper sends `echo ready` until it succeeds. If the toolbox is already
+ * routing, the first attempt returns immediately (~200ms total). If we're
+ * mid-race, it waits up to `maxAttempts * 2s` for the proxy to come online.
+ */
+async function waitForToolboxReady(sandboxId: string, maxAttempts = 15): Promise<boolean> {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const r = await execInSandbox(sandboxId, 'echo ready', 5)
+      if (r.exitCode === 0 && r.output.includes('ready')) return true
+    } catch {
+      // Expected during the race window — execInSandbox throws on the toolbox 400.
+      // Any other unexpected error also retries; the loop bounds the total wait.
+    }
+    await new Promise(r => setTimeout(r, 2000))
+  }
+  return false
+}
+
 // ─────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────
@@ -194,6 +229,14 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
       throw new Error(`Sandbox stuck in state=${state} after 120s`)
     }
     console.log(`✅ Sandbox started`)
+
+    // Bridge the toolbox-proxy race: metadata says `started` ~3-6s before the
+    // reverse-proxy can route. Without this, the install exec below would fail
+    // with `400 failed to resolve container IP`. See `waitForToolboxReady` doc.
+    const toolboxReady = await waitForToolboxReady(sandbox.id)
+    if (!toolboxReady) {
+      throw new Error(`Toolbox proxy never became reachable after sandbox start`)
+    }
 
     // Step 3: Install osborn + claude-code globally
     // Note: sudo strips PATH, so we explicitly preserve it via `sudo env PATH=...`
@@ -330,6 +373,20 @@ export async function startSandbox(sandboxId: string): Promise<SandboxInfo | nul
       state = sb.state
     }
     if (state !== 'started') return null
+
+    // Bridge the toolbox-proxy race: metadata says `started` ~3-6s before the
+    // reverse-proxy can route. Without this, the supervisor exec below races
+    // and throws with `400 failed to resolve container IP`, which startSandbox
+    // catches and converts to `return null` → the route returns 500, the
+    // dashboard handler silently ignores it (no `data.previewUrl` to set),
+    // and the user is left with a "running" sandbox that has nothing on port
+    // 8741. This was the actual cause of the symptoms: stop/resume appearing
+    // to "work" while connecting to chat 502s. See `waitForToolboxReady` doc.
+    const toolboxReady = await waitForToolboxReady(sandboxId)
+    if (!toolboxReady) {
+      console.error(`❌ Toolbox proxy never became reachable for sandbox ${sandboxId}`)
+      return null
+    }
 
     // Restart agent as root, wrapped in a bash supervisor loop (see createSandbox for why).
     // The supervisor loop catches osborn's "Restart requested via HTTP" self-exits and
