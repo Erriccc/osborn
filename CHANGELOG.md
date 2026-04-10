@@ -26,7 +26,77 @@
 
 ## Version History
 
-### v0.8.3 (Current) — Per-User Cloud Sandboxes (Self-Hosted Daytona)
+### v0.8.6 (Current) — Subprocess Cleanup, Self-Healing CWD, Daytona Toolbox Race Fix
+
+#### `killCurrentLLM()` — fix orphaned Claude subprocess on disconnect
+- **Problem**: The persistent ClaudeLLM session is deliberately kept alive across user messages to avoid JSONL replay (see CLAUDE.md "Persistent Session Architecture"). When the participant disconnected, the existing cleanup just nulled `currentLLM` — but that only dropped the JS reference. The underlying Claude Code subprocess kept draining the `MessageChannel`, running tools, capturing checkpoints, and pushing TTS into a now-null voice session. Visible in logs as repeated `⚠️ tts_say fired but currentSession is null — text dropped` followed by orphaned `🔧 Claude: Bash` calls and `📍 Checkpoint captured` lines that nobody was listening to. Wasted compute, wasted tokens, possible side effects on the user's filesystem from a "completed" session.
+- **Fix**: New `killCurrentLLM(reason)` helper that duck-types `abortQuery()` (on `ClaudeLLM`) or `abortAgent()` (on `PipelineDirectLLM`). Both call into `closeSession()` which kills the subprocess via the SDK's `query.close()`. Wired into all 3 cleanup sites: `RoomEvent.Disconnected`, the previous-session cleanup branch when a new participant joins while an old session lingers, and the `ParticipantDisconnected` handler.
+- **Files**: `agent/src/index.ts` — `killCurrentLLM()` definition + 3 call sites.
+
+#### Self-healing CWD fallback chain
+- **Problem**: `defaultWorkingDir` blindly trusted whatever `OSBORN_CWD` env var was set, even if the path didn't exist. Cloud sandboxes provisioned with the old `OSBORN_CWD=/root/workspace` had `/root` as `drwx------` (unreadable to non-root) and the directory itself never created. When osborn passed that as `cwd` to the SDK's `child_process.spawn(node, [cli.js], { cwd })`, spawn errored ENOENT and the SDK reported the misleading `Claude Code executable not found at .../cli.js` error. Same shape would bite local users who edited `config.workingDirectory` to a deleted path.
+- **Fix**: `main()` now walks `[OSBORN_CWD env, config.workingDirectory, process.cwd()]` in priority order and picks the FIRST entry whose path actually exists on disk via `existsSync`. `process.cwd()` is the ultimate safety net (it always exists by definition). Skipped candidates are logged with the reason so misconfiguration is visible.
+- **Lesson preserved in code**: When you see "Claude Code executable not found" in any SDK context, FIRST check `process.env.OSBORN_CWD` and whether that path exists/is readable. The error message lies about what's missing.
+- **Files**: `agent/src/index.ts` — `main()` cwd resolution.
+- **Version bump**: agent → 0.8.6.
+
+#### Daytona toolbox-proxy race fix (`waitForToolboxReady()`)
+- **Problem**: Daytona's metadata API (`GET /api/sandbox/{id}`) flips the `state` field to `started` BEFORE its toolbox reverse-proxy has resolved the container's IP. If you immediately call `process/execute` after seeing `state: started`, the toolbox returns `400 "failed to resolve container IP after 3 attempts: no IP address found. Is the Sandbox started?"` and `execInSandbox()` throws. Race window is typically 2–6 seconds wide on a warm runner.
+- **Symptom**: dashboard Resume appearing to "work" (state flips to running) while the chat page hangs on `/room-code` with 502 Bad Gateway. The supervisor exec to launch osborn was firing inside the race window, silently failing, and leaving the container running with NOTHING bound on port 8741.
+- **Fix**: `waitForToolboxReady(sandboxId)` polls `echo ready` via `process/execute` (5s timeout each attempt, up to 15 attempts × 2s wait). Called from both `createSandbox()` (after state flips to `started`) and `startSandbox()` (after Resume triggers a new start). If the toolbox is already routing, the first attempt returns in ~200ms; if we're mid-race, it waits up to ~30s for the proxy to come online.
+- **Files**: `frontend/src/lib/daytona.ts` — `waitForToolboxReady()` definition + 2 call sites.
+
+#### Daytona supervisor wrapper removed (avoid hanging on restart requests)
+- **Problem (subtle)**: An attempt to wrap osborn in `bash -c 'while true; do osborn; done'` for auto-restart introduced a fatal regression: the bash process inherits the toolbox `process/execute` stdout/stderr pipe and never closes it. Daytona's endpoint waits indefinitely for the pipe to close before returning, the Next.js fetch hangs for the full undici 5-minute headers timeout (`UND_ERR_HEADERS_TIMEOUT`), and `startSandbox()` returns null with the misleading "fetch failed" message. The deployed Stop/Resume flow was completely broken from this exact bug for as long as the supervisor wrapper existed — Resume click hangs forever, refresh shows "running", connecting to `/room-code` 502s.
+- **Why**: When osborn is the immediate child of `nohup`, Node properly closes the inherited stdio fds when it sets up its own logging. The toolbox sees the close and `process/execute` returns in ~2s instead of ~5min.
+- **Trade-off**: No auto-restart on osborn's `process.exit()` self-exit path. That self-exit is a separate bug from a LiveKit publisher timeout — should be fixed in osborn (don't self-exit when no process manager exists), not papered over with a wrapper that breaks startup.
+- **Big in-code comment**: Added to both `createSandbox()` and `startSandbox()` so the next person who tries to add a supervisor loop will SEE this and reconsider.
+- **Files**: `frontend/src/lib/daytona.ts`.
+
+#### `autoStopInterval: 0` — defuse Daytona disk-fill bug
+- **Problem**: Self-hosted Daytona has a chronic backup-system bug. Every auto-stop triggers a `CREATE_BACKUP` job that races a `STOP_SANDBOX` job. The stop wins (millisecond commit vs second commit), leaving the backup with `context canceled` (verifiable in `docker logs daytona-runner-1` — search for "Backup canceled for container"). Compounding that, the few backups that DO win the race are accumulated forever: `backup.manager.ts` has 4 cron jobs that CREATE backups but ZERO crons that delete them. `deleteBackupImageFromRegistry()` (`docker-registry.service.ts:710`) is dead code with no callers anywhere in the repo.
+- **Damage**: Hit 100/100 GB on Hostinger after one day of debug, with 9 historical backups of a single sandbox eating 38 GB. Recovery required SSH + manual `docker exec daytona-runner-1 docker image prune -af` + registry garbage-collect.
+- **Fix (defense in depth)**:
+  1. `autoStopInterval: 0` in `createSandbox()` — sandboxes don't auto-stop, so backup cycles only fire when the user explicitly stops. Big in-code comment warns the next person not to re-enable.
+  2. `/etc/cron.daily/daytona-backup-prune` on the VPS keeps the latest 2 backups per sandbox, runs registry GC.
+- **Trade-off**: Sandboxes stay running until explicitly stopped. On self-hosted Hostinger this costs zero (already paid for) and improves UX. When/if scaling to many real users on shared infra, re-enable auto-stop AFTER patching `backup.manager.ts` to delete old backups.
+- **Files**: `frontend/src/lib/daytona.ts`.
+
+#### `workingDirectory` parameter forwarded through session handling
+- **Problem**: Frontend metadata included a `workingDirectory` field that the agent silently ignored. Sessions booted in whatever the agent's startup CWD was, not what the user selected.
+- **Fix**: `ParticipantConnected` handler reads `metadata.workingDirectory` and overrides `workingDir` for the duration of the session. New connections without the field reset to `defaultWorkingDir`.
+- **Files**: `agent/src/index.ts`.
+
+---
+
+### v0.8.5 — Mixed-Content Handling + Public Origin Resolution
+
+#### Public origin resolution for OAuth redirects
+- **Problem**: OAuth callbacks (Google, GitHub) redirected to whatever the request `host` was — broke when the frontend sat behind a proxy or had a public domain different from the internal host.
+- **Fix**: New helper resolves the public origin from `X-Forwarded-Proto` + `X-Forwarded-Host` headers (with `host` fallback) so OAuth flows redirect back to the public URL.
+
+#### Mixed-content fixes in Chat and Dashboard
+- HTTPS frontend connecting to a `http://localhost:8741` agent triggered Chrome mixed-content blocks. Updated Chat and Dashboard pages to detect mixed-content scenarios and show a clear error message instead of failing silently.
+- Added an icon SVG for the dashboard.
+
+---
+
+### v0.8.4 — Daytona Sandbox Provisioning + File Attachments + Permission Diff Viewer
+
+#### Daytona sandbox provisioning
+- Initial wiring of `frontend/src/lib/daytona.ts`, `frontend/src/app/api/sandbox/route.ts`, and the `connectionMode` localStorage toggle in dashboard settings.
+- See v0.8.3 for the full provisioning + fix history; v0.8.4 was the first version that landed it as a feature.
+
+#### File attachments with inline image rendering
+- New `MessageContent` component supports inline images and file attachments in chat messages. Images render as `<img>` tags, files as download cards.
+- Storage bucket renamed from `osborn-uploads` to `osborn-storage`.
+
+#### Permission modal: collapsible git-style diff viewer
+- `diff` + `diff2html` rendering for Write/Edit/MultiEdit permission requests. Collapsible diff hunks, line numbers, addition/deletion counts.
+
+---
+
+### v0.8.3 — Per-User Cloud Sandboxes (Self-Hosted Daytona, original entry)
 
 #### Cloud Sandbox Provisioning
 - **Self-hosted Daytona on Hostinger VPS**: `daytona.voice-native.com` (KVM 2, ~$11/mo all-in). Caddy-fronted HTTPS via Let's Encrypt, on-demand TLS for sandbox subdomains

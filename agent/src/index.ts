@@ -247,6 +247,44 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    // GET /events — Server-Sent Events heartbeat for cloud-sandbox keepalive.
+    //
+    // This endpoint is the single thing preventing Sprites' CRIU-based
+    // hibernation from freezing osborn's Node.js event loop and dropping our
+    // LiveKit WebSocket mid-session. Short HTTP pings don't work: Sprites'
+    // warm state serves /health responses from a process snapshot without
+    // actually resuming the event loop, so background timers (including
+    // LiveKit heartbeats) stop firing after a few seconds. That causes the
+    // LiveKit server to drop osborn's participant, delete the room, and
+    // leave any future user joins stuck at "Connecting..." forever.
+    //
+    // An OPEN long-lived TCP connection keeps the sprite in 'running' state.
+    // The frontend opens this endpoint on chat page mount and holds it open
+    // for the entire voice session. While open, osborn's event loop ticks
+    // continuously, LiveKit heartbeats fire, and the room stays alive.
+    //
+    // For local (non-cloud) dev, this endpoint is harmless — it just idles
+    // on a client that may never connect. Zero cost when unused.
+    if (req.method === 'GET' && url.pathname === '/events') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        // Disable proxy buffering (nginx-style) so each ping is flushed
+        // through Sprites' reverse proxy immediately rather than batched.
+        'X-Accel-Buffering': 'no',
+      })
+      res.write(`: sprite-keepalive connected at ${new Date().toISOString()}\n\n`)
+      const heartbeat = setInterval(() => {
+        try { res.write(`: ping ${Date.now()}\n\n`) } catch {}
+      }, 10_000)
+      req.on('close', () => {
+        clearInterval(heartbeat)
+        console.log('[events] SSE client disconnected')
+      })
+      console.log('[events] SSE client connected')
+      return
+    }
 
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: 'Not found' }))
@@ -451,6 +489,41 @@ async function main() {
   let currentSession: voice.AgentSession | null = null
   let currentAgent: voice.Agent | null = null  // For updateChatCtx() context injection
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
+
+  /**
+   * Hard-kill the in-flight Claude SDK query AND the persistent subprocess.
+   *
+   * Why this exists: the persistent ClaudeLLM session is deliberately kept alive
+   * across user messages to avoid JSONL replay (see CLAUDE.md "Persistent Session
+   * Architecture"). When the participant disconnects, simply nulling `currentLLM`
+   * drops the JS reference but does NOT kill the underlying Claude Code subprocess
+   * — the SDK keeps draining the MessageChannel, running tools, and pushing TTS
+   * calls into a now-null voice session. Visible in logs as repeated:
+   *   "⚠️ tts_say fired but currentSession is null — text dropped"
+   * followed by orphaned `🔧 Claude: Bash` calls and `📍 Checkpoint captured` lines
+   * that nobody is listening to. Wasted compute, wasted tokens, possible side effects.
+   *
+   * The right cleanup is `abortQuery()` (on ClaudeLLM directly) or `abortAgent()`
+   * (on PipelineDirectLLM, which wraps ClaudeLLM). They both call into
+   * `closeSession()` → kills the subprocess. We duck-type to handle both class
+   * shapes since `currentLLM` can hold either, depending on voice mode.
+   */
+  function killCurrentLLM(reason: string): void {
+    if (!currentLLM) return
+    try {
+      const llm = currentLLM as any
+      if (typeof llm.abortQuery === 'function') {
+        llm.abortQuery()
+      } else if (typeof llm.abortAgent === 'function') {
+        llm.abortAgent()
+      } else {
+        console.warn(`⚠️ killCurrentLLM(${reason}): no abort method on currentLLM`)
+      }
+    } catch (err) {
+      console.error(`❌ killCurrentLLM(${reason}) failed:`, err instanceof Error ? err.message : err)
+    }
+  }
+
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
   // Session-level always-allow list: paths the user has approved for this session without prompting
@@ -550,7 +623,7 @@ async function main() {
     // fullText is what was being spoken when interrupted (passed from tts_say handler).
     // No word-level cutoff for say() — only generateReply pipeline has that — but Claude
     // knows its own output from JSONL, so the full block is enough context.
-    console.log(`🔇 Speech interrupted. Was speaking: "${fullText.substring(0, 80)}..."`)
+    console.log(`🔇 Speech interrupted. Was speaking (${fullText.length} chars): "${fullText}"`)
 
     // Read last 10 assistant messages from JSONL (Claude's full untruncated output).
     // SessionMessage.text is pre-joined from all text content blocks.
@@ -816,7 +889,18 @@ async function main() {
   }
 
   // Helper to send data to frontend (with size limit handling)
-  const MAX_MESSAGE_SIZE = 60000
+  //
+  // WebRTC SCTP data channel max message size is ~256KB. Sending larger
+  // payloads corrupts the publisher transport, killing ALL subsequent sends.
+  // We enforce a soft limit (truncate text/content fields) and a hard limit
+  // (drop the message entirely with a warning) to prevent this.
+  // ⚠️ These limits protect the LiveKit SCTP publisher peer connection.
+  // During session resume, 12 artifact requests arrive simultaneously and the agent
+  // sends responses back-to-back. If the cumulative payload exceeds the SCTP buffer
+  // (~50-100 KB in rapid fire), the publisher PC enters a zombie state and NEVER
+  // recovers — the user hears nothing for the rest of the connection. Keep these low.
+  const MAX_MESSAGE_SIZE = 30000       // 30KB soft limit — truncate text/content fields
+  const HARD_MAX_MESSAGE_SIZE = 50000  // 50KB hard limit — drop if still too large after truncation
 
   async function sendToFrontend(data: object) {
     if (!localParticipant) {
@@ -827,19 +911,38 @@ async function main() {
       const encoder = new TextEncoder()
       let jsonData = JSON.stringify(data)
 
-      // If message is too large, truncate the text content
+      // If message is too large, truncate the text or content field
       if (jsonData.length > MAX_MESSAGE_SIZE) {
         const truncatedData = { ...data } as any
+        // Try truncating .text first (assistant_response, claude_output, etc.)
         if (truncatedData.text && typeof truncatedData.text === 'string') {
           const overhead = JSON.stringify({ ...truncatedData, text: '' }).length
           const maxTextLength = MAX_MESSAGE_SIZE - overhead - 100
           truncatedData.text = truncatedData.text.substring(0, maxTextLength) + '\n\n[Message truncated due to size limit]'
           jsonData = JSON.stringify(truncatedData)
-          console.log(`⚠️ Message truncated from ${(data as any).text?.length} to ${truncatedData.text.length} chars`)
+          console.log(`⚠️ Message truncated .text from ${(data as any).text?.length} to ${truncatedData.text.length} chars`)
+        }
+        // Also try truncating .content (research_artifact_content, plan_file_content)
+        if (jsonData.length > MAX_MESSAGE_SIZE && truncatedData.content && typeof truncatedData.content === 'string') {
+          const overhead = JSON.stringify({ ...truncatedData, content: '' }).length
+          const maxContentLength = MAX_MESSAGE_SIZE - overhead - 100
+          truncatedData.content = truncatedData.content.substring(0, maxContentLength) + '\n\n[Content truncated due to size limit]'
+          truncatedData.truncated = true
+          truncatedData.originalSize = Buffer.byteLength((data as any).content, 'utf-8')
+          jsonData = JSON.stringify(truncatedData)
+          console.log(`⚠️ Message truncated .content from ${(data as any).content?.length} to ${truncatedData.content.length} chars`)
         }
       }
 
+      // Hard cap — if still too large after truncation, drop entirely.
+      // This prevents a 480KB base64 image or similar from killing the
+      // WebRTC publisher transport (which is unrecoverable without reconnect).
       const payload = encoder.encode(jsonData)
+      if (payload.length > HARD_MAX_MESSAGE_SIZE) {
+        console.error(`❌ sendToFrontend: dropping message (${(payload.length / 1024).toFixed(0)}KB > ${(HARD_MAX_MESSAGE_SIZE / 1024).toFixed(0)}KB hard limit) — type: ${(data as any).type}`)
+        return
+      }
+
       await localParticipant.publishData(payload, {
         reliable: true,
         topic: 'osborn-updates',
@@ -943,7 +1046,7 @@ async function main() {
 
     // Wire up Claude text output - RAW text goes to frontend for chat bubbles
     directLLM.events.on('assistant_text', (data) => {
-      console.log(`💬 Claude text: ${data.text?.substring(0, 60)}...`)
+      console.log(`💬 Claude text (${data.text?.length || 0} chars): ${data.text || ''}`)
       sendToFrontend({
         type: 'claude_output',
         text: data.text,
@@ -954,7 +1057,7 @@ async function main() {
 
     // Wire up Claude final result - RAW result goes to frontend
     directLLM.events.on('assistant_result', (data) => {
-      console.log(`📋 Claude result: ${data.text?.substring(0, 60)}...`)
+      console.log(`📋 Claude result (${data.text?.length || 0} chars): ${data.text || ''}`)
       sendToFrontend({
         type: 'claude_output',
         text: data.text,
@@ -1072,7 +1175,7 @@ async function main() {
     directLLM.events.on('tts_say', (data) => {
       // Guard: session must be alive — TTS errors can kill the session while background query runs
       if (!currentSession) {
-        console.warn(`⚠️ tts_say fired but currentSession is null — text dropped: "${data.text?.substring(0, 60)}"`)
+        console.warn(`⚠️ tts_say fired but currentSession is null — text dropped (${data.text?.length || 0} chars): "${data.text || ''}"`)
         return
       }
       if (!data.text?.trim()) {
@@ -1081,7 +1184,7 @@ async function main() {
       }
 
       const sayId = Date.now() // simple ID to correlate start/end logs
-      console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text.substring(0, 60)}..."`)
+      console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
 
       try {
         const handle = (currentSession as any).say(data.text)
@@ -1223,7 +1326,7 @@ async function main() {
     })
 
     realtimeClaudeHandler.events.on('assistant_result', (data) => {
-      console.log(`📋 Claude result: ${data.text?.substring(0, 60)}...`)
+      console.log(`📋 Claude result (${data.text?.length || 0} chars): ${data.text || ''}`)
       sendToFrontend({
         type: 'claude_output',
         text: data.text,
@@ -1743,6 +1846,9 @@ async function main() {
     lastCompletedResearch = null
     currentSession = null
     currentAgent = null
+    // Same disconnect-leak fix as the other two cleanup sites — kill the Claude SDK
+    // subprocess BEFORE dropping the reference. See killCurrentLLM() for full context.
+    killCurrentLLM('disconnected_cleanup')
     currentLLM = null
     clearFastBrainSession()
     clearPipelineFastBrainSession()
@@ -1784,6 +1890,9 @@ async function main() {
       } catch {}
       currentSession = null
       currentAgent = null
+      // Same disconnect-leak fix — kill the previous user's Claude subprocess
+      // before binding currentLLM to the new user's session below.
+      killCurrentLLM('previous_session_cleanup')
       currentLLM = null
     }
 
@@ -1811,10 +1920,25 @@ async function main() {
         preSelectedSessionId = metadata.sessionId
         console.log(`📂 Pre-selected session from frontend: ${preSelectedSessionId}`)
       }
-      // Read working directory override from frontend
+      // Read working directory override from frontend.
+      //
+      // Must validate with existsSync before accepting: a broken reverse-slug in
+      // the frontend's session list (see `slugToPath` in config.ts — the encoding
+      // is lossy), a deleted project, or a bad legacy client can all produce a
+      // non-existent path here. Passing a non-existent cwd to
+      // `child_process.spawn` in the Claude SDK errors with ENOENT, which the
+      // SDK then reports as the misleading "Claude Code executable not found at
+      // .../cli.js" error (see MEMORY bug fix #11). Fall back to defaultWorkingDir
+      // (which is itself existsSync-verified at startup).
       if (metadata.workingDirectory && typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0) {
-        workingDir = metadata.workingDirectory
-        console.log(`📂 Working directory from frontend: ${workingDir}`)
+        if (existsSync(metadata.workingDirectory)) {
+          workingDir = metadata.workingDirectory
+          console.log(`📂 Working directory from frontend: ${workingDir}`)
+        } else {
+          console.log(`⚠️  Frontend sent workingDirectory that does not exist: ${metadata.workingDirectory}`)
+          console.log(`   Falling back to default: ${defaultWorkingDir}`)
+          workingDir = defaultWorkingDir
+        }
       } else {
         // Reset to default for new connections (in case previous session changed it)
         workingDir = defaultWorkingDir
@@ -1935,7 +2059,7 @@ async function main() {
         // (Gemini v1.0.51: userInput in generateReply creates a user conversation item)
         if (normalized.startsWith('[SCRIPT]') || normalized.startsWith('[PROACTIVE]') || normalized.startsWith('[NOTIFICATION]')) return
 
-        console.log(`📝 User (${source}): "${transcript.substring(0, 60)}..."`)
+        console.log(`📝 User (${source}, ${transcript.length} chars): "${transcript}"`)
         sendToFrontend({ type: 'user_transcript', text: transcript })
         lastSentUserTranscript = normalized
       }
@@ -1945,7 +2069,7 @@ async function main() {
         const normalized = text.trim().replace(/\s+/g, ' ')
         if (normalized === lastSentAgentTranscript) return
 
-        console.log(`💬 Agent (${source}): "${text.substring(0, 60)}..."`)
+        console.log(`💬 Agent (${source}, ${text.length} chars): "${text}"`)
         sendToFrontend({ type: 'assistant_response', text })
         lastSentAgentTranscript = normalized
       }
@@ -2408,6 +2532,9 @@ async function main() {
       })()
     }
     currentAgent = null
+    // Kill the Claude SDK subprocess BEFORE dropping the reference, otherwise the
+    // persistent session keeps running tools and pushing TTS into a dead session.
+    killCurrentLLM('participant_disconnected')
     currentLLM = null
     clearFastBrainSession()
     clearPipelineFastBrainSession()
@@ -2452,9 +2579,9 @@ async function main() {
               fullContent += `\n\n[Image attached: ${f.name}]`
             }
           }
-          console.log(`📝 Text + ${files.length} file(s): "${fullContent.substring(0, 100)}"`)
+          console.log(`📝 Text + ${files.length} file(s) (${fullContent.length} chars): "${fullContent}"`)
         } else {
-          console.log(`📝 Text: "${fullContent.substring(0, 100)}"`)
+          console.log(`📝 Text (${fullContent.length} chars): "${fullContent}"`)
         }
         // Skip interrupt for Gemini — disrupts state machine (hangs in speaking state)
         if (currentProvider !== 'gemini') {
@@ -2709,12 +2836,41 @@ async function main() {
             const fileName = filePath.split('/').pop() || ''
             const ext = fileName.split('.').pop()?.toLowerCase() || ''
             const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)
+
+            // WebRTC SCTP data channel max message size is ~256KB. Sending
+            // larger payloads corrupts the publisher transport, killing ALL
+            // subsequent sends (publishData, streamBytes, publishTranscription)
+            // with "could not establish publisher connection: timeout". This
+            // was the root cause of the career-ops session bug: a 480KB
+            // evaluation report blew through the limit on resume.
+            // ⚠️ MUST be low — not just per-message but cumulative back-to-back pressure.
+            // 12 artifact requests arrive simultaneously during session resume. Even if
+            // each is individually "safe", flooding them kills the publisher PC. At 200KB
+            // the search-index.txt (136KB) passed through and poisoned the connection.
+            // 30KB catches search-index.txt (136KB), resume.pdf (233KB), and search-index-
+            // meta.json (5.7KB passes). resume.html (14KB) also passes — acceptable.
+            const MAX_DATA_CHANNEL_BYTES = 30_000 // 30KB max per artifact
+
             if (isImage) {
-              const base64 = fs.readFileSync(filePath, 'base64')
-              await sendToFrontend({ type: 'research_artifact_content', filePath, content: base64, fileName, isImage: true, mimeType: `image/${ext}` })
+              const stats = fs.statSync(filePath)
+              const base64Size = Math.ceil(stats.size * 4 / 3) // base64 inflates ~33%
+              if (base64Size > MAX_DATA_CHANNEL_BYTES) {
+                console.log(`⚠️ Artifact too large for data channel: ${fileName} (${(base64Size / 1024).toFixed(0)}KB base64) — sending truncation notice`)
+                await sendToFrontend({ type: 'research_artifact_content', filePath, content: '', fileName, isImage: false, truncated: true, originalSize: stats.size })
+              } else {
+                const base64 = fs.readFileSync(filePath, 'base64')
+                await sendToFrontend({ type: 'research_artifact_content', filePath, content: base64, fileName, isImage: true, mimeType: `image/${ext}` })
+              }
             } else {
               const content = fs.readFileSync(filePath, 'utf-8')
-              await sendToFrontend({ type: 'research_artifact_content', filePath, content, fileName, isImage: false })
+              if (Buffer.byteLength(content, 'utf-8') > MAX_DATA_CHANNEL_BYTES) {
+                // Send a truncated preview + metadata so the frontend knows the file exists
+                const truncated = content.substring(0, 5_000) // ~5KB preview (keep well under the 30KB limit)
+                console.log(`⚠️ Artifact too large for data channel: ${fileName} (${(Buffer.byteLength(content, 'utf-8') / 1024).toFixed(0)}KB) — sending truncated preview`)
+                await sendToFrontend({ type: 'research_artifact_content', filePath, content: truncated, fileName, isImage: false, truncated: true, originalSize: Buffer.byteLength(content, 'utf-8') })
+              } else {
+                await sendToFrontend({ type: 'research_artifact_content', filePath, content, fileName, isImage: false })
+              }
             }
           } catch (err) {
             await sendToFrontend({ type: 'research_artifact_content', filePath, content: '', error: (err as Error).message })

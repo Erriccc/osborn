@@ -730,36 +730,75 @@ export interface ClaudeSessionEntry {
 }
 
 /**
- * Reverse a project slug back to a path (best-effort — replace leading dash, then dashes→slashes).
- * "-Users-foo-bar" → "/Users/foo/bar"
+ * Reverse a project slug back to a path — LAST-RESORT fallback only.
+ *
+ * Claude's slug encoding (`/` → `-`, `.` → `-`) is LOSSY: you can't tell from a
+ * slug whether a given `-` was originally `/`, `.`, or a literal `-` inside a
+ * directory name like `pensive-bohr`. So this function cannot reliably
+ * round-trip an arbitrary path.
+ *
+ * Strategy: produce the naive guess (with a small `--` → `/.` improvement for
+ * dot-directories like `.claude`), then VALIDATE it with `existsSync`. If the
+ * guess doesn't exist, return empty string — that way the caller knows the
+ * reverse failed and can fall back cleanly instead of passing a broken path
+ * to `child_process.spawn` and crashing with ENOENT.
+ *
+ * The primary source of cwd is `extractCwd()` which reads the actual cwd from
+ * the JSONL file. This function is only reached when that fails.
  */
 function slugToPath(slug: string): string {
-  return slug.replace(/^-/, '/').replace(/-/g, '/')
+  // Naive reverse: leading `-` → `/`, `--` → `/.`, remaining `-` → `/`.
+  // The `--` → `/.` pass handles dot-prefixed directories like `.claude`.
+  const guess = slug
+    .replace(/^-/, '/')
+    .replace(/--/g, '/.')
+    .replace(/-/g, '/')
+  // Validate — lossy encoding means we cannot trust the guess.
+  return existsSync(guess) ? guess : ''
 }
 
 const UUID_JSONL_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
 
 /**
- * Extract cwd from first user message in a JSONL file.
- * Reuses the existing readline-based parsing pattern.
+ * Extract cwd from the first JSONL entry that carries a `cwd` field.
+ *
+ * Previously: read only the first 8KB and only accepted `type === 'user'`. That
+ * broke for sessions whose first JSONL entry was larger than 8KB — e.g. a
+ * `queue-operation` containing pasted email/page text. readline never emits the
+ * `line` event for an incomplete final chunk, so the scan finds nothing,
+ * `listAllClaudeSessions` falls through to the lossy `slugToPath` reverse, and
+ * the mangled path ends up as a `cwd` passed to `child_process.spawn`, producing
+ * the misleading "Claude Code executable not found" error (see MEMORY bug #11).
+ *
+ * Now: stream line-by-line with no byte cap, short-circuit on the first entry
+ * with a `cwd` field regardless of `type` (every `user` / `attachment` /
+ * `assistant` / `system` entry in a Claude JSONL session carries `cwd`, so the
+ * scan finishes in the first few KB of any normal session).
  */
 async function extractCwd(filePath: string): Promise<string> {
   return new Promise((resolve) => {
-    const fileStream = createReadStream(filePath, { end: 8192 }) // first 8KB
+    const fileStream = createReadStream(filePath)
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity })
+    let resolved = false
+    const done = (value: string) => {
+      if (resolved) return
+      resolved = true
+      try { rl.close() } catch {}
+      try { fileStream.destroy() } catch {}
+      resolve(value)
+    }
     rl.on('line', (line) => {
+      if (resolved) return
       if (!line.trim()) return
       try {
         const obj = JSON.parse(line)
-        if (obj.type === 'user' && obj.cwd) {
-          rl.close()
-          fileStream.destroy()
-          resolve(obj.cwd)
+        if (typeof obj?.cwd === 'string' && obj.cwd.length > 0) {
+          done(obj.cwd)
         }
       } catch {}
     })
-    rl.on('close', () => resolve(''))
-    rl.on('error', () => resolve(''))
+    rl.on('close', () => done(''))
+    rl.on('error', () => done(''))
   })
 }
 

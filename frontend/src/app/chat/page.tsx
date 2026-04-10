@@ -31,33 +31,77 @@ function ChatInner() {
   const [lastActivityAt, setLastActivityAt] = useState(Date.now())
   const [authRequired, setAuthRequired] = useState(false)
 
-  // Keepalive ping while user is connected to a cloud sandbox.
+  // Sprites cloud sandbox keepalive.
   //
-  // IMPORTANT: this must hit the sandbox's `/health` endpoint through the Daytona
-  // reverse proxy — not the Next.js `/api/sandbox` management endpoint. Daytona's
-  // auto-stop timer (`autoStopInterval: 15`) only resets when real traffic reaches
-  // the sandbox container via the proxy. A GET on Daytona's management API
-  // (`keepAliveSandbox()` in daytona.ts) doesn't count — we verified this the hard
-  // way when a sandbox auto-stopped mid-conversation despite the old keepalive
-  // firing every 5 minutes. Voice traffic through LiveKit Cloud also doesn't
-  // count because it flows outbound from the container, not inbound through
-  // Daytona's proxy — from Daytona's perspective the container looks idle even
-  // during a full voice conversation with multi-minute tool runs.
+  // Primary strategy: open a persistent SSE connection to osborn's /events
+  // endpoint and hold it open for the duration of the chat session. The open
+  // TCP connection keeps the sprite in 'running' state, which keeps osborn's
+  // Node.js event loop ticking, which keeps LiveKit heartbeats firing, which
+  // keeps the LK room alive. This is the only strategy that actually works
+  // with Sprites — we verified empirically that short HTTP pings are
+  // insufficient because Sprites' 'warm' state serves responses from a
+  // process snapshot without resuming the event loop (background timers
+  // don't fire between requests, so LK heartbeats stop within seconds of
+  // hibernation, LK drops the WebSocket, the room is deleted).
   //
-  // Hitting `{agentUrl}/health` pushes a real HTTP request through
-  // `https://8741-{sandboxId}.daytona.voice-native.com/health`, which goes
-  // through Daytona's reverse proxy and resets the activity timer correctly.
+  // Fallback strategy: older osborn versions may not have /events yet.
+  // When SSE fails with a permanent error (404, etc.), fall back to the
+  // legacy 20-second /health ping. This is INSUFFICIENT for keeping the
+  // LK room alive, but at least keeps the sprite from going fully cold so
+  // HTTP endpoints remain responsive. A visible warning logs to console
+  // so devs notice the sprite needs an osborn version with /events.
   useEffect(() => {
     if (!connected) return
     if (!agentUrl) return
-    // Only ping cloud sandboxes — local agents don't auto-stop
+    // Only relevant for cloud sandboxes — local agents don't hibernate
     if (!activeSandboxId) return
-    const ping = () => {
-      fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(5000) }).catch(() => {})
+    if (agentUrl.startsWith('http://localhost')) return
+
+    let es: EventSource | null = null
+    let pingInterval: ReturnType<typeof setInterval> | null = null
+    let usingFallback = false
+
+    const startFallback = (reason: string) => {
+      if (usingFallback) return
+      usingFallback = true
+      console.warn(
+        `[sprite-keepalive] SSE unavailable (${reason}) — falling back to /health pings`,
+      )
+      console.warn(
+        '[sprite-keepalive] WARNING: ping-based keepalive is INSUFFICIENT for LiveKit ' +
+          'on Sprites. Voice session may stall. Deploy osborn with /events endpoint.',
+      )
+      const ping = () => {
+        fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(5000) }).catch(() => {})
+      }
+      pingInterval = setInterval(ping, 20 * 1000)
+      ping()
     }
-    const interval = setInterval(ping, 5 * 60 * 1000) // every 5 min (well under 15-min auto-stop)
-    ping() // immediate ping
-    return () => clearInterval(interval)
+
+    const sseUrl = `${agentUrl}/events`
+    console.log(`[sprite-keepalive] opening SSE to ${sseUrl}`)
+    try {
+      es = new EventSource(sseUrl)
+      es.onopen = () => console.log('[sprite-keepalive] SSE connected')
+      es.onerror = () => {
+        // EventSource fires onerror both for transient failures (auto-reconnects
+        // with exponential backoff) and permanent failures (4xx/5xx, sets
+        // readyState to CLOSED). Only fall back on permanent failures.
+        if (es && es.readyState === EventSource.CLOSED) {
+          startFallback('SSE closed permanently (likely 404 — old osborn version)')
+          es = null
+        }
+        // readyState === CONNECTING → EventSource will auto-reconnect, do nothing
+      }
+    } catch (err) {
+      startFallback(`SSE init failed: ${(err as Error).message}`)
+    }
+
+    return () => {
+      console.log('[sprite-keepalive] cleanup')
+      if (es) es.close()
+      if (pingInterval) clearInterval(pingInterval)
+    }
   }, [connected, agentUrl, activeSandboxId])
 
   // Auto-disconnect after 20 min of no user activity (preserves LiveKit + cloud)
@@ -121,21 +165,32 @@ function ChatInner() {
           if (sandboxData.available && sandboxData.sandbox) {
             const sb = sandboxData.sandbox
             setActiveSandboxId(sb.id)
-            if (sb.status === 'stopped') {
-              setStatusMsg('Resuming your workspace...')
+            if (sb.status !== 'running') {
+              setStatusMsg(sb.status === 'warm' ? 'Resuming your workspace...' : 'Starting your workspace...')
+              console.log(`[chat] Sandbox is ${sb.status} — starting it...`)
               const startRes = await fetch('/api/sandbox', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'start', sandboxId: sb.id }),
               })
-              const startData = await startRes.json()
-              if (startData.previewUrl) {
-                resolvedUrl = startData.previewUrl
-                setAgentUrl(resolvedUrl)
+              if (startRes.ok) {
+                const startData = await startRes.json()
+                if (startData.previewUrl) {
+                  resolvedUrl = startData.previewUrl
+                  setAgentUrl(resolvedUrl)
+                  // Update URL bar to show the actual cloud agent URL, not localhost
+                  const url = new URL(window.location.href)
+                  url.searchParams.set('agentUrl', resolvedUrl)
+                  window.history.replaceState({}, '', url.toString())
+                }
               }
             } else if (sb.status === 'running' && sb.previewUrl) {
               resolvedUrl = sb.previewUrl
               setAgentUrl(resolvedUrl)
+              // Update URL bar to show the actual cloud agent URL, not localhost
+              const url = new URL(window.location.href)
+              url.searchParams.set('agentUrl', resolvedUrl)
+              window.history.replaceState({}, '', url.toString())
             }
           }
         } catch {
@@ -146,20 +201,43 @@ function ChatInner() {
 
       setStatusMsg('Connecting to agent...')
 
-      // Step 2: Get room code from agent.
-      // Mixed-content guard: skip the fetch if frontend is HTTPS but the agent URL is HTTP —
-      // the browser will block the request and flag the page "Not Secure" otherwise.
-      // Without a room code we fall through to letting the API generate one fresh.
+      // Step 2: Fetch room code from agent.
+      // Cloud mode: proxy through Next.js API — handles cold-wake and CORS server-side.
+      // Local mode: direct fetch with mixed-content guard (skip if HTTPS frontend → HTTP agent).
       let code: string | null = null
-      const isMixedContent = typeof window !== 'undefined' &&
-        window.location.protocol === 'https:' &&
-        resolvedUrl.startsWith('http://')
-      if (!isMixedContent) {
-        try {
-          const r = await fetch(`${resolvedUrl}/room-code`)
-          const d = await r.json()
-          if (d.roomCode) code = d.roomCode
-        } catch {}
+      try {
+        if (connectionMode === 'cloud') {
+          // Proxy through Next.js API — handles cold-wake and CORS server-side
+          const r = await fetch('/api/sandbox', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'room-code' }),
+          })
+          if (r.ok) {
+            const d = await r.json() as { roomCode?: string; agentUrl?: string }
+            code = d.roomCode ?? null
+            if (d.agentUrl) {
+              resolvedUrl = d.agentUrl
+              setAgentUrl(resolvedUrl)
+              // Update URL bar to show the actual cloud agent URL, not localhost
+              const url = new URL(window.location.href)
+              url.searchParams.set('agentUrl', resolvedUrl)
+              window.history.replaceState({}, '', url.toString())
+            }
+          }
+        } else {
+          // Local mode — direct fetch (mixed-content guard still applies)
+          const isMixed = window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
+          if (!isMixed) {
+            const r = await fetch(`${resolvedUrl}/room-code`, { signal: AbortSignal.timeout(3000) })
+            if (r.ok) {
+              const d = await r.json() as { roomCode?: string }
+              code = d.roomCode ?? null
+            }
+          }
+        }
+      } catch {
+        // room-code unavailable — token API will generate a fresh room
       }
 
       // Step 3: Get LiveKit token

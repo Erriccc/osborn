@@ -13,7 +13,20 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
+const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
+const TURN_SHAPE_REMINDER_PATH = join(__claudeLlmDir, 'prompts', 'turn-shape-reminder.md')
+
+// ≤3 direct tool call budget per turn. Reset on every UserPromptSubmit (new user message).
+// Enforced mechanically in PreToolUse — the model CANNOT exceed this regardless of JSONL history.
+// Task/Agent delegations are exempt (delegation is what we WANT). Sub-agent tool calls
+// (agent_type !== null) are exempt (they're inside a delegation). Only the main orchestrator
+// agent's direct tool calls count against the budget.
+let turnToolCallCount = 0
+const TOOL_CALL_BUDGET = 3
 
 export interface ClaudeLLMOptions {
   workingDirectory?: string      // cwd for Claude Code (where it reads/writes/runs commands)
@@ -699,7 +712,7 @@ export class ClaudeLLM extends llm.LLM {
               callbacks.eventEmitter.emit('assistant_text', { text: block.text })
               const ttsChunk = stripMarkdownForTTS(block.text)
               if (ttsChunk.trim()) {
-                console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk.substring(0, 60)}..."`)
+                console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
                 callbacks.eventEmitter.emit('tts_say', { text: ttsChunk })
               }
             }
@@ -862,7 +875,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         return
       }
 
-      console.log(`🎤 User: "${userText.substring(0, 100)}${userText.length > 100 ? '...' : ''}"`)
+      console.log(`🎤 User (${userText.length} chars): "${userText}"`)
 
       // Build Claude Agent SDK options
       const resumeSessionId = this.#opts.resumeSessionId
@@ -880,6 +893,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
         allowedTools,
+        // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
         model: this.#opts.model || 'claude-sonnet-4-6', // Sonnet orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
         enableFileCheckpointing: true,
         extraArgs: { 'replay-user-messages': null },
@@ -955,6 +969,23 @@ class ClaudeLLMStream extends llm.LLMStream {
               const agentType = input?.agent_type || null
               console.log(`🔍 PreToolUse: toolName=${toolName} agent_type=${agentType} agent_id=${(input as any)?.agent_id || 'none'} all_keys=[${Object.keys(input || {}).join(', ')}]`)
 
+              // ≤3 direct tool call budget enforcement.
+              // Only counts calls from the MAIN orchestrator agent (agent_type === null).
+              // Task/Agent delegations are exempt — delegation is the desired behavior.
+              // Sub-agent tool calls are exempt — they're inside a delegation.
+              if (!agentType && toolName !== 'Task' && toolName !== 'Agent') {
+                turnToolCallCount++
+                if (turnToolCallCount > TOOL_CALL_BUDGET) {
+                  console.log(`🛑 Tool budget exceeded (${turnToolCallCount}/${TOOL_CALL_BUDGET}) — DENYING ${toolName}. Must delegate via Task.`)
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Tool call budget exceeded (${turnToolCallCount}/${TOOL_CALL_BUDGET}). Delegate via Task.` })
+                  return {
+                    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' },
+                    reason: `Hard limit: maximum ${TOOL_CALL_BUDGET} direct tool calls per turn (you are at ${turnToolCallCount}). Delegate the remaining work to a sub-agent via Task(subagent_type=\'researcher\'|\'writer\'|\'reasoner\', run_in_background: true). This is a system-enforced limit.`,
+                  }
+                }
+                console.log(`🔧 Tool call ${turnToolCallCount}/${TOOL_CALL_BUDGET}: ${toolName}`)
+              }
+
               // Write/Edit/MultiEdit access control
               if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
                 // Writer sub-agent gets full write access everywhere
@@ -989,6 +1020,37 @@ class ClaudeLLMStream extends llm.LLMStream {
               console.log(`✅ Done: ${toolName}`)
               this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse })
               return {}
+            }]
+          }],
+          // Per-turn behavioral re-anchor. Fires on EVERY user message that reaches Claude
+          // (initial requests, follow-ups, mid-flight steering, resumed-session messages).
+          // Reads the reminder text from disk every call, so it's hot-editable just like the
+          // main prompt — edit agent/src/prompts/turn-shape-reminder.md, reconnect, next message
+          // sees the new reminder. The SDK injects `additionalContext` alongside the user's actual
+          // message so the model sees both the literal user input AND the reminder, weighing them
+          // together. This is what fights JSONL-history-overrides-system-prompt drift on resumed
+          // sessions: the conductor pattern gets re-asserted on every turn instead of being
+          // anchored only at session-init time.
+          UserPromptSubmit: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              try {
+                // Reset the per-turn tool call counter so the new turn starts fresh.
+                turnToolCallCount = 0
+
+                const reminder = readFileSync(TURN_SHAPE_REMINDER_PATH, 'utf-8')
+                const promptPreview = String(input?.prompt || '').substring(0, 60).replace(/\n/g, ' ')
+                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars) for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'UserPromptSubmit',
+                    additionalContext: reminder,
+                  },
+                }
+              } catch (err) {
+                console.error('⚠️ UserPromptSubmit: failed to load turn-shape-reminder.md:', err instanceof Error ? err.message : err)
+                return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit' } }
+              }
             }]
           }]
         },
@@ -1225,11 +1287,11 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (this.#opts.skipTTSQueue) {
                   // Direct mode: emit event for session.say() — bypasses LiveKit's
                   // BufferedTokenStream which causes stuck/delayed/out-of-order audio
-                  console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk.substring(0, 60)}..."`)
+                  console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
                   this.#eventEmitter.emit('tts_say', { text: ttsChunk })
                 } else {
                   // Realtime mode: use LLM stream queue (framework handles TTS)
-                  console.log(`🔊 TTS stream (${ttsChunk.length} chars): "${ttsChunk.substring(0, 60)}..."`)
+                  console.log(`🔊 TTS stream (${ttsChunk.length} chars): "${ttsChunk}"`)
                   this.queue.put({
                     id: requestId,
                     delta: { role: 'assistant', content: ttsChunk },
@@ -1252,10 +1314,10 @@ class ClaudeLLMStream extends llm.LLMStream {
             const ttsText = stripMarkdownForTTS(rawResult)
             if (ttsText.trim()) {
               if (this.#opts.skipTTSQueue) {
-                console.log(`🔊 TTS say result (${ttsText.length} chars): "${ttsText.substring(0, 60)}..."`)
+                console.log(`🔊 TTS say result (${ttsText.length} chars): "${ttsText}"`)
                 this.#eventEmitter.emit('tts_say', { text: ttsText })
               } else {
-                console.log(`🔊 TTS result (${ttsText.length} chars): "${ttsText.substring(0, 60)}..."`)
+                console.log(`🔊 TTS result (${ttsText.length} chars): "${ttsText}"`)
                 this.queue.put({
                   id: requestId,
                   delta: { role: 'assistant', content: ttsText },

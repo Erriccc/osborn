@@ -1,0 +1,59 @@
+# Osborn Sandbox — Fly.io Machines (per-user)
+# Installs osborn as npm package (not from source) for lightweight per-user machines.
+# Build: docker build -f Dockerfile.sandbox -t registry.fly.io/osborn-sandbox/agent:latest .
+# Push:  fly auth docker && docker push registry.fly.io/osborn-sandbox/agent:latest
+
+FROM node:22-slim
+
+# Runtime deps for osborn + claude-code
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y \
+    ca-certificates \
+    curl \
+    git \
+    python-is-python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install osborn + claude-code globally
+RUN npm install -g osborn@latest @anthropic-ai/claude-code
+
+# Persistent workspace + claude config dirs
+RUN mkdir -p /workspace /root/.claude
+
+ENV OSBORN_CWD=/workspace
+ENV OSBORN_API_PORT=8741
+ENV NODE_ENV=production
+
+WORKDIR /workspace
+
+EXPOSE 8741
+
+# Entrypoint: credential persistence + onboarding suppression + start
+COPY <<'ENTRYPOINT' /entrypoint.sh
+#!/bin/sh
+set -e
+
+# Claude credential persistence (volume at /workspace)
+mkdir -p /workspace/.claude
+rm -rf /root/.claude
+ln -sf /workspace/.claude /root/.claude
+
+# Suppress Claude Code interactive onboarding prompts
+ONBOARDING_JSON='{"numStartups":10,"installMethod":"npm","autoUpdates":false,"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true,"hasAcknowledgedCostThreshold":true,"effortCalloutV2Dismissed":true,"theme":"dark","projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true}}}'
+echo "$ONBOARDING_JSON" > /root/.claude.json
+mkdir -p /workspace/.claude
+echo "$ONBOARDING_JSON" > /workspace/.claude/.config.json
+echo "$ONBOARDING_JSON" > /workspace/.claude/claude.json
+
+# Restore OAuth token if persisted on volume
+if [ -f /workspace/.claude/.oauth-token ]; then
+  export CLAUDE_CODE_OAUTH_TOKEN="$(cat /workspace/.claude/.oauth-token)"
+  echo "[sandbox] Restored CLAUDE_CODE_OAUTH_TOKEN from volume"
+fi
+
+exec osborn
+ENTRYPOINT
+
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]

@@ -205,13 +205,40 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
   try {
     const { region } = getApiConfig()
     // Step 1: Create sandbox with env vars (note: field is `env`, not `envVars`)
+    //
+    // ⚠️ autoStopInterval intentionally set to 0 (disabled). DO NOT change this without
+    // reading the comment below — re-enabling it WILL fill the host VPS disk in days.
+    //
+    // Background: self-hosted Daytona has a chronic backup-system bug. Every auto-stop
+    // triggers a CREATE_BACKUP job that races a STOP_SANDBOX job. The stop wins because
+    // commit takes seconds and stop takes milliseconds, leaving the backup with
+    // `context canceled` (you can confirm in `docker logs daytona-runner-1` — search for
+    // "Backup canceled for container"). Compounding that, the few backups that DO win
+    // the race are accumulated forever: backup.manager.ts has four cron jobs that CREATE
+    // backups but ZERO crons that delete old ones, and `deleteBackupImageFromRegistry()`
+    // in docker-registry.service.ts:710 is dead code with no callers anywhere in the repo.
+    //
+    // We hit 100/100 GB on Hostinger after one day of debug, with 9 historical backups
+    // of a single sandbox eating 38 GB. Recovery required SSH + manual `docker exec
+    // daytona-runner-1 docker image prune -af` + registry garbage-collect.
+    //
+    // Defense in depth:
+    //   1. autoStopInterval: 0 here       — sandboxes don't auto-stop, so backup cycles
+    //                                       only fire when the user explicitly stops
+    //   2. /etc/cron.daily/daytona-backup-prune on the VPS — keeps the latest 2 backups
+    //                                       per sandbox, runs registry garbage-collect
+    //
+    // Trade-off: sandboxes stay running until explicitly stopped. On self-hosted Hostinger
+    // this costs zero (you've already paid for the VPS) and improves UX (no surprise
+    // disconnections mid-debugging). When/if scaling to many real users on shared infra,
+    // re-enable auto-stop AFTER patching backup.manager.ts to delete old backups.
     const sandbox = await api<DaytonaSandbox>('POST', '/api/sandbox', {
       image: 'node:22',
       env: getPlatformEnvVars(),  // ← persisted, available in shells
       labels: { userId, app: 'osborn' },
       public: true,
       target: region,              // ← `target`, not `region`
-      autoStopInterval: 15,
+      autoStopInterval: 0,         // ← DISABLED — see big comment above before changing
       autoArchiveInterval: 10080,
     })
     console.log(`📦 Sandbox created: ${sandbox.id}, waiting for state=started...`)

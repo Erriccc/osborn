@@ -124,7 +124,7 @@ export class PipelineDirectLLM extends llm.LLM {
       }
     }
 
-    console.log(`📥 [pipeline] chat() call #${callN}: "${userText.substring(0, 60)}"`)
+    console.log(`📥 [pipeline] chat() call #${callN} (${userText.length} chars): "${userText}"`)
 
     // Check for pending interruption context — enrich user message if interrupted
     const interruptCtx = this.#opts.getAndConsumeInterruptionContext?.()

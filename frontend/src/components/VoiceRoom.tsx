@@ -1893,6 +1893,20 @@ function VoiceRoomInner({
         setClaudeAuthStatus('complete')
         // Auto-dismiss after 3 seconds
         setTimeout(() => setClaudeAuthStatus('none'), 3000)
+        // Persist the OAuth token to the host-persistent layer so it survives
+        // service container restarts (warm→running transitions). Without this,
+        // credentials written inside the ephemeral container overlay are lost
+        // and the user has to re-authenticate every time the sprite resumes.
+        if (data.token) {
+          fetch('/api/sandbox', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'persist-auth', token: data.token }),
+          }).then(r => {
+            if (r.ok) console.log('✅ OAuth token persisted to sprite host layer')
+            else console.warn('⚠️ Failed to persist OAuth token:', r.status)
+          }).catch(err => console.warn('⚠️ Failed to persist OAuth token:', err))
+        }
       } else if (data.type === 'claude_auth_error') {
         console.log('❌ Claude auth error:', data.message)
         setClaudeAuthStatus('error')
@@ -2210,10 +2224,17 @@ function VoiceRoomInner({
                   <span>Preparing login...</span>
                 </div>
               )}
-              {claudeAuthStatus === 'waiting' && claudeAuthUrl && (
+              {(claudeAuthStatus === 'waiting' || claudeAuthStatus === 'waiting_code') && claudeAuthUrl && (
                 <div className="space-y-3">
                   <p className="text-sm text-gray-300">
-                    Click below to sign in, then paste the authentication code you receive.
+                    Sign in with your own Anthropic account &mdash; use this device or your phone.
+                  </p>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    After authorizing you&apos;ll land on a page that says
+                    &ldquo;connection refused&rdquo; or similar &mdash; that&apos;s expected. The code is in
+                    the browser&apos;s address bar: find <code className="text-amber-400">code=</code>&hellip; and
+                    copy everything up to the next <code className="text-amber-400">&amp;</code>, then paste
+                    it below.
                   </p>
                   <a
                     href={claudeAuthUrl}
@@ -2250,7 +2271,7 @@ function VoiceRoomInner({
                   </div>
                 </div>
               )}
-              {claudeAuthStatus === 'waiting_code' && (
+              {claudeAuthStatus === 'waiting_code' && !claudeAuthUrl && (
                 <div className="space-y-3">
                   <p className="text-sm text-gray-300">
                     Paste the authentication code from the browser:

@@ -151,7 +151,7 @@ class CodexLLMStream extends llm.LLMStream {
         return
       }
 
-      console.log(`🎤 User: "${userText.substring(0, 100)}${userText.length > 100 ? '...' : ''}"`)
+      console.log(`🎤 User (${userText.length} chars): "${userText}"`)
 
       // Create or reuse thread
       if (!this.#thread) {

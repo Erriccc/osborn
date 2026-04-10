@@ -80,6 +80,27 @@ function resolveClaudePath(): string {
 
 const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json')
 
+/**
+ * Strip ALL ANSI escape sequences from a string — CSI (including private
+ * prefixes like `?`), OSC (both BEL and ST terminators), and lone ESC bytes.
+ *
+ * This is a superset of the common `/\x1B\[[0-9;]*[A-Za-z]/g` pattern, which
+ * misses private-prefix modes like `\x1B[?2026h` and string terminators like
+ * `\x1B\\`. Claude's Ink UI uses these extensively and they leak into error
+ * messages and URLs when we only strip the basic CSI form.
+ */
+function stripAnsi(text: string): string {
+  return text
+    // Full CSI: ESC [ <intermediates 0x20–0x3F> <final 0x40–0x7E>
+    .replace(/\x1B\[[\x20-\x3F]*[\x40-\x7E]/g, '')
+    // OSC terminated by BEL (0x07) — ESC ] <content> BEL
+    .replace(/\x1B\][^\x07]*\x07/g, '')
+    // OSC terminated by ST (ESC \) — ESC ] <content> ESC \
+    .replace(/\x1B\][^\x1B]*\x1B\\/g, '')
+    // Any remaining lone ESC bytes (e.g. ESC \ string terminator used standalone)
+    .replace(/\x1B/g, '')
+}
+
 // URL matching: strip all whitespace first (like claudebox), then match
 // Handles Ink UI wrapping URLs across multiple lines
 const URL_REGEX = /https:\/\/claude\.(com|ai)\/cai\/oauth\/authorize[^\s]*/
@@ -177,27 +198,67 @@ export async function checkClaudeAuthStatus(): Promise<boolean> {
 
 /**
  * Extract OAuth URL from CLI output.
- * Strips ALL whitespace first (like vutran1710/claudebox) to handle
- * Ink UI wrapping the URL across multiple lines.
- * Also cleans trailing "Pastecodehereifprompted" that Ink appends.
+ *
+ * Strips ALL whitespace first (like vutran1710/claudebox) to handle Ink UI
+ * wrapping the URL across multiple lines. Cleans trailing junk the Ink UI
+ * appends (e.g. "Pastecodehereifprompted") and any stray ESC bytes.
+ *
+ * Note on redirect_uri: we used to strip it hoping claude.ai would fall back
+ * to an in-page code display, but claude.ai REQUIRES redirect_uri and returns
+ * "Invalid OAuth Request: Missing redirect_uri parameter" when it's missing.
+ * The pinned Claude Code client ID (9d1c250a-e61b-44d9-88ed-5944d1962f5e)
+ * only has http://localhost:<port>/callback URIs in its whitelist, so we
+ * can't rewrite to a public callback either — it would be rejected.
+ *
+ * Actual flow that works: keep the localhost redirect AS-IS. User clicks the
+ * URL on any device, authorizes. claude.ai 302s the browser to the localhost
+ * URL (which is unreachable). The browser shows "connection refused" but
+ * leaves the full URL in the address bar — including ?code=XXX&state=YYY.
+ * The user copies the `code` value from the address bar and pastes it into
+ * the modal. This is ugly on mobile but it's the only flow the server
+ * accepts.
  */
 function extractOAuthUrl(text: string): string | null {
-  // Strip ANSI codes
-  const noAnsi = text.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '')
-                     .replace(/\x1B\][^\x07]*\x07/g, '')
+  // Replace ALL ANSI control sequences with a NUL sentinel. NUL (not a
+  // space) because we strip all whitespace next to unwrap URLs that Ink
+  // split across terminal lines — a space would vanish and text on either
+  // side of a control sequence would fuse into the URL. NUL survives the
+  // strip and acts as a hard boundary the tail-cut below can detect.
+  //
+  // Uses the same patterns as stripAnsi() but replaces with SENTINEL
+  // instead of '' so boundaries are preserved.
+  const SENTINEL = '\x00'
+  const noAnsi = text
+    .replace(/\x1B\[[\x20-\x3F]*[\x40-\x7E]/g, SENTINEL)  // Full CSI (incl. private-prefix ?/</>/=)
+    .replace(/\x1B\][^\x07]*\x07/g, SENTINEL)              // OSC terminated by BEL
+    .replace(/\x1B\][^\x1B]*\x1B\\/g, SENTINEL)            // OSC terminated by ST (ESC \)
+    .replace(/\x1B/g, SENTINEL)                             // Lone ESC bytes
   // Strip all whitespace (claudebox pattern: strings.Join(strings.Fields(pane), ""))
+  // to unwrap URLs split across terminal lines. NUL sentinels survive.
   const stripped = noAnsi.replace(/\s+/g, '')
 
   const match = stripped.match(URL_REGEX)
   if (!match) return null
 
   let url = match[0]
-  // Clean trailing Ink artifacts (claudebox pattern)
-  const trailingJunk = ['Pastecodehereifprompted', 'Pastecodehereifprompted>']
-  for (const junk of trailingJunk) {
-    const idx = url.indexOf(junk)
-    if (idx > 0) url = url.substring(0, idx)
-  }
+
+  // Cut at the first NUL sentinel — that marks where an ANSI control code
+  // USED to be, which is a reliable boundary between the URL and adjacent
+  // terminal output that got fused by the whitespace strip.
+  const sentinelCut = url.indexOf(SENTINEL)
+  if (sentinelCut > 0) url = url.substring(0, sentinelCut)
+
+  // Cut at the first `paste` (case-insensitive) — Ink always appends a
+  // "Paste code here if prompted" input box after the URL, and any case
+  // variant of it is junk. None of Claude's query-param values begin
+  // with "paste" so this is safe.
+  const pasteCut = url.toLowerCase().indexOf('paste')
+  if (pasteCut > 0) url = url.substring(0, pasteCut)
+
+  // Defensive: cut at any byte outside the URL-valid character set. OAuth
+  // URLs use letters, digits, `%`, and URL-safe punctuation only.
+  const tailCut = url.search(/[^A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=\-]/)
+  if (tailCut > 0) url = url.substring(0, tailCut)
 
   return url
 }
@@ -220,7 +281,22 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
   const handle: ClaudeAuthHandle = {
     submitCode: (code: string) => {
       if (procRef) {
-        const trimmed = code.trim()
+        let trimmed = code.trim()
+        // User may paste the full callback URL instead of just the code:
+        //   http://localhost:38719/callback?code=ZIgFd5nApQMR7...&state=TSLp6...
+        // Extract the bare `code` value so the CLI accepts it.
+        if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+          try {
+            const u = new URL(trimmed)
+            const extracted = u.searchParams.get('code')
+            if (extracted) {
+              console.log(`🔑 Extracted code from pasted callback URL (${extracted.length} chars)`)
+              trimmed = extracted
+            }
+          } catch {
+            // Not a valid URL, use as-is
+          }
+        }
         console.log(`🔑 Submitting auth code to Claude CLI (${trimmed.length} chars)`)
         // Ink reads raw keypresses. Write in chunks to simulate typing.
         const CHUNK_SIZE = 10
@@ -275,7 +351,7 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
     }, AUTH_TIMEOUT_MS)
 
     proc.onData((data: string) => {
-      const clean = data.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '')
+      const clean = stripAnsi(data)
                         .replace(/\x1B\][^\x07]*\x07/g, '')
       fullBuffer += clean
       recentBuffer += clean
@@ -340,7 +416,7 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
 
       // Detect errors
       if (/OAuth error|Invalid code|expired/i.test(recentBuffer)) {
-        const errMsg = recentBuffer.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').trim().substring(0, 200)
+        const errMsg = stripAnsi(recentBuffer).trim().substring(0, 200)
         console.log('⚠️ Claude auth error:', errMsg)
         callbacks.onError(errMsg)
         recentBuffer = ''
@@ -369,6 +445,20 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
 // Startup Gate
 // ─────────────────────────────────────────
 
+// Module-level state: tracks the in-flight auth flow (if any) so that
+// concurrent callers from e.g. fast LiveKit reconnects don't each spawn
+// their own `claude setup-token` pty. Every call after the first returns
+// the SAME submitCode handle and done promise, and the SAME URL is
+// replayed to the new sendToFrontend callback.
+interface InFlightAuth {
+  submitCode: (code: string) => void
+  done: Promise<void>
+  lastUrl: string | null
+  lastStatus: 'waiting' | 'waiting_code' | null
+  subscribers: Array<(type: string, payload: unknown) => void>
+}
+let inFlightAuth: InFlightAuth | null = null
+
 /**
  * Ensure Claude is authenticated before proceeding.
  *
@@ -377,10 +467,36 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
  *   2. ~/.claude/.credentials.json file
  *   3. `claude auth status --json`
  *   4. Interactive OAuth flow (setup-token)
+ *
+ * Concurrency: if a previous call is still running its OAuth flow, new
+ * callers attach to the existing flow rather than spawning a second pty.
+ * This prevents the situation where LiveKit reconnects (e.g. after a
+ * microphone-permission error) retrigger ensureClaudeAuth and the user
+ * sees two different URLs / two different code_challenges racing.
  */
 export async function ensureClaudeAuth(
   sendToFrontend: (type: string, payload: unknown) => void
 ): Promise<{ submitCode?: (code: string) => void; done?: Promise<void> }> {
+  // If an auth flow is already running, attach to it and replay any
+  // state we've already captured (the URL, any waiting_code prompt).
+  if (inFlightAuth) {
+    console.log('🔑 ensureClaudeAuth called while a flow is in-flight — attaching new subscriber')
+    inFlightAuth.subscribers.push(sendToFrontend)
+    // Replay the state the frontend needs to render the modal correctly.
+    sendToFrontend('claude_auth_required', {
+      message: 'Claude authentication required. A login URL will appear shortly.',
+    })
+    if (inFlightAuth.lastUrl) {
+      sendToFrontend('claude_auth_url', { url: inFlightAuth.lastUrl })
+    }
+    if (inFlightAuth.lastStatus === 'waiting_code') {
+      sendToFrontend('claude_auth_waiting_code', {
+        message: 'Paste the authentication code from the browser.',
+      })
+    }
+    return { submitCode: inFlightAuth.submitCode, done: inFlightAuth.done }
+  }
+
   // Check 0: Restore token from volume if previously persisted
   if (!hasOAuthTokenEnv()) {
     try {
@@ -416,29 +532,67 @@ export async function ensureClaudeAuth(
 
   // Check 4: Need interactive OAuth flow
   console.log('🔑 Claude not authenticated — starting OAuth flow')
-  sendToFrontend('claude_auth_required', {
+
+  // Create the in-flight record BEFORE spawning, and fan-out every
+  // callback to all current subscribers. New subscribers that attach
+  // later get replay of lastUrl / lastStatus from the deduped path
+  // at the top of this function.
+  const subscribers: Array<(type: string, payload: unknown) => void> = [sendToFrontend]
+  const fanout = (type: string, payload: unknown) => {
+    for (const sub of subscribers) {
+      try { sub(type, payload) } catch (err) { console.warn('🔑 subscriber failed:', err) }
+    }
+  }
+
+  fanout('claude_auth_required', {
     message: 'Claude authentication required. A login URL will appear shortly.',
   })
 
   const { handle, done } = runClaudeAuthFlow({
     onUrl: (url) => {
-      console.log('📤 Sending Claude auth URL to frontend')
-      sendToFrontend('claude_auth_url', { url })
+      console.log(`📤 Sending Claude auth URL to frontend (${url.length} chars)`)
+      if (inFlightAuth) {
+        inFlightAuth.lastUrl = url
+        inFlightAuth.lastStatus = 'waiting'
+      }
+      fanout('claude_auth_url', { url })
     },
     onWaitingForCode: () => {
       console.log('📤 Sending code prompt to frontend')
-      sendToFrontend('claude_auth_waiting_code', {
+      if (inFlightAuth) inFlightAuth.lastStatus = 'waiting_code'
+      fanout('claude_auth_waiting_code', {
         message: 'Paste the authentication code from the browser.',
       })
     },
     onComplete: () => {
-      sendToFrontend('claude_auth_complete', {
+      // Include the captured token so the frontend can persist it to the
+      // host-persistent layer via the Sprites API. Without this, credentials
+      // written inside the service container's ephemeral overlay are lost on
+      // every warm→running transition (service re-registration creates a
+      // fresh container).
+      fanout('claude_auth_complete', {
         message: 'Claude authenticated successfully. Starting voice session...',
+        token: process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
       })
     },
     onError: (message) => {
-      sendToFrontend('claude_auth_error', { message })
+      fanout('claude_auth_error', { message })
     },
+  })
+
+  // Publish the in-flight record so concurrent callers attach to it.
+  inFlightAuth = {
+    submitCode: handle.submitCode,
+    done,
+    lastUrl: null,
+    lastStatus: null,
+    subscribers,
+  }
+
+  // Clear the in-flight record once the flow settles, success or failure.
+  done.finally(() => {
+    console.log('🔑 OAuth flow settled — clearing in-flight guard')
+    inFlightAuth = null
   })
 
   return { submitCode: handle.submitCode, done }

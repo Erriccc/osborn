@@ -83,8 +83,14 @@ export default function Dashboard() {
     if (typeof window === 'undefined') return false
     if (!agentUrl) return false
     if (window.location.protocol === 'https:' && agentUrl.startsWith('http://')) return false
+    // In cloud mode the agent lives on a remote sprite, not on the localhost
+    // fallback URL that `agentUrl` holds when the user hasn't configured one.
+    // Pinging localhost:8741 in cloud mode just spams ERR_CONNECTION_REFUSED
+    // every 15s. The cloud sandbox's health is tracked via sandboxStatus
+    // (polled from /api/sandbox) — not by hitting the agent URL directly.
+    if (connectionMode === 'cloud' && agentUrl.startsWith('http://localhost')) return false
     return true
-  }, [agentUrl])
+  }, [agentUrl, connectionMode])
 
   // Fetch sessions
   const fetchSessions = useCallback(async () => {
@@ -105,17 +111,74 @@ export default function Dashboard() {
 
   useEffect(() => { if (!loading) fetchSessions() }, [loading, fetchSessions])
 
-  // Health check
+  // Status polling — branches on connection mode:
+  //   local:  hit the agent's /health directly (fast, local network)
+  //   cloud:  poll /api/sandbox for sandboxStatus (cold/warm/running/stopped
+  //           are rich states the sprite API reports; /health can't
+  //           distinguish between them and the sprite's localhost:8741
+  //           wouldn't even resolve from the browser anyway).
+  //
+  // In cloud mode agentOnline is derived as (sandboxStatus === 'running')
+  // so the existing "offline" indicator only shows when the sprite is
+  // genuinely not running. Everything else (cold, warm, stopped, creating)
+  // displays the raw state on the badge so the user can see what's happening.
   useEffect(() => {
     if (loading) return
-    if (!canFetchAgent()) { setAgentOnline(false); return }
-    const check = () => fetch(`${agentUrl}/health`).then(() => setAgentOnline(true)).catch(() => setAgentOnline(false))
+    if (!user) return
+
+    let cancelled = false
+
+    const check = async () => {
+      if (cancelled) return
+
+      if (connectionMode === 'cloud') {
+        // Cloud: poll sandbox API
+        try {
+          const r = await fetch('/api/sandbox')
+          const d = await r.json()
+          if (cancelled) return
+          setSandboxAvailable(d.available || false)
+          if (d.sandbox) {
+            setSandboxId(d.sandbox.id)
+            setSandboxStatus(d.sandbox.status)
+            if (d.sandbox.previewUrl) setAgentUrl(d.sandbox.previewUrl)
+            setAgentOnline(d.sandbox.status === 'running')
+          } else {
+            setSandboxStatus(null)
+            setAgentOnline(false)
+          }
+        } catch {
+          if (cancelled) return
+          setSandboxAvailable(false)
+          setAgentOnline(false)
+        }
+        return
+      }
+
+      // Local: ping agent /health directly
+      if (!canFetchAgent()) {
+        setAgentOnline(false)
+        return
+      }
+      try {
+        await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(4000) })
+        if (!cancelled) setAgentOnline(true)
+      } catch {
+        if (!cancelled) setAgentOnline(false)
+      }
+    }
+
     check()
     const i = setInterval(check, 15000)
-    return () => clearInterval(i)
-  }, [agentUrl, loading, canFetchAgent])
+    return () => {
+      cancelled = true
+      clearInterval(i)
+    }
+  }, [agentUrl, loading, user, connectionMode, canFetchAgent])
 
-  // Sandbox status
+  // One-time sandbox discovery on mount: if the user has a saved cloud
+  // preference AND a sandbox already exists, adopt its previewUrl as the
+  // agentUrl so the polling loop picks up the right target.
   useEffect(() => {
     if (loading || !user) return
     fetch('/api/sandbox').then(r => r.json())
@@ -273,13 +336,26 @@ export default function Dashboard() {
             </div>
 
             <div className="flex items-center gap-1.5">
-              {/* Connection badge */}
+              {/* Connection badge — in cloud mode shows the rich sandbox
+                  state (cold/warm/running/stopped) from /api/sandbox; in
+                  local mode shows agent /health reachability. */}
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--surface)] border border-[var(--border-subtle)]">
                 <div className={`w-1.5 h-1.5 rounded-full transition-colors ${
-                  agentOnline ? 'bg-emerald-400' : agentOnline === false ? 'bg-red-400' : 'bg-[var(--text-muted)]'
+                  isCloud
+                    ? sandboxStatus === 'running' ? 'bg-emerald-400'
+                      : sandboxStatus === 'warm' ? 'bg-amber-400'
+                      : sandboxStatus === 'cold' ? 'bg-sky-400'
+                      : sandboxStatus === 'stopped' ? 'bg-orange-400'
+                      : sandboxStatus === 'creating' ? 'bg-amber-400 animate-pulse'
+                      : sandboxStatus === 'error' ? 'bg-red-400'
+                      : 'bg-[var(--text-muted)]'
+                    : agentOnline ? 'bg-emerald-400' : agentOnline === false ? 'bg-red-400' : 'bg-[var(--text-muted)]'
                 }`} />
                 <span className="text-[11px] text-[var(--text-muted)]">
-                  {isCloud ? 'Cloud' : 'Local'}{agentOnline ? '' : agentOnline === false ? ' (offline)' : ''}
+                  {isCloud
+                    ? sandboxStatus ? `Cloud (${sandboxStatus})` : 'Cloud'
+                    : agentOnline ? 'Local' : agentOnline === false ? 'Local (offline)' : 'Local'
+                  }
                 </span>
               </div>
 
@@ -382,6 +458,8 @@ export default function Dashboard() {
                     <div className="flex items-center gap-2.5">
                       <div className={`w-2 h-2 rounded-full ${
                         sandboxStatus === 'running' ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]'
+                        : sandboxStatus === 'warm' ? 'bg-amber-400'
+                        : sandboxStatus === 'cold' ? 'bg-sky-400'
                         : sandboxStatus === 'stopped' ? 'bg-orange-400'
                         : sandboxStatus === 'creating' ? 'bg-amber-400 animate-pulse'
                         : 'bg-gray-500'
@@ -390,7 +468,7 @@ export default function Dashboard() {
                       <span className="text-[11px] text-[var(--text-muted)] capitalize">{sandboxStatus}</span>
                     </div>
                     <div className="flex items-center gap-1">
-                      {sandboxStatus === 'stopped' && (
+                      {(sandboxStatus === 'stopped' || sandboxStatus === 'warm' || sandboxStatus === 'cold') && (
                         <button onClick={handleStartSandbox} disabled={provisioning}
                           className="text-[11px] text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded-lg hover:bg-emerald-400/10 transition-all disabled:opacity-50">
                           Resume
