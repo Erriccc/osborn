@@ -1,31 +1,26 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
-import VoiceRoom from '@/components/VoiceRoom'
 import SessionBrowser from '@/components/SessionBrowser'
 import SetupWizard from '@/components/SetupWizard'
 
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'realtime' | 'pipelined' | 'direct' | 'pipeline'
 type CodingAgent = 'claude' | 'codex'
-type ConnectionState = 'browsing' | 'waiting' | 'connected'
 
 export default function Home() {
-  const [connectionState, setConnectionState] = useState<ConnectionState>('browsing')
-  const [token, setToken] = useState<string | null>(null)
-  const [roomCode, setRoomCode] = useState<string | null>(null)
+  const router = useRouter()
   const [provider, setProvider] = useState<Provider>('gemini')
   const [voiceArch, setVoiceArch] = useState<VoiceArch>('pipeline')
   const [codingAgent, setCodingAgent] = useState<CodingAgent>('claude')
-  const [agentStatus, setAgentStatus] = useState<string>('waiting')
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [roomCode, setRoomCode] = useState<string | null>(null)
   const [agentUrl, setAgentUrl] = useState<string>('http://localhost:8741')
   const [showWizard, setShowWizard] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showSessionBrowser, setShowSessionBrowser] = useState(false)
-  const [slowConnection, setSlowConnection] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
 
   // Supabase auth
@@ -47,7 +42,7 @@ export default function Home() {
 
   // Redirect authenticated users to dashboard
   useEffect(() => {
-    if (user && !authLoading && connectionState === 'browsing') {
+    if (user && !authLoading) {
       window.location.href = '/dashboard'
     }
   }, [user, authLoading])
@@ -62,8 +57,6 @@ export default function Home() {
   const signOut = async () => {
     await supabase.auth.signOut()
     setUser(null)
-    setConnectionState('browsing')
-    setToken(null)
     autoConnectAttempted.current = false
   }
 
@@ -90,75 +83,33 @@ export default function Home() {
     localStorage.setItem('osborn-agent-url', agentUrl)
   }, [provider, voiceArch, codingAgent, agentUrl])
 
-  // Slow connection
-  useEffect(() => {
-    let t: ReturnType<typeof setTimeout>
-    if (connectionState === 'waiting' && agentStatus !== 'connected') {
-      t = setTimeout(() => setSlowConnection(true), 6000)
-    } else setSlowConnection(false)
-    return () => clearTimeout(t)
-  }, [connectionState, agentStatus])
+  // All voice sessions now live at /chat (wrapped by ChatSessionProvider
+  // via app/chat/layout.tsx). This page just builds the URL and navigates.
+  // The provider owns the LiveKitRoom, so edits to chat/page.tsx or
+  // VoiceRoom.tsx during dev don't tear down the WebRTC connection.
+  const navigateToChat = useCallback((sessionId?: string | null) => {
+    setConnectError(null)
+    const params = new URLSearchParams({
+      provider,
+      voiceArch,
+      agent: codingAgent,
+      agentUrl,
+    })
+    if (sessionId) params.set('session', sessionId)
+    router.push(`/chat?${params.toString()}`)
+  }, [provider, voiceArch, codingAgent, agentUrl, router])
 
-  const handleAgentReady = useCallback(() => {
-    setAgentStatus('connected')
-    setConnectionState('connected')
-  }, [])
+  const autoConnect = useCallback(() => {
+    // The /chat provider already handles "find existing room code vs
+    // create fresh" — just forward.
+    navigateToChat()
+  }, [navigateToChat])
 
-  const joinRoom = async (code: string, sessionId?: string | null) => {
-    try {
-      setConnectError(null)
-      let url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}&roomCode=${code}`
-      if (sessionId) url += `&sessionId=${encodeURIComponent(sessionId)}`
-      const res = await fetch(url)
-      const data = await res.json()
-      setToken(data.token)
-      setRoomCode(data.roomCode)
-      setSelectedSessionId(sessionId || null)
-      localStorage.setItem('osborn-room-code', data.roomCode)
-      setAgentStatus('waiting')
-      setConnectionState('waiting')
-    } catch (e) {
-      setConnectError('Failed to connect')
-    }
-  }
+  const handleJoinRoom = useCallback((_code: string, sessionId?: string | null) => {
+    navigateToChat(sessionId)
+  }, [navigateToChat])
 
-  const connectFresh = async () => {
-    try {
-      setConnectError(null)
-      const url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}`
-      const res = await fetch(url)
-      const data = await res.json()
-      setToken(data.token)
-      setRoomCode(data.roomCode)
-      setSelectedSessionId(null)
-      localStorage.setItem('osborn-room-code', data.roomCode)
-      setAgentStatus('waiting')
-      setConnectionState('waiting')
-    } catch (e) {
-      setConnectError('Failed to connect')
-    }
-  }
-
-  const autoConnect = async () => {
-    try {
-      const r = await fetch(`${agentUrl}/room-code`)
-      const d = await r.json()
-      if (d.roomCode) await joinRoom(d.roomCode)
-      else await connectFresh()
-    } catch { await connectFresh() }
-  }
-
-  const handleJoinRoom = useCallback((code: string, sessionId?: string | null) => {
-    joinRoom(code, sessionId)
-  }, [provider, voiceArch, codingAgent])
-
-  const handleNewSession = useCallback(() => { connectFresh() }, [provider, voiceArch, codingAgent])
-
-  const disconnect = () => {
-    setConnectionState('browsing')
-    setToken(null)
-    setSelectedSessionId(null)
-  }
+  const handleNewSession = useCallback(() => { navigateToChat() }, [navigateToChat])
 
   const handleWizardComplete = useCallback((u: string) => {
     localStorage.setItem('osborn-setup-completed', 'true')
@@ -172,7 +123,7 @@ export default function Home() {
   }, [])
 
   // ─── SETUP WIZARD ────────────────────────────────────────
-  if (showWizard && connectionState === 'browsing') {
+  if (showWizard) {
     return (
       <main className="min-h-screen bg-[var(--background)] flex items-center justify-center p-8">
         <SetupWizard onComplete={handleWizardComplete} onSkip={handleWizardSkip} />
@@ -181,7 +132,7 @@ export default function Home() {
   }
 
   // ─── SESSION BROWSER ─────────────────────────────────────
-  if (showSessionBrowser && connectionState === 'browsing') {
+  if (showSessionBrowser) {
     return (
       <main className="min-h-screen bg-[var(--background)] flex items-center justify-center p-8">
         <SessionBrowser
@@ -192,64 +143,6 @@ export default function Home() {
           roomCode={roomCode} onRerunSetup={() => setShowWizard(true)}
         />
       </main>
-    )
-  }
-
-  // ─── CONNECTED ────────────────────────────────────────────
-  if (connectionState === 'connected' && roomCode && token) {
-    return (
-      <VoiceRoom
-        token={token} onDisconnect={disconnect} onAgentReady={handleAgentReady}
-        waitingMode={false} provider={provider} preSelectedSessionId={selectedSessionId}
-      />
-    )
-  }
-
-  // ─── WAITING / CONNECTING ─────────────────────────────────
-  if (connectionState === 'waiting' && roomCode && token) {
-    return (
-      <>
-        <style>{`
-          @keyframes orb-breathe {
-            0%, 100% { transform: scale(1); opacity: 0.7; }
-            50% { transform: scale(1.15); opacity: 1; }
-          }
-          @keyframes orb-ring {
-            0% { transform: scale(0.8); opacity: 0.6; }
-            100% { transform: scale(2.2); opacity: 0; }
-          }
-        `}</style>
-        <main className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center p-8 font-[var(--font-sans)]">
-          <div className="flex flex-col items-center gap-8">
-            {/* Breathing orb */}
-            <div className="relative w-24 h-24">
-              <div className="absolute inset-0 rounded-full bg-[var(--accent)]"
-                style={{ animation: 'orb-breathe 2.4s ease-in-out infinite', filter: 'blur(0.5px)' }} />
-              <div className="absolute inset-0 rounded-full border border-[var(--accent)]"
-                style={{ animation: 'orb-ring 2.4s ease-out infinite', opacity: 0.3 }} />
-            </div>
-
-            <div className="text-center space-y-2">
-              <p className="text-[var(--text-primary)] text-lg font-medium tracking-tight">
-                Connecting...
-              </p>
-              {slowConnection && (
-                <p className="text-[var(--text-muted)] text-xs">Taking longer than expected</p>
-              )}
-            </div>
-
-            <button onClick={disconnect}
-              className="text-[var(--text-secondary)] text-sm hover:text-[var(--text-primary)] transition-colors underline underline-offset-2">
-              Cancel
-            </button>
-          </div>
-
-          <div className="hidden">
-            <VoiceRoom token={token} onDisconnect={disconnect} onAgentReady={handleAgentReady}
-              waitingMode={true} provider={provider} preSelectedSessionId={selectedSessionId} />
-          </div>
-        </main>
-      </>
     )
   }
 

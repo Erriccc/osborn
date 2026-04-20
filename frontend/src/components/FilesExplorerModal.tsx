@@ -8,11 +8,17 @@ interface GeneratedFile {
   filePath: string
   fileName: string
   content?: string
+  // Supabase Storage URL — when present, fetch from here instead of rendering
+  // inline content. Agent uploads large artifacts (PDFs, big text files) to
+  // Supabase and passes just the URL through the data channel.
+  url?: string
   type: 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'html' | 'other'
   source: 'plan' | 'research'
   updatedAt: Date
   isImage?: boolean
   mimeType?: string
+  truncated?: boolean
+  originalSize?: number
 }
 
 interface FilesExplorerModalProps {
@@ -81,6 +87,28 @@ export function FilesExplorerModal({
   const handleBackdropClick = useCallback((e: React.MouseEvent) => {
     if (e.target === e.currentTarget) onClose()
   }, [onClose])
+
+  // When the selected file has a Supabase URL but no inline content, fetch
+  // the text once and cache it keyed by URL. PDFs and images render from
+  // the URL directly via <iframe>/<img> — no fetch needed — so we only
+  // fetch for text-like files that need MarkdownMessage rendering.
+  const [urlContentCache, setUrlContentCache] = useState<Record<string, string>>({})
+  const [urlFetching, setUrlFetching] = useState<string | null>(null)
+  useEffect(() => {
+    const sel = files.find(f => f.filePath === selectedFilePath) || files[0] || null
+    if (!sel?.url) return
+    if (sel.content) return                       // already have inline content
+    if (urlContentCache[sel.url]) return          // already fetched
+    if (sel.isImage) return                       // <img src={url}> handles it
+    const ext = sel.fileName.split('.').pop()?.toLowerCase() || ''
+    if (ext === 'pdf') return                     // <iframe src={url}> handles it
+    setUrlFetching(sel.url)
+    fetch(sel.url)
+      .then(r => r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(text => setUrlContentCache(prev => ({ ...prev, [sel.url!]: text })))
+      .catch(err => setUrlContentCache(prev => ({ ...prev, [sel.url!]: `Error fetching: ${(err as Error).message}` })))
+      .finally(() => setUrlFetching(null))
+  }, [files, selectedFilePath, urlContentCache])
 
   if (!isOpen) return null
 
@@ -237,40 +265,112 @@ export function FilesExplorerModal({
                   )}
                 </div>
 
-                {/* Content */}
+                {/* Content — URL path first, inline content path second */}
                 <div className="flex-1 overflow-y-auto p-5">
-                  {selectedFile.content ? (
-                    selectedFile.isImage ? (
-                      <img
-                        src={`data:${selectedFile.mimeType || 'image/png'};base64,${selectedFile.content}`}
-                        alt={selectedFile.fileName}
-                        className="max-w-full rounded-lg border border-gray-700"
-                      />
-                    ) : selectedFile.type === 'html' || selectedFile.fileName?.endsWith('.svg') ? (
-                      <iframe
-                        srcDoc={selectedFile.fileName?.endsWith('.svg')
-                          ? `<!DOCTYPE html><html><head><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1a2e;overflow:hidden}svg{width:100%;height:100%;max-width:100vw;max-height:100vh}</style></head><body>${selectedFile.content}</body></html>`
-                          : `<!DOCTYPE html><html><head><style>html{font-size:16px}body{margin:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#e2e8f0;background:#1a1a2e}table{border-collapse:collapse;width:100%}th,td{border:1px solid #475569;padding:8px 12px;text-align:left}th{background:#334155}h1,h2,h3{color:#f1f5f9}a{color:#60a5fa}code{background:#334155;padding:2px 6px;border-radius:4px;font-size:14px}pre{background:#0f172a;padding:16px;border-radius:8px;overflow-x:auto}</style></head><body>${selectedFile.content}</body></html>`}
-                        className="w-full h-full min-h-[500px] rounded-lg border border-gray-700"
-                        sandbox="allow-scripts"
-                        title={selectedFile.fileName}
-                      />
-                    ) : selectedFile.fileName?.endsWith('.mmd') || selectedFile.fileName?.endsWith('.mermaid') ? (
-                      <MermaidBlock code={selectedFile.content} />
-                    ) : (
-                      <div className="text-sm">
-                        <MarkdownMessage content={selectedFile.content} />
+                  {(() => {
+                    const ext = selectedFile.fileName.split('.').pop()?.toLowerCase() || ''
+                    // URL-based rendering: agent uploaded to Supabase, render from URL
+                    if (selectedFile.url) {
+                      if (selectedFile.isImage) {
+                        return (
+                          <img
+                            src={selectedFile.url}
+                            alt={selectedFile.fileName}
+                            className="max-w-full rounded-lg border border-gray-700"
+                          />
+                        )
+                      }
+                      if (ext === 'pdf') {
+                        return (
+                          <iframe
+                            src={selectedFile.url}
+                            className="w-full h-full min-h-[600px] rounded-lg border border-gray-700 bg-gray-800"
+                            title={selectedFile.fileName}
+                          />
+                        )
+                      }
+                      // Text-like: use the fetched content from the cache (fetched by the useEffect above)
+                      const fetched = urlContentCache[selectedFile.url]
+                      if (!fetched) {
+                        return (
+                          <div className="flex items-center justify-center py-12 text-gray-500 text-xs">
+                            <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                            Fetching from storage...
+                          </div>
+                        )
+                      }
+                      if (selectedFile.type === 'html' || ext === 'svg') {
+                        return (
+                          <iframe
+                            srcDoc={ext === 'svg'
+                              ? `<!DOCTYPE html><html><head><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1a2e;overflow:hidden}svg{width:100%;height:100%;max-width:100vw;max-height:100vh}</style></head><body>${fetched}</body></html>`
+                              : `<!DOCTYPE html><html><head><style>html{font-size:16px}body{margin:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#e2e8f0;background:#1a1a2e}table{border-collapse:collapse;width:100%}th,td{border:1px solid #475569;padding:8px 12px;text-align:left}th{background:#334155}h1,h2,h3{color:#f1f5f9}a{color:#60a5fa}code{background:#334155;padding:2px 6px;border-radius:4px;font-size:14px}pre{background:#0f172a;padding:16px;border-radius:8px;overflow-x:auto}</style></head><body>${fetched}</body></html>`}
+                            className="w-full h-full min-h-[500px] rounded-lg border border-gray-700"
+                            sandbox="allow-scripts"
+                            title={selectedFile.fileName}
+                          />
+                        )
+                      }
+                      if (ext === 'mmd' || ext === 'mermaid') {
+                        return <MermaidBlock code={fetched} />
+                      }
+                      return (
+                        <div className="text-sm">
+                          <MarkdownMessage content={fetched} />
+                        </div>
+                      )
+                    }
+                    // Inline content path (fallback — when URL upload wasn't available)
+                    if (selectedFile.content) {
+                      if (selectedFile.isImage) {
+                        return (
+                          <img
+                            src={`data:${selectedFile.mimeType || 'image/png'};base64,${selectedFile.content}`}
+                            alt={selectedFile.fileName}
+                            className="max-w-full rounded-lg border border-gray-700"
+                          />
+                        )
+                      }
+                      if (selectedFile.type === 'html' || ext === 'svg') {
+                        return (
+                          <iframe
+                            srcDoc={ext === 'svg'
+                              ? `<!DOCTYPE html><html><head><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1a2e;overflow:hidden}svg{width:100%;height:100%;max-width:100vw;max-height:100vh}</style></head><body>${selectedFile.content}</body></html>`
+                              : `<!DOCTYPE html><html><head><style>html{font-size:16px}body{margin:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#e2e8f0;background:#1a1a2e}table{border-collapse:collapse;width:100%}th,td{border:1px solid #475569;padding:8px 12px;text-align:left}th{background:#334155}h1,h2,h3{color:#f1f5f9}a{color:#60a5fa}code{background:#334155;padding:2px 6px;border-radius:4px;font-size:14px}pre{background:#0f172a;padding:16px;border-radius:8px;overflow-x:auto}</style></head><body>${selectedFile.content}</body></html>`}
+                            className="w-full h-full min-h-[500px] rounded-lg border border-gray-700"
+                            sandbox="allow-scripts"
+                            title={selectedFile.fileName}
+                          />
+                        )
+                      }
+                      if (ext === 'mmd' || ext === 'mermaid') {
+                        return <MermaidBlock code={selectedFile.content} />
+                      }
+                      return (
+                        <div className="text-sm">
+                          {selectedFile.truncated && (
+                            <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+                              Truncated preview &mdash; original {selectedFile.originalSize ? `${(selectedFile.originalSize / 1024).toFixed(0)} KB` : 'large'} (Supabase upload unavailable)
+                            </div>
+                          )}
+                          <MarkdownMessage content={selectedFile.content} />
+                        </div>
+                      )
+                    }
+                    // Still loading
+                    return (
+                      <div className="flex items-center justify-center py-12 text-gray-500 text-xs">
+                        <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Loading content...
                       </div>
                     )
-                  ) : (
-                    <div className="flex items-center justify-center py-12 text-gray-500 text-xs">
-                      <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Loading content...
-                    </div>
-                  )}
+                  })()}
                 </div>
               </>
             ) : (
@@ -311,7 +411,10 @@ function FileListItem({
     >
       <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${badge.color}`}>{badge.label}</span>
       <span className="text-xs font-mono text-gray-300 truncate flex-1">{file.fileName}</span>
-      {!file.content && (
+      {/* Spinner only while we have neither content nor URL — once either
+          lands the file is "ready" (URL may still need a fetch to render
+          text, but the list item shouldn't spin forever). */}
+      {!file.content && !file.url && (
         <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />

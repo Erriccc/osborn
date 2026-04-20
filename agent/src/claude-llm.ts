@@ -1052,6 +1052,76 @@ class ClaudeLLMStream extends llm.LLMStream {
                 return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit' } }
               }
             }]
+          }],
+          // ── PreCompact: inject "include behavioral learnings" instruction into the compact ──
+          // When the SDK is about to compress the conversation, this tells Claude to
+          // include a BEHAVIORAL_LEARNINGS section in the compact summary. The instruction
+          // is read from disk (hot-editable like the other prompts). Also includes
+          // existing learned skills so Claude can merge/update rather than start fresh.
+          PreCompact: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              try {
+                const instructionPath = join(__claudeLlmDir, 'prompts', 'compact-learnings-instruction.md')
+                const instruction = readFileSync(instructionPath, 'utf-8')
+
+                // Load existing learned skills so Claude can update them
+                const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
+                const skillPath = join(skillDir, '.claude', 'skills', 'learned-behaviors', 'SKILL.md')
+                let existingSkills = ''
+                try { existingSkills = readFileSync(skillPath, 'utf-8') } catch {}
+
+                const fullInstruction = existingSkills
+                  ? `${instruction}\n\nEXISTING LEARNED SKILLS (update/merge — remove outdated, add new, strengthen confirmed):\n${existingSkills}`
+                  : instruction
+
+                console.log(`🧠 PreCompact: injected learnings instruction (${fullInstruction.length} chars, trigger=${input?.trigger || 'unknown'})`)
+                return { systemMessage: fullInstruction }
+              } catch (err) {
+                console.error('⚠️ PreCompact hook error:', err instanceof Error ? err.message : err)
+                return {}
+              }
+            }]
+          }],
+          // ── PostCompact: extract BEHAVIORAL_LEARNINGS from summary and write to skill file ──
+          PostCompact: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              try {
+                const summary: string = input?.compact_summary || ''
+                const marker = '=== BEHAVIORAL_LEARNINGS ==='
+                const idx = summary.indexOf(marker)
+
+                if (idx === -1) {
+                  console.log('🧠 PostCompact: no BEHAVIORAL_LEARNINGS section found in summary — skipping')
+                  return {}
+                }
+
+                const learnings = summary.substring(idx + marker.length).trim()
+                if (learnings.length < 30) {
+                  console.log('🧠 PostCompact: BEHAVIORAL_LEARNINGS section too short — skipping')
+                  return {}
+                }
+
+                // Write the skill file
+                const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
+                const skillFolder = join(skillDir, '.claude', 'skills', 'learned-behaviors')
+                const skillPath = join(skillFolder, 'SKILL.md')
+
+                const { mkdirSync, writeFileSync: writeSyncFs } = await import('fs')
+                mkdirSync(skillFolder, { recursive: true })
+
+                const today = new Date().toISOString().split('T')[0]
+                const sessionId = this.#sessionId || 'unknown'
+                const header = `# Learned Behaviors\n\nAuto-extracted from voice sessions via PreCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
+
+                writeSyncFs(skillPath, header + learnings + '\n', 'utf-8')
+                console.log(`🧠 PostCompact: wrote learned behaviors to ${skillPath} (${learnings.length} chars)`)
+              } catch (err) {
+                console.error('⚠️ PostCompact hook error:', err instanceof Error ? err.message : err)
+              }
+              return {}
+            }]
           }]
         },
         // Named sub-agents — Haiku overseer delegates to these specialists.

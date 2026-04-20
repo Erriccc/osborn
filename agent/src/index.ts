@@ -531,6 +531,11 @@ async function main() {
   let userState = 'listening'  // Track user speech state for queue safety
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
   let currentProvider: string = realtimeConfig.provider  // Track active realtime provider
+  // Authenticated Supabase userId from participant metadata. Used to scope
+  // workspace artifact uploads to the owner's prefix in Supabase Storage.
+  // Empty string = anonymous / unauthenticated; uploads fall back to a
+  // session-only path (no user prefix).
+  let currentUserId: string = ''
 
   // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
@@ -1904,6 +1909,14 @@ async function main() {
     try {
       const metadata = JSON.parse(participant.metadata || '{}')
       console.log(`📋 Participant metadata:`, metadata)
+      // userId from authenticated Supabase session — used to scope Supabase
+      // Storage uploads so each user's workspace artifacts live under their
+      // own prefix. Falls through to '' (anonymous) if not authenticated.
+      if (typeof metadata.userId === 'string' && metadata.userId.length > 0) {
+        currentUserId = metadata.userId
+      } else {
+        currentUserId = ''
+      }
       if (metadata.voiceArch === 'realtime' || metadata.voiceArch === 'direct' || metadata.voiceArch === 'pipeline') {
         sessionVoiceMode = metadata.voiceArch
         console.log(`🎙️ Using voice mode from frontend: ${sessionVoiceMode}`)
@@ -2833,40 +2846,94 @@ async function main() {
         if (filePath && (filePath.includes('/osb/') || filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/'))) {
           try {
             const fs = await import('fs')
+            const path = await import('path')
             const fileName = filePath.split('/').pop() || ''
             const ext = fileName.split('.').pop()?.toLowerCase() || ''
             const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)
+            const mimeByExt: Record<string, string> = {
+              png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+              gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf',
+              html: 'text/html', md: 'text/markdown', txt: 'text/plain',
+              json: 'application/json',
+            }
+            const mimeType = mimeByExt[ext] || 'application/octet-stream'
 
-            // WebRTC SCTP data channel max message size is ~256KB. Sending
-            // larger payloads corrupts the publisher transport, killing ALL
-            // subsequent sends (publishData, streamBytes, publishTranscription)
-            // with "could not establish publisher connection: timeout". This
-            // was the root cause of the career-ops session bug: a 480KB
-            // evaluation report blew through the limit on resume.
-            // ⚠️ MUST be low — not just per-message but cumulative back-to-back pressure.
-            // 12 artifact requests arrive simultaneously during session resume. Even if
-            // each is individually "safe", flooding them kills the publisher PC. At 200KB
-            // the search-index.txt (136KB) passed through and poisoned the connection.
-            // 30KB catches search-index.txt (136KB), resume.pdf (233KB), and search-index-
-            // meta.json (5.7KB passes). resume.html (14KB) also passes — acceptable.
-            const MAX_DATA_CHANNEL_BYTES = 30_000 // 30KB max per artifact
+            // Strategy: upload the file to Supabase Storage via the frontend's
+            // /api/upload route and send back just the URL. This mirrors the
+            // existing frontend→agent attachment flow (where the browser uploads
+            // user attachments to Supabase and passes URLs to the agent). For
+            // the reverse direction we do the same: URLs are ~100 bytes, so
+            // the LiveKit data channel stays healthy regardless of file size.
+            //
+            // Fallback to inline send if OSBORN_FRONTEND_URL isn't configured
+            // OR the upload fails — with a small size cap so we don't kill the
+            // publisher PC with a 480KB payload (see earlier career-ops bug).
+            const FRONTEND_URL = process.env.OSBORN_FRONTEND_URL || process.env.NEXT_PUBLIC_FRONTEND_URL || ''
+            const MAX_INLINE_BYTES = 30_000 // fallback-only cap
 
-            if (isImage) {
+            let uploadedUrl: string | null = null
+            if (FRONTEND_URL) {
+              try {
+                const buf = fs.readFileSync(filePath)
+                const form = new FormData()
+                form.append('file', new Blob([buf as any], { type: mimeType }), fileName)
+                form.append('folder', 'artifacts')
+                // Pass userId + sessionId so /api/upload can place the file
+                // under `{userId}/{sessionId}/...` in Supabase Storage for
+                // easy ownership queries and future RLS policies. Both are
+                // optional — route falls back to `artifacts/...` if missing.
+                if (currentUserId) form.append('userId', currentUserId)
+                // Prefer the live resume session id (updated by session
+                // switches), fall back to whatever SDK session id the LLM
+                // reports, fall back to empty.
+                const uploadSessionId = currentResumeSessionId
+                  || (currentLLM as any)?.sessionId
+                  || ''
+                if (uploadSessionId) form.append('sessionId', uploadSessionId)
+                const r = await fetch(`${FRONTEND_URL.replace(/\/$/, '')}/api/upload`, {
+                  method: 'POST', body: form,
+                  signal: AbortSignal.timeout(15_000),
+                })
+                if (r.ok) {
+                  const j = await r.json() as { success?: boolean; url?: string; error?: string }
+                  if (j.success && j.url) {
+                    uploadedUrl = j.url
+                    console.log(`☁️ Uploaded artifact to Supabase: ${fileName} (${(buf.length / 1024).toFixed(0)}KB) → ${j.url.substring(0, 80)}...`)
+                  } else {
+                    console.warn(`⚠️ Upload failed for ${fileName}: ${j.error || 'unknown'}`)
+                  }
+                } else {
+                  console.warn(`⚠️ Upload HTTP ${r.status} for ${fileName}`)
+                }
+              } catch (err) {
+                console.warn(`⚠️ Upload threw for ${fileName}:`, (err as Error).message)
+              }
+            }
+
+            if (uploadedUrl) {
+              // Success path — send URL, no inline content.
+              await sendToFrontend({
+                type: 'research_artifact_content',
+                filePath, fileName, url: uploadedUrl,
+                isImage, mimeType,
+              })
+            } else if (isImage) {
+              // Fallback: inline image (with size cap)
               const stats = fs.statSync(filePath)
-              const base64Size = Math.ceil(stats.size * 4 / 3) // base64 inflates ~33%
-              if (base64Size > MAX_DATA_CHANNEL_BYTES) {
-                console.log(`⚠️ Artifact too large for data channel: ${fileName} (${(base64Size / 1024).toFixed(0)}KB base64) — sending truncation notice`)
+              const base64Size = Math.ceil(stats.size * 4 / 3)
+              if (base64Size > MAX_INLINE_BYTES) {
+                console.log(`⚠️ Artifact too large for inline fallback: ${fileName} (${(base64Size / 1024).toFixed(0)}KB base64) — sending truncation notice`)
                 await sendToFrontend({ type: 'research_artifact_content', filePath, content: '', fileName, isImage: false, truncated: true, originalSize: stats.size })
               } else {
                 const base64 = fs.readFileSync(filePath, 'base64')
-                await sendToFrontend({ type: 'research_artifact_content', filePath, content: base64, fileName, isImage: true, mimeType: `image/${ext}` })
+                await sendToFrontend({ type: 'research_artifact_content', filePath, content: base64, fileName, isImage: true, mimeType })
               }
             } else {
+              // Fallback: inline text (with size cap)
               const content = fs.readFileSync(filePath, 'utf-8')
-              if (Buffer.byteLength(content, 'utf-8') > MAX_DATA_CHANNEL_BYTES) {
-                // Send a truncated preview + metadata so the frontend knows the file exists
-                const truncated = content.substring(0, 5_000) // ~5KB preview (keep well under the 30KB limit)
-                console.log(`⚠️ Artifact too large for data channel: ${fileName} (${(Buffer.byteLength(content, 'utf-8') / 1024).toFixed(0)}KB) — sending truncated preview`)
+              if (Buffer.byteLength(content, 'utf-8') > MAX_INLINE_BYTES) {
+                const truncated = content.substring(0, 5_000)
+                console.log(`⚠️ Artifact too large for inline fallback: ${fileName} (${(Buffer.byteLength(content, 'utf-8') / 1024).toFixed(0)}KB) — sending truncated preview`)
                 await sendToFrontend({ type: 'research_artifact_content', filePath, content: truncated, fileName, isImage: false, truncated: true, originalSize: Buffer.byteLength(content, 'utf-8') })
               } else {
                 await sendToFrontend({ type: 'research_artifact_content', filePath, content, fileName, isImage: false })

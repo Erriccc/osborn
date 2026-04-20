@@ -125,6 +125,22 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
   for (const key of forwardKeys) {
     if (process.env[key]) envVars[key] = process.env[key]!
   }
+
+  // Tell the agent where to find this frontend's /api/upload route. The agent
+  // uses this to upload session workspace artifacts to Supabase Storage and
+  // pass URLs back via the data channel (instead of inlining large content
+  // and corrupting the LiveKit publisher connection).
+  //
+  // OSBORN_PUBLIC_FRONTEND_URL — settable in Railway/deployment env, e.g.
+  // "https://osborn.app" in production. VERCEL_URL is auto-populated on Vercel
+  // deployments. Both fall back to nothing, in which case the agent just uses
+  // the legacy inline path with a size cap.
+  const frontendUrl = process.env.OSBORN_PUBLIC_FRONTEND_URL
+    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
+  if (frontendUrl) {
+    envVars.OSBORN_FRONTEND_URL = frontendUrl
+  }
+
   return envVars
 }
 

@@ -2,8 +2,6 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
-  LiveKitRoom,
-  RoomAudioRenderer,
   useVoiceAssistant,
   BarVisualizer,
   useDataChannel,
@@ -15,15 +13,15 @@ import { LogsDrawer } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { formatTime, groupSessionsByDate } from '@/lib/sessions'
+import { useChatSession } from './ChatSessionProvider'
 
+// Public props for VoiceRoom. All session-level state (token, disconnect
+// handler, agent-ready callback, auth callback, preSelectedSessionId,
+// provider) now lives in ChatSessionProvider and is read via
+// useChatSession() inside the default export below. Only truly
+// UI-local flags remain as props.
 interface VoiceRoomProps {
-  token: string
-  onDisconnect?: () => void
-  onAgentReady?: () => void
-  onAuthRequired?: () => void
   waitingMode?: boolean
-  provider?: string
-  preSelectedSessionId?: string | null
 }
 
 // Message parts inspired by AI SDK - supports streaming, tool calls, reasoning
@@ -89,11 +87,21 @@ interface GeneratedFile {
   filePath: string
   fileName: string
   content?: string
+  // Supabase Storage URL. When present, the agent uploaded this file to
+  // Supabase rather than sending inline content — fetch from this URL to
+  // render. Keeps the LiveKit data channel healthy for large artifacts
+  // (resume PDFs, search indexes) that would otherwise corrupt the
+  // publisher peer connection.
+  url?: string
   type: 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'html' | 'other'
   source: 'plan' | 'research'  // .claude/plans/ vs .osborn/sessions/
   updatedAt: Date
   isImage?: boolean
   mimeType?: string
+  // Set when the agent had to fall back to inline delivery and truncated
+  // the payload. Frontend can show a "truncated — N KB original" hint.
+  truncated?: boolean
+  originalSize?: number
 }
 
 // Streaming indicator dots
@@ -1279,6 +1287,26 @@ function VoiceRoomInner({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
+  // YOLO toggle: when enabled, the frontend intercepts every incoming
+  // permission_request and sends back an immediate allow without showing
+  // the modal. Persisted to localStorage so it survives reloads. Default
+  // OFF. Applied at the data-channel handler in handleDataMessage (see the
+  // permission_request branch below) — the agent still emits requests, we
+  // just auto-respond.
+  const [autoApprovePermissions, setAutoApprovePermissions] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('osborn-auto-approve-permissions') === 'true'
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    localStorage.setItem('osborn-auto-approve-permissions', String(autoApprovePermissions))
+  }, [autoApprovePermissions])
+  // Mirror the toggle into a ref so the data-channel handler can read the
+  // latest value without listing autoApprovePermissions in its dependency
+  // array (which would re-subscribe the room on every toggle flip and
+  // momentarily drop incoming messages).
+  const autoApprovePermissionsRef = useRef(autoApprovePermissions)
+  useEffect(() => { autoApprovePermissionsRef.current = autoApprovePermissions }, [autoApprovePermissions])
   const [claudeAuthUrl, setClaudeAuthUrl] = useState<string | null>(null)
   const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'waiting_code' | 'submitting' | 'complete' | 'error'>('none')
   const [claudeAuthCode, setClaudeAuthCode] = useState('')
@@ -1629,6 +1657,23 @@ function VoiceRoomInner({
           addMessageRef.current?.('assistant', data.text, undefined, category)
         }
       } else if (data.type === 'permission_request') {
+        // YOLO intercept: if the user has turned on auto-approve, respond
+        // immediately with `allow` and skip the modal entirely. The agent
+        // still sends requests (we don't want to teach it to stop asking —
+        // server-side write safety lives in its PreToolUse hook) we just
+        // answer them instantly here.
+        if (autoApprovePermissionsRef.current) {
+          const filePath = data.input?.file_path
+          const payload = new TextEncoder().encode(JSON.stringify({
+            type: 'permission_response',
+            response: 'allow',
+            ...(filePath ? { filePath: String(filePath) } : {}),
+          }))
+          sendToAgent(payload, { reliable: true })
+          console.log(`⚡ [perm] auto-approved (YOLO on): ${data.toolName}`)
+          addMessageRef.current?.('system', `Auto-approved: ${data.toolName}`, undefined, 'log')
+          return
+        }
         setPendingPermission({
           toolName: data.toolName,
           description: data.description,
@@ -1788,11 +1833,25 @@ function VoiceRoomInner({
         setIsFilesModalOpen(true)
         setSelectedFilePath(data.filePath)
       } else if (data.type === 'research_artifact_content') {
-        // Research artifact content received
-        console.log('🔬 Research artifact content received:', data.fileName, data.isImage ? 'image' : `${data.content?.length || 0} chars`)
+        // Research artifact content received. Prefer `data.url` (agent
+        // uploaded to Supabase Storage — fetch on demand, no data channel
+        // strain) over inline `data.content` (legacy fallback path).
+        if (data.url) {
+          console.log('🔬 Research artifact URL received:', data.fileName, '→', data.url.substring(0, 60) + '...')
+        } else {
+          console.log('🔬 Research artifact inline content received:', data.fileName, data.isImage ? 'image' : `${data.content?.length || 0} chars`, data.truncated ? '(truncated)' : '')
+        }
         setGeneratedFiles((prev) => prev.map(f =>
           f.filePath === data.filePath
-            ? { ...f, content: data.content || data.error || 'Empty file', isImage: data.isImage || false, mimeType: data.mimeType }
+            ? {
+                ...f,
+                url: data.url || undefined,
+                content: data.url ? undefined : (data.content || data.error || 'Empty file'),
+                isImage: data.isImage || false,
+                mimeType: data.mimeType,
+                truncated: data.truncated || false,
+                originalSize: data.originalSize,
+              }
             : f
         ))
       } else if (data.type === 'session_artifacts') {
@@ -2640,6 +2699,36 @@ function VoiceRoomInner({
                 )}
               </button>
 
+              {/* Auto-approve (YOLO) toggle — always visible in the toolbar
+                  so the user can flip it mid-conversation without waiting
+                  for a permission modal. When ON, incoming permission_request
+                  events are intercepted and answered 'allow' before the modal
+                  renders (see handleDataMessage branch above). Icon swaps
+                  between a lock (off) and a lightning bolt (on). */}
+              <button
+                onClick={() => setAutoApprovePermissions(v => !v)}
+                className={`p-2 rounded-lg transition-all ${
+                  autoApprovePermissions
+                    ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 ring-1 ring-amber-500/50'
+                    : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                }`}
+                title={autoApprovePermissions
+                  ? 'Auto-approve ON — all tool permissions accepted instantly. Click to turn off.'
+                  : 'Auto-approve OFF — permission prompts appear. Click to enable YOLO mode.'}
+              >
+                {autoApprovePermissions ? (
+                  // Lightning bolt — YOLO engaged
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                ) : (
+                  // Shield-check — default safe mode (prompts appear)
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                )}
+              </button>
+
               {/* Copy All Messages button — hidden on mobile */}
               <button
                 onClick={handleCopyAllMessages}
@@ -2990,36 +3079,25 @@ function VoiceRoomInner({
   )
 }
 
-export default function VoiceRoom({
-  token,
-  onDisconnect,
-  onAgentReady,
-  onAuthRequired,
-  waitingMode,
-  provider,
-  preSelectedSessionId,
-}: VoiceRoomProps) {
-  const livekitUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-project.livekit.cloud'
-  const enableVideo = provider === 'gemini'
+/**
+ * Default export. VoiceRoom is now a thin adapter — the LiveKitRoom
+ * wrapper and all session callbacks live in ChatSessionProvider
+ * (see app/chat/layout.tsx). This component is rendered INSIDE the
+ * provider's <LiveKitRoom>, so VoiceRoomInner's useRoomContext /
+ * useLocalParticipant / useDataChannel hooks work without any
+ * prop-drilled connection info.
+ */
+export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
+  const { disconnect, markAgentReady, markAuthRequired, preSelectedSessionId } =
+    useChatSession()
 
   return (
-    <LiveKitRoom
-      token={token}
-      serverUrl={livekitUrl}
-      connect={true}
-      audio={true}
-      video={enableVideo}
-      className="w-full flex justify-center"
-      onDisconnected={onDisconnect}
-    >
-      <RoomAudioRenderer />
-      <VoiceRoomInner
-        onDisconnect={onDisconnect}
-        onAgentReady={onAgentReady}
-        onAuthRequired={onAuthRequired}
-        waitingMode={waitingMode}
-        preSelectedSessionId={preSelectedSessionId}
-      />
-    </LiveKitRoom>
+    <VoiceRoomInner
+      onDisconnect={disconnect}
+      onAgentReady={markAgentReady}
+      onAuthRequired={markAuthRequired}
+      waitingMode={waitingMode}
+      preSelectedSessionId={preSelectedSessionId}
+    />
   )
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { AccessToken } from 'livekit-server-sdk'
+import { createSupabaseServer } from '@/lib/supabase-server'
 
 // Generate a short, user-friendly room code
 function generateRoomCode(): string {
@@ -37,10 +38,27 @@ export async function GET(request: NextRequest) {
 
   const participantName = `user-${Date.now()}`
 
+  // Resolve the authenticated Supabase user so the agent can scope workspace
+  // artifact uploads (and any future per-user data) to the right owner. This
+  // is optional — guest/unauthenticated users still get a token but userId
+  // will be empty, and the agent will fall back to session-scoped paths only.
+  let userId = ''
+  try {
+    const supabase = await createSupabaseServer()
+    const { data } = await supabase.auth.getUser()
+    if (data.user) userId = data.user.id
+  } catch {
+    // Not authenticated / no Supabase session cookie — proceed without userId
+  }
+
   const at = new AccessToken(apiKey, apiSecret, {
     identity: participantName,
-    // Include provider, voice architecture, coding agent, sessionId, and workingDirectory in participant metadata
-    metadata: JSON.stringify({ provider, voiceArch, codingAgent, sessionId, workingDirectory }),
+    // Include provider, voice architecture, coding agent, sessionId,
+    // workingDirectory, and userId in participant metadata. The agent reads
+    // this metadata on participant join (see ParticipantConnected handler
+    // in agent/src/index.ts) and uses userId when uploading workspace
+    // artifacts to Supabase Storage so files are scoped by owner.
+    metadata: JSON.stringify({ provider, voiceArch, codingAgent, sessionId, workingDirectory, userId }),
   })
 
   at.addGrant({
