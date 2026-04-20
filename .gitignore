@@ -37,3 +37,19 @@ npm-debug.log*
 *.tmp
 *.temp
 I_am_here.txt
+
+# Personal automation scripts — may contain hardcoded credentials, never commit.
+# These are exploratory scripts (browser automation, sprite testing, one-off helpers)
+# that get written during dev and should stay local. Past leaks happened via
+# caresource-apply.mjs etc. containing Workday passwords — do not regress.
+caresource-*.mjs
+caresource-*.js
+sprite-*-test.mjs
+sprite-stub-creds.mjs
+sprite-tail-logs.mjs
+sprite-upgrade.mjs
+wd-step*.mjs
+agentlog.txt
+resume-tailored.html
+career-ops-backup/
+.playwright-cli/
