@@ -1,6 +1,6 @@
 {
   "name": "osborn",
-  "version": "0.8.26",
+  "version": "0.8.27",
   "description": "Voice AI coding assistant - local agent that connects to Osborn frontend",
   "type": "module",
   "bin": {
