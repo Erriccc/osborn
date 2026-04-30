@@ -268,14 +268,23 @@ export default function Dashboard() {
 
   const handleRestart = async () => {
     setRestarting(true)
-    try { await fetch(`${agentUrl}/restart`, { method: 'POST' }) } catch {}
-    const poll = setInterval(async () => {
-      try {
-        const r = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(2000) })
-        if (r.ok) { clearInterval(poll); setRestarting(false); setAgentOnline(true) }
-      } catch {}
-    }, 2000)
-    setTimeout(() => { clearInterval(poll); setRestarting(false) }, 60000)
+    try {
+      await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restart-service', sandboxId })
+      })
+      // poll health
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(2000) })
+          if (r.ok) { clearInterval(poll); setRestarting(false); setAgentOnline(true) }
+        } catch {}
+      }, 2000)
+      setTimeout(() => { clearInterval(poll); setRestarting(false) }, 60000)
+    } catch {
+      setRestarting(false)
+    }
   }
 
   const signOut = async () => {

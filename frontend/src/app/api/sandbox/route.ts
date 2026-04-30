@@ -9,6 +9,9 @@ import {
   keepAliveSandbox,
   deleteSandbox,
   assignFromPoolOrCreate,
+  restartService,
+  checkOsbornHealth,
+  waitForHealth,
 } from '@/lib/sprites'
 
 /**
@@ -191,6 +194,16 @@ export async function POST(request: Request) {
         }
       }
 
+      // Health check: if osborn isn't responding, restart the service via Sprites API
+      // (asking osborn to restart itself fails when it is frozen)
+      const previewUrl = sb.previewUrl
+      const healthy = await checkOsbornHealth(previewUrl)
+      if (!healthy) {
+        console.log(`[sandbox] room-code: osborn health check failed, restarting service...`)
+        await restartService(sb.id)
+        await waitForHealth(previewUrl, 15)
+      }
+
       // Fetch room-code from the sprite (server-side — no CORS issues)
       // Retry up to 5 times in case the sprite just woke and needs a moment
       let roomCode: string | null = null
@@ -264,6 +277,28 @@ export async function POST(request: Request) {
         console.error('[sandbox] persist-auth failed:', err)
         return NextResponse.json({ error: 'Failed to persist token' }, { status: 500 })
       }
+    }
+
+    case 'restart-service': {
+      if (!sandboxId) {
+        return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
+      }
+      // Get sandbox from Supabase to confirm ownership
+      const { data: instance } = await supabase
+        .from('instances')
+        .select('sandbox_id, sandbox_url')
+        .eq('user_id', user.id)
+        .single()
+      if (!instance?.sandbox_id || instance.sandbox_id !== sandboxId) {
+        return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
+      }
+      const restartOk = await restartService(sandboxId)
+      if (!restartOk) {
+        return NextResponse.json({ error: 'Failed to restart service' }, { status: 503 })
+      }
+      const rsPreviewUrl = instance.sandbox_url as string
+      const rsHealthy = await waitForHealth(rsPreviewUrl, 30) // 30 × 2s = 60s
+      return NextResponse.json({ success: rsHealthy })
     }
 
     default:

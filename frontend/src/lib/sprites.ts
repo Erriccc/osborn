@@ -902,6 +902,53 @@ export async function keepAliveSandbox(sandboxId: string): Promise<boolean> {
 }
 
 /**
+ * Restart the osborn service on a sprite via the Sprites service restart endpoint.
+ * Use this instead of asking osborn to restart itself (which fails when osborn is frozen).
+ *
+ * @param sandboxId - the sprite name (e.g. "osborn-abc123def456")
+ */
+export async function restartService(sandboxId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${SPRITES_API_BASE}/v1/sprites/${sandboxId}/services/osborn/restart`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${getApiToken()}`,
+        'Content-Type': 'application/json',
+      },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      console.error(`[sprites] restartService failed: ${res.status}: ${text.substring(0, 200)}`)
+      return false
+    }
+    await res.body?.cancel().catch(() => {})
+    console.log(`[sprites] Service osborn restarted on ${sandboxId}`)
+    return true
+  } catch (err) {
+    console.error(`[sprites] restartService error: ${(err as Error).message}`)
+    return false
+  }
+}
+
+/**
+ * Single-shot health check against the osborn agent's /health endpoint.
+ * Returns true if the agent responds with HTTP 200 within 3 seconds, false otherwise.
+ * Does NOT poll — use waitForHealth() for polling.
+ *
+ * @param previewUrl - full base URL of the sprite (e.g. https://osborn-abc.sprites.app)
+ */
+export async function checkOsbornHealth(previewUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${previewUrl}/health`, {
+      signal: AbortSignal.timeout(3000),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/**
  * Permanently delete a sprite sandbox.
  * Calls DELETE /v1/sprites/{name} on the Sprites API.
  * Returns true on success or if the sprite didn't exist (404), false on error.
