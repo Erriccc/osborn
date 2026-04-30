@@ -10,8 +10,10 @@ import {
   deleteSandbox,
   assignFromPoolOrCreate,
   restartService,
+  updateOsborn,
   checkOsbornHealth,
   waitForHealth,
+  execInSprite,
 } from '@/lib/sprites'
 
 /**
@@ -299,6 +301,68 @@ export async function POST(request: Request) {
       const rsPreviewUrl = instance.sandbox_url as string
       const rsHealthy = await waitForHealth(rsPreviewUrl, 30) // 30 × 2s = 60s
       return NextResponse.json({ success: rsHealthy })
+    }
+
+    case 'update-osborn': {
+      if (!sandboxId) {
+        return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
+      }
+      // Confirm ownership via Supabase (same pattern as restart-service)
+      const { data: updateInstance } = await supabase
+        .from('instances')
+        .select('sandbox_id, sandbox_url')
+        .eq('user_id', user.id)
+        .single()
+      if (!updateInstance?.sandbox_id || updateInstance.sandbox_id !== sandboxId) {
+        return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
+      }
+      // Step 1: npm install -g osborn@latest inside the sprite
+      const updateResult = await updateOsborn(sandboxId)
+      if (!updateResult.success) {
+        return NextResponse.json(
+          { error: 'npm install failed', log: updateResult.log },
+          { status: 500 },
+        )
+      }
+      // Step 2: restart the osborn service so the new binary takes effect
+      const updateRestartOk = await restartService(sandboxId)
+      if (!updateRestartOk) {
+        return NextResponse.json({ error: 'Failed to restart service after update' }, { status: 503 })
+      }
+      // Step 3: wait for the agent to become healthy (30 × 2s = 60s)
+      const updatePreviewUrl = updateInstance.sandbox_url as string
+      const updateHealthy = await waitForHealth(updatePreviewUrl, 30)
+      if (!updateHealthy) {
+        return NextResponse.json({ error: 'Agent did not become healthy after update' }, { status: 503 })
+      }
+      return NextResponse.json({ success: true, version: 'latest' })
+    }
+
+    case 'check-version': {
+      // Find sandbox for this user
+      const cvSandbox = await findUserSandbox(user.id)
+      if (!cvSandbox) {
+        return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
+      }
+
+      // Run both version checks in parallel
+      const [latestResult, installedResult] = await Promise.allSettled([
+        // Latest version on npm registry
+        execInSprite(cvSandbox.id, 'npm', ['view', 'osborn', 'version'], 15),
+        // Installed version inside the sprite
+        execInSprite(cvSandbox.id, 'osborn', ['--version'], 10),
+      ])
+
+      const latest = latestResult.status === 'fulfilled'
+        ? latestResult.value.output.trim()
+        : null
+      const installed = installedResult.status === 'fulfilled'
+        ? installedResult.value.output.trim().replace(/^osborn[\s@]*/i, '')
+        : null
+
+      const updateAvailable = !!(latest && installed && latest !== installed)
+
+      return NextResponse.json({ installed, latest, updateAvailable })
     }
 
     default:

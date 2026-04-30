@@ -31,6 +31,9 @@ export default function Dashboard() {
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [restarting, setRestarting] = useState(false)
+  const [updating, setUpdating] = useState(false)
+  const [installedVersion, setInstalledVersion] = useState<string | null>(null)
+  const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [sandboxAvailable, setSandboxAvailable] = useState(false)
   const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
@@ -197,6 +200,14 @@ export default function Dashboard() {
       .catch(() => setSandboxAvailable(false))
   }, [user, loading])
 
+  // Check installed vs latest osborn version when cloud agent comes online
+  useEffect(() => {
+    if (agentOnline && isCloud && sandboxId) {
+      checkVersion()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentOnline, isCloud, sandboxId])
+
   // ── Actions ──
 
   const handleProvisionSandbox = async () => {
@@ -285,6 +296,43 @@ export default function Dashboard() {
     } catch {
       setRestarting(false)
     }
+  }
+
+  const handleUpdate = async () => {
+    if (!sandboxId) return
+    setUpdating(true)
+    try {
+      await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update-osborn', sandboxId }),
+      })
+      // poll health until the newly-updated agent responds
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(2000) })
+          if (r.ok) { clearInterval(poll); setUpdating(false); setAgentOnline(true); checkVersion() }
+        } catch {}
+      }, 2000)
+      setTimeout(() => { clearInterval(poll); setUpdating(false) }, 60000)
+    } catch {
+      setUpdating(false)
+    }
+  }
+
+  const checkVersion = async () => {
+    if (!sandboxId) return
+    try {
+      const r = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'check-version' }),
+      })
+      if (!r.ok) return
+      const data = await r.json()
+      setInstalledVersion(data.installed ?? null)
+      setLatestVersion(data.latest ?? null)
+    } catch {}
   }
 
   const signOut = async () => {
@@ -405,13 +453,36 @@ export default function Dashboard() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Environment</span>
-                  {agentOnline && !restarting && (
+                  <div className="flex items-center gap-2">
+                  {agentOnline && !restarting && !updating && (
                     <button onClick={handleRestart}
                       className="text-[11px] text-[var(--text-muted)] hover:text-red-400 transition-colors">
                       Restart agent
                     </button>
                   )}
+                  {agentOnline && !restarting && !updating && isCloud && (
+                    <div className="flex items-center gap-2">
+                      {installedVersion && (
+                        <span className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full font-mono ${
+                          latestVersion && installedVersion !== latestVersion
+                            ? 'bg-amber-400/15 text-amber-400'
+                            : 'bg-[var(--surface)] text-[var(--text-muted)]'
+                        }`}>
+                          {latestVersion && installedVersion !== latestVersion && (
+                            <span className="text-amber-400 text-[9px]">▲</span>
+                          )}
+                          v{installedVersion}
+                        </span>
+                      )}
+                      <button onClick={handleUpdate}
+                        className="text-[11px] text-[var(--text-muted)] hover:text-sky-400 transition-colors">
+                        Update Osborn
+                      </button>
+                    </div>
+                  )}
                   {restarting && <span className="text-[11px] text-amber-400 animate-pulse">Restarting...</span>}
+                  {updating && <span className="text-[11px] text-sky-400 animate-pulse">Updating...</span>}
+                </div>
                 </div>
 
                 {/* Segmented control: Local / Cloud */}

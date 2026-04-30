@@ -902,6 +902,31 @@ export async function keepAliveSandbox(sandboxId: string): Promise<boolean> {
 }
 
 /**
+ * Install the latest version of osborn globally inside a sprite.
+ * Runs `npm install -g osborn@latest` with a 180s timeout (npm install can be slow).
+ * Returns the combined stdout/stderr log and whether the install succeeded.
+ *
+ * @param sandboxId - the sprite name (e.g. "osborn-abc123def456")
+ */
+export async function updateOsborn(sandboxId: string): Promise<{ success: boolean; log: string }> {
+  console.log(`[sprites] updateOsborn: running npm install -g osborn@latest on ${sandboxId}...`)
+  try {
+    const { exitCode, output } = await execInSprite(
+      sandboxId,
+      'npm',
+      ['install', '-g', 'osborn@latest'],
+      180,
+    )
+    console.log(`[sprites] updateOsborn: exit=${exitCode}, output length=${output.length}`)
+    return { success: exitCode === 0, log: output }
+  } catch (err) {
+    const msg = (err as Error).message
+    console.error(`[sprites] updateOsborn failed: ${msg}`)
+    return { success: false, log: msg }
+  }
+}
+
+/**
  * Restart the osborn service on a sprite via the Sprites service restart endpoint.
  * Use this instead of asking osborn to restart itself (which fails when osborn is frozen).
  *
