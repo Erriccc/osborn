@@ -200,6 +200,8 @@ export default function Dashboard() {
       .catch(() => setSandboxAvailable(false))
   }, [user, loading])
 
+  const isCloud = connectionMode === 'cloud'
+
   // Check installed vs latest osborn version when cloud agent comes online
   useEffect(() => {
     if (agentOnline && isCloud && sandboxId) {
@@ -359,8 +361,6 @@ export default function Dashboard() {
     if (diff < 604800000) return d.toLocaleDateString('en', { weekday: 'short' })
     return d.toLocaleDateString('en', { month: 'short', day: 'numeric' })
   }
-
-  const isCloud = connectionMode === 'cloud'
 
   if (loading) {
     return (
