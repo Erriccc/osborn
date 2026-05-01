@@ -316,26 +316,18 @@ export async function POST(request: Request) {
       if (!updateInstance?.sandbox_id || updateInstance.sandbox_id !== sandboxId) {
         return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
       }
-      // Step 1: npm install -g osborn@latest inside the sprite
-      const updateResult = await updateOsborn(sandboxId)
+      // updateOsborn now handles the full upgrade flow internally:
+      //   resolve target version → stop → DELETE registration → PUT new bootstrap
+      //   (auto-starts) → wait for /health
+      // Returns the actual installed version so the dashboard can display it.
+      const updateResult = await updateOsborn(sandboxId, user.id)
       if (!updateResult.success) {
         return NextResponse.json(
-          { error: 'npm install failed', log: updateResult.log },
+          { error: 'Update failed', log: updateResult.log },
           { status: 500 },
         )
       }
-      // Step 2: restart the osborn service so the new binary takes effect
-      const updateRestartOk = await restartService(sandboxId)
-      if (!updateRestartOk) {
-        return NextResponse.json({ error: 'Failed to restart service after update' }, { status: 503 })
-      }
-      // Step 3: wait for the agent to become healthy (30 × 2s = 60s)
-      const updatePreviewUrl = updateInstance.sandbox_url as string
-      const updateHealthy = await waitForHealth(updatePreviewUrl, 30)
-      if (!updateHealthy) {
-        return NextResponse.json({ error: 'Agent did not become healthy after update' }, { status: 503 })
-      }
-      return NextResponse.json({ success: true, version: 'latest' })
+      return NextResponse.json({ success: true, version: updateResult.version })
     }
 
     case 'fetch-log': {

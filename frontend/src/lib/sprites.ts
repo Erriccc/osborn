@@ -60,11 +60,32 @@ interface SpritesStreamEvent {
 
 const SPRITES_API_BASE = 'https://api.sprites.dev'
 const OSBORN_HTTP_PORT = 8080
+const NPM_REGISTRY = 'https://registry.npmjs.org'
 
 function getApiToken(): string {
   const token = process.env.SPRITES_API_TOKEN
   if (!token) throw new Error('SPRITES_API_TOKEN not configured')
   return token
+}
+
+/**
+ * Fetch the latest published version of `osborn` from the npm registry.
+ *
+ * Returns a concrete version string like "0.8.31". Throws on network failure
+ * or unexpected response. Used by the bootstrap to bake a target version into
+ * the service definition so the in-container marker comparison is meaningful
+ * (comparing against literal "latest" never matches).
+ */
+export async function resolveOsbornLatest(): Promise<string> {
+  const res = await fetch(`${NPM_REGISTRY}/osborn/latest`, {
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok) {
+    throw new Error(`npm registry returned ${res.status} for osborn/latest`)
+  }
+  const data = (await res.json()) as { version?: string }
+  if (!data.version) throw new Error('npm registry response missing version field')
+  return data.version
 }
 
 /**
@@ -408,69 +429,90 @@ async function waitForServiceReady(spriteName: string, maxAttempts = 20): Promis
 }
 
 /**
- * Register the osborn service on a sprite using an inline bootstrap bash script.
+ * Build the bootstrap shell script that runs as the osborn service entry-point.
  *
- * All setup logic lives in the service cmd itself — no separate exec/file-write needed.
- * The bootstrap script installs osborn if not present (skipped on checkpoint restores),
- * sets all env vars, creates the workspace directory, then exec's osborn.
+ * The bootstrap is responsible for: env setup → ensure correct osborn version is
+ * installed → exec osborn. It runs on every service start (first creation, warm
+ * wake, cold wake, post-restore, manual stop+start).
  *
- * This approach is reliable because the service manager always runs its configured cmd
- * regardless of whether exec is fire-and-forget.
+ * Marker-file based version tracking:
+ *   - `WANT="X.Y.Z"` is baked into the cmd at PUT-time by the frontend.
+ *   - `/home/sprite/.osborn-installed-version` is a marker file written by the
+ *     bootstrap AFTER each successful install. It records what version was last
+ *     installed via this mechanism. (Container-local — fs API and container fs
+ *     are disjoint views, so this file is invisible to fs-API readers; both
+ *     sides of the marker write/read happen inside the container.)
+ *
+ * Decision logic — install if ANY of these is true:
+ *   1. Symlink at `lib/node_modules/osborn` (npm-link state, never a real install)
+ *   2. `osborn` binary not found in PATH
+ *   3. Marker file's version doesn't match WANT
+ *
+ * On install: `npm unlink + rm -rf + npm install --force` to handle every prior
+ * state (symlink, partial install, wrong version). Marker is written on success.
+ * On failure, `exec sleep infinity` keeps the sprite alive for post-mortem.
+ *
+ * To trigger an upgrade later, the frontend re-PUTs the bootstrap with a new WANT.
+ * Marker mismatch → install runs.
  */
-export async function registerService(
-  spriteName: string,
-  serviceName: string,
-  httpPort: number,
+export function buildOsbornBootstrap(
   envVars: Record<string, string>,
-): Promise<boolean> {
+  httpPort: number,
+  targetVersion: string,
+): string {
   const exportLines = Object.entries(envVars)
     .map(([k, v]) => `export ${k}='${v.replace(/'/g, "'\\''")}'`)
     .join('\n')
 
-  // Bootstrap script WITH INSTALL DIAGNOSTICS.
-  //
-  // Why the complexity: we've seen npm install hang indefinitely after
-  // deprecation warnings, with no output to stdout, even though `npm install`
-  // is the exact same command that worked in 38 seconds earlier today.
-  // Strong signal that a transitive dep or the Sprites npm mirror is stuck.
-  //
-  // To diagnose, we:
-  //   1. Run npm install in the background with --loglevel=verbose, writing
-  //      ALL output to /tmp/npm-install.log (readable via Sprites fs API).
-  //   2. Run a heartbeat loop in the foreground that emits progress to stdout
-  //      (service log) every 20 seconds: elapsed time, line count, last line.
-  //      Lets us watch progress live and know if npm is still alive.
-  //   3. Kill npm install if it's been running > 10 minutes. Prevents infinite
-  //      hang from eating the entire waitForHealth budget.
-  //   4. If install fails/hangs, `exec sleep infinity` keeps the sprite alive
-  //      so we can read /tmp/npm-install.log post-mortem.
-  //
-  // Remove this diagnostic shim once the root cause is identified and fixed.
-  const bootstrapScript = `
-set -e
-# npm global bin (e.g. /.sprite/languages/node/nvm/versions/node/<ver>/bin) must come first
-# so command -v osborn works on checkpoint restores and exec osborn works after first-run install.
+  return `set -e
+# npm global bin must come first so command -v osborn finds the registry install
 export PATH="$(npm prefix -g)/bin:/.sprite/bin:\${PATH:-/usr/local/bin:/usr/bin:/bin}"
 ${exportLines}
 mkdir -p /home/sprite/workspace
 
-# Install osborn if not already present (skipped on checkpoint restores)
-if ! command -v osborn >/dev/null 2>&1; then
-  echo "[osborn-bootstrap] Installing osborn + claude-code (verbose -> /tmp/npm-install.log)..."
+# Marker-based upgrade detection. Frontend bakes WANT in via PUT; bootstrap writes
+# marker after successful install. Future restarts skip install when marker matches.
+WANT="${targetVersion}"
+MARKER="/home/sprite/.osborn-installed-version"
+NPM_PREFIX="$(npm prefix -g)"
+INSTALLED="$(cat "$MARKER" 2>/dev/null | tr -d '[:space:]' || echo '')"
 
-  # Run npm install in background with verbose logging to a file
-  npm install -g osborn@latest @anthropic-ai/claude-code --loglevel=verbose > /tmp/npm-install.log 2>&1 &
+NEEDS_INSTALL=false
+REASON=""
+
+if [ -L "$NPM_PREFIX/lib/node_modules/osborn" ] || [ -L "$NPM_PREFIX/bin/osborn" ]; then
+  NEEDS_INSTALL=true
+  REASON="symlink detected (npm-link state)"
+elif ! command -v osborn >/dev/null 2>&1; then
+  NEEDS_INSTALL=true
+  REASON="osborn binary missing"
+elif [ "$INSTALLED" != "$WANT" ]; then
+  NEEDS_INSTALL=true
+  REASON="marker mismatch (have='$INSTALLED' want='$WANT')"
+fi
+
+echo "[osborn-bootstrap] WANT=$WANT marker='$INSTALLED' needs-install=$NEEDS_INSTALL reason='$REASON'"
+
+if [ "$NEEDS_INSTALL" = "true" ]; then
+  echo "[osborn-bootstrap] >>> force-installing osborn@$WANT from npm registry"
+
+  # Nuke ALL traces — handles symlinks AND existing installs. --force survives conflicts.
+  npm unlink -g osborn 2>/dev/null || true
+  rm -rf "$NPM_PREFIX/lib/node_modules/osborn" 2>/dev/null || true
+  rm -f "$NPM_PREFIX/bin/osborn" 2>/dev/null || true
+
+  echo "[osborn-bootstrap] running npm install (verbose -> /tmp/npm-install.log)"
+  npm install -g "osborn@$WANT" @anthropic-ai/claude-code --force --loglevel=verbose > /tmp/npm-install.log 2>&1 &
   NPM_PID=$!
-
-  # Heartbeat loop: log progress every 20 seconds to the service log
   START=$SECONDS
+
+  # Heartbeat loop emits progress so we know npm install is alive
   while kill -0 $NPM_PID 2>/dev/null; do
-    sleep 20
+    sleep 10
     ELAPSED=$((SECONDS - START))
     LINES=$(wc -l < /tmp/npm-install.log 2>/dev/null || echo 0)
-    LAST=$(tail -1 /tmp/npm-install.log 2>/dev/null | head -c 150 || echo "")
+    LAST=$(tail -1 /tmp/npm-install.log 2>/dev/null | head -c 120 || echo "")
     echo "[osborn-bootstrap] install t=\${ELAPSED}s lines=\${LINES} last='\${LAST}'"
-    # Kill if stuck > 10 min so waitForHealth doesn't time out waiting forever
     if [ "$ELAPSED" -gt 600 ]; then
       echo "[osborn-bootstrap] STUCK > 10 min, killing npm install pid=\$NPM_PID"
       kill -9 $NPM_PID 2>/dev/null || true
@@ -480,21 +522,51 @@ if ! command -v osborn >/dev/null 2>&1; then
 
   wait $NPM_PID 2>/dev/null || true
   INSTALL_EXIT=$?
-  echo "[osborn-bootstrap] npm install finished (exit=\$INSTALL_EXIT)"
+  echo "[osborn-bootstrap] install finished exit=\$INSTALL_EXIT"
 
-  # If install failed, keep the sprite alive so we can read /tmp/npm-install.log
   if [ "$INSTALL_EXIT" -ne 0 ] || ! command -v osborn >/dev/null 2>&1; then
-    echo "[osborn-bootstrap] INSTALL FAILED - keeping sprite alive for diagnosis"
-    echo "[osborn-bootstrap] Read /tmp/npm-install.log via Sprites fs API"
+    echo "[osborn-bootstrap] INSTALL FAILED — keeping sprite alive for diagnosis"
+    echo "[osborn-bootstrap] tail /tmp/npm-install.log:"
+    tail -30 /tmp/npm-install.log 2>/dev/null
     exec sleep infinity
   fi
 
-  echo "[osborn-bootstrap] Install complete"
+  # Write marker so next restart skips install (fast restart path)
+  echo "$WANT" > "$MARKER"
+  echo "[osborn-bootstrap] install OK — marker written: $WANT"
 fi
 
 echo "[osborn-bootstrap] Starting osborn on port ${httpPort}..."
 exec osborn >> /tmp/osborn-sprite.log 2>&1
 `.trim()
+}
+
+/**
+ * Register the osborn service on a sprite using an inline bootstrap bash script.
+ *
+ * Bootstrap behavior is documented on `buildOsbornBootstrap`. Caller can either
+ * pass a concrete `targetVersion` (e.g. "0.8.31") or omit it — in which case
+ * we resolve the latest from the npm registry. Resolving is required because
+ * the bootstrap compares WANT against a marker file that stores a concrete
+ * version string; the literal "latest" never matches.
+ *
+ * On Sprites, PUT to an existing service silently no-ops on cmd updates. To
+ * change the bootstrap (e.g. for an upgrade), call `updateOsborn()` which does
+ * the stop+delete+PUT dance correctly. This function is for INITIAL registration
+ * (createSandbox) and post-cold-wake re-registration (startSandbox).
+ */
+export async function registerService(
+  spriteName: string,
+  serviceName: string,
+  httpPort: number,
+  envVars: Record<string, string>,
+  targetVersion?: string,
+): Promise<boolean> {
+  const version = targetVersion ?? (await resolveOsbornLatest().catch((err) => {
+    console.warn(`[sprites] resolveOsbornLatest failed: ${(err as Error).message} — falling back to "latest" (marker comparison will always force install)`)
+    return 'latest'
+  }))
+  const bootstrapScript = buildOsbornBootstrap(envVars, httpPort, version)
 
   const serviceBody = JSON.stringify({
     cmd: '/bin/bash',
@@ -973,27 +1045,114 @@ export async function keepAliveSandbox(sandboxId: string): Promise<boolean> {
 }
 
 /**
- * Install the latest version of osborn globally inside a sprite.
- * Runs `npm install -g osborn@latest` with a 180s timeout (npm install can be slow).
- * Returns the combined stdout/stderr log and whether the install succeeded.
+ * Upgrade osborn on a sprite to a target version.
  *
- * @param sandboxId - the sprite name (e.g. "osborn-abc123def456")
+ * Why this is structured the way it is:
+ *
+ *   1. The Sprites exec API silently no-ops on warm/cold sprites — `npm install`
+ *      via execInSprite reports exit=0 with zero output but doesn't actually run.
+ *      So we cannot upgrade by exec'ing npm.
+ *
+ *   2. PUT to `/services/osborn` while the service is running silently rejects
+ *      cmd updates ("Service already running with that command"). Have to do
+ *      stop → DELETE → PUT to actually change the bootstrap.
+ *
+ *   3. Past sprites had osborn installed via `npm link` (symlink to local source
+ *      at /home/sprite/workspace/osborn-src/agent). The bootstrap's old
+ *      `command -v osborn` check was satisfied by the symlink and skipped install
+ *      forever. New marker-based bootstrap (`buildOsbornBootstrap`) detects the
+ *      symlink and force-installs from the npm registry.
+ *
+ * Flow:
+ *   1. Resolve target version (npm registry → e.g. "0.8.31") unless caller passed one
+ *   2. Get current sprite (preview URL)
+ *   3. Reuse the user's platform env vars from `getPlatformEnvVars(userId)`
+ *   4. Stop osborn service (graceful, 10s timeout)
+ *   5. DELETE osborn service registration (REQUIRED — PUT alone won't update cmd)
+ *   6. PUT new bootstrap with WANT=<targetVersion> (auto-starts service)
+ *   7. Wait for /health to return 200 (up to 120s — install can take 60s+)
+ *
+ * Returns the actual installed version string on success (read from npm registry
+ * resolution; not from inside the sprite, since `osborn --version` doesn't have
+ * a real handler yet).
+ *
+ * @param sandboxId - the sprite name (e.g. "osborn-1b9d70e5-2a4")
+ * @param userId    - user ID for `getPlatformEnvVars`
+ * @param version   - optional target version. Omit to use npm registry latest.
  */
-export async function updateOsborn(sandboxId: string): Promise<{ success: boolean; log: string }> {
-  console.log(`[sprites] updateOsborn: running npm uninstall then npm install -g osborn@latest on ${sandboxId}...`)
+export async function updateOsborn(
+  sandboxId: string,
+  userId: string,
+  version?: string,
+): Promise<{ success: boolean; version: string | null; log: string }> {
+  let targetVersion: string
   try {
-    const { exitCode, output } = await execInSprite(
-      sandboxId,
-      'sh',
-      ['-c', 'npm uninstall -g osborn --silent; npm install -g osborn@latest'],
-      180,
-    )
-    console.log(`[sprites] updateOsborn: exit=${exitCode}, output length=${output.length}`)
-    return { success: exitCode === 0, log: output }
+    targetVersion = version ?? (await resolveOsbornLatest())
+  } catch (err) {
+    return { success: false, version: null, log: `Could not resolve target version: ${(err as Error).message}` }
+  }
+
+  console.log(`[sprites] updateOsborn: target=${targetVersion} on ${sandboxId}`)
+
+  let previewUrl: string
+  try {
+    const sprite = await api<SpritesSprite>('GET', `/v1/sprites/${sandboxId}`)
+    previewUrl = sprite.url
+  } catch (err) {
+    return { success: false, version: null, log: `Could not fetch sprite metadata: ${(err as Error).message}` }
+  }
+
+  const envVars = getPlatformEnvVars(userId)
+  const headers = { 'Authorization': `Bearer ${getApiToken()}`, 'Content-Type': 'application/json' }
+
+  try {
+    // Step 1: Stop the running service (graceful)
+    console.log(`[sprites] updateOsborn: stopping current service`)
+    const stopRes = await fetch(`${SPRITES_API_BASE}/v1/sprites/${sandboxId}/services/osborn/stop`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ timeout: 10 }),
+    })
+    if (stopRes.body) await consumeNdjsonStream(stopRes, 'updateOsborn:stop').catch(() => ({}))
+
+    // Step 2: DELETE the registration — REQUIRED before PUT can change cmd
+    console.log(`[sprites] updateOsborn: deleting service registration`)
+    const delRes = await fetch(`${SPRITES_API_BASE}/v1/sprites/${sandboxId}/services/osborn`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${getApiToken()}` },
+    })
+    if (!delRes.ok && delRes.status !== 404) {
+      console.warn(`[sprites] updateOsborn: DELETE returned ${delRes.status} (continuing anyway)`)
+    }
+    await delRes.text()
+
+    // Step 3: PUT new bootstrap with target version baked in (auto-starts service)
+    console.log(`[sprites] updateOsborn: PUT new bootstrap with WANT=${targetVersion}`)
+    const bootstrap = buildOsbornBootstrap(envVars, OSBORN_HTTP_PORT, targetVersion)
+    const putRes = await fetch(`${SPRITES_API_BASE}/v1/sprites/${sandboxId}/services/osborn`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ cmd: '/bin/bash', args: ['-c', bootstrap], needs: [], http_port: OSBORN_HTTP_PORT }),
+    })
+    if (!putRes.ok) {
+      const text = await putRes.text()
+      return { success: false, version: null, log: `PUT failed: ${putRes.status}: ${text.slice(0, 300)}` }
+    }
+    if (putRes.body) await consumeNdjsonStream(putRes, 'updateOsborn:put').catch(() => ({}))
+
+    // Step 4: Poll /health (npm install can take 60s, so allow 120s budget)
+    console.log(`[sprites] updateOsborn: polling ${previewUrl}/health (max 120s)`)
+    const healthy = await waitForHealth(previewUrl, 60) // 60 × 2s = 120s
+    if (!healthy) {
+      return { success: false, version: null, log: 'Health check timed out after install (>120s)' }
+    }
+
+    console.log(`[sprites] updateOsborn: success — osborn@${targetVersion} healthy on ${sandboxId}`)
+    return { success: true, version: targetVersion, log: `Upgraded to osborn@${targetVersion}` }
   } catch (err) {
     const msg = (err as Error).message
     console.error(`[sprites] updateOsborn failed: ${msg}`)
-    return { success: false, log: msg }
+    return { success: false, version: null, log: msg }
   }
 }
 

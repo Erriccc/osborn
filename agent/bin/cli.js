@@ -3,12 +3,29 @@
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import { readFileSync } from 'fs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 // Pass all args to the actual agent
 const args = process.argv.slice(2)
+
+// Check for version flag — read from package.json relative to this binary.
+// Used by the Sprite bootstrap to verify install via marker file. Must exit
+// before any env-var checks since `osborn --version` should work without
+// LiveKit/etc credentials configured.
+if (args.includes('--version') || args.includes('-v')) {
+  try {
+    const pkgPath = join(__dirname, '..', 'package.json')
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+    console.log(pkg.version)
+    process.exit(0)
+  } catch (err) {
+    console.error('Could not read package.json:', err.message)
+    process.exit(1)
+  }
+}
 
 // Check for help
 if (args.includes('--help') || args.includes('-h')) {
@@ -22,6 +39,7 @@ Usage:
 
 Options:
   --room <code>    Room code from the Osborn web interface
+  --version, -v    Print version and exit
   --help, -h       Show this help message
 
 Environment Variables:
