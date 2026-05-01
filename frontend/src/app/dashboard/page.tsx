@@ -325,25 +325,19 @@ export default function Dashboard() {
         body: JSON.stringify({ action: 'update-osborn', sandboxId }),
       }).then(r => r.json()).catch(() => ({ success: false }))
       if (result.success === false) {
-        setStatusMessage({ text: 'Update failed', type: 'error' })
+        setStatusMessage({ text: result.error || 'Update failed', type: 'error' })
         setUpdating(false)
         return
       }
-      // poll health until the newly-updated agent responds
-      const poll = setInterval(async () => {
-        try {
-          const r = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(2000) })
-          if (r.ok) {
-            clearInterval(poll)
-            setUpdating(false)
-            setAgentOnline(true)
-            setStatusMessage({ text: `Updated to v${latestVersion || 'latest'}`, type: 'success' })
-            checkVersion()
-            setTimeout(() => setStatusMessage(null), 4000)
-          }
-        } catch {}
-      }, 2000)
-      setTimeout(() => { clearInterval(poll); setUpdating(false) }, 60000)
+      // updateOsborn already waited for /health server-side — no client-side poll needed.
+      // Use the version returned by the API to update the badge immediately.
+      const newVersion = result.version as string | null
+      if (newVersion) setInstalledVersion(newVersion)
+      setUpdating(false)
+      setAgentOnline(true)
+      setStatusMessage({ text: `Updated to v${newVersion || latestVersion || 'latest'}`, type: 'success' })
+      checkVersion()
+      setTimeout(() => setStatusMessage(null), 4000)
     } catch {
       setUpdating(false)
     }

@@ -413,9 +413,20 @@ export async function POST(request: Request) {
       if (installedResult.status === 'fulfilled') {
         try {
           const parsed = JSON.parse(installedResult.value.output) as {
-            dependencies?: { osborn?: { version?: string } }
+            dependencies?: { osborn?: { version?: string; resolved?: string } }
           }
-          installed = parsed?.dependencies?.osborn?.version ?? null
+          const osbornEntry = parsed?.dependencies?.osborn
+          if (osbornEntry) {
+            // If resolved points to a local file path (npm link / npm link <path>),
+            // the version field reflects the local source version — not a real registry
+            // install. Report 'dev' so the dashboard always shows an update is available
+            // and the badge does not mislead the user with a stale source version.
+            if (osbornEntry.resolved?.startsWith('file:')) {
+              installed = 'dev'
+            } else {
+              installed = osbornEntry.version ?? null
+            }
+          }
         } catch {
           // JSON parse failed — leave installed as null
         }
