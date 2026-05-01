@@ -45,7 +45,8 @@ export class RecallClient extends EventEmitter {
         meeting_url: meetingUrl,
         bot_name: botName,
         recording_config: {
-          transcript: true,
+          // `transcript: true` was rejected as "Expected a dictionary, but got bool" —
+          // omit; `transcription_options` below already configures the transcript provider.
           real_time_endpoints: [{
             type: 'webhook',
             config: {
@@ -60,7 +61,9 @@ export class RecallClient extends EventEmitter {
         },
         output_media: {
           camera: {
-            type: 'webpage',
+            // Recall API expects `kind` (not `type`); the wrong key arrives as null and
+            // gets rejected as "Invalid choice null. Expected 'webpage' or 'default'."
+            kind: 'webpage',
             config: {
               url: `${webhookBaseUrl}/meeting-output`,
             },
