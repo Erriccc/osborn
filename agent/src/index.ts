@@ -1200,7 +1200,7 @@ async function main() {
           // Wall-clock timer: capture when audio actually starts playing (first frame)
           // Used as fallback if LiveKit's playbackPosition is 0 (race condition)
           let playbackStartedAt: number | null = null
-          const audioOutputRef = (currentSession as any)?._activity?.agentSession?.output?.audio
+          const audioOutputRef = (currentSession as any)?.output?.audio
           if (audioOutputRef && typeof audioOutputRef.on === 'function') {
             const onPlaybackStarted = () => {
               playbackStartedAt = Date.now()
@@ -1212,7 +1212,7 @@ async function main() {
           handle.addDoneCallback((sh: any) => {
             if (sh.interrupted) {
               console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
-              const audioOutput = (currentSession as any)?._activity?.agentSession?.output?.audio
+              const audioOutput = (currentSession as any)?.output?.audio
               const sdkTranscript = audioOutput?.lastPlaybackEvent?.synchronizedTranscript
               const sdkPlaybackSec = audioOutput?.lastPlaybackEvent?.playbackPosition ?? 0
 
