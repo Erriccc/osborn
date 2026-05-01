@@ -1153,7 +1153,45 @@ export async function keepAliveSandbox(sandboxId: string): Promise<boolean> {
  * @param userId    - user ID for `getPlatformEnvVars`
  * @param version   - optional target version. Omit to use npm registry latest.
  */
+// Per-sprite in-flight lock for updateOsborn. Concurrent calls collide
+// destructively because updateOsborn does stop → DELETE → PUT in sequence —
+// if a second call's DELETE lands between the first call's PUT and its
+// /health-poll completing, the second call wipes the just-registered service
+// and the first call's poll fails with "service not found" / "manager dead".
+// In production we saw this happen with two clicks 3 seconds apart, leaving
+// the sprite in a degraded state until the marker bootstrap self-healed.
+//
+// The lock returns the in-flight call's promise to subsequent callers, so
+// they get the same result instead of triggering parallel work. Per Next.js
+// instance — for true cross-instance locking we'd need Redis or a Postgres
+// advisory lock, but per-instance catches the multi-click and debounce
+// gaps that cause most damage.
+const updateInflight = new Map<string, Promise<{ success: boolean; version: string | null; log: string }>>()
+
 export async function updateOsborn(
+  sandboxId: string,
+  userId: string,
+  version?: string,
+): Promise<{ success: boolean; version: string | null; log: string }> {
+  // Serialize concurrent calls per sprite — if one is already in flight,
+  // return its promise instead of starting a new one.
+  const existing = updateInflight.get(sandboxId)
+  if (existing) {
+    console.log(`[sprites] updateOsborn: join in-flight call for ${sandboxId} (de-duped)`)
+    return existing
+  }
+
+  const work = updateOsbornImpl(sandboxId, userId, version)
+  updateInflight.set(sandboxId, work)
+  work.finally(() => {
+    if (updateInflight.get(sandboxId) === work) {
+      updateInflight.delete(sandboxId)
+    }
+  })
+  return work
+}
+
+async function updateOsbornImpl(
   sandboxId: string,
   userId: string,
   version?: string,
@@ -1166,6 +1204,29 @@ export async function updateOsborn(
   }
 
   console.log(`[sprites] updateOsborn: target=${targetVersion} on ${sandboxId}`)
+
+  // Short-circuit: if the marker file already shows the target version AND osborn
+  // is healthy, no work is needed. This handles the "user clicks Update twice in
+  // a row" pattern — the second click sees the install already happened (marker
+  // matches) and returns immediately instead of triggering another stop+delete+PUT.
+  try {
+    const installedNow = await readInstalledOsbornVersion(sandboxId)
+    if (installedNow === targetVersion) {
+      const sprite = await api<SpritesSprite>('GET', `/v1/sprites/${sandboxId}`)
+      if (sprite.url) {
+        try {
+          const h = await fetch(`${sprite.url}/health`, { signal: AbortSignal.timeout(3000) })
+          if (h.ok) {
+            console.log(`[sprites] updateOsborn: marker already at ${targetVersion} and /health 200 — skipping (no-op)`)
+            return { success: true, version: targetVersion, log: `Already at osborn@${targetVersion}` }
+          }
+        } catch {} // not healthy, fall through to full upgrade
+      }
+    }
+  } catch (err) {
+    // Could not read marker / sprite — fall through to full upgrade
+    console.warn(`[sprites] updateOsborn: short-circuit check failed: ${(err as Error).message} — proceeding with full upgrade`)
+  }
 
   let previewUrl: string
   try {

@@ -30,11 +30,40 @@ export default function Dashboard() {
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [restarting, setRestarting] = useState(false)
-  const [updating, setUpdating] = useState(false)
   const [installedVersion, setInstalledVersion] = useState<string | null>(null)
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
+
+  // Unified operation state. Only ONE long-running agent operation can run
+  // at a time — restart or update. They share state because the UI can only
+  // show one progress message anyway, and running them concurrently would
+  // race the same Sprites service registration.
+  //
+  // Lifecycle:
+  //   null                       → idle, agent operations enabled
+  //   { kind, stage, startedAt } → in flight, button disabled, phase shown
+  //
+  // `targetVersion` is set during update so the version badge can show the
+  // transition ("v0.8.32 → v0.8.33") instead of going blank or reverting.
+  type Operation = {
+    kind: 'restart' | 'update'
+    stage: 'starting' | 'installing' | 'verifying' | 'snapshotting'
+    startedAt: number
+    targetVersion?: string
+  }
+  const [operation, setOperation] = useState<Operation | null>(null)
+  const [opElapsed, setOpElapsed] = useState(0) // seconds since op started
+
+  // Tick elapsed time for the operation banner. Only ticks while operation is set.
+  useEffect(() => {
+    if (!operation) { setOpElapsed(0); return }
+    const id = setInterval(() => setOpElapsed(Math.floor((Date.now() - operation.startedAt) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [operation])
+
+  // Convenience flags so existing render code reads naturally.
+  const restarting = operation?.kind === 'restart'
+  const updating = operation?.kind === 'update'
   const [sandboxAvailable, setSandboxAvailable] = useState(false)
   const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
@@ -281,65 +310,124 @@ export default function Dashboard() {
   }
 
   const handleRestart = async () => {
-    setRestarting(true)
+    if (operation) return // already running an op
     setStatusMessage(null)
+    setOperation({ kind: 'restart', stage: 'starting', startedAt: Date.now() })
+
+    // Begin: server-side restart-service does stop+start internally.
+    // Phase advances after request is fired.
     try {
-      const result = await fetch('/api/sandbox', {
+      const restartPromise = fetch('/api/sandbox', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'restart-service', sandboxId })
-      }).then(r => r.json()).catch(() => ({ success: false }))
+        body: JSON.stringify({ action: 'restart-service', sandboxId }),
+      }).then(r => r.json()).catch((e) => ({ success: false, error: String(e) }))
+
+      // Move to "verifying" phase ~3s in (server-side stop usually finishes by then)
+      const phaseTimer = setTimeout(() => {
+        setOperation((op) => op?.kind === 'restart' ? { ...op, stage: 'verifying' } : op)
+      }, 3000)
+
+      const result = await restartPromise
+      clearTimeout(phaseTimer)
+
       if (result.success === false) {
-        setStatusMessage({ text: 'Restart failed', type: 'error' })
-        setRestarting(false)
+        setOperation(null)
+        setStatusMessage({ text: result.error || 'Restart failed', type: 'error' })
         return
       }
-      // poll health
-      const poll = setInterval(async () => {
+
+      // Server returned success → poll /health to confirm the agent is reachable
+      // from the browser too (caches Sprites' DNS, mixed-content guard, etc).
+      setOperation({ kind: 'restart', stage: 'verifying', startedAt: Date.now() })
+      const deadline = Date.now() + 60000
+      while (Date.now() < deadline) {
         try {
           const r = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(2000) })
           if (r.ok) {
-            clearInterval(poll)
-            setRestarting(false)
+            setOperation(null)
             setAgentOnline(true)
             setStatusMessage({ text: 'Agent is back online', type: 'success' })
+            // Refresh version display in case install state changed.
+            // Safe to call here because no upgrade is in flight.
             checkVersion()
             setTimeout(() => setStatusMessage(null), 4000)
+            return
           }
         } catch {}
-      }, 2000)
-      setTimeout(() => { clearInterval(poll); setRestarting(false) }, 60000)
-    } catch {
-      setRestarting(false)
+        await new Promise(r => setTimeout(r, 2000))
+      }
+      // Health didn't return within 60s — stop spinner, show error
+      setOperation(null)
+      setStatusMessage({ text: 'Agent restart timed out (60s)', type: 'error' })
+    } catch (err) {
+      setOperation(null)
+      setStatusMessage({ text: `Restart error: ${(err as Error).message}`, type: 'error' })
     }
   }
 
   const handleUpdate = async () => {
     if (!sandboxId) return
-    setUpdating(true)
+    if (operation) return // already running an op
     setStatusMessage(null)
+
+    // Capture target version up-front so the badge can show the transition
+    // ("v0.8.32 → v0.8.33") instead of going blank during the install.
+    const target = latestVersion ?? null
+    setOperation({
+      kind: 'update',
+      stage: 'starting',
+      startedAt: Date.now(),
+      targetVersion: target ?? undefined,
+    })
+
+    // Phase machine: stage advances on a timeline so the user knows what's
+    // happening even though the server returns one big response at the end.
+    // Real timings on a typical install: stop ~2s, install ~50-70s, health ~5s,
+    // checkpoint ~10s. Total ~70-90s.
+    const phaseTimers = [
+      setTimeout(() => setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'installing' } : op), 3000),
+      setTimeout(() => setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'verifying' } : op), 60000),
+      setTimeout(() => setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'snapshotting' } : op), 80000),
+    ]
+
     try {
+      // updateOsborn handles stop+DELETE+PUT+health+checkpoint server-side.
+      // We just await its single response.
       const result = await fetch('/api/sandbox', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'update-osborn', sandboxId }),
-      }).then(r => r.json()).catch(() => ({ success: false }))
+      }).then(r => r.json()).catch((e) => ({ success: false, error: String(e) }))
+
+      // Clear all phase timers regardless of outcome
+      phaseTimers.forEach(clearTimeout)
+
       if (result.success === false) {
-        setStatusMessage({ text: result.error || 'Update failed', type: 'error' })
-        setUpdating(false)
+        setOperation(null)
+        setStatusMessage({
+          text: result.error ? `Update failed: ${result.error}` : 'Update failed',
+          type: 'error',
+        })
         return
       }
-      // updateOsborn already waited for /health server-side — no client-side poll needed.
-      // Use the version returned by the API to update the badge immediately.
+
+      // Trust the server's reported version (read from the marker file via the
+      // new check-version handler — accurate). Do NOT refire checkVersion here:
+      // it can race with the post-install marker write and revert the badge.
       const newVersion = result.version as string | null
       if (newVersion) setInstalledVersion(newVersion)
-      setUpdating(false)
+      setOperation(null)
       setAgentOnline(true)
-      setStatusMessage({ text: `Updated to v${newVersion || latestVersion || 'latest'}`, type: 'success' })
-      checkVersion()
+      setStatusMessage({
+        text: newVersion ? `Updated to v${newVersion}` : 'Update complete',
+        type: 'success',
+      })
       setTimeout(() => setStatusMessage(null), 4000)
-    } catch {
-      setUpdating(false)
+    } catch (err) {
+      phaseTimers.forEach(clearTimeout)
+      setOperation(null)
+      setStatusMessage({ text: `Update error: ${(err as Error).message}`, type: 'error' })
     }
   }
 
@@ -481,7 +569,7 @@ export default function Dashboard() {
                       Restart agent
                     </button>
                   )}
-                  {agentOnline && !restarting && !updating && isCloud && (
+                  {agentOnline && !operation && isCloud && (
                     <div className="flex items-center gap-2">
                       {installedVersion && (
                         <span className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full font-mono ${
@@ -503,9 +591,36 @@ export default function Dashboard() {
                       </button>
                     </div>
                   )}
-                  {restarting && <span className="text-[11px] text-amber-400 animate-pulse">Restarting...</span>}
-                  {updating && <span className="text-[11px] text-sky-400 animate-pulse">Updating...</span>}
-                  {statusMessage && (
+
+                  {/* Update in flight — show transition badge + phased status */}
+                  {updating && operation && (
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full font-mono bg-sky-400/15 text-sky-400">
+                        v{installedVersion ?? '?'}
+                        <span className="opacity-60">→</span>
+                        v{operation.targetVersion ?? latestVersion ?? '?'}
+                      </span>
+                      <span className="text-[11px] text-sky-400 animate-pulse">
+                        {operation.stage === 'starting'      && 'Stopping service...'}
+                        {operation.stage === 'installing'    && `Installing v${operation.targetVersion ?? latestVersion ?? 'latest'}...`}
+                        {operation.stage === 'verifying'     && 'Verifying agent...'}
+                        {operation.stage === 'snapshotting'  && 'Saving snapshot...'}
+                        {' '}({opElapsed}s)
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Restart in flight */}
+                  {restarting && operation && (
+                    <span className="text-[11px] text-amber-400 animate-pulse">
+                      {operation.stage === 'starting'  && 'Restarting service...'}
+                      {operation.stage === 'verifying' && 'Waiting for agent to come back...'}
+                      {' '}({opElapsed}s)
+                    </span>
+                  )}
+
+                  {/* Final status (success/error) — only shows when no op in flight */}
+                  {statusMessage && !operation && (
                     <p className={`text-[11px] ${statusMessage.type === 'success' ? 'text-green-400' : statusMessage.type === 'error' ? 'text-red-400' : 'text-sky-400'}`}>
                       {statusMessage.text}
                     </p>
