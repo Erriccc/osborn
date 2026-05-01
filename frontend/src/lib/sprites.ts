@@ -982,29 +982,41 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
       }
     }
 
-    // Step 2: Restore latest USER-BLESSED checkpoint if available.
-    // NOTE: Sprites CRIU checkpoints capture container filesystem+memory but NOT the service
-    // registry (control plane). The service must always be re-registered after cold wake.
+    // Step 2: Restore latest USER-BLESSED checkpoint — IF the existing service definition
+    // does NOT already have marker-bootstrap logic. The marker bootstrap is self-healing:
+    // it detects missing/symlink installs and re-installs from the registry on every cold
+    // wake. Restoring an old checkpoint that pre-dates the install causes a re-install loop
+    // (checkpoint → no marker → install → sprite hibernates → restore old checkpoint → repeat).
     //
-    // We deliberately filter out `pre-restore-vN` snapshots — Sprites auto-creates these
-    // before every restore, and they often capture mid-corruption states (e.g. during
-    // a kill-mid-install). Restoring them perpetuates damage. Only restore from
-    // checkpoints we (or the user) explicitly created.
-    const checkpoints = await listCheckpoints(sandboxId)
-    const userBlessed = checkpoints.filter(cp => !cp.id.startsWith('pre-restore-'))
-    const latest = userBlessed[0] ?? null
-    if (latest) {
-      console.log(`[sprites] Restoring checkpoint ${latest.id} (created ${latest.create_time})...`)
-      const restored = await restoreCheckpoint(sandboxId, latest.id)
-      if (!restored) {
-        console.warn(`[sprites] Checkpoint restore failed — proceeding with cold start`)
-      } else {
-        console.log(`[sprites] Checkpoint restored`)
-      }
-    } else if (checkpoints.length > 0) {
-      console.warn(`[sprites] No clean (non-pre-restore) checkpoint for ${sandboxId} — proceeding with cold start (skipped ${checkpoints.length} pre-restore-* snapshot(s))`)
+    // We also filter out `pre-restore-vN` snapshots — Sprites auto-creates these before
+    // every restore and they often capture mid-corruption states.
+    let bootstrapHasMarker = false
+    try {
+      const existing = await api<{ args?: string[] }>('GET', `/v1/sprites/${sandboxId}/services/osborn`)
+      bootstrapHasMarker = (existing.args?.[1] ?? '').includes('osborn-installed-version')
+    } catch {
+      // service may not be registered yet (cold sprite) — fall through to restore
+    }
+
+    if (bootstrapHasMarker) {
+      console.log(`[sprites] Service has marker bootstrap — skip checkpoint restore (bootstrap will re-install if needed)`)
     } else {
-      console.log(`[sprites] No restorable checkpoints — cold start without restore`)
+      const checkpoints = await listCheckpoints(sandboxId)
+      const userBlessed = checkpoints.filter(cp => !cp.id.startsWith('pre-restore-'))
+      const latest = userBlessed[0] ?? null
+      if (latest) {
+        console.log(`[sprites] Restoring checkpoint ${latest.id} (created ${latest.create_time})...`)
+        const restored = await restoreCheckpoint(sandboxId, latest.id)
+        if (!restored) {
+          console.warn(`[sprites] Checkpoint restore failed — proceeding with cold start`)
+        } else {
+          console.log(`[sprites] Checkpoint restored`)
+        }
+      } else if (checkpoints.length > 0) {
+        console.warn(`[sprites] No clean (non-pre-restore) checkpoint for ${sandboxId} — proceeding with cold start (skipped ${checkpoints.length} pre-restore-* snapshot(s))`)
+      } else {
+        console.log(`[sprites] No restorable checkpoints — cold start without restore`)
+      }
     }
 
     // Step 3: Wait for sprite to be ready for service registration
