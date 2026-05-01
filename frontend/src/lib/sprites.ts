@@ -236,6 +236,41 @@ async function consumeNdjsonStream(
 }
 
 /**
+ * Wait until the sprite's exec subsystem is ready to accept commands.
+ *
+ * The Sprites control plane flips a sprite to "running" before its exec
+ * endpoint can actually launch processes — we've seen `503: Process not ready
+ * after 30s` for ~10–60s after wake. Polls a no-op `echo ready` until exit 0.
+ *
+ * Modeled on waitForServiceReady but probes the exec subsystem specifically.
+ *
+ * @param spriteName  - the sprite name
+ * @param maxAttempts - max poll attempts (2s apart) — default 30 = 60s
+ * @returns true if exec is ready, false on timeout
+ */
+export async function waitForExecReady(spriteName: string, maxAttempts = 30): Promise<boolean> {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      // Pass skipWait=true so we don't infinitely recurse into ourselves.
+      const { exitCode } = await execInSprite(spriteName, 'echo', ['ready'], 5, {}, true)
+      if (exitCode === 0) {
+        if (i > 0) console.log(`[sprites] Exec ready on ${spriteName} after ${i + 1} attempt(s)`)
+        return true
+      }
+    } catch (err) {
+      const msg = (err as Error).message
+      // 503 "Process not ready" is the expected transient state — keep polling silently
+      if (!msg.includes('503')) {
+        console.warn(`[sprites] waitForExecReady probe error (attempt ${i + 1}/${maxAttempts}): ${msg.substring(0, 120)}`)
+      }
+    }
+    await new Promise(r => setTimeout(r, 2000))
+  }
+  console.warn(`[sprites] waitForExecReady: ${spriteName} exec not ready within ${maxAttempts * 2}s — proceeding anyway`)
+  return false
+}
+
+/**
  * Execute a command inside a sprite via the exec API.
  * Returns stdout/stderr output and exit code.
  *
@@ -244,6 +279,9 @@ async function consumeNdjsonStream(
  * @param args       - argument list (strings, no shell expansion)
  * @param timeoutSec - exec timeout in seconds
  * @param env        - optional extra env vars for this exec
+ * @param skipWait   - if true, skips the waitForExecReady() preflight (use for
+ *                     internal calls from waitForExecReady itself, or when the
+ *                     caller has already confirmed exec subsystem is up)
  */
 export async function execInSprite(
   spriteName: string,
@@ -251,7 +289,11 @@ export async function execInSprite(
   args: string[] = [],
   timeoutSec = 30,
   env: Record<string, string> = {},
+  skipWait = false,
 ): Promise<{ exitCode: number; output: string }> {
+  if (!skipWait) {
+    await waitForExecReady(spriteName)
+  }
   const res = await fetch(`${SPRITES_API_BASE}/v1/sprites/${spriteName}/exec`, {
     method: 'POST',
     headers: {
@@ -806,12 +848,39 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
     const previewUrl = sprite.url
     console.log(`[sprites] Starting sandbox "${sandboxId}" (current state: ${sprite.status})...`)
 
-    // Step 2: Restore latest checkpoint if available (preserves installed binaries + filesystem)
+    // Bonus: if the sprite is already running and healthy, skip restore entirely.
+    // Avoids triggering Sprites' auto-snapshot system (pre-restore-vN) when nothing
+    // is actually broken.
+    if (sprite.status === 'running' && previewUrl) {
+      try {
+        const h = await fetch(`${previewUrl}/health`, { signal: AbortSignal.timeout(3000) })
+        if (h.ok) {
+          console.log(`[sprites] ${sandboxId} already healthy — no restore needed`)
+          return {
+            id: sandboxId,
+            status: 'running',
+            previewUrl,
+            userId,
+            createdAt: new Date().toISOString(),
+          }
+        }
+      } catch {
+        // Not healthy — fall through to restore path
+      }
+    }
+
+    // Step 2: Restore latest USER-BLESSED checkpoint if available.
     // NOTE: Sprites CRIU checkpoints capture container filesystem+memory but NOT the service
     // registry (control plane). The service must always be re-registered after cold wake.
+    //
+    // We deliberately filter out `pre-restore-vN` snapshots — Sprites auto-creates these
+    // before every restore, and they often capture mid-corruption states (e.g. during
+    // a kill-mid-install). Restoring them perpetuates damage. Only restore from
+    // checkpoints we (or the user) explicitly created.
     const checkpoints = await listCheckpoints(sandboxId)
-    if (checkpoints.length > 0) {
-      const latest = checkpoints[0]
+    const userBlessed = checkpoints.filter(cp => !cp.id.startsWith('pre-restore-'))
+    const latest = userBlessed[0] ?? null
+    if (latest) {
       console.log(`[sprites] Restoring checkpoint ${latest.id} (created ${latest.create_time})...`)
       const restored = await restoreCheckpoint(sandboxId, latest.id)
       if (!restored) {
@@ -819,6 +888,8 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
       } else {
         console.log(`[sprites] Checkpoint restored`)
       }
+    } else if (checkpoints.length > 0) {
+      console.warn(`[sprites] No clean (non-pre-restore) checkpoint for ${sandboxId} — proceeding with cold start (skipped ${checkpoints.length} pre-restore-* snapshot(s))`)
     } else {
       console.log(`[sprites] No restorable checkpoints — cold start without restore`)
     }
@@ -927,27 +998,48 @@ export async function updateOsborn(sandboxId: string): Promise<{ success: boolea
 }
 
 /**
- * Restart the osborn service on a sprite via the Sprites service restart endpoint.
+ * Restart the osborn service on a sprite.
+ *
+ * The Sprites Services API has no /restart endpoint — restart is implemented
+ * as stop-then-start. The stop call may fail if the service is already
+ * stopped; that's fine, we proceed to start anyway.
+ *
  * Use this instead of asking osborn to restart itself (which fails when osborn is frozen).
  *
  * @param sandboxId - the sprite name (e.g. "osborn-abc123def456")
  */
 export async function restartService(sandboxId: string): Promise<boolean> {
   try {
-    const res = await fetch(`${SPRITES_API_BASE}/v1/sprites/${sandboxId}/services/osborn/restart`, {
+    // Stop first — may 404/4xx if service is already stopped, which is OK
+    const stopRes = await fetch(`${SPRITES_API_BASE}/v1/sprites/${sandboxId}/services/osborn/stop`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${getApiToken()}`,
         'Content-Type': 'application/json',
       },
+      body: JSON.stringify({ timeout: 10 }),
     })
-    if (!res.ok) {
-      const text = await res.text()
-      console.error(`[sprites] restartService failed: ${res.status}: ${text.substring(0, 200)}`)
+    if (stopRes.body) {
+      await consumeNdjsonStream(stopRes, 'restart-service:stop').catch(() => ({}))
+    }
+    if (!stopRes.ok && stopRes.status !== 404) {
+      console.warn(`[sprites] restartService: stop returned ${stopRes.status} (continuing to start)`)
+    }
+
+    // Then start fresh
+    const startRes = await fetch(`${SPRITES_API_BASE}/v1/sprites/${sandboxId}/services/osborn/start`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${getApiToken()}` },
+    })
+    if (!startRes.ok) {
+      const text = await startRes.text()
+      console.error(`[sprites] restartService start failed: ${startRes.status}: ${text.substring(0, 200)}`)
       return false
     }
-    await res.body?.cancel().catch(() => {})
-    console.log(`[sprites] Service osborn restarted on ${sandboxId}`)
+    if (startRes.body) {
+      await consumeNdjsonStream(startRes, 'restart-service:start').catch(() => ({}))
+    }
+    console.log(`[sprites] Service osborn restarted on ${sandboxId} (stop+start)`)
     return true
   } catch (err) {
     console.error(`[sprites] restartService error: ${(err as Error).message}`)
