@@ -1278,12 +1278,14 @@ function VoiceRoomInner({
   onAuthRequired,
   waitingMode,
   preSelectedSessionId,
+  agentUrl,
 }: {
   onDisconnect?: () => void
   onAgentReady?: () => void
   onAuthRequired?: () => void
   waitingMode?: boolean
   preSelectedSessionId?: string | null
+  agentUrl?: string
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
@@ -2198,9 +2200,10 @@ function VoiceRoomInner({
     const payload = encoder.encode(JSON.stringify({
       type: 'join_meeting',
       url: meetingUrl,
+      webhookBase: agentUrl,
     }))
     sendToAgent(payload, { reliable: true })
-  }, [sendToAgent])
+  }, [sendToAgent, agentUrl])
 
   const handleLeaveMeeting = useCallback(() => {
     if (!meetingBotId) return
@@ -3088,7 +3091,7 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, preSelectedSessionId } =
+  const { disconnect, markAgentReady, markAuthRequired, preSelectedSessionId, agentUrl } =
     useChatSession()
 
   return (
@@ -3098,6 +3101,7 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       onAuthRequired={markAuthRequired}
       waitingMode={waitingMode}
       preSelectedSessionId={preSelectedSessionId}
+      agentUrl={agentUrl}
     />
   )
 }

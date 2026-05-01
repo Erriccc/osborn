@@ -3111,9 +3111,10 @@ async function main() {
             await sendToFrontend({ type: 'meeting_error', message: 'Recall.ai not configured — set RECALL_API_KEY in .env' })
           } else {
             try {
-              const webhookBase = process.env.FLY_APP_NAME
-                ? `https://${process.env.FLY_APP_NAME}.fly.dev`
-                : `http://localhost:${apiPort}`
+              const webhookBase = (data.webhookBase as string) ||
+                (process.env.FLY_APP_NAME
+                  ? `https://${process.env.FLY_APP_NAME}.fly.dev`
+                  : `http://localhost:${apiPort}`)
               await sendToFrontend({ type: 'meeting_joining', message: 'Osborn is joining your meeting...' })
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase)
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
