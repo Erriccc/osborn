@@ -1197,13 +1197,61 @@ async function main() {
         if (handle && typeof handle.addDoneCallback === 'function') {
           // SpeechHandle — track it and register interruption callback
           currentSpeechHandle = handle
+          // Wall-clock timer: capture when audio actually starts playing (first frame)
+          // Used as fallback if LiveKit's playbackPosition is 0 (race condition)
+          let playbackStartedAt: number | null = null
+          const audioOutputRef = (currentSession as any)?._activity?.agentSession?.output?.audio
+          if (audioOutputRef && typeof audioOutputRef.on === 'function') {
+            const onPlaybackStarted = () => {
+              playbackStartedAt = Date.now()
+              console.log(`🔊 [${sayId}] audio first frame out (playbackStarted)`)
+              audioOutputRef.off('playbackStarted', onPlaybackStarted)
+            }
+            audioOutputRef.on('playbackStarted', onPlaybackStarted)
+          }
           handle.addDoneCallback((sh: any) => {
             if (sh.interrupted) {
               console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
               const audioOutput = (currentSession as any)?._activity?.agentSession?.output?.audio
-              const spokenText = audioOutput?.lastPlaybackEvent?.synchronizedTranscript || data.text
-              const playbackPositionSec = audioOutput?.lastPlaybackEvent?.playbackPosition ?? 0
-              console.log('🔇 Synchronized transcript:', JSON.stringify({ chars: spokenText.length, fullChars: data.text.length, playbackSec: playbackPositionSec, isSynced: !!audioOutput?.lastPlaybackEvent?.synchronizedTranscript }))
+              const sdkTranscript = audioOutput?.lastPlaybackEvent?.synchronizedTranscript
+              const sdkPlaybackSec = audioOutput?.lastPlaybackEvent?.playbackPosition ?? 0
+
+              let spokenText: string
+              let method: string
+
+              if (sdkTranscript) {
+                // Best case: LiveKit gave us word-accurate transcript (requires alignedTranscript TTS)
+                spokenText = sdkTranscript
+                method = 'sdk-transcript'
+              } else if (sdkPlaybackSec > 0) {
+                // Second: LiveKit gave us playback duration — estimate chars from it
+                const CHARS_PER_SEC = 14
+                const charCount = Math.min(Math.round(sdkPlaybackSec * CHARS_PER_SEC), data.text.length)
+                const slicePoint = data.text.lastIndexOf(' ', charCount) || charCount
+                spokenText = slicePoint > 0 ? data.text.slice(0, slicePoint) : data.text
+                method = 'sdk-position'
+              } else if (playbackStartedAt !== null) {
+                // Third: use our wall-clock timer from first audio frame
+                const elapsedSec = (Date.now() - playbackStartedAt) / 1000
+                const CHARS_PER_SEC = 14
+                const charCount = Math.min(Math.round(elapsedSec * CHARS_PER_SEC), data.text.length)
+                const slicePoint = data.text.lastIndexOf(' ', charCount) || charCount
+                spokenText = slicePoint > 0 ? data.text.slice(0, slicePoint) : data.text
+                method = 'wall-clock'
+              } else {
+                // Fallback: interrupt fired before first frame — pass full block
+                spokenText = data.text
+                method = 'full-block-fallback'
+              }
+
+              console.log('🔇 Interruption estimate:', JSON.stringify({
+                method,
+                sdkPlaybackSec,
+                isSynced: !!sdkTranscript,
+                spokenChars: spokenText.length,
+                fullChars: data.text.length,
+                heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
+              }))
               handleSpeechDone(sh, spokenText, data.text)
             } else {
               console.log(`✅ [${sayId}] session.say DONE`)
