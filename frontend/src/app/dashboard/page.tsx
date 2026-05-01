@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
@@ -325,8 +325,23 @@ export default function Dashboard() {
     }
   }
 
+  // Two-click delete: first click arms the button (text+color change), second
+  // click within 4s actually deletes. Sprites does NOT soft-delete — once gone,
+  // overlay + persistent disk + checkpoints are unrecoverable. We learned this
+  // the hard way; the modal-equivalent friction is worth it.
+  const [deleteArmed, setDeleteArmed] = useState(false)
+  const deleteArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const handleDeleteSandbox = async () => {
     if (!sandboxId) return
+    if (!deleteArmed) {
+      setDeleteArmed(true)
+      if (deleteArmTimer.current) clearTimeout(deleteArmTimer.current)
+      deleteArmTimer.current = setTimeout(() => setDeleteArmed(false), 4000)
+      return
+    }
+    if (deleteArmTimer.current) clearTimeout(deleteArmTimer.current)
+    setDeleteArmed(false)
     try { await fetch('/api/sandbox', { method: 'DELETE' }) } catch {}
     setSandboxId(null)
     setSandboxStatus(null)
@@ -785,12 +800,28 @@ export default function Dashboard() {
                           Stop
                         </button>
                       )}
-                      <button onClick={handleDeleteSandbox}
-                        className="text-[11px] text-[var(--text-muted)] hover:text-red-400 px-2 py-1 rounded-lg hover:bg-red-400/10 transition-all"
-                        title="Delete sandbox and switch to local">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                        </svg>
+                      <button
+                        onClick={handleDeleteSandbox}
+                        className={`text-[11px] px-2 py-1 rounded-lg transition-all ${
+                          deleteArmed
+                            ? 'bg-red-500 text-white font-medium hover:bg-red-600 ring-2 ring-red-400/40'
+                            : 'text-[var(--text-muted)] hover:text-red-400 hover:bg-red-400/10'
+                        }`}
+                        title={deleteArmed
+                          ? 'Click again to PERMANENTLY delete (no recovery — Sprites does not soft-delete)'
+                          : 'Delete sandbox and switch to local'}>
+                        {deleteArmed ? (
+                          <span className="inline-flex items-center gap-1">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                            </svg>
+                            Confirm delete?
+                          </span>
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                          </svg>
+                        )}
                       </button>
                     </div>
                   </div>
