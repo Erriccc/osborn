@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 
-const RECALL_BASE_URL = 'https://us-east-1.recall.ai/api/v1'
+const RECALL_REGION = process.env.RECALL_REGION ?? 'us-west-2'
+const RECALL_BASE_URL = `https://${RECALL_REGION}.recall.ai/api/v1`
 
 export interface RecallBot {
   id: string
