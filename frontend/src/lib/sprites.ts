@@ -69,6 +69,47 @@ function getApiToken(): string {
 }
 
 /**
+ * Read the version of osborn currently installed on a sprite.
+ *
+ * Tries the marker file first (written by `buildOsbornBootstrap` after every
+ * successful install) and falls back to reading the installed package.json
+ * directly. Both via the Sprites fs API — neither involves the broken exec API.
+ *
+ * Returns null if neither source is readable (e.g. sprite never installed
+ * osborn from registry, or fs API is unreachable).
+ */
+export async function readInstalledOsbornVersion(spriteName: string): Promise<string | null> {
+  // 1. Marker file (preferred — written by our bootstrap, knows exactly what we asked for)
+  const markerVersion = await readSpriteFile(spriteName, '/home/sprite/.osborn-installed-version')
+  if (markerVersion) {
+    const trimmed = markerVersion.trim()
+    if (trimmed) return trimmed
+  }
+
+  // 2. Fallback: read the installed package.json. If osborn is a npm-link symlink to
+  // local source, this still returns the symlink target's version (which may be stale).
+  // The marker file path is the source of truth for "what we last installed via the
+  // upgrade flow". When the marker is absent, we're reading whatever's there.
+  // Try common Node version paths (Sprites uses nvm).
+  const candidates = [
+    '/.sprite/languages/node/nvm/versions/node/v22.20.0/lib/node_modules/osborn/package.json',
+    '/.sprite/languages/node/nvm/versions/node/v22.14.0/lib/node_modules/osborn/package.json',
+    '/.sprite/languages/node/nvm/versions/node/v20.11.0/lib/node_modules/osborn/package.json',
+  ]
+  for (const path of candidates) {
+    const content = await readSpriteFile(spriteName, path)
+    if (!content) continue
+    try {
+      const pkg = JSON.parse(content) as { version?: string }
+      if (pkg.version) return pkg.version
+    } catch {
+      // continue
+    }
+  }
+  return null
+}
+
+/**
  * Fetch the latest published version of `osborn` from the npm registry.
  *
  * Returns a concrete version string like "0.8.31". Throws on network failure
@@ -970,16 +1011,48 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
     // Sprite needs ~seconds after waking before the service endpoint accepts requests.
     await waitForServiceReady(sandboxId)
 
-    // Step 4: Re-register the osborn service (required on every cold wake)
-    // The Sprites service registry lives in the control plane, not the container —
-    // it does NOT survive cold sleep even with CRIU. We must re-register every time.
-    // registerService handles: 409 (already registered → delete+retry), 503 (not ready → retry).
-    // If osborn is already installed (checkpoint preserved it), the bootstrap skips npm install.
-    const envVars = getPlatformEnvVars(userId)
-    console.log(`[sprites] Re-registering osborn service (install skipped if checkpoint present)...`)
-    const registered = await registerService(sandboxId, 'osborn', OSBORN_HTTP_PORT, envVars)
-    if (!registered) {
-      console.warn(`[sprites] Service re-registration failed — health check may fail`)
+    // Step 4: Re-register the osborn service ONLY if needed.
+    //
+    // Why this guard: Railway runs multiple instances of the frontend during deploy.
+    // If a still-running OLD instance of the frontend handles a startSandbox call
+    // after a NEW instance has already registered the marker bootstrap, the OLD
+    // instance overwrites the new bootstrap with the old one. Result: every cold
+    // wake during a rolling deploy could regress the upgrade.
+    //
+    // Mitigation: before re-registering, check if the existing service definition
+    // already has marker-based logic (signal: contains "osborn-installed-version")
+    // AND the service is running healthy. If so, skip the re-register — the
+    // service is already correctly configured.
+    let needsRegister = true
+    try {
+      const existing = await api<{ args?: string[]; state?: { status?: string } }>(
+        'GET',
+        `/v1/sprites/${sandboxId}/services/osborn`,
+      )
+      const existingCmd = existing.args?.[1] ?? ''
+      const hasMarkerLogic = existingCmd.includes('osborn-installed-version')
+      const isRunning = existing.state?.status === 'running'
+      if (hasMarkerLogic && isRunning) {
+        // Probe /health to confirm the running service actually responds
+        try {
+          const h = await fetch(`${previewUrl}/health`, { signal: AbortSignal.timeout(3000) })
+          if (h.ok) {
+            console.log(`[sprites] ${sandboxId} service already has marker bootstrap and is healthy — skip re-register`)
+            needsRegister = false
+          }
+        } catch {}
+      }
+    } catch {
+      // 404 or fetch error — proceed with registration
+    }
+
+    if (needsRegister) {
+      const envVars = getPlatformEnvVars(userId)
+      console.log(`[sprites] Re-registering osborn service (install skipped if checkpoint marker matches WANT)...`)
+      const registered = await registerService(sandboxId, 'osborn', OSBORN_HTTP_PORT, envVars)
+      if (!registered) {
+        console.warn(`[sprites] Service re-registration failed — health check may fail`)
+      }
     }
 
     // Step 5: Poll /health — registerService starts osborn, allow 60s to bind
@@ -1145,6 +1218,20 @@ export async function updateOsborn(
     const healthy = await waitForHealth(previewUrl, 60) // 60 × 2s = 120s
     if (!healthy) {
       return { success: false, version: null, log: 'Health check timed out after install (>120s)' }
+    }
+
+    // Step 5: Take a post-upgrade checkpoint so future cold-wake restores don't roll back
+    // to a pre-upgrade state. Without this, `startSandbox` could restore an older clean
+    // checkpoint on next wake — bringing back the symlink + marker file gone — forcing
+    // the bootstrap to re-install on every wake (60s cost). Snapshot now.
+    //
+    // Failure to take the checkpoint is logged but not fatal — install itself succeeded.
+    try {
+      console.log(`[sprites] updateOsborn: taking post-upgrade checkpoint (so future wakes preserve the install)`)
+      const ck = await createCheckpoint(sandboxId)
+      if (!ck) console.warn(`[sprites] updateOsborn: post-upgrade checkpoint failed (install still succeeded)`)
+    } catch (err) {
+      console.warn(`[sprites] updateOsborn: post-upgrade checkpoint threw: ${(err as Error).message}`)
     }
 
     console.log(`[sprites] updateOsborn: success — osborn@${targetVersion} healthy on ${sandboxId}`)

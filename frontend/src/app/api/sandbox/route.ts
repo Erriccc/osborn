@@ -14,6 +14,8 @@ import {
   checkOsbornHealth,
   waitForHealth,
   execInSprite,
+  resolveOsbornLatest,
+  readInstalledOsbornVersion,
 } from '@/lib/sprites'
 
 /**
@@ -395,42 +397,20 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
 
-      // Run both version checks in parallel
+      // Both version checks bypass the Sprites exec API entirely. The exec
+      // endpoint silently no-ops on warm sprites (returns exit=0 with no output)
+      // which made the previous npm-based checks always return null. Instead:
+      //   - latest: HTTP fetch from npm registry (no sprite involvement)
+      //   - installed: read the marker file written by buildOsbornBootstrap
+      //     after each successful install, with fallback to reading the actual
+      //     installed package.json. Both via the Sprites fs API which works.
       const [latestResult, installedResult] = await Promise.allSettled([
-        // Latest version on npm registry
-        execInSprite(cvSandbox.id, 'npm', ['view', 'osborn', 'version'], 15),
-        // Installed version via npm list — works even when osborn is restarting,
-        // and reads the actual installed package rather than asking the running process.
-        // Output: { "dependencies": { "osborn": { "version": "0.8.29" } } }
-        execInSprite(cvSandbox.id, 'npm', ['list', '-g', 'osborn', '--json'], 10),
+        resolveOsbornLatest(),
+        readInstalledOsbornVersion(cvSandbox.id),
       ])
 
-      const latest = latestResult.status === 'fulfilled'
-        ? latestResult.value.output.trim()
-        : null
-
-      let installed: string | null = null
-      if (installedResult.status === 'fulfilled') {
-        try {
-          const parsed = JSON.parse(installedResult.value.output) as {
-            dependencies?: { osborn?: { version?: string; resolved?: string } }
-          }
-          const osbornEntry = parsed?.dependencies?.osborn
-          if (osbornEntry) {
-            // If resolved points to a local file path (npm link / npm link <path>),
-            // the version field reflects the local source version — not a real registry
-            // install. Report 'dev' so the dashboard always shows an update is available
-            // and the badge does not mislead the user with a stale source version.
-            if (osbornEntry.resolved?.startsWith('file:')) {
-              installed = 'dev'
-            } else {
-              installed = osbornEntry.version ?? null
-            }
-          }
-        } catch {
-          // JSON parse failed — leave installed as null
-        }
-      }
+      const latest = latestResult.status === 'fulfilled' ? latestResult.value : null
+      const installed = installedResult.status === 'fulfilled' ? installedResult.value : null
 
       const updateAvailable = !!(latest && installed && latest !== installed)
 
