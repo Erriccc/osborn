@@ -619,16 +619,16 @@ async function main() {
    * If interrupted: gather spoken text + JSONL context. Does NOT send to Claude yet —
    * that happens when the user's transcribed message arrives via chat().
    */
-  async function handleSpeechDone(handle: any, fullText: string) {
+  async function handleSpeechDone(handle: any, fullText: string, fullBlockText?: string) {
     if (!handle.interrupted) {
       lastInterruption = null
       return
     }
 
-    // fullText is what was being spoken when interrupted (passed from tts_say handler).
-    // No word-level cutoff for say() — only generateReply pipeline has that — but Claude
-    // knows its own output from JSONL, so the full block is enough context.
-    console.log(`🔇 Speech interrupted. Was speaking (${fullText.length} chars): "${fullText}"`)
+    // fullText is the synchronized (word-accurate) transcript of what was actually spoken
+    // before the interruption. fullBlockText is the original full TTS segment text.
+    const fullBlockLen = fullBlockText?.length ?? fullText.length
+    console.log(`🔇 Speech interrupted. Heard (${fullText.length} chars): "${fullText}" [full block was ${fullBlockLen} chars]`)
 
     // Read last 10 assistant messages from JSONL (Claude's full untruncated output).
     // SessionMessage.text is pre-joined from all text content blocks.
@@ -1200,7 +1200,11 @@ async function main() {
           handle.addDoneCallback((sh: any) => {
             if (sh.interrupted) {
               console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
-              handleSpeechDone(sh, data.text)
+              const audioOutput = (currentSession as any)?._activity?.agentSession?.output?.audio
+              const spokenText = audioOutput?.lastPlaybackEvent?.synchronizedTranscript || data.text
+              const playbackPositionSec = audioOutput?.lastPlaybackEvent?.playbackPosition ?? 0
+              console.log('🔇 Synchronized transcript:', JSON.stringify({ chars: spokenText.length, fullChars: data.text.length, playbackSec: playbackPositionSec, isSynced: !!audioOutput?.lastPlaybackEvent?.synchronizedTranscript }))
+              handleSpeechDone(sh, spokenText, data.text)
             } else {
               console.log(`✅ [${sayId}] session.say DONE`)
               if (currentSpeechHandle === sh) lastInterruption = null
