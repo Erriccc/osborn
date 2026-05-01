@@ -1,6 +1,6 @@
 {
   "name": "osborn-frontend",
-  "version": "0.8.36",
+  "version": "0.8.37",
   "private": true,
   "scripts": {
     "dev": "next dev",

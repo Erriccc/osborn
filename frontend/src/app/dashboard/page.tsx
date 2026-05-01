@@ -34,6 +34,21 @@ export default function Dashboard() {
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
 
+  // Session-layer consistency report. When the sprite's persistent disk has
+  // notably more sessions than the running container can see, we surface a
+  // warning banner so the user knows recovery may be available — without
+  // auto-restoring (which would clobber the current session). See
+  // checkSessionLayerConsistency in lib/sprites.ts for layer details.
+  type LayerReport = {
+    persistentSessionCount: number
+    persistentTotalJsonl: number
+    persistentBytes: number
+    containerSessionCount: number
+    mismatch: boolean
+    projects: Array<{ slug: string; jsonlCount: number; bigJsonlCount: number; totalBytes: number }>
+  }
+  const [layerReport, setLayerReport] = useState<LayerReport | null>(null)
+
   // Unified operation state. Only ONE long-running agent operation can run
   // at a time — restart or update. They share state because the UI can only
   // show one progress message anyway, and running them concurrently would
@@ -240,6 +255,12 @@ export default function Dashboard() {
   useEffect(() => {
     if (isCloud && sandboxId) {
       checkVersion()
+      // Don't bother on `creating` — the sandbox doesn't exist yet, so the
+      // fs API call would 404. After it transitions to running/warm/cold the
+      // status-dep change re-fires this effect.
+      if (sandboxStatus && sandboxStatus !== 'creating') {
+        checkLayerConsistency()
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCloud, sandboxId, sandboxStatus])
@@ -450,6 +471,24 @@ export default function Dashboard() {
     } catch {}
   }
 
+  // Persistent-disk vs container-view consistency check. Called alongside
+  // checkVersion on cloud sandbox status changes. Cheap (one fs/list per
+  // project dir, ~200ms total) and read-only — never triggers recovery.
+  const checkLayerConsistency = async () => {
+    if (!sandboxId) return
+    try {
+      const r = await fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'consistency-check' }),
+      })
+      if (!r.ok) { setLayerReport(null); return }
+      setLayerReport(await r.json())
+    } catch {
+      setLayerReport(null)
+    }
+  }
+
   const signOut = async () => {
     await supabase.auth.signOut()
     window.location.href = '/'
@@ -639,6 +678,37 @@ export default function Dashboard() {
                   )}
                 </div>
                 </div>
+
+                {/* Data-layer mismatch warning. Surfaces when persistent disk
+                    has notably more session data than the running container —
+                    a sign that a CRIU restore left the container with a stale
+                    /home view. Read-only signal; recovery is manual via the
+                    Sprites checkpoint API (intentional — restore destroys the
+                    current session). See checkSessionLayerConsistency for
+                    layer-divergence background. */}
+                {layerReport && layerReport.mismatch && (
+                  <div className="rounded-lg border border-amber-400/30 bg-amber-400/[0.06] px-3 py-2.5 text-[11.5px] text-amber-100 leading-relaxed">
+                    <div className="flex items-start gap-2">
+                      <span className="text-amber-400 text-[13px] leading-none mt-px">⚠</span>
+                      <div className="flex-1 space-y-1">
+                        <div className="font-medium text-amber-300">
+                          Older session data on disk isn't visible to the running agent
+                        </div>
+                        <div className="text-amber-100/80">
+                          Persistent disk has{' '}
+                          <span className="font-mono">{layerReport.persistentSessionCount}</span>{' '}
+                          large session{layerReport.persistentSessionCount === 1 ? '' : 's'}{' '}
+                          ({(layerReport.persistentBytes / 1024 / 1024).toFixed(1)} MB total).
+                          Agent only sees{' '}
+                          <span className="font-mono">{layerReport.containerSessionCount}</span>.
+                          This usually means a checkpoint restore rolled back the container
+                          view. Data isn't lost — it's recoverable from a Sprites checkpoint
+                          (destructive to current session).
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Segmented control: Local / Cloud */}
                 <div className="flex rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] p-1 gap-1">

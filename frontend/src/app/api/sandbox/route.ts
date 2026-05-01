@@ -16,6 +16,7 @@ import {
   execInSprite,
   resolveOsbornLatest,
   readInstalledOsbornVersion,
+  checkSessionLayerConsistency,
 } from '@/lib/sprites'
 
 /**
@@ -415,6 +416,50 @@ export async function POST(request: Request) {
       const updateAvailable = !!(latest && installed && latest !== installed)
 
       return NextResponse.json({ installed, latest, updateAvailable })
+    }
+
+    case 'consistency-check': {
+      // Detect divergence between the sprite's persistent-disk layer (fs API)
+      // and the container view (osborn's /sessions endpoint).
+      //
+      // Why this matters: Sprites' CRIU + overlay-fs setup can leave older
+      // session JSONLs invisible to the running container even though they
+      // still exist on persistent disk. Surfacing the mismatch lets the user
+      // recover (via a checkpoint restore) before assuming data is lost.
+      //
+      // This is read-only — no restore is triggered. The dashboard shows a
+      // banner; the user explicitly chooses recovery.
+      const ccSandbox = await findUserSandbox(user.id)
+      if (!ccSandbox) {
+        return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
+      }
+
+      // Fetch container-visible session count from osborn /sessions. If the
+      // sprite is warm/cold or osborn is down, we still proceed with 0 — the
+      // persistent count is what tells us whether divergence happened.
+      let containerSessionCount = 0
+      const previewUrl = ccSandbox.previewUrl
+      if (previewUrl) {
+        try {
+          const r = await fetch(`${previewUrl}/sessions?limit=200`, {
+            signal: AbortSignal.timeout(5000),
+          })
+          if (r.ok) {
+            const data = (await r.json()) as { sessions?: Array<unknown>; total?: number }
+            containerSessionCount = data.total ?? data.sessions?.length ?? 0
+          }
+        } catch {
+          // /sessions unreachable — leave containerSessionCount at 0 and let
+          // the persistent-side numbers tell the story.
+        }
+      }
+
+      const report = await checkSessionLayerConsistency(ccSandbox.id, containerSessionCount)
+      if (!report) {
+        return NextResponse.json({ error: 'fs API unreachable' }, { status: 502 })
+      }
+
+      return NextResponse.json(report)
     }
 
     default:

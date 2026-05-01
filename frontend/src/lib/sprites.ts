@@ -182,7 +182,12 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
   const forwardKeys = [
     'LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET',
     'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
-    'SMITHERY_API_KEY', 'RECALL_API_KEY',
+    'SMITHERY_API_KEY',
+    // Recall.ai bot integration. RECALL_API_KEY is the auth token; RECALL_REGION
+    // selects the regional API endpoint (default 'us-west-2' if unset). If the
+    // user's Recall.ai account is in another region, this MUST be forwarded
+    // or every meeting bot call hits the wrong endpoint.
+    'RECALL_API_KEY', 'RECALL_REGION',
   ]
   for (const key of forwardKeys) {
     if (process.env[key]) envVars[key] = process.env[key]!
@@ -577,8 +582,33 @@ if [ "$NEEDS_INSTALL" = "true" ]; then
   echo "[osborn-bootstrap] install OK — marker written: $WANT"
 fi
 
+# Layer-divergence diagnostic — surfaces the container's view of session JSONLs at
+# boot. Sprites uses CRIU + an overlay-style /home, so the persistent disk (what the
+# fs API reads) and the container view can diverge after restore cycles. If the
+# counts here ever drop without user action between two boots, divergence is the
+# first thing to suspect — cross-check against fs API count from the frontend.
+echo "[osborn-bootstrap] Session inventory (container view):"
+PROJECTS_DIR="/home/sprite/.claude/projects"
+if [ -d "$PROJECTS_DIR" ]; then
+  for proj in "$PROJECTS_DIR"/*/; do
+    [ -d "$proj" ] || continue
+    SLUG="$(basename "$proj")"
+    JSONL_COUNT="$(find "$proj" -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')"
+    BIG_COUNT="$(find "$proj" -maxdepth 1 -name '*.jsonl' -size +100k 2>/dev/null | wc -l | tr -d ' ')"
+    TOTAL_BYTES="$(find "$proj" -maxdepth 1 -name '*.jsonl' -printf '%s\n' 2>/dev/null | awk '{s+=$1} END {print s+0}')"
+    echo "[osborn-bootstrap]   project=$SLUG jsonl=$JSONL_COUNT (>=100k=$BIG_COUNT) bytes=$TOTAL_BYTES"
+  done
+else
+  echo "[osborn-bootstrap]   (no projects dir at $PROJECTS_DIR — fresh sprite or first boot)"
+fi
+
 echo "[osborn-bootstrap] Starting osborn on port ${httpPort}..."
-exec osborn >> /tmp/osborn-sprite.log 2>&1
+# No redirect — let osborn's stdout/stderr flow to the service's stdout pipe.
+# That makes osborn's runtime output visible via Sprites' service-logs API
+# (GET /v1/sprites/<name>/services/<name>/logs). The previous redirect to
+# /tmp/osborn-sprite.log was on a filesystem layer that the Sprites fs API
+# couldn't read — meaning osborn's output was invisible to every API surface.
+exec osborn 2>&1
 `.trim()
 }
 
@@ -1437,6 +1467,138 @@ export async function readSpriteFile(spriteName: string, filePath: string): Prom
   } catch (err) {
     console.warn(`[sprites] readSpriteFile(${filePath}) failed: ${(err as Error).message}`)
     return null
+  }
+}
+
+/**
+ * List entries in a sprite directory via the fs API.
+ * Returns null on error (network, auth) and empty array on 404 / not-a-dir.
+ *
+ * The fs API reads the **persistent disk** layer of the sprite — which is
+ * physically distinct from the container's view of the same path. See
+ * `checkSessionLayerConsistency` for why this matters.
+ */
+async function listSpriteDir(
+  spriteName: string,
+  dirPath: string,
+): Promise<Array<{ name: string; type: 'file' | 'directory'; size?: number }> | null> {
+  try {
+    const res = await fetch(
+      `${SPRITES_API_BASE}/v1/sprites/${spriteName}/fs/list?path=${encodeURIComponent(dirPath)}`,
+      {
+        headers: { 'Authorization': `Bearer ${getApiToken()}` },
+        signal: AbortSignal.timeout(10000),
+      },
+    )
+    if (!res.ok) {
+      if (res.status === 404) return []
+      return null
+    }
+    const data = (await res.json()) as { entries?: Array<{ name: string; type: 'file' | 'directory'; size?: number }> }
+    return data.entries ?? []
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Compare the sprite's persistent-disk session count (visible to the fs API)
+ * against the container-visible session count (what osborn's /sessions
+ * endpoint reports).
+ *
+ * BACKGROUND: Sprites uses CRIU + an overlay-style filesystem under /home/.
+ * Two layers expose the SAME path string:
+ *
+ *   1. **Persistent disk** — read by the Sprites fs API (`/fs/list`, `/fs/read`).
+ *      Holds whatever has been flushed to durable storage. Survives across
+ *      checkpoint restores in theory.
+ *   2. **Container view** — read by `readdirSync` from inside osborn. This is
+ *      the CRIU snapshot's base + the current process's overlay writes.
+ *      Reverts to the snapshot whenever a CRIU restore fires.
+ *
+ * The two can desync after rapid `STOP+DELETE+PUT` cycles or stale-checkpoint
+ * restores — the persistent disk ends up with strictly MORE data than the
+ * container can see (e.g. 4MB+ historical JSONLs that osborn's /sessions
+ * endpoint omits because they aren't in its view of the directory).
+ *
+ * This check counts JSONLs >= 100KB (filters out trivially-short error sessions)
+ * via fs API and returns enough metadata for the dashboard to surface a banner.
+ * It does NOT trigger a restore — the user owns that decision because restore
+ * is destructive to whatever's currently in the container.
+ *
+ * @param spriteName  — the sprite name (e.g. "osborn-1b9d70e5-2a4")
+ * @param containerSessionCount — count from osborn's /sessions endpoint
+ * @returns null if fs API unreachable; otherwise consistency report
+ */
+export interface SessionLayerConsistency {
+  /** JSONLs >= 100KB seen on persistent disk via fs API */
+  persistentSessionCount: number
+  /** All JSONLs (any size) seen on persistent disk */
+  persistentTotalJsonl: number
+  /** Total bytes of JSONLs across all projects on persistent disk */
+  persistentBytes: number
+  /** From osborn's /sessions endpoint — what the running container sees */
+  containerSessionCount: number
+  /**
+   * True if persistent disk has notably more sessions than the container.
+   * Threshold is `persistentSessionCount > containerSessionCount + 1`
+   * (the +1 absorbs the current session, which is in container-only until flushed).
+   */
+  mismatch: boolean
+  /** Per-project breakdown for debugging */
+  projects: Array<{ slug: string; jsonlCount: number; bigJsonlCount: number; totalBytes: number }>
+}
+
+export async function checkSessionLayerConsistency(
+  spriteName: string,
+  containerSessionCount: number,
+): Promise<SessionLayerConsistency | null> {
+  const projectsDir = '/home/sprite/.claude/projects'
+  const projectEntries = await listSpriteDir(spriteName, projectsDir)
+  if (projectEntries === null) return null // fs API unreachable
+
+  let persistentSessionCount = 0
+  let persistentTotalJsonl = 0
+  let persistentBytes = 0
+  const projects: SessionLayerConsistency['projects'] = []
+
+  for (const entry of projectEntries) {
+    if (entry.type !== 'directory') continue
+    const slug = entry.name
+    const projDirEntries = await listSpriteDir(spriteName, `${projectsDir}/${slug}`)
+    if (!projDirEntries) continue
+
+    let jsonlCount = 0
+    let bigJsonlCount = 0
+    let totalBytes = 0
+    for (const f of projDirEntries) {
+      if (f.type !== 'file' || !f.name.endsWith('.jsonl')) continue
+      jsonlCount++
+      const size = f.size ?? 0
+      totalBytes += size
+      if (size >= 100 * 1024) bigJsonlCount++
+    }
+
+    persistentTotalJsonl += jsonlCount
+    persistentSessionCount += bigJsonlCount
+    persistentBytes += totalBytes
+    if (jsonlCount > 0) {
+      projects.push({ slug, jsonlCount, bigJsonlCount, totalBytes })
+    }
+  }
+
+  // The container is currently writing one session that hasn't flushed to
+  // persistent disk yet — that asymmetry is normal. We only flag a mismatch
+  // when persistent disk is meaningfully ahead of the container.
+  const mismatch = persistentSessionCount > containerSessionCount + 1
+
+  return {
+    persistentSessionCount,
+    persistentTotalJsonl,
+    persistentBytes,
+    containerSessionCount,
+    mismatch,
+    projects,
   }
 }
 
