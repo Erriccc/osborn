@@ -980,12 +980,12 @@ export async function keepAliveSandbox(sandboxId: string): Promise<boolean> {
  * @param sandboxId - the sprite name (e.g. "osborn-abc123def456")
  */
 export async function updateOsborn(sandboxId: string): Promise<{ success: boolean; log: string }> {
-  console.log(`[sprites] updateOsborn: running npm install -g osborn@latest on ${sandboxId}...`)
+  console.log(`[sprites] updateOsborn: running npm uninstall then npm install -g osborn@latest on ${sandboxId}...`)
   try {
     const { exitCode, output } = await execInSprite(
       sandboxId,
-      'npm',
-      ['install', '-g', 'osborn@latest'],
+      'sh',
+      ['-c', 'npm uninstall -g osborn --silent; npm install -g osborn@latest'],
       180,
     )
     console.log(`[sprites] updateOsborn: exit=${exitCode}, output length=${output.length}`)
