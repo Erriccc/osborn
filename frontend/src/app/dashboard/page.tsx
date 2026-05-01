@@ -232,13 +232,17 @@ export default function Dashboard() {
 
   const isCloud = connectionMode === 'cloud'
 
-  // Check installed vs latest osborn version when cloud agent comes online
+  // Check installed vs latest osborn version whenever we have a cloud sandbox.
+  // The new check-version handler reads:
+  //   - latest:    https://registry.npmjs.org/osborn/latest (no sprite involvement)
+  //   - installed: marker file via Sprites fs API (works on warm/cold sprites)
+  // So this works regardless of whether the agent process is running.
   useEffect(() => {
-    if (agentOnline && isCloud && sandboxId) {
+    if (isCloud && sandboxId) {
       checkVersion()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentOnline, isCloud, sandboxId])
+  }, [isCloud, sandboxId, sandboxStatus])
 
   // ── Actions ──
 
@@ -563,13 +567,21 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between">
                   <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Environment</span>
                   <div className="flex items-center gap-2">
-                  {agentOnline && !restarting && !updating && (
+                  {/* Restart agent — only meaningful when agent is actively running.
+                      On warm/cold sprites the user wakes via "start chat" instead. */}
+                  {agentOnline && !operation && (
                     <button onClick={handleRestart}
                       className="text-[11px] text-[var(--text-muted)] hover:text-red-400 transition-colors">
                       Restart agent
                     </button>
                   )}
-                  {agentOnline && !operation && isCloud && (
+
+                  {/* Version badge + Update button: shown whenever we're in cloud
+                      mode and have a sandbox. Source: server-side check-version
+                      reads marker file via fs API + npm registry HTTP — both work
+                      regardless of whether the agent process is running. So these
+                      remain visible (and accurate) on warm/cold sprites. */}
+                  {isCloud && sandboxId && !operation && (
                     <div className="flex items-center gap-2">
                       {installedVersion && (
                         <span className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full font-mono ${
