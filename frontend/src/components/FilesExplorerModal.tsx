@@ -54,6 +54,12 @@ export function FilesExplorerModal({
 }: FilesExplorerModalProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [isMaximized, setIsMaximized] = useState(false)
+  const [mobileView, setMobileView] = useState<'list' | 'content'>('list')
+
+  // Reset mobile view when modal closes
+  useEffect(() => {
+    if (!isOpen) setMobileView('list')
+  }, [isOpen])
 
   // Escape to close
   useEffect(() => {
@@ -88,6 +94,11 @@ export function FilesExplorerModal({
     if (e.target === e.currentTarget) onClose()
   }, [onClose])
 
+  const handleSelectFile = useCallback((filePath: string) => {
+    onSelectFile(filePath)
+    setMobileView('content')
+  }, [onSelectFile])
+
   // When the selected file has a Supabase URL but no inline content, fetch
   // the text once and cache it keyed by URL. PDFs and images render from
   // the URL directly via <iframe>/<img> — no fetch needed — so we only
@@ -118,10 +129,10 @@ export function FilesExplorerModal({
       onClick={handleBackdropClick}
     >
       <div
-        className={`flex flex-col bg-gray-900 border border-gray-700/50 shadow-2xl rounded-2xl overflow-hidden transition-all duration-200 ${
+        className={`flex flex-col bg-gray-900 border border-gray-700/50 shadow-2xl overflow-hidden transition-all duration-200 ${
           isMaximized
-            ? 'w-[95vw] h-[95vh]'
-            : 'w-[80vw] max-w-5xl h-[75vh]'
+            ? 'w-[95vw] h-[95vh] rounded-2xl'
+            : 'w-full h-full rounded-none sm:rounded-2xl sm:w-[80vw] sm:max-w-5xl sm:h-[75vh]'
         }`}
       >
         {/* Header */}
@@ -179,7 +190,7 @@ export function FilesExplorerModal({
         {/* Body: two-column layout */}
         <div className="flex flex-1 overflow-hidden">
           {/* Left column: file list */}
-          <div className="w-64 shrink-0 flex flex-col border-r border-gray-700/50 bg-gray-900/50">
+          <div className={`${mobileView === 'list' ? 'flex' : 'hidden'} sm:flex w-full sm:w-64 shrink-0 flex-col border-r border-gray-700/50 bg-gray-900/50`}>
             {/* Search */}
             <div className="p-3 border-b border-gray-700/30">
               <div className="relative">
@@ -214,7 +225,7 @@ export function FilesExplorerModal({
                           key={file.filePath}
                           file={file}
                           isSelected={selectedFile?.filePath === file.filePath}
-                          onSelect={onSelectFile}
+                          onSelect={handleSelectFile}
                         />
                       ))}
                     </div>
@@ -229,7 +240,7 @@ export function FilesExplorerModal({
                           key={file.filePath}
                           file={file}
                           isSelected={selectedFile?.filePath === file.filePath}
-                          onSelect={onSelectFile}
+                          onSelect={handleSelectFile}
                         />
                       ))}
                     </div>
@@ -240,12 +251,23 @@ export function FilesExplorerModal({
           </div>
 
           {/* Right column: content preview */}
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className={`${mobileView === 'content' ? 'flex' : 'hidden'} sm:flex flex-1 flex-col overflow-hidden`}>
             {selectedFile ? (
               <>
                 {/* File header */}
                 <div className="flex items-center justify-between px-5 py-2.5 bg-gray-800/50 border-b border-gray-700/30 shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
+                    {/* Back button — mobile only */}
+                    <button
+                      onClick={() => setMobileView('list')}
+                      className="sm:hidden flex items-center gap-1 text-xs text-gray-400 hover:text-white shrink-0 mr-1"
+                      title="Back to files"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                      Files
+                    </button>
                     <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${(typeBadge[selectedFile.type] || typeBadge.other).color}`}>
                       {(typeBadge[selectedFile.type] || typeBadge.other).label}
                     </span>
