@@ -34,6 +34,7 @@ export default function Dashboard() {
   const [updating, setUpdating] = useState(false)
   const [installedVersion, setInstalledVersion] = useState<string | null>(null)
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
+  const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
   const [sandboxAvailable, setSandboxAvailable] = useState(false)
   const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
@@ -281,17 +282,30 @@ export default function Dashboard() {
 
   const handleRestart = async () => {
     setRestarting(true)
+    setStatusMessage(null)
     try {
-      await fetch('/api/sandbox', {
+      const result = await fetch('/api/sandbox', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'restart-service', sandboxId })
-      })
+      }).then(r => r.json()).catch(() => ({ success: false }))
+      if (result.success === false) {
+        setStatusMessage({ text: 'Restart failed', type: 'error' })
+        setRestarting(false)
+        return
+      }
       // poll health
       const poll = setInterval(async () => {
         try {
           const r = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(2000) })
-          if (r.ok) { clearInterval(poll); setRestarting(false); setAgentOnline(true) }
+          if (r.ok) {
+            clearInterval(poll)
+            setRestarting(false)
+            setAgentOnline(true)
+            setStatusMessage({ text: 'Agent is back online', type: 'success' })
+            checkVersion()
+            setTimeout(() => setStatusMessage(null), 4000)
+          }
         } catch {}
       }, 2000)
       setTimeout(() => { clearInterval(poll); setRestarting(false) }, 60000)
@@ -303,17 +317,30 @@ export default function Dashboard() {
   const handleUpdate = async () => {
     if (!sandboxId) return
     setUpdating(true)
+    setStatusMessage(null)
     try {
-      await fetch('/api/sandbox', {
+      const result = await fetch('/api/sandbox', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'update-osborn', sandboxId }),
-      })
+      }).then(r => r.json()).catch(() => ({ success: false }))
+      if (result.success === false) {
+        setStatusMessage({ text: 'Update failed', type: 'error' })
+        setUpdating(false)
+        return
+      }
       // poll health until the newly-updated agent responds
       const poll = setInterval(async () => {
         try {
           const r = await fetch(`${agentUrl}/health`, { signal: AbortSignal.timeout(2000) })
-          if (r.ok) { clearInterval(poll); setUpdating(false); setAgentOnline(true); checkVersion() }
+          if (r.ok) {
+            clearInterval(poll)
+            setUpdating(false)
+            setAgentOnline(true)
+            setStatusMessage({ text: `Updated to v${latestVersion || 'latest'}`, type: 'success' })
+            checkVersion()
+            setTimeout(() => setStatusMessage(null), 4000)
+          }
         } catch {}
       }, 2000)
       setTimeout(() => { clearInterval(poll); setUpdating(false) }, 60000)
@@ -476,12 +503,19 @@ export default function Dashboard() {
                       )}
                       <button onClick={handleUpdate}
                         className="text-[11px] text-[var(--text-muted)] hover:text-sky-400 transition-colors">
-                        Update Osborn
+                        {latestVersion && installedVersion && latestVersion !== installedVersion
+                          ? `Update to v${latestVersion}`
+                          : 'Update Osborn'}
                       </button>
                     </div>
                   )}
                   {restarting && <span className="text-[11px] text-amber-400 animate-pulse">Restarting...</span>}
                   {updating && <span className="text-[11px] text-sky-400 animate-pulse">Updating...</span>}
+                  {statusMessage && (
+                    <p className={`text-[11px] ${statusMessage.type === 'success' ? 'text-green-400' : statusMessage.type === 'error' ? 'text-red-400' : 'text-sky-400'}`}>
+                      {statusMessage.text}
+                    </p>
+                  )}
                 </div>
                 </div>
 

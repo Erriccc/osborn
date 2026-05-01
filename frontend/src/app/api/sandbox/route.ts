@@ -407,16 +407,27 @@ export async function POST(request: Request) {
       const [latestResult, installedResult] = await Promise.allSettled([
         // Latest version on npm registry
         execInSprite(cvSandbox.id, 'npm', ['view', 'osborn', 'version'], 15),
-        // Installed version inside the sprite
-        execInSprite(cvSandbox.id, 'osborn', ['--version'], 10),
+        // Installed version via npm list — works even when osborn is restarting,
+        // and reads the actual installed package rather than asking the running process.
+        // Output: { "dependencies": { "osborn": { "version": "0.8.29" } } }
+        execInSprite(cvSandbox.id, 'npm', ['list', '-g', 'osborn', '--json'], 10),
       ])
 
       const latest = latestResult.status === 'fulfilled'
         ? latestResult.value.output.trim()
         : null
-      const installed = installedResult.status === 'fulfilled'
-        ? installedResult.value.output.trim().replace(/^osborn[\s@]*/i, '')
-        : null
+
+      let installed: string | null = null
+      if (installedResult.status === 'fulfilled') {
+        try {
+          const parsed = JSON.parse(installedResult.value.output) as {
+            dependencies?: { osborn?: { version?: string } }
+          }
+          installed = parsed?.dependencies?.osborn?.version ?? null
+        } catch {
+          // JSON parse failed — leave installed as null
+        }
+      }
 
       const updateAvailable = !!(latest && installed && latest !== installed)
 
