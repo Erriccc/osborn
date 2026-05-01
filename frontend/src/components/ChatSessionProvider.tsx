@@ -337,8 +337,35 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   }, [])
 
   const disconnect = useCallback(() => {
+    // Fire-and-forget log capture: fetch log from sprite then save to Supabase Storage.
+    // Must not block or throw — disconnect proceeds unconditionally.
+    if (activeSandboxId) {
+      const spriteName = activeSandboxId
+      fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'fetch-log', sandboxId: spriteName }),
+      })
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`fetch-log ${res.status}`))))
+        .then((data: { log: string }) => {
+          return fetch('/api/sandbox', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'save-log',
+              sandboxId: spriteName,
+              spriteName,
+              logContent: data.log,
+              sessionId: preSelectedSessionId ?? undefined,
+            }),
+          })
+        })
+        .catch(() => {
+          // Log capture is best-effort — swallow all errors silently
+        })
+    }
     router.push('/dashboard')
-  }, [router])
+  }, [router, activeSandboxId, preSelectedSessionId])
 
   const markAgentReady = useCallback(() => {
     setConnected(true)

@@ -338,6 +338,64 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: true, version: 'latest' })
     }
 
+    case 'fetch-log': {
+      // Confirm the user has a sandbox (ownership check)
+      const { data: fetchLogInstance } = await supabase
+        .from('instances')
+        .select('sandbox_id')
+        .eq('user_id', user.id)
+        .single()
+      if (!fetchLogInstance?.sandbox_id) {
+        return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
+      }
+      // Use sandboxId from body if provided, otherwise fall back to the DB record
+      const targetId = (sandboxId as string | undefined) || fetchLogInstance.sandbox_id
+      if (targetId !== fetchLogInstance.sandbox_id) {
+        return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
+      }
+      const logResult = await execInSprite(
+        targetId,
+        'sh',
+        ['-c', 'tail -500 /tmp/osborn-sprite.log 2>/dev/null || echo "Log not available"'],
+        15,
+      )
+      return NextResponse.json({ log: logResult.output })
+    }
+
+    case 'save-log': {
+      const { spriteName, logContent, sessionId } = body as {
+        spriteName: string
+        logContent: string
+        sessionId?: string
+      }
+      if (!spriteName || typeof logContent !== 'string') {
+        return NextResponse.json({ error: 'spriteName and logContent required' }, { status: 400 })
+      }
+      // Verify ownership: the spriteName must match this user's sandbox
+      const { data: saveLogInstance } = await supabase
+        .from('instances')
+        .select('sandbox_id')
+        .eq('user_id', user.id)
+        .single()
+      if (!saveLogInstance?.sandbox_id || saveLogInstance.sandbox_id !== spriteName) {
+        return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
+      }
+      const timestamp = new Date().toISOString().replace(/:/g, '-')
+      const sessionSuffix = sessionId ? `_${sessionId}` : ''
+      const storagePath = `logs/${spriteName}/${timestamp}${sessionSuffix}.log`
+      const { error: uploadError } = await supabase.storage
+        .from('osborn-storage')
+        .upload(storagePath, logContent, {
+          contentType: 'text/plain',
+          upsert: false,
+        })
+      if (uploadError) {
+        console.error('[sandbox] save-log: upload failed', uploadError)
+        return NextResponse.json({ error: 'Failed to upload log' }, { status: 500 })
+      }
+      return NextResponse.json({ path: storagePath })
+    }
+
     case 'check-version': {
       // Find sandbox for this user
       const cvSandbox = await findUserSandbox(user.id)
