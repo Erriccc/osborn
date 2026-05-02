@@ -16,7 +16,14 @@ setMaxListeners(50)
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Resolve __dirname for this ESM module so we can find sibling files (e.g.
+// meeting-output.html) relative to the compiled JS location, NOT process.cwd().
+// In production cwd is the user's workspace; the static file lives next to dist/index.js.
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, listAllClaudeSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
@@ -218,14 +225,33 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
-    // GET /meeting-output — Output Media webpage for Recall.ai bot audio
+    // GET /meeting-output — Output Media webpage for Recall.ai bot audio.
+    //
+    // The file lives next to this compiled JS (copied by the build script from
+    // src/ to dist/). Resolve via __dirname rather than process.cwd() — in
+    // production cwd is the user's workspace, NOT the osborn package directory.
     if (req.method === 'GET' && url.pathname === '/meeting-output') {
-      const htmlPath = join(process.cwd(), 'src', 'meeting-output.html')
-      try {
-        const html = readFileSync(htmlPath, 'utf-8')
+      // Try the package-relative path first (post-build location), then fall
+      // back to source path for `tsx src/index.ts` dev runs.
+      const candidates = [
+        join(__dirname, 'meeting-output.html'),       // dist/ (production)
+        join(__dirname, '..', 'src', 'meeting-output.html'),  // dev: dist/ → src/
+        join(__dirname, '..', 'meeting-output.html'), // tsx run from src/
+      ]
+      let html: string | null = null
+      let foundPath: string | null = null
+      for (const p of candidates) {
+        try {
+          html = readFileSync(p, 'utf-8')
+          foundPath = p
+          break
+        } catch {}
+      }
+      if (html) {
         res.writeHead(200, { 'Content-Type': 'text/html' })
         res.end(html)
-      } catch {
+      } else {
+        console.warn(`[meeting-output] not found in any of: ${candidates.join(', ')}`)
         res.writeHead(404, { 'Content-Type': 'text/plain' })
         res.end('meeting-output.html not found')
       }

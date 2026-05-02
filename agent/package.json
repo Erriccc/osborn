@@ -1,6 +1,6 @@
 {
   "name": "osborn",
-  "version": "0.8.34",
+  "version": "0.8.35",
   "description": "Voice AI coding assistant - local agent that connects to Osborn frontend",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
     "dev:logged": "tsx scripts/dev-logged.ts",
     "review": "tsx scripts/review.ts",
     "start": "tsx src/index.ts",
-    "build": "tsc && rm -rf dist/prompts && cp -r src/prompts dist/prompts",
+    "build": "tsc && rm -rf dist/prompts && cp -r src/prompts dist/prompts && cp src/meeting-output.html dist/",
     "room": "tsx src/index.ts --room",
     "prepublishOnly": "npm run build"
   },
