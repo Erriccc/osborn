@@ -139,11 +139,43 @@ export function isSpritesConfigured(): boolean {
 
 /**
  * Derive a deterministic sprite name from a userId.
+ *
+ * Used as fallback for `findUserSandbox()` when the caller didn't pass an
+ * explicit sandbox_id from Supabase. Kept for backward compatibility with
+ * users who provisioned sprites BEFORE the timestamp-suffix change below.
+ *
  * Must be lowercase alphanumeric + hyphens, max 12 chars from userId.
  */
 function spriteNameFromUserId(userId: string): string {
   const slug = userId.substring(0, 12).toLowerCase().replace(/[^a-z0-9]/g, '-')
   return `osborn-${slug}`
+}
+
+/**
+ * Generate a UNIQUE sprite name for a fresh creation.
+ *
+ * Why not deterministic any more: Sprites' API gateway has been observed to
+ * develop "stuck routing" entries per sprite name — once a sprite's been
+ * provisioned-and-failed under a given name, the gateway returns 503 to that
+ * name's `PUT /services/{name}/services/osborn` from certain source IPs even
+ * after the sprite is deleted and recreated. Identical PUTs from other IPs
+ * succeed against the same sprite. Direct evidence in Sprites' own logs:
+ * sprite-side platform log shows ZERO incoming service-registration requests
+ * during the 503 window, meaning the 503 originates upstream of the sprite.
+ *
+ * Workaround: each `createSandbox()` call generates a fresh, unique sprite
+ * name (timestamp-suffixed), bypassing the stuck routing entry. `findUserSandbox()`
+ * looks up the user's current sprite name from Supabase, NOT by re-deriving it.
+ *
+ * Format: `osborn-<userIdSlug>-<base36 timestamp>` — e.g. `osborn-1b9d70e5-2a4-lszt8q`.
+ * Total length stays under Sprites' name limit while remaining greppable.
+ */
+export function generateUniqueSpriteName(userId: string): string {
+  const slug = userId.substring(0, 12).toLowerCase().replace(/[^a-z0-9]/g, '-')
+  // Use base36 of (now mod 1 billion) — gives ~6 lowercase alphanumeric chars,
+  // collision-resistant for human-rate sprite creation, doesn't blow the name length.
+  const suffix = (Date.now() % 1_000_000_000).toString(36)
+  return `osborn-${slug}-${suffix}`
 }
 
 /**
@@ -841,7 +873,11 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
     return { id: '', status: 'error', userId, createdAt: new Date().toISOString(), error: 'Sprites not configured. Set SPRITES_API_TOKEN in .env.local' }
   }
 
-  const spriteName = spriteNameFromUserId(userId)
+  // Generate a fresh unique sprite name on every create to avoid Sprites'
+  // gateway "stuck routing" issue where a previously-failed sprite name keeps
+  // returning 503 from certain source IPs (Railway). See generateUniqueSpriteName
+  // for the full diagnosis.
+  const spriteName = generateUniqueSpriteName(userId)
   console.log(`[sprites] Creating sandbox "${spriteName}" for user ${userId}...`)
 
   try {
@@ -940,13 +976,23 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
 }
 
 /**
- * Find an existing sandbox for a user by deriving the sprite name from userId.
+ * Find an existing sandbox for a user.
+ *
+ * Resolution order:
+ *   1. If `knownSandboxId` is provided (read from Supabase by the caller),
+ *      look it up directly. This is the source of truth post-`generateUniqueSpriteName`.
+ *   2. Otherwise, fall back to the LEGACY deterministic name from `userId`.
+ *      This handles users who provisioned a sprite before the timestamp-suffix
+ *      change and haven't been re-recorded in Supabase yet.
  *
  * Returns null if the sprite does not exist (404) or lookup fails.
  * Maps sprite state: "cold" → "stopped", "running" → "running", anything else → "error".
  */
-export async function findUserSandbox(userId: string): Promise<SandboxInfo | null> {
-  const spriteName = spriteNameFromUserId(userId)
+export async function findUserSandbox(
+  userId: string,
+  knownSandboxId?: string,
+): Promise<SandboxInfo | null> {
+  const spriteName = knownSandboxId ?? spriteNameFromUserId(userId)
   try {
     const sprite = await api<SpritesSprite>('GET', `/v1/sprites/${spriteName}`)
 
@@ -1050,6 +1096,10 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
       console.warn(`[sprites] Could not determine service state for ${sandboxId} (${(err as Error).message}) — SKIPPING restore to preserve overlay state`)
     }
 
+    // Track whether sprite was hibernated when this startSandbox was called.
+    // Used by Step 4b below to decide whether to kick the agent's WebSocket.
+    const spriteWasWarm = sprite.status === 'warm' || sprite.status === 'cold'
+
     if (!serviceCheckSucceeded) {
       // Skip restore — see comment above. Either the service exists (don't
       // touch overlay) or it's a real cold sprite (registerService below
@@ -1120,6 +1170,27 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
       const registered = await registerService(sandboxId, 'osborn', OSBORN_HTTP_PORT, envVars)
       if (!registered) {
         console.warn(`[sprites] Service re-registration failed — health check may fail`)
+      }
+    } else if (spriteWasWarm && bootstrapHasMarker) {
+      // Step 4b: warm-wake LiveKit kick.
+      //
+      // When sprite is warm (CRIU snapshotted) and we skip both restore and re-register,
+      // the agent process resumes from its frozen state. The HTTP server thaws fine, but
+      // the agent's LiveKit WebSocket connection was severed by LiveKit Cloud during
+      // hibernation (TCP timeout from their side). The agent's in-memory state still says
+      // "Connected to room" but LiveKit has long since evicted it. User joins the room
+      // and publishes audio — agent is a ghost. Stuck forever.
+      //
+      // Fix: restart the service. This kills + restarts the agent process — fresh LiveKit
+      // WebSocket, fresh "Connected to room" state. Sprites' service manager handles the
+      // restart automatically on the marker-bootstrap path (skip install since marker
+      // matches → straight to `exec osborn`). Overlay is untouched, so OAuth credentials
+      // and session JSONLs are preserved.
+      console.log(`[sprites] Sprite was warm — restarting service to re-establish LiveKit connection`)
+      try {
+        await restartService(sandboxId)
+      } catch (err) {
+        console.warn(`[sprites] Warm-wake service restart failed: ${(err as Error).message} — proceeding to health check`)
       }
     }
 

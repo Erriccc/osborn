@@ -46,8 +46,11 @@ export async function GET() {
     .eq('user_id', user.id)
     .single()
 
-  // Always check Daytona by label — source of truth
-  const sandbox = await findUserSandbox(user.id)
+  // Source of truth for the user's current sprite name is Supabase
+  // (instance.sandbox_id), since each createSandbox now generates a unique
+  // timestamped name (see generateUniqueSpriteName). Fall back to deterministic
+  // name only when Supabase has no record (legacy users / first-time provision lookup).
+  const sandbox = await findUserSandbox(user.id, instance?.sandbox_id ?? undefined)
 
   if (sandbox) {
     // Sync DB if it differs (handles label-found-but-DB-stale case)
@@ -101,6 +104,19 @@ export async function POST(request: Request) {
 
   const body = await request.json()
   const { action, sandboxId } = body
+
+  // Helper: get the user's current sandbox_id from Supabase. Source of truth
+  // since `generateUniqueSpriteName` makes each new sprite get a fresh
+  // timestamped name. findUserSandbox falls back to deterministic name when
+  // this returns null (legacy users provisioned before the naming change).
+  const getKnownSandboxId = async (): Promise<string | undefined> => {
+    const { data } = await supabase
+      .from('instances')
+      .select('sandbox_id')
+      .eq('user_id', user.id)
+      .single()
+    return data?.sandbox_id ?? undefined
+  }
 
   switch (action) {
     case 'create': {
@@ -185,7 +201,7 @@ export async function POST(request: Request) {
 
     case 'room-code': {
       // Get the sandbox for this user
-      const sb = await findUserSandbox(user.id)
+      const sb = await findUserSandbox(user.id, await getKnownSandboxId())
       if (!sb?.previewUrl) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
@@ -247,7 +263,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Invalid token' }, { status: 400 })
       }
 
-      const sb = await findUserSandbox(user.id)
+      const sb = await findUserSandbox(user.id, await getKnownSandboxId())
       if (!sb) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
@@ -393,7 +409,7 @@ export async function POST(request: Request) {
 
     case 'check-version': {
       // Find sandbox for this user
-      const cvSandbox = await findUserSandbox(user.id)
+      const cvSandbox = await findUserSandbox(user.id, await getKnownSandboxId())
       if (!cvSandbox) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
@@ -429,7 +445,7 @@ export async function POST(request: Request) {
       //
       // This is read-only — no restore is triggered. The dashboard shows a
       // banner; the user explicitly chooses recovery.
-      const ccSandbox = await findUserSandbox(user.id)
+      const ccSandbox = await findUserSandbox(user.id, await getKnownSandboxId())
       if (!ccSandbox) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
