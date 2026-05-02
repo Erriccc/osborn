@@ -46,8 +46,14 @@ As of April 2026, Sprites (`frontend/src/lib/sprites.ts`) replaces the self-host
 - Checkpoint restore: ~10-20 seconds (CRIU)
 - Auto-hibernates after ~30s idle — wakes on HTTP request
 - Service registration may 503 for ~45s after creation — retry loop handles this
+- **Unique sprite names per create** (since v0.8.38): `generateUniqueSpriteName` appends a base36 timestamp suffix to bypass any per-name "stuck routing" entries in Sprites' API gateway. `findUserSandbox(userId, knownSandboxId?)` reads the actual sprite name from Supabase as source of truth; deterministic name is fallback only.
+- **Warm-wake LiveKit kick** (since v0.8.38): When `startSandbox()` resumes a warm sprite that has marker bootstrap, it `restartService()` to give the agent a fresh process with a fresh LiveKit WebSocket. CRIU snapshot preserves the local socket but LiveKit Cloud has evicted the agent during hibernation; without a process restart the agent is a "ghost" in the room.
+- **Marker-bootstrap install loop avoidance**: Bootstrap writes `/home/sprite/.osborn-installed-version` after a successful install. Subsequent restarts compare WANT vs marker and skip install when they match.
+- **Two-click delete confirmation**: Sprites does NOT soft-delete (probed 6 different undelete endpoint shapes — all 404). Trash icon arms on first click, deletes on second click within 4s. Auto-disarms otherwise.
+- **`fs/write` is asymmetric with container view**: writes via fs API land on the persistent disk and are NOT visible to the running container (overlay layer). Don't use it to "inject" files into a sprite — bake them into the bootstrap or copy them via service exec.
+- **`process.cwd()` is `/home/sprite/workspace`** (per `OSBORN_CWD`). Files shipped with the npm package must resolve via ESM `__dirname`, not cwd. See the `meeting-output.html` handler in `agent/src/index.ts` for the 3-candidate path pattern.
 
-**Planned**: Pre-warm pool to reduce new-user wait to ~30s.
+**Planned**: Pre-warm pool to reduce new-user wait to ~30s. Agent-side LiveKit reconnect watchdog so warm-wake doesn't require a service restart.
 
 The Daytona setup (`DAYTONA_API_KEY`, `daytona.ts`) is preserved but no longer active.
 

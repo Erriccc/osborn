@@ -192,6 +192,27 @@ Each user can be provisioned an isolated Linux sandbox running their own osborn 
 
 The local-mode branch must NOT touch `/api/sandbox` — earlier bug had it unconditionally fetching the sandbox, so local mode would hijack the user's connection to the cloud sandbox if one existed.
 
+### Cloud Sandboxes (Fly.io Sprites — current production system)
+
+Sprites (`frontend/src/lib/sprites.ts`) replaced the self-hosted Daytona setup in April 2026 and is the **current production cloud-sandbox system**. The Daytona section above is preserved for historical reference; `daytona.ts` is no longer active.
+
+Sprites are persistent Linux sandboxes (Ubuntu, Node 22, 100GB NVMe) managed by Fly.io. Required env: `SPRITES_API_TOKEN` in `frontend/.env.local`.
+
+**Key files:**
+- `frontend/src/lib/sprites.ts` — Provisioning, lifecycle, fs API helpers, marker bootstrap, warm-wake handling.
+- `frontend/src/app/api/sandbox/route.ts` — Same endpoint as the Daytona version; switched-out backend.
+- `agent/src/index.ts` — `/health`, `/events` (SSE keepalive), `/room-code`, `/meeting-output`, `/sessions` HTTP API.
+
+**Architecture quirks tracked in [docs/critical-patterns.md](docs/critical-patterns.md) ("Sprites cloud-sandbox patterns") and [CHANGELOG.md](CHANGELOG.md) (v0.8.30–0.8.38 entry):**
+- **Unique sprite names per `createSandbox`**: `generateUniqueSpriteName(userId)` adds a base36 timestamp suffix. `findUserSandbox(userId, knownSandboxId?)` reads the actual sprite name from Supabase as source of truth. Required because Sprites' API gateway can develop "stuck routing" entries per sprite name.
+- **Restart service on warm-wake**: When `startSandbox()` resumes a sprite that was warm AND has marker bootstrap, it `restartService()` to give the agent a fresh process with a fresh LiveKit WebSocket. CRIU snapshot preserves the local socket state but LiveKit Cloud has evicted the agent during hibernation; without process restart the agent is a "ghost" in the room (in-memory state says "Connected", but real connection is dead).
+- **Never restore checkpoint on transient API failure**: `startSandbox()` tracks `serviceCheckSucceeded` separately. The destructive `restoreCheckpoint()` only fires when we positively know the service lacks marker logic — never when the API call to determine that just transiently 503'd. Prior version silently restored on 503s, wiping `.credentials.json` and session JSONLs.
+- **Marker bootstrap**: `buildOsbornBootstrap()` writes `/home/sprite/.osborn-installed-version` after install. Subsequent restarts compare WANT vs marker and skip install when they match. The bootstrap also emits a "Session inventory (container view)" log at boot showing JSONL counts per project — visible via Sprites' service-logs API for layer-divergence diagnostics.
+- **Two-click delete confirmation**: Trash icon arms on first click, deletes on second within 4s. Sprites does NOT soft-delete (verified by probing 6 different undelete endpoint shapes — all 404). Once deleted, overlay + persistent disk + checkpoints are unrecoverable.
+- **fs API ≠ container view**: `GET /v1/sprites/<id>/fs/list|read` reads persistent disk; the running container reads through the CRIU overlay. They can desync. `fs/write` returns 405 on POST but works on PUT — yet writes via fs API land on persistent disk and are NOT visible to the running container at the same path.
+- **`process.cwd()` is `/home/sprite/workspace`** in production (set via `OSBORN_CWD`), NOT the package install directory. Files shipped with the npm package (e.g. `meeting-output.html`) must resolve via ESM `__dirname` (`fileURLToPath(import.meta.url)` + `dirname`). The build script copies static files to `dist/` so they ship with the package.
+- **Recall.ai bot payload field names**: `recording_config.transcript` is a **dict** (omit if `transcription_options` is set); `output_media.camera.kind` is the field (NOT `type`). `RECALL_REGION` env var selects the regional endpoint (default `us-west-2`); 401 with region-mismatch detail if your token belongs to a different region.
+
 ### Frontend Routes
 - `/` — Landing/login (Google/GitHub OAuth + guest connect). Authenticated users redirect to `/dashboard`.
 - `/dashboard` — Recent conversations, agent health, settings, user profile. Click chat → `/chat`.

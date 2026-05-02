@@ -26,7 +26,62 @@
 
 ## Version History
 
-### v0.8.6 (Current) — Subprocess Cleanup, Self-Healing CWD, Daytona Toolbox Race Fix
+### v0.8.30 → v0.8.38 (May 1–2, 2026) — Sprites Stability: Naming, Warm-Wake, Bootstrap, Recall
+
+A long debugging night uncovered four independent layered bugs in the cloud-sprites flow. All shipped fixes are surgical (existing code paths preserved for legacy users).
+
+Frontend bumps: `0.8.30 → 0.8.38`. Agent bumps: `0.8.30 → 0.8.35`.
+
+#### Sprites gateway "stuck routing" per-sprite-name (frontend 0.8.38)
+- **Problem**: `findUserSandbox` and `createSandbox` derived a deterministic sprite name from `userId.substring(0,12)` (e.g. `osborn-1b9d70e5-2a4`). After a sprite under that name failed registration, Sprites' API gateway kept returning 503 to `PUT /services/<name>/services/osborn` from Railway's egress IP **even after the sprite was deleted and recreated under the same name**. Identical PUTs from a different IP (local dev machine) succeeded against the same sprite. Sprite-side platform logs showed ZERO incoming service-registration requests during the 503 window, meaning the 503 originated upstream of the sprite. We never reproduced the trigger but the symptom is sticky-per-name.
+- **Fix**: New `generateUniqueSpriteName(userId)` appends a base36 timestamp suffix (e.g. `osborn-1b9d70e5-2a4-lszt8q`). Each `createSandbox` call gets a fresh name, escaping any stuck gateway entry. `findUserSandbox` now accepts an optional `knownSandboxId` parameter — caller (`/api/sandbox/route.ts`) reads it from Supabase first. Falls back to the legacy deterministic name when Supabase has no record (legacy users / first-time provision lookup).
+- **Files**: `frontend/src/lib/sprites.ts` (new helper + signature change), `frontend/src/app/api/sandbox/route.ts` (small `getKnownSandboxId()` helper, all 5 callers updated to pass it).
+
+#### CRIU warm-wake leaves agent's LiveKit WebSocket as a "ghost" (frontend 0.8.38)
+- **Problem**: When a sprite hibernates (CRIU snapshot), the agent process is frozen mid-execution. LiveKit Cloud's server-side WebSocket times out, evicts the agent from the room, and forgets it ever existed. When the user reconnects via chat, frontend hits `/health` — the sprite's HTTP server thaws, but **only the HTTP path runs**. The agent's event loop stays paused. From the agent's in-memory state it's still "Connected to room", but LiveKit has long since evicted it. User publishes audio + video to the right room name; agent never sees them. Stuck on connecting forever.
+- **Why this only started showing recently**: Commit `b9eb3e5` ("skip checkpoint restore when marker bootstrap exists") was the right call for data preservation — restoring on every wake was wiping the container overlay (OAuth credentials, session JSONLs). But it removed an accidental side-effect: restore used to spin up a fresh agent process, which got a fresh LiveKit WebSocket. With restore skipped, no fresh process, no fresh WebSocket.
+- **Fix**: When `startSandbox()` sees a sprite that was **warm AND has marker bootstrap**, restart the service (`stop+start` via Sprites API). This kills + restarts only the agent process — overlay is preserved (no re-auth, no lost JSONLs), bootstrap re-runs and skips install (marker matches), agent boots fresh, fresh LiveKit WebSocket. Best of both worlds.
+- **Files**: `frontend/src/lib/sprites.ts` — new `else if (spriteWasWarm && bootstrapHasMarker)` branch in step 4 of `startSandbox`.
+- **Lesson**: CRIU snapshot can preserve a TCP socket's local state but the peer (LiveKit Cloud) doesn't know to keep its end. Future-proof fix is an agent-side LiveKit reconnect watchdog (not yet implemented).
+
+#### Silent 503 → destructive checkpoint restore (frontend 0.8.37)
+- **Problem**: `startSandbox()` had `let bootstrapHasMarker = false` followed by a bare catch on the `GET /services/osborn` request. When Sprites' API was 503-flaky, the catch fired silently, the boolean stayed `false`, and code proceeded to `restoreCheckpoint()` — wiping the writable overlay including `.credentials.json` (Claude OAuth) and any session JSONLs. Symptoms: re-auth prompts every reconnect, missing past conversations, 60–100s `startSandbox` runs that exceeded Railway's request timeout (returning 502/503 to the browser as "stuck on connecting").
+- **Fix**: Track `serviceCheckSucceeded` separately. Restore only fires when we have **positive confirmation** that the service genuinely lacks marker logic — never when the API call to determine that just transiently failed. The catch now logs the actual error so the path is observable.
+- **Files**: `frontend/src/lib/sprites.ts` — three-way branch in `startSandbox()` Step 2 (skip-on-uncertainty / has-marker-skip / clean-restore).
+- **Lesson preserved in code**: Never restore on uncertainty. Restore is destructive; treat it like `rm -rf`.
+
+#### Sprite naming + Supabase as source-of-truth (frontend 0.8.38)
+- **Coordinated change** with the unique-name fix above. Pre-change architecture used `findUserSandbox(userId)` which derived the name deterministically and used that as the lookup key. Post-change: `findUserSandbox(userId, knownSandboxId?)` takes the Supabase-stored ID as the source of truth. Deterministic name is fallback only.
+- **Why both changes are needed together**: If you only added `generateUniqueSpriteName` without the Supabase lookup, the next `findUserSandbox` call would generate a different name and not find the sprite that was just created. If you only added the Supabase lookup without unique names, you'd still hit the stuck-gateway issue on the same name.
+
+#### Recall.ai bot payload field corrections (agent 0.8.34)
+- **Problem**: `joinMeeting()` sent `recording_config: { transcript: true }` and `output_media: { camera: { type: 'webpage' } }`. Recall API rejected with 400: `"recording_config.transcript: Expected a dictionary, but got bool"` and `"output_media.camera.kind: Invalid choice null. Expected 'webpage' or 'default'."` Bot creation failed entirely; no botId returned; meeting feature was completely broken.
+- **Fix**: Removed `transcript: true` (the `transcription_options` block below already configures the provider, making the flag redundant). Renamed `camera.type` → `camera.kind`.
+- **Files**: `agent/src/recall-client.ts`.
+
+#### `meeting-output.html` path resolution (agent 0.8.35)
+- **Problem**: The `/meeting-output` HTTP handler used `join(process.cwd(), 'src', 'meeting-output.html')`. In local dev (`npm run dev` from `agent/`), cwd IS `agent/` so the path resolved fine. In cloud, cwd is `/home/sprite/workspace` (per `OSBORN_CWD`), so the file was 404. Visible to the user as the bot's video tile in Google Meet showing "html not found" instead of the configured webpage. Bot was technically in the meeting but completely useless.
+- **Fix**: Resolve via ESM `__dirname` (`fileURLToPath(import.meta.url)` + `dirname`). Try three candidates in order: `dist/meeting-output.html` (production, post-build), `../src/meeting-output.html` (dev with tsx running compiled JS), `../meeting-output.html` (tsx run from src). Build script extended to `cp src/meeting-output.html dist/` so the file ships with the npm package.
+- **Files**: `agent/src/index.ts` (`__dirname` + 3-candidate path resolution), `agent/package.json` (build script + version bump).
+- **Lesson**: `process.cwd()` is the user's launch directory. Files-shipped-with-the-package should always resolve via `__dirname`, never cwd.
+
+#### Bootstrap inventory log + persistent-disk consistency check (frontend 0.8.37)
+- **Diagnostic** rather than a fix. The bootstrap now emits per-project JSONL counts at boot (visible via Sprites' service-logs API). The frontend `/api/sandbox?action=consistency-check` endpoint cross-references the persistent-disk JSONL count (via fs API) against what the running container reports via `/sessions`. A dashboard banner surfaces the mismatch.
+- **Why**: Sprites uses CRIU + an overlay-style filesystem. The fs API reads the persistent disk; the container reads through the overlay. They can desync (most painfully when a checkpoint restore rolls the overlay back to a stale base). When that happens, "old session JSONLs" are still on disk but invisible to the running agent. Detection saves users from assuming data is lost.
+- **Files**: `frontend/src/lib/sprites.ts` (helpers + bootstrap logging), `frontend/src/app/api/sandbox/route.ts` (new action), `frontend/src/app/dashboard/page.tsx` (banner UI).
+
+#### Two-click delete confirmation + Restart button visibility (frontend 0.8.37)
+- **Delete confirmation**: First click on the trash icon arms it (button turns red, label changes to `⚠ Confirm delete?`); second click within 4s actually deletes; auto-disarms otherwise. Critical because **Sprites does not soft-delete** (verified by probing 6 different undelete endpoint shapes — all 404). Once deleted: overlay, persistent disk, all checkpoints unrecoverable.
+- **Restart button visibility**: Was gated on `agentOnline === true`. The dashboard's browser-side `/health` poll can fail to see a healthy agent during warm-wake (server-side health passes; browser polling races the warm thaw), which used to hide the Restart button exactly when the user needs it. Now visible whenever `isCloud && sandboxId && !operation` — same condition as the version badge.
+
+#### Operational learnings
+- **Sprites' "last 5 checkpoints mounted at /.sprite/checkpoints/"** advertised in `/.sprite/llm.txt` was empty in our testing. The user's session JSONLs from a wiped-overlay sprite were recoverable via `pre-restore-vN-{ts}` checkpoints (Sprites' auto-snapshots taken before each restore call). Recovery requires full checkpoint restore — there's no API to copy files OUT of a checkpoint without restoring it.
+- **`PUT /services/osborn` is a no-op when the cmd matches**. Returns 200 with body `"Service already running with that command, use POST .../restart"`. Safe to retry. Different cmd requires `STOP + DELETE + PUT` cycle.
+- **Sprites API gateway routing**: per-sprite-name routing entries can get stuck. Confirmed by sprite-side request logs showing zero forwards during the 503 window from Railway, and identical requests from another IP succeeding immediately. The `generateUniqueSpriteName` workaround sidesteps this entirely.
+
+---
+
+### v0.8.6 — Subprocess Cleanup, Self-Healing CWD, Daytona Toolbox Race Fix
 
 #### `killCurrentLLM()` — fix orphaned Claude subprocess on disconnect
 - **Problem**: The persistent ClaudeLLM session is deliberately kept alive across user messages to avoid JSONL replay (see CLAUDE.md "Persistent Session Architecture"). When the participant disconnected, the existing cleanup just nulled `currentLLM` — but that only dropped the JS reference. The underlying Claude Code subprocess kept draining the `MessageChannel`, running tools, capturing checkpoints, and pushing TTS into a now-null voice session. Visible in logs as repeated `⚠️ tts_say fired but currentSession is null — text dropped` followed by orphaned `🔧 Claude: Bash` calls and `📍 Checkpoint captured` lines that nobody was listening to. Wasted compute, wasted tokens, possible side effects on the user's filesystem from a "completed" session.
