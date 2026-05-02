@@ -621,9 +621,13 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between">
                   <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Environment</span>
                   <div className="flex items-center gap-2">
-                  {/* Restart agent — only meaningful when agent is actively running.
-                      On warm/cold sprites the user wakes via "start chat" instead. */}
-                  {agentOnline && !operation && (
+                  {/* Restart agent — visible whenever we have a cloud sandbox, regardless
+                      of agentOnline. The dashboard's browser-side /health poll can fail
+                      to see a healthy agent during warm-wake (server-side health passes
+                      but browser polling races the warm thaw), which used to hide this
+                      button exactly when the user needs it most — to force a clean
+                      service restart out of a warm-stuck loop. */}
+                  {isCloud && sandboxId && !operation && (
                     <button onClick={handleRestart}
                       className="text-[11px] text-[var(--text-muted)] hover:text-red-400 transition-colors">
                       Restart agent
