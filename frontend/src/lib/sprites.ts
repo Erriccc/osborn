@@ -1018,17 +1018,43 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
     // wake. Restoring an old checkpoint that pre-dates the install causes a re-install loop
     // (checkpoint → no marker → install → sprite hibernates → restore old checkpoint → repeat).
     //
-    // We also filter out `pre-restore-vN` snapshots — Sprites auto-creates these before
-    // every restore and they often capture mid-corruption states.
+    // CRITICAL — never restore on uncertainty. The previous version of this code
+    // had `let bootstrapHasMarker = false` and a bare catch on the GET that
+    // silently swallowed transient Sprites API 503s. When the API was flaky,
+    // the catch fired, bootstrapHasMarker stayed false, and we proceeded to
+    // restoreCheckpoint() — which wipes the container's writable overlay,
+    // including `.credentials.json` (Claude OAuth) and any session JSONLs.
+    // Symptom for users: re-auth prompts on every reconnect, missing past
+    // conversations, and 60+ second startSandbox timeouts that exceeded
+    // Railway's request timeout (returning 502/503 to the browser).
+    //
+    // The fix below tracks `serviceCheckSucceeded` separately. We only restore
+    // when we KNOW the service is missing or lacks marker logic — never when
+    // the API call to determine that just transiently failed.
+    //
+    // We also filter out `pre-restore-vN` snapshots — Sprites auto-creates
+    // these before every restore and they often capture mid-corruption states.
     let bootstrapHasMarker = false
+    let serviceCheckSucceeded = false
     try {
       const existing = await api<{ args?: string[] }>('GET', `/v1/sprites/${sandboxId}/services/osborn`)
       bootstrapHasMarker = (existing.args?.[1] ?? '').includes('osborn-installed-version')
-    } catch {
-      // service may not be registered yet (cold sprite) — fall through to restore
+      serviceCheckSucceeded = true
+    } catch (err) {
+      // Could be (a) the service genuinely doesn't exist yet (cold sprite, first
+      // boot — safe to restore) or (b) a transient Sprites API 503/network blip
+      // (NOT safe to restore — restore would wipe a working overlay).
+      // We can't distinguish (a) from (b) from this single failure, so we log
+      // and skip restore. A real cold sprite will fall through to registerService
+      // below, which has its own retry logic for the legitimate-cold case.
+      console.warn(`[sprites] Could not determine service state for ${sandboxId} (${(err as Error).message}) — SKIPPING restore to preserve overlay state`)
     }
 
-    if (bootstrapHasMarker) {
+    if (!serviceCheckSucceeded) {
+      // Skip restore — see comment above. Either the service exists (don't
+      // touch overlay) or it's a real cold sprite (registerService below
+      // will handle it with retries).
+    } else if (bootstrapHasMarker) {
       console.log(`[sprites] Service has marker bootstrap — skip checkpoint restore (bootstrap will re-install if needed)`)
     } else {
       const checkpoints = await listCheckpoints(sandboxId)
