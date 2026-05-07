@@ -14,7 +14,8 @@
 import { existsSync } from 'fs'
 import { execSync, spawnSync } from 'child_process'
 import { homedir } from 'os'
-import { resolve, join } from 'path'
+import { resolve, join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -135,16 +136,16 @@ function ensureFlyctl(): void {
 }
 
 /**
- * Run `fly deploy --build-only --push --image-label {version}` from the
- * agent/ directory (resolved via process.cwd() which is always `frontend/`
- * in Railway production). Streams stderr output to our own stderr so
- * progress is visible in logs.
+ * Run `fly deploy --build-only --push --image-label {version}` from the repo
+ * root (two levels up from `src/lib/`). Streams stderr output to our own
+ * stderr so progress is visible in logs.
  */
 function buildAndPushImage(version: string, flySandboxApp: string): void {
   const flyBin = resolveFlyBin()
-  // In Railway production, process.cwd() is always `frontend/`.
-  // The agent dir with Dockerfile.sandbox and fly.toml is one level up.
-  const agentDir = resolve(process.cwd(), '..', 'agent')
+  // Repo root is two levels up from src/lib/.
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = dirname(__filename)
+  const repoRoot = resolve(__dirname, '..', '..')
 
   const args = [
     'deploy',
@@ -152,15 +153,14 @@ function buildAndPushImage(version: string, flySandboxApp: string): void {
     '--push',
     '--image-label', version,
     '--app', flySandboxApp,
-    '--dockerfile', 'Dockerfile.sandbox',
-    '--config', 'fly.toml',
+    '--dockerfile', '../agent/Dockerfile.sandbox',
   ]
 
   log(`Running: ${flyBin} ${args.join(' ')}`)
-  log(`Working directory: ${agentDir}`)
+  log(`Working directory: ${repoRoot}`)
 
   const result = spawnSync(flyBin, args, {
-    cwd: agentDir,
+    cwd: repoRoot,
     stdio: 'pipe',
     encoding: 'utf8',
     env: buildEnvWithFlyPath(),
