@@ -1957,7 +1957,6 @@ async function main() {
             chatHistory,
             researchContext,
             callbacks,
-            sessionBaseDir,
           })
           haikuInFlight = null
           // Voice queue items may have been held while fast brain was in flight — retry now
@@ -2142,23 +2141,19 @@ async function main() {
       }
       // Read working directory override from frontend.
       //
-      // Must validate with existsSync before accepting: a broken reverse-slug in
-      // the frontend's session list (see `slugToPath` in config.ts — the encoding
-      // is lossy), a deleted project, or a bad legacy client can all produce a
-      // non-existent path here. Passing a non-existent cwd to
-      // `child_process.spawn` in the Claude SDK errors with ENOENT, which the
-      // SDK then reports as the misleading "Claude Code executable not found at
-      // .../cli.js" error (see MEMORY bug fix #11). Fall back to defaultWorkingDir
-      // (which is itself existsSync-verified at startup).
+      // If the path doesn't exist yet (new project on first use, or freshly
+      // imported sessions on a new sprite), create it with mkdirSync so the
+      // agent can accept it. This is safe: recursive mkdirSync is a no-op when
+      // the directory already exists, and project paths always live under the
+      // workspace root. The Claude SDK child_process.spawn requires the cwd to
+      // exist — mkdirSync satisfies that requirement without silently falling back.
       if (metadata.workingDirectory && typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0) {
-        if (existsSync(metadata.workingDirectory)) {
-          workingDir = metadata.workingDirectory
-          console.log(`📂 Working directory from frontend: ${workingDir}`)
-        } else {
-          console.log(`⚠️  Frontend sent workingDirectory that does not exist: ${metadata.workingDirectory}`)
-          console.log(`   Falling back to default: ${defaultWorkingDir}`)
-          workingDir = defaultWorkingDir
+        if (!existsSync(metadata.workingDirectory)) {
+          mkdirSync(metadata.workingDirectory, { recursive: true })
+          console.log(`📁 Created project directory: ${metadata.workingDirectory}`)
         }
+        workingDir = metadata.workingDirectory
+        console.log(`📂 Working directory from frontend: ${workingDir}`)
       } else {
         // Reset to default for new connections (in case previous session changed it)
         workingDir = defaultWorkingDir

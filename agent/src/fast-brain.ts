@@ -983,7 +983,7 @@ export async function askHaiku(
 
   // workspace uses workingDir for spec.md (under ~/.claude/projects/{slug}/osb/)
   // workingDir is for JSONL access (matches Claude SDK cwd)
-  const wsDir = sessionBaseDir || workingDir
+  const wsDir = workingDir
   const workspace = getSessionWorkspace(wsDir, sessionId)
 
   // Primary: Gemini Flash (~1-2s) with pre-loaded JSONL context
@@ -1035,7 +1035,7 @@ export async function askFastBrain(
   }
 ): Promise<FastBrainResponse> {
   const { chatHistory, researchContext, callbacks } = opts
-  const wsDir = opts.sessionBaseDir || workingDir
+  const wsDir = workingDir
 
   // Detect document generation requests
   const docMatch = detectDocumentRequest(question)
@@ -1229,7 +1229,7 @@ export async function processResearchChunk(
   }
 
   specUpdateInProgress = true
-  const wsDir = sessionBaseDir || workingDir
+  const wsDir = workingDir
   try {
     const workspace = getSessionWorkspace(wsDir, sessionId)
     const specPath = `${workspace}/spec.md`
@@ -1742,7 +1742,7 @@ export async function contextualizeResearchUpdate(
   initProvider()
   if (provider === 'none') return null
 
-  const wsDir = sessionBaseDir || workingDir
+  const wsDir = workingDir
   try {
     const specContent = readSessionSpec(wsDir, sessionId)
     const specTruncated = specContent ? specContent.substring(0, 1500) : ''
@@ -1819,7 +1819,7 @@ export async function generateProactivePrompt(
   initProvider()
   if (provider === 'none') return null
 
-  const wsDir = sessionBaseDir || workingDir
+  const wsDir = workingDir
   try {
     const specContent = readSessionSpec(wsDir, sessionId)
     const specTruncated = specContent ? specContent.substring(0, 2000) : ''
@@ -1908,7 +1908,7 @@ export async function generateVisualDocument(
   initProvider()
   if (provider === 'none') return null
 
-  const wsDir = sessionBaseDir || workingDir
+  const wsDir = workingDir
   try {
     const workspace = getSessionWorkspace(wsDir, sessionId)
     const specContent = readSessionSpec(wsDir, sessionId) || ''
@@ -2010,7 +2010,7 @@ export async function processResearchCompletion(
   initProvider()
   if (provider === 'none') return agentResult.substring(0, 500)
 
-  const wsDir = sessionBaseDir || workingDir
+  const wsDir = workingDir
   try {
     // Read spec for context
     const specContent = readSessionSpec(wsDir, sessionId) || ''
