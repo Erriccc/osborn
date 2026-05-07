@@ -14,8 +14,7 @@
 import { existsSync } from 'fs'
 import { execSync, spawnSync } from 'child_process'
 import { homedir } from 'os'
-import { resolve, join, dirname } from 'path'
-import { fileURLToPath } from 'url'
+import { join } from 'path'
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -142,10 +141,9 @@ function ensureFlyctl(): void {
  */
 function buildAndPushImage(version: string, flySandboxApp: string): void {
   const flyBin = resolveFlyBin()
-  // Repo root is two levels up from src/lib/.
-  const __filename = fileURLToPath(import.meta.url)
-  const __dirname = dirname(__filename)
-  const repoRoot = resolve(__dirname, '..', '..')
+  // In Railway production, process.cwd() is always the frontend/ directory.
+  // fly-sandbox.toml lives here, and the Dockerfile is at ../agent/Dockerfile.sandbox.
+  const repoRoot = process.cwd()
 
   const args = [
     'deploy',
@@ -153,11 +151,11 @@ function buildAndPushImage(version: string, flySandboxApp: string): void {
     '--push',
     '--image-label', version,
     '--app', flySandboxApp,
-    '--dockerfile', '../agent/Dockerfile.sandbox',
+    '--config', 'fly-sandbox.toml',
   ]
 
   log(`Running: ${flyBin} ${args.join(' ')}`)
-  log(`Working directory: ${repoRoot}`)
+  log(`Working directory (frontend/): ${repoRoot}`)
 
   const result = spawnSync(flyBin, args, {
     cwd: repoRoot,
