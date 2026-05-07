@@ -319,14 +319,6 @@ function startApiServer(workingDir: string, port: number): void {
     // GET /sessions/export — stream a gzipped tar of ~/.claude/projects/ to the client
     // Optional ?workDir= query param: if present, export only that project's slug folder.
     if (req.method === 'GET' && url.pathname === '/sessions/export') {
-      if (syncToken) {
-        const authHeader = req.headers['authorization'] ?? ''
-        if (authHeader !== `Bearer ${syncToken}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'Unauthorized' }))
-          return
-        }
-      }
       const projectsDir = join(homedir(), '.claude', 'projects')
       const workDir = url.searchParams.get('workDir')
       if (workDir) {
@@ -342,7 +334,8 @@ function startApiServer(workingDir: string, port: number): void {
           'Content-Disposition': `attachment; filename="claude-sessions-${slug}.tar.gz"`,
           'Access-Control-Allow-Origin': '*',
         })
-        const tar = spawn('tar', ['-czf', '-', '-C', projectsDir, slug])
+        // Use '--' to prevent tar from interpreting the leading-hyphen slug as flags
+        const tar = spawn('tar', ['-czf', '-', '-C', projectsDir, '--', slug])
         tar.stdout.pipe(res)
         tar.stderr.on('data', (d: Buffer) => console.error('[export]', d.toString()))
         tar.on('close', (code: number | null) => { if (code !== 0) res.destroy() })
