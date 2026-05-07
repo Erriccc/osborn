@@ -521,14 +521,29 @@ async function waitForServiceReady(spriteName: string, maxAttempts = 20): Promis
  *     are disjoint views, so this file is invisible to fs-API readers; both
  *     sides of the marker write/read happen inside the container.)
  *
+ * Architectural invariant:
+ *   The running osborn agent is ALWAYS the npm-registry version pinned by WANT.
+ *   `/home/sprite/workspace/*` is user data (clones, source, files) — NEVER
+ *   linked into the global agent. If a user runs `npm link` from a workspace
+ *   clone, that creates an anomaly which this bootstrap reverts on next boot.
+ *   Their workspace files are preserved; only the global npm install is
+ *   restored to registry state. Updates always target the npm registry.
+ *
  * Decision logic — install if ANY of these is true:
- *   1. Symlink at `lib/node_modules/osborn` (npm-link state, never a real install)
+ *   1. Symlink ANOMALY: `lib/node_modules/osborn` is itself a symlink, OR
+ *      `bin/osborn` resolves OUTSIDE `lib/node_modules/osborn/` (npm-link state).
+ *      NB: `bin/osborn` being a symlink is NORMAL — every `npm install -g`
+ *      creates it. Detect anomalies by checking the canonical target, not
+ *      the mere presence of a symlink.
  *   2. `osborn` binary not found in PATH
  *   3. Marker file's version doesn't match WANT
+ *   4. `lib/node_modules/osborn/package.json` missing (partial install)
  *
- * On install: `npm unlink + rm -rf + npm install --force` to handle every prior
- * state (symlink, partial install, wrong version). Marker is written on success.
- * On failure, `exec sleep infinity` keeps the sprite alive for post-mortem.
+ * On install: `npm unlink + rm -rf + npm install --force`. Workspace dirs are
+ * NEVER touched (user dev source may live there). Marker is written ONLY after
+ * verifying install completeness (binary in PATH + package.json present) —
+ * partial install + marker = false confidence. On failure, `exec sleep infinity`
+ * keeps the sprite alive for post-mortem.
  *
  * To trigger an upgrade later, the frontend re-PUTs the bootstrap with a new WANT.
  * Marker mismatch → install runs.
@@ -555,18 +570,52 @@ MARKER="/home/sprite/.osborn-installed-version"
 NPM_PREFIX="$(npm prefix -g)"
 INSTALLED="$(cat "$MARKER" 2>/dev/null | tr -d '[:space:]' || echo '')"
 
+# Architectural invariant: the running osborn agent is ALWAYS the npm-registry
+# version pinned by WANT. Workspace dirs (/home/sprite/workspace/*) are user
+# data — clones, source, files — never linked into the global agent. If a user
+# ran \`npm link\` from a workspace clone, that creates an anomaly that this
+# bootstrap reverts on next boot. Their workspace files are preserved; only the
+# global npm install is restored to registry state.
+
 NEEDS_INSTALL=false
 REASON=""
 
-if [ -L "$NPM_PREFIX/lib/node_modules/osborn" ] || [ -L "$NPM_PREFIX/bin/osborn" ]; then
+# Symlink anomaly detection — distinguishes \`npm link\` (dev mode) from the
+# standard \`bin/osborn\` shortcut that EVERY \`npm install -g\` creates.
+#
+#   Normal install:  bin/osborn  → lib/node_modules/osborn/bin/cli.js  (target inside lib)
+#                    lib/node_modules/osborn  is a real directory
+#
+#   npm-link state:  lib/node_modules/osborn  IS a symlink (to a workspace dir)
+#                    OR bin/osborn resolves OUTSIDE lib/node_modules/osborn
+#
+# The previous detector tripped on \`-L bin/osborn\` alone, which is true after
+# every install → install loop. Check the canonical target instead.
+SYMLINK_ANOMALY=false
+if [ -L "$NPM_PREFIX/lib/node_modules/osborn" ]; then
+  SYMLINK_ANOMALY=true
+  REASON="lib/node_modules/osborn is a symlink (npm-link state)"
+fi
+if [ "$SYMLINK_ANOMALY" != "true" ] && [ -L "$NPM_PREFIX/bin/osborn" ]; then
+  BIN_TARGET="$(readlink -f "$NPM_PREFIX/bin/osborn" 2>/dev/null || echo)"
+  case "$BIN_TARGET" in
+    "$NPM_PREFIX/lib/node_modules/osborn/"*) ;;  # standard install — fine
+    *) SYMLINK_ANOMALY=true
+       REASON="bin/osborn → '$BIN_TARGET' (outside lib/node_modules)" ;;
+  esac
+fi
+
+if [ "$SYMLINK_ANOMALY" = "true" ]; then
   NEEDS_INSTALL=true
-  REASON="symlink detected (npm-link state)"
 elif ! command -v osborn >/dev/null 2>&1; then
   NEEDS_INSTALL=true
   REASON="osborn binary missing"
 elif [ "$INSTALLED" != "$WANT" ]; then
   NEEDS_INSTALL=true
   REASON="marker mismatch (have='$INSTALLED' want='$WANT')"
+elif [ ! -f "$NPM_PREFIX/lib/node_modules/osborn/package.json" ]; then
+  NEEDS_INSTALL=true
+  REASON="package.json missing — partial install"
 fi
 
 echo "[osborn-bootstrap] WANT=$WANT marker='$INSTALLED' needs-install=$NEEDS_INSTALL reason='$REASON'"
@@ -574,7 +623,10 @@ echo "[osborn-bootstrap] WANT=$WANT marker='$INSTALLED' needs-install=$NEEDS_INS
 if [ "$NEEDS_INSTALL" = "true" ]; then
   echo "[osborn-bootstrap] >>> force-installing osborn@$WANT from npm registry"
 
-  # Nuke ALL traces — handles symlinks AND existing installs. --force survives conflicts.
+  # Nuke npm install state ONLY — handles symlinks AND existing installs. --force survives conflicts.
+  # IMPORTANT: do NOT touch /home/sprite/workspace/ — user dev source (e.g. osborn-src)
+  # lives there and may be the npm-link target. To run sprite as a dev server, create
+  # /home/sprite/.osborn-dev-mode (handled at top of bootstrap, install branch is skipped).
   npm unlink -g osborn 2>/dev/null || true
   rm -rf "$NPM_PREFIX/lib/node_modules/osborn" 2>/dev/null || true
   rm -f "$NPM_PREFIX/bin/osborn" 2>/dev/null || true
@@ -602,12 +654,21 @@ if [ "$NEEDS_INSTALL" = "true" ]; then
   INSTALL_EXIT=$?
   echo "[osborn-bootstrap] install finished exit=\$INSTALL_EXIT"
 
-  if [ "$INSTALL_EXIT" -ne 0 ] || ! command -v osborn >/dev/null 2>&1; then
-    echo "[osborn-bootstrap] INSTALL FAILED — keeping sprite alive for diagnosis"
+  # Verification gate — refuse to write marker unless install is fully present.
+  # Marker is the source of truth for "skip install on next boot"; a partial
+  # install + marker = false confidence and a broken sprite. Better to fail loud.
+  if [ "$INSTALL_EXIT" -ne 0 ] \
+     || ! command -v osborn >/dev/null 2>&1 \
+     || [ ! -f "$NPM_PREFIX/lib/node_modules/osborn/package.json" ]; then
+    echo "[osborn-bootstrap] INSTALL FAILED OR INCOMPLETE — keeping sprite alive for diagnosis"
     echo "[osborn-bootstrap] tail /tmp/npm-install.log:"
     tail -30 /tmp/npm-install.log 2>/dev/null
     exec sleep infinity
   fi
+
+  # Forensic log: confirm bin/osborn resolves to a normal target, not a re-link.
+  POST_BIN_TARGET="$(readlink -f "$NPM_PREFIX/bin/osborn" 2>/dev/null || echo '?')"
+  echo "[osborn-bootstrap] post-install bin/osborn → $POST_BIN_TARGET"
 
   # Write marker so next restart skips install (fast restart path)
   echo "$WANT" > "$MARKER"
