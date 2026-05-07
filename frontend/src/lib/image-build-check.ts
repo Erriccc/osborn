@@ -187,6 +187,8 @@ export async function checkImageBuild(): Promise<void> {
     // Ensure FLY_ORG_SLUG has a default so flyctl picks it up automatically.
     if (!process.env.FLY_ORG_SLUG) process.env.FLY_ORG_SLUG = 'personal'
 
+    process.stderr.write('[image-build-check] starting version check\n')
+
     // Guard: require FLY_API_TOKEN — nothing to do without it.
     if (!FLY_API_TOKEN) {
       log('FLY_API_TOKEN is not set — skipping image build check')
@@ -198,16 +200,19 @@ export async function checkImageBuild(): Promise<void> {
     // Step 1: Resolve latest published osborn version.
     const version = await fetchLatestOsbornVersion()
     log(`Latest osborn version on npm: ${version}`)
+    process.stderr.write(`[image-build-check] npm latest version: ${version}\n`)
 
     // Step 2: Check if the image tag already exists in the Fly registry.
     const exists = await imageTagExists(version, FLY_API_TOKEN, FLY_SANDBOX_APP)
 
     if (exists) {
       log(`Image tag ${version} already exists in registry — nothing to do`)
+      process.stderr.write(`[image-build-check] image tag ${version} exists in Fly registry — skipping build\n`)
       return
     }
 
     log(`Image tag ${version} not found — starting build`)
+    process.stderr.write(`[image-build-check] image tag ${version} not found in Fly registry — starting build\n`)
 
     // Step 3: Ensure flyctl is available, installing it if necessary.
     ensureFlyctl()
