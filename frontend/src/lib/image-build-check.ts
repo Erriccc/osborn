@@ -26,7 +26,7 @@ const FLYCTL_INSTALL_URL = 'https://fly.io/install.sh'
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function log(...args: unknown[]): void {
-  process.stderr.write('[check-image-build] ' + args.join(' ') + '\n')
+  console.log('[check-image-build]', ...args)
 }
 
 /**
@@ -167,8 +167,8 @@ function buildAndPushImage(version: string, flySandboxApp: string): void {
     timeout: 600000, // 10 minutes
   })
 
-  if (result.stdout) process.stderr.write(result.stdout)
-  if (result.stderr) process.stderr.write(result.stderr)
+  if (result.stdout) console.log(result.stdout)
+  if (result.stderr) console.log(result.stderr)
 
   if (result.status !== 0) {
     throw new Error(`fly deploy exited with status ${result.status}`)
@@ -187,7 +187,7 @@ export async function checkImageBuild(): Promise<void> {
     // Ensure FLY_ORG_SLUG has a default so flyctl picks it up automatically.
     if (!process.env.FLY_ORG_SLUG) process.env.FLY_ORG_SLUG = 'personal'
 
-    process.stderr.write('[image-build-check] starting version check\n')
+    console.log('[image-build-check] starting version check')
 
     // Guard: require FLY_API_TOKEN — nothing to do without it.
     if (!FLY_API_TOKEN) {
@@ -200,19 +200,19 @@ export async function checkImageBuild(): Promise<void> {
     // Step 1: Resolve latest published osborn version.
     const version = await fetchLatestOsbornVersion()
     log(`Latest osborn version on npm: ${version}`)
-    process.stderr.write(`[image-build-check] npm latest version: ${version}\n`)
+    console.log(`[image-build-check] npm latest version: ${version}`)
 
     // Step 2: Check if the image tag already exists in the Fly registry.
     const exists = await imageTagExists(version, FLY_API_TOKEN, FLY_SANDBOX_APP)
 
     if (exists) {
       log(`Image tag ${version} already exists in registry — nothing to do`)
-      process.stderr.write(`[image-build-check] image tag ${version} exists in Fly registry — skipping build\n`)
+      console.log(`[image-build-check] image tag ${version} exists in Fly registry — skipping build`)
       return
     }
 
     log(`Image tag ${version} not found — starting build`)
-    process.stderr.write(`[image-build-check] image tag ${version} not found in Fly registry — starting build\n`)
+    console.log(`[image-build-check] image tag ${version} not found in Fly registry — starting build`)
 
     // Step 3: Ensure flyctl is available, installing it if necessary.
     ensureFlyctl()
@@ -222,6 +222,6 @@ export async function checkImageBuild(): Promise<void> {
   } catch (err) {
     // Never throw — log to stderr only.
     const message = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`[check-image-build] ERROR: ${message}\n`)
+    console.error(`[check-image-build] ERROR: ${message}`)
   }
 }
