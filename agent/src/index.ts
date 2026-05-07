@@ -319,6 +319,14 @@ function startApiServer(workingDir: string, port: number): void {
     // GET /sessions/export — stream a gzipped tar of ~/.claude/projects/ to the client
     // Optional ?workDir= query param: if present, export only that project's slug folder.
     if (req.method === 'GET' && url.pathname === '/sessions/export') {
+      if (syncToken) {
+        const authHeader = req.headers['authorization'] ?? ''
+        if (authHeader !== `Bearer ${syncToken}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Unauthorized' }))
+          return
+        }
+      }
       const projectsDir = join(homedir(), '.claude', 'projects')
       const workDir = url.searchParams.get('workDir')
       if (workDir) {

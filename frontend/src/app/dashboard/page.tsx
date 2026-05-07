@@ -17,6 +17,28 @@ interface SessionInfo {
   cwd?: string
 }
 
+interface ProjectGroup {
+  name: string        // display name: last path segment, or 'General' for root
+  cwd: string         // full path e.g. '/home/sprite/workspace/instagram'
+  sessions: SessionInfo[]
+  lastActive: string  // timestamp of most recent session
+}
+
+function groupByProject(sessions: SessionInfo[]): ProjectGroup[] {
+  const map = new Map<string, SessionInfo[]>()
+  for (const s of sessions) {
+    const cwd = s.cwd || '/home/sprite/workspace'
+    map.set(cwd, [...(map.get(cwd) || []), s])
+  }
+  return Array.from(map.entries())
+    .map(([cwd, sessions]) => {
+      const segments = cwd.replace(/\/$/, '').split('/')
+      const name = cwd === '/home/sprite/workspace' ? 'General' : (segments[segments.length - 1] || 'General')
+      return { name, cwd, sessions, lastActive: sessions[0]?.timestamp || '' }
+    })
+    .sort((a, b) => new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime())
+}
+
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'pipeline' | 'direct' | 'realtime'
 
@@ -83,11 +105,12 @@ export default function Dashboard() {
   const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState(false)
-  const PAGE_SIZE = 20
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
-
   const [localAgentUrl] = useState('http://localhost:8741')
   const [connectionMode, setConnectionMode] = useState<'local' | 'cloud'>('local')
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
+  const [newProjectName, setNewProjectName] = useState('')
+  const [showNewProject, setShowNewProject] = useState(false)
+  const [importingProject, setImportingProject] = useState<string | null>(null)
 
   // Prefs
   const [provider, setProvider] = useState<Provider>('gemini')
@@ -542,6 +565,60 @@ export default function Dashboard() {
     return d.toLocaleDateString('en', { month: 'short', day: 'numeric' })
   }
 
+  const toggleProject = (cwd: string) => {
+    setExpandedProjects(prev => {
+      const next = new Set(prev)
+      if (next.has(cwd)) next.delete(cwd)
+      else next.add(cwd)
+      return next
+    })
+  }
+
+  const handleDownload = async (cwd: string) => {
+    try {
+      const headers: HeadersInit = {}
+      if (syncToken) headers['Authorization'] = `Bearer ${syncToken}`
+      const r = await fetch(`${agentUrl}/sessions/export?workDir=${encodeURIComponent(cwd)}`, { headers })
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `sessions-${cwd.split('/').pop() || 'export'}.tar.gz`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('Export failed', e)
+    }
+  }
+
+  const handleImport = async (cwd: string, file: File) => {
+    setImportingProject(cwd)
+    try {
+      const formData = new FormData()
+      formData.append('archive', file)
+      const r = await fetch(`${agentUrl}/sessions/import?targetWorkDir=${encodeURIComponent(cwd)}`, {
+        method: 'POST',
+        headers: syncToken ? { 'Authorization': `Bearer ${syncToken}` } : {},
+        body: formData,
+      })
+      const data = await r.json()
+      if (data.ok) {
+        await fetchSessions()  // refresh session list
+      }
+    } finally {
+      setImportingProject(null)
+    }
+  }
+
+  const handleCreateProject = () => {
+    const name = newProjectName.trim().toLowerCase().replace(/\s+/g, '-')
+    if (!name) return
+    const projectPath = `/home/sprite/workspace/${name}`
+    setShowNewProject(false)
+    setNewProjectName('')
+    startChat(undefined, projectPath)
+  }
+
   if (loading) {
     return (
       <main className="min-h-screen bg-[var(--background)] flex items-center justify-center">
@@ -913,101 +990,192 @@ export default function Dashboard() {
             New conversation
           </button>
 
-          {/* Recent chats */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between mb-1">
-              <h2 className="text-[var(--text-secondary)] text-xs font-medium uppercase tracking-wider">Recent</h2>
-              {sessionsLoading && (
-                <div className="w-3 h-3 border border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
+          {/* Agent offline states */}
+          {agentOnline === false && isCloud && provisioning && (
+            <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
+              <div className="w-10 h-10 rounded-full bg-[var(--accent-dim)]/20 flex items-center justify-center mx-auto mb-3">
+                <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+              </div>
+              <p className="text-[var(--accent)] text-sm">Setting up your cloud workspace</p>
+              <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">
+                Installing osborn + claude-code (~60s on first launch)
+              </p>
+            </div>
+          )}
+
+          {agentOnline === false && !provisioning && (
+            <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
+              <div className="w-10 h-10 rounded-full bg-[var(--surface)] flex items-center justify-center mx-auto mb-3">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+                </svg>
+              </div>
+              <p className="text-[var(--text-muted)] text-sm">
+                {isCloud
+                  ? sandboxStatus === 'stopped' ? 'Cloud workspace is stopped' : 'Cloud workspace is offline'
+                  : 'Local agent is offline'}
+              </p>
+              <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">
+                {isCloud
+                  ? sandboxStatus === 'stopped'
+                    ? 'Open Settings → Resume to start it again'
+                    : 'Open Settings to manage your workspace'
+                  : `Check that your agent is running at ${agentUrl}`}
+              </p>
+            </div>
+          )}
+
+          {/* Projects section — only shown when agent is reachable */}
+          {agentOnline !== false && (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-[var(--text-secondary)] text-xs font-medium uppercase tracking-wider">Projects</h2>
+                {sessionsLoading && (
+                  <div className="w-3 h-3 border border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
+                )}
+              </div>
+
+              {/* New Project */}
+              <div className="mb-4">
+                {showNewProject ? (
+                  <div className="flex gap-2">
+                    <input
+                      autoFocus
+                      className="flex-1 rounded-xl bg-[var(--surface)] px-4 py-3 text-sm outline-none"
+                      placeholder="Project name"
+                      value={newProjectName}
+                      onChange={e => setNewProjectName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') handleCreateProject()
+                        if (e.key === 'Escape') { setShowNewProject(false); setNewProjectName('') }
+                      }}
+                    />
+                    <button
+                      onClick={handleCreateProject}
+                      className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-medium text-white"
+                    >
+                      Start
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowNewProject(true)}
+                    className="w-full rounded-2xl bg-[var(--surface)] px-4 py-3.5 text-left text-sm font-medium hover:opacity-80 transition-opacity"
+                  >
+                    + New project
+                  </button>
+                )}
+              </div>
+
+              {/* Project list */}
+              {sessionsLoading ? (
+                <div className="flex justify-center py-8">
+                  <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : sessions.length === 0 && agentOnline ? (
+                <p className="px-4 text-sm text-[var(--muted)]">No conversations yet</p>
+              ) : (
+                <div className="space-y-2">
+                  {groupByProject(sessions).map(project => (
+                    <div key={project.cwd} className="rounded-2xl bg-[var(--surface)] overflow-hidden">
+                      {/* Project header row */}
+                      <div className="flex items-center gap-3 px-4 py-3.5">
+                        <button
+                          className="flex-1 flex items-center gap-3 text-left min-w-0"
+                          onClick={() => toggleProject(project.cwd)}
+                        >
+                          <div className="w-9 h-9 rounded-xl bg-[var(--surface-2)] flex items-center justify-center flex-shrink-0 text-base">
+                            {project.name === 'General' ? '📁' : '🗂️'}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium capitalize truncate">{project.name}</div>
+                            <div className="text-xs text-[var(--muted)]">
+                              {project.sessions.length} session{project.sessions.length !== 1 ? 's' : ''} · {formatDate(project.lastActive)}
+                            </div>
+                          </div>
+                          <svg
+                            className={`w-4 h-4 text-[var(--muted)] flex-shrink-0 transition-transform ${expandedProjects.has(project.cwd) ? 'rotate-90' : ''}`}
+                            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                        {/* Per-project actions */}
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <button
+                            onClick={() => handleDownload(project.cwd)}
+                            title="Export project"
+                            className="p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors text-[var(--muted)] hover:text-[var(--text)]"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                          </button>
+                          <label
+                            title="Import sessions"
+                            className={`p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors cursor-pointer ${importingProject === project.cwd ? 'opacity-50' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
+                          >
+                            {importingProject === project.cwd ? (
+                              <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12" />
+                              </svg>
+                            )}
+                            <input
+                              type="file"
+                              accept=".tar.gz,.tgz"
+                              className="hidden"
+                              onChange={e => {
+                                const f = e.target.files?.[0]
+                                if (f) handleImport(project.cwd, f)
+                                e.target.value = ''
+                              }}
+                            />
+                          </label>
+                          <button
+                            onClick={() => startChat(undefined, project.cwd)}
+                            title="New conversation in this project"
+                            className="p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors text-[var(--muted)] hover:text-[var(--text)]"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Expanded session list */}
+                      {expandedProjects.has(project.cwd) && (
+                        <div className="border-t border-[var(--border)] divide-y divide-[var(--border)]">
+                          {project.sessions.slice(0, 10).map(s => (
+                            <button
+                              key={s.sessionId}
+                              onClick={() => startChat(s.sessionId, s.cwd)}
+                              className="w-full px-4 py-3 text-left hover:bg-[var(--surface-2)] transition-colors"
+                            >
+                              <div className="text-sm text-[var(--text)] line-clamp-1">
+                                {s.lastMessage || 'New conversation'}
+                              </div>
+                              <div className="text-xs text-[var(--muted)] mt-0.5 flex items-center gap-2">
+                                <span>{formatDate(s.timestamp)}</span>
+                                {s.messageCount ? <span>{s.messageCount} messages</span> : null}
+                              </div>
+                            </button>
+                          ))}
+                          {project.sessions.length > 10 && (
+                            <div className="px-4 py-2 text-xs text-[var(--muted)]">
+                              +{project.sessions.length - 10} more — export project to see all
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-
-            {agentOnline === false && isCloud && provisioning && (
-              <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
-                <div className="w-10 h-10 rounded-full bg-[var(--accent-dim)]/20 flex items-center justify-center mx-auto mb-3">
-                  <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-                </div>
-                <p className="text-[var(--accent)] text-sm">Setting up your cloud workspace</p>
-                <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">
-                  Installing osborn + claude-code (~60s on first launch)
-                </p>
-              </div>
-            )}
-
-            {agentOnline === false && !provisioning && (
-              <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
-                <div className="w-10 h-10 rounded-full bg-[var(--surface)] flex items-center justify-center mx-auto mb-3">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
-                  </svg>
-                </div>
-                <p className="text-[var(--text-muted)] text-sm">
-                  {isCloud
-                    ? sandboxStatus === 'stopped' ? 'Cloud workspace is stopped' : 'Cloud workspace is offline'
-                    : 'Local agent is offline'}
-                </p>
-                <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">
-                  {isCloud
-                    ? sandboxStatus === 'stopped'
-                      ? 'Open Settings → Resume to start it again'
-                      : 'Open Settings to manage your workspace'
-                    : `Check that your agent is running at ${agentUrl}`}
-                </p>
-              </div>
-            )}
-
-            {agentOnline && sessions.length === 0 && !sessionsLoading && (
-              <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
-                <p className="text-[var(--text-muted)] text-sm">No conversations yet</p>
-                <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">Start a new conversation to begin</p>
-              </div>
-            )}
-
-            {sessions.slice(0, visibleCount).map((s, i) => (
-              <button key={s.sessionId} onClick={() => startChat(s.sessionId, s.cwd)}
-                className="w-full text-left p-4 rounded-2xl bg-[var(--surface)] border border-[var(--border-subtle)] hover:border-[var(--border)] transition-all group"
-                style={{ animation: `enter 0.3s ease ${Math.min(i, 10) * 0.04}s both` }}>
-                <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
-                    style={{ background: 'linear-gradient(135deg, var(--surface-raised) 0%, var(--border) 100%)' }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                    </svg>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[var(--text-primary)] text-[14px] leading-relaxed line-clamp-2">
-                      {s.lastMessage || 'New conversation'}
-                    </p>
-                    <div className="flex items-center gap-2 mt-2">
-                      <span className="text-[var(--text-muted)] text-[11px]">{formatDate(s.timestamp)}</span>
-                      {s.messageCount ? (
-                        <span className="text-[var(--text-muted)] text-[11px] bg-[var(--surface-raised)] px-1.5 py-0.5 rounded-full">
-                          {s.messageCount} messages
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                  <svg className="w-4 h-4 text-[var(--text-muted)] opacity-0 group-hover:opacity-60 transition-opacity shrink-0 mt-3"
-                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="9 18 15 12 9 6"/>
-                  </svg>
-                </div>
-              </button>
-            ))}
-
-            {sessions.length > visibleCount && (
-              <button onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
-                className="w-full py-3 mt-2 rounded-xl text-[var(--text-secondary)] text-sm hover:text-[var(--text-primary)] hover:bg-[var(--surface)] transition-all">
-                Show more ({sessions.length - visibleCount} remaining)
-              </button>
-            )}
-
-            {sessions.length > 0 && (
-              <p className="text-center text-[var(--text-muted)] text-[11px] mt-4 pb-4">
-                {sessions.length} conversation{sessions.length !== 1 ? 's' : ''}
-              </p>
-            )}
-          </div>
+          )}
         </div>
       </main>
     </>

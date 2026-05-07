@@ -202,7 +202,7 @@ function mapSpriteState(status: string): SandboxInfo['status'] {
  * OSBORN_CWD must match the workspace directory created during provisioning.
  * User is "sprite", home is /home/sprite.
  */
-function getPlatformEnvVars(userId: string): Record<string, string> {
+function getPlatformEnvVars(userId: string, syncToken?: string): Record<string, string> {
   const envVars: Record<string, string> = {
     OSBORN_API_PORT: '8080',
     OSBORN_CWD: '/home/sprite/workspace',
@@ -223,6 +223,14 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
   ]
   for (const key of forwardKeys) {
     if (process.env[key]) envVars[key] = process.env[key]!
+  }
+
+  // Per-user sync token — authorises the sprite's osborn agent to call the
+  // dashboard's export/import endpoints. Stored on the user's Supabase
+  // instance row and threaded in here so it's baked into the service
+  // bootstrap on create, start, and update.
+  if (syncToken) {
+    envVars.OSBORN_SYNC_TOKEN = syncToken
   }
 
   // Tell the agent where to find this frontend's /api/upload route. The agent
@@ -929,7 +937,7 @@ export async function waitForHealth(previewUrl: string, maxAttempts = 45): Promi
  * Rate limits: Sprites enforces concurrent limits (3 on free tier).
  * If creation returns 429 or a rate-limit error body, returns status='error'.
  */
-export async function createSandbox(userId: string): Promise<SandboxInfo> {
+export async function createSandbox(userId: string, syncToken?: string): Promise<SandboxInfo> {
   if (!isSpritesConfigured()) {
     return { id: '', status: 'error', userId, createdAt: new Date().toISOString(), error: 'Sprites not configured. Set SPRITES_API_TOKEN in .env.local' }
   }
@@ -958,7 +966,7 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
       if (!previewUrl) {
         return { id: spriteName, status: 'error', userId, createdAt: new Date().toISOString(), error: 'Could not recover existing sprite' }
       }
-      const envVars = getPlatformEnvVars(userId)
+      const envVars = getPlatformEnvVars(userId, syncToken)
       await registerService(spriteName, 'osborn', OSBORN_HTTP_PORT, envVars)
       await startService(spriteName, 'osborn')
       const healthy = await waitForHealth(previewUrl, 90)
@@ -995,7 +1003,7 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
     // Step 4: Register osborn as a service with an inline bootstrap script.
     // The bootstrap handles npm install (on first run only) + env vars + exec osborn.
     // No exec calls needed — all setup happens inside the service itself.
-    const envVars = getPlatformEnvVars(userId)
+    const envVars = getPlatformEnvVars(userId, syncToken)
     console.log(`[sprites] Registering osborn service with bootstrap script...`)
     await registerService(spriteName, 'osborn', OSBORN_HTTP_PORT, envVars)
 
@@ -1090,8 +1098,9 @@ export async function findUserSandbox(
  *
  * @param sandboxId - the sprite name (e.g. "osborn-abc123def456")
  * @param userId    - user ID, required for getPlatformEnvVars
+ * @param syncToken - optional per-user sync token forwarded as OSBORN_SYNC_TOKEN
  */
-export async function startSandbox(sandboxId: string, userId: string): Promise<SandboxInfo | null> {
+export async function startSandbox(sandboxId: string, userId: string, syncToken?: string): Promise<SandboxInfo | null> {
   try {
     // Step 1: Get current sprite state and URL
     const sprite = await api<SpritesSprite>('GET', `/v1/sprites/${sandboxId}`)
@@ -1226,7 +1235,7 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
     }
 
     if (needsRegister) {
-      const envVars = getPlatformEnvVars(userId)
+      const envVars = getPlatformEnvVars(userId, syncToken)
       console.log(`[sprites] Re-registering osborn service (install skipped if checkpoint marker matches WANT)...`)
       const registered = await registerService(sandboxId, 'osborn', OSBORN_HTTP_PORT, envVars)
       if (!registered) {
@@ -1372,6 +1381,7 @@ export async function updateOsborn(
   sandboxId: string,
   userId: string,
   version?: string,
+  syncToken?: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
   // Serialize concurrent calls per sprite — if one is already in flight,
   // return its promise instead of starting a new one.
@@ -1381,7 +1391,7 @@ export async function updateOsborn(
     return existing
   }
 
-  const work = updateOsbornImpl(sandboxId, userId, version)
+  const work = updateOsbornImpl(sandboxId, userId, version, syncToken)
   updateInflight.set(sandboxId, work)
   work.finally(() => {
     if (updateInflight.get(sandboxId) === work) {
@@ -1395,6 +1405,7 @@ async function updateOsbornImpl(
   sandboxId: string,
   userId: string,
   version?: string,
+  syncToken?: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
   let targetVersion: string
   try {
@@ -1436,7 +1447,7 @@ async function updateOsbornImpl(
     return { success: false, version: null, log: `Could not fetch sprite metadata: ${(err as Error).message}` }
   }
 
-  const envVars = getPlatformEnvVars(userId)
+  const envVars = getPlatformEnvVars(userId, syncToken)
   const headers = { 'Authorization': `Bearer ${getApiToken()}`, 'Content-Type': 'application/json' }
 
   try {
@@ -1942,12 +1953,13 @@ async function findUnassignedPoolSprite(
 export async function assignFromPoolOrCreate(
   userId: string,
   assignedSandboxIds: string[],
+  syncToken?: string,
 ): Promise<SandboxInfo> {
   const poolSprite = await findUnassignedPoolSprite(assignedSandboxIds)
 
   if (poolSprite) {
     console.log(`[sprites] Assigning pool sprite ${poolSprite.name} to user ${userId}`)
-    const assigned = await startSandbox(poolSprite.name, userId)
+    const assigned = await startSandbox(poolSprite.name, userId, syncToken)
 
     if (assigned && assigned.status === 'running') {
       // Fire-and-forget replenishment: if pool count drops below target,
@@ -1984,5 +1996,5 @@ export async function assignFromPoolOrCreate(
 
   // No pool sprite available OR pool assignment failed — fall back to the
   // original per-user cold provisioning flow (~6 minutes).
-  return createSandbox(userId)
+  return createSandbox(userId, syncToken)
 }

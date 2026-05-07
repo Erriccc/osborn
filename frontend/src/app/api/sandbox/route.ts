@@ -118,9 +118,20 @@ export async function POST(request: Request) {
     return data?.sandbox_id ?? undefined
   }
 
+  // Helper: read the user's sync_token for forwarding to sprites as OSBORN_SYNC_TOKEN.
+  const getSyncToken = async (): Promise<string | undefined> => {
+    const { data } = await supabase
+      .from('instances')
+      .select('sync_token')
+      .eq('user_id', user.id)
+      .single()
+    return (data?.sync_token as string | null) ?? undefined
+  }
+
   switch (action) {
     case 'create': {
-      const info = await createSandbox(user.id)
+      const syncToken = await getSyncToken()
+      const info = await createSandbox(user.id, syncToken)
 
       if (info.status === 'running' && info.previewUrl) {
         // Save to DB — this becomes the user's agent URL
@@ -146,7 +157,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
-      const info = await startSandbox(sandboxId, user.id)
+      const startSyncToken = await getSyncToken()
+      const info = await startSandbox(sandboxId, user.id, startSyncToken)
       if (info?.previewUrl) {
         await supabase.from('instances').update({
           server_url: info.previewUrl,
@@ -209,7 +221,8 @@ export async function POST(request: Request) {
       // If sandbox isn't running (warm/cold/stopped/error), start it first
       if (sb.status !== 'running') {
         console.log(`[sandbox] room-code: sandbox is ${sb.status}, starting...`)
-        const woken = await startSandbox(sb.id, user.id)
+        const roomCodeSyncToken = await getSyncToken()
+        const woken = await startSandbox(sb.id, user.id, roomCodeSyncToken)
         if (!woken || woken.status !== 'running') {
           return NextResponse.json({ error: 'Failed to wake sandbox' }, { status: 503 })
         }
@@ -339,7 +352,8 @@ export async function POST(request: Request) {
       //   resolve target version → stop → DELETE registration → PUT new bootstrap
       //   (auto-starts) → wait for /health
       // Returns the actual installed version so the dashboard can display it.
-      const updateResult = await updateOsborn(sandboxId, user.id)
+      const updateSyncToken = await getSyncToken()
+      const updateResult = await updateOsborn(sandboxId, user.id, undefined, updateSyncToken)
       if (!updateResult.success) {
         return NextResponse.json(
           { error: 'Update failed', log: updateResult.log },
