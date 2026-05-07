@@ -119,13 +119,24 @@ export async function POST(request: Request) {
   }
 
   // Helper: read the user's sync_token for forwarding to sprites as OSBORN_SYNC_TOKEN.
+  // If no token exists yet, generate one, persist it, and return the new value.
   const getSyncToken = async (): Promise<string | undefined> => {
     const { data } = await supabase
       .from('instances')
       .select('sync_token')
       .eq('user_id', user.id)
       .single()
-    return (data?.sync_token as string | null) ?? undefined
+
+    if (data?.sync_token) return data.sync_token as string
+
+    // Generate a new token and persist it for this user
+    const newToken = crypto.randomUUID() + '-' + crypto.randomUUID()
+    await supabase
+      .from('instances')
+      .update({ sync_token: newToken })
+      .eq('user_id', user.id)
+
+    return newToken
   }
 
   switch (action) {
