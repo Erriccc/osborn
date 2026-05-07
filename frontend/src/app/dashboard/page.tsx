@@ -365,6 +365,7 @@ export default function Dashboard() {
   // the hard way; the modal-equivalent friction is worth it.
   const [syncToken, setSyncToken] = useState<string | null>(null)
   const [syncCopied, setSyncCopied] = useState(false)
+  const [skillCopied, setSkillCopied] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const deleteArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -594,12 +595,13 @@ export default function Dashboard() {
   const handleImport = async (cwd: string, file: File) => {
     setImportingProject(cwd)
     try {
-      const formData = new FormData()
-      formData.append('archive', file)
       const r = await fetch(`${agentUrl}/sessions/import?targetWorkDir=${encodeURIComponent(cwd)}`, {
         method: 'POST',
-        headers: syncToken ? { 'Authorization': `Bearer ${syncToken}` } : {},
-        body: formData,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          ...(syncToken ? { 'Authorization': `Bearer ${syncToken}` } : {}),
+        },
+        body: file,
       })
       const data = await r.json()
       if (data.ok) {
@@ -608,6 +610,14 @@ export default function Dashboard() {
     } finally {
       setImportingProject(null)
     }
+  }
+
+  const handleCopySyncInfo = async (project: ProjectGroup) => {
+    const skillUrl = `${window.location.origin}/api/sync-skill`
+    const info = `Osborn sync info for this project:\nSkill: ${skillUrl}\nSprite: ${agentUrl}\nToken: ${syncToken ?? ''}\nTarget: ${project.cwd}`
+    await navigator.clipboard.writeText(info)
+    setSkillCopied(true)
+    setTimeout(() => setSkillCopied(false), 2000)
   }
 
   const handleCreateProject = () => {
@@ -1133,6 +1143,15 @@ export default function Dashboard() {
                               }}
                             />
                           </label>
+                          <button
+                            onClick={() => handleCopySyncInfo(project)}
+                            title="Copy sync info"
+                            className={`p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors ${skillCopied ? 'text-emerald-400' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                            </svg>
+                          </button>
                           <button
                             onClick={() => startChat(undefined, project.cwd)}
                             title="New conversation in this project"
