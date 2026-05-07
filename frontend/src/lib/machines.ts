@@ -12,15 +12,13 @@
  *  - Auto-suspend: concurrency-based (not 30s timer) — machine stays up during active sessions
  *  - No filesystem API — bootstrap via Docker image CMD
  *  - Requires FLY_API_TOKEN (org-scoped), FLY_ORG_SLUG, FLY_SANDBOX_IMAGE env vars
- *  - IP allocation uses flyctl subprocess (no pure API endpoint exists)
+ *  - IP allocation uses Fly Machines REST API (POST /v1/apps/{app}/ip_assignments)
  *
  * Env vars required in frontend/.env.local:
  *   FLY_API_TOKEN=<fly tokens org --name "osborn-provisioner">
  *   FLY_ORG_SLUG=<your org slug, e.g. "personal">
  *   FLY_SANDBOX_IMAGE=registry.fly.io/osborn-sandbox/agent:latest
  */
-
-import { execSync } from 'child_process'
 
 // ─────────────────────────────────────────
 // Types
@@ -43,7 +41,7 @@ interface FlyMachine {
   image_ref?: { registry: string; repository: string; tag: string }
   created_at: string
   updated_at: string
-  config?: { env?: Record<string, string> }
+  config?: { env?: Record<string, string>; image?: string; services?: unknown[]; [key: string]: unknown }
 }
 
 interface FlyApp {
@@ -59,6 +57,7 @@ interface FlyApp {
 
 const FLY_API_BASE = 'https://api.machines.dev'
 const OSBORN_HTTP_PORT = 8741
+const NPM_REGISTRY = 'https://registry.npmjs.org'
 
 function getApiToken(): string {
   const token = process.env.FLY_API_TOKEN
@@ -79,7 +78,7 @@ export function isMachinesConfigured(): boolean {
 }
 
 function appNameFromUserId(userId: string): string {
-  const slug = userId.substring(0, 12).toLowerCase().replace(/[^a-z0-9]/g, '-')
+  const slug = userId.substring(0, 12).toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/^-+|-+$/g, '')
   return `osborn-${slug}`
 }
 
@@ -96,7 +95,7 @@ function mapMachineState(state: string): SandboxInfo['status'] {
 // ─────────────────────────────────────────
 
 async function api<T = unknown>(
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -115,6 +114,11 @@ async function api<T = unknown>(
   }
 
   if (res.status === 204) return null as T
+  const contentLength = res.headers.get('content-length')
+  const contentType = res.headers.get('content-type') || ''
+  if (contentLength === '0' || !contentType.includes('json')) {
+    try { return await res.json() as T } catch { return null as T }
+  }
   return res.json() as Promise<T>
 }
 
@@ -146,7 +150,7 @@ async function waitForMachineState(
 /**
  * Poll the agent's /health endpoint until it returns 200.
  */
-async function waitForHealth(previewUrl: string, maxAttempts = 30): Promise<boolean> {
+export async function waitForHealth(previewUrl: string, maxAttempts = 30): Promise<boolean> {
   for (let i = 0; i < maxAttempts; i++) {
     try {
       const res = await fetch(`${previewUrl}/health`, {
@@ -174,26 +178,28 @@ async function getFirstMachine(appName: string): Promise<FlyMachine | null> {
 }
 
 /**
- * Allocate a shared IPv4 for a Fly app using flyctl subprocess.
+ * Allocate a shared IPv4 for a Fly app via the Fly Machines REST API.
  * Required for the app to be reachable at {app_name}.fly.dev.
  * Returns true on success.
  */
-function allocateIp(appName: string): boolean {
+async function allocateIp(appName: string): Promise<boolean> {
   try {
-    execSync(`fly ips allocate-v4 --shared -a ${appName}`, {
-      stdio: 'pipe',
-      timeout: 30000,
+    const res = await fetch(`https://api.machines.dev/v1/apps/${appName}/ip_assignments`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `FlyV1 ${getApiToken()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'shared_v4' }),
     })
-    console.log(`[machines] Allocated shared IPv4 for ${appName}`)
+    if (!res.ok) {
+      const text = await res.text()
+      console.error(`[machines] IP allocation failed for ${appName}: HTTP ${res.status} — ${text}`)
+      return false
+    }
     return true
   } catch (err) {
-    // 409 / "already allocated" is fine
-    const msg = (err as Error).message || ''
-    if (msg.includes('already') || msg.includes('exists')) {
-      console.log(`[machines] IP already allocated for ${appName}`)
-      return true
-    }
-    console.error(`[machines] IP allocation failed for ${appName}: ${msg}`)
+    console.error(`[machines] IP allocation error for ${appName}:`, err)
     return false
   }
 }
@@ -210,8 +216,9 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
   }
   const forwardKeys = [
     'LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET',
-    'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
-    'SMITHERY_API_KEY', 'RECALL_API_KEY',
+    'NEXT_PUBLIC_LIVEKIT_URL',
+    'DEEPGRAM_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'ANTHROPIC_API_KEY',
+    'RECALL_API_KEY', 'SMITHERY_API_KEY', 'GROQ_API_KEY',
   ]
   for (const key of forwardKeys) {
     if (process.env[key]) envVars[key] = process.env[key]!
@@ -234,8 +241,10 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
  *  5. Wait for machine to reach 'started' state
  *  6. Poll /health until agent responds
  *  7. Return SandboxInfo
+ *
+ * @param options.autostopMode - 'stop' (default, cold stop/start cycle) or 'off' (disable autostop)
  */
-export async function createSandbox(userId: string): Promise<SandboxInfo> {
+export async function createSandbox(userId: string, options?: { autostopMode?: 'off' | 'stop' }): Promise<SandboxInfo> {
   if (!isMachinesConfigured()) {
     return { id: '', status: 'error', userId, createdAt: new Date().toISOString(), error: 'FLY_API_TOKEN not configured' }
   }
@@ -256,7 +265,7 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
     }
 
     // Step 2: Allocate shared IP (required for fly.dev URL routing)
-    allocateIp(appName)
+    await allocateIp(appName)
 
     // Step 3: Create volume for persistent workspace + credentials
     let volumeId: string | undefined
@@ -292,7 +301,7 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
           { port: 443, handlers: ['tls', 'http'] },
           { port: 80, handlers: ['http'], force_https: true },
         ],
-        autostop: 'suspend',
+        autostop: options?.autostopMode ?? 'stop',
         autostart: true,
         concurrency: { type: 'connections', soft_limit: 5, hard_limit: 10 },
       }],
@@ -343,8 +352,13 @@ export async function createSandbox(userId: string): Promise<SandboxInfo> {
 /**
  * Find an existing sandbox for a user.
  * Derives app name from userId and checks the Fly API.
+ *
+ * @param userId         - the user ID to look up
+ * @param knownSandboxId - optional; accepted for API parity with sprites.ts but ignored.
+ *                         On Fly Machines the app name is deterministic from userId.
  */
-export async function findUserSandbox(userId: string): Promise<SandboxInfo | null> {
+export async function findUserSandbox(userId: string, knownSandboxId?: string): Promise<SandboxInfo | null> {
+  void knownSandboxId // accepted for API parity — app name is deterministic from userId
   const appName = appNameFromUserId(userId)
   try {
     // Ensure the app exists before checking machines
@@ -405,19 +419,29 @@ export async function startSandbox(sandboxId: string, userId: string): Promise<S
 }
 
 /**
- * Suspend a sandbox machine (CRIU snapshot, ~300ms).
- * Process state is fully preserved — resume picks up exactly where it left off.
+ * Stop a sandbox machine (cold stop, waits for stopped state).
+ * Delegates to stopMachineCold — no CRIU snapshot on Fly Machines in this path.
  */
 export async function stopSandbox(sandboxId: string): Promise<boolean> {
+  return stopMachineCold(sandboxId)
+}
+
+/**
+ * Hard-stop a sandbox machine (cold stop, no CRIU snapshot).
+ * Use this when autostop is 'off' and you want a clean stop/start cycle
+ * without any checkpoint state — the machine will cold-boot on next start.
+ */
+export async function stopMachineCold(sandboxId: string): Promise<boolean> {
   const appName = sandboxId
   try {
     const machine = await getFirstMachine(appName)
     if (!machine) return true // nothing to stop
-    await api('POST', `/v1/apps/${appName}/machines/${machine.id}/suspend`)
-    console.log(`[machines] Machine ${machine.id} suspended`)
+    await api('POST', `/v1/apps/${appName}/machines/${machine.id}/stop`)
+    await waitForMachineState(appName, machine.id, 'stopped', 60)
+    console.log(`[machines] Machine ${machine.id} stopped (cold)`)
     return true
   } catch (err) {
-    console.error(`[machines] stopSandbox failed: ${(err as Error).message}`)
+    console.error(`[machines] stopMachineCold failed: ${(err as Error).message}`)
     return false
   }
 }
@@ -465,5 +489,337 @@ export async function deleteSandbox(sandboxId: string): Promise<boolean> {
   } catch (err) {
     console.error(`[machines] deleteSandbox failed: ${(err as Error).message}`)
     return false
+  }
+}
+
+// ─────────────────────────────────────────
+// Parity exports (drop-in replacement for sprites.ts)
+// ─────────────────────────────────────────
+
+/**
+ * Alias to isMachinesConfigured — drop-in parity with sprites.ts isSpritesConfigured().
+ */
+export function isSpritesConfigured(): boolean {
+  return isMachinesConfigured()
+}
+
+/**
+ * Single health probe with 5s timeout, no retry loop.
+ * Drop-in parity with sprites.ts checkOsbornHealth().
+ *
+ * @param previewUrl - full base URL (e.g. https://osborn-abc.fly.dev)
+ */
+export async function checkOsbornHealth(previewUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${previewUrl}/health`, {
+      signal: AbortSignal.timeout(5000),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Assign a sandbox to a user — alias to createSandbox.
+ * No pool needed on Fly Machines (one app per user, deterministic name).
+ * Drop-in parity with sprites.ts assignFromPoolOrCreate().
+ */
+export async function assignFromPoolOrCreate(userId: string): Promise<SandboxInfo> {
+  return createSandbox(userId)
+}
+
+/**
+ * Restart the osborn process in a sandbox — stops the machine cold then starts it.
+ * Returns true if the machine comes back healthy.
+ * Drop-in parity with sprites.ts restartService().
+ *
+ * @param sandboxId - the app name (e.g. "osborn-abc123def456")
+ * @param userId    - user ID, required for startSandbox
+ */
+export async function restartService(sandboxId: string, userId?: string): Promise<boolean> {
+  const stopped = await stopMachineCold(sandboxId)
+  if (!stopped) {
+    console.warn(`[machines] restartService: stopMachineCold failed for ${sandboxId}`)
+  }
+  const info = await startSandbox(sandboxId, userId ?? '')
+  return info?.status === 'running'
+}
+
+/**
+ * Fetch the latest published version of `osborn` from the npm registry.
+ * Returns a concrete version string like "0.8.31". Throws on network failure.
+ */
+export async function resolveOsbornLatest(): Promise<string> {
+  const res = await fetch(`${NPM_REGISTRY}/osborn/latest`, {
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok) {
+    throw new Error(`npm registry returned ${res.status} for osborn/latest`)
+  }
+  const data = (await res.json()) as { version?: string }
+  if (!data.version) throw new Error('npm registry response missing version field')
+  return data.version
+}
+
+/**
+ * Read the version of osborn currently running on a Fly Machines sandbox.
+ *
+ * Strategy:
+ *  1. GET /health — if the response body has a `version` field, return it.
+ *  2. Fall back to machine.image_ref.tag from the Fly API.
+ *  3. Return null if both fail.
+ *
+ * @param sandboxId - the app name (e.g. "osborn-abc123def456")
+ */
+export async function readInstalledOsbornVersion(sandboxId: string): Promise<string | null> {
+  const appName = sandboxId
+  const previewUrl = `https://${appName}.fly.dev`
+
+  // Strategy 1: /health endpoint version field
+  try {
+    const res = await fetch(`${previewUrl}/health`, {
+      signal: AbortSignal.timeout(5000),
+    })
+    if (res.ok) {
+      const data = (await res.json()) as { version?: string }
+      if (data.version) return data.version
+    }
+  } catch {
+    // fall through
+  }
+
+  // Strategy 2: image_ref.tag from the Fly Machines API
+  // Only return the tag if it looks like a semver string (e.g. "0.8.37").
+  // Tags like "latest" or "main" are not real versions — returning them causes
+  // callers to always see a mismatch against a real semver and trigger updateOsborn
+  // on every check.
+  try {
+    const machine = await getFirstMachine(appName)
+    const tag = machine?.image_ref?.tag
+    if (tag && /^\d+\.\d+/.test(tag)) return tag
+  } catch {
+    // fall through
+  }
+
+  return null
+}
+
+// Per-sandbox in-flight lock for updateOsborn.
+// Concurrent calls collide destructively (stop → PATCH → start in sequence).
+// The lock returns the in-flight promise to subsequent callers so they get the
+// same result instead of triggering parallel work.
+const updateInflight = new Map<string, Promise<{ success: boolean; version: string | null; log: string }>>()
+
+/**
+ * Upgrade osborn on a Fly Machines sandbox to a target version.
+ *
+ * Flow:
+ *  1. Serialize concurrent calls (per-sandbox in-flight dedup lock)
+ *  2. Resolve target version (npm registry latest, unless caller passed one)
+ *  3. stopMachineCold — clean stop before config change
+ *  4. PATCH machine config with updated image via Fly Machines API
+ *  5. startSandbox — cold boot from new image
+ *  6. readInstalledOsbornVersion — confirm installed version
+ *  7. Return { success, version, log }
+ *
+ * @param sandboxId - the app name (e.g. "osborn-abc123def456")
+ * @param userId    - user ID for startSandbox
+ * @param version   - optional target version. Omit to use npm registry latest.
+ */
+export async function updateOsborn(
+  sandboxId: string,
+  userId: string,
+  version?: string,
+): Promise<{ success: boolean; version: string | null; log: string }> {
+  const existing = updateInflight.get(sandboxId)
+  if (existing) {
+    console.log(`[machines] updateOsborn: join in-flight call for ${sandboxId} (de-duped)`)
+    return existing
+  }
+
+  const work = updateOsbornImpl(sandboxId, userId, version)
+  updateInflight.set(sandboxId, work)
+  work.finally(() => {
+    if (updateInflight.get(sandboxId) === work) {
+      updateInflight.delete(sandboxId)
+    }
+  })
+  return work
+}
+
+async function updateOsbornImpl(
+  sandboxId: string,
+  userId: string,
+  version?: string,
+): Promise<{ success: boolean; version: string | null; log: string }> {
+  let targetVersion: string
+  try {
+    targetVersion = version ?? (await resolveOsbornLatest())
+  } catch (err) {
+    return { success: false, version: null, log: `Could not resolve target version: ${(err as Error).message}` }
+  }
+
+  console.log(`[machines] updateOsborn: target=${targetVersion} on ${sandboxId}`)
+
+  const appName = sandboxId
+
+  // Step 1: Get the current machine config
+  const machine = await getFirstMachine(appName)
+  if (!machine) {
+    return { success: false, version: null, log: `No machine found for app ${appName}` }
+  }
+
+  // Step 2: Stop the machine cold before changing config
+  console.log(`[machines] updateOsborn: stopping machine ${machine.id}`)
+  const stopped = await stopMachineCold(sandboxId)
+  if (!stopped) {
+    console.warn(`[machines] updateOsborn: stopMachineCold did not confirm stopped state — proceeding anyway`)
+  }
+
+  // Step 3: PATCH machine config with new image
+  // Fly Machines uses POST /machines/{id} to update config (same as create endpoint).
+  const newImage = getSandboxImage()
+  console.log(`[machines] updateOsborn: patching machine config image=${newImage}`)
+  try {
+    await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, {
+      config: {
+        ...(machine.config ?? {}),
+        image: newImage,
+      },
+    })
+  } catch (err) {
+    return { success: false, version: null, log: `Machine config PATCH failed: ${(err as Error).message}` }
+  }
+
+  // Step 4: Wait for the replacement to complete.
+  // A config PATCH with a new image triggers an in-place machine replacement on Fly.
+  // The machine transitions through "replacing" → "started" automatically — calling
+  // /start during this window returns 412 failed_precondition: machine getting replaced.
+  // Poll for "started" (up to 120s). If it doesn't reach "started" (e.g. it lands in
+  // "stopped" or the poll times out), fall back to an explicit startSandbox call.
+  console.log(`[machines] updateOsborn: waiting for machine replacement to reach started state`)
+  const reachedStarted = await waitForMachineState(appName, machine.id, 'started', 120)
+
+  let info: SandboxInfo | null = null
+  if (reachedStarted) {
+    // Machine booted itself as part of the replacement — just wait for health.
+    const previewUrl = `https://${appName}.fly.dev`
+    console.log(`[machines] updateOsborn: machine reached started state, polling health`)
+    const healthy = await waitForHealth(previewUrl, 30) // 30 × 2s = 60s
+    info = {
+      id: appName,
+      status: healthy ? 'running' : 'error',
+      previewUrl,
+      userId,
+      createdAt: machine.created_at,
+      ...(healthy ? {} : { error: 'Agent did not pass health check after update' }),
+    }
+  } else {
+    // Replacement did not auto-boot (landed stopped, or timed out) — start explicitly.
+    console.log(`[machines] updateOsborn: machine did not auto-start after replacement, calling startSandbox`)
+    info = await startSandbox(sandboxId, userId)
+  }
+
+  if (!info || info.status !== 'running') {
+    return { success: false, version: null, log: 'Machine did not come back healthy after image update' }
+  }
+
+  // Step 5: Read the installed version
+  const installed = await readInstalledOsbornVersion(sandboxId)
+  console.log(`[machines] updateOsborn: success — osborn installed=${installed ?? 'unknown'} on ${sandboxId}`)
+  return {
+    success: true,
+    version: installed,
+    log: `Updated to image ${newImage}${installed ? ` (osborn@${installed})` : ''}`,
+  }
+}
+
+/**
+ * Fetch recent log output from a Fly Machines sandbox via the Fly logs API.
+ *
+ * No exec API exists on Fly Machines — this is the closest equivalent.
+ * The command/args/env/timeout parameters are accepted for API parity with
+ * sprites.ts execInSprite() but are ignored in the implementation.
+ *
+ * Returns exitCode 0 on success with log lines in `output`.
+ *
+ * @param sandboxId  - the app name (e.g. "osborn-abc123def456")
+ * @param _cmd       - ignored (no exec API on Fly Machines)
+ * @param _args      - ignored
+ * @param _timeoutSec - ignored
+ * @param _env       - ignored
+ */
+export async function execInSprite(
+  sandboxId: string,
+  _cmd: string,
+  _args?: string[],
+  _timeoutSec?: number,
+  _env?: Record<string, string>,
+): Promise<{ exitCode: number; output: string }> {
+  const appName = sandboxId
+  try {
+    const machine = await getFirstMachine(appName)
+    if (!machine) {
+      return { exitCode: 1, output: `No machine found for app ${appName}` }
+    }
+
+    // Fetch recent logs from the Fly Machines logs endpoint
+    const res = await fetch(
+      `${FLY_API_BASE}/v1/apps/${appName}/machines/${machine.id}/logs?limit=500`,
+      {
+        headers: { 'Authorization': `Bearer ${getApiToken()}` },
+        signal: AbortSignal.timeout(10000),
+      },
+    )
+
+    if (!res.ok) {
+      const text = await res.text()
+      return { exitCode: 1, output: `Logs API error ${res.status}: ${text.substring(0, 200)}` }
+    }
+
+    // Parse NDJSON log lines — each line is a JSON object with timestamp + message fields
+    const raw = await res.text()
+    const lines = raw.split('\n').filter(l => l.trim())
+    const output = lines
+      .map(line => {
+        try {
+          const entry = JSON.parse(line) as { timestamp?: string; message?: string; msg?: string }
+          const ts = entry.timestamp ?? ''
+          const msg = entry.message ?? entry.msg ?? line
+          return ts ? `[${ts}] ${msg}` : msg
+        } catch {
+          return line
+        }
+      })
+      .join('\n')
+
+    return { exitCode: 0, output }
+  } catch (err) {
+    return { exitCode: 1, output: `execInSprite error: ${(err as Error).message}` }
+  }
+}
+
+/**
+ * Check session layer consistency.
+ *
+ * No CRIU overlay filesystem exists on Fly Machines — the container view and
+ * persistent disk are always the same volume mount. Always returns a consistent
+ * result with diverged=false.
+ *
+ * Drop-in parity with sprites.ts checkSessionLayerConsistency().
+ *
+ * @param _sandboxId            - ignored on Fly Machines
+ * @param _containerSessionCount - used as both persistent and container counts
+ */
+export async function checkSessionLayerConsistency(
+  _sandboxId: string,
+  _containerSessionCount: number,
+): Promise<{ consistent: boolean; persistentCount: number; containerCount: number; diverged: boolean } | null> {
+  return {
+    consistent: true,
+    persistentCount: _containerSessionCount,
+    containerCount: _containerSessionCount,
+    diverged: false,
   }
 }

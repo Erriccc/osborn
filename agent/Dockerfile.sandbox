@@ -11,6 +11,8 @@ RUN apt-get update -qq && \
     ca-certificates \
     curl \
     git \
+    make \
+    g++ \
     python-is-python3 && \
     rm -rf /var/lib/apt/lists/*
 
