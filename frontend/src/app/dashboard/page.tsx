@@ -366,6 +366,7 @@ export default function Dashboard() {
   const [syncToken, setSyncToken] = useState<string | null>(null)
   const [syncCopied, setSyncCopied] = useState(false)
   const [skillCopied, setSkillCopied] = useState(false)
+  const [globalSyncCopied, setGlobalSyncCopied] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const deleteArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -612,6 +613,14 @@ export default function Dashboard() {
     }
   }
 
+  const handleCopyGlobalSyncInfo = async () => {
+    const skillUrl = `${window.location.origin}/api/sync-skill`
+    const info = `Osborn sync info:\nSkill: ${skillUrl}\nSprite: ${agentUrl}\nToken: ${syncToken || '(no token)'}`
+    await navigator.clipboard.writeText(info)
+    setGlobalSyncCopied(true)
+    setTimeout(() => setGlobalSyncCopied(false), 2000)
+  }
+
   const handleCopySyncInfo = async (project: ProjectGroup) => {
     const skillUrl = `${window.location.origin}/api/sync-skill`
     const info = `Osborn sync info for this project:\nSkill: ${skillUrl}\nSprite: ${agentUrl}\nToken: ${syncToken ?? ''}\nTarget: ${project.cwd}`
@@ -682,6 +691,26 @@ export default function Dashboard() {
                   }
                 </span>
               </div>
+
+              {/* Copy sync info */}
+              <button
+                onClick={handleCopyGlobalSyncInfo}
+                title="Copy sync info"
+                className={`p-2 rounded-lg transition-all ${
+                  globalSyncCopied
+                    ? 'text-emerald-400'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface)]'
+                }`}>
+                {globalSyncCopied ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/>
+                  </svg>
+                )}
+              </button>
 
               {/* Settings gear */}
               <button onClick={() => setShowSettings(s => !s)}
