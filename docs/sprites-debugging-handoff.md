@@ -403,7 +403,175 @@ Versions deployed at handoff time:
 
 ---
 
-## 10. First moves when you pick this up
+## 10. Fly.io directly (the parallel path next to Sprites)
+
+Sprites runs ON Fly.io's infrastructure under the hood, but our codebase ALSO has a parallel path that talks to Fly Machines API directly (skipping Sprites' control plane). This was scoped during the Daytona → cloud-sandbox migration (early April 2026) and **shipped as `frontend/src/lib/machines.ts`** alongside `sprites.ts` and `daytona.ts`. It is currently inactive in production but functional and worth understanding when:
+
+- Sprites' control plane has an outage or behaviour we can't work around
+- You want lower-level control (per-user Fly apps, direct CRIU suspend/resume)
+- You want to bypass Sprites' API-gateway "stuck routing" entirely (different infra path)
+- A throwaway/spike requires direct Machines API testing
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `frontend/src/lib/machines.ts` (469 lines) | Server-only client for Fly Machines API. Same `SandboxInfo` interface as `sprites.ts` — drop-in replacement at the API surface |
+| `agent/Dockerfile` | Original "deploy via `fly deploy`" image. Builds the agent into a long-running per-app machine. **This was the slow-build path** — full Docker build per deploy, with Playwright Chromium pulled in (~hundreds of MB extra). Discovered as "wrong approach for per-user sandboxes" |
+| `agent/Dockerfile.sandbox` | Lean image for per-user Machines. Installs `osborn` + `claude-code` from npm (no source build), copies the entrypoint script inline (CRIU credential persistence + Claude onboarding-prompt suppression). **Push to `registry.fly.io/osborn-sandbox/agent:latest`** and reference it from `FLY_SANDBOX_IMAGE` env |
+| `agent/fly.toml` | Fly app config for the long-running deployment. App name `osborn-agent`, region `ewr`, mounts persistent volume `workspace` at `/workspace`, shared 1 CPU + 1GB RAM. Auto-stop OFF, auto-start ON, min 1 machine. **For the per-user Machines path you do NOT use this fly.toml — you create apps via API instead** |
+| `agent/deploy.sh` | Long-running-deployment helper. Runs `fly launch --no-deploy`, creates 5GB workspace volume, sets secrets, then `fly deploy`. **Documents required prereqs**: `flyctl install`, `fly auth login`, env vars for LIVEKIT/DEEPGRAM/etc |
+| `agent/.dockerignore` | Excludes `node_modules`, `dist`, `.git`, `.osborn`, `.env*`, plus Claude credential dirs (`.claude/settings`, `.claude/projects`, `.claude/credentials`). **Keeps `.claude/skills`** because skills ship as defaults |
+
+### Two architectures, same Docker
+
+The repo has two Fly.io approaches living side by side:
+
+**Path A — `fly deploy` (long-running app):** uses `agent/Dockerfile` + `agent/fly.toml` + `agent/deploy.sh`. Runs ONE machine per user (or per-org), full Docker build per deploy, persistent volume. **This is what was originally built and deemed too slow** for per-user sandboxes — the cold-start cost of a Docker build dominated.
+
+**Path B — Fly Machines API (per-user image):** uses `agent/Dockerfile.sandbox` + `frontend/src/lib/machines.ts`. Pre-build the image ONCE, push to Fly's container registry. To provision a user, create a fresh app + machine pulling the existing image — no build step on the per-user path. Fly Machines documents ~300ms cold start for fresh machines, near-instant resume from CRIU suspend.
+
+### Key endpoints / commands (Path B)
+
+```
+Base:   https://api.machines.dev/v1
+Auth:   Authorization: Bearer ${FLY_API_TOKEN}
+```
+
+| Path | Method | Purpose |
+|---|---|---|
+| `/apps` | POST | Create a Fly app. Body: `{ app_name, org_slug }` |
+| `/apps/<app>` | GET | App metadata |
+| `/apps/<app>` | DELETE | **Destructive**: removes the app + all its machines + volumes |
+| `/apps/<app>/machines` | GET | List machines for this app |
+| `/apps/<app>/machines` | POST | Create a machine. Body includes `{ image, env, services, mounts, region }` |
+| `/apps/<app>/machines/<id>` | GET | Machine state/config |
+| `/apps/<app>/machines/<id>/start` | POST | Start a stopped/suspended machine |
+| `/apps/<app>/machines/<id>/stop` | POST | Stop (cleanly) |
+| `/apps/<app>/machines/<id>/suspend` | POST | CRIU snapshot → suspended state. Resume via `/start` is ~300ms |
+| `/apps/<app>/machines/<id>` | DELETE | Destroy machine |
+
+Some operations don't have pure REST endpoints and require the `flyctl` CLI subprocess — `machines.ts` shells out via `execSync` for things like IP allocation. **`flyctl` must be on PATH** of whatever process is running this code.
+
+### Required env vars (`frontend/.env.local`)
+
+```
+FLY_API_TOKEN=<from `fly tokens org --name "osborn-provisioner"`>
+FLY_ORG_SLUG=<e.g. "personal" or your org slug>
+FLY_SANDBOX_IMAGE=registry.fly.io/osborn-sandbox/agent:latest
+```
+
+All three are configured in our `.env.local`. The `isMachinesConfigured()` check (line 77 of `machines.ts`) gates the codepath; without `FLY_API_TOKEN` the path is a no-op.
+
+### Building & pushing the sandbox image
+
+The recipe used in early April:
+
+```bash
+# From the agent directory:
+cd agent
+
+# Authenticate Docker with Fly's registry
+fly auth docker
+
+# Build the lean per-user image
+docker build -f Dockerfile.sandbox -t registry.fly.io/osborn-sandbox/agent:latest .
+
+# Push to Fly's registry — referenced by FLY_SANDBOX_IMAGE
+docker push registry.fly.io/osborn-sandbox/agent:latest
+```
+
+**Bumping `osborn` version**: rebuild the image. The `Dockerfile.sandbox` does `npm install -g osborn@latest @anthropic-ai/claude-code`, so a fresh build pulls latest from npm. **Tag intentionally** if you want different versions side-by-side (e.g. `:0.8.35`). The `:latest` tag is what `FLY_SANDBOX_IMAGE` defaults to.
+
+### Local Docker testing
+
+The `agent/Dockerfile` (Path A, the long-running deploy) supports local docker run for sanity checking:
+
+```bash
+cd agent
+docker build -t osborn-agent .
+docker run -p 8741:8741 --env-file .env osborn-agent
+# Hits: http://localhost:8741/health, /sessions, /room-code
+```
+
+For `Dockerfile.sandbox` (Path B), local run requires the volume mount (the entrypoint expects `/workspace` to exist and persists Claude credentials there):
+
+```bash
+cd agent
+docker build -f Dockerfile.sandbox -t osborn-sandbox .
+mkdir -p /tmp/osborn-test-workspace
+docker run -p 8741:8741 \
+  -v /tmp/osborn-test-workspace:/workspace \
+  --env LIVEKIT_URL=... \
+  --env LIVEKIT_API_KEY=... \
+  --env LIVEKIT_API_SECRET=... \
+  osborn-sandbox
+```
+
+The entrypoint script (inlined in `Dockerfile.sandbox` via heredoc):
+1. **Symlinks `/root/.claude` → `/workspace/.claude`** so Claude credentials persist on the volume across container recreates
+2. **Pre-fills `~/.claude.json`** with onboarding-completed flags (suppresses Claude Code's interactive `hasCompletedOnboarding` prompt that would otherwise hang in headless containers)
+3. **Restores `CLAUDE_CODE_OAUTH_TOKEN`** from `/workspace/.claude/.oauth-token` if present (per-user OAuth survives machine recreation)
+4. `exec osborn` to launch the agent
+
+### Why we ended up on Sprites instead
+
+The Path B (Machines API + Dockerfile.sandbox) is technically sound, but Sprites layers ergonomic features on top: filesystem API, checkpoint browser, service registration with retry, sprite-side platform logs. Building and maintaining all that ourselves on raw Machines API is real work. The early-April investigation concluded "Fly Machines with a lean pre-built image might be the faster answer" — and Sprites IS that approach, just productized. Sprites = Fly Machines + Sprites-team's app-platform framework on top.
+
+If Sprites is in a bad state (gateway routing, control-plane outage, etc.) and you need a working escape hatch:
+1. Make sure `FLY_API_TOKEN` / `FLY_ORG_SLUG` / `FLY_SANDBOX_IMAGE` are set
+2. The `Dockerfile.sandbox` image is up to date in `registry.fly.io/osborn-sandbox/agent:latest`
+3. Switch the route handler (`frontend/src/app/api/sandbox/route.ts`) imports from `@/lib/sprites` to `@/lib/machines` — same exported function names, drop-in replacement
+4. Per-user app names will follow the pattern `osborn-{userId-slug}` (deterministic in `machines.ts`)
+
+### Documented historical learnings (from session JSONLs Apr 7–9)
+
+- **Outbound networking on Fly Machines is unrestricted** — verified for LiveKit, Deepgram, Anthropic. Standard machines have no egress firewall by default
+- **Per-user volumes** (`fly volumes create workspace --size 5`) are the right abstraction for Claude OAuth credential persistence
+- **`fly deploy` is wrong for per-user provisioning** — it triggers a full Docker build pipeline. Use `fly machines create` against a pre-built image instead
+- **Playwright Chromium pulled in by mistake** in the original `Dockerfile` was the main image-bloat source. `Dockerfile.sandbox` deliberately omits it because the cloud sandbox doesn't need browser automation (browser-use skill is only for local dev)
+- **Region selection**: `ewr` (Newark) was tested as primary; `iad` (Ashburn) was used by the deploy script default. LiveKit Cloud's media servers are mostly US-East, so any East-coast region works fine
+
+### Diagnostic commands (Fly path)
+
+```bash
+# Status of a deployed app (Path A or active per-user machines on Path B):
+fly status --app <app-name>
+fly logs --app <app-name>             # follow logs
+fly logs --app <app-name> -i <since>  # since a specific time
+fly machines list --app <app-name>
+fly machines status <id> --app <app-name>
+
+# Get into a running machine:
+fly ssh console --app <app-name>
+fly ssh console --machine <id> --app <app-name>
+
+# Inspect / set secrets:
+fly secrets list --app <app-name>
+fly secrets set KEY=value --app <app-name>
+fly secrets unset KEY --app <app-name>
+
+# Volume + storage:
+fly volumes list --app <app-name>
+fly volumes show <vol-id> --app <app-name>
+
+# Manual emergency: suspend / resume a single machine via API
+curl -X POST -H "Authorization: Bearer $FLY_API_TOKEN" \
+  https://api.machines.dev/v1/apps/<app>/machines/<id>/suspend
+curl -X POST -H "Authorization: Bearer $FLY_API_TOKEN" \
+  https://api.machines.dev/v1/apps/<app>/machines/<id>/start
+```
+
+For deeper Fly history, the relevant Claude session JSONLs are at `~/.claude/projects/-Users-newupgrade-Desktop-Developer-osborn/`:
+- `0a393f1c-9e63-4dcd-b072-f86472d00ae6.jsonl` (April 9, ~6.2 MB) — extensive Fly Machines investigation, machines.ts authoring
+- `ca9279ed-9287-4a43-b96b-ed6a26cb4d86.jsonl` (April 8, ~6.7 MB) — Dockerfile work, Fly app setup
+- `fab3439e-a84f-403e-b662-1a632b3a6f1f.jsonl` (April 7, 311 MB) and `cc64bd09-bf57-4dac-a86d-8d0cc630fb7c.jsonl` (April 7, 272 MB) — original Daytona → cloud migration scoping, Fly attempted alongside
+
+These are huge; `getRecentToolResults()` from `agent/src/session-access.ts` or simple `readline` JSON.parse passes are how we extracted the relevant subsets tonight.
+
+---
+
+## 11. First moves when you pick this up
 
 1. Read this file end to end. Don't skim §4.
 2. Run `proof-of-life.mjs` (after editing the `SPRITE` constant) — confirms your env is set up and the active sprite is reachable.
