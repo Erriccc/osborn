@@ -243,6 +243,10 @@ export default function Dashboard() {
         }
       })
       .catch(() => setSandboxAvailable(false))
+    fetch('/api/instance')
+      .then(r => r.json())
+      .then(d => { if (d.instance?.sync_token) setSyncToken(d.instance.sync_token) })
+      .catch(() => {})
   }, [user, loading])
 
   const isCloud = connectionMode === 'cloud'
@@ -325,10 +329,19 @@ export default function Dashboard() {
     }
   }
 
+  const handleCopySyncToken = async () => {
+    if (!syncToken) return
+    await navigator.clipboard.writeText(syncToken)
+    setSyncCopied(true)
+    setTimeout(() => setSyncCopied(false), 2000)
+  }
+
   // Two-click delete: first click arms the button (text+color change), second
   // click within 4s actually deletes. Sprites does NOT soft-delete — once gone,
   // overlay + persistent disk + checkpoints are unrecoverable. We learned this
   // the hard way; the modal-equivalent friction is worth it.
+  const [syncToken, setSyncToken] = useState<string | null>(null)
+  const [syncCopied, setSyncCopied] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const deleteArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -778,56 +791,71 @@ export default function Dashboard() {
                 )}
 
                 {isCloud && sandboxId && (
-                  <div className="flex items-center justify-between bg-[var(--surface)] rounded-xl px-3 py-2.5 border border-[var(--border-subtle)]">
-                    <div className="flex items-center gap-2.5">
-                      <div className={`w-2 h-2 rounded-full ${
-                        sandboxStatus === 'running' ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]'
-                        : sandboxStatus === 'warm' ? 'bg-amber-400'
-                        : sandboxStatus === 'cold' ? 'bg-sky-400'
-                        : sandboxStatus === 'stopped' ? 'bg-orange-400'
-                        : sandboxStatus === 'creating' ? 'bg-amber-400 animate-pulse'
-                        : 'bg-gray-500'
-                      }`} />
-                      <span className="text-[12px] text-[var(--text-secondary)] font-mono">{sandboxId.substring(0, 8)}</span>
-                      <span className="text-[11px] text-[var(--text-muted)] capitalize">{sandboxStatus}</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {(sandboxStatus === 'stopped' || sandboxStatus === 'warm' || sandboxStatus === 'cold') && (
-                        <button onClick={handleStartSandbox} disabled={provisioning}
-                          className="text-[11px] text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded-lg hover:bg-emerald-400/10 transition-all disabled:opacity-50">
-                          Resume
-                        </button>
-                      )}
-                      {sandboxStatus === 'running' && (
-                        <button onClick={handleStopSandbox}
-                          className="text-[11px] text-[var(--text-muted)] hover:text-orange-400 px-2 py-1 rounded-lg hover:bg-orange-400/10 transition-all">
-                          Stop
-                        </button>
-                      )}
-                      <button
-                        onClick={handleDeleteSandbox}
-                        className={`text-[11px] px-2 py-1 rounded-lg transition-all ${
-                          deleteArmed
-                            ? 'bg-red-500 text-white font-medium hover:bg-red-600 ring-2 ring-red-400/40'
-                            : 'text-[var(--text-muted)] hover:text-red-400 hover:bg-red-400/10'
-                        }`}
-                        title={deleteArmed
-                          ? 'Click again to PERMANENTLY delete (no recovery — Sprites does not soft-delete)'
-                          : 'Delete sandbox and switch to local'}>
-                        {deleteArmed ? (
-                          <span className="inline-flex items-center gap-1">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                            </svg>
-                            Confirm delete?
-                          </span>
-                        ) : (
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                          </svg>
+                  <div className="flex flex-col bg-[var(--surface)] rounded-xl px-3 py-2.5 border border-[var(--border-subtle)] gap-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className={`w-2 h-2 rounded-full ${
+                          sandboxStatus === 'running' ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]'
+                          : sandboxStatus === 'warm' ? 'bg-amber-400'
+                          : sandboxStatus === 'cold' ? 'bg-sky-400'
+                          : sandboxStatus === 'stopped' ? 'bg-orange-400'
+                          : sandboxStatus === 'creating' ? 'bg-amber-400 animate-pulse'
+                          : 'bg-gray-500'
+                        }`} />
+                        <span className="text-[12px] text-[var(--text-secondary)] font-mono">{sandboxId.substring(0, 8)}</span>
+                        <span className="text-[11px] text-[var(--text-muted)] capitalize">{sandboxStatus}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {(sandboxStatus === 'stopped' || sandboxStatus === 'warm' || sandboxStatus === 'cold') && (
+                          <button onClick={handleStartSandbox} disabled={provisioning}
+                            className="text-[11px] text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded-lg hover:bg-emerald-400/10 transition-all disabled:opacity-50">
+                            Resume
+                          </button>
                         )}
-                      </button>
+                        {sandboxStatus === 'running' && (
+                          <button onClick={handleStopSandbox}
+                            className="text-[11px] text-[var(--text-muted)] hover:text-orange-400 px-2 py-1 rounded-lg hover:bg-orange-400/10 transition-all">
+                            Stop
+                          </button>
+                        )}
+                        <button
+                          onClick={handleDeleteSandbox}
+                          className={`text-[11px] px-2 py-1 rounded-lg transition-all ${
+                            deleteArmed
+                              ? 'bg-red-500 text-white font-medium hover:bg-red-600 ring-2 ring-red-400/40'
+                              : 'text-[var(--text-muted)] hover:text-red-400 hover:bg-red-400/10'
+                          }`}
+                          title={deleteArmed
+                            ? 'Click again to PERMANENTLY delete (no recovery — Sprites does not soft-delete)'
+                            : 'Delete sandbox and switch to local'}>
+                          {deleteArmed ? (
+                            <span className="inline-flex items-center gap-1">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                              </svg>
+                              Confirm delete?
+                            </span>
+                          ) : (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            </svg>
+                          )}
+                        </button>
+                      </div>
                     </div>
+                    {syncToken && (
+                      <div className="flex items-center gap-2 border-t border-[var(--border-subtle)] pt-2">
+                        <span className="text-[11px] text-[var(--text-muted)] font-mono flex-1 truncate">
+                          Sync token: {syncToken.substring(0, 8)}...
+                        </span>
+                        <button
+                          onClick={handleCopySyncToken}
+                          className="text-[11px] px-2 py-1 rounded-lg bg-[var(--surface-raised)] hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors shrink-0"
+                        >
+                          {syncCopied ? '✓ Copied' : 'Copy token'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
