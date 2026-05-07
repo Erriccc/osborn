@@ -327,40 +327,23 @@ function startApiServer(workingDir: string, port: number): void {
           return
         }
       }
-      const projectsDir = join(homedir(), '.claude', 'projects')
+      const claudeDir = join(homedir(), '.claude')
+      const projectsDir = join(claudeDir, 'projects')
       const workDir = url.searchParams.get('workDir')
-      if (workDir) {
-        const slug = workDir.replace(/\//g, '-')
-        const slugDir = join(projectsDir, slug)
-        if (!existsSync(slugDir)) {
-          res.writeHead(404, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'Project not found', slug }))
-          return
-        }
-        res.writeHead(200, {
-          'Content-Type': 'application/gzip',
-          'Content-Disposition': `attachment; filename="claude-sessions-${slug}.tar.gz"`,
-          'Access-Control-Allow-Origin': '*',
-        })
-        // Use '--' to prevent tar from interpreting the leading-hyphen slug as flags
-        const tar = spawn('tar', ['-czf', '-', '-C', projectsDir, '--', slug])
-        tar.stdout.pipe(res)
-        tar.stderr.on('data', (d: Buffer) => console.error('[export]', d.toString()))
-        tar.on('close', (code: number | null) => { if (code !== 0) res.destroy() })
-        return
-      }
       if (!existsSync(projectsDir)) {
         res.writeHead(404, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'No sessions found' }))
         return
       }
+      const tarArgs = ['-czf', '-', '-C', claudeDir, 'projects']
+      void workDir  // workDir param accepted but full projects/ export is returned
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': 'attachment; filename="claude-sessions.tar.gz"',
         'Access-Control-Allow-Origin': '*',
       })
       // Stream tar output directly to response
-      const tar = spawn('tar', ['-czf', '-', '-C', join(homedir(), '.claude'), 'projects'])
+      const tar = spawn('tar', tarArgs)
       tar.stdout.pipe(res)
       tar.stderr.on('data', (d: Buffer) => console.error('[export]', d.toString()))
       tar.on('close', (code: number | null) => { if (code !== 0) res.destroy() })
@@ -396,7 +379,8 @@ function startApiServer(workingDir: string, port: number): void {
               return
             }
             try {
-              const projectsDir = join(homedir(), '.claude', 'projects')
+              const claudeDir = join(homedir(), '.claude')
+              const projectsDir = join(claudeDir, 'projects')
               mkdirSync(projectsDir, { recursive: true })
 
               // The archive should contain a 'projects' subdirectory
