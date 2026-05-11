@@ -665,6 +665,32 @@ function startApiServer(workingDir: string, port: number): void {
     console.log(`   Sessions: http://${host}:${port}/sessions`)
   })
 
+  // Stale upload-chunk cleanup: remove osborn-upload-* dirs older than 30 minutes
+  const cleanStaleUploadDirs = () => {
+    const tmp = tmpdir()
+    const cutoff = Date.now() - 30 * 60 * 1000
+    try {
+      const entries = readdirSync(tmp)
+      for (const entry of entries) {
+        if (!entry.startsWith('osborn-upload-')) continue
+        const full = `${tmp}/${entry}`
+        try {
+          const st = statSync(full)
+          if (st.isDirectory() && st.mtimeMs < cutoff) {
+            rmSync(full, { recursive: true, force: true })
+            console.log(`🧹 Removed stale upload dir: ${full}`)
+          }
+        } catch {
+          // ignore per-entry errors
+        }
+      }
+    } catch {
+      // ignore if /tmp is unreadable
+    }
+  }
+  cleanStaleUploadDirs()
+  setInterval(cleanStaleUploadDirs, 10 * 60 * 1000)
+
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
       console.warn(`⚠️ API port ${port} in use, trying ${port + 1}...`)
