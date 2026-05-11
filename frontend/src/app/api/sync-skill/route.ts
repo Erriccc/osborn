@@ -18,7 +18,7 @@ When the user wants to sync their local Claude Code session files to their Osbor
 
 ## WHAT YOU NEED
 From the Osborn dashboard (voice-native.com), copy the sync info block which gives you three values:
-- SPRITE_URL (e.g. https://osborn-abc123.sprites.app)
+- CLOUD_URL (e.g. https://osborn-abc123.sprites.app)
 - TOKEN (your sync token)
 - TARGET_PATH (e.g. /home/sprite/workspace)
 
@@ -28,13 +28,13 @@ Delegate the entire sync to a sub-agent. Do NOT run individual tool calls intera
 
 ### Step 1 — Get the manifest
 Fetch the current state of what's already on the cloud instance:
-curl -s -H "Authorization: Bearer $TOKEN" "$SPRITE_URL/sessions/manifest"
+curl -s -H "Authorization: Bearer $TOKEN" "$CLOUD_URL/sessions/manifest"
 
 ### Step 2 — Write a sync script to /tmp/osborn-sync.sh
 
 Write the complete script as a single file, then execute it. The script should:
 
-1. Set the three variables (SPRITE_URL, TOKEN, TARGET_PATH)
+1. Set the three variables (CLOUD_URL, TOKEN, TARGET_PATH)
 2. Determine the local slug: the current Claude projects directory path with / replaced by -
    - Local projects dir is typically: $HOME/.claude/projects
    - Slug example: -Users-yourname-Desktop-Developer-osborn
@@ -51,14 +51,14 @@ Write the complete script as a single file, then execute it. The script should:
        -H "Authorization: Bearer $TOKEN" \\
        -H "Content-Type: application/octet-stream" \\
        --data-binary @/tmp/osborn-chunk-<suffix> \\
-       "$SPRITE_URL/sessions/import-chunk?uploadId=$UPLOAD_ID&chunkIndex=<n>" &
+       "$CLOUD_URL/sessions/import-chunk?uploadId=$UPLOAD_ID&chunkIndex=<n>" &
    wait  # wait for all parallel uploads to complete
 7. Finalize — assembles all chunks and extracts:
    curl -s -X POST \\
      -H "Authorization: Bearer $TOKEN" \\
-     "$SPRITE_URL/sessions/import-finalize?uploadId=$UPLOAD_ID&targetWorkDir=$TARGET_PATH"
+     "$CLOUD_URL/sessions/import-finalize?uploadId=$UPLOAD_ID&targetWorkDir=$TARGET_PATH"
 8. Verify — fetch manifest again and confirm slug appears:
-   curl -s -H "Authorization: Bearer $TOKEN" "$SPRITE_URL/sessions/manifest"
+   curl -s -H "Authorization: Bearer $TOKEN" "$CLOUD_URL/sessions/manifest"
 
 ### Step 3 — Execute the script
 Run: bash /tmp/osborn-sync.sh
@@ -82,7 +82,7 @@ Pulls all session files from the remote cloud instance and merges them into your
 
 ### What you need
 Same three variables from the Osborn dashboard:
-- SPRITE_URL
+- CLOUD_URL
 - TOKEN
 - TARGET_PATH (the cloud instance's working directory, e.g. /home/sprite/workspace)
 
@@ -94,14 +94,14 @@ Write this script to /tmp/osborn-download.sh and run it in one bash execution:
 #!/bin/bash
 set -e
 
-SPRITE_URL="<YOUR_SPRITE_URL>"
+CLOUD_URL="<YOUR_CLOUD_URL>"
 TOKEN="<YOUR_TOKEN>"
 
 # Download the gzipped tar from the sprite
 echo "Downloading sessions from sprite..."
 curl -s -f \\
   -H "Authorization: Bearer $TOKEN" \\
-  "$SPRITE_URL/sessions/export?workDir=/home/sprite/workspace" \\
+  "$CLOUD_URL/sessions/export?workDir=/home/sprite/workspace" \\
   -o /tmp/osborn-sessions.tar.gz
 
 echo "Download complete. Extracting..."
