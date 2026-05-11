@@ -621,7 +621,7 @@ export class ClaudeLLM extends llm.LLM {
     },
   ): void {
     // Lower compaction threshold to 65% so PreCompact fires earlier and context is preserved
-    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '60'
+    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '75'
 
     const userMessage: SDKUserMessage = {
       type: 'user',
@@ -1071,120 +1071,67 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const instructionPath = join(__claudeLlmDir, 'prompts', 'compact-learnings-instruction.md')
                 const instruction = existsSync(instructionPath) ? readFileSync(instructionPath, 'utf-8') : ''
 
-                // 2. Smart JSONL extraction — parse line-by-line, keep only signal-rich content.
-                // Avoids blowing Haiku's 200K token context window on large sessions (e.g. 19MB files).
-                const transcriptPath = input?.transcript_path
+                // 2. Get session content via session-access helpers (clean text, not raw JSONL)
                 let transcriptContent = ''
-                if (transcriptPath && existsSync(transcriptPath)) {
+                if (input?.session_id && input?.cwd) {
                   try {
-                    const { statSync } = await import('node:fs')
-                    const fileSize = statSync(transcriptPath).size
-                    const rawFile = readFileSync(transcriptPath, 'utf-8')
-                    const lines = rawFile.split('\n')
-                    const lineCount = lines.length
+                    const { getConversationText, getRecentToolResults } = await import('./session-access.js')
 
-                    const userMessages: string[] = []
-                    const assistantMessages: string[] = []
-                    const toolResults: string[] = []
-                    const priorSummaries: string[] = []
+                    // Both functions are synchronous: (sessionId, projectDir, lastN?, ...) => array
+                    const convEntries = getConversationText(input.session_id, input.cwd, 80, 1000)
+                    const toolResultsRaw = getRecentToolResults(input.session_id, input.cwd, 15)
 
-                    const SUMMARY_MARKERS = ['=== HANDOFF_STATE ===', '=== DECISIONS ===', '=== SKILL_CANDIDATES ===', '=== BEHAVIORAL_LEARNINGS ===']
+                    const convBlock = convEntries
+                      .map((e: { role: string; text: string }) => `[${e.role}] ${e.text}`)
+                      .join('\n')
 
-                    for (const line of lines) {
-                      if (!line.trim()) continue
-                      let parsed: any
-                      try { parsed = JSON.parse(line) } catch { continue }
+                    const toolBlock = toolResultsRaw
+                      .slice(-15)
+                      .map((r: any, i: number) =>
+                        `[T${i + 1}] ${String(r?.resultContent ?? r?.content ?? r?.output ?? r ?? '').substring(0, 500)}`
+                      )
+                      .join('\n')
 
-                      // Capture prior compact summary sections (gold — already condensed)
-                      const lineStr = line
-                      for (const marker of SUMMARY_MARKERS) {
-                        if (lineStr.includes(marker)) {
-                          const idx = lineStr.indexOf(marker)
-                          priorSummaries.push(lineStr.substring(idx, idx + 3000))
-                          break
-                        }
-                      }
+                    transcriptContent = [
+                      '=== RECENT CONVERSATION ===',
+                      convBlock.substring(0, 80000),
+                      '=== RECENT TOOL RESULTS ===',
+                      toolBlock,
+                    ].join('\n\n').substring(0, 120000)
 
-                      const msg = parsed?.message
-                      if (!msg) continue
-
-                      // Extract text content from string or content-block array
-                      const extractText = (content: any): string => {
-                        if (typeof content === 'string') return content
-                        if (Array.isArray(content)) {
-                          return content
-                            .filter((b: any) => b?.type === 'text' && b?.text)
-                            .map((b: any) => b.text)
-                            .join(' ')
-                        }
-                        return ''
-                      }
-
-                      if (msg.role === 'user') {
-                        const text = extractText(msg.content).trim()
-                        // Filter noise: interrupted messages, turn-shape reminders, empty/very short
-                        if (
-                          text.startsWith('[INTERRUPTED]') ||
-                          text.startsWith('TURN-SHAPE REMINDER') ||
-                          text.length < 15
-                        ) continue
-                        userMessages.push(text.substring(0, 400))
-                      } else if (msg.role === 'assistant') {
-                        const text = extractText(msg.content).trim()
-                        if (text.length >= 15) {
-                          assistantMessages.push(text.substring(0, 300))
-                        }
-                      }
-
-                      // Tool results: look for tool_result type blocks in content arrays
-                      if (Array.isArray(msg.content)) {
-                        for (const block of msg.content) {
-                          if (block?.type === 'tool_result' && block?.content) {
-                            const resultText = extractText(block.content).trim()
-                            if (resultText.length >= 20) {
-                              toolResults.push(resultText.substring(0, 500))
-                            }
+                    console.log(`🧠 PreCompact: session-access extracted ${transcriptContent.length} chars (session=${input.session_id})`)
+                  } catch (saErr) {
+                    // Fall back to transcript_path if session-access fails
+                    console.warn('⚠️ PreCompact: session-access failed, falling back to transcript_path:', saErr instanceof Error ? saErr.message : saErr)
+                    const transcriptPath = input?.transcript_path
+                    if (transcriptPath) {
+                      try {
+                        const { readFileSync, existsSync } = await import('node:fs')
+                        if (existsSync(transcriptPath)) {
+                          const raw = readFileSync(transcriptPath, 'utf-8')
+                          const lines = raw.split('\n').filter(Boolean)
+                          const recent = lines.slice(-300)
+                          const texts: string[] = []
+                          for (const line of recent) {
+                            try {
+                              const p = JSON.parse(line)
+                              const msg = p?.message
+                              if (!msg) continue
+                              const content = typeof msg.content === 'string'
+                                ? msg.content
+                                : Array.isArray(msg.content)
+                                  ? msg.content.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join(' ')
+                                  : ''
+                              if (content.length > 15) texts.push(`[${msg.role}] ${content.substring(0, 400)}`)
+                            } catch { continue }
                           }
+                          transcriptContent = texts.join('\n').substring(0, 120000)
+                          console.log(`🧠 PreCompact: fallback extracted ${transcriptContent.length} chars from last ${recent.length} lines`)
                         }
+                      } catch (fbErr) {
+                        console.warn('⚠️ PreCompact: fallback also failed:', fbErr instanceof Error ? fbErr.message : fbErr)
                       }
                     }
-
-                    // Keep most recent entries within caps
-                    const recentUsers = userMessages.slice(-60)
-                    const recentAssistants = assistantMessages.slice(-20)
-                    const recentTools = toolResults.slice(-15)
-
-                    // Assemble condensed representation
-                    const parts: string[] = [
-                      `=== EXTRACTED SESSION CONTENT (condensed from ${lineCount} lines) ===`,
-                    ]
-
-                    parts.push(`\n--- USER MESSAGES (most recent ${recentUsers.length}) ---`)
-                    recentUsers.forEach((m, i) => parts.push(`[U${i + 1}] ${m}`))
-
-                    parts.push(`\n--- RECENT ASSISTANT MESSAGES (last ${recentAssistants.length}) ---`)
-                    recentAssistants.forEach((m, i) => parts.push(`[A${i + 1}] ${m}`))
-
-                    if (priorSummaries.length > 0) {
-                      parts.push(`\n--- PRIOR COMPACT SUMMARIES ---`)
-                      let summaryBudget = 3000
-                      for (const s of priorSummaries) {
-                        const chunk = s.substring(0, summaryBudget)
-                        parts.push(chunk)
-                        summaryBudget -= chunk.length
-                        if (summaryBudget <= 0) break
-                      }
-                    }
-
-                    parts.push(`\n--- KEY TOOL RESULTS (last ${recentTools.length}) ---`)
-                    recentTools.forEach((m, i) => parts.push(`[T${i + 1}] ${m}`))
-
-                    // Join and cap at 150000 chars total
-                    transcriptContent = parts.join('\n').substring(0, 150000)
-
-                    console.log(`🧠 PreCompact: extracted ${transcriptContent.length} chars from ${lineCount} lines (file: ${Math.round(fileSize / 1024)}KB)`)
-                  } catch (readErr) {
-                    console.warn('⚠️ PreCompact: could not read transcript:', readErr instanceof Error ? readErr.message : readErr)
                   }
                 }
 
