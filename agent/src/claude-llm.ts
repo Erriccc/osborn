@@ -1057,207 +1057,21 @@ class ClaudeLLMStream extends llm.LLMStream {
               }
             }]
           }],
-          // ── PreCompact: read full transcript, call Anthropic API directly to extract skills ──
-          // Fires before the SDK compresses the conversation. Reads the FULL transcript JSONL,
-          // calls claude-haiku-4-5-20251001 directly for structured extraction, and writes
-          // skill files to disk immediately — no relying on PostCompact for persistence.
+          // ── PreCompact: inject extraction instruction only ──
+          // Fires before the SDK compresses the conversation. Injects the compact-learnings
+          // instruction so the SDK compaction summary includes the four structured sections.
+          // Skill extraction happens in PostCompact, which reads input.compact_summary directly.
           PreCompact: [{
             matcher: '.*',
             hooks: [async (input: any) => {
               try {
                 this.#opts.onCompactionEvent?.({ type: 'compaction_started', trigger: input?.trigger })
 
-                const { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } = await import('node:fs')
-                const { join } = await import('node:path')
-
-                // 1. Read the instruction file
                 const instructionPath = join(__claudeLlmDir, 'prompts', 'compact-learnings-instruction.md')
                 const instruction = existsSync(instructionPath) ? readFileSync(instructionPath, 'utf-8') : ''
 
-                // 2. Get session content via session-access helpers (clean text, not raw JSONL)
-                let transcriptContent = ''
-                if (input?.session_id && input?.cwd) {
-                  try {
-                    const { getConversationText, getRecentToolResults } = await import('./session-access.js')
-
-                    // Both functions are synchronous: (sessionId, projectDir, lastN?, ...) => array
-                    const convEntries = getConversationText(input.session_id, input.cwd, 80, 1000)
-                    const toolResultsRaw = getRecentToolResults(input.session_id, input.cwd, 15)
-
-                    const convBlock = convEntries
-                      .map((e: { role: string; text: string }) => `[${e.role}] ${e.text}`)
-                      .join('\n')
-
-                    const toolBlock = toolResultsRaw
-                      .slice(-15)
-                      .map((r: any, i: number) =>
-                        `[T${i + 1}] ${String(r?.resultContent ?? r?.content ?? r?.output ?? r ?? '').substring(0, 500)}`
-                      )
-                      .join('\n')
-
-                    transcriptContent = [
-                      '=== RECENT CONVERSATION ===',
-                      convBlock.substring(0, 80000),
-                      '=== RECENT TOOL RESULTS ===',
-                      toolBlock,
-                    ].join('\n\n').substring(0, 120000)
-
-                    console.log(`🧠 PreCompact: session-access extracted ${transcriptContent.length} chars (session=${input.session_id})`)
-                  } catch (saErr) {
-                    // Fall back to transcript_path if session-access fails
-                    console.warn('⚠️ PreCompact: session-access failed, falling back to transcript_path:', saErr instanceof Error ? saErr.message : saErr)
-                    const transcriptPath = input?.transcript_path
-                    if (transcriptPath) {
-                      try {
-                        const { readFileSync, existsSync } = await import('node:fs')
-                        if (existsSync(transcriptPath)) {
-                          const raw = readFileSync(transcriptPath, 'utf-8')
-                          const lines = raw.split('\n').filter(Boolean)
-                          const recent = lines.slice(-300)
-                          const texts: string[] = []
-                          for (const line of recent) {
-                            try {
-                              const p = JSON.parse(line)
-                              const msg = p?.message
-                              if (!msg) continue
-                              const content = typeof msg.content === 'string'
-                                ? msg.content
-                                : Array.isArray(msg.content)
-                                  ? msg.content.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join(' ')
-                                  : ''
-                              if (content.length > 15) texts.push(`[${msg.role}] ${content.substring(0, 400)}`)
-                            } catch { continue }
-                          }
-                          transcriptContent = texts.join('\n').substring(0, 120000)
-                          console.log(`🧠 PreCompact: fallback extracted ${transcriptContent.length} chars from last ${recent.length} lines`)
-                        }
-                      } catch (fbErr) {
-                        console.warn('⚠️ PreCompact: fallback also failed:', fbErr instanceof Error ? fbErr.message : fbErr)
-                      }
-                    }
-                  }
-                }
-
-                const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
-                const skillsRoot = join(skillDir, '.claude', 'skills')
-
-                // 3. Load existing skills for context (cap each at 500 chars)
-                let existingSkillsBlock = ''
-                if (existsSync(skillsRoot)) {
-                  try {
-                    const names = readdirSync(skillsRoot).slice(0, 15)
-                    const fragments: string[] = []
-                    for (const name of names) {
-                      const p = join(skillsRoot, name, 'SKILL.md')
-                      if (existsSync(p)) {
-                        const body = readFileSync(p, 'utf-8')
-                        const cleaned = body.replace(/^===.*===\s*$/gm, '').substring(0, 500)
-                        fragments.push(`### ${name}\n${cleaned}`)
-                      }
-                    }
-                    if (fragments.length) {
-                      existingSkillsBlock = `EXISTING SKILLS (do NOT re-emit unchanged):\n${fragments.join('\n\n')}`
-                    }
-                  } catch (skillErr) {
-                    console.warn('⚠️ PreCompact: skills load failed:', skillErr instanceof Error ? skillErr.message : skillErr)
-                  }
-                }
-
-                // 4. If transcript available, use direct Anthropic API call to extract everything
-                if (transcriptContent && process.env.ANTHROPIC_API_KEY) {
-                  try {
-                    const Anthropic = (await import('@anthropic-ai/sdk')).default
-                    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
-                    const extractionPrompt = [
-                      instruction,
-                      existingSkillsBlock,
-                      `FULL SESSION TRANSCRIPT (JSONL format — extract the four sections from this):`,
-                      transcriptContent,
-                    ].filter(Boolean).join('\n\n---\n\n')
-
-                    console.log(`🧠 PreCompact: calling extraction API (${extractionPrompt.length} chars, trigger=${input?.trigger || 'unknown'})`)
-
-                    const response = await client.messages.create({
-                      model: 'claude-haiku-4-5-20251001',
-                      max_tokens: 4096,
-                      messages: [{ role: 'user', content: extractionPrompt }],
-                    })
-
-                    const extractedText = response.content[0]?.type === 'text' ? (response.content[0] as any).text : ''
-
-                    if (extractedText) {
-                      // Write SKILL_CANDIDATES to disk directly
-                      const skillRegex = /--- SKILL: ([a-z][a-z0-9-]{1,39}) ---\n([\s\S]*?)\n--- END SKILL ---/g
-                      let match
-                      let skillsWrittenCount = 0
-                      while ((match = skillRegex.exec(extractedText)) !== null) {
-                        const [, name, body] = match
-                        if (/^[a-z][a-z0-9-]{1,39}$/.test(name)) {
-                          const today = new Date().toISOString().split('T')[0]
-                          const sessionId = this.#sessionId || 'unknown'
-                          const skillFolder = join(skillsRoot, name)
-                          mkdirSync(skillFolder, { recursive: true })
-                          writeFileSync(join(skillFolder, 'SKILL.md'), `# ${name}\nAuto-extracted: ${today} | Session: ${sessionId.substring(0, 8)}\n\n${body}`)
-                          console.log(`🧠 PreCompact: wrote skill '${name}' to ${skillFolder}`)
-                          skillsWrittenCount++
-                        }
-                      }
-
-                      // Write BEHAVIORAL_LEARNINGS to learned-behaviors skill
-                      const blMarker = '=== BEHAVIORAL_LEARNINGS ==='
-                      const blIdx = extractedText.indexOf(blMarker)
-                      if (blIdx !== -1) {
-                        const blContent = extractedText.substring(blIdx)
-                        if (blContent.length > 30) {
-                          const today = new Date().toISOString().split('T')[0]
-                          const sessionId = this.#sessionId || 'unknown'
-                          const learnedDir = join(skillsRoot, 'learned-behaviors')
-                          mkdirSync(learnedDir, { recursive: true })
-                          const header = `# Learned Behaviors\n\nAuto-extracted from voice sessions via PreCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
-                          writeFileSync(join(learnedDir, 'SKILL.md'), header + blContent)
-                          console.log(`🧠 PreCompact: wrote learned-behaviors (${blContent.length} chars)`)
-                        }
-                      }
-
-                      // Write project-scoped DECISIONS
-                      const decMarker = '=== DECISIONS ==='
-                      const decIdx = extractedText.indexOf(decMarker)
-                      if (decIdx !== -1) {
-                        const decEnd = extractedText.indexOf('===', decIdx + decMarker.length)
-                        const decContent = extractedText.substring(decIdx + decMarker.length, decEnd !== -1 ? decEnd : undefined)
-                        const projectDecisions = decContent.split('\n').filter((l: string) => l.includes('SCOPE: project')).join('\n')
-                        if (projectDecisions.trim()) {
-                          const decDir = join(skillsRoot, 'project-decisions')
-                          mkdirSync(decDir, { recursive: true })
-                          const decFile = join(decDir, 'SKILL.md')
-                          const existing = existsSync(decFile) ? readFileSync(decFile, 'utf-8') : '# Project Decisions\n\n'
-                          writeFileSync(decFile, existing + '\n' + projectDecisions)
-                          console.log(`🧠 PreCompact: appended project decisions`)
-                        }
-                      }
-
-                      // Return extracted content as systemMessage for compact summary
-                      const systemMessage = [
-                        '## Pre-Compaction Extraction Complete',
-                        'Skill files have been written to disk. Include the following in your compact summary verbatim:',
-                        extractedText.substring(0, 8000),
-                      ].join('\n\n').substring(0, 9500)
-
-                      console.log(`🧠 PreCompact: extraction complete, returning systemMessage (${systemMessage.length} chars)`)
-                      this.#opts.onCompactionEvent?.({ type: 'compaction_complete', trigger: input?.trigger, skillsWritten: skillsWrittenCount })
-                      return { systemMessage }
-                    }
-                  } catch (apiErr) {
-                    console.error('⚠️ PreCompact: API extraction failed, falling back to basic mode:', apiErr instanceof Error ? apiErr.message : apiErr)
-                    // Fall through to basic fallback
-                  }
-                }
-
-                // 5. Fallback: basic mode — just inject the instruction
-                console.log(`🧠 PreCompact: basic mode (no transcript or API key unavailable)`)
-                this.#opts.onCompactionEvent?.({ type: 'compaction_complete', trigger: input?.trigger, skillsWritten: 0 })
-                return { systemMessage: instruction.substring(0, 9500) }
+                console.log(`🧠 PreCompact: injecting instruction (${instruction.length} chars, trigger=${input?.trigger || 'unknown'})`)
+                return { systemMessage: instruction }
 
               } catch (err) {
                 console.error('⚠️ PreCompact hook error:', err instanceof Error ? err.message : err)
@@ -1265,16 +1079,19 @@ class ClaudeLLMStream extends llm.LLMStream {
               }
             }]
           }],
-          // ── PostCompact: extract all four sections from summary and persist to disk ──
+          // ── PostCompact: parse compact_summary from stdin payload and persist skill sections ──
+          // input.compact_summary is the full summary text the SDK just wrote.
+          // We read the four sections directly from it — no JSONL file access needed.
           PostCompact: [{
             matcher: '.*',
             hooks: [async (input: any) => {
               try {
                 const summary: string = input?.compact_summary || ''
-                const { mkdirSync, writeFileSync: writeSyncFs } = await import('fs')
+                const { mkdirSync, writeFileSync: writeSyncFs, readFileSync: readSyncFs, existsSync: existsSyncFs } = await import('node:fs')
                 const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
                 const today = new Date().toISOString().split('T')[0]
                 const sessionId = this.#sessionId || 'unknown'
+                let skillsWritten = 0
 
                 // Helper: extract text between a marker and the next === marker (or end of string)
                 const extractSection = (marker: string): string => {
@@ -1285,7 +1102,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                   return (nextMarker === -1 ? summary.substring(start) : summary.substring(start, nextMarker)).trim()
                 }
 
-                // ── Section 1: HANDOFF_STATE — log only, not written to disk ──
+                // ── Section 1: HANDOFF_STATE — stays in compact summary only, not written to disk ──
                 const handoff = extractSection('=== HANDOFF_STATE ===')
                 if (handoff) {
                   console.log(`🧠 PostCompact: HANDOFF_STATE present (${handoff.length} chars) — not written to disk`)
@@ -1299,21 +1116,22 @@ class ClaudeLLMStream extends llm.LLMStream {
                       .split('\n')
                       .filter(l => /DECISION:.*SCOPE:\s*project/i.test(l))
                     if (projectLines.length) {
-                      const decFolder = join(skillDir, '.claude', 'skills', 'project-decisions')
+                      const decFolder = join(skillDir, '.claude', 'skills', 'decisions')
                       const decPath = join(decFolder, 'SKILL.md')
                       mkdirSync(decFolder, { recursive: true })
-                      const existing = (() => { try { return require('fs').readFileSync(decPath, 'utf-8') } catch { return '' } })()
+                      const existing = existsSyncFs(decPath) ? readSyncFs(decPath, 'utf-8') : ''
                       const header = existing ? '' : `# Project Decisions\n\nAuto-extracted from compact summaries.\n\n`
                       const entry = `\n## ${today} (session ${sessionId.substring(0, 8)})\n${projectLines.join('\n')}\n`
                       writeSyncFs(decPath, header + existing + entry, 'utf-8')
                       console.log(`🧠 PostCompact: appended ${projectLines.length} decision(s) to ${decPath}`)
+                      skillsWritten++
                     }
                   }
                 } catch (decErr) {
                   console.error('⚠️ PostCompact: DECISIONS write failed:', decErr instanceof Error ? decErr.message : decErr)
                 }
 
-                // ── Section 3: SKILL_CANDIDATES — parse and write each skill ──
+                // ── Section 3: SKILL_CANDIDATES — parse individual blocks and write each ──
                 try {
                   const skillsSection = extractSection('=== SKILL_CANDIDATES ===')
                   if (skillsSection) {
@@ -1333,34 +1151,33 @@ class ClaudeLLMStream extends llm.LLMStream {
                       const header = `# ${name}\nAuto-extracted: ${today} | Session: ${sessionId.substring(0, 8)}\n\n`
                       writeSyncFs(skillPath, header + body + '\n', 'utf-8')
                       console.log(`🧠 PostCompact: wrote skill '${name}' to ${skillPath}`)
+                      skillsWritten++
                     }
                   }
                 } catch (skillErr) {
                   console.error('⚠️ PostCompact: SKILL_CANDIDATES write failed:', skillErr instanceof Error ? skillErr.message : skillErr)
                 }
 
-                // ── Section 4: BEHAVIORAL_LEARNINGS — write to learned-behaviors skill file ──
+                // ── Section 4: BEHAVIORAL_LEARNINGS — write to learned-behaviors/SKILL.md ──
                 try {
-                  const marker = '=== BEHAVIORAL_LEARNINGS ==='
-                  const idx = summary.indexOf(marker)
-                  if (idx !== -1) {
-                    const learnings = summary.substring(idx + marker.length).trim()
-                    if (learnings.length >= 30) {
-                      const skillFolder = join(skillDir, '.claude', 'skills', 'learned-behaviors')
-                      const skillPath = join(skillFolder, 'SKILL.md')
-                      mkdirSync(skillFolder, { recursive: true })
-                      const header = `# Learned Behaviors\n\nAuto-extracted from voice sessions via PostCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
-                      writeSyncFs(skillPath, header + learnings + '\n', 'utf-8')
-                      console.log(`🧠 PostCompact: wrote learned behaviors to ${skillPath} (${learnings.length} chars)`)
-                    } else {
-                      console.log('🧠 PostCompact: BEHAVIORAL_LEARNINGS section too short — skipping')
-                    }
+                  const learnings = extractSection('=== BEHAVIORAL_LEARNINGS ===')
+                  if (learnings.length >= 30) {
+                    const skillFolder = join(skillDir, '.claude', 'skills', 'learned-behaviors')
+                    const skillPath = join(skillFolder, 'SKILL.md')
+                    mkdirSync(skillFolder, { recursive: true })
+                    const header = `# Learned Behaviors\n\nAuto-extracted from voice sessions via PostCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
+                    writeSyncFs(skillPath, header + learnings + '\n', 'utf-8')
+                    console.log(`🧠 PostCompact: wrote learned behaviors to ${skillPath} (${learnings.length} chars)`)
+                    skillsWritten++
                   } else {
-                    console.log('🧠 PostCompact: no BEHAVIORAL_LEARNINGS section found in summary — skipping')
+                    console.log('🧠 PostCompact: no BEHAVIORAL_LEARNINGS section found or too short — skipping')
                   }
                 } catch (blErr) {
                   console.error('⚠️ PostCompact: BEHAVIORAL_LEARNINGS write failed:', blErr instanceof Error ? blErr.message : blErr)
                 }
+
+                this.#opts.onCompactionEvent?.({ type: 'compaction_complete', skillsWritten })
+                console.log(`🧠 PostCompact: complete — ${skillsWritten} skill file(s) written`)
 
               } catch (err) {
                 console.error('⚠️ PostCompact hook error:', err instanceof Error ? err.message : err)
