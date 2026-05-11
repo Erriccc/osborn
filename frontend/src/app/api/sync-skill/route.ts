@@ -57,6 +57,34 @@ Syncs your local Claude Code session files to your Osborn sprite. Uses increment
    If you used Windows PowerShell, change the filename to @"$env:TEMP\\osborn-sync.zip".
    You can run this in the background with \`&\` so you are not blocked waiting for the upload to complete.
 
+   **Faster option — parallel chunk upload:**
+   This splits the archive into 50MB chunks and uploads them simultaneously.
+
+   # Generate unique upload ID
+   UPLOAD_ID=$(date +%s%N | md5sum | head -c 16)
+
+   # Split archive into 50MB chunks
+   mkdir -p /tmp/osborn-chunks
+   split -b 50m /tmp/osborn-sync.tar.gz /tmp/osborn-chunks/chunk-
+   CHUNKS=($( ls /tmp/osborn-chunks/chunk-* | sort))
+   TOTAL=\${#CHUNKS[@]}
+
+   # Upload all chunks in parallel
+   for i in "\${!CHUNKS[@]}"; do
+     curl -X POST "<SPRITE_URL>/sessions/import-chunk?uploadId=$UPLOAD_ID&chunk=$i" \\
+       -H "Authorization: Bearer <TOKEN>" \\
+       -H "Content-Type: application/octet-stream" \\
+       --data-binary @"\${CHUNKS[$i]}" &
+   done
+   wait
+
+   # Finalize (reassemble and extract on sprite)
+   curl -X POST "<SPRITE_URL>/sessions/import-finalize?uploadId=$UPLOAD_ID&total=$TOTAL&targetWorkDir=<URL_ENCODED_TARGET_PATH>" \\
+     -H "Authorization: Bearer <TOKEN>"
+
+   # Clean up chunks
+   rm -rf /tmp/osborn-chunks
+
 6. Confirm success
    Response should contain "ok":true
 

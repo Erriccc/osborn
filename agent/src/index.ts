@@ -15,7 +15,7 @@ import { setMaxListeners } from 'node:events'
 setMaxListeners(50)
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, createWriteStream } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -480,6 +480,177 @@ function startApiServer(workingDir: string, port: number): void {
           rmSync(tmpDir, { recursive: true, force: true })
         }
       })
+      return
+    }
+
+    // POST /sessions/import-chunk — accept a single chunk of a multi-part upload
+    if (req.method === 'POST' && url.pathname === '/sessions/import-chunk') {
+      if (syncToken) {
+        const authHeader = req.headers['authorization'] ?? ''
+        if (authHeader !== `Bearer ${syncToken}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Unauthorized' }))
+          return
+        }
+      }
+
+      const uploadId = url.searchParams.get('uploadId')
+      const chunkIndex = parseInt(url.searchParams.get('chunk') || '0')
+
+      if (!uploadId) {
+        res.writeHead(400)
+        res.end(JSON.stringify({ error: 'uploadId required' }))
+        return
+      }
+
+      // Chunk storage dir: /tmp/osborn-upload-<uploadId>/
+      const uploadDir = join(tmpdir(), `osborn-upload-${uploadId}`)
+      mkdirSync(uploadDir, { recursive: true })
+
+      // Write chunk to padded filename for correct sort order
+      const chunkPath = join(uploadDir, `chunk-${String(chunkIndex).padStart(6, '0')}`)
+      const writeStream = createWriteStream(chunkPath)
+      req.pipe(writeStream)
+
+      writeStream.on('finish', () => {
+        res.writeHead(200)
+        res.end(JSON.stringify({ ok: true, chunk: chunkIndex }))
+      })
+
+      writeStream.on('error', (err) => {
+        console.error('[import-chunk] write error', err)
+        if (!res.headersSent) { res.writeHead(500); res.end(JSON.stringify({ error: 'write failed' })) }
+      })
+
+      req.on('aborted', () => { writeStream.destroy() })
+      return
+    }
+
+    // POST /sessions/import-finalize — reassemble chunks, extract, apply slug merge
+    if (req.method === 'POST' && url.pathname === '/sessions/import-finalize') {
+      if (syncToken) {
+        const authHeader = req.headers['authorization'] ?? ''
+        if (authHeader !== `Bearer ${syncToken}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Unauthorized' }))
+          return
+        }
+      }
+
+      const uploadId = url.searchParams.get('uploadId')
+      const total = parseInt(url.searchParams.get('total') || '0')
+      const targetWorkDir = url.searchParams.get('targetWorkDir') ?? undefined
+
+      if (!uploadId || total === 0) {
+        res.writeHead(400)
+        res.end(JSON.stringify({ error: 'uploadId and total required' }))
+        return
+      }
+
+      const uploadDir = join(tmpdir(), `osborn-upload-${uploadId}`)
+
+      // Verify all chunks present
+      const expectedChunks = Array.from({ length: total }, (_, i) => `chunk-${String(i).padStart(6, '0')}`)
+      const presentChunks = existsSync(uploadDir) ? readdirSync(uploadDir).filter(f => f.startsWith('chunk-')).sort() : []
+
+      const missing = expectedChunks.filter(c => !presentChunks.includes(c))
+      if (missing.length > 0) {
+        res.writeHead(400)
+        res.end(JSON.stringify({ error: 'missing chunks', missing }))
+        return
+      }
+
+      const tmpExtractDir = mkdtempSync(join(tmpdir(), 'osborn-import-'))
+
+      try {
+        // Reassemble chunks into a single stream and pipe to tar
+        const tarProc = spawn('tar', ['-xf', '-', '-C', tmpExtractDir])
+
+        // Stream chunks in order to tar stdin
+        const streamChunks = async () => {
+          for (const chunkFile of expectedChunks) {
+            const chunkData = readFileSync(join(uploadDir, chunkFile))
+            await new Promise<void>((resolve, reject) => {
+              tarProc.stdin.write(chunkData, (err) => {
+                if (err) reject(err); else resolve()
+              })
+            })
+          }
+          tarProc.stdin.end()
+        }
+
+        streamChunks().catch(err => {
+          console.error('[import-finalize] chunk stream error', err)
+          tarProc.kill('SIGTERM')
+        })
+
+        tarProc.stderr.on('data', (d: Buffer) => console.error('[import-finalize]', d.toString()))
+
+        tarProc.on('close', async (code: number | null) => {
+          try {
+            if (code !== 0) {
+              res.writeHead(500); res.end(JSON.stringify({ error: 'tar extraction failed', code })); return
+            }
+
+            const claudeDir = join(homedir(), '.claude')
+            const projectsDir = join(claudeDir, 'projects')
+            mkdirSync(projectsDir, { recursive: true })
+
+            // The archive should contain a 'projects' subdirectory
+            const extractedProjects = join(tmpExtractDir, 'projects')
+            const sourceDir = existsSync(extractedProjects) ? extractedProjects : tmpExtractDir
+
+            // Optionally remap slug: if targetWorkDir is provided, find slug(s)
+            // that don't match the target and rename them
+            const remapped: Record<string, string> = {}
+            if (targetWorkDir) {
+              const targetSlug = targetWorkDir.replace(/\//g, '-')
+              const sourceSlugs = readdirSync(sourceDir)
+              for (const slug of sourceSlugs) {
+                if (slug !== targetSlug && !slug.startsWith('.')) {
+                  remapped[slug] = targetSlug
+                }
+              }
+            }
+
+            // Copy subdirectories into ~/.claude/projects/, merging and updating existing files
+            let filesWritten = 0
+            const slugsInSource = readdirSync(sourceDir)
+            for (const slug of slugsInSource) {
+              const effectiveSlug = remapped[slug] ?? slug
+              const destSlug = join(projectsDir, effectiveSlug)
+              mkdirSync(destSlug, { recursive: true })
+              try {
+                renameSync(join(sourceDir, slug), destSlug)
+              } catch (e: any) {
+                if (e.code === 'EXDEV') {
+                  // Cross-filesystem fallback
+                  cpSync(join(sourceDir, slug), destSlug, { recursive: true, force: true, errorOnExist: false })
+                } else {
+                  throw e
+                }
+              }
+              filesWritten++
+            }
+
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: true, filesWritten, remapped }))
+          } catch (err) {
+            console.error('[import-finalize] merge error:', err)
+            if (!res.headersSent) {
+              res.writeHead(500)
+              res.end(JSON.stringify({ error: 'Failed to merge sessions', detail: String(err) }))
+            }
+          } finally {
+            rmSync(uploadDir, { recursive: true, force: true })
+            rmSync(tmpExtractDir, { recursive: true, force: true })
+          }
+        })
+      } catch (err) {
+        rmSync(uploadDir, { recursive: true, force: true })
+        rmSync(tmpExtractDir, { recursive: true, force: true })
+        throw err
+      }
       return
     }
 
