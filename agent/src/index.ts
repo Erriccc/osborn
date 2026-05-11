@@ -397,7 +397,9 @@ function startApiServer(workingDir: string, port: number): void {
       const targetWorkDir = url.searchParams.get('targetWorkDir')
 
       const tmpDir = mkdtempSync(join(tmpdir(), 'osborn-import-'))
-      const tarProc = spawn('tar', ['-xf', '-', '-C', tmpDir])
+      const contentType = req.headers['content-type'] ?? ''
+      const isGzip = contentType.includes('gzip') || (req.headers['content-encoding'] ?? '').includes('gzip')
+      const tarProc = spawn('tar', isGzip ? ['-xzf', '-', '-C', tmpDir] : ['-xf', '-', '-C', tmpDir])
 
       // Streaming: pipe request body directly to tar stdin — no buffering
       req.pipe(tarProc.stdin)
@@ -563,8 +565,12 @@ function startApiServer(workingDir: string, port: number): void {
       const tmpExtractDir = mkdtempSync(join(tmpdir(), 'osborn-import-'))
 
       try {
+        // Detect gzip by sniffing the first two bytes of the first chunk (magic: 0x1f 0x8b)
+        const firstChunkPath = join(uploadDir, expectedChunks[0])
+        const firstChunkHeader = readFileSync(firstChunkPath)
+        const isGzip = firstChunkHeader[0] === 0x1f && firstChunkHeader[1] === 0x8b
         // Reassemble chunks into a single stream and pipe to tar
-        const tarProc = spawn('tar', ['-xf', '-', '-C', tmpExtractDir])
+        const tarProc = spawn('tar', isGzip ? ['-xzf', '-', '-C', tmpExtractDir] : ['-xf', '-', '-C', tmpExtractDir])
 
         // Stream chunks in order to tar stdin
         const streamChunks = async () => {
