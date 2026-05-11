@@ -3,6 +3,16 @@ import { NextResponse } from 'next/server'
 export async function GET() {
   const skillContent = `# Osborn Session Sync Skill
 
+## DIRECTION — Upload or Download?
+
+Before running, decide which direction you need:
+- **UPLOAD (Mac → Sprite)**: Push your local session files to the sprite for backup or to continue on another device
+- **DOWNLOAD (Sprite → Mac)**: Pull sessions from the sprite back to your local machine
+
+Ask the user which they want, then run the appropriate section below.
+
+---
+
 ## WHEN TO USE
 When the user wants to sync their local Claude Code session files to their Osborn sprite for backup or migration. This makes session memory available across devices.
 
@@ -63,6 +73,77 @@ After the script finishes, report: how many files were uploaded, whether the man
 - Slug remapping is automatic: your local slug is remapped to the sprite's target path
 - The sync is safe to re-run: existing files are not overwritten (no-overwrite behavior)
 - BSD tar on macOS: always use --exclude='._*' to prevent AppleDouble metadata files in the archive
+
+---
+
+## DOWNLOAD (Sprite → Mac)
+
+Pulls all session files from the sprite and merges them into your local \`~/.claude/projects/\`.
+
+### What you need
+Same three variables from the Osborn dashboard:
+- SPRITE_URL
+- TOKEN
+- TARGET_PATH (the sprite's working directory, e.g. /home/sprite/workspace)
+
+### How to execute — single script, one approval
+
+Write this script to /tmp/osborn-download.sh and run it in one bash execution:
+
+\`\`\`bash
+#!/bin/bash
+set -e
+
+SPRITE_URL="<YOUR_SPRITE_URL>"
+TOKEN="<YOUR_TOKEN>"
+
+# Download the gzipped tar from the sprite
+echo "Downloading sessions from sprite..."
+curl -s -f \\
+  -H "Authorization: Bearer $TOKEN" \\
+  "$SPRITE_URL/sessions/export?workDir=/home/sprite/workspace" \\
+  -o /tmp/osborn-sessions.tar.gz
+
+echo "Download complete. Extracting..."
+mkdir -p /tmp/osborn-extract
+tar -xzf /tmp/osborn-sessions.tar.gz -C /tmp/osborn-extract
+
+# The tar contains a \`projects/\` folder at the top level
+# Inside is a slug folder named after the sprite's path: -home-sprite-workspace
+# We need to rename it to match the local slug
+
+LOCAL_SLUG=$(echo "$HOME/.claude/projects" | sed 's|/|-|g' | sed 's|^-||')
+SPRITE_SLUG="-home-sprite-workspace"
+
+EXTRACT_DIR="/tmp/osborn-extract/projects"
+
+if [ -d "$EXTRACT_DIR/$SPRITE_SLUG" ]; then
+  echo "Remapping slug: $SPRITE_SLUG -> -$LOCAL_SLUG"
+  LOCAL_PROJECTS="$HOME/.claude/projects"
+  mkdir -p "$LOCAL_PROJECTS/-$LOCAL_SLUG"
+  # Copy files, don't overwrite newer local files
+  cp -n "$EXTRACT_DIR/$SPRITE_SLUG/"* "$LOCAL_PROJECTS/-$LOCAL_SLUG/" 2>/dev/null || true
+  echo "Sessions merged into $LOCAL_PROJECTS/-$LOCAL_SLUG/"
+else
+  echo "Warning: Expected slug folder $SPRITE_SLUG not found in extracted archive"
+  ls "$EXTRACT_DIR/" 2>/dev/null || echo "Extract dir contents unavailable"
+fi
+
+# Cleanup
+rm -rf /tmp/osborn-sessions.tar.gz /tmp/osborn-extract
+echo "Done. Local sessions updated."
+\`\`\`
+
+Then execute: \`bash /tmp/osborn-download.sh\`
+
+### After running
+Verify by checking that \`~/.claude/projects/<your-local-slug>/\` contains the expected \`.jsonl\` files from the sprite session.
+
+### Notes
+- Uses \`cp -n\` (no-overwrite) — safe to re-run, won't clobber newer local files
+- The sprite exports its full \`~/.claude/projects/\` directory as a gzip tar
+- Slug remapping is handled by the script — sprite slug becomes your local slug
+- If you have multiple project slugs on the sprite, the script picks up all of them
 `
 
   return new NextResponse(skillContent, {
