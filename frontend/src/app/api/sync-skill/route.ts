@@ -6,8 +6,8 @@ export async function GET() {
 ## DIRECTION — Upload or Download?
 
 Before running, decide which direction you need:
-- **UPLOAD (Local → Sprite)**: Push your local session files to the sprite for backup or to continue on another device
-- **DOWNLOAD (Sprite → Local)**: Pull sessions from the sprite back to your local machine
+- **UPLOAD (Local → Cloud)**: Push your local session files to the remote cloud instance for backup or to continue on another device
+- **DOWNLOAD (Cloud → Local)**: Pull sessions from the remote cloud instance back to your local machine
 
 Ask the user which they want, then run the appropriate section below.
 
@@ -27,7 +27,7 @@ From the Osborn dashboard (voice-native.com), copy the sync info block which giv
 Delegate the entire sync to a sub-agent. Do NOT run individual tool calls interactively — that forces the user to approve every curl and bash call. Instead, write a single shell script and execute it in one step so only one permission approval is needed.
 
 ### Step 1 — Get the manifest
-Fetch the current state of what's already on the sprite:
+Fetch the current state of what's already on the cloud instance:
 curl -s -H "Authorization: Bearer $TOKEN" "$SPRITE_URL/sessions/manifest"
 
 ### Step 2 — Write a sync script to /tmp/osborn-sync.sh
@@ -70,21 +70,21 @@ After the script finishes, report: how many files were uploaded, whether the man
 - Server auto-detects gzip vs plain tar via zlib stream sniffing (v0.9.15+) — no Content-Type header needed
 - Always use gzip (-czf). Never use zstd — server does not support it
 - Parallel chunked upload: all chunks return HTTP 200 independently; finalize assembles them
-- Slug remapping is automatic: your local slug is remapped to the sprite's target path
+- Slug remapping is automatic: your local slug is remapped to the cloud instance's target path
 - The sync is safe to re-run: existing files are not overwritten (no-overwrite behavior)
 - macOS BSD tar only: always use --exclude='._*' to prevent AppleDouble metadata files in the archive; Linux and Windows tar do not produce these files
 
 ---
 
-## DOWNLOAD (Sprite → Local)
+## DOWNLOAD (Cloud → Local)
 
-Pulls all session files from the sprite and merges them into your local \`~/.claude/projects/\`.
+Pulls all session files from the remote cloud instance and merges them into your local \`~/.claude/projects/\`.
 
 ### What you need
 Same three variables from the Osborn dashboard:
 - SPRITE_URL
 - TOKEN
-- TARGET_PATH (the sprite's working directory, e.g. /home/sprite/workspace)
+- TARGET_PATH (the cloud instance's working directory, e.g. /home/sprite/workspace)
 
 ### How to execute — single script, one approval
 
@@ -173,13 +173,13 @@ echo "Done. Local sessions updated."
 Then execute: \`bash /tmp/osborn-download.sh\`
 
 ### After running
-Verify by checking that \`~/.claude/projects/<your-local-slug>/\` contains the expected \`.jsonl\` files from the sprite session.
+Verify by checking that \`~/.claude/projects/<your-local-slug>/\` contains the expected \`.jsonl\` files from the cloud session.
 
 ### Notes
 - Merge uses JSONL timestamps — the version with the most recent session entry wins, regardless of file size or modification time
-- The sprite exports its full \`~/.claude/projects/\` directory as a gzip tar
-- Slug remapping is handled by the script — sprite slug becomes your local slug
-- If you have multiple project slugs on the sprite, the script picks up all of them
+- The cloud instance exports its full \`~/.claude/projects/\` directory as a gzip tar
+- Slug remapping is handled by the script — cloud instance slug becomes your local slug
+- If you have multiple project slugs on the cloud instance, the script picks up all of them
 `
 
   return new NextResponse(skillContent, {
