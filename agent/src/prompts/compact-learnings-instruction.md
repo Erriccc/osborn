@@ -1,14 +1,57 @@
-IMPORTANT — BEFORE COMPACTING: Include a section at the END of your compact summary titled exactly:
+# Pre-Compaction Instructions
 
-=== BEHAVIORAL_LEARNINGS ===
+Before Claude Code compacts this conversation, you MUST preserve critical context by including the following four sections at the very END of your compact summary. Be selective and specific — vague summaries are useless.
 
-In this section, extract and list:
-1. USER CORRECTIONS — things the user explicitly told you to stop/start doing (e.g., "stop patching scripts", "use step-by-step not autonomous", "don't name sub-agents")
-2. USER PREFERENCES — recurring patterns in how the user works (e.g., "prefers yahoo email for new accounts", "wants visible browser not headless", "expects score-based salary calculation")
-3. DOMAIN KNOWLEDGE — specific technical facts verified during this session (e.g., "Workday sign-in is inline switch not modal", "CareSource hibernation is 30s confirmed")
-4. EFFECTIVE PATTERNS — approaches that worked and the user confirmed (e.g., "co-direction questions during steerable work", "grounding with 2 reads before speaking")
-5. ANTI-PATTERNS — approaches that failed or frustrated the user (e.g., "reporting exit code 0 as success without verification", "multiple browser windows from competing automation approaches")
+---
 
-Be SELECTIVE — only include items that are generalizable, actionable, and non-obvious. Skip task-specific details. Each item should be one line.
+## Section 1: HANDOFF_STATE
+Format: === HANDOFF_STATE ===
+Include:
+- **Current goal**: What are we building/fixing and WHY (the big-picture reason, not just the immediate task)
+- **Progress**: What is done, what is in-progress, what is the very next step
+- **Active facts**: Environment details mentioned in this session (API keys referenced, service URLs, version numbers confirmed, file paths that matter)
+- **Test results**: What was tried, what it showed, what it ruled out
 
-This section will be extracted after compaction and saved as a persistent skill for future sessions.
+Keep this under 800 characters. This stays in the compact summary — it is NOT written to disk.
+
+---
+
+## Section 2: DECISIONS
+Format: === DECISIONS ===
+List each architectural or project decision made in this session, one per line:
+- DECISION: <choice made> | RATIONALE: <why> | SCOPE: project
+
+Only include decisions that would matter in a future session on the same project. Skip trivial choices.
+
+---
+
+## Section 3: SKILL_CANDIDATES
+Format: === SKILL_CANDIDATES ===
+For each reusable how-to procedure confirmed working in this session, emit:
+
+--- SKILL: <kebab-case-name> ---
+WHEN: <one line: when this skill applies>
+STEPS:
+1. ...
+2. ...
+VERIFIED: <exact command or observation that confirmed it works>
+--- END SKILL ---
+
+A skill is worth extracting only if: (1) it was confirmed working in this session AND (2) it would apply to future sessions on different tasks. Do NOT re-emit skills already shown in the EXISTING SKILLS section unless they need substantive updates.
+
+---
+
+## Section 4: BEHAVIORAL_LEARNINGS
+Format: === BEHAVIORAL_LEARNINGS ===
+Capture user corrections, preferences, and anti-patterns in these subsections:
+USER CORRECTIONS:
+USER PREFERENCES:
+DOMAIN KNOWLEDGE:
+EFFECTIVE PATTERNS:
+ANTI-PATTERNS:
+
+If the EXISTING LEARNED SKILLS section is shown below, merge — update outdated items, add new ones, keep confirmed ones.
+
+---
+
+IMPORTANT: All four sections MUST appear at the end of the compact summary even if some are empty. Empty sections should have a single line: (none this session)

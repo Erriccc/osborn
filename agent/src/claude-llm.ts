@@ -620,6 +620,9 @@ export class ClaudeLLM extends llm.LLM {
       eventEmitter: EventEmitter
     },
   ): void {
+    // Lower compaction threshold to 65% so PreCompact fires earlier and context is preserved
+    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '65'
+
     const userMessage: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text: userText }] } as any,
@@ -1062,61 +1065,203 @@ class ClaudeLLMStream extends llm.LLMStream {
             matcher: '.*',
             hooks: [async (input: any) => {
               try {
+                const { readFileSync, existsSync, readdirSync } = await import('node:fs')
+                const { join } = await import('node:path')
+
+                // 1. Read the instruction file
                 const instructionPath = join(__claudeLlmDir, 'prompts', 'compact-learnings-instruction.md')
-                const instruction = readFileSync(instructionPath, 'utf-8')
+                const instruction = existsSync(instructionPath) ? readFileSync(instructionPath, 'utf-8') : ''
 
-                // Load existing learned skills so Claude can update them
+                // 2. Extract recent context from transcript
+                let recentContext = ''
+                let toolWins: string[] = []
+                const transcriptPath = input?.transcript_path
+                if (transcriptPath && existsSync(transcriptPath)) {
+                  try {
+                    const raw = readFileSync(transcriptPath, 'utf-8')
+                    const lines = raw.trim().split('\n').slice(-200)
+                    const events: any[] = []
+                    for (const line of lines) {
+                      try { events.push(JSON.parse(line)) } catch { /* skip malformed */ }
+                    }
+
+                    // Last 6 user messages
+                    const userMsgs = events
+                      .filter((e: any) => e?.type === 'user' && typeof e?.message?.content === 'string')
+                      .slice(-6)
+                      .map((e: any) => `USER: ${String(e.message.content).substring(0, 300)}`)
+
+                    // Last 3 assistant text blocks
+                    const asstTexts = events
+                      .filter((e: any) => e?.type === 'assistant')
+                      .flatMap((e: any) => Array.isArray(e?.message?.content) ? e.message.content : [])
+                      .filter((b: any) => b?.type === 'text' && b?.text)
+                      .slice(-3)
+                      .map((b: any) => `ASSISTANT: ${String(b.text).substring(0, 400)}`)
+
+                    recentContext = [...userMsgs, ...asstTexts].join('\n')
+
+                    // Successful tool results as skill candidate signals
+                    toolWins = events
+                      .filter((e: any) => e?.type === 'user' && Array.isArray(e?.message?.content))
+                      .flatMap((e: any) => e.message.content)
+                      .filter((b: any) => b?.type === 'tool_result' && !b?.is_error && typeof b?.content === 'string' && String(b.content).length > 20)
+                      .slice(-8)
+                      .map((b: any) => String(b.content).substring(0, 200))
+                  } catch (parseErr) {
+                    console.warn('⚠️ PreCompact: transcript parse failed (continuing):', parseErr instanceof Error ? parseErr.message : parseErr)
+                  }
+                }
+
+                // 3. Load existing skills (all of them, capped)
                 const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
-                const skillPath = join(skillDir, '.claude', 'skills', 'learned-behaviors', 'SKILL.md')
-                let existingSkills = ''
-                try { existingSkills = readFileSync(skillPath, 'utf-8') } catch {}
+                const skillsRoot = join(skillDir, '.claude', 'skills')
+                let existingSkillsBlock = ''
+                if (existsSync(skillsRoot)) {
+                  try {
+                    const names = readdirSync(skillsRoot).slice(0, 15)
+                    const fragments: string[] = []
+                    for (const name of names) {
+                      const p = join(skillsRoot, name, 'SKILL.md')
+                      if (existsSync(p)) {
+                        const body = readFileSync(p, 'utf-8')
+                        // Strip any existing marker lines to avoid circular re-emission
+                        const cleaned = body.replace(/^===.*===\s*$/gm, '').substring(0, 500)
+                        fragments.push(`### ${name}\n${cleaned}`)
+                      }
+                    }
+                    if (fragments.length) {
+                      existingSkillsBlock = `EXISTING SKILLS (do NOT re-emit unchanged; only emit SKILL_CANDIDATES that are new or substantively updated):\n${fragments.join('\n\n')}`
+                    }
+                  } catch (skillErr) {
+                    console.warn('⚠️ PreCompact: skills load failed:', skillErr instanceof Error ? skillErr.message : skillErr)
+                  }
+                }
 
-                const fullInstruction = existingSkills
-                  ? `${instruction}\n\nEXISTING LEARNED SKILLS (update/merge — remove outdated, add new, strengthen confirmed):\n${existingSkills}`
-                  : instruction
+                // 4. Assemble systemMessage with 9500-char budget
+                const MAX = 9500
+                const sections = [
+                  instruction,
+                  recentContext ? `RECENT_SESSION_CONTEXT (raw — use this to populate HANDOFF_STATE):\n${recentContext}` : '',
+                  toolWins.length ? `CANDIDATE_SIGNALS (successful tool results — consider whether any indicate a reusable skill):\n${toolWins.join('\n---\n')}` : '',
+                  existingSkillsBlock,
+                ].filter(Boolean)
 
-                console.log(`🧠 PreCompact: injected learnings instruction (${fullInstruction.length} chars, trigger=${input?.trigger || 'unknown'})`)
-                return { systemMessage: fullInstruction }
+                let full = sections.join('\n\n---\n\n')
+                if (full.length > MAX) {
+                  // Truncate: drop existing skills first, then candidate signals
+                  const fallback = [
+                    instruction,
+                    recentContext ? `RECENT_SESSION_CONTEXT:\n${recentContext}` : '',
+                  ].filter(Boolean).join('\n\n---\n\n')
+                  full = fallback.substring(0, MAX)
+                }
+
+                console.log(`🧠 PreCompact: injected ${full.length} chars (trigger=${input?.trigger || 'unknown'}, hasTranscript=${!!transcriptPath}, toolWins=${toolWins.length})`)
+                return { systemMessage: full }
               } catch (err) {
                 console.error('⚠️ PreCompact hook error:', err instanceof Error ? err.message : err)
                 return {}
               }
             }]
           }],
-          // ── PostCompact: extract BEHAVIORAL_LEARNINGS from summary and write to skill file ──
+          // ── PostCompact: extract all four sections from summary and persist to disk ──
           PostCompact: [{
             matcher: '.*',
             hooks: [async (input: any) => {
               try {
                 const summary: string = input?.compact_summary || ''
-                const marker = '=== BEHAVIORAL_LEARNINGS ==='
-                const idx = summary.indexOf(marker)
-
-                if (idx === -1) {
-                  console.log('🧠 PostCompact: no BEHAVIORAL_LEARNINGS section found in summary — skipping')
-                  return {}
-                }
-
-                const learnings = summary.substring(idx + marker.length).trim()
-                if (learnings.length < 30) {
-                  console.log('🧠 PostCompact: BEHAVIORAL_LEARNINGS section too short — skipping')
-                  return {}
-                }
-
-                // Write the skill file
-                const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
-                const skillFolder = join(skillDir, '.claude', 'skills', 'learned-behaviors')
-                const skillPath = join(skillFolder, 'SKILL.md')
-
                 const { mkdirSync, writeFileSync: writeSyncFs } = await import('fs')
-                mkdirSync(skillFolder, { recursive: true })
-
+                const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
                 const today = new Date().toISOString().split('T')[0]
                 const sessionId = this.#sessionId || 'unknown'
-                const header = `# Learned Behaviors\n\nAuto-extracted from voice sessions via PreCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
 
-                writeSyncFs(skillPath, header + learnings + '\n', 'utf-8')
-                console.log(`🧠 PostCompact: wrote learned behaviors to ${skillPath} (${learnings.length} chars)`)
+                // Helper: extract text between a marker and the next === marker (or end of string)
+                const extractSection = (marker: string): string => {
+                  const idx = summary.indexOf(marker)
+                  if (idx === -1) return ''
+                  const start = idx + marker.length
+                  const nextMarker = summary.indexOf('=== ', start)
+                  return (nextMarker === -1 ? summary.substring(start) : summary.substring(start, nextMarker)).trim()
+                }
+
+                // ── Section 1: HANDOFF_STATE — log only, not written to disk ──
+                const handoff = extractSection('=== HANDOFF_STATE ===')
+                if (handoff) {
+                  console.log(`🧠 PostCompact: HANDOFF_STATE present (${handoff.length} chars) — not written to disk`)
+                }
+
+                // ── Section 2: DECISIONS — append project-scoped decisions ──
+                try {
+                  const decisions = extractSection('=== DECISIONS ===')
+                  if (decisions) {
+                    const projectLines = decisions
+                      .split('\n')
+                      .filter(l => /DECISION:.*SCOPE:\s*project/i.test(l))
+                    if (projectLines.length) {
+                      const decFolder = join(skillDir, '.claude', 'skills', 'project-decisions')
+                      const decPath = join(decFolder, 'SKILL.md')
+                      mkdirSync(decFolder, { recursive: true })
+                      const existing = (() => { try { return require('fs').readFileSync(decPath, 'utf-8') } catch { return '' } })()
+                      const header = existing ? '' : `# Project Decisions\n\nAuto-extracted from compact summaries.\n\n`
+                      const entry = `\n## ${today} (session ${sessionId.substring(0, 8)})\n${projectLines.join('\n')}\n`
+                      writeSyncFs(decPath, header + existing + entry, 'utf-8')
+                      console.log(`🧠 PostCompact: appended ${projectLines.length} decision(s) to ${decPath}`)
+                    }
+                  }
+                } catch (decErr) {
+                  console.error('⚠️ PostCompact: DECISIONS write failed:', decErr instanceof Error ? decErr.message : decErr)
+                }
+
+                // ── Section 3: SKILL_CANDIDATES — parse and write each skill ──
+                try {
+                  const skillsSection = extractSection('=== SKILL_CANDIDATES ===')
+                  if (skillsSection) {
+                    const skillBlockRe = /---\s*SKILL:\s*([^\n-]+?)\s*---\n([\s\S]*?)---\s*END SKILL\s*---/g
+                    const nameRe = /^[a-z][a-z0-9-]{1,39}$/
+                    let match: RegExpExecArray | null
+                    while ((match = skillBlockRe.exec(skillsSection)) !== null) {
+                      const name = match[1].trim()
+                      const body = match[2].trim()
+                      if (!nameRe.test(name)) {
+                        console.warn(`⚠️ PostCompact: skipping skill with invalid name "${name}" (must match /^[a-z][a-z0-9-]{1,39}$/)`)
+                        continue
+                      }
+                      const skillFolder = join(skillDir, '.claude', 'skills', name)
+                      const skillPath = join(skillFolder, 'SKILL.md')
+                      mkdirSync(skillFolder, { recursive: true })
+                      const header = `# ${name}\nAuto-extracted: ${today} | Session: ${sessionId.substring(0, 8)}\n\n`
+                      writeSyncFs(skillPath, header + body + '\n', 'utf-8')
+                      console.log(`🧠 PostCompact: wrote skill '${name}' to ${skillPath}`)
+                    }
+                  }
+                } catch (skillErr) {
+                  console.error('⚠️ PostCompact: SKILL_CANDIDATES write failed:', skillErr instanceof Error ? skillErr.message : skillErr)
+                }
+
+                // ── Section 4: BEHAVIORAL_LEARNINGS — write to learned-behaviors skill file ──
+                try {
+                  const marker = '=== BEHAVIORAL_LEARNINGS ==='
+                  const idx = summary.indexOf(marker)
+                  if (idx !== -1) {
+                    const learnings = summary.substring(idx + marker.length).trim()
+                    if (learnings.length >= 30) {
+                      const skillFolder = join(skillDir, '.claude', 'skills', 'learned-behaviors')
+                      const skillPath = join(skillFolder, 'SKILL.md')
+                      mkdirSync(skillFolder, { recursive: true })
+                      const header = `# Learned Behaviors\n\nAuto-extracted from voice sessions via PostCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
+                      writeSyncFs(skillPath, header + learnings + '\n', 'utf-8')
+                      console.log(`🧠 PostCompact: wrote learned behaviors to ${skillPath} (${learnings.length} chars)`)
+                    } else {
+                      console.log('🧠 PostCompact: BEHAVIORAL_LEARNINGS section too short — skipping')
+                    }
+                  } else {
+                    console.log('🧠 PostCompact: no BEHAVIORAL_LEARNINGS section found in summary — skipping')
+                  }
+                } catch (blErr) {
+                  console.error('⚠️ PostCompact: BEHAVIORAL_LEARNINGS write failed:', blErr instanceof Error ? blErr.message : blErr)
+                }
+
               } catch (err) {
                 console.error('⚠️ PostCompact hook error:', err instanceof Error ? err.message : err)
               }
