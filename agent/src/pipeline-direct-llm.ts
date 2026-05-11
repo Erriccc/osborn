@@ -149,7 +149,7 @@ export class PipelineDirectLLM extends llm.LLM {
         `- If it's a quick side question, answer it then continue where you left off`,
         `- If they want to change direction, acknowledge and follow their lead`,
         `- Clarify when asked to or the question requires going over what you just said`,
-        `- Reference unspoken content naturally if relevant`,
+        `- If relevant details were cut off — whether they answer the current question or an earlier one — weave them back in naturally so the user stays in context without having to ask again.`,
       ].join('\n')
       // Modify the last user message in chatCtx
       for (let i = chatCtx.items.length - 1; i >= 0; i--) {

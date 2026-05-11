@@ -15,11 +15,11 @@ import { setMaxListeners } from 'node:events'
 setMaxListeners(50)
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 
 // Resolve __dirname for this ESM module so we can find sibling files (e.g.
 // meeting-output.html) relative to the compiled JS location, NOT process.cwd().
@@ -350,6 +350,40 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    // GET /sessions/manifest — return mtime+size for all .jsonl files per slug (public, no auth)
+    if (req.method === 'GET' && url.pathname === '/sessions/manifest') {
+      const claudeDir = join(homedir(), '.claude', 'projects')
+      const slugMap: Record<string, { files: Record<string, { mtime: number, size: number }> }> = {}
+
+      try {
+        const slugs = readdirSync(claudeDir, { withFileTypes: true })
+          .filter(d => d.isDirectory())
+          .map(d => d.name)
+
+        for (const slug of slugs) {
+          const slugDir = join(claudeDir, slug)
+          try {
+            const jsonlFiles = readdirSync(slugDir)
+              .filter(f => f.endsWith('.jsonl'))
+            const fileStats: Record<string, { mtime: number, size: number }> = {}
+            for (const file of jsonlFiles) {
+              const st = statSync(join(slugDir, file))
+              fileStats[file] = { mtime: st.mtimeMs, size: st.size }
+            }
+            slugMap[slug] = { files: fileStats }
+          } catch {
+            // skip unreadable dirs
+          }
+        }
+      } catch {
+        // projects dir doesn't exist yet — return empty
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ slugs: slugMap }))
+      return
+    }
+
     // POST /sessions/import — accept a gzipped tar and extract into ~/.claude/projects/
     if (req.method === 'POST' && url.pathname === '/sessions/import') {
       if (syncToken) {
@@ -361,73 +395,89 @@ function startApiServer(workingDir: string, port: number): void {
         }
       }
       const targetWorkDir = url.searchParams.get('targetWorkDir')
-      const chunks: Buffer[] = []
-      req.on('data', (chunk: Buffer) => chunks.push(chunk))
-      req.on('end', () => {
-        const body = Buffer.concat(chunks)
-        const tmpDir = mkdtempSync('/tmp/osborn-import-')
+
+      const tmpDir = mkdtempSync(join(tmpdir(), 'osborn-import-'))
+      const tarProc = spawn('tar', ['-xf', '-', '-C', tmpDir])
+
+      // Streaming: pipe request body directly to tar stdin — no buffering
+      req.pipe(tarProc.stdin)
+
+      tarProc.stdin.on('error', (err: Error) => {
+        console.error('[import] tar stdin error', err)
+        tarProc.kill('SIGTERM')
+        rmSync(tmpDir, { recursive: true, force: true })
+        if (!res.headersSent) {
+          res.writeHead(500)
+          res.end(JSON.stringify({ error: 'upload error' }))
+        }
+      })
+
+      req.on('aborted', () => {
+        tarProc.kill('SIGTERM')
+        rmSync(tmpDir, { recursive: true, force: true })
+      })
+
+      tarProc.stderr.on('data', (d: Buffer) => console.error('[import]', d.toString()))
+
+      tarProc.on('close', async (code: number | null) => {
         try {
-          // Extract archive into temp dir
-          const tarProc = spawn('tar', ['-xzf', '-', '-C', tmpDir])
-          tarProc.stdin.write(body)
-          tarProc.stdin.end()
-          tarProc.stderr.on('data', (d: Buffer) => console.error('[import]', d.toString()))
-          tarProc.on('close', (code: number | null) => {
-            if (code !== 0) {
-              res.writeHead(500, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ error: 'tar extraction failed', code }))
-              return
+          if (code !== 0) {
+            res.writeHead(500)
+            res.end(JSON.stringify({ error: 'tar extraction failed', code }))
+            return
+          }
+
+          const claudeDir = join(homedir(), '.claude')
+          const projectsDir = join(claudeDir, 'projects')
+          mkdirSync(projectsDir, { recursive: true })
+
+          // The archive should contain a 'projects' subdirectory
+          const extractedProjects = join(tmpDir, 'projects')
+          const sourceDir = existsSync(extractedProjects) ? extractedProjects : tmpDir
+
+          // Optionally remap slug: if targetWorkDir is provided, find slug(s)
+          // that don't match the target and rename them
+          const remapped: Record<string, string> = {}
+          if (targetWorkDir) {
+            const targetSlug = targetWorkDir.replace(/\//g, '-')
+            const sourceSlugs = readdirSync(sourceDir)
+            for (const slug of sourceSlugs) {
+              if (slug !== targetSlug && !slug.startsWith('.')) {
+                remapped[slug] = targetSlug
+              }
             }
+          }
+
+          // Copy subdirectories into ~/.claude/projects/, merging and updating existing files
+          let filesWritten = 0
+          const slugsInSource = readdirSync(sourceDir)
+          for (const slug of slugsInSource) {
+            const effectiveSlug = remapped[slug] ?? slug
+            const destSlug = join(projectsDir, effectiveSlug)
+            mkdirSync(destSlug, { recursive: true })
             try {
-              const claudeDir = join(homedir(), '.claude')
-              const projectsDir = join(claudeDir, 'projects')
-              mkdirSync(projectsDir, { recursive: true })
-
-              // The archive should contain a 'projects' subdirectory
-              const extractedProjects = join(tmpDir, 'projects')
-              const sourceDir = existsSync(extractedProjects) ? extractedProjects : tmpDir
-
-              // Optionally remap slug: if targetWorkDir is provided, find slug(s)
-              // that don't match the target and rename them
-              let remapped: Record<string, string> = {}
-              if (targetWorkDir) {
-                const targetSlug = targetWorkDir.replace(/\//g, '-')
-                const sourceSlugs = readdirSync(sourceDir)
-                for (const slug of sourceSlugs) {
-                  if (slug !== targetSlug && !slug.startsWith('.')) {
-                    const newSlug = targetSlug
-                    remapped[slug] = newSlug
-                  }
-                }
+              renameSync(join(sourceDir, slug), destSlug)
+            } catch (e: any) {
+              if (e.code === 'EXDEV') {
+                // Cross-filesystem fallback
+                cpSync(join(sourceDir, slug), destSlug, { recursive: true, force: true, errorOnExist: false })
+              } else {
+                throw e
               }
-
-              // Copy subdirectories into ~/.claude/projects/, merging without overwriting
-              let filesWritten = 0
-              const slugsInSource = readdirSync(sourceDir)
-              for (const slug of slugsInSource) {
-                const effectiveSlug = remapped[slug] ?? slug
-                const destSlug = join(projectsDir, effectiveSlug)
-                mkdirSync(destSlug, { recursive: true })
-                cpSync(join(sourceDir, slug), destSlug, {
-                  recursive: true,
-                  force: false,     // don't overwrite existing files
-                  errorOnExist: false,
-                })
-                filesWritten++
-              }
-
-              res.writeHead(200, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ ok: true, filesWritten, remapped }))
-            } catch (err) {
-              console.error('[import] merge error:', err)
-              res.writeHead(500, { 'Content-Type': 'application/json' })
-              res.end(JSON.stringify({ error: 'Failed to merge sessions', detail: String(err) }))
             }
-          })
+            filesWritten++
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, filesWritten, remapped }))
         } catch (err) {
-          console.error('[import] spawn error:', err)
-          res.writeHead(500, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'Failed to start extraction', detail: String(err) }))
+          console.error('[import] merge error:', err)
+          if (!res.headersSent) {
+            res.writeHead(500)
+            res.end(JSON.stringify({ error: 'Failed to merge sessions', detail: String(err) }))
+          }
+        } finally {
+          rmSync(tmpDir, { recursive: true, force: true })
         }
       })
       return
@@ -438,6 +488,7 @@ function startApiServer(workingDir: string, port: number): void {
   })
 
   const host = process.env.HOST || '0.0.0.0'
+  server.requestTimeout = 0  // no timeout — large uploads can take minutes
   server.listen(port, host, () => {
     console.log(`🌐 API server listening on http://${host}:${port}`)
     console.log(`   Sessions: http://${host}:${port}/sessions`)
