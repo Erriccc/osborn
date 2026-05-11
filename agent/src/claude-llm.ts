@@ -621,7 +621,7 @@ export class ClaudeLLM extends llm.LLM {
     },
   ): void {
     // Lower compaction threshold to 65% so PreCompact fires earlier and context is preserved
-    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '65'
+    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '60'
 
     const userMessage: SDKUserMessage = {
       type: 'user',
@@ -1056,66 +1056,36 @@ class ClaudeLLMStream extends llm.LLMStream {
               }
             }]
           }],
-          // ── PreCompact: inject "include behavioral learnings" instruction into the compact ──
-          // When the SDK is about to compress the conversation, this tells Claude to
-          // include a BEHAVIORAL_LEARNINGS section in the compact summary. The instruction
-          // is read from disk (hot-editable like the other prompts). Also includes
-          // existing learned skills so Claude can merge/update rather than start fresh.
+          // ── PreCompact: read full transcript, call Anthropic API directly to extract skills ──
+          // Fires before the SDK compresses the conversation. Reads the FULL transcript JSONL,
+          // calls claude-haiku-4-5-20251001 directly for structured extraction, and writes
+          // skill files to disk immediately — no relying on PostCompact for persistence.
           PreCompact: [{
             matcher: '.*',
             hooks: [async (input: any) => {
               try {
-                const { readFileSync, existsSync, readdirSync } = await import('node:fs')
+                const { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } = await import('node:fs')
                 const { join } = await import('node:path')
 
                 // 1. Read the instruction file
                 const instructionPath = join(__claudeLlmDir, 'prompts', 'compact-learnings-instruction.md')
                 const instruction = existsSync(instructionPath) ? readFileSync(instructionPath, 'utf-8') : ''
 
-                // 2. Extract recent context from transcript
-                let recentContext = ''
-                let toolWins: string[] = []
+                // 2. Read FULL transcript (no line limit)
                 const transcriptPath = input?.transcript_path
+                let transcriptContent = ''
                 if (transcriptPath && existsSync(transcriptPath)) {
                   try {
-                    const raw = readFileSync(transcriptPath, 'utf-8')
-                    const lines = raw.trim().split('\n').slice(-200)
-                    const events: any[] = []
-                    for (const line of lines) {
-                      try { events.push(JSON.parse(line)) } catch { /* skip malformed */ }
-                    }
-
-                    // Last 6 user messages
-                    const userMsgs = events
-                      .filter((e: any) => e?.type === 'user' && typeof e?.message?.content === 'string')
-                      .slice(-6)
-                      .map((e: any) => `USER: ${String(e.message.content).substring(0, 300)}`)
-
-                    // Last 3 assistant text blocks
-                    const asstTexts = events
-                      .filter((e: any) => e?.type === 'assistant')
-                      .flatMap((e: any) => Array.isArray(e?.message?.content) ? e.message.content : [])
-                      .filter((b: any) => b?.type === 'text' && b?.text)
-                      .slice(-3)
-                      .map((b: any) => `ASSISTANT: ${String(b.text).substring(0, 400)}`)
-
-                    recentContext = [...userMsgs, ...asstTexts].join('\n')
-
-                    // Successful tool results as skill candidate signals
-                    toolWins = events
-                      .filter((e: any) => e?.type === 'user' && Array.isArray(e?.message?.content))
-                      .flatMap((e: any) => e.message.content)
-                      .filter((b: any) => b?.type === 'tool_result' && !b?.is_error && typeof b?.content === 'string' && String(b.content).length > 20)
-                      .slice(-8)
-                      .map((b: any) => String(b.content).substring(0, 200))
-                  } catch (parseErr) {
-                    console.warn('⚠️ PreCompact: transcript parse failed (continuing):', parseErr instanceof Error ? parseErr.message : parseErr)
+                    transcriptContent = readFileSync(transcriptPath, 'utf-8')
+                  } catch (readErr) {
+                    console.warn('⚠️ PreCompact: could not read transcript:', readErr instanceof Error ? readErr.message : readErr)
                   }
                 }
 
-                // 3. Load existing skills (all of them, capped)
                 const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
                 const skillsRoot = join(skillDir, '.claude', 'skills')
+
+                // 3. Load existing skills for context (cap each at 500 chars)
                 let existingSkillsBlock = ''
                 if (existsSync(skillsRoot)) {
                   try {
@@ -1125,40 +1095,110 @@ class ClaudeLLMStream extends llm.LLMStream {
                       const p = join(skillsRoot, name, 'SKILL.md')
                       if (existsSync(p)) {
                         const body = readFileSync(p, 'utf-8')
-                        // Strip any existing marker lines to avoid circular re-emission
                         const cleaned = body.replace(/^===.*===\s*$/gm, '').substring(0, 500)
                         fragments.push(`### ${name}\n${cleaned}`)
                       }
                     }
                     if (fragments.length) {
-                      existingSkillsBlock = `EXISTING SKILLS (do NOT re-emit unchanged; only emit SKILL_CANDIDATES that are new or substantively updated):\n${fragments.join('\n\n')}`
+                      existingSkillsBlock = `EXISTING SKILLS (do NOT re-emit unchanged):\n${fragments.join('\n\n')}`
                     }
                   } catch (skillErr) {
                     console.warn('⚠️ PreCompact: skills load failed:', skillErr instanceof Error ? skillErr.message : skillErr)
                   }
                 }
 
-                // 4. Assemble systemMessage with 9500-char budget
-                const MAX = 9500
-                const sections = [
-                  instruction,
-                  recentContext ? `RECENT_SESSION_CONTEXT (raw — use this to populate HANDOFF_STATE):\n${recentContext}` : '',
-                  toolWins.length ? `CANDIDATE_SIGNALS (successful tool results — consider whether any indicate a reusable skill):\n${toolWins.join('\n---\n')}` : '',
-                  existingSkillsBlock,
-                ].filter(Boolean)
+                // 4. If transcript available, use direct Anthropic API call to extract everything
+                if (transcriptContent && process.env.ANTHROPIC_API_KEY) {
+                  try {
+                    const Anthropic = (await import('@anthropic-ai/sdk')).default
+                    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-                let full = sections.join('\n\n---\n\n')
-                if (full.length > MAX) {
-                  // Truncate: drop existing skills first, then candidate signals
-                  const fallback = [
-                    instruction,
-                    recentContext ? `RECENT_SESSION_CONTEXT:\n${recentContext}` : '',
-                  ].filter(Boolean).join('\n\n---\n\n')
-                  full = fallback.substring(0, MAX)
+                    const extractionPrompt = [
+                      instruction,
+                      existingSkillsBlock,
+                      `FULL SESSION TRANSCRIPT (JSONL format — extract the four sections from this):`,
+                      transcriptContent,
+                    ].filter(Boolean).join('\n\n---\n\n')
+
+                    console.log(`🧠 PreCompact: calling extraction API (${extractionPrompt.length} chars, trigger=${input?.trigger || 'unknown'})`)
+
+                    const response = await client.messages.create({
+                      model: 'claude-haiku-4-5-20251001',
+                      max_tokens: 4096,
+                      messages: [{ role: 'user', content: extractionPrompt }],
+                    })
+
+                    const extractedText = response.content[0]?.type === 'text' ? (response.content[0] as any).text : ''
+
+                    if (extractedText) {
+                      // Write SKILL_CANDIDATES to disk directly
+                      const skillRegex = /--- SKILL: ([a-z][a-z0-9-]{1,39}) ---\n([\s\S]*?)\n--- END SKILL ---/g
+                      let match
+                      while ((match = skillRegex.exec(extractedText)) !== null) {
+                        const [, name, body] = match
+                        if (/^[a-z][a-z0-9-]{1,39}$/.test(name)) {
+                          const today = new Date().toISOString().split('T')[0]
+                          const sessionId = this.#sessionId || 'unknown'
+                          const skillFolder = join(skillsRoot, name)
+                          mkdirSync(skillFolder, { recursive: true })
+                          writeFileSync(join(skillFolder, 'SKILL.md'), `# ${name}\nAuto-extracted: ${today} | Session: ${sessionId.substring(0, 8)}\n\n${body}`)
+                          console.log(`🧠 PreCompact: wrote skill '${name}' to ${skillFolder}`)
+                        }
+                      }
+
+                      // Write BEHAVIORAL_LEARNINGS to learned-behaviors skill
+                      const blMarker = '=== BEHAVIORAL_LEARNINGS ==='
+                      const blIdx = extractedText.indexOf(blMarker)
+                      if (blIdx !== -1) {
+                        const blContent = extractedText.substring(blIdx)
+                        if (blContent.length > 30) {
+                          const today = new Date().toISOString().split('T')[0]
+                          const sessionId = this.#sessionId || 'unknown'
+                          const learnedDir = join(skillsRoot, 'learned-behaviors')
+                          mkdirSync(learnedDir, { recursive: true })
+                          const header = `# Learned Behaviors\n\nAuto-extracted from voice sessions via PreCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
+                          writeFileSync(join(learnedDir, 'SKILL.md'), header + blContent)
+                          console.log(`🧠 PreCompact: wrote learned-behaviors (${blContent.length} chars)`)
+                        }
+                      }
+
+                      // Write project-scoped DECISIONS
+                      const decMarker = '=== DECISIONS ==='
+                      const decIdx = extractedText.indexOf(decMarker)
+                      if (decIdx !== -1) {
+                        const decEnd = extractedText.indexOf('===', decIdx + decMarker.length)
+                        const decContent = extractedText.substring(decIdx + decMarker.length, decEnd !== -1 ? decEnd : undefined)
+                        const projectDecisions = decContent.split('\n').filter((l: string) => l.includes('SCOPE: project')).join('\n')
+                        if (projectDecisions.trim()) {
+                          const decDir = join(skillsRoot, 'project-decisions')
+                          mkdirSync(decDir, { recursive: true })
+                          const decFile = join(decDir, 'SKILL.md')
+                          const existing = existsSync(decFile) ? readFileSync(decFile, 'utf-8') : '# Project Decisions\n\n'
+                          writeFileSync(decFile, existing + '\n' + projectDecisions)
+                          console.log(`🧠 PreCompact: appended project decisions`)
+                        }
+                      }
+
+                      // Return extracted content as systemMessage for compact summary
+                      const systemMessage = [
+                        '## Pre-Compaction Extraction Complete',
+                        'Skill files have been written to disk. Include the following in your compact summary verbatim:',
+                        extractedText.substring(0, 8000),
+                      ].join('\n\n').substring(0, 9500)
+
+                      console.log(`🧠 PreCompact: extraction complete, returning systemMessage (${systemMessage.length} chars)`)
+                      return { systemMessage }
+                    }
+                  } catch (apiErr) {
+                    console.error('⚠️ PreCompact: API extraction failed, falling back to basic mode:', apiErr instanceof Error ? apiErr.message : apiErr)
+                    // Fall through to basic fallback
+                  }
                 }
 
-                console.log(`🧠 PreCompact: injected ${full.length} chars (trigger=${input?.trigger || 'unknown'}, hasTranscript=${!!transcriptPath}, toolWins=${toolWins.length})`)
-                return { systemMessage: full }
+                // 5. Fallback: basic mode — just inject the instruction
+                console.log(`🧠 PreCompact: basic mode (no transcript or API key unavailable)`)
+                return { systemMessage: instruction.substring(0, 9500) }
+
               } catch (err) {
                 console.error('⚠️ PreCompact hook error:', err instanceof Error ? err.message : err)
                 return {}
