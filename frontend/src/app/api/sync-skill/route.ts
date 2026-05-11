@@ -39,9 +39,8 @@ Write the complete script as a single file, then execute it. The script should:
    - Local projects dir is typically: $HOME/.claude/projects
    - Slug example: -Users-yourname-Desktop-Developer-osborn
 3. Create a gzip archive — ALWAYS use gzip, NOT zstd (server doesn't support zstd):
-   cd ~/.claude/projects && tar -czf /tmp/osborn-sync.tar.gz --exclude='._*' -- <slug>/*.jsonl
+   tar -czf /tmp/osborn-sync.tar.gz --exclude='._*' -C "$HOME/.claude" projects
    Note: --exclude='._*' is required on macOS BSD tar to prevent AppleDouble metadata files (macOS BSD tar only — not needed on Linux/Windows)
-   Note: the -- before slug prevents tar treating the leading - as a flag
 4. Split into 50MB chunks for parallel upload:
    split -b 50m /tmp/osborn-sync.tar.gz /tmp/osborn-chunk-
 5. Generate a unique upload ID: UPLOAD_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
