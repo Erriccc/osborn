@@ -1384,6 +1384,9 @@ async function main() {
       resumeSessionId,
       voiceMode: 'direct',
       skipTTSQueue: true,
+      onCompactionEvent: (event) => {
+        try { sendToFrontend({ type: event.type, trigger: event.trigger, skillsWritten: event.skillsWritten }) } catch { /* non-fatal */ }
+      },
     })
     currentLLM = directLLM
 
@@ -1729,6 +1732,9 @@ async function main() {
       sessionBaseDir,
       mcpServers,
       resumeSessionId,
+      onCompactionEvent: (event) => {
+        try { sendToFrontend({ type: event.type, trigger: event.trigger, skillsWritten: event.skillsWritten }) } catch { /* non-fatal */ }
+      },
     })
     currentLLM = realtimeClaudeHandler
 

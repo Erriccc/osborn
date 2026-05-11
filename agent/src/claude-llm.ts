@@ -40,6 +40,7 @@ export interface ClaudeLLMOptions {
   model?: string  // Claude model ID (default: claude-sonnet-4-6)
   voiceMode?: 'direct' | 'realtime'  // Which voice pipeline — controls system prompt selection
   skipTTSQueue?: boolean  // When true, emit 'tts_say' events instead of queue.put() — for session.say() bypass
+  onCompactionEvent?: (event: { type: 'compaction_started' | 'compaction_complete'; trigger?: string; skillsWritten?: number }) => void
 }
 
 /**
@@ -1064,6 +1065,8 @@ class ClaudeLLMStream extends llm.LLMStream {
             matcher: '.*',
             hooks: [async (input: any) => {
               try {
+                this.#opts.onCompactionEvent?.({ type: 'compaction_started', trigger: input?.trigger })
+
                 const { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } = await import('node:fs')
                 const { join } = await import('node:path')
 
@@ -1187,6 +1190,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                       // Write SKILL_CANDIDATES to disk directly
                       const skillRegex = /--- SKILL: ([a-z][a-z0-9-]{1,39}) ---\n([\s\S]*?)\n--- END SKILL ---/g
                       let match
+                      let skillsWrittenCount = 0
                       while ((match = skillRegex.exec(extractedText)) !== null) {
                         const [, name, body] = match
                         if (/^[a-z][a-z0-9-]{1,39}$/.test(name)) {
@@ -1196,6 +1200,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                           mkdirSync(skillFolder, { recursive: true })
                           writeFileSync(join(skillFolder, 'SKILL.md'), `# ${name}\nAuto-extracted: ${today} | Session: ${sessionId.substring(0, 8)}\n\n${body}`)
                           console.log(`🧠 PreCompact: wrote skill '${name}' to ${skillFolder}`)
+                          skillsWrittenCount++
                         }
                       }
 
@@ -1240,6 +1245,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                       ].join('\n\n').substring(0, 9500)
 
                       console.log(`🧠 PreCompact: extraction complete, returning systemMessage (${systemMessage.length} chars)`)
+                      this.#opts.onCompactionEvent?.({ type: 'compaction_complete', trigger: input?.trigger, skillsWritten: skillsWrittenCount })
                       return { systemMessage }
                     }
                   } catch (apiErr) {
@@ -1250,6 +1256,7 @@ class ClaudeLLMStream extends llm.LLMStream {
 
                 // 5. Fallback: basic mode — just inject the instruction
                 console.log(`🧠 PreCompact: basic mode (no transcript or API key unavailable)`)
+                this.#opts.onCompactionEvent?.({ type: 'compaction_complete', trigger: input?.trigger, skillsWritten: 0 })
                 return { systemMessage: instruction.substring(0, 9500) }
 
               } catch (err) {

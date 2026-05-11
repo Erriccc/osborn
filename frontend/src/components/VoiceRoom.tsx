@@ -1347,6 +1347,8 @@ function VoiceRoomInner({
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
   const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
   const [meetingError, setMeetingError] = useState<string | null>(null)
+  // Compaction status indicator
+  const [compactionStatus, setCompactionStatus] = useState<'idle' | 'compacting' | 'complete'>('idle')
 
   // Derived: currently selected file for preview
   const selectedFile = useMemo(() => {
@@ -1988,6 +1990,13 @@ function VoiceRoomInner({
         setMeetingError(data.message)
         setMeetingStatus('error')
         setTimeout(() => { setMeetingStatus('idle'); setMeetingError(null) }, 5000)
+      } else if (data.type === 'compaction_started') {
+        console.log('🧠 Compaction started, trigger:', data.trigger)
+        setCompactionStatus('compacting')
+      } else if (data.type === 'compaction_complete') {
+        console.log('🧠 Compaction complete, skillsWritten:', data.skillsWritten)
+        setCompactionStatus('complete')
+        setTimeout(() => setCompactionStatus('idle'), 3000)
       } else {
         console.log('❓ Unknown message type:', data.type)
       }
@@ -2606,6 +2615,32 @@ function VoiceRoomInner({
 
             {/* Status */}
             <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} />
+
+            {/* Compaction status pill — subtle, non-intrusive */}
+            {compactionStatus !== 'idle' && (
+              <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium transition-all duration-300 ${
+                compactionStatus === 'compacting'
+                  ? 'bg-amber-500/15 text-amber-400 border border-amber-500/25'
+                  : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25'
+              }`}>
+                {compactionStatus === 'compacting' ? (
+                  <>
+                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <span>Compacting session&hellip;</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span>Memory updated</span>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Control Menu (Mode + History + Tools) — hidden on mobile */}
             <div className="hidden sm:block"><ControlMenu
