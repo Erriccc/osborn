@@ -6,8 +6,8 @@ export async function GET() {
 ## DIRECTION — Upload or Download?
 
 Before running, decide which direction you need:
-- **UPLOAD (Mac → Sprite)**: Push your local session files to the sprite for backup or to continue on another device
-- **DOWNLOAD (Sprite → Mac)**: Pull sessions from the sprite back to your local machine
+- **UPLOAD (Local → Sprite)**: Push your local session files to the sprite for backup or to continue on another device
+- **DOWNLOAD (Sprite → Local)**: Pull sessions from the sprite back to your local machine
 
 Ask the user which they want, then run the appropriate section below.
 
@@ -40,7 +40,7 @@ Write the complete script as a single file, then execute it. The script should:
    - Slug example: -Users-yourname-Desktop-Developer-osborn
 3. Create a gzip archive — ALWAYS use gzip, NOT zstd (server doesn't support zstd):
    cd ~/.claude/projects && tar -czf /tmp/osborn-sync.tar.gz --exclude='._*' -- <slug>/*.jsonl
-   Note: --exclude='._*' is required on macOS to prevent BSD tar AppleDouble metadata files
+   Note: --exclude='._*' is required on macOS BSD tar to prevent AppleDouble metadata files (macOS BSD tar only — not needed on Linux/Windows)
    Note: the -- before slug prevents tar treating the leading - as a flag
 4. Split into 50MB chunks for parallel upload:
    split -b 50m /tmp/osborn-sync.tar.gz /tmp/osborn-chunk-
@@ -72,11 +72,11 @@ After the script finishes, report: how many files were uploaded, whether the man
 - Parallel chunked upload: all chunks return HTTP 200 independently; finalize assembles them
 - Slug remapping is automatic: your local slug is remapped to the sprite's target path
 - The sync is safe to re-run: existing files are not overwritten (no-overwrite behavior)
-- BSD tar on macOS: always use --exclude='._*' to prevent AppleDouble metadata files in the archive
+- macOS BSD tar only: always use --exclude='._*' to prevent AppleDouble metadata files in the archive; Linux and Windows tar do not produce these files
 
 ---
 
-## DOWNLOAD (Sprite → Mac)
+## DOWNLOAD (Sprite → Local)
 
 Pulls all session files from the sprite and merges them into your local \`~/.claude/projects/\`.
 
@@ -117,12 +117,48 @@ SPRITE_SLUG="-home-sprite-workspace"
 
 EXTRACT_DIR="/tmp/osborn-extract/projects"
 
+merge_jsonl() {
+  local src="$1"   # file from sprite
+  local dest="$2"  # local file
+
+  if [ ! -f "$dest" ]; then
+    cp "$src" "$dest"
+    return
+  fi
+
+  # Extract last timestamp from each JSONL file
+  get_ts() {
+    local f="$1"
+    if command -v jq &>/dev/null; then
+      tail -1 "$f" | jq -r '.timestamp // .ts // ""' 2>/dev/null
+    else
+      tail -1 "$f" | grep -o '"timestamp":"[^"]*"' | cut -d'"' -f4 2>/dev/null
+    fi
+  }
+
+  local sprite_ts local_ts
+  sprite_ts=$(get_ts "$src")
+  local_ts=$(get_ts "$dest")
+
+  # ISO 8601 timestamps sort lexicographically — string compare works
+  if [ -n "$sprite_ts" ] && [ "$sprite_ts" > "$local_ts" ]; then
+    cp "$src" "$dest"
+    echo "  Updated: $(basename $dest) (sprite: $sprite_ts > local: $local_ts)"
+  else
+    echo "  Kept local: $(basename $dest) (local is newer or equal)"
+  fi
+}
+
 if [ -d "$EXTRACT_DIR/$SPRITE_SLUG" ]; then
   echo "Remapping slug: $SPRITE_SLUG -> -$LOCAL_SLUG"
   LOCAL_PROJECTS="$HOME/.claude/projects"
   mkdir -p "$LOCAL_PROJECTS/-$LOCAL_SLUG"
-  # Copy files, don't overwrite newer local files
-  cp -n "$EXTRACT_DIR/$SPRITE_SLUG/"* "$LOCAL_PROJECTS/-$LOCAL_SLUG/" 2>/dev/null || true
+  for f in "$EXTRACT_DIR/$SPRITE_SLUG/"*.jsonl; do
+    [ -f "$f" ] || continue
+    fname=$(basename "$f")
+    dest="$LOCAL_PROJECTS/$LOCAL_SLUG/$fname"
+    merge_jsonl "$f" "$dest"
+  done
   echo "Sessions merged into $LOCAL_PROJECTS/-$LOCAL_SLUG/"
 else
   echo "Warning: Expected slug folder $SPRITE_SLUG not found in extracted archive"
@@ -140,7 +176,7 @@ Then execute: \`bash /tmp/osborn-download.sh\`
 Verify by checking that \`~/.claude/projects/<your-local-slug>/\` contains the expected \`.jsonl\` files from the sprite session.
 
 ### Notes
-- Uses \`cp -n\` (no-overwrite) — safe to re-run, won't clobber newer local files
+- Merge uses JSONL timestamps — the version with the most recent session entry wins, regardless of file size or modification time
 - The sprite exports its full \`~/.claude/projects/\` directory as a gzip tar
 - Slug remapping is handled by the script — sprite slug becomes your local slug
 - If you have multiple project slugs on the sprite, the script picks up all of them
