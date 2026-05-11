@@ -20,6 +20,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
+import { PassThrough } from 'node:stream'
+import { createGunzip } from 'node:zlib'
 
 // Resolve __dirname for this ESM module so we can find sibling files (e.g.
 // meeting-output.html) relative to the compiled JS location, NOT process.cwd().
@@ -397,12 +399,28 @@ function startApiServer(workingDir: string, port: number): void {
       const targetWorkDir = url.searchParams.get('targetWorkDir')
 
       const tmpDir = mkdtempSync(join(tmpdir(), 'osborn-import-'))
-      const contentType = req.headers['content-type'] ?? ''
-      const isGzip = contentType.includes('gzip') || (req.headers['content-encoding'] ?? '').includes('gzip')
-      const tarProc = spawn('tar', isGzip ? ['-xzf', '-', '-C', tmpDir] : ['-xf', '-', '-C', tmpDir])
+      const tarProc = spawn('tar', ['-xf', '-', '-C', tmpDir])
 
-      // Streaming: pipe request body directly to tar stdin — no buffering
-      req.pipe(tarProc.stdin)
+      // Stream-sniff the first chunk to detect gzip magic bytes (0x1f 0x8b).
+      // Then route through createGunzip() if gzip, otherwise pipe raw to tar.
+      // This avoids any reliance on Content-Type or Content-Encoding headers.
+      const passthrough = new PassThrough()
+      let sniffDone = false
+      req.once('data', (firstChunk: Buffer) => {
+        sniffDone = true
+        const isGzip = firstChunk[0] === 0x1f && firstChunk[1] === 0x8b
+        passthrough.write(firstChunk)
+        req.pipe(passthrough)
+        const source = isGzip ? passthrough.pipe(createGunzip()) : passthrough
+        source.pipe(tarProc.stdin)
+      })
+      req.once('end', () => {
+        if (!sniffDone) {
+          // Empty body — just end tar stdin
+          passthrough.end()
+          tarProc.stdin.end()
+        }
+      })
 
       tarProc.stdin.on('error', (err: Error) => {
         console.error('[import] tar stdin error', err)
@@ -565,24 +583,27 @@ function startApiServer(workingDir: string, port: number): void {
       const tmpExtractDir = mkdtempSync(join(tmpdir(), 'osborn-import-'))
 
       try {
-        // Detect gzip by sniffing the first two bytes of the first chunk (magic: 0x1f 0x8b)
-        const firstChunkPath = join(uploadDir, expectedChunks[0])
-        const firstChunkHeader = readFileSync(firstChunkPath)
-        const isGzip = firstChunkHeader[0] === 0x1f && firstChunkHeader[1] === 0x8b
-        // Reassemble chunks into a single stream and pipe to tar
-        const tarProc = spawn('tar', isGzip ? ['-xzf', '-', '-C', tmpExtractDir] : ['-xf', '-', '-C', tmpExtractDir])
+        // Reassemble all chunks into a combined buffer, then sniff first 2 bytes
+        // to detect gzip magic (0x1f 0x8b). Route through createGunzip() if gzip,
+        // otherwise pass raw bytes — always using tar -xf (no -z flag).
+        const chunkBuffers: Buffer[] = []
+        for (const chunkFile of expectedChunks) {
+          chunkBuffers.push(readFileSync(join(uploadDir, chunkFile)))
+        }
+        const combined = Buffer.concat(chunkBuffers)
+        const isGzip = combined[0] === 0x1f && combined[1] === 0x8b
 
-        // Stream chunks in order to tar stdin
+        const tarProc = spawn('tar', ['-xf', '-', '-C', tmpExtractDir])
+
+        // Feed combined buffer through gunzip (if needed) then into tar stdin
+        const feedStream = new PassThrough()
+        const tarInput = isGzip ? feedStream.pipe(createGunzip()) : feedStream
+        tarInput.pipe(tarProc.stdin)
+        feedStream.end(combined)
+
         const streamChunks = async () => {
-          for (const chunkFile of expectedChunks) {
-            const chunkData = readFileSync(join(uploadDir, chunkFile))
-            await new Promise<void>((resolve, reject) => {
-              tarProc.stdin.write(chunkData, (err) => {
-                if (err) reject(err); else resolve()
-              })
-            })
-          }
-          tarProc.stdin.end()
+          // feeding is already initiated above; just return a resolved promise
+          await Promise.resolve()
         }
 
         streamChunks().catch(err => {
