@@ -25,19 +25,36 @@ Syncs your local Claude Code session files to your Osborn sprite. Uses increment
    Only include files where local mtime > remote mtime, or files not in the manifest at all.
    On first sync (slug not in manifest), include all files.
 
-4. Build the tar with only changed files
-   tar -czf /tmp/osborn-sync.tar.gz -C ~/.claude/projects -- <slug>/<file1> <slug>/<file2> ...
+4. Build the compressed archive
    (If no files are newer, you can skip the upload entirely.)
-   Note: on Linux/Codespace, zstd gives better compression — use GNU tar's --zstd flag:
+
+   Choose compression based on what's available on your system:
+
+   Best option — zstd (if installed):
+   Linux/Codespace: sudo apt-get install -y zstd  (if not present), then:
      tar --zstd -cf /tmp/osborn-sync.tar.zst -C ~/.claude/projects -- <slug>/<file1> <slug>/<file2> ...
-   Then update the curl filename in step 5 to @/tmp/osborn-sync.tar.zst
-   On Mac, gzip (as shown above) works fine; for zstd support install GNU tar via Homebrew (brew install gnu-tar).
+   Mac: brew install zstd  (if not present), then same command above.
+
+   Universal fallback — gzip at max compression (always available):
+     GZIP=-9 tar -czf /tmp/osborn-sync.tar.gz -C ~/.claude/projects -- <slug>/<file1> <slug>/<file2> ...
+
+   Windows (PowerShell):
+     Compress-Archive -Path "$env:USERPROFILE\\.claude\\projects\\<slug>" -DestinationPath "$env:TEMP\\osborn-sync.zip" -CompressionLevel Optimal
+     Note: update the upload curl command in step 5 to use osborn-sync.zip as the filename.
+
+   Why these choices: zstd and gzip produce similar-sized archives for JSON text, but zstd
+   compresses 5-10x faster. At max gzip level (-9), you get 10-20% smaller archives than
+   default gzip with no additional install. Use whichever gets you the smallest file fastest
+   on your system. The server auto-detects compression format, so any of these formats will
+   work on the receiving end.
 
 5. Upload to the sprite
    curl -X POST "<SPRITE_URL>/sessions/import?targetWorkDir=<URL_ENCODED_TARGET_PATH>" \\
      -H "Authorization: Bearer <TOKEN>" \\
      -H "Content-Type: application/octet-stream" \\
      --data-binary @/tmp/osborn-sync.tar.gz
+   If you used zstd, change the filename to @/tmp/osborn-sync.tar.zst.
+   If you used Windows PowerShell, change the filename to @"$env:TEMP\\osborn-sync.zip".
    You can run this in the background with \`&\` so you are not blocked waiting for the upload to complete.
 
 6. Confirm success
@@ -48,6 +65,8 @@ Syncs your local Claude Code session files to your Osborn sprite. Uses increment
 
 8. Clean up
    rm /tmp/osborn-sync.tar.gz /tmp/osborn-manifest.json
+   (If you used zstd: rm /tmp/osborn-sync.tar.zst /tmp/osborn-manifest.json)
+   (If you used Windows: del "$env:TEMP\\osborn-sync.zip")
 `
 
   return new NextResponse(skillContent, {
