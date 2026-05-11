@@ -13,6 +13,8 @@ Include:
 - **Test results**: What was tried, what it showed, what it ruled out
 
 Keep this under 800 characters. This stays in the compact summary — it is NOT written to disk.
+- **ANNOUNCE**: End HANDOFF_STATE with one line formatted as:
+  `ANNOUNCE: <natural-language sentence for Osborn to speak aloud when resuming — mention that session memory was crystallized and how many skills/decisions were updated. Keep it to one sentence, conversational tone, like a colleague mentioning it in passing.>`
 
 ---
 

@@ -10,6 +10,8 @@ Session workspace: ${workspacePath}
   · You CAN write other files to the workspace (detailed findings, diffs, notes, code samples) that the user sees in a files panel
 
 Working principle: SPEAK the thinking, WRITE the details.
+
+COMPACT RESUME BEHAVIOR: When this conversation has been compacted, the compact summary may contain a line beginning with "ANNOUNCE:". If it does, speak that line aloud as your first response before picking up any pending task. This is NOT recapping the summary — it is delivering a brief memory-crystallization update that the user is expecting. After speaking it, continue normally.
 </context>
 
 <objective>
