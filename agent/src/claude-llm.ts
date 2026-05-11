@@ -1071,12 +1071,118 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const instructionPath = join(__claudeLlmDir, 'prompts', 'compact-learnings-instruction.md')
                 const instruction = existsSync(instructionPath) ? readFileSync(instructionPath, 'utf-8') : ''
 
-                // 2. Read FULL transcript (no line limit)
+                // 2. Smart JSONL extraction — parse line-by-line, keep only signal-rich content.
+                // Avoids blowing Haiku's 200K token context window on large sessions (e.g. 19MB files).
                 const transcriptPath = input?.transcript_path
                 let transcriptContent = ''
                 if (transcriptPath && existsSync(transcriptPath)) {
                   try {
-                    transcriptContent = readFileSync(transcriptPath, 'utf-8')
+                    const { statSync } = await import('node:fs')
+                    const fileSize = statSync(transcriptPath).size
+                    const rawFile = readFileSync(transcriptPath, 'utf-8')
+                    const lines = rawFile.split('\n')
+                    const lineCount = lines.length
+
+                    const userMessages: string[] = []
+                    const assistantMessages: string[] = []
+                    const toolResults: string[] = []
+                    const priorSummaries: string[] = []
+
+                    const SUMMARY_MARKERS = ['=== HANDOFF_STATE ===', '=== DECISIONS ===', '=== SKILL_CANDIDATES ===', '=== BEHAVIORAL_LEARNINGS ===']
+
+                    for (const line of lines) {
+                      if (!line.trim()) continue
+                      let parsed: any
+                      try { parsed = JSON.parse(line) } catch { continue }
+
+                      // Capture prior compact summary sections (gold — already condensed)
+                      const lineStr = line
+                      for (const marker of SUMMARY_MARKERS) {
+                        if (lineStr.includes(marker)) {
+                          const idx = lineStr.indexOf(marker)
+                          priorSummaries.push(lineStr.substring(idx, idx + 3000))
+                          break
+                        }
+                      }
+
+                      const msg = parsed?.message
+                      if (!msg) continue
+
+                      // Extract text content from string or content-block array
+                      const extractText = (content: any): string => {
+                        if (typeof content === 'string') return content
+                        if (Array.isArray(content)) {
+                          return content
+                            .filter((b: any) => b?.type === 'text' && b?.text)
+                            .map((b: any) => b.text)
+                            .join(' ')
+                        }
+                        return ''
+                      }
+
+                      if (msg.role === 'user') {
+                        const text = extractText(msg.content).trim()
+                        // Filter noise: interrupted messages, turn-shape reminders, empty/very short
+                        if (
+                          text.startsWith('[INTERRUPTED]') ||
+                          text.startsWith('TURN-SHAPE REMINDER') ||
+                          text.length < 15
+                        ) continue
+                        userMessages.push(text.substring(0, 400))
+                      } else if (msg.role === 'assistant') {
+                        const text = extractText(msg.content).trim()
+                        if (text.length >= 15) {
+                          assistantMessages.push(text.substring(0, 300))
+                        }
+                      }
+
+                      // Tool results: look for tool_result type blocks in content arrays
+                      if (Array.isArray(msg.content)) {
+                        for (const block of msg.content) {
+                          if (block?.type === 'tool_result' && block?.content) {
+                            const resultText = extractText(block.content).trim()
+                            if (resultText.length >= 20) {
+                              toolResults.push(resultText.substring(0, 500))
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // Keep most recent entries within caps
+                    const recentUsers = userMessages.slice(-60)
+                    const recentAssistants = assistantMessages.slice(-20)
+                    const recentTools = toolResults.slice(-15)
+
+                    // Assemble condensed representation
+                    const parts: string[] = [
+                      `=== EXTRACTED SESSION CONTENT (condensed from ${lineCount} lines) ===`,
+                    ]
+
+                    parts.push(`\n--- USER MESSAGES (most recent ${recentUsers.length}) ---`)
+                    recentUsers.forEach((m, i) => parts.push(`[U${i + 1}] ${m}`))
+
+                    parts.push(`\n--- RECENT ASSISTANT MESSAGES (last ${recentAssistants.length}) ---`)
+                    recentAssistants.forEach((m, i) => parts.push(`[A${i + 1}] ${m}`))
+
+                    if (priorSummaries.length > 0) {
+                      parts.push(`\n--- PRIOR COMPACT SUMMARIES ---`)
+                      let summaryBudget = 3000
+                      for (const s of priorSummaries) {
+                        const chunk = s.substring(0, summaryBudget)
+                        parts.push(chunk)
+                        summaryBudget -= chunk.length
+                        if (summaryBudget <= 0) break
+                      }
+                    }
+
+                    parts.push(`\n--- KEY TOOL RESULTS (last ${recentTools.length}) ---`)
+                    recentTools.forEach((m, i) => parts.push(`[T${i + 1}] ${m}`))
+
+                    // Join and cap at 150000 chars total
+                    transcriptContent = parts.join('\n').substring(0, 150000)
+
+                    console.log(`🧠 PreCompact: extracted ${transcriptContent.length} chars from ${lineCount} lines (file: ${Math.round(fileSize / 1024)}KB)`)
                   } catch (readErr) {
                     console.warn('⚠️ PreCompact: could not read transcript:', readErr instanceof Error ? readErr.message : readErr)
                   }
