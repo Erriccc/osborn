@@ -486,6 +486,11 @@ function startApiServer(workingDir: string, port: number): void {
               }
             }
             filesWritten++
+
+            const recoveredPath = effectiveSlug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
+            if (recoveredPath && recoveredPath !== '/') {
+              mkdirSync(recoveredPath, { recursive: true })
+            }
           }
 
           res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -627,25 +632,11 @@ function startApiServer(workingDir: string, port: number): void {
             const extractedProjects = join(tmpExtractDir, 'projects')
             const sourceDir = existsSync(extractedProjects) ? extractedProjects : tmpExtractDir
 
-            // Optionally remap slug: if targetWorkDir is provided, find slug(s)
-            // that don't match the target and rename them
-            const remapped: Record<string, string> = {}
-            if (targetWorkDir) {
-              const targetSlug = targetWorkDir.replace(/\//g, '-')
-              const sourceSlugs = readdirSync(sourceDir)
-              for (const slug of sourceSlugs) {
-                if (slug !== targetSlug && !slug.startsWith('.')) {
-                  remapped[slug] = targetSlug
-                }
-              }
-            }
-
             // Copy subdirectories into ~/.claude/projects/, merging and updating existing files
             let filesWritten = 0
             const slugsInSource = readdirSync(sourceDir)
             for (const slug of slugsInSource) {
-              const effectiveSlug = remapped[slug] ?? slug
-              const destSlug = join(projectsDir, effectiveSlug)
+              const destSlug = join(projectsDir, slug)
               mkdirSync(destSlug, { recursive: true })
               try {
                 renameSync(join(sourceDir, slug), destSlug)
@@ -657,11 +648,16 @@ function startApiServer(workingDir: string, port: number): void {
                   throw e
                 }
               }
+              // Also create the corresponding workspace directory so Claude can resume
+              const recoveredPath = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
+              if (recoveredPath && recoveredPath !== '/') {
+                mkdirSync(recoveredPath, { recursive: true })
+              }
               filesWritten++
             }
 
             res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ ok: true, filesWritten, remapped }))
+            res.end(JSON.stringify({ ok: true, filesWritten }))
           } catch (err) {
             console.error('[import-finalize] merge error:', err)
             if (!res.headersSent) {
@@ -3141,13 +3137,64 @@ async function main() {
             })
           }
         } else {
-          console.error(`❌ Session not found: ${sessionId}`)
-          await sendToFrontend({
-            type: 'session_resume_set',
-            sessionId,
-            success: false,
-            error: 'Session not found',
-          })
+          // Try to find the session in any slug directory
+          let found = false
+          const projectsDir = join(homedir(), '.claude', 'projects')
+
+          if (existsSync(projectsDir)) {
+            const slugDirs = readdirSync(projectsDir)
+            for (const slug of slugDirs) {
+              const candidate = join(projectsDir, slug, `${sessionId}.jsonl`)
+              if (existsSync(candidate)) {
+                // Recover the original path from the slug
+                const recoveredPath = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
+                if (recoveredPath && recoveredPath !== '/') {
+                  mkdirSync(recoveredPath, { recursive: true })
+                  workingDir = recoveredPath
+                  currentLLM.setWorkingDirectory(recoveredPath)
+                  console.log(`🔄 Found session in slug ${slug}, using path: ${recoveredPath}`)
+                  found = true
+
+                  // Proceed with the same success path
+                  currentLLM.setResumeSessionId(sessionId)
+                  currentResumeSessionId = sessionId
+                  console.log(`🔄 Will resume session: ${sessionId}`)
+
+                  await sendToFrontend({
+                    type: 'session_resume_set',
+                    sessionId,
+                    success: true,
+                  })
+
+                  const artifacts = listWorkspaceArtifacts(workingDir, sessionId)
+                  if (artifacts.length > 0) {
+                    console.log(`📁 Sending ${artifacts.length} session artifacts to frontend`)
+                    await sendToFrontend({
+                      type: 'session_artifacts',
+                      sessionId,
+                      artifacts: artifacts.map(a => ({
+                        filePath: a.filePath,
+                        fileName: a.fileName,
+                        type: a.type,
+                        updatedAt: a.updatedAt,
+                      }))
+                    })
+                  }
+                  break
+                }
+              }
+            }
+          }
+
+          if (!found) {
+            console.error(`❌ Session not found: ${sessionId}`)
+            await sendToFrontend({
+              type: 'session_resume_set',
+              sessionId,
+              success: false,
+              error: 'Session not found',
+            })
+          }
         }
       }
       else if (data.type === 'continue_session' && currentLLM) {

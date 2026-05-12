@@ -15,6 +15,7 @@ import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -104,6 +105,45 @@ function loadSkillsFromDir(agentDir: string): string {
   if (skills.length === 0) return ''
   console.log(`📚 Loaded ${skills.length} skill(s) from ${skillsDir}`)
   return `<available-skills>\n${skills.join('\n\n---\n\n')}\n</available-skills>`
+}
+
+/**
+ * Loads skills from both ~/.claude/skills/ (home dir) and {workingDir}/.claude/skills/ (project dir).
+ * Merges results, deduplicating by skill directory name — home dir wins on conflicts.
+ * Returns a combined <available-skills> XML block, or '' if no skills found.
+ */
+function loadAllSkills(workingDir: string): string {
+  const homeSkillsDir = join(homedir(), '.claude', 'skills')
+  const projectSkillsDir = join(workingDir, '.claude', 'skills')
+
+  // skill name → content; home dir loaded first so it wins on conflicts
+  const skillMap = new Map<string, string>()
+
+  const loadFromDir = (dir: string) => {
+    if (!existsSync(dir)) return
+    try {
+      for (const skillName of readdirSync(dir)) {
+        if (skillMap.has(skillName)) continue // home dir already set this one
+        const skillFile = join(dir, skillName, 'SKILL.md')
+        if (existsSync(skillFile)) {
+          skillMap.set(skillName, readFileSync(skillFile, 'utf-8').trim())
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ Failed to load skills from', dir, ':', err)
+    }
+  }
+
+  loadFromDir(homeSkillsDir)
+  loadFromDir(projectSkillsDir)
+
+  if (skillMap.size === 0) return ''
+  const sources = [
+    existsSync(homeSkillsDir) ? homeSkillsDir : null,
+    existsSync(projectSkillsDir) ? projectSkillsDir : null,
+  ].filter(Boolean).join(', ')
+  console.log(`📚 Loaded ${skillMap.size} skill(s) from ${sources}`)
+  return `<available-skills>\n${[...skillMap.values()].join('\n\n---\n\n')}\n</available-skills>`
 }
 
 // Research mode tools — full research capabilities
@@ -350,6 +390,14 @@ export class ClaudeLLM extends llm.LLM {
     if (sessionId) {
       console.log(`🔄 Will resume session: ${sessionId}`)
     }
+  }
+
+  /**
+   * Set the working directory for the current session
+   * Call this when resuming a session from a different project slug
+   */
+  setWorkingDirectory(path: string): void {
+    this.#opts.workingDirectory = path
   }
 
   /**
@@ -900,6 +948,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
         model: this.#opts.model || 'claude-sonnet-4-6', // Sonnet orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
         enableFileCheckpointing: true,
+        settingSources: ['project', 'user'],
         extraArgs: { 'replay-user-messages': null },
         ...(this.#abortController && { abortController: this.#abortController }),
         ...(resumeSessionId && { resume: resumeSessionId }),
@@ -911,7 +960,7 @@ class ClaudeLLMStream extends llm.LLMStream {
           this.#opts.voiceMode === 'direct'
             ? getDirectModeResearchPrompt(workspacePath)
             : getResearchSystemPrompt(workspacePath),
-          loadSkillsFromDir(this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()),
+          loadAllSkills(this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()),
         ].filter(Boolean).join('\n\n'),
         canUseTool: async (toolName, input, _options) => {
           // Auto-approve writes to session workspace (but block spec.md and library/ — fast brain manages those)
@@ -1088,7 +1137,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               try {
                 const summary: string = input?.compact_summary || ''
                 const { mkdirSync, writeFileSync: writeSyncFs, readFileSync: readSyncFs, existsSync: existsSyncFs } = await import('node:fs')
-                const skillDir = this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()
+                const skillDir = homedir()
                 const today = new Date().toISOString().split('T')[0]
                 const sessionId = this.#sessionId || 'unknown'
                 let skillsWritten = 0
