@@ -16,8 +16,17 @@ RUN apt-get update -qq && \
     python-is-python3 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install osborn + claude-code globally
-RUN npm install -g osborn@latest @anthropic-ai/claude-code
+# Pin osborn to an explicit version so Docker layer cache invalidates whenever
+# the version changes. Earlier `RUN npm install -g osborn@latest` looked correct
+# but it never invalidated: `latest` is a tag resolved by npm at install time,
+# but Docker's layer cache keys on the literal RUN command string. So every
+# rebuild reused the cached layer from when "latest" was a previous version,
+# producing images labeled :0.9.21 that actually contained osborn 0.9.19 inside.
+#
+# Pass --build-arg OSBORN_VERSION=X.Y.Z when building. image-build-check.ts
+# does this automatically using the npm-registry-resolved latest version.
+ARG OSBORN_VERSION=latest
+RUN npm install -g "osborn@${OSBORN_VERSION}" @anthropic-ai/claude-code
 
 # Persistent workspace + claude config dirs
 RUN mkdir -p /workspace /root/.claude

@@ -252,11 +252,17 @@ async function buildAndPushImage(version: string, flySandboxApp: string): Promis
 
   // Step 2: deploy with --build-only --push.
   // Use absolute paths so cwd ambiguity doesn't break --config resolution.
+  // Pass --build-arg OSBORN_VERSION=<version> to invalidate the Docker layer
+  // cache when osborn npm version changes. Without this, the RUN instruction
+  // for `npm install -g osborn@${OSBORN_VERSION}` would cache-hit from previous
+  // builds, producing images that claim a new version label but contain stale
+  // osborn code inside.
   const args = [
     'deploy',
     '--build-only',
     '--push',
     '--image-label', version,
+    '--build-arg', `OSBORN_VERSION=${version}`,
     '--app', flySandboxApp,
     '--config', configPath,
   ]
