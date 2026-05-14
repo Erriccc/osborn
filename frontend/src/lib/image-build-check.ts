@@ -12,9 +12,56 @@
  */
 
 import { existsSync } from 'fs'
-import { execSync, spawnSync } from 'child_process'
+import { execSync, spawn, spawnSync } from 'child_process'
 import { homedir } from 'os'
 import { join } from 'path'
+
+/**
+ * Async wrapper around child_process.spawn — returns { status, stdout, stderr }.
+ * Use this instead of spawnSync for any subprocess that could take >100ms,
+ * because spawnSync BLOCKS THE NODE EVENT LOOP for its entire duration.
+ *
+ * Background: this file is invoked from Next.js instrumentation register(),
+ * which runs during server startup. If we spawnSync a 5-10 minute `fly deploy`,
+ * Next.js cannot answer any HTTP request including Railway's healthcheck, the
+ * deploy fails the healthcheck window (5 min), and Railway rolls back the deploy.
+ * One real incident: deploy 62d079f2 (May 14 5:48 PM CDT) — caught + fixed by
+ * switching to this async wrapper.
+ */
+function spawnAsync(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+): Promise<{ status: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    let killedByTimeout = false
+    const timer = opts.timeoutMs
+      ? setTimeout(() => { killedByTimeout = true; child.kill('SIGTERM') }, opts.timeoutMs)
+      : null
+    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+    child.on('close', (code, signal) => {
+      if (timer) clearTimeout(timer)
+      resolve({
+        status: code,
+        signal: killedByTimeout ? 'SIGTERM' : signal,
+        stdout,
+        stderr,
+      })
+    })
+    child.on('error', (err) => {
+      if (timer) clearTimeout(timer)
+      resolve({ status: null, signal: null, stdout, stderr: stderr + '\n' + (err as Error).message })
+    })
+  })
+}
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -165,13 +212,11 @@ function findFlyConfigDir(): string | null {
  *
  * Idempotent — safe to call before every deploy.
  */
-function flyAuthDocker(flyBin: string): void {
+async function flyAuthDocker(flyBin: string): Promise<void> {
   log('Running: fly auth docker')
-  const result = spawnSync(flyBin, ['auth', 'docker'], {
-    stdio: 'pipe',
-    encoding: 'utf8',
+  const result = await spawnAsync(flyBin, ['auth', 'docker'], {
     env: buildEnvWithFlyPath(),
-    timeout: 30000,
+    timeoutMs: 30000,
   })
   if (result.stdout) console.log('[fly auth docker stdout]', result.stdout.trim())
   if (result.stderr) console.log('[fly auth docker stderr]', result.stderr.trim())
@@ -185,7 +230,7 @@ function flyAuthDocker(flyBin: string): void {
  * Run `fly deploy --build-only --push --image-label {version}` with absolute
  * paths so cwd doesn't matter. Streams stdout/stderr to our own logger.
  */
-function buildAndPushImage(version: string, flySandboxApp: string): void {
+async function buildAndPushImage(version: string, flySandboxApp: string): Promise<void> {
   const flyBin = resolveFlyBin()
   const configDir = findFlyConfigDir()
   if (!configDir) {
@@ -203,7 +248,7 @@ function buildAndPushImage(version: string, flySandboxApp: string): void {
   log(`Dockerfile: ${dockerfilePath} ${existsSync(dockerfilePath) ? '(exists)' : '(MISSING — prebuild step did not run)'}`)
 
   // Step 1: register Fly registry creds with Docker (required for --push).
-  flyAuthDocker(flyBin)
+  await flyAuthDocker(flyBin)
 
   // Step 2: deploy with --build-only --push.
   // Use absolute paths so cwd ambiguity doesn't break --config resolution.
@@ -218,12 +263,14 @@ function buildAndPushImage(version: string, flySandboxApp: string): void {
 
   log(`Running: ${flyBin} ${args.join(' ')}`)
 
-  const result = spawnSync(flyBin, args, {
+  // Critical: use spawnAsync (event-loop-safe), NOT spawnSync.
+  // A 5-10 min spawnSync here blocks the Next.js server from answering
+  // Railway's healthcheck, causing the deploy to roll back before the
+  // build finishes. See spawnAsync docstring for the full incident note.
+  const result = await spawnAsync(flyBin, args, {
     cwd: configDir,
-    stdio: 'pipe',
-    encoding: 'utf8',
     env: buildEnvWithFlyPath(),
-    timeout: 900000, // 15 minutes — image build + push can take 10+ min
+    timeoutMs: 900000, // 15 minutes — image build + push can take 10+ min
   })
 
   // Always log both streams — historically only the last line of stderr was
