@@ -421,9 +421,18 @@ function startApiServer(workingDir: string, port: number): void {
         mkdirSync(destSlug, { recursive: true })
 
         const sourceSlugPath = join(effectiveSource, sourceSlug)
-        const sourceCwd = slugToCwd(sourceSlug)
-        const destCwd = targetWorkDir ?? slugToCwd(effectiveSlug)
-        const needsCwdRewrite = sourceCwd !== destCwd
+        // NO content mutation. Earlier versions rewrote the embedded `"cwd":"..."`
+        // field inside JSONL entries to match the destination workspace. That was
+        // wrong on two counts:
+        //   1. The cwd field is documentary metadata, not how Claude Code resolves
+        //      a session at resume time — resume uses the slug directory name.
+        //   2. Mutating contents breaks roundtripability (laptop → cloud → laptop
+        //      ends up with /workspace cwd on laptop), corrupting historical data
+        //      across environment hops.
+        // What's actually needed is just the slug rename (handled by `effectiveSlug`
+        // below). File contents stay byte-exact across every transfer direction.
+        void sourceSlugPath
+        void targetWorkDir
 
         // Walk the source slug directory and copy files individually so we can:
         //   (a) skip AppleDouble per-file too (in case nested)
@@ -452,17 +461,10 @@ function startApiServer(workingDir: string, port: number): void {
               } catch { /* dst doesn't exist — write it */ }
               if (!shouldWrite) continue
 
-              if (needsCwdRewrite && e.name.endsWith('.jsonl')) {
-                // Read, rewrite "cwd" field, write. JSONL is line-delimited;
-                // string match on `"cwd":"<sourceCwd>"` is precise enough.
-                const content = readFileSync(sp, 'utf8')
-                const find = `"cwd":"${sourceCwd}"`
-                const replace = `"cwd":"${destCwd}"`
-                const rewritten = content.split(find).join(replace)
-                writeFileSync(dp, rewritten)
-              } else {
-                cpSync(sp, dp, { force: true })
-              }
+              // Copy byte-exact — no content mutation. The slug rename above is
+              // the only structural change; file contents are immutable historical
+              // record and must roundtrip cleanly between environments.
+              cpSync(sp, dp, { force: true })
               filesWritten++
             }
             // skip symlinks, sockets, etc.
