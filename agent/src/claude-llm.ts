@@ -41,7 +41,11 @@ export interface ClaudeLLMOptions {
   model?: string  // Claude model ID (default: claude-sonnet-4-6)
   voiceMode?: 'direct' | 'realtime'  // Which voice pipeline — controls system prompt selection
   skipTTSQueue?: boolean  // When true, emit 'tts_say' events instead of queue.put() — for session.say() bypass
-  onCompactionEvent?: (event: { type: 'compaction_started' | 'compaction_complete'; trigger?: string; skillsWritten?: number }) => void
+  onCompactionEvent?: (event:
+    | { type: 'compaction_started'; trigger?: string }
+    | { type: 'compaction_progress'; stage: string; detail?: string }
+    | { type: 'compaction_complete'; skillsWritten?: number; skillNames?: string[]; trigger?: string }
+  ) => void
 }
 
 /**
@@ -112,37 +116,33 @@ function loadSkillsFromDir(agentDir: string): string {
  * Merges results, deduplicating by skill directory name — home dir wins on conflicts.
  * Returns a combined <available-skills> XML block, or '' if no skills found.
  */
-function loadAllSkills(workingDir: string): string {
+function loadAllSkills(_workingDir: string): string {
+  // Single source of truth: ~/.claude/skills/
+  // Defaults are seeded into this dir by the provisioning bootstrap (sprites.ts
+  // buildOsbornBootstrap + Dockerfile.sandbox entrypoint). PostCompact writes
+  // newly-learned skills here too. By unifying on one path we avoid the older
+  // confusion where defaults loaded from node_modules/osborn/.claude/skills/
+  // while PostCompact wrote to home — meaning learnings were second-class.
   const homeSkillsDir = join(homedir(), '.claude', 'skills')
-  const projectSkillsDir = join(workingDir, '.claude', 'skills')
-
-  // skill name → content; home dir loaded first so it wins on conflicts
-  const skillMap = new Map<string, string>()
-
-  const loadFromDir = (dir: string) => {
-    if (!existsSync(dir)) return
-    try {
-      for (const skillName of readdirSync(dir)) {
-        if (skillMap.has(skillName)) continue // home dir already set this one
-        const skillFile = join(dir, skillName, 'SKILL.md')
-        if (existsSync(skillFile)) {
-          skillMap.set(skillName, readFileSync(skillFile, 'utf-8').trim())
-        }
-      }
-    } catch (err) {
-      console.warn('⚠️ Failed to load skills from', dir, ':', err)
-    }
+  if (!existsSync(homeSkillsDir)) {
+    console.log(`📚 No skills dir at ${homeSkillsDir} — bootstrap may not have run yet`)
+    return ''
   }
 
-  loadFromDir(homeSkillsDir)
-  loadFromDir(projectSkillsDir)
+  const skillMap = new Map<string, string>()
+  try {
+    for (const skillName of readdirSync(homeSkillsDir)) {
+      const skillFile = join(homeSkillsDir, skillName, 'SKILL.md')
+      if (existsSync(skillFile)) {
+        skillMap.set(skillName, readFileSync(skillFile, 'utf-8').trim())
+      }
+    }
+  } catch (err) {
+    console.warn('⚠️ Failed to load skills from', homeSkillsDir, ':', err)
+  }
 
   if (skillMap.size === 0) return ''
-  const sources = [
-    existsSync(homeSkillsDir) ? homeSkillsDir : null,
-    existsSync(projectSkillsDir) ? projectSkillsDir : null,
-  ].filter(Boolean).join(', ')
-  console.log(`📚 Loaded ${skillMap.size} skill(s) from ${sources}`)
+  console.log(`📚 Loaded ${skillMap.size} skill(s) from ${homeSkillsDir}`)
   return `<available-skills>\n${[...skillMap.values()].join('\n\n---\n\n')}\n</available-skills>`
 }
 
@@ -1144,6 +1144,17 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const today = new Date().toISOString().split('T')[0]
                 const sessionId = this.#sessionId || 'unknown'
                 let skillsWritten = 0
+                const skillNames: string[] = []
+                // Emit fine-grained progress events so the UI can render a multi-step
+                // "crystallizing..." panel instead of a single 3-second flash. Each
+                // stage gets a human-readable label + optional detail (skill name,
+                // char counts) so the user sees something happening through the whole
+                // ~3 minute compaction window.
+                const progress = (stage: string, detail?: string) => {
+                  this.#opts.onCompactionEvent?.({ type: 'compaction_progress', stage, detail })
+                }
+
+                progress('Reading compact summary', `${summary.length} chars`)
 
                 // Helper: extract text between a marker and the next === marker (or end of string)
                 const extractSection = (marker: string): string => {
@@ -1158,6 +1169,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const handoff = extractSection('=== HANDOFF_STATE ===')
                 if (handoff) {
                   console.log(`🧠 PostCompact: HANDOFF_STATE present (${handoff.length} chars) — not written to disk`)
+                  progress('Parsed handoff state', `${handoff.length} chars`)
                 }
 
                 // ── Section 2: DECISIONS — append project-scoped decisions ──
@@ -1168,6 +1180,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                       .split('\n')
                       .filter(l => /DECISION:.*SCOPE:\s*project/i.test(l))
                     if (projectLines.length) {
+                      progress('Extracting decisions', `${projectLines.length} project-scoped`)
                       const decFolder = join(skillDir, '.claude', 'skills', 'decisions')
                       const decPath = join(decFolder, 'SKILL.md')
                       mkdirSync(decFolder, { recursive: true })
@@ -1177,6 +1190,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                       writeSyncFs(decPath, header + existing + entry, 'utf-8')
                       console.log(`🧠 PostCompact: appended ${projectLines.length} decision(s) to ${decPath}`)
                       skillsWritten++
+                      skillNames.push('decisions')
+                      progress('Wrote skill', 'decisions')
                     }
                   }
                 } catch (decErr) {
@@ -1204,6 +1219,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                       writeSyncFs(skillPath, header + body + '\n', 'utf-8')
                       console.log(`🧠 PostCompact: wrote skill '${name}' to ${skillPath}`)
                       skillsWritten++
+                      skillNames.push(name)
+                      progress('Wrote skill', name)
                     }
                   }
                 } catch (skillErr) {
@@ -1214,6 +1231,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 try {
                   const learnings = extractSection('=== BEHAVIORAL_LEARNINGS ===')
                   if (learnings.length >= 30) {
+                    progress('Extracting learnings', `${learnings.length} chars`)
                     const skillFolder = join(skillDir, '.claude', 'skills', 'learned-behaviors')
                     const skillPath = join(skillFolder, 'SKILL.md')
                     mkdirSync(skillFolder, { recursive: true })
@@ -1221,6 +1239,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                     writeSyncFs(skillPath, header + learnings + '\n', 'utf-8')
                     console.log(`🧠 PostCompact: wrote learned behaviors to ${skillPath} (${learnings.length} chars)`)
                     skillsWritten++
+                    skillNames.push('learned-behaviors')
+                    progress('Wrote skill', 'learned-behaviors')
                   } else {
                     console.log('🧠 PostCompact: no BEHAVIORAL_LEARNINGS section found or too short — skipping')
                   }
@@ -1228,8 +1248,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                   console.error('⚠️ PostCompact: BEHAVIORAL_LEARNINGS write failed:', blErr instanceof Error ? blErr.message : blErr)
                 }
 
-                this.#opts.onCompactionEvent?.({ type: 'compaction_complete', skillsWritten })
-                console.log(`🧠 PostCompact: complete — ${skillsWritten} skill file(s) written`)
+                this.#opts.onCompactionEvent?.({ type: 'compaction_complete', skillsWritten, skillNames })
+                console.log(`🧠 PostCompact: complete — ${skillsWritten} skill file(s) written: [${skillNames.join(', ')}]`)
 
               } catch (err) {
                 console.error('⚠️ PostCompact hook error:', err instanceof Error ? err.message : err)

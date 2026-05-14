@@ -683,6 +683,26 @@ if [ "$NEEDS_INSTALL" = "true" ]; then
   echo "[osborn-bootstrap] install OK — marker written: $WANT"
 fi
 
+# ── Seed default skills into ~/.claude/skills/ ────────────────────────────────
+# Single source of truth: the agent now ONLY loads skills from ~/.claude/skills/
+# (the home dir). This step copies the bundled defaults that ship with the npm
+# package into the home dir on first boot. Idempotent — existing skills (whether
+# learned via PostCompact or manually edited) are preserved.
+HOME_SKILLS_DIR="/home/sprite/.claude/skills"
+PKG_SKILLS_DIR="$NPM_PREFIX/lib/node_modules/osborn/.claude/skills"
+mkdir -p "$HOME_SKILLS_DIR"
+if [ -d "$PKG_SKILLS_DIR" ]; then
+  for d in "$PKG_SKILLS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    NAME="$(basename "$d")"
+    if [ -d "$HOME_SKILLS_DIR/$NAME" ]; then
+      continue  # preserve existing (learned or manually edited)
+    fi
+    cp -r "$d" "$HOME_SKILLS_DIR/$NAME"
+    echo "[osborn-bootstrap] seeded default skill: $NAME"
+  done
+fi
+
 # Layer-divergence diagnostic — surfaces the container's view of session JSONLs at
 # boot. Sprites uses CRIU + an overlay-style /home, so the persistent disk (what the
 # fs API reads) and the container view can diverge after restore cycles. If the

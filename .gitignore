@@ -30,6 +30,8 @@ npm-debug.log*
 # Claude Code
 .claude/
 
+/tests/
+
 # Osborn Code
 .osborn/
 

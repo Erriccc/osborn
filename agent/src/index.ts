@@ -353,29 +353,159 @@ function startApiServer(workingDir: string, port: number): void {
     }
 
     // GET /sessions/manifest — return mtime+size for all .jsonl files per slug (public, no auth)
+    // Helper: merge an extracted tar directory into ~/.claude/projects/ with all 4 fixes:
+    //   1. Skip macOS AppleDouble entries (`._*`) that bsdtar emits
+    //   2. Apply slug remap when targetWorkDir is supplied (chunked path missed this)
+    //   3. Rewrite embedded `cwd` field inside .jsonl entries during remap so
+    //      Claude Code can resume the conversation in the destination workspace
+    //   4. Merge into existing dest dirs instead of failing on rename collision
+    const mergeExtractedIntoProjects = async (
+      sourceDir: string,
+      targetWorkDir: string | undefined,
+    ): Promise<{ filesWritten: number, remapped: Record<string, string> }> => {
+      const claudeDir = join(homedir(), '.claude')
+      const projectsDir = join(claudeDir, 'projects')
+      mkdirSync(projectsDir, { recursive: true })
+
+      // The archive sometimes wraps content in a 'projects' subdir, sometimes not.
+      const extractedProjects = join(sourceDir, 'projects')
+      const effectiveSource = existsSync(extractedProjects) ? extractedProjects : sourceDir
+
+      // Filter out AppleDouble (`._*`) entries that macOS bsdtar emits for
+      // resource forks. These crash later steps if they collide with real dirs.
+      const sourceSlugs = readdirSync(effectiveSource)
+        .filter(s => !s.startsWith('._') && !s.startsWith('.DS_Store'))
+
+      // Build remap table: source-slug → target-slug.
+      // Only remaps slugs that differ from the target (no-op if already correct).
+      const remapped: Record<string, string> = {}
+      const targetSlug = targetWorkDir ? targetWorkDir.replace(/\//g, '-') : ''
+      if (targetSlug) {
+        for (const slug of sourceSlugs) {
+          if (slug !== targetSlug) remapped[slug] = targetSlug
+        }
+      }
+
+      // Slug → original cwd path (reverse of slug encoding):
+      //   '-Users-newupgrade-Desktop-Developer-osborn' → '/Users/newupgrade/Desktop/Developer/osborn'
+      // Claude Code's slug rule: replace all '/' with '-', so reverse is replace '-' with '/'.
+      // Leading '-' becomes '/'. We don't try to recover '.' (Claude uses '--' for it, but
+      // dot-prefixed dirs are uncommon and a best-effort rewrite is enough for resume).
+      const slugToCwd = (slug: string): string => '/' + slug.replace(/^-/, '').replace(/-/g, '/')
+
+      let filesWritten = 0
+
+      for (const sourceSlug of sourceSlugs) {
+        const effectiveSlug = remapped[sourceSlug] ?? sourceSlug
+        const destSlug = join(projectsDir, effectiveSlug)
+        mkdirSync(destSlug, { recursive: true })
+
+        const sourceSlugPath = join(effectiveSource, sourceSlug)
+        const sourceCwd = slugToCwd(sourceSlug)
+        const destCwd = targetWorkDir ?? slugToCwd(effectiveSlug)
+        const needsCwdRewrite = sourceCwd !== destCwd
+
+        // Walk the source slug directory and copy files individually so we can:
+        //   (a) skip AppleDouble per-file too (in case nested)
+        //   (b) rewrite cwd inside .jsonl files when remapping across workspaces
+        //   (c) merge into existing destination directories without renameSync collision
+        //   (d) keep newer-by-mtime when both sides have the same file (the user's
+        //       requested "overwrite based on timestamp" rule for bidirectional sync)
+        const walkAndCopy = (src: string, dst: string): void => {
+          const entries = readdirSync(src, { withFileTypes: true })
+          for (const e of entries) {
+            if (e.name.startsWith('._') || e.name === '.DS_Store') continue
+            const sp = join(src, e.name)
+            const dp = join(dst, e.name)
+            if (e.isDirectory()) {
+              mkdirSync(dp, { recursive: true })
+              walkAndCopy(sp, dp)
+            } else if (e.isFile()) {
+              // mtime conflict resolution — when destination already has this file,
+              // only overwrite when the source is strictly newer. Preserves work
+              // done on the destination side when re-syncing in either direction.
+              let shouldWrite = true
+              try {
+                const dstStat = statSync(dp)
+                const srcStat = statSync(sp)
+                if (dstStat.mtimeMs >= srcStat.mtimeMs) shouldWrite = false
+              } catch { /* dst doesn't exist — write it */ }
+              if (!shouldWrite) continue
+
+              if (needsCwdRewrite && e.name.endsWith('.jsonl')) {
+                // Read, rewrite "cwd" field, write. JSONL is line-delimited;
+                // string match on `"cwd":"<sourceCwd>"` is precise enough.
+                const content = readFileSync(sp, 'utf8')
+                const find = `"cwd":"${sourceCwd}"`
+                const replace = `"cwd":"${destCwd}"`
+                const rewritten = content.split(find).join(replace)
+                writeFileSync(dp, rewritten)
+              } else {
+                cpSync(sp, dp, { force: true })
+              }
+              filesWritten++
+            }
+            // skip symlinks, sockets, etc.
+          }
+        }
+
+        walkAndCopy(sourceSlugPath, destSlug)
+
+        // Best-effort: ensure the resolved workspace directory exists so Claude
+        // can resume conversations whose JSONLs reference it.
+        const recoveredPath = effectiveSlug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
+        if (recoveredPath && recoveredPath !== '/') {
+          try { mkdirSync(recoveredPath, { recursive: true }) } catch { /* ignore */ }
+        }
+      }
+
+      return { filesWritten, remapped }
+    }
+
     if (req.method === 'GET' && url.pathname === '/sessions/manifest') {
+      // Walks the FULL tree per slug — including sub-agent transcripts
+      // (<slug>/<sessionId>/subagents/*.jsonl), tool-results (<slug>/<sessionId>/tool-results/*),
+      // osb workspace files (<slug>/osb/<sessionId>/*), and file-history. Files are
+      // keyed by their path RELATIVE to the slug dir so the client can preserve
+      // structure when computing diffs. mtime is in ms epoch so a simple `>`
+      // comparison is the "newer wins" merge rule.
+      //
+      // Previous version only listed top-level *.jsonl and missed ~270/290 files
+      // on a typical session — sub-agent transcripts invisible → resume failed
+      // silently because Claude couldn't find the referenced agent_id transcripts.
       const claudeDir = join(homedir(), '.claude', 'projects')
       const slugMap: Record<string, { files: Record<string, { mtime: number, size: number }> }> = {}
 
+      const walkSlug = (slugDir: string): Record<string, { mtime: number, size: number }> => {
+        const files: Record<string, { mtime: number, size: number }> = {}
+        const walk = (dir: string, relPrefix: string): void => {
+          let entries
+          try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+          for (const e of entries) {
+            if (e.name.startsWith('._') || e.name === '.DS_Store') continue
+            const sub = join(dir, e.name)
+            const rel = relPrefix ? `${relPrefix}/${e.name}` : e.name
+            if (e.isDirectory()) {
+              walk(sub, rel)
+            } else if (e.isFile()) {
+              try {
+                const st = statSync(sub)
+                files[rel] = { mtime: st.mtimeMs, size: st.size }
+              } catch { /* skip unreadable */ }
+            }
+          }
+        }
+        walk(slugDir, '')
+        return files
+      }
+
       try {
         const slugs = readdirSync(claudeDir, { withFileTypes: true })
-          .filter(d => d.isDirectory())
+          .filter(d => d.isDirectory() && !d.name.startsWith('._'))
           .map(d => d.name)
 
         for (const slug of slugs) {
-          const slugDir = join(claudeDir, slug)
-          try {
-            const jsonlFiles = readdirSync(slugDir)
-              .filter(f => f.endsWith('.jsonl'))
-            const fileStats: Record<string, { mtime: number, size: number }> = {}
-            for (const file of jsonlFiles) {
-              const st = statSync(join(slugDir, file))
-              fileStats[file] = { mtime: st.mtimeMs, size: st.size }
-            }
-            slugMap[slug] = { files: fileStats }
-          } catch {
-            // skip unreadable dirs
-          }
+          slugMap[slug] = { files: walkSlug(join(claudeDir, slug)) }
         }
       } catch {
         // projects dir doesn't exist yet — return empty
@@ -446,53 +576,7 @@ function startApiServer(workingDir: string, port: number): void {
             res.end(JSON.stringify({ error: 'tar extraction failed', code }))
             return
           }
-
-          const claudeDir = join(homedir(), '.claude')
-          const projectsDir = join(claudeDir, 'projects')
-          mkdirSync(projectsDir, { recursive: true })
-
-          // The archive should contain a 'projects' subdirectory
-          const extractedProjects = join(tmpDir, 'projects')
-          const sourceDir = existsSync(extractedProjects) ? extractedProjects : tmpDir
-
-          // Optionally remap slug: if targetWorkDir is provided, find slug(s)
-          // that don't match the target and rename them
-          const remapped: Record<string, string> = {}
-          if (targetWorkDir) {
-            const targetSlug = targetWorkDir.replace(/\//g, '-')
-            const sourceSlugs = readdirSync(sourceDir)
-            for (const slug of sourceSlugs) {
-              if (slug !== targetSlug && !slug.startsWith('.')) {
-                remapped[slug] = targetSlug
-              }
-            }
-          }
-
-          // Copy subdirectories into ~/.claude/projects/, merging and updating existing files
-          let filesWritten = 0
-          const slugsInSource = readdirSync(sourceDir)
-          for (const slug of slugsInSource) {
-            const effectiveSlug = remapped[slug] ?? slug
-            const destSlug = join(projectsDir, effectiveSlug)
-            mkdirSync(destSlug, { recursive: true })
-            try {
-              renameSync(join(sourceDir, slug), destSlug)
-            } catch (e: any) {
-              if (e.code === 'EXDEV') {
-                // Cross-filesystem fallback
-                cpSync(join(sourceDir, slug), destSlug, { recursive: true, force: true, errorOnExist: false })
-              } else {
-                throw e
-              }
-            }
-            filesWritten++
-
-            const recoveredPath = effectiveSlug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
-            if (recoveredPath && recoveredPath !== '/') {
-              mkdirSync(recoveredPath, { recursive: true })
-            }
-          }
-
+          const { filesWritten, remapped } = await mergeExtractedIntoProjects(tmpDir, targetWorkDir ?? undefined)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: true, filesWritten, remapped }))
         } catch (err) {
@@ -623,41 +707,9 @@ function startApiServer(workingDir: string, port: number): void {
             if (code !== 0) {
               res.writeHead(500); res.end(JSON.stringify({ error: 'tar extraction failed', code })); return
             }
-
-            const claudeDir = join(homedir(), '.claude')
-            const projectsDir = join(claudeDir, 'projects')
-            mkdirSync(projectsDir, { recursive: true })
-
-            // The archive should contain a 'projects' subdirectory
-            const extractedProjects = join(tmpExtractDir, 'projects')
-            const sourceDir = existsSync(extractedProjects) ? extractedProjects : tmpExtractDir
-
-            // Copy subdirectories into ~/.claude/projects/, merging and updating existing files
-            let filesWritten = 0
-            const slugsInSource = readdirSync(sourceDir)
-            for (const slug of slugsInSource) {
-              const destSlug = join(projectsDir, slug)
-              mkdirSync(destSlug, { recursive: true })
-              try {
-                renameSync(join(sourceDir, slug), destSlug)
-              } catch (e: any) {
-                if (e.code === 'EXDEV') {
-                  // Cross-filesystem fallback
-                  cpSync(join(sourceDir, slug), destSlug, { recursive: true, force: true, errorOnExist: false })
-                } else {
-                  throw e
-                }
-              }
-              // Also create the corresponding workspace directory so Claude can resume
-              const recoveredPath = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
-              if (recoveredPath && recoveredPath !== '/') {
-                mkdirSync(recoveredPath, { recursive: true })
-              }
-              filesWritten++
-            }
-
+            const { filesWritten, remapped } = await mergeExtractedIntoProjects(tmpExtractDir, targetWorkDir)
             res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ ok: true, filesWritten }))
+            res.end(JSON.stringify({ ok: true, filesWritten, remapped }))
           } catch (err) {
             console.error('[import-finalize] merge error:', err)
             if (!res.headersSent) {
@@ -1408,7 +1460,11 @@ async function main() {
       voiceMode: 'direct',
       skipTTSQueue: true,
       onCompactionEvent: (event) => {
-        try { sendToFrontend({ type: event.type, trigger: event.trigger, skillsWritten: event.skillsWritten }) } catch { /* non-fatal */ }
+        try {
+          // Forward every field — frontend renders stage + detail + skill list during compaction.
+          // Spread covers compaction_started/progress/complete (different fields per type).
+          sendToFrontend({ ...event } as any)
+        } catch { /* non-fatal */ }
       },
     })
     currentLLM = directLLM
@@ -1756,7 +1812,11 @@ async function main() {
       mcpServers,
       resumeSessionId,
       onCompactionEvent: (event) => {
-        try { sendToFrontend({ type: event.type, trigger: event.trigger, skillsWritten: event.skillsWritten }) } catch { /* non-fatal */ }
+        try {
+          // Forward every field — frontend renders stage + detail + skill list during compaction.
+          // Spread covers compaction_started/progress/complete (different fields per type).
+          sendToFrontend({ ...event } as any)
+        } catch { /* non-fatal */ }
       },
     })
     currentLLM = realtimeClaudeHandler

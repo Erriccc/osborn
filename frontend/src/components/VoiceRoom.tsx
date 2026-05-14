@@ -1347,8 +1347,15 @@ function VoiceRoomInner({
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
   const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
   const [meetingError, setMeetingError] = useState<string | null>(null)
-  // Compaction status indicator
+  // Compaction status indicator — full lifecycle visualization
+  // Compaction is a ~1-3 minute server-side process. Earlier UX used a tiny pill
+  // that animated only for the brief moment between started/complete; users
+  // missed it entirely. New UX: keep a prominent panel visible for the entire
+  // window, with a rolling list of stages so the user sees real progress.
   const [compactionStatus, setCompactionStatus] = useState<'idle' | 'compacting' | 'complete'>('idle')
+  const [compactionStages, setCompactionStages] = useState<Array<{ stage: string; detail?: string; ts: number }>>([])
+  const [compactionSkills, setCompactionSkills] = useState<string[]>([])
+  const [compactionStartedAt, setCompactionStartedAt] = useState<number | null>(null)
 
   // Derived: currently selected file for preview
   const selectedFile = useMemo(() => {
@@ -1991,12 +1998,32 @@ function VoiceRoomInner({
         setMeetingStatus('error')
         setTimeout(() => { setMeetingStatus('idle'); setMeetingError(null) }, 5000)
       } else if (data.type === 'compaction_started') {
-        console.log('🧠 Compaction started, trigger:', data.trigger)
+        console.log('🧠 [COMPACT] started, trigger:', data.trigger)
         setCompactionStatus('compacting')
+        setCompactionStartedAt(Date.now())
+        setCompactionStages([{ stage: 'Compaction triggered', detail: data.trigger ?? 'auto', ts: Date.now() }])
+        setCompactionSkills([])
+      } else if (data.type === 'compaction_progress') {
+        console.log('🧠 [COMPACT] progress:', data.stage, data.detail ?? '')
+        setCompactionStages(prev => [...prev, { stage: data.stage, detail: data.detail, ts: Date.now() }])
       } else if (data.type === 'compaction_complete') {
-        console.log('🧠 Compaction complete, skillsWritten:', data.skillsWritten)
+        console.log('🧠 [COMPACT] complete, skillsWritten:', data.skillsWritten, 'skills:', data.skillNames)
         setCompactionStatus('complete')
-        setTimeout(() => setCompactionStatus('idle'), 3000)
+        setCompactionSkills(Array.isArray(data.skillNames) ? data.skillNames : [])
+        setCompactionStages(prev => [...prev, {
+          stage: 'Memory crystallized',
+          detail: `${data.skillsWritten ?? 0} skill${data.skillsWritten === 1 ? '' : 's'} updated`,
+          ts: Date.now(),
+        }])
+        // Keep the success panel visible for 10s so the user has time to read it
+        // (was 3s — far too brief on mobile where compaction announcements arrive
+        // mid-voice-response and the user is listening, not staring at the screen).
+        setTimeout(() => {
+          setCompactionStatus('idle')
+          setCompactionStages([])
+          setCompactionSkills([])
+          setCompactionStartedAt(null)
+        }, 10000)
       } else {
         console.log('❓ Unknown message type:', data.type)
       }
@@ -2616,27 +2643,27 @@ function VoiceRoomInner({
             {/* Status */}
             <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} />
 
-            {/* Compaction status pill — subtle, non-intrusive */}
+            {/* Compaction status pill — header-level summary (always visible during compact) */}
             {compactionStatus !== 'idle' && (
-              <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium transition-all duration-300 ${
+              <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
                 compactionStatus === 'compacting'
-                  ? 'bg-amber-500/15 text-amber-400 border border-amber-500/25'
-                  : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25'
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
+                  : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
               }`}>
                 {compactionStatus === 'compacting' ? (
                   <>
-                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    <span>Crystallizing session memory&hellip;</span>
+                    <span>Crystallizing memory&hellip;</span>
                   </>
                 ) : (
                   <>
-                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
-                    <span>Skills updated</span>
+                    <span>{compactionSkills.length > 0 ? `${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated` : 'Memory crystallized'}</span>
                   </>
                 )}
               </div>
@@ -2828,6 +2855,60 @@ function VoiceRoomInner({
             </div>
           </div>
         </div>
+
+        {/* Prominent compaction banner — sits above chat during PreCompact→PostCompact window.
+            Visible for the full duration (typically 1–3 min), rolling stages keep the user
+            informed something is happening. Replaces the older 3-second flash pill which
+            users routinely missed. */}
+        {compactionStatus !== 'idle' && (
+          <div className={`px-3 sm:px-4 py-2.5 border-b transition-all duration-500 ${
+            compactionStatus === 'compacting'
+              ? 'bg-gradient-to-r from-amber-500/10 via-amber-500/15 to-amber-500/10 border-amber-500/30'
+              : 'bg-gradient-to-r from-emerald-500/10 via-emerald-500/15 to-emerald-500/10 border-emerald-500/30'
+          }`}>
+            <div className="flex items-start gap-2.5 max-w-3xl mx-auto">
+              <div className={`shrink-0 mt-0.5 ${compactionStatus === 'compacting' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                {compactionStatus === 'compacting' ? (
+                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className={`text-sm font-semibold ${compactionStatus === 'compacting' ? 'text-amber-300' : 'text-emerald-300'}`}>
+                  {compactionStatus === 'compacting'
+                    ? `Crystallizing session memory${compactionStartedAt ? ` · ${Math.floor((Date.now() - compactionStartedAt) / 1000)}s` : ''}`
+                    : `Memory crystallized — ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated`}
+                </div>
+                {compactionStages.length > 0 && (
+                  <div className="mt-1 text-xs text-gray-400 space-y-0.5 max-h-24 overflow-y-auto">
+                    {compactionStages.slice(-6).map((s, i) => (
+                      <div key={`${s.ts}-${i}`} className="flex items-center gap-1.5">
+                        <span className="text-gray-600">›</span>
+                        <span className="text-gray-300">{s.stage}</span>
+                        {s.detail && <span className="text-gray-500">— {s.detail}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {compactionStatus === 'complete' && compactionSkills.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {compactionSkills.map(name => (
+                      <span key={name} className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono">
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Chat */}
         <ChatPanel

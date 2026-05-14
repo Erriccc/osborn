@@ -53,6 +53,23 @@ if [ -f /workspace/.claude/.oauth-token ]; then
   echo "[sandbox] Restored CLAUDE_CODE_OAUTH_TOKEN from volume"
 fi
 
+# Seed default skills into ~/.claude/skills/ — single source of truth.
+# The agent only loads skills from this path; defaults shipped in the npm
+# package get copied here on first boot. Idempotent: existing skills
+# (learned via PostCompact or manually edited) are preserved across restarts.
+HOME_SKILLS_DIR=/root/.claude/skills
+PKG_SKILLS_DIR=/usr/local/lib/node_modules/osborn/.claude/skills
+mkdir -p "$HOME_SKILLS_DIR"
+if [ -d "$PKG_SKILLS_DIR" ]; then
+  for d in "$PKG_SKILLS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    NAME=$(basename "$d")
+    [ -d "$HOME_SKILLS_DIR/$NAME" ] && continue
+    cp -r "$d" "$HOME_SKILLS_DIR/$NAME"
+    echo "[sandbox] seeded default skill: $NAME"
+  done
+fi
+
 exec osborn
 ENTRYPOINT
 
