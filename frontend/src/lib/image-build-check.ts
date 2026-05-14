@@ -135,41 +135,109 @@ function ensureFlyctl(): void {
 }
 
 /**
- * Run `fly deploy --build-only --push --image-label {version}` from the repo
- * root (two levels up from `src/lib/`). Streams stderr output to our own
- * stderr so progress is visible in logs.
+ * Resolve the absolute path to the frontend/ directory.
+ *
+ * On Railway, `process.cwd()` is `/app` (the repo root), NOT `/app/frontend/`
+ * — even though railway.toml/Procfile do `cd frontend && npm run start`. The
+ * Node process starts at /app for reasons that aren't worth chasing. We just
+ * need to find the dir containing `fly-sandbox.toml` and use absolute paths.
+ *
+ * Strategy: walk up from process.cwd() looking for fly-sandbox.toml. Covers
+ * cwd=/app (find at /app/frontend/) AND cwd=/app/frontend (find here). If
+ * neither match, log a clear error and bail.
+ */
+function findFlyConfigDir(): string | null {
+  const candidates = [
+    process.cwd(),
+    join(process.cwd(), 'frontend'),
+    join(homedir(), '..', 'app', 'frontend'),  // /app/frontend safety net
+  ]
+  for (const c of candidates) {
+    if (existsSync(join(c, 'fly-sandbox.toml'))) return c
+  }
+  return null
+}
+
+/**
+ * Run `fly auth docker` to register the Fly registry credentials with the
+ * local Docker daemon. The `fly deploy --build-only --push` flow requires
+ * this — without it, the registry push step errors with auth failures.
+ *
+ * Idempotent — safe to call before every deploy.
+ */
+function flyAuthDocker(flyBin: string): void {
+  log('Running: fly auth docker')
+  const result = spawnSync(flyBin, ['auth', 'docker'], {
+    stdio: 'pipe',
+    encoding: 'utf8',
+    env: buildEnvWithFlyPath(),
+    timeout: 30000,
+  })
+  if (result.stdout) console.log('[fly auth docker stdout]', result.stdout.trim())
+  if (result.stderr) console.log('[fly auth docker stderr]', result.stderr.trim())
+  if (result.status !== 0) {
+    // Non-fatal — some builders (e.g. remote builder) don't need it.
+    log(`fly auth docker exited ${result.status} (continuing — may not be needed for remote builder)`)
+  }
+}
+
+/**
+ * Run `fly deploy --build-only --push --image-label {version}` with absolute
+ * paths so cwd doesn't matter. Streams stdout/stderr to our own logger.
  */
 function buildAndPushImage(version: string, flySandboxApp: string): void {
   const flyBin = resolveFlyBin()
-  // In Railway production, process.cwd() is always the frontend/ directory.
-  // fly-sandbox.toml lives here, and the Dockerfile is at ../agent/Dockerfile.sandbox.
-  const repoRoot = process.cwd()
+  const configDir = findFlyConfigDir()
+  if (!configDir) {
+    throw new Error(
+      `Could not locate fly-sandbox.toml. process.cwd()=${process.cwd()}. ` +
+      `Searched: ${[process.cwd(), join(process.cwd(), 'frontend')].join(', ')}. ` +
+      `Ensure fly-sandbox.toml + Dockerfile.sandbox are present in the deployed frontend/ dir.`,
+    )
+  }
+  const configPath = join(configDir, 'fly-sandbox.toml')
+  const dockerfilePath = join(configDir, 'Dockerfile.sandbox')
 
+  log(`Working directory (resolved): ${configDir}`)
+  log(`Config: ${configPath} ${existsSync(configPath) ? '(exists)' : '(MISSING!)'}`)
+  log(`Dockerfile: ${dockerfilePath} ${existsSync(dockerfilePath) ? '(exists)' : '(MISSING — prebuild step did not run)'}`)
+
+  // Step 1: register Fly registry creds with Docker (required for --push).
+  flyAuthDocker(flyBin)
+
+  // Step 2: deploy with --build-only --push.
+  // Use absolute paths so cwd ambiguity doesn't break --config resolution.
   const args = [
     'deploy',
     '--build-only',
     '--push',
     '--image-label', version,
     '--app', flySandboxApp,
-    '--config', 'fly-sandbox.toml',
+    '--config', configPath,
   ]
 
   log(`Running: ${flyBin} ${args.join(' ')}`)
-  log(`Working directory (frontend/): ${repoRoot}`)
 
   const result = spawnSync(flyBin, args, {
-    cwd: repoRoot,
+    cwd: configDir,
     stdio: 'pipe',
     encoding: 'utf8',
     env: buildEnvWithFlyPath(),
-    timeout: 600000, // 10 minutes
+    timeout: 900000, // 15 minutes — image build + push can take 10+ min
   })
 
-  if (result.stdout) console.log(result.stdout)
-  if (result.stderr) console.log(result.stderr)
+  // Always log both streams — historically only the last line of stderr was
+  // visible, hiding the real error (e.g. "Could not find App", "config not found").
+  if (result.stdout) console.log('[fly deploy stdout]\n' + result.stdout)
+  if (result.stderr) console.log('[fly deploy stderr]\n' + result.stderr)
+  log(`fly deploy: status=${result.status} signal=${result.signal ?? 'none'}`)
 
   if (result.status !== 0) {
-    throw new Error(`fly deploy exited with status ${result.status}`)
+    throw new Error(
+      `fly deploy exited with status ${result.status}` +
+      (result.signal ? ` (killed by ${result.signal})` : '') +
+      `. See stderr above for details.`,
+    )
   }
 
   log(`Image build and push complete for version ${version}`)

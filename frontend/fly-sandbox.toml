@@ -1,8 +1,13 @@
 # Fly.io config for the osborn sandbox image build.
 # Used by image-build-check.ts to run fly deploy --build-only --push.
 # This does NOT deploy machines — it only builds and pushes the image to the registry.
+#
+# Dockerfile location: ./Dockerfile.sandbox is copied here from agent/Dockerfile.sandbox
+# at build-time by the frontend/scripts/copy-sandbox-dockerfile.mjs prebuild step.
+# Local path required because Railway's deploy root is only the frontend/ subtree —
+# `../agent/...` resolves to /agent/ which doesn't exist on the Railway dyno.
 app = "osborn-sandbox"
 primary_region = "iad"
 
 [build]
-  dockerfile = "../agent/Dockerfile.sandbox"
+  dockerfile = "./Dockerfile.sandbox"
