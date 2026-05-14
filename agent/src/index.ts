@@ -206,8 +206,28 @@ function startApiServer(workingDir: string, port: number): void {
     }
 
     if (req.method === 'GET' && url.pathname === '/health') {
+      // Include osborn version — primary signal used by machines.readInstalledOsbornVersion()
+      // to detect which agent version is running. Without this the consumer falls back to
+      // parsing the Docker image tag (e.g. ":latest" → rejected) and returns null, which
+      // breaks the dashboard's version badge + the upgrade-needed comparison.
+      // Read once at module load? No — package.json is small and resolveFromPackage() handles
+      // both `dist/` (installed) and `src/` (local dev) layouts.
+      let version: string | undefined
+      try {
+        // Walk up from this file's dirname to find package.json. Works whether running
+        // from src/ (tsx local dev) or dist/ (compiled npm install).
+        const { readFileSync } = await import('node:fs')
+        const { join } = await import('node:path')
+        for (const rel of ['../package.json', '../../package.json']) {
+          try {
+            const pkg = JSON.parse(readFileSync(join(__dirname, rel), 'utf8'))
+            if (pkg.name === 'osborn' && pkg.version) { version = pkg.version; break }
+          } catch { /* try next */ }
+        }
+      } catch { /* version optional */ }
+
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ status: 'ok', workingDir }))
+      res.end(JSON.stringify({ status: 'ok', workingDir, version }))
       return
     }
 

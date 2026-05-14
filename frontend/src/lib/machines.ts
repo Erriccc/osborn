@@ -242,7 +242,14 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
  *  6. Poll /health until agent responds
  *  7. Return SandboxInfo
  *
- * @param options.autostopMode - 'stop' (default, cold stop/start cycle) or 'off' (disable autostop)
+ * Autostop policy: DEFAULTS TO `'off'` — machines stay running until WE
+ * explicitly call stopSandbox(). This is intentional: we want full manual
+ * control over lifecycle so unexpected wakes / cold-start delays / suspend-
+ * related bugs don't surprise users. The dashboard (or any keepalive watcher)
+ * is responsible for calling /api/sandbox `stop` when the user goes idle.
+ * Caller can opt in to Fly-managed autostop by passing `autostopMode: 'stop'`.
+ *
+ * @param options.autostopMode - 'off' (default, manual lifecycle) or 'stop' (Fly-managed cold stop/start)
  */
 export async function createSandbox(userId: string, options?: { autostopMode?: 'off' | 'stop' }): Promise<SandboxInfo> {
   if (!isMachinesConfigured()) {
@@ -301,7 +308,9 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
           { port: 443, handlers: ['tls', 'http'] },
           { port: 80, handlers: ['http'], force_https: true },
         ],
-        autostop: options?.autostopMode ?? 'stop',
+        // Manual lifecycle by default — see createSandbox doc for rationale.
+        // Frontend/server explicitly calls stopSandbox() when user goes idle.
+        autostop: options?.autostopMode ?? 'off',
         autostart: true,
         concurrency: { type: 'connections', soft_limit: 5, hard_limit: 10 },
       }],
@@ -351,15 +360,24 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
 
 /**
  * Find an existing sandbox for a user.
- * Derives app name from userId and checks the Fly API.
+ *
+ * `knownSandboxId` (typically from Supabase `instances.sandbox_id`) is the
+ * authoritative source — honor it when provided. Fall back to deterministic
+ * naming only when Supabase has no record (legacy users provisioned before
+ * row creation, or first-time provision-lookup race).
+ *
+ * Earlier versions of this function ignored `knownSandboxId` with a "deterministic
+ * from userId" comment. That assumption silently broke any user whose stored
+ * sandbox name differed from the derived one — for example after a manual
+ * provisioning script used a timestamped name, or if Fly app naming evolves
+ * to add a suffix (as sprites already does via `generateUniqueSpriteName`).
+ * The code-level parity test caught this — see tests/parity/code-level-parity.ts.
  *
  * @param userId         - the user ID to look up
- * @param knownSandboxId - optional; accepted for API parity with sprites.ts but ignored.
- *                         On Fly Machines the app name is deterministic from userId.
+ * @param knownSandboxId - if provided, this is the actual Fly app name; used as-is
  */
 export async function findUserSandbox(userId: string, knownSandboxId?: string): Promise<SandboxInfo | null> {
-  void knownSandboxId // accepted for API parity — app name is deterministic from userId
-  const appName = appNameFromUserId(userId)
+  const appName = knownSandboxId || appNameFromUserId(userId)
   try {
     // Ensure the app exists before checking machines
     await api<FlyApp>('GET', `/v1/apps/${appName}`)
@@ -803,23 +821,39 @@ export async function execInSprite(
 /**
  * Check session layer consistency.
  *
+ * Drop-in parity with sprites.ts checkSessionLayerConsistency() — returns the
+ * SAME response shape (`SessionLayerConsistency` interface from sprites.ts) so
+ * /api/sandbox can return the report verbatim and the dashboard can render the
+ * same banner regardless of backend.
+ *
  * No CRIU overlay filesystem exists on Fly Machines — the container view and
- * persistent disk are always the same volume mount. Always returns a consistent
- * result with diverged=false.
+ * the mounted volume are always the same. `mismatch` is always false because
+ * there's no layer to diverge from. Container count is the authoritative number.
  *
- * Drop-in parity with sprites.ts checkSessionLayerConsistency().
- *
- * @param _sandboxId            - ignored on Fly Machines
- * @param _containerSessionCount - used as both persistent and container counts
+ * Fields we cannot populate without an exec API (which Fly Machines doesn't
+ * expose for our use case) are filled with zero-as-equal-to-container so the
+ * dashboard's "X persistent vs Y container" comparison renders as in-sync.
  */
+export interface SessionLayerConsistency {
+  persistentSessionCount: number
+  persistentTotalJsonl: number
+  persistentBytes: number
+  containerSessionCount: number
+  mismatch: boolean
+  projects: Array<{ slug: string; jsonlCount: number; bigJsonlCount: number; totalBytes: number }>
+}
+
 export async function checkSessionLayerConsistency(
   _sandboxId: string,
-  _containerSessionCount: number,
-): Promise<{ consistent: boolean; persistentCount: number; containerCount: number; diverged: boolean } | null> {
+  containerSessionCount: number,
+): Promise<SessionLayerConsistency | null> {
+  void _sandboxId
   return {
-    consistent: true,
-    persistentCount: _containerSessionCount,
-    containerCount: _containerSessionCount,
-    diverged: false,
+    persistentSessionCount: containerSessionCount,
+    persistentTotalJsonl: containerSessionCount,
+    persistentBytes: 0, // unknown without volume inspection — dashboard tolerates 0
+    containerSessionCount,
+    mismatch: false,
+    projects: [],
   }
 }

@@ -1,19 +1,26 @@
 /**
- * Prebuild step — copies agent/Dockerfile.sandbox into frontend/ so it lands
- * at /app/Dockerfile.sandbox on Railway. Without this, the auto-publish flow
- * (image-build-check.ts) calls `fly deploy` from /app referencing the build
- * config's `dockerfile = "../agent/Dockerfile.sandbox"`, which resolves to
- * /agent/Dockerfile.sandbox — a path that doesn't exist on Railway because
- * the deploy root is only the frontend/ subtree.
+ * Prebuild step — keeps frontend/Dockerfile.sandbox in sync with the
+ * canonical agent/Dockerfile.sandbox source.
  *
- * Runs in two paths:
- *   - Local: `npm run build` runs `prebuild` (this script), then `next build`
- *   - Railway: same — nixpacks runs `npm run build` which triggers prebuild
+ * Background:
+ *   Railway's deploy root for this project is frontend/, so agent/ is NOT
+ *   available at /app on the Railway dyno. The committed copy at
+ *   frontend/Dockerfile.sandbox is what actually ships to production and gets
+ *   used by image-build-check.ts → fly deploy --build-only --push.
  *
- * Idempotent — overwrites on every build so the bundled Dockerfile stays in
- * sync with the canonical agent/Dockerfile.sandbox source.
+ * Local dev (agent/ available):
+ *   Refreshes frontend/Dockerfile.sandbox from agent/Dockerfile.sandbox so
+ *   developers don't have to remember to update both. If the destination
+ *   already matches, no-op.
+ *
+ * Railway (agent/ NOT available):
+ *   No-op. The committed frontend/Dockerfile.sandbox is used as-is.
+ *
+ * To update the Dockerfile, edit agent/Dockerfile.sandbox, run `npm run build`
+ * once locally (or `node frontend/scripts/copy-sandbox-dockerfile.mjs`), and
+ * commit the resulting frontend/Dockerfile.sandbox change.
  */
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,12 +32,29 @@ const src = join(repoRoot, 'agent', 'Dockerfile.sandbox')
 const dst = join(frontendDir, 'Dockerfile.sandbox')
 
 if (!existsSync(src)) {
-  console.error(`[prebuild-sandbox] source missing: ${src}`)
-  console.error(`[prebuild-sandbox] If running outside the monorepo this is expected — skipping.`)
+  // Railway production — agent/ is outside the deploy root. The committed
+  // Dockerfile.sandbox in frontend/ is what ships, no refresh needed.
+  if (existsSync(dst)) {
+    console.log(`[prebuild-sandbox] agent/Dockerfile.sandbox not available (probably Railway) — using committed copy at ${dst}`)
+  } else {
+    console.error(`[prebuild-sandbox] WARNING: neither ${src} nor ${dst} exists. Image build will fail.`)
+  }
   process.exit(0)
+}
+
+// Local dev: refresh if content drifted
+if (existsSync(dst)) {
+  const srcContent = readFileSync(src, 'utf8')
+  const dstContent = readFileSync(dst, 'utf8')
+  if (srcContent === dstContent) {
+    console.log(`[prebuild-sandbox] in sync with ${src} — no change`)
+    process.exit(0)
+  }
+  console.log(`[prebuild-sandbox] drift detected — refreshing from ${src}`)
 }
 
 mkdirSync(dirname(dst), { recursive: true })
 copyFileSync(src, dst)
 console.log(`[prebuild-sandbox] copied ${src}`)
 console.log(`[prebuild-sandbox]     → ${dst}`)
+console.log(`[prebuild-sandbox] ⚠ Commit the updated frontend/Dockerfile.sandbox so Railway picks it up`)
