@@ -861,25 +861,24 @@ export async function listAllClaudeSessions(limit = 100): Promise<ClaudeSessionE
 
       if (preview.messageCount < 2) continue
 
-      // SLUG-FIRST: prefer the slug-derived path over the content cwd.
+      // SLUG-FIRST for both `cwd` (routing) and `projectPath` (display).
       //
-      // Claude Code's `--resume <id>` looks up sessions by file LOCATION
-      // (slug folder under ~/.claude/projects/), not by the cwd field inside
-      // the JSONL. The JSONL content cwd is immutable historical metadata —
-      // it's where the session was ORIGINALLY recorded (e.g. sprite path
-      // /home/sprite/workspace or /workspaces/codespaces-blank). On migration
-      // (sprite → fly), files were finalized into a new slug but their
-      // content still records the original cwd.
+      // The workspace root (the agent's cwd, e.g. `/workspace` on fly) is
+      // the base layer. Projects are subdirectories beneath it — a session
+      // started in `/workspace/instagram` gets slug `-workspace-instagram`,
+      // and slugToPath turns that back into `/workspace/instagram`. The
+      // dashboard groups by this path → "instagram" naturally becomes a
+      // project card. Sessions started at the workspace root collapse into
+      // one "General" / "Workspace" card.
       //
-      // The dashboard forwards this field as `workingDirectory` to the
-      // agent, which uses it as Claude Code's spawn cwd. If it doesn't
-      // match the slug, the spawn lands in the wrong folder and resume
-      // errors with "No conversation found". The slug is the source of
-      // truth for where the file lives on disk; use it.
-      //
-      // Content cwd is kept as a last-resort fallback only when slug
-      // reversal fails (slugToPath validates with existsSync and returns
-      // '' on ambiguous encodings like dir names containing literal '-').
+      // Why NOT prefer the content cwd: the JSONL records whatever cwd
+      // existed when the session was recorded — for migrated sessions that
+      // can be a path that no longer exists on this host (e.g.
+      // `/workspaces/codespaces-blank` from someone's Codespace). Using
+      // file LOCATION as the source of truth keeps grouping aligned with
+      // where the data actually lives and where Claude Code's --resume
+      // will look. Content cwd is kept as a last-resort fallback for the
+      // rare case where slugToPath reversal fails.
       const slugPath = slugToPath(c.slug)
       sessions.push({
         sessionId: c.sessionId,

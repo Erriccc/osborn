@@ -10,33 +10,81 @@ interface SessionInfo {
   timestamp: string
   lastMessage?: string
   messageCount?: number
-  // The cwd the session was originally created with. Critical for resume:
-  // sessions live at ~/.claude/projects/<slug>/<sessionId>.jsonl where <slug>
-  // is derived from the cwd, so the agent must boot with the matching cwd or
-  // the session lookup goes to the wrong directory ("Session not found").
+  // Slug-derived cwd = file LOCATION on disk. Both grouping (project card)
+  // and resume routing (workingDirectory forwarded to the agent) use this.
+  // Anchored to the workspace base layer — `/workspace` is the root,
+  // `/workspace/<name>` becomes a project card called "<name>".
   cwd?: string
+  // Same value as cwd in the current schema, kept as a separate field so
+  // a future server-side change can hand the dashboard a richer display
+  // path without changing the routing contract.
+  projectPath?: string
 }
 
+// The dashboard no longer keeps a hardcoded list of base cwds — the agent
+// broadcasts its own `baseCwd` (its working directory) in the `/sessions`
+// response. We pass it into the grouping helpers so the model is:
+//
+//   session.cwd === baseCwd            → "Workspace" card  (the base)
+//   session.cwd startsWith baseCwd/X   → project card named "X"
+//   anything else                       → off-base / legacy, its own card
+//
+// When `baseCwd` is null (older agent that doesn't advertise it), we fall
+// back to behaving like every session is at its own absolute cwd — no
+// "Workspace" collapsing, no first-segment magic. The old agent's
+// dashboard rendering still works, just less prettily.
+
 interface ProjectGroup {
-  name: string        // display name: last path segment, or 'General' for root
-  cwd: string         // full path e.g. '/home/sprite/workspace/instagram'
+  name: string        // display name: "Workspace" for the base, or the
+                      // first segment beneath the base for sub-projects
+  cwd: string         // grouping key — slug-derived absolute path. Used
+                      // for forwarding workingDirectory on resume.
   sessions: SessionInfo[]
   lastActive: string  // timestamp of most recent session
 }
 
-function groupByProject(sessions: SessionInfo[]): ProjectGroup[] {
+function projectKeyFromCwd(cwd: string, baseCwd: string | null): string {
+  const clean = cwd.replace(/\/+$/, '')
+  if (!baseCwd) return clean
+  const cleanBase = baseCwd.replace(/\/+$/, '')
+  // Session at the base → key IS the base. All such sessions collapse
+  // into the "Workspace" card.
+  if (clean === cleanBase) return cleanBase
+  // Session below the base → key is the FIRST segment beneath the base.
+  // `${base}/instagram/api/src` and `${base}/instagram` both key to
+  // `${base}/instagram` and group into the "instagram" card.
+  if (clean.startsWith(cleanBase + '/')) {
+    const rest = clean.slice(cleanBase.length + 1)
+    const firstSegment = rest.split('/')[0]
+    return `${cleanBase}/${firstSegment}`
+  }
+  // Off-base — keep the raw cwd as its own group.
+  return clean
+}
+
+function groupByProject(sessions: SessionInfo[], baseCwd: string | null): ProjectGroup[] {
   const map = new Map<string, SessionInfo[]>()
   for (const s of sessions) {
-    const cwd = s.cwd || '/home/sprite/workspace'
-    map.set(cwd, [...(map.get(cwd) || []), s])
+    const cwd = s.cwd || s.projectPath || baseCwd || '/workspace'
+    const key = projectKeyFromCwd(cwd, baseCwd)
+    map.set(key, [...(map.get(key) || []), s])
   }
+  const cleanBase = baseCwd?.replace(/\/+$/, '') ?? null
   return Array.from(map.entries())
     .map(([cwd, sessions]) => {
+      const isBase = cleanBase !== null && cwd === cleanBase
       const segments = cwd.replace(/\/$/, '').split('/')
-      const name = cwd === '/home/sprite/workspace' ? 'General' : (segments[segments.length - 1] || 'General')
+      const name = isBase ? 'Workspace' : (segments[segments.length - 1] || 'Workspace')
       return { name, cwd, sessions, lastActive: sessions[0]?.timestamp || '' }
     })
-    .sort((a, b) => new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime())
+    .sort((a, b) => {
+      // Base "Workspace" card pinned to the top, then everything else by
+      // most-recent activity.
+      const aBase = cleanBase !== null && a.cwd === cleanBase ? 0 : 1
+      const bBase = cleanBase !== null && b.cwd === cleanBase ? 0 : 1
+      if (aBase !== bBase) return aBase - bBase
+      return new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime()
+    })
 }
 
 type Provider = 'gemini' | 'openai'
@@ -48,6 +96,11 @@ export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  // The agent's working directory (BASE LAYER) as reported by `/sessions`.
+  // Null until we've successfully fetched the session list once. Used by
+  // groupByProject to know which sessions are "Workspace" sessions vs
+  // project-card sessions. See the comment block above groupByProject.
+  const [baseCwd, setBaseCwd] = useState<string | null>(null)
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
@@ -165,16 +218,21 @@ export default function Dashboard() {
 
   // Fetch sessions
   const fetchSessions = useCallback(async () => {
-    if (!canFetchAgent()) { setAgentOnline(false); setSessions([]); return }
+    if (!canFetchAgent()) { setAgentOnline(false); setSessions([]); setBaseCwd(null); return }
     setSessionsLoading(true)
     try {
       const r = await fetch(`${agentUrl}/sessions`)
       const data = await r.json()
       setSessions(data.sessions || [])
+      // baseCwd is included by 0.9.25+. Older agents omit it; null fallback
+      // makes groupByProject behave like the pre-base-aware version (each
+      // cwd is its own card) — no rendering crash, just less prettily.
+      setBaseCwd(typeof data.baseCwd === 'string' && data.baseCwd ? data.baseCwd : null)
       setAgentOnline(true)
     } catch {
       setAgentOnline(false)
       setSessions([])
+      setBaseCwd(null)
     } finally {
       setSessionsLoading(false)
     }
@@ -1236,7 +1294,7 @@ export default function Dashboard() {
                 <p className="px-4 text-sm text-[var(--muted)]">No conversations yet</p>
               ) : (
                 <div className="space-y-2">
-                  {groupByProject(sessions).map(project => (
+                  {groupByProject(sessions, baseCwd).map(project => (
                     <div key={project.cwd} className="rounded-2xl bg-[var(--surface)] overflow-hidden">
                       {/* Project header row */}
                       <div className="flex items-center gap-3 px-4 py-3.5">

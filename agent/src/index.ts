@@ -183,6 +183,14 @@ function startApiServer(workingDir: string, port: number): void {
         const limit = parseInt(url.searchParams.get('limit') || '100', 10)
         const sessions = await listAllClaudeSessions(limit)
         const payload = {
+          // The agent's working directory at launch — the BASE LAYER of all
+          // project organization. The dashboard groups sessions relative to
+          // this path: a session whose cwd === baseCwd is a "Workspace"
+          // session (the base); a session at `${baseCwd}/<name>` is a
+          // project called "<name>". Replaces the dashboard's previously-
+          // hardcoded base-path list — agent self-describes its base so
+          // the UI doesn't have to keep a sync'd copy.
+          baseCwd: workingDir,
           sessions: sessions.map(s => ({
             sessionId: s.sessionId,
             projectSlug: s.projectSlug,
@@ -3235,6 +3243,11 @@ async function main() {
           const sessions = await listAllClaudeSessions(100)
           await sendToFrontend({
             type: 'sessions_list',
+            // See `/sessions` HTTP handler — baseCwd is the agent's
+            // workingDir, the base layer the dashboard groups against.
+            // Sent here too so the in-chat session list grouping stays
+            // consistent with the dashboard's grouping.
+            baseCwd: workingDir,
             sessions: sessions.map(s => ({
               sessionId: s.sessionId,
               projectSlug: s.projectSlug,
