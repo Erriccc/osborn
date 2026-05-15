@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
+// Provider switched via CLOUD_PROVIDER env var: 'sprites' (default) or 'machines'.
+// See lib/cloud.ts — thin wrapper that re-exports from the active backend.
+// To flip backends in Railway: set CLOUD_PROVIDER=machines, redeploy. No code change.
 import {
   isSpritesConfigured,
   createSandbox,
@@ -17,7 +20,7 @@ import {
   resolveOsbornLatest,
   readInstalledOsbornVersion,
   checkSessionLayerConsistency,
-} from '@/lib/sprites'
+} from '@/lib/cloud'
 
 /**
  * GET /api/sandbox — get current user's sandbox status

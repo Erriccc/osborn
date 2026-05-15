@@ -338,8 +338,13 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
-    // GET /sessions/export — stream a gzipped tar of ~/.claude/projects/ to the client
-    // Optional ?workDir= query param: if present, export only that project's slug folder.
+    // GET /sessions/export — stream a gzipped tar of ~/.claude/projects/ AND
+    // ~/.claude/skills/ to the client. Both directories ship in one archive so
+    // a sync covers conversations (projects/) and learned skills together —
+    // e.g. PostCompact-written `decisions/SKILL.md` and `learned-behaviors/SKILL.md`
+    // travel with the user's session data.
+    // Optional ?workDir= query param accepted for backwards compat but ignored
+    // (full export is always returned).
     if (req.method === 'GET' && url.pathname === '/sessions/export') {
       if (syncToken) {
         const authHeader = req.headers['authorization'] ?? ''
@@ -351,17 +356,22 @@ function startApiServer(workingDir: string, port: number): void {
       }
       const claudeDir = join(homedir(), '.claude')
       const projectsDir = join(claudeDir, 'projects')
+      const skillsDir = join(claudeDir, 'skills')
       const workDir = url.searchParams.get('workDir')
-      if (!existsSync(projectsDir)) {
+      void workDir
+      // Collect which top-level dirs exist — tar fails if we list one that doesn't.
+      const topLevel: string[] = []
+      if (existsSync(projectsDir)) topLevel.push('projects')
+      if (existsSync(skillsDir)) topLevel.push('skills')
+      if (topLevel.length === 0) {
         res.writeHead(404, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No sessions found' }))
+        res.end(JSON.stringify({ error: 'No sessions or skills found' }))
         return
       }
-      const tarArgs = ['-czf', '-', '-C', claudeDir, 'projects']
-      void workDir  // workDir param accepted but full projects/ export is returned
+      const tarArgs = ['-czf', '-', '-C', claudeDir, ...topLevel]
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
-        'Content-Disposition': 'attachment; filename="claude-sessions.tar.gz"',
+        'Content-Disposition': 'attachment; filename="claude-export.tar.gz"',
         'Access-Control-Allow-Origin': '*',
       })
       // Stream tar output directly to response
@@ -373,28 +383,44 @@ function startApiServer(workingDir: string, port: number): void {
     }
 
     // GET /sessions/manifest — return mtime+size for all .jsonl files per slug (public, no auth)
-    // Helper: merge an extracted tar directory into ~/.claude/projects/ with all 4 fixes:
+    // Helper: merge an extracted tar directory into ~/.claude/{projects,skills}/.
+    //
+    // Behavior:
     //   1. Skip macOS AppleDouble entries (`._*`) that bsdtar emits
-    //   2. Apply slug remap when targetWorkDir is supplied (chunked path missed this)
-    //   3. Rewrite embedded `cwd` field inside .jsonl entries during remap so
-    //      Claude Code can resume the conversation in the destination workspace
-    //   4. Merge into existing dest dirs instead of failing on rename collision
-    const mergeExtractedIntoProjects = async (
+    //   2. Project slugs: apply slug remap when targetWorkDir is supplied so
+    //      laptop/codespaces sessions land at the destination's slug.
+    //   3. Skills: copy each <skillName>/ directory verbatim (no slug remap —
+    //      skill identity is the directory name, same across all environments).
+    //      PostCompact-learned skills like 'decisions' and 'learned-behaviors'
+    //      from a sprite travel through to the destination this way.
+    //   4. Per-file mtime-newer-wins resolves collisions in either dir (preserves
+    //      whichever side has the more-recent version).
+    //   5. Byte-exact copy — no content mutation in either projects/ or skills/.
+    const mergeExtractedClaudeDir = async (
       sourceDir: string,
       targetWorkDir: string | undefined,
-    ): Promise<{ filesWritten: number, remapped: Record<string, string> }> => {
+    ): Promise<{ filesWritten: number, remapped: Record<string, string>, skillsWritten: number }> => {
       const claudeDir = join(homedir(), '.claude')
       const projectsDir = join(claudeDir, 'projects')
+      const skillsDir = join(claudeDir, 'skills')
       mkdirSync(projectsDir, { recursive: true })
+      mkdirSync(skillsDir, { recursive: true })
 
-      // The archive sometimes wraps content in a 'projects' subdir, sometimes not.
+      // The archive may wrap content in a 'projects' / 'skills' subdir, or be
+      // a flat dir of slugs. Detect both.
       const extractedProjects = join(sourceDir, 'projects')
-      const effectiveSource = existsSync(extractedProjects) ? extractedProjects : sourceDir
+      const extractedSkills = join(sourceDir, 'skills')
+      const hasProjectsWrapper = existsSync(extractedProjects)
+      const hasSkillsWrapper = existsSync(extractedSkills)
+      // If neither wrapper exists, treat the source dir as a flat slug dir
+      // (back-compat with older client tar layouts).
+      const effectiveSource = (hasProjectsWrapper || hasSkillsWrapper) ? null : sourceDir
 
-      // Filter out AppleDouble (`._*`) entries that macOS bsdtar emits for
-      // resource forks. These crash later steps if they collide with real dirs.
-      const sourceSlugs = readdirSync(effectiveSource)
-        .filter(s => !s.startsWith('._') && !s.startsWith('.DS_Store'))
+      // ─── PROJECTS extraction ─────────────────────────────────────────
+      const projectsSource = hasProjectsWrapper ? extractedProjects : effectiveSource
+      const sourceSlugs = projectsSource
+        ? readdirSync(projectsSource).filter(s => !s.startsWith('._') && !s.startsWith('.DS_Store'))
+        : []
 
       // Build remap table: source-slug → target-slug.
       // Only remaps slugs that differ from the target (no-op if already correct).
@@ -420,7 +446,7 @@ function startApiServer(workingDir: string, port: number): void {
         const destSlug = join(projectsDir, effectiveSlug)
         mkdirSync(destSlug, { recursive: true })
 
-        const sourceSlugPath = join(effectiveSource, sourceSlug)
+        const sourceSlugPath = join(projectsSource!, sourceSlug)
         // NO content mutation. Earlier versions rewrote the embedded `"cwd":"..."`
         // field inside JSONL entries to match the destination workspace. That was
         // wrong on two counts:
@@ -481,35 +507,73 @@ function startApiServer(workingDir: string, port: number): void {
         }
       }
 
-      return { filesWritten, remapped }
+      // ─── SKILLS extraction ───────────────────────────────────────────
+      // Skill identity is the directory name (`decisions`, `learned-behaviors`,
+      // etc.) so there's no slug remap — each <skillName>/ dir copies into
+      // ~/.claude/skills/<skillName>/. Mtime-newer-wins handles collisions:
+      //   - Default skills seeded by Docker entrypoint have the boot mtime
+      //   - Learned skills from source have whatever mtime they had on origin
+      //   - Newer side wins per file
+      let skillsWritten = 0
+      if (hasSkillsWrapper) {
+        const sourceSkillNames = readdirSync(extractedSkills)
+          .filter(s => !s.startsWith('._') && !s.startsWith('.DS_Store'))
+        for (const skillName of sourceSkillNames) {
+          const srcSkillPath = join(extractedSkills, skillName)
+          const dstSkillPath = join(skillsDir, skillName)
+          mkdirSync(dstSkillPath, { recursive: true })
+
+          // Reuse the same mtime-aware walkAndCopy from the projects loop —
+          // it's still in scope from the last iteration. If sourceSlugs was
+          // empty, define it inline here. (Define standalone to be safe.)
+          const walkSkill = (src: string, dst: string): void => {
+            const entries = readdirSync(src, { withFileTypes: true })
+            for (const e of entries) {
+              if (e.name.startsWith('._') || e.name === '.DS_Store') continue
+              const sp = join(src, e.name)
+              const dp = join(dst, e.name)
+              if (e.isDirectory()) { mkdirSync(dp, { recursive: true }); walkSkill(sp, dp) }
+              else if (e.isFile()) {
+                let shouldWrite = true
+                try {
+                  const dstStat = statSync(dp)
+                  const srcStat = statSync(sp)
+                  if (dstStat.mtimeMs >= srcStat.mtimeMs) shouldWrite = false
+                } catch {}
+                if (!shouldWrite) continue
+                cpSync(sp, dp, { force: true })
+                skillsWritten++
+              }
+            }
+          }
+          walkSkill(srcSkillPath, dstSkillPath)
+        }
+      }
+
+      return { filesWritten, remapped, skillsWritten }
     }
 
     if (req.method === 'GET' && url.pathname === '/sessions/manifest') {
-      // Walks the FULL tree per slug — including sub-agent transcripts
-      // (<slug>/<sessionId>/subagents/*.jsonl), tool-results (<slug>/<sessionId>/tool-results/*),
-      // osb workspace files (<slug>/osb/<sessionId>/*), and file-history. Files are
-      // keyed by their path RELATIVE to the slug dir so the client can preserve
-      // structure when computing diffs. mtime is in ms epoch so a simple `>`
-      // comparison is the "newer wins" merge rule.
-      //
-      // Previous version only listed top-level *.jsonl and missed ~270/290 files
-      // on a typical session — sub-agent transcripts invisible → resume failed
-      // silently because Claude couldn't find the referenced agent_id transcripts.
-      const claudeDir = join(homedir(), '.claude', 'projects')
-      const slugMap: Record<string, { files: Record<string, { mtime: number, size: number }> }> = {}
+      // Walks BOTH ~/.claude/projects/ AND ~/.claude/skills/ — full tree per
+      // top-level directory.
+      //   - projects/<slug>/<...> → session JSONLs, sub-agent transcripts, tool-results, osb/
+      //   - skills/<skillName>/<...> → SKILL.md + any subfiles
+      // Files keyed by path RELATIVE to the slug/skill-name dir so the client
+      // can preserve structure when computing diffs. mtime in ms epoch.
+      const projectsRoot = join(homedir(), '.claude', 'projects')
+      const skillsRoot = join(homedir(), '.claude', 'skills')
 
-      const walkSlug = (slugDir: string): Record<string, { mtime: number, size: number }> => {
+      const walkDir = (dir: string): Record<string, { mtime: number, size: number }> => {
         const files: Record<string, { mtime: number, size: number }> = {}
-        const walk = (dir: string, relPrefix: string): void => {
+        const walk = (curr: string, relPrefix: string): void => {
           let entries
-          try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+          try { entries = readdirSync(curr, { withFileTypes: true }) } catch { return }
           for (const e of entries) {
             if (e.name.startsWith('._') || e.name === '.DS_Store') continue
-            const sub = join(dir, e.name)
+            const sub = join(curr, e.name)
             const rel = relPrefix ? `${relPrefix}/${e.name}` : e.name
-            if (e.isDirectory()) {
-              walk(sub, rel)
-            } else if (e.isFile()) {
+            if (e.isDirectory()) walk(sub, rel)
+            else if (e.isFile()) {
               try {
                 const st = statSync(sub)
                 files[rel] = { mtime: st.mtimeMs, size: st.size }
@@ -517,24 +581,30 @@ function startApiServer(workingDir: string, port: number): void {
             }
           }
         }
-        walk(slugDir, '')
+        walk(dir, '')
         return files
       }
 
+      const slugMap: Record<string, { files: Record<string, { mtime: number, size: number }> }> = {}
       try {
-        const slugs = readdirSync(claudeDir, { withFileTypes: true })
+        for (const slug of readdirSync(projectsRoot, { withFileTypes: true })
           .filter(d => d.isDirectory() && !d.name.startsWith('._'))
-          .map(d => d.name)
-
-        for (const slug of slugs) {
-          slugMap[slug] = { files: walkSlug(join(claudeDir, slug)) }
+          .map(d => d.name)) {
+          slugMap[slug] = { files: walkDir(join(projectsRoot, slug)) }
         }
-      } catch {
-        // projects dir doesn't exist yet — return empty
-      }
+      } catch { /* projects dir doesn't exist yet — leave empty */ }
+
+      const skillsMap: Record<string, { files: Record<string, { mtime: number, size: number }> }> = {}
+      try {
+        for (const name of readdirSync(skillsRoot, { withFileTypes: true })
+          .filter(d => d.isDirectory() && !d.name.startsWith('._'))
+          .map(d => d.name)) {
+          skillsMap[name] = { files: walkDir(join(skillsRoot, name)) }
+        }
+      } catch { /* skills dir doesn't exist yet — leave empty */ }
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ slugs: slugMap }))
+      res.end(JSON.stringify({ slugs: slugMap, skills: skillsMap }))
       return
     }
 
@@ -598,9 +668,9 @@ function startApiServer(workingDir: string, port: number): void {
             res.end(JSON.stringify({ error: 'tar extraction failed', code }))
             return
           }
-          const { filesWritten, remapped } = await mergeExtractedIntoProjects(tmpDir, targetWorkDir ?? undefined)
+          const { filesWritten, remapped, skillsWritten } = await mergeExtractedClaudeDir(tmpDir, targetWorkDir ?? undefined)
           res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ ok: true, filesWritten, remapped }))
+          res.end(JSON.stringify({ ok: true, filesWritten, remapped, skillsWritten }))
         } catch (err) {
           console.error('[import] merge error:', err)
           if (!res.headersSent) {
@@ -729,9 +799,9 @@ function startApiServer(workingDir: string, port: number): void {
             if (code !== 0) {
               res.writeHead(500); res.end(JSON.stringify({ error: 'tar extraction failed', code })); return
             }
-            const { filesWritten, remapped } = await mergeExtractedIntoProjects(tmpExtractDir, targetWorkDir)
+            const { filesWritten, remapped, skillsWritten } = await mergeExtractedClaudeDir(tmpExtractDir, targetWorkDir)
             res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ ok: true, filesWritten, remapped }))
+            res.end(JSON.stringify({ ok: true, filesWritten, remapped, skillsWritten }))
           } catch (err) {
             console.error('[import-finalize] merge error:', err)
             if (!res.headersSent) {
