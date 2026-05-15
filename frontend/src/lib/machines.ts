@@ -69,7 +69,31 @@ function getOrgSlug(): string {
   return process.env.FLY_ORG_SLUG || 'personal'
 }
 
-function getSandboxImage(): string {
+/**
+ * Build the sandbox image URL.
+ *
+ * When `version` is supplied (e.g. "0.9.24"), pin the tag explicitly. This
+ * is what `updateOsborn` uses: every upgrade points at a version-tagged
+ * digest in the Fly registry, so we never depend on `:latest` (which
+ * `fly deploy --image-label` does NOT move automatically — leaving the
+ * dashboard "Update" button silently re-installing whatever stale digest
+ * happens to be sitting at `:latest`).
+ *
+ * When called with no argument, fall back to `FLY_SANDBOX_IMAGE` (or the
+ * default `:latest` URL). This path is only used by `createSandbox` for
+ * fresh provisioning where we haven't resolved the npm-latest version yet
+ * — and even there, the bootstrap installs `osborn@latest` from npm at
+ * boot, so the image's pinned osborn version is just a starting point.
+ */
+function getSandboxImage(version?: string): string {
+  if (version) {
+    // Repository host + path are stable; only the tag changes. Use the
+    // configured env var as the source so tests / non-prod can override
+    // the registry path, while still flipping the tag to the explicit
+    // version we just resolved.
+    const base = process.env.FLY_SANDBOX_IMAGE || 'registry.fly.io/osborn-sandbox/agent:latest'
+    return base.replace(/:[^/:]+$/, `:${version}`)
+  }
   return process.env.FLY_SANDBOX_IMAGE || 'registry.fly.io/osborn-sandbox/agent:latest'
 }
 
@@ -697,7 +721,15 @@ async function updateOsbornImpl(
 
   // Step 3: PATCH machine config with new image
   // Fly Machines uses POST /machines/{id} to update config (same as create endpoint).
-  const newImage = getSandboxImage()
+  //
+  // VERSION-PINNED: pass `targetVersion` so the URL is `agent:0.9.24`, not
+  // `agent:latest`. `fly deploy --image-label X.Y.Z` (in image-build-check.ts)
+  // only writes the version tag — it does NOT move `:latest`. If we kept
+  // pulling `:latest` here, the registry would return whatever stale digest
+  // happens to be sitting there from a previous build, and the user's
+  // "Update to vX.Y.Z" click would silently re-install the old version.
+  // Pinning to the resolved target version makes upgrades deterministic.
+  const newImage = getSandboxImage(targetVersion)
   console.log(`[machines] updateOsborn: patching machine config image=${newImage}`)
   try {
     await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, {

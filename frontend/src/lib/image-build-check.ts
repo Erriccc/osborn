@@ -336,8 +336,12 @@ export async function checkImageBuild(): Promise<void> {
     // Step 3: Ensure flyctl is available, installing it if necessary.
     ensureFlyctl()
 
-    // Step 4: Build and push the image.
-    buildAndPushImage(version, FLY_SANDBOX_APP)
+    // Step 4: Build and push the image. We rely on the explicit
+    // `--image-label ${version}` tag — `:latest` is intentionally not
+    // touched. Upgrades go through `machines.updateOsborn` which now
+    // pulls the version-pinned tag directly, so we never need `:latest`
+    // to track the newest digest.
+    await buildAndPushImage(version, FLY_SANDBOX_APP)
   } catch (err) {
     // Never throw — log to stderr only.
     const message = err instanceof Error ? err.message : String(err)
