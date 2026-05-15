@@ -87,7 +87,7 @@ export default function Home() {
   // via app/chat/layout.tsx). This page just builds the URL and navigates.
   // The provider owns the LiveKitRoom, so edits to chat/page.tsx or
   // VoiceRoom.tsx during dev don't tear down the WebRTC connection.
-  const navigateToChat = useCallback((sessionId?: string | null) => {
+  const navigateToChat = useCallback((sessionId?: string | null, sessionCwd?: string | null) => {
     setConnectError(null)
     const params = new URLSearchParams({
       provider,
@@ -96,6 +96,13 @@ export default function Home() {
       agentUrl,
     })
     if (sessionId) params.set('session', sessionId)
+    // Forward the session's slug-derived cwd (file location on the
+    // agent host) so the agent boots Claude Code at the matching slug.
+    // Without this, ParticipantConnected falls back to defaultWorkingDir
+    // and Claude Code's --resume lookup misses any session that doesn't
+    // live in the default slug → "No conversation found". Mirrors the
+    // dashboard's `startChat(sessionId, sessionCwd)` plumbing.
+    if (sessionCwd) params.set('workingDirectory', sessionCwd)
     router.push(`/chat?${params.toString()}`)
   }, [provider, voiceArch, codingAgent, agentUrl, router])
 
@@ -105,8 +112,8 @@ export default function Home() {
     navigateToChat()
   }, [navigateToChat])
 
-  const handleJoinRoom = useCallback((_code: string, sessionId?: string | null) => {
-    navigateToChat(sessionId)
+  const handleJoinRoom = useCallback((_code: string, sessionId?: string | null, sessionCwd?: string | null) => {
+    navigateToChat(sessionId, sessionCwd)
   }, [navigateToChat])
 
   const handleNewSession = useCallback(() => { navigateToChat() }, [navigateToChat])

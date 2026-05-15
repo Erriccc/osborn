@@ -8,6 +8,13 @@ export interface SessionInfo {
   timestamp: string // ISO string for JSON serialization
   lastMessage?: string
   messageCount: number
+  // Slug-derived cwd from the agent's `listAllClaudeSessions`. This is
+  // where the session FILE lives on disk (~/.claude/projects/<slug>/),
+  // NOT the cwd recorded inside the JSONL content. Claude Code's
+  // `--resume` looks up by file location, so this is what the chat
+  // page must forward as `workingDirectory` for resume to find the
+  // session. Optional because older agent responses may omit it.
+  cwd?: string
 }
 
 /**

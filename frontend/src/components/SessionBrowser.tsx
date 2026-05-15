@@ -18,7 +18,7 @@ interface SessionBrowserProps {
   onCodingAgentChange: (c: CodingAgent) => void
   agentUrl: string
   onAgentUrlChange: (url: string) => void
-  onJoinRoom: (code: string, sessionId?: string | null) => void
+  onJoinRoom: (code: string, sessionId?: string | null, sessionCwd?: string | null) => void
   onNewSession: () => void
   roomCode: string | null
   onRerunSetup?: () => void
@@ -103,12 +103,20 @@ export default function SessionBrowser({
   const paginatedSessions = filteredSessions.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
   const groupedSessions = useMemo(() => groupSessionsByDate(paginatedSessions), [paginatedSessions])
 
-  // Join room with optional session — requires room code
-  const handleJoin = (sessionId?: string | null) => {
+  // Join room with optional session — requires room code.
+  //
+  // `sessionCwd` is the slug-derived path from `listAllClaudeSessions`
+  // (file location, not content cwd). Forwarded to the chat page so
+  // the agent boots Claude Code at the matching slug; without it the
+  // landing-page card click would fall back to default cwd, and any
+  // session that lives outside the default slug would fail to resume
+  // with "No conversation found". Same plumbing as dashboard
+  // `startChat(sessionId, sessionCwd)`.
+  const handleJoin = (sessionId?: string | null, sessionCwd?: string | null) => {
     const code = roomInput.trim()
     if (code) {
       setNeedsRoomCode(false)
-      onJoinRoom(code, sessionId || null)
+      onJoinRoom(code, sessionId || null, sessionCwd || null)
     } else {
       setNeedsRoomCode(true)
     }
@@ -118,7 +126,7 @@ export default function SessionBrowser({
     const code = roomInput.trim()
     if (code) {
       setNeedsRoomCode(false)
-      onJoinRoom(code, null)
+      onJoinRoom(code, null, null)
     } else {
       onNewSession()
     }
@@ -435,7 +443,7 @@ export default function SessionBrowser({
                 {group.sessions.map((session) => (
                   <button
                     key={session.sessionId}
-                    onClick={() => handleJoin(session.sessionId)}
+                    onClick={() => handleJoin(session.sessionId, session.cwd)}
                     className="w-full text-left p-4 rounded-xl border border-gray-800/50 bg-gray-800/50 hover:border-violet-500/30 hover:bg-gray-800/70 transition-all group"
                   >
                     <div className="flex items-start justify-between gap-3">
