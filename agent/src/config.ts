@@ -861,30 +861,45 @@ export async function listAllClaudeSessions(limit = 100): Promise<ClaudeSessionE
 
       if (preview.messageCount < 2) continue
 
-      // SLUG-FIRST for both `cwd` (routing) and `projectPath` (display).
+      // TWO FIELDS — two distinct purposes. The dashboard uses each for
+      // exactly one thing:
       //
-      // The workspace root (the agent's cwd, e.g. `/workspace` on fly) is
-      // the base layer. Projects are subdirectories beneath it — a session
-      // started in `/workspace/instagram` gets slug `-workspace-instagram`,
-      // and slugToPath turns that back into `/workspace/instagram`. The
-      // dashboard groups by this path → "instagram" naturally becomes a
-      // project card. Sessions started at the workspace root collapse into
-      // one "General" / "Workspace" card.
+      //   `projectPath` ← content cwd from JSONL.
+      //     What the session ORIGINALLY recorded as its working directory.
+      //     For native fly sessions that's the same as the slug-derived
+      //     path. For imported sessions (migrated from sprite, copied from
+      //     Codespaces, synced from a Mac) it's the source machine's cwd —
+      //     a path that may not exist on this host. The dashboard groups
+      //     by this so a user who imported sessions from 4 different
+      //     places sees 4 project cards, named after where each came from.
       //
-      // Why NOT prefer the content cwd: the JSONL records whatever cwd
-      // existed when the session was recorded — for migrated sessions that
-      // can be a path that no longer exists on this host (e.g.
-      // `/workspaces/codespaces-blank` from someone's Codespace). Using
-      // file LOCATION as the source of truth keeps grouping aligned with
-      // where the data actually lives and where Claude Code's --resume
-      // will look. Content cwd is kept as a last-resort fallback for the
-      // rare case where slugToPath reversal fails.
+      //   `cwd` ← slug-derived. File LOCATION on disk.
+      //     Forwarded to the agent as `workingDirectory` so Claude Code's
+      //     `--resume` finds the JSONL — Claude Code looks up sessions
+      //     by slug folder, not by content cwd. Always points at the
+      //     real on-disk location regardless of what the JSONL records.
+      //
+      // Why NOT use content cwd for routing too: imported sessions still
+      // live in the LOCAL slug after migration. A session whose content
+      // cwd is `/workspaces/codespaces-blank` was put in slug `-workspace/`
+      // when we synced it onto fly, so `--resume` needs cwd=/workspace to
+      // find it. Forwarding the content cwd would send Claude Code to a
+      // slug that doesn't exist on this host.
+      //
+      // Why NOT use slug-derived path for grouping too: that collapses all
+      // imported sessions into one "Workspace" card on the dashboard,
+      // losing the "this came from Codespaces, that came from sprite"
+      // organization the user thinks of when finding old conversations.
+      //
+      // Each field falls back to the other if its preferred source is
+      // empty — slugToPath returns '' for ambiguous slug encodings, and
+      // some old JSONL files don't carry a cwd field at all.
       const slugPath = slugToPath(c.slug)
       sessions.push({
         sessionId: c.sessionId,
         projectSlug: c.slug,
-        projectPath: slugPath || cwd,
-        cwd: slugPath || cwd,
+        projectPath: cwd || slugPath,    // display / group key (original cwd)
+        cwd: slugPath || cwd,            // resume routing (file location)
         timestamp: c.mtime,
         lastMessage: preview.lastMessage,
         messageCount: preview.messageCount,

@@ -10,14 +10,16 @@ interface SessionInfo {
   timestamp: string
   lastMessage?: string
   messageCount?: number
-  // Slug-derived cwd = file LOCATION on disk. Both grouping (project card)
-  // and resume routing (workingDirectory forwarded to the agent) use this.
-  // Anchored to the workspace base layer — `/workspace` is the root,
-  // `/workspace/<name>` becomes a project card called "<name>".
+  // SLUG-DERIVED cwd → resume routing. Forwarded to the agent as
+  // `workingDirectory` so Claude Code's `--resume` finds the JSONL file
+  // in the matching slug folder. Always points at the real on-disk
+  // location, NOT the cwd the session originally recorded.
   cwd?: string
-  // Same value as cwd in the current schema, kept as a separate field so
-  // a future server-side change can hand the dashboard a richer display
-  // path without changing the routing contract.
+  // ORIGINAL cwd from the JSONL content → display / grouping. For
+  // imported sessions this is the source machine's cwd (e.g. a
+  // Codespaces path that doesn't exist on the current host) — the
+  // dashboard uses it to organize history by where each session came
+  // from, even after migration consolidates everything into one slug.
   projectPath?: string
 }
 
@@ -43,30 +45,56 @@ interface ProjectGroup {
   lastActive: string  // timestamp of most recent session
 }
 
-function projectKeyFromCwd(cwd: string, baseCwd: string | null): string {
-  const clean = cwd.replace(/\/+$/, '')
+// Historical workspace cwds that should collapse into the current base
+// alongside the live baseCwd. Sprites used `/home/sprite/workspace` as
+// their default cwd — sessions started there were the equivalent of fly's
+// "Workspace" base, so post-migration they belong in the same card.
+// Hardcoded for now; can be removed once those sessions age out, or moved
+// to a server-broadcast `legacyBases` field if more hosts join the mix.
+const LEGACY_BASE_CWDS = ['/home/sprite/workspace']
+
+function projectKeyFromCwd(projectPath: string, baseCwd: string | null): string {
+  const clean = projectPath.replace(/\/+$/, '')
+
+  // Without a known base, every cwd is its own card. Older agent versions
+  // that don't broadcast baseCwd land here — no grouping magic.
   if (!baseCwd) return clean
   const cleanBase = baseCwd.replace(/\/+$/, '')
-  // Session at the base → key IS the base. All such sessions collapse
-  // into the "Workspace" card.
+
+  // Base-equivalent: the live baseCwd, plus historical workspace cwds.
+  // All collapse into the single "Workspace" card.
   if (clean === cleanBase) return cleanBase
-  // Session below the base → key is the FIRST segment beneath the base.
-  // `${base}/instagram/api/src` and `${base}/instagram` both key to
-  // `${base}/instagram` and group into the "instagram" card.
+  if (LEGACY_BASE_CWDS.includes(clean)) return cleanBase
+
+  // Native sub-project under the live base: `${base}/instagram/api` and
+  // `${base}/instagram` both key to `${base}/instagram` → "instagram" card.
   if (clean.startsWith(cleanBase + '/')) {
     const rest = clean.slice(cleanBase.length + 1)
     const firstSegment = rest.split('/')[0]
     return `${cleanBase}/${firstSegment}`
   }
-  // Off-base — keep the raw cwd as its own group.
+
+  // Off-base. This is the imported-from-elsewhere case: a session whose
+  // original cwd was a Codespace, a Mac local dir, etc. We treat each
+  // distinct off-base cwd as its own project card, named after the
+  // path's leaf segment.
+  //
+  // For deeper paths like `/Users/foo/Desktop/Developer/osborn`, the leaf
+  // ("osborn") is the user-facing project name. For `/workspaces/codespaces-blank`
+  // the leaf is "codespaces-blank". This matches how imported sessions
+  // were ORGANIZED on their source host, not where they physically live
+  // on this host after migration.
   return clean
 }
 
 function groupByProject(sessions: SessionInfo[], baseCwd: string | null): ProjectGroup[] {
   const map = new Map<string, SessionInfo[]>()
   for (const s of sessions) {
-    const cwd = s.cwd || s.projectPath || baseCwd || '/workspace'
-    const key = projectKeyFromCwd(cwd, baseCwd)
+    // Display key = projectPath (original cwd from JSONL). Falls back to
+    // cwd (slug-derived) when projectPath is missing — the dashboard
+    // still groups correctly, just under the slug-derived path.
+    const display = s.projectPath || s.cwd || baseCwd || '/workspace'
+    const key = projectKeyFromCwd(display, baseCwd)
     map.set(key, [...(map.get(key) || []), s])
   }
   const cleanBase = baseCwd?.replace(/\/+$/, '') ?? null
@@ -78,8 +106,6 @@ function groupByProject(sessions: SessionInfo[], baseCwd: string | null): Projec
       return { name, cwd, sessions, lastActive: sessions[0]?.timestamp || '' }
     })
     .sort((a, b) => {
-      // Base "Workspace" card pinned to the top, then everything else by
-      // most-recent activity.
       const aBase = cleanBase !== null && a.cwd === cleanBase ? 0 : 1
       const bBase = cleanBase !== null && b.cwd === cleanBase ? 0 : 1
       if (aBase !== bBase) return aBase - bBase
