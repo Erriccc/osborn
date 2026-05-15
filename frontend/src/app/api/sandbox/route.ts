@@ -20,6 +20,7 @@ import {
   resolveOsbornLatest,
   readInstalledOsbornVersion,
   checkSessionLayerConsistency,
+  getLastUpdateResult,
 } from '@/lib/cloud'
 
 /**
@@ -460,6 +461,49 @@ export async function POST(request: Request) {
       const updateAvailable = !!(latest && installed && latest !== installed)
 
       return NextResponse.json({ installed, latest, updateAvailable })
+    }
+
+    case 'verify-update': {
+      // Multi-signal verification used by the dashboard when the long-held
+      // `update-osborn` POST drops (mobile Safari fetch timeout, network
+      // blip, user navigates away). Combines three independent truths:
+      //
+      //   1. Machine state from Fly (`started`?) — proves the runtime is up
+      //   2. /health + readInstalledOsbornVersion — proves it's on the
+      //      target version AND responding
+      //   3. Server-side getLastUpdateResult — the exact final outcome of
+      //      the most recent updateOsborn call on this Node process, even
+      //      if its HTTP response never reached the browser
+      //
+      // Signal #3 is authoritative when present: it includes the specific
+      // error message that updateOsborn would have returned. When the
+      // frontend pod restarts mid-update or the result expires, #3 is null
+      // and the dashboard falls back to interpreting #1 + #2 itself.
+      const { data: vuInstance } = await supabase
+        .from('instances')
+        .select('sandbox_id')
+        .eq('user_id', user.id)
+        .single()
+      if (!vuInstance?.sandbox_id || vuInstance.sandbox_id !== sandboxId) {
+        return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
+      }
+
+      const vuSandbox = await findUserSandbox(user.id, sandboxId)
+      // Run version + last-result probes in parallel — they're independent
+      // and we want the freshest snapshot of all three signals at the same
+      // wall-clock instant.
+      const [installedResult] = await Promise.allSettled([
+        readInstalledOsbornVersion(sandboxId),
+      ])
+      const installed = installedResult.status === 'fulfilled' ? installedResult.value : null
+      const lastResult = getLastUpdateResult(sandboxId)
+
+      return NextResponse.json({
+        machineState: vuSandbox?.status ?? null,       // signal #1
+        installedVersion: installed,                    // signal #2 (a)
+        healthOk: installed !== null,                   // signal #2 (b) — /health responded
+        lastUpdate: lastResult,                         // signal #4 — null when unavailable
+      })
     }
 
     case 'consistency-check': {

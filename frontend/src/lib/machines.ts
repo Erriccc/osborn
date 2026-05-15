@@ -653,6 +653,41 @@ export async function readInstalledOsbornVersion(sandboxId: string): Promise<str
 // same result instead of triggering parallel work.
 const updateInflight = new Map<string, Promise<{ success: boolean; version: string | null; log: string }>>()
 
+// ─── Update result store (signal #4: server-side last-known outcome) ─────────
+//
+// `verify-update` needs a server-side source of truth for whether the most
+// recent `updateOsborn` finished — independent of whether the long-held POST
+// response reached the browser. Without this, a Safari fetch drop during the
+// ~90s update window leaves the dashboard guessing. With this, the dashboard
+// can call `verify-update` and learn the actual outcome.
+//
+// In-memory Map is fine on Railway (single Node process, single replica per
+// service). If we ever scale frontend > 1 replica or restart frontend mid-
+// update, the next verify call returns `null` for `lastUpdateResult`. That's
+// not a regression vs today — the dashboard already has to fall back to
+// version probing in that case. We just buy a higher-fidelity signal when
+// available.
+export interface UpdateResult {
+  sandboxId: string
+  status: 'in-progress' | 'success' | 'error'
+  targetVersion: string | null
+  installedVersion: string | null
+  error: string | null
+  startedAt: number          // epoch ms
+  completedAt: number | null // epoch ms; null while in-progress
+  log: string
+}
+
+const lastUpdateResult = new Map<string, UpdateResult>()
+
+export function getLastUpdateResult(sandboxId: string): UpdateResult | null {
+  return lastUpdateResult.get(sandboxId) ?? null
+}
+
+function setUpdateResult(r: UpdateResult): void {
+  lastUpdateResult.set(r.sandboxId, r)
+}
+
 /**
  * Upgrade osborn on a Fly Machines sandbox to a target version.
  *
@@ -695,21 +730,73 @@ async function updateOsbornImpl(
   userId: string,
   version?: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
+  const startedAt = Date.now()
+  // Seed the result store immediately so verify-update knows an update is
+  // in-flight even if the caller never gets the final response (mobile
+  // Safari closing the socket etc.). Subsequent updates overwrite this
+  // entry — we only care about the LAST update per sandbox.
+  setUpdateResult({
+    sandboxId,
+    status: 'in-progress',
+    targetVersion: version ?? null,
+    installedVersion: null,
+    error: null,
+    startedAt,
+    completedAt: null,
+    log: 'updateOsborn: started',
+  })
+
+  // Helper to record a terminal outcome before returning. Mirrors what we
+  // return to the caller so the dashboard sees the same shape it always
+  // did, just persisted server-side too.
+  const finish = (
+    payload: { success: boolean; version: string | null; log: string },
+    targetForLog: string | null,
+  ): { success: boolean; version: string | null; log: string } => {
+    setUpdateResult({
+      sandboxId,
+      status: payload.success ? 'success' : 'error',
+      targetVersion: targetForLog,
+      installedVersion: payload.version,
+      error: payload.success ? null : payload.log,
+      startedAt,
+      completedAt: Date.now(),
+      log: payload.log,
+    })
+    return payload
+  }
+
   let targetVersion: string
   try {
     targetVersion = version ?? (await resolveOsbornLatest())
   } catch (err) {
-    return { success: false, version: null, log: `Could not resolve target version: ${(err as Error).message}` }
+    return finish(
+      { success: false, version: null, log: `Could not resolve target version: ${(err as Error).message}` },
+      null,
+    )
   }
 
   console.log(`[machines] updateOsborn: target=${targetVersion} on ${sandboxId}`)
+  // Update the in-progress entry with the resolved target version so
+  // verify-update can render "Installing v0.9.24…" even before the patch
+  // lands.
+  setUpdateResult({
+    sandboxId,
+    status: 'in-progress',
+    targetVersion,
+    installedVersion: null,
+    error: null,
+    startedAt,
+    completedAt: null,
+    log: `updateOsborn: target=${targetVersion}`,
+  })
 
   const appName = sandboxId
 
   // Step 1: Get the current machine config
   const machine = await getFirstMachine(appName)
   if (!machine) {
-    return { success: false, version: null, log: `No machine found for app ${appName}` }
+    return finish({ success: false, version: null, log: `No machine found for app ${appName}` }, targetVersion)
   }
 
   // Step 2: Stop the machine cold before changing config
@@ -739,7 +826,10 @@ async function updateOsbornImpl(
       },
     })
   } catch (err) {
-    return { success: false, version: null, log: `Machine config PATCH failed: ${(err as Error).message}` }
+    return finish(
+      { success: false, version: null, log: `Machine config PATCH failed: ${(err as Error).message}` },
+      targetVersion,
+    )
   }
 
   // Step 4: Wait for the replacement to complete.
@@ -772,17 +862,42 @@ async function updateOsbornImpl(
   }
 
   if (!info || info.status !== 'running') {
-    return { success: false, version: null, log: 'Machine did not come back healthy after image update' }
+    return finish(
+      { success: false, version: null, log: 'Machine did not come back healthy after image update' },
+      targetVersion,
+    )
   }
 
-  // Step 5: Read the installed version
+  // Step 5: Read the installed version. NOTE: this is signal #2 — even if
+  // we got here, the install only counts as a real success if /health
+  // reports the target version. If the probe fails or reports an older
+  // version, surface that as an error instead of claiming success.
   const installed = await readInstalledOsbornVersion(sandboxId)
-  console.log(`[machines] updateOsborn: success — osborn installed=${installed ?? 'unknown'} on ${sandboxId}`)
-  return {
-    success: true,
-    version: installed,
-    log: `Updated to image ${newImage}${installed ? ` (osborn@${installed})` : ''}`,
+  if (!installed) {
+    return finish(
+      { success: false, version: null, log: 'Machine running but /health did not return a version' },
+      targetVersion,
+    )
   }
+  if (installed !== targetVersion) {
+    return finish(
+      {
+        success: false,
+        version: installed,
+        log: `Machine running on v${installed} but expected v${targetVersion} — image swap did not take effect`,
+      },
+      targetVersion,
+    )
+  }
+  console.log(`[machines] updateOsborn: success — osborn installed=${installed} on ${sandboxId}`)
+  return finish(
+    {
+      success: true,
+      version: installed,
+      log: `Updated to image ${newImage} (osborn@${installed})`,
+    },
+    targetVersion,
+  )
 }
 
 /**

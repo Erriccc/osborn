@@ -469,30 +469,134 @@ export default function Dashboard() {
       setTimeout(() => setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'snapshotting' } : op), 80000),
     ]
 
+    // Helper: poll `verify-update` until the server-side update result lands
+    // OR the multi-signal state proves the update outcome on its own.
+    //
+    // This runs whenever the held-open POST drops (mobile Safari kills idle
+    // fetches at ~30-60s, but updateOsborn runs ~90s) OR when the POST
+    // returns `success: false` (which can still be a real failure — we need
+    // to distinguish "server gave up partway" from "actually broken"). The
+    // server stores its final result in `getLastUpdateResult(sandboxId)`, so
+    // we ask for it directly instead of inferring from version probes alone.
+    //
+    // Three exit conditions:
+    //   1. Authoritative: `lastUpdate.status === 'success'` or `'error'` →
+    //      use its installedVersion + error message verbatim
+    //   2. Inferred success: machine `started` AND `installedVersion === target` AND
+    //      `lastUpdate.status` is null/missing (frontend pod restarted) → trust signals
+    //   3. Timeout after 3 minutes → declare error using best-available info
+    const verifyUpdate = async (targetVersion: string | null): Promise<
+      { success: true; version: string | null } | { success: false; error: string }
+    > => {
+      const deadline = Date.now() + 3 * 60_000
+      let lastSignals: { machineState?: string | null; installedVersion?: string | null } = {}
+      while (Date.now() < deadline) {
+        try {
+          const r = await fetch('/api/sandbox', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'verify-update', sandboxId }),
+          })
+          if (r.ok) {
+            const data = await r.json()
+            lastSignals = { machineState: data.machineState, installedVersion: data.installedVersion }
+            // (1) Authoritative — server-side updateOsborn already finished.
+            if (data.lastUpdate?.status === 'success') {
+              return { success: true, version: data.lastUpdate.installedVersion ?? null }
+            }
+            if (data.lastUpdate?.status === 'error') {
+              return { success: false, error: data.lastUpdate.error ?? 'Update failed' }
+            }
+            // (2) Inferred — pod restarted, lastUpdate gone, but signals agree.
+            if (
+              data.machineState === 'running' &&
+              data.installedVersion &&
+              targetVersion &&
+              data.installedVersion === targetVersion
+            ) {
+              return { success: true, version: data.installedVersion }
+            }
+            // Otherwise still in-progress — keep polling.
+          }
+        } catch {
+          // Network error during poll — keep retrying until the deadline.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 4000))
+      }
+      // (3) Timeout. Build the most informative error we can from the last
+      // signals we saw, so the user knows whether it almost-worked or never
+      // got off the ground.
+      if (lastSignals.installedVersion === targetVersion) {
+        return { success: true, version: lastSignals.installedVersion ?? null }
+      }
+      const detail = lastSignals.machineState
+        ? ` (machine=${lastSignals.machineState}, installed=${lastSignals.installedVersion ?? 'unknown'})`
+        : ''
+      return { success: false, error: `Verification timed out after 3 min${detail}` }
+    }
+
     try {
-      // updateOsborn handles stop+DELETE+PUT+health+checkpoint server-side.
-      // We just await its single response.
+      // Primary path: hold the POST open. If Safari survives the whole ~90s
+      // it returns the authoritative result here. If not (mobile fetch
+      // timeout, sleep-then-resume, etc.) the catch triggers and we hand
+      // off to verifyUpdate, which reads the server-side result store.
       const result = await fetch('/api/sandbox', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'update-osborn', sandboxId }),
-      }).then(r => r.json()).catch((e) => ({ success: false, error: String(e) }))
+      }).then(r => r.json()).catch((e) => ({ __droppedFetch: true, error: String(e) }))
 
       // Clear all phase timers regardless of outcome
       phaseTimers.forEach(clearTimeout)
 
-      if (result.success === false) {
+      // Branch A: the POST never made it back (Safari fetch dropped). The
+      // server may have finished, may still be running. Fall through to
+      // verifyUpdate which polls the result store + signals.
+      if (result.__droppedFetch) {
+        setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'verifying' } : op)
+        const verified = await verifyUpdate(target)
         setOperation(null)
-        setStatusMessage({
-          text: result.error ? `Update failed: ${result.error}` : 'Update failed',
-          type: 'error',
-        })
+        if (verified.success) {
+          if (verified.version) setInstalledVersion(verified.version)
+          setAgentOnline(true)
+          setStatusMessage({
+            text: verified.version ? `Updated to v${verified.version}` : 'Update complete',
+            type: 'success',
+          })
+          setTimeout(() => setStatusMessage(null), 4000)
+        } else {
+          setStatusMessage({ text: `Update failed: ${verified.error}`, type: 'error' })
+        }
         return
       }
 
-      // Trust the server's reported version (read from the marker file via the
-      // new check-version handler — accurate). Do NOT refire checkVersion here:
-      // it can race with the post-install marker write and revert the badge.
+      // Branch B: server explicitly returned success=false. This might be a
+      // real failure OR it might be a partial/race where updateOsborn returned
+      // an error but a follow-up probe shows the version actually flipped.
+      // Verify before declaring failure.
+      if (result.success === false) {
+        setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'verifying' } : op)
+        const verified = await verifyUpdate(target)
+        setOperation(null)
+        if (verified.success) {
+          if (verified.version) setInstalledVersion(verified.version)
+          setAgentOnline(true)
+          setStatusMessage({
+            text: verified.version ? `Updated to v${verified.version}` : 'Update complete',
+            type: 'success',
+          })
+          setTimeout(() => setStatusMessage(null), 4000)
+        } else {
+          // Prefer the original server error message when present — it has
+          // more detail than the verify timeout fallback ("Verification
+          // timed out after 3 min" tells the user nothing useful).
+          const errMsg = result.error || verified.error
+          setStatusMessage({ text: `Update failed: ${errMsg}`, type: 'error' })
+        }
+        return
+      }
+
+      // Branch C: happy path — POST returned success in time. Trust it.
       const newVersion = result.version as string | null
       if (newVersion) setInstalledVersion(newVersion)
       setOperation(null)
@@ -503,9 +607,26 @@ export default function Dashboard() {
       })
       setTimeout(() => setStatusMessage(null), 4000)
     } catch (err) {
+      // Reached only if even the fetch().then() chain threw synchronously
+      // — extremely rare. Still try to verify before giving up.
       phaseTimers.forEach(clearTimeout)
+      setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'verifying' } : op)
+      const verified = await verifyUpdate(target)
       setOperation(null)
-      setStatusMessage({ text: `Update error: ${(err as Error).message}`, type: 'error' })
+      if (verified.success) {
+        if (verified.version) setInstalledVersion(verified.version)
+        setAgentOnline(true)
+        setStatusMessage({
+          text: verified.version ? `Updated to v${verified.version}` : 'Update complete',
+          type: 'success',
+        })
+        setTimeout(() => setStatusMessage(null), 4000)
+      } else {
+        setStatusMessage({
+          text: `Update error: ${(err as Error).message} (verify: ${verified.error})`,
+          type: 'error',
+        })
+      }
     }
   }
 

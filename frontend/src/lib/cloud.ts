@@ -67,3 +67,19 @@ export type { SandboxInfo } from './sprites'
 export function getCloudProvider(): 'sprites' | 'machines' {
   return process.env.CLOUD_PROVIDER === 'machines' ? 'machines' : 'sprites'
 }
+
+/**
+ * Server-side store of the most recent `updateOsborn` outcome per sandbox.
+ *
+ * Used by `verify-update` to give the dashboard a ground-truth answer when
+ * the long-held POST response drops (mobile Safari, network blip). Only the
+ * machines provider records this — sprites stubs return null, falling back
+ * to the dashboard's existing version-probe path with no regression.
+ */
+export type UpdateResult = machines.UpdateResult
+export function getLastUpdateResult(sandboxId: string): UpdateResult | null {
+  if (getCloudProvider() === 'machines') {
+    return machines.getLastUpdateResult(sandboxId)
+  }
+  return null
+}
