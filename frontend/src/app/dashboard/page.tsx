@@ -190,6 +190,8 @@ export default function Dashboard() {
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
   const [importingProject, setImportingProject] = useState<string | null>(null)
+  const [deletingProject, setDeletingProject] = useState<string | null>(null)   // cwd being deleted
+  const [armedProjectDelete, setArmedProjectDelete] = useState<string | null>(null) // cwd armed for delete
 
   // Prefs
   const [provider, setProvider] = useState<Provider>('gemini')
@@ -818,6 +820,36 @@ export default function Dashboard() {
     }
   }
 
+  const handleDeleteProject = async (project: ProjectGroup) => {
+    const cwd = project.cwd
+    // First click arms the button (4s window). Second click within that window confirms.
+    if (armedProjectDelete !== cwd) {
+      setArmedProjectDelete(cwd)
+      setTimeout(() => setArmedProjectDelete(a => a === cwd ? null : a), 4000)
+      return
+    }
+    // Confirmed — proceed with delete
+    setArmedProjectDelete(null)
+    setDeletingProject(cwd)
+    try {
+      const slug = project.cwd.replace(/\//g, '-')  // cwd → slug
+      const headers: Record<string, string> = {}
+      if (syncToken) headers['Authorization'] = `Bearer ${syncToken}`
+      const r = await fetch(
+        `${agentUrl}/sessions/project?slug=${encodeURIComponent(slug)}`,
+        { method: 'DELETE', headers }
+      )
+      const data = await r.json()
+      if (r.ok && data.success) {
+        await fetchSessions()  // refresh list — project disappears
+      } else {
+        console.error('Delete project failed:', data.error)
+      }
+    } finally {
+      setDeletingProject(null)
+    }
+  }
+
   const handleCopyGlobalSyncInfo = async () => {
     const skillUrl = `${window.location.origin}/api/sync-skill`
     const info = `Osborn sync info:\nSkill: ${skillUrl}\nSprite: ${agentUrl}\nToken: ${syncToken || '(no token)'}`
@@ -1394,6 +1426,27 @@ export default function Dashboard() {
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                             </svg>
+                          </button>
+                          {/* Delete project — arms on first click, confirms on second within 4s */}
+                          <button
+                            onClick={() => handleDeleteProject(project)}
+                            title={armedProjectDelete === project.cwd ? 'Click again to confirm delete' : 'Delete project sessions'}
+                            className={`p-2 rounded-lg transition-colors ${
+                              deletingProject === project.cwd
+                                ? 'opacity-50 cursor-not-allowed text-[var(--muted)]'
+                                : armedProjectDelete === project.cwd
+                                ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                                : 'hover:bg-[var(--surface-2)] text-[var(--muted)] hover:text-red-400'
+                            }`}
+                            disabled={deletingProject === project.cwd}
+                          >
+                            {deletingProject === project.cwd ? (
+                              <div className="w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            )}
                           </button>
                         </div>
                       </div>

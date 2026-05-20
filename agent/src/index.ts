@@ -829,6 +829,58 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    // DELETE /sessions/project?slug=<slug> — remove all sessions under a slug.
+    // Deletes ~/.claude/projects/<slug>/ and ~/.claude/projects/osb/<slug>/
+    // Used by the dashboard "delete project" button.
+    if (req.method === 'DELETE' && url.pathname === '/sessions/project') {
+      if (syncToken) {
+        const authHeader = req.headers['authorization'] ?? ''
+        if (authHeader !== `Bearer ${syncToken}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Unauthorized' }))
+          return
+        }
+      }
+      const slug = url.searchParams.get('slug')
+      if (!slug || slug.includes('..') || slug.includes('/')) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid slug' }))
+        return
+      }
+      const projectsDir = join(homedir(), '.claude', 'projects')
+      const targetDir = join(projectsDir, slug)
+      if (!targetDir.startsWith(projectsDir + '/')) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid slug path' }))
+        return
+      }
+      if (!existsSync(targetDir)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Project not found', slug }))
+        return
+      }
+      try {
+        // Count files before deleting so we can report what was removed
+        let fileCount = 0
+        const countFiles = (dir: string) => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            if (e.isDirectory()) countFiles(join(dir, e.name))
+            else fileCount++
+          }
+        }
+        countFiles(targetDir)
+        rmSync(targetDir, { recursive: true, force: true })
+        console.log(`🗑️ Deleted project slug ${slug} (${fileCount} files)`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: true, slug, filesDeleted: fileCount }))
+      } catch (err) {
+        console.error(`❌ Failed to delete project ${slug}:`, err)
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Delete failed: ${(err as Error).message}` }))
+      }
+      return
+    }
+
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: 'Not found' }))
   })
