@@ -56,4 +56,26 @@ If the EXISTING LEARNED SKILLS section is shown below, merge — update outdated
 
 ---
 
-IMPORTANT: All four sections MUST appear at the end of the compact summary even if some are empty. Empty sections should have a single line: (none this session)
+---
+
+## Section 5: USER_CONTEXT
+Format: === USER_CONTEXT ===
+Capture what you learned about THIS USER's language and communication style this session.
+Only include observations that were CONFIRMED — things the user actually said, corrected, or repeated.
+Skip if nothing new was observed.
+
+VOCABULARY:
+- List any terms the user used consistently with a specific meaning
+- List any terms they used interchangeably that should be standardised
+- Format: **term**: what they mean by it. _Avoid_: alternatives they used
+
+STYLE:
+- One or two sentences describing how they communicate (tone, pace, depth preference)
+- Only include if a clear pattern emerged this session
+
+RECURRING:
+- Topics, projects, or concepts that came up repeatedly
+
+---
+
+IMPORTANT: All five sections MUST appear at the end of the compact summary even if some are empty. Empty sections should have a single line: (none this session)

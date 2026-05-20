@@ -1248,6 +1248,35 @@ class ClaudeLLMStream extends llm.LLMStream {
                   console.error('⚠️ PostCompact: BEHAVIORAL_LEARNINGS write failed:', blErr instanceof Error ? blErr.message : blErr)
                 }
 
+                // ── Section 5: USER_CONTEXT — merge into user-context/CONTEXT.md ──
+                // Passive UX: agent learns the user's language automatically after every
+                // compaction. No explicit "grill me" command needed. The compact summary
+                // captures vocabulary/style observations confirmed during the session.
+                try {
+                  const userCtx = extractSection('=== USER_CONTEXT ===')
+                  const hasContent = userCtx.length >= 30 && !userCtx.includes('(none this session)')
+                  if (hasContent) {
+                    progress('Updating user context', `${userCtx.length} chars`)
+                    const ctxFolder = join(skillDir, '.claude', 'skills', 'user-context')
+                    const ctxPath = join(ctxFolder, 'CONTEXT.md')
+                    mkdirSync(ctxFolder, { recursive: true })
+
+                    // Append new observations to existing CONTEXT.md under a dated section.
+                    // The grill-me skill can consolidate/clean up on explicit request.
+                    const existing = existsSyncFs(ctxPath) ? readSyncFs(ctxPath, 'utf-8') : '# User Context\n\n'
+                    const entry = `\n## Observations — ${today} (session ${sessionId.substring(0, 8)})\n\n${userCtx}\n`
+                    writeSyncFs(ctxPath, existing + entry, 'utf-8')
+                    console.log(`🧠 PostCompact: updated user context at ${ctxPath}`)
+                    skillsWritten++
+                    skillNames.push('user-context')
+                    progress('Wrote skill', 'user-context')
+                  } else {
+                    console.log('🧠 PostCompact: no USER_CONTEXT observations this session — skipping')
+                  }
+                } catch (ucErr) {
+                  console.error('⚠️ PostCompact: USER_CONTEXT write failed:', ucErr instanceof Error ? ucErr.message : ucErr)
+                }
+
                 this.#opts.onCompactionEvent?.({ type: 'compaction_complete', skillsWritten, skillNames })
                 console.log(`🧠 PostCompact: complete — ${skillsWritten} skill file(s) written: [${skillNames.join(', ')}]`)
 

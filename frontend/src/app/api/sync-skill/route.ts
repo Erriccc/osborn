@@ -118,7 +118,7 @@ for chunk in "\${CHUNKS[@]}"; do
     -H "Authorization: Bearer $TOKEN" \\
     -H "Content-Type: application/octet-stream" \\
     --data-binary "@\${chunk}" \\
-    "\${CLOUD_URL}/sessions/import-chunk?uploadId=\${UPLOAD_ID}&chunkIndex=\${idx}")
+    "\${CLOUD_URL}/sessions/import-chunk?uploadId=\${UPLOAD_ID}&chunk=\${idx}")
   echo "  chunk $idx → HTTP $STATUS"
   idx=$((idx+1))
 done
