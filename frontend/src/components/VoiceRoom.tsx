@@ -1276,6 +1276,7 @@ function VoiceRoomInner({
   onDisconnect,
   onAgentReady,
   onAuthRequired,
+  onVoiceActivity,
   waitingMode,
   preSelectedSessionId,
   agentUrl,
@@ -1283,6 +1284,7 @@ function VoiceRoomInner({
   onDisconnect?: () => void
   onAgentReady?: () => void
   onAuthRequired?: () => void
+  onVoiceActivity?: () => void
   waitingMode?: boolean
   preSelectedSessionId?: string | null
   agentUrl?: string
@@ -1606,10 +1608,14 @@ function VoiceRoomInner({
         }
       } else if (data.type === 'agent_state') {
         setAgentState(data.state)
+        // Any voice state change (thinking/speaking/listening) = active session
+        onVoiceActivity?.()
       } else if (data.type === 'user_transcript') {
         if (data.text && data.text.trim()) {
           console.log('👤 Adding user message:', data.text.substring(0, 50))
           addMessageRef.current?.('user', data.text)
+          // User spoke — strongest activity signal, always reset idle timer
+          onVoiceActivity?.()
         }
       } else if (data.type === 'assistant_response') {
         console.log('🤖 RAW assistant_response:', {
@@ -3207,14 +3213,39 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, preSelectedSessionId, agentUrl } =
+  const { disconnect, markAgentReady, markAuthRequired, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl } =
     useChatSession()
+
+  if (idleStopped) {
+    return (
+      <div className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center gap-6 p-8">
+        <div className="text-4xl">😴</div>
+        <div className="text-center">
+          <p className="text-lg font-medium text-[var(--text)]">Session paused</p>
+          <p className="text-sm text-[var(--muted)] mt-1">No activity for 15 min — machine stopped to save credits</p>
+        </div>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-6 py-3 bg-[var(--accent)] text-black font-semibold rounded-xl hover:opacity-90 transition-opacity"
+        >
+          Resume
+        </button>
+        <button
+          onClick={disconnect}
+          className="text-sm text-[var(--muted)] hover:text-[var(--text)] transition-colors"
+        >
+          Back to dashboard
+        </button>
+      </div>
+    )
+  }
 
   return (
     <VoiceRoomInner
       onDisconnect={disconnect}
       onAgentReady={markAgentReady}
       onAuthRequired={markAuthRequired}
+      onVoiceActivity={markVoiceActivity}
       waitingMode={waitingMode}
       preSelectedSessionId={preSelectedSessionId}
       agentUrl={agentUrl}

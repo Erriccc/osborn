@@ -53,6 +53,13 @@ interface ChatSessionContextValue {
   disconnect: () => void
   markAgentReady: () => void
   markAuthRequired: () => void
+  // Called by VoiceRoom whenever voice activity occurs (user spoke, agent
+  // thinking/speaking). Resets the idle-stop timer — voice is the primary
+  // activity signal; DOM events are removed as they're unreliable on mobile.
+  markVoiceActivity: () => void
+  // True when the session was stopped due to inactivity. VoiceRoom renders
+  // a resume overlay instead of the normal UI. Cleared on reconnect.
+  idleStopped: boolean
 }
 
 const ChatSessionContext = createContext<ChatSessionContextValue | null>(null)
@@ -99,6 +106,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null)
   const [lastActivityAt, setLastActivityAt] = useState(Date.now())
   const [authRequired, setAuthRequired] = useState(false)
+  const [idleStopped, setIdleStopped] = useState(false)
 
   // ═══════════════════════════════════════════════════════════════════════
   // Sprites cloud sandbox keepalive.
@@ -170,31 +178,48 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
   }, [connected, agentUrl, activeSandboxId])
 
-  // Auto-disconnect after 20 min of no user activity (preserves LiveKit + cloud usage)
+  // ── Idle-stop timer ────────────────────────────────────────────────────────
+  //
+  // 15 min of no voice activity → stop machine + show in-place idle overlay.
+  // Intentionally does NOT navigate away — pushing to /dashboard would
+  // trigger the dashboard's auto-start, creating a restart loop where the
+  // machine spins up again immediately.
+  //
+  // Instead: set idleStopped=true which (a) unmounts LiveKitRoom so the
+  // WebRTC connection closes and credits stop, and (b) shows a resume overlay
+  // on the same page. User clicks Resume → connect() restarts everything.
+  //
+  // Activity signal: voice only — user_transcript (user spoke) and agent_state
+  // changes (agent thinking/speaking). DOM events removed — unreliable on
+  // mobile voice sessions.
+  const IDLE_MS = 15 * 60 * 1000  // 15 minutes from last transcript
+
   useEffect(() => {
-    if (!connected) return
+    if (!connected || idleStopped) return
     const checkIdle = setInterval(() => {
       const idleMs = Date.now() - lastActivityAt
-      if (idleMs > 20 * 60 * 1000) {
-        console.log('🛌 Idle for 20min — disconnecting to preserve usage')
-        router.push('/dashboard')
+      if (idleMs > IDLE_MS) {
+        console.log('🛌 Voice idle 15min — stopping machine, showing resume overlay')
+        // Stop the fly machine: closes LiveKit connection on the agent side,
+        // stops credit burn. Fire-and-forget — overlay shows regardless.
+        if (activeSandboxId) {
+          fetch('/api/sandbox', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'stop', sandboxId: activeSandboxId }),
+          }).catch(() => {})
+        }
+        // Unmount LiveKitRoom (by clearing token/connected state) and show
+        // the idle overlay — no navigation, no restart loop.
+        setIdleStopped(true)
+        setConnected(false)
+        setToken(null)
+        setRoomCode(null)
       }
     }, 60 * 1000)
     return () => clearInterval(checkIdle)
-  }, [connected, lastActivityAt, router])
-
-  // Track user activity (clicks, keypresses, mousemoves) to reset the idle timer.
-  useEffect(() => {
-    const update = () => setLastActivityAt(Date.now())
-    window.addEventListener('click', update)
-    window.addEventListener('keydown', update)
-    window.addEventListener('mousemove', update)
-    return () => {
-      window.removeEventListener('click', update)
-      window.removeEventListener('keydown', update)
-      window.removeEventListener('mousemove', update)
-    }
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, idleStopped, lastActivityAt, activeSandboxId])
 
   // ── Connection flow ──────────────────────────────────────────────
   const connect = useCallback(async () => {
@@ -368,12 +393,20 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   }, [router, activeSandboxId, preSelectedSessionId])
 
   const markAgentReady = useCallback(() => {
+    // Reset activity clock + clear idle state on connection so the machine
+    // gets a full 15 min grace period from the moment voice is ready.
+    setLastActivityAt(Date.now())
+    setIdleStopped(false)
     setConnected(true)
   }, [])
 
   const markAuthRequired = useCallback(() => {
     setAuthRequired(true)
     setConnected(true) // surface the VoiceRoom UI so user can see + complete auth
+  }, [])
+
+  const markVoiceActivity = useCallback(() => {
+    setLastActivityAt(Date.now())
   }, [])
 
   const value: ChatSessionContextValue = {
@@ -394,6 +427,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     disconnect,
     markAgentReady,
     markAuthRequired,
+    markVoiceActivity,
+    idleStopped,
   }
 
   // LiveKit config is stable per session
@@ -411,7 +446,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // if given null. Conditional mount is cleaner.
   return (
     <ChatSessionContext.Provider value={value}>
-      {token && roomCode ? (
+      {token && roomCode && !idleStopped ? (
         <LiveKitRoom
           token={token}
           serverUrl={livekitUrl}

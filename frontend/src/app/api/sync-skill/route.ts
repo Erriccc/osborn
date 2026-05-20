@@ -7,6 +7,27 @@ export async function GET() {
 Name: voice-native-sync
 Install path: ~/.claude/skills/voice-native-sync/SKILL.md
 
+## INSTALLATION (one-time, any Claude Code session)
+This skill must be installed GLOBALLY so it's available in every project
+and every Claude Code session — Mac app, CLI, or Codespaces.
+
+Global skills live at ~/.claude/skills/ (your home directory, not a project folder).
+Claude Code auto-loads all skills from this path on every startup.
+
+To install:
+\`\`\`bash
+mkdir -p ~/.claude/skills/voice-native-sync
+curl -sS https://www.voice-native.com/api/sync-skill -o ~/.claude/skills/voice-native-sync/SKILL.md
+cat > ~/.claude/skills/voice-native-sync/config <<'EOF'
+CLOUD_URL=https://osborn-XXXX.fly.dev
+TOKEN=your-token-here
+EOF
+\`\`\`
+
+You can run these commands in any Claude Code session (Mac app or CLI) —
+both have filesystem access and write to the same ~/.claude/skills/ directory.
+After installing, the skill is active in ALL future Claude Code sessions globally.
+
 ## TRIGGER PHRASES
 This skill activates when the user says any of:
 - "upload to voice native"

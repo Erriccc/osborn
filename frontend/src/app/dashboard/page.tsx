@@ -856,10 +856,12 @@ export default function Dashboard() {
     // Include a ready-to-paste install instruction so the user just
     // pastes once into Claude Code and it installs + stores credentials.
     const info = [
-      `Fetch ${skillUrl} and save it as ~/.claude/skills/voice-native-sync/SKILL.md (install the Voice Native sync skill).`,
-      `Then save these credentials to ~/.claude/skills/voice-native-sync/config:`,
-      `CLOUD_URL=${agentUrl}`,
-      `TOKEN=${syncToken || '(no token)'}`,
+      `Install the Voice Native sync skill globally (works in all Claude Code sessions):`,
+      `mkdir -p ~/.claude/skills/voice-native-sync`,
+      `curl -sS ${skillUrl} -o ~/.claude/skills/voice-native-sync/SKILL.md`,
+      `printf 'CLOUD_URL=${agentUrl}\\nTOKEN=${syncToken || '(no token)'}\\n' > ~/.claude/skills/voice-native-sync/config`,
+      ``,
+      `After this, say "upload to voice native" or "download from voice native" in any Claude Code session.`,
     ].join('\n')
     await navigator.clipboard.writeText(info)
     setGlobalSyncCopied(true)
@@ -869,10 +871,12 @@ export default function Dashboard() {
   const handleCopySyncInfo = async (project: ProjectGroup) => {
     const skillUrl = `${window.location.origin}/api/sync-skill`
     const info = [
-      `Fetch ${skillUrl} and save it as ~/.claude/skills/voice-native-sync/SKILL.md (install the Voice Native sync skill).`,
-      `Then save these credentials to ~/.claude/skills/voice-native-sync/config:`,
-      `CLOUD_URL=${agentUrl}`,
-      `TOKEN=${syncToken ?? ''}`,
+      `Install the Voice Native sync skill globally (works in all Claude Code sessions):`,
+      `mkdir -p ~/.claude/skills/voice-native-sync`,
+      `curl -sS ${skillUrl} -o ~/.claude/skills/voice-native-sync/SKILL.md`,
+      `printf 'CLOUD_URL=${agentUrl}\\nTOKEN=${syncToken ?? ''}\\n' > ~/.claude/skills/voice-native-sync/config`,
+      ``,
+      `After this, say "upload to voice native" or "download from voice native" in any Claude Code session.`,
     ].join('\n')
     await navigator.clipboard.writeText(info)
     setSkillCopied(true)
