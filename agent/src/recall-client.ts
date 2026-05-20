@@ -9,19 +9,31 @@ export interface RecallBot {
   status: string
 }
 
-export interface TranscriptWord {
-  text: string
-  start_time: number
-  end_time: number
-}
-
+// Webhook payload shape per Recall.ai docs:
+// https://docs.recall.ai/docs/real-time-transcription
+// event: "transcript.data" (final) | "transcript.partial_data" (interim)
+// data.data.words[].text — word text
+// data.data.participant.name — speaker name
+// data.bot.id — bot id
 export interface TranscriptPayload {
-  bot_id: string
-  transcript: {
-    speaker: string
-    words: TranscriptWord[]
-    is_final: boolean
-    language?: string
+  event: string
+  data: {
+    data: {
+      words: Array<{
+        text: string
+        start_timestamp?: { relative?: number }
+        end_timestamp?: { relative?: number }
+      }>
+      language_code?: string
+      participant?: {
+        id: number
+        name: string
+        is_host?: boolean
+        platform?: string
+      }
+    }
+    bot?: { id: string }
+    recording?: { id: string }
   }
 }
 
@@ -35,6 +47,17 @@ export class RecallClient extends EventEmitter {
   }
 
   async joinMeeting(meetingUrl: string, webhookBaseUrl: string, botName = 'Osborn'): Promise<string> {
+    // Authoritative structure per https://docs.recall.ai/reference/bot_create
+    // and https://docs.recall.ai/docs/real-time-transcription:
+    //
+    //   recording_config.transcript.provider  — transcription provider config
+    //   recording_config.realtime_endpoints   — webhook/websocket delivery
+    //
+    // IMPORTANT:
+    //   - Field is `realtime_endpoints` (NOT `real_time_endpoints`)
+    //   - `url` and `events` are flat on the endpoint object (NOT nested under `config`)
+    //   - `transcription_options` does NOT exist — use `transcript.provider`
+    //   - Both transcript.provider AND realtime_endpoints must be set, or no events delivered
     const res = await fetch(`${RECALL_BASE_URL}/bot`, {
       method: 'POST',
       headers: {
@@ -45,24 +68,26 @@ export class RecallClient extends EventEmitter {
         meeting_url: meetingUrl,
         bot_name: botName,
         recording_config: {
-          // Field names must match Recall API exactly (no underscore in realtime_endpoints).
-          // real_time_endpoints was silently ignored — API uses realtime_endpoints.
+          transcript: {
+            provider: {
+              // recallai_streaming is built-in — no external API key needed,
+              // low-latency, works across all meeting platforms.
+              recallai_streaming: {
+                mode: 'prioritize_low_latency',
+                language_code: 'en',
+              },
+            },
+          },
           realtime_endpoints: [{
             type: 'webhook',
-            config: {
-              url: `${webhookBaseUrl}/webhook/recall`,
-              events: ['transcript.data'],
-            },
+            url: `${webhookBaseUrl}/webhook/recall`,
+            events: ['transcript.data'],
           }],
-          transcription_options: {
-            provider: 'assembly_ai',
-            mode: 'prioritize_low_latency',
-          },
         },
         output_media: {
           camera: {
-            // Recall API expects `kind` (not `type`); the wrong key arrives as null and
-            // gets rejected as "Invalid choice null. Expected 'webpage' or 'default'."
+            // `kind` (not `type`) — confirmed from prior debugging.
+            // Output webpage plays TTS audio so meeting participants can hear the agent.
             kind: 'webpage',
             config: {
               url: `${webhookBaseUrl}/meeting-output`,
@@ -100,14 +125,17 @@ export class RecallClient extends EventEmitter {
   }
 
   handleWebhook(payload: TranscriptPayload): void {
-    if (!payload.transcript?.is_final) return
-    const text = payload.transcript.words.map(w => w.text).join(' ').trim()
+    // Only process final transcripts (transcript.data), skip partials
+    if (payload.event !== 'transcript.data') return
+
+    const words = payload.data?.data?.words ?? []
+    const text = words.map(w => w.text).join(' ').trim()
     if (!text) return
-    this.emit('transcript', {
-      botId: payload.bot_id,
-      speaker: payload.transcript.speaker,
-      text,
-    })
+
+    const speaker = payload.data?.data?.participant?.name ?? 'Unknown'
+    const botId = payload.data?.bot?.id ?? 'unknown'
+
+    this.emit('transcript', { botId, speaker, text })
   }
 
   registerBot(botId: string, sessionId: string): void {
