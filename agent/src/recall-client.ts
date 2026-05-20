@@ -45,9 +45,9 @@ export class RecallClient extends EventEmitter {
         meeting_url: meetingUrl,
         bot_name: botName,
         recording_config: {
-          // `transcript: true` was rejected as "Expected a dictionary, but got bool" —
-          // omit; `transcription_options` below already configures the transcript provider.
-          real_time_endpoints: [{
+          // Field names must match Recall API exactly (no underscore in realtime_endpoints).
+          // real_time_endpoints was silently ignored — API uses realtime_endpoints.
+          realtime_endpoints: [{
             type: 'webhook',
             config: {
               url: `${webhookBaseUrl}/webhook/recall`,
@@ -56,7 +56,7 @@ export class RecallClient extends EventEmitter {
           }],
           transcription_options: {
             provider: 'assembly_ai',
-            mode: 'prioritize_low_latency', // default delays transcripts 3-10 minutes
+            mode: 'prioritize_low_latency',
           },
         },
         output_media: {
