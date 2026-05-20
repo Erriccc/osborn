@@ -1158,6 +1158,7 @@ async function main() {
   // Empty string = anonymous / unauthenticated; uploads fall back to a
   // session-only path (no user prefix).
   let currentUserId: string = ''
+  let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
 
   // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
@@ -3235,6 +3236,16 @@ async function main() {
     clearFastBrainSession()
     clearPipelineFastBrainSession()
 
+    // Auto-leave any active meeting bot when user disconnects from the room
+    if (activeMeetingBotId) {
+      const recallDisconnect = getRecallClient()
+      if (recallDisconnect) {
+        console.log(`🤝 Auto-leaving meeting (bot ${activeMeetingBotId}) — user disconnected from room`)
+        recallDisconnect.leaveMeeting(activeMeetingBotId).catch(() => {})
+        activeMeetingBotId = null
+      }
+    }
+
     console.log('⏳ Waiting for new user...\n')
   })
 
@@ -3806,6 +3817,7 @@ async function main() {
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase)
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
               recallJoin.registerBot(botId, sessionId)
+              activeMeetingBotId = botId
               await sendToFrontend({ type: 'meeting_joined', botId, message: 'Osborn has joined the meeting' })
             } catch (err: any) {
               console.error('❌ Recall.ai join error:', err)
@@ -3820,6 +3832,7 @@ async function main() {
         if (recallLeave && botId) {
           try {
             await recallLeave.leaveMeeting(botId)
+            activeMeetingBotId = null
             await sendToFrontend({ type: 'meeting_left', botId })
           } catch (err: any) {
             console.error('❌ Recall.ai leave error:', err)
