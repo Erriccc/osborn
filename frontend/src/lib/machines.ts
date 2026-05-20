@@ -5,7 +5,7 @@
  * Uses the Fly Machines API at https://api.machines.dev for per-user isolated
  * Fly apps, each running a single osborn agent machine.
  *
- * Key differences from Sprites:
+ * Key differences from Sprites:-
  *  - One Fly app per user (app name = osborn-{userId-slug})
  *  - Public URL: https://{app_name}.fly.dev (stable, no auth wall)
  *  - Suspend/resume via Fly CRIU (~300ms) — process state fully preserved
