@@ -324,7 +324,12 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
       image: getSandboxImage(),
       init: { exec: ['/entrypoint.sh'] },
       env: envVars,
-      guest: { cpu_kind: 'shared', cpus: 1, memory_mb: 1024 },
+      // performance-1x:2048MB — dedicated vCPU prevents audio jitter from CPU-steal;
+      // 2GB RAM gives headroom for osborn + Claude Code subprocess + large JSONL replay
+      // without hitting OOM. Matches the performance class used by Sprites.
+      // (shared-cpu-1x:1024MB caused event-loop pauses under memory pressure,
+      // degrading both STT and TTS simultaneously mid-conversation.)
+      guest: { cpu_kind: 'performance', cpus: 1, memory_mb: 2048 },
       services: [{
         protocol: 'tcp',
         internal_port: OSBORN_HTTP_PORT,
