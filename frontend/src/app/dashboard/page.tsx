@@ -187,6 +187,7 @@ export default function Dashboard() {
   const [localAgentUrl] = useState('http://localhost:8741')
   const [connectionMode, setConnectionMode] = useState<'local' | 'cloud'>('local')
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
+  const [expandedSessionLists, setExpandedSessionLists] = useState<Set<string>>(new Set())
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
   const [importingProject, setImportingProject] = useState<string | null>(null)
@@ -852,7 +853,14 @@ export default function Dashboard() {
 
   const handleCopyGlobalSyncInfo = async () => {
     const skillUrl = `${window.location.origin}/api/sync-skill`
-    const info = `Osborn sync info:\nSkill: ${skillUrl}\nSprite: ${agentUrl}\nToken: ${syncToken || '(no token)'}`
+    // Include a ready-to-paste install instruction so the user just
+    // pastes once into Claude Code and it installs + stores credentials.
+    const info = [
+      `Fetch ${skillUrl} and save it as ~/.claude/skills/voice-native-sync/SKILL.md (install the Voice Native sync skill).`,
+      `Then save these credentials to ~/.claude/skills/voice-native-sync/config:`,
+      `CLOUD_URL=${agentUrl}`,
+      `TOKEN=${syncToken || '(no token)'}`,
+    ].join('\n')
     await navigator.clipboard.writeText(info)
     setGlobalSyncCopied(true)
     setTimeout(() => setGlobalSyncCopied(false), 2000)
@@ -860,7 +868,12 @@ export default function Dashboard() {
 
   const handleCopySyncInfo = async (project: ProjectGroup) => {
     const skillUrl = `${window.location.origin}/api/sync-skill`
-    const info = `Osborn sync info for this project:\nSkill: ${skillUrl}\nSprite: ${agentUrl}\nToken: ${syncToken ?? ''}\nTarget: ${project.cwd}`
+    const info = [
+      `Fetch ${skillUrl} and save it as ~/.claude/skills/voice-native-sync/SKILL.md (install the Voice Native sync skill).`,
+      `Then save these credentials to ~/.claude/skills/voice-native-sync/config:`,
+      `CLOUD_URL=${agentUrl}`,
+      `TOKEN=${syncToken ?? ''}`,
+    ].join('\n')
     await navigator.clipboard.writeText(info)
     setSkillCopied(true)
     setTimeout(() => setSkillCopied(false), 2000)
@@ -1454,7 +1467,10 @@ export default function Dashboard() {
                       {/* Expanded session list */}
                       {expandedProjects.has(project.cwd) && (
                         <div className="border-t border-[var(--border)] divide-y divide-[var(--border)]">
-                          {project.sessions.slice(0, 10).map(s => (
+                          {(expandedSessionLists.has(project.cwd)
+                            ? project.sessions
+                            : project.sessions.slice(0, 15)
+                          ).map(s => (
                             <button
                               key={s.sessionId}
                               onClick={() => startChat(s.sessionId, s.cwd)}
@@ -1469,10 +1485,13 @@ export default function Dashboard() {
                               </div>
                             </button>
                           ))}
-                          {project.sessions.length > 10 && (
-                            <div className="px-4 py-2 text-xs text-[var(--muted)]">
-                              +{project.sessions.length - 10} more — export project to see all
-                            </div>
+                          {project.sessions.length > 15 && !expandedSessionLists.has(project.cwd) && (
+                            <button
+                              onClick={() => setExpandedSessionLists(s => { const n = new Set(s); n.add(project.cwd); return n })}
+                              className="w-full px-4 py-2 text-xs text-[var(--accent)] hover:bg-[var(--surface-2)] transition-colors text-left"
+                            >
+                              +{project.sessions.length - 15} more — show all
+                            </button>
                           )}
                         </div>
                       )}
