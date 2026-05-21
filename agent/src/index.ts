@@ -3208,10 +3208,24 @@ async function main() {
         console.log('✅ agent_ready retries complete')
       }, 20000)
 
-      // Stop agent_ready retries on user speech
+      // Stop agent_ready retries on user speech, and interrupt agent TTS at VAD onset.
+      // Previously the interrupt only fired when STT committed a full transcript (chat()
+      // call), which let the agent talk over the user for the full utterance. Firing it
+      // here cuts TTS the moment VAD detects speech.
+      // Realtime providers (OpenAI/Gemini) handle interruption server-side via their own
+      // VAD — calling interrupt() manually for Gemini specifically crashes its state
+      // machine (code 1008, hangs in 'speaking'), so skip those.
       session.on('input_speech_started' as any, () => {
         readySent = true
         clearInterval(readyInterval)
+        if (agentState !== 'speaking') return
+        if (sessionVoiceMode === 'realtime') return
+        try {
+          console.log('🎤 VAD onset → interrupting agent TTS')
+          currentSession?.interrupt()
+        } catch (err) {
+          console.warn('⚠️ VAD-onset interrupt failed:', err instanceof Error ? err.message : err)
+        }
       })
 
       // Greet user via TTS (delayed if resume prompt will be shown)
