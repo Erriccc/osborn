@@ -15,6 +15,7 @@ import { setMaxListeners } from 'node:events'
 setMaxListeners(50)
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
+import { WebSocket, WebSocketServer } from 'ws'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, createWriteStream } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -160,6 +161,56 @@ process.on('uncaughtException', (error) => {
 
 // Module-level room code so the HTTP server can expose it via GET /room-code
 let currentRoomCode: string | null = null
+// Meeting output WebSocket — module-level so both startApiServer and main() can access it
+let meetingOutputWs: WebSocket | null = null
+
+function sendToMeetingOutput(msg: object): void {
+  if (meetingOutputWs && meetingOutputWs.readyState === WebSocket.OPEN) {
+    try { meetingOutputWs.send(JSON.stringify(msg)) } catch {}
+  }
+}
+
+// Synthesize text using the configured TTS provider, WAV-encode, and push to meeting browser.
+// Uses the same ttsConfig as the live voice session — no separate hardcoded provider.
+async function synthesizeForMeeting(text: string, ttsConfig: any): Promise<void> {
+  if (!meetingOutputWs || meetingOutputWs.readyState !== WebSocket.OPEN) return
+  const ttsInstance = createTTS(ttsConfig)
+  try {
+    const chunks: Int16Array[] = []
+    let sampleRate = 24000
+    let numChannels = 1
+    const stream = ttsInstance.synthesize(text)
+    for await (const event of stream) {
+      if ((event as any) === Symbol.for('END_OF_STREAM')) break
+      const e = event as any
+      if (e?.frame?.data) {
+        chunks.push(e.frame.data)
+        sampleRate = e.frame.sampleRate ?? sampleRate
+        numChannels = e.frame.numChannels ?? numChannels
+      }
+    }
+    if (chunks.length === 0) return
+    const totalSamples = chunks.reduce((s, c) => s + c.length, 0)
+    const pcm = new Int16Array(totalSamples)
+    let offset = 0
+    for (const c of chunks) { pcm.set(c, offset); offset += c.length }
+    // WAV header (44 bytes) + PCM data
+    const dataBytes = pcm.length * 2
+    const wav = Buffer.alloc(44 + dataBytes)
+    wav.write('RIFF', 0); wav.writeUInt32LE(36 + dataBytes, 4); wav.write('WAVE', 8)
+    wav.write('fmt ', 12); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20)
+    wav.writeUInt16LE(numChannels, 22); wav.writeUInt32LE(sampleRate, 24)
+    wav.writeUInt32LE(sampleRate * numChannels * 2, 28); wav.writeUInt16LE(numChannels * 2, 32)
+    wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(dataBytes, 40)
+    for (let i = 0; i < pcm.length; i++) wav.writeInt16LE(pcm[i]!, 44 + i * 2)
+    if (meetingOutputWs && meetingOutputWs.readyState === WebSocket.OPEN) {
+      meetingOutputWs.send(wav)
+      console.log(`📺 Meeting audio sent (${wav.byteLength} bytes, ${sampleRate}Hz)`)
+    }
+  } finally {
+    await ttsInstance.close().catch(() => {})
+  }
+}
 
 function startApiServer(workingDir: string, port: number): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -918,6 +969,32 @@ function startApiServer(workingDir: string, port: number): void {
   cleanStaleUploadDirs()
   setInterval(cleanStaleUploadDirs, 10 * 60 * 1000)
 
+  // ============================================================
+  // Meeting Output WebSocket — /meeting-audio
+  // ============================================================
+  // Recall's headless browser opens meeting-output.html which connects here.
+  // We push: JSON { type: 'speak', text } for display, binary PCM for audio (future).
+  const meetingOutputWss = new WebSocketServer({ noServer: true })
+  meetingOutputWss.on('connection', (ws) => {
+    console.log('📺 Meeting output browser connected')
+    meetingOutputWs = ws
+    ws.on('close', () => {
+      console.log('📺 Meeting output browser disconnected')
+      if (meetingOutputWs === ws) meetingOutputWs = null
+    })
+  })
+
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url || '/', `http://localhost:${port}`)
+    if (url.pathname === '/meeting-audio') {
+      meetingOutputWss.handleUpgrade(req, socket, head, (ws) => {
+        meetingOutputWss.emit('connection', ws, req)
+      })
+    } else {
+      socket.destroy()
+    }
+  })
+
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
       console.warn(`⚠️ API port ${port} in use, trying ${port + 1}...`)
@@ -1159,6 +1236,7 @@ async function main() {
   // session-only path (no user prefix).
   let currentUserId: string = ''
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
+  // meetingOutputWs is module-level (see top of file) — shared between startApiServer and main()
 
   // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
@@ -1820,6 +1898,20 @@ async function main() {
 
       const sayId = Date.now() // simple ID to correlate start/end logs
       console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
+
+      // Forward spoken text + audio to meeting output page when bot is in a meeting.
+      // Text appears immediately; audio uses the same configured TTS (directConfig.tts)
+      // so voice/provider stays consistent — no separate hardcoded provider.
+      // PCM frames are WAV-encoded and pushed as binary WebSocket frames.
+      // Recall captures the browser page's audio output and injects it into the meeting.
+      if (activeMeetingBotId) {
+        sendToMeetingOutput({ type: 'speak', text: data.text })
+        if (meetingOutputWs) {
+          synthesizeForMeeting(data.text, directConfig.tts).catch((err) =>
+            console.warn('⚠️ Meeting TTS error:', err)
+          )
+        }
+      }
 
       try {
         const handle = (currentSession as any).say(data.text)
