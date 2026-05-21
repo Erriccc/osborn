@@ -2613,6 +2613,47 @@ async function main() {
     localParticipant = room.localParticipant
   })
 
+  // EARLIEST possible "user is speaking" signal in our setup. Driven by LiveKit's
+  // server-side audio-level VAD on the participant's WebRTC track — fires ~50-100ms
+  // after mic onset, independent of Deepgram STT or any local VAD (we don't run one).
+  // Same signal the LiveKit room uses to identify active speakers, so it's tuned for
+  // real speech and ignores low-level noise.
+  //
+  // Flow: user starts talking → ActiveSpeakersChanged includes the remote participant →
+  // if agent is currently speaking → interrupt the SpeechHandle to flush TTS.
+  // The existing handleSpeechDone callback captures the spoken-text + JSONL context
+  // (lastInterruption) and PipelineDirectLLM consumes it on the next chat() call to
+  // enrich the user's message with [INTERRUPTED] context — so the post-interrupt
+  // note flow is preserved even though we're interrupting earlier.
+  //
+  // Realtime mode skipped — the SDK handles interruption internally there, and manual
+  // interrupt for Gemini realtime crashes its state machine (code 1008, memory v0.4.5).
+  let lastActiveSpeakerInterruptAt = 0
+  room.on(RoomEvent.ActiveSpeakersChanged, (speakers: any[]) => {
+    if (currentVoiceMode === 'realtime') return
+    if (agentState !== 'speaking') return
+    const localIdentity = room.localParticipant?.identity
+    const remoteSpeaking = Array.isArray(speakers) && speakers.some(
+      (s: any) => s && s.identity && s.identity !== localIdentity
+    )
+    if (!remoteSpeaking) return
+    // Debounce: avoid log spam when audio level oscillates above/below threshold.
+    // interrupt() itself is idempotent on an already-interrupted SpeechHandle, but
+    // we suppress duplicate logs within 1s.
+    const now = Date.now()
+    if (now - lastActiveSpeakerInterruptAt < 1000) {
+      try { currentSession?.interrupt() } catch {}
+      return
+    }
+    lastActiveSpeakerInterruptAt = now
+    try {
+      console.log('🎤 ActiveSpeakersChanged: remote speaker + agent speaking → interrupting TTS')
+      currentSession?.interrupt()
+    } catch (err) {
+      console.warn('⚠️ active-speaker interrupt failed:', err instanceof Error ? err.message : err)
+    }
+  })
+
   room.on(RoomEvent.Disconnected, () => {
     console.log('👋 Disconnected from room')
     // Clean up active research and voice queue
@@ -2903,10 +2944,32 @@ async function main() {
         }
       })
 
-      // User state tracking — prevents queue from colliding with server-side VAD
+      // User state tracking — prevents queue from colliding with server-side VAD.
+      // ALSO: interrupt the agent's TTS the moment Deepgram STT says the user is speaking.
+      // Why here: in STT pipeline mode without a local VAD, the SDK's own auto-interrupt
+      // (interruptByAudioActivity, agent_activity.js:651) is dead because it only fires
+      // from onVADInferenceDone. The STT path (Deepgram START_OF_SPEECH) reaches us via
+      // agent_activity.onStartOfSpeech → _updateUserState('speaking') → this event. That
+      // is the earliest "user is speaking, not noise" signal we get without bringing back
+      // a local VAD. interrupt() drains the currentSpeech + speech queue, killing TTS
+      // playback in-flight. handleSpeechDone still captures the spoken-text + JSONL
+      // context, consumed by PipelineDirectLLM on the next chat() call.
+      // Realtime mode skipped — the SDK handles interruption internally there, and manual
+      // interrupt for Gemini realtime crashes its state machine (code 1008, memory v0.4.5).
       sess.on('user_state_changed' as any, (ev: any) => {
+        const prev = userState
         userState = ev.newState
-        console.log(`👤 User state: ${ev.newState}`)
+        console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
+
+        if (ev.newState === 'speaking' && agentState === 'speaking' && sessionVoiceMode !== 'realtime') {
+          try {
+            console.log('🎤 User started speaking while agent was speaking → interrupting TTS')
+            currentSession?.interrupt()
+          } catch (err) {
+            console.warn('⚠️ user-onset interrupt failed:', err instanceof Error ? err.message : err)
+          }
+        }
+
         // When user stops speaking, retry voice queue — items may be waiting
         if (ev.newState === 'listening' && voiceQueue.length > 0) {
           setTimeout(() => processVoiceQueue(), 500)
@@ -3208,24 +3271,13 @@ async function main() {
         console.log('✅ agent_ready retries complete')
       }, 20000)
 
-      // Stop agent_ready retries on user speech, and interrupt agent TTS at VAD onset.
-      // Previously the interrupt only fired when STT committed a full transcript (chat()
-      // call), which let the agent talk over the user for the full utterance. Firing it
-      // here cuts TTS the moment VAD detects speech.
-      // Realtime providers (OpenAI/Gemini) handle interruption server-side via their own
-      // VAD — calling interrupt() manually for Gemini specifically crashes its state
-      // machine (code 1008, hangs in 'speaking'), so skip those.
+      // Stop agent_ready retries on user speech.
+      // NB: input_speech_started is realtime-only — the SDK never emits it in STT pipeline
+      // mode. The earliest onset signal in pipeline mode is user_state_changed → 'speaking',
+      // wired further down. Don't add interrupt logic here.
       session.on('input_speech_started' as any, () => {
         readySent = true
         clearInterval(readyInterval)
-        if (agentState !== 'speaking') return
-        if (sessionVoiceMode === 'realtime') return
-        try {
-          console.log('🎤 VAD onset → interrupting agent TTS')
-          currentSession?.interrupt()
-        } catch (err) {
-          console.warn('⚠️ VAD-onset interrupt failed:', err instanceof Error ? err.message : err)
-        }
       })
 
       // Greet user via TTS (delayed if resume prompt will be shown)
