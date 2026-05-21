@@ -156,14 +156,35 @@ async function waitForMachineState(
   targetState: string,
   timeoutSec = 60,
 ): Promise<boolean> {
+  // Fly's /wait long-polls until state is reached OR timeout. 200 = reached;
+  // 408/504 = timeout (state not reached). Previously this function returned
+  // `true` on ANY fetch resolution, masking timeouts as success — callers then
+  // declared updates done while machines were still in 'replacing' state. Now
+  // we check the status code AND verify the current machine state with a
+  // follow-up GET as a tiebreaker (Fly occasionally returns 200 even for
+  // mismatched state during fast transitions).
   try {
-    await fetch(
+    const res = await fetch(
       `${FLY_API_BASE}/v1/apps/${appName}/machines/${machineId}/wait?state=${targetState}&timeout=${timeoutSec}`,
       {
         headers: { 'Authorization': `Bearer ${getApiToken()}` },
         signal: AbortSignal.timeout((timeoutSec + 5) * 1000),
       },
     )
+    if (!res.ok) {
+      console.warn(`[machines] waitForMachineState(${targetState}) HTTP ${res.status} — state not reached`)
+      return false
+    }
+    // Confirm the current state actually matches what we waited for.
+    try {
+      const m = await api<{ state?: string }>('GET', `/v1/apps/${appName}/machines/${machineId}`)
+      if (m?.state !== targetState) {
+        console.warn(`[machines] waitForMachineState(${targetState}) returned 200 but actual state=${m?.state}`)
+        return false
+      }
+    } catch {
+      // GET probe failed — trust the 200 from /wait
+    }
     return true
   } catch (err) {
     console.warn(`[machines] waitForMachineState(${targetState}) failed: ${(err as Error).message}`)
@@ -623,7 +644,14 @@ export async function readInstalledOsbornVersion(sandboxId: string): Promise<str
   const appName = sandboxId
   const previewUrl = `https://${appName}.fly.dev`
 
-  // Strategy 1: /health endpoint version field
+  // ONLY trust the running container's /health endpoint. We previously fell back
+  // to the Fly Machines API's image_ref.tag, but that's the *configured* image
+  // tag — Fly reports the new tag immediately after our PATCH, before the
+  // container has pulled, unpacked, or run that image. During the in-place
+  // replacement window the tag says "0.9.36" while the running container is
+  // still "0.9.35", causing updateOsbornImpl to declare success on a failed
+  // update. Returning null instead lets the caller treat the version as
+  // unknown and surface a real failure.
   try {
     const res = await fetch(`${previewUrl}/health`, {
       signal: AbortSignal.timeout(5000),
@@ -633,20 +661,7 @@ export async function readInstalledOsbornVersion(sandboxId: string): Promise<str
       if (data.version) return data.version
     }
   } catch {
-    // fall through
-  }
-
-  // Strategy 2: image_ref.tag from the Fly Machines API
-  // Only return the tag if it looks like a semver string (e.g. "0.8.37").
-  // Tags like "latest" or "main" are not real versions — returning them causes
-  // callers to always see a mismatch against a real semver and trigger updateOsborn
-  // on every check.
-  try {
-    const machine = await getFirstMachine(appName)
-    const tag = machine?.image_ref?.tag
-    if (tag && /^\d+\.\d+/.test(tag)) return tag
-  } catch {
-    // fall through
+    // /health unreachable → unknown
   }
 
   return null

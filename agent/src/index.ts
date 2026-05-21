@@ -1312,6 +1312,7 @@ async function main() {
   let lastInterruption: {
     spokenText: string       // synchronizedTranscript — what user heard (word-accurate)
     recentMessages: string   // last 10 assistant messages from JSONL (full untruncated)
+    suppressedText: string   // agent text we did NOT play because the user was speaking (see tts_say gate below)
     timestamp: number
   } | null = null
 
@@ -1351,9 +1352,33 @@ async function main() {
       }
     }
 
-    // Store — consumed when user's next message arrives via chat()
-    lastInterruption = { spokenText: fullText, recentMessages, timestamp: Date.now() }
-    console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars)`)
+    // Store — consumed when user's next message arrives via chat().
+    // Preserve any already-buffered suppressedText (the user may have started speaking
+    // BEFORE the previous TTS completed, and we may have already suppressed in-flight
+    // tts_say events that arrived during that overlap).
+    const carriedSuppressed = lastInterruption?.suppressedText ?? ''
+    lastInterruption = { spokenText: fullText, recentMessages, suppressedText: carriedSuppressed, timestamp: Date.now() }
+    console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars, suppressed carried: ${carriedSuppressed.length} chars)`)
+  }
+
+  /**
+   * Append text the agent tried to say while the user was speaking, but which we
+   * suppressed at the tts_say gate to avoid talking over them. Folded into
+   * lastInterruption so it travels to Claude in the next chat() call.
+   * If no interruption context exists yet (e.g. user just started speaking with no
+   * prior TTS interrupt), creates a fresh entry.
+   */
+  function appendSuppressedText(text: string) {
+    const t = text.trim()
+    if (!t) return
+    if (lastInterruption) {
+      const sep = lastInterruption.suppressedText ? '\n' : ''
+      lastInterruption.suppressedText = lastInterruption.suppressedText + sep + t
+      lastInterruption.timestamp = Date.now()
+    } else {
+      lastInterruption = { spokenText: '', recentMessages: '', suppressedText: t, timestamp: Date.now() }
+    }
+    console.log(`🤐 Suppressed text buffered (+${t.length} chars, total ${lastInterruption.suppressedText.length}): "${t.substring(0, 80)}${t.length > 80 ? '...' : ''}"`)
   }
 
   /**
@@ -1368,7 +1393,11 @@ async function main() {
       lastInterruption = null
       return null
     }
-    const ctx = { spokenText: lastInterruption.spokenText, recentMessages: lastInterruption.recentMessages }
+    const ctx = {
+      spokenText: lastInterruption.spokenText,
+      recentMessages: lastInterruption.recentMessages,
+      suppressedText: lastInterruption.suppressedText,
+    }
     lastInterruption = null
     return ctx
   }
@@ -1893,6 +1922,16 @@ async function main() {
       }
       if (!data.text?.trim()) {
         console.log(`🔇 tts_say fired but text is empty — skipping`)
+        return
+      }
+
+      // Suppress while the user is mid-utterance. Without this, agent text generated
+      // in parallel by the Claude SDK plays right over the user — same problem as
+      // pre-interrupt overlap, but at the *output* side. The suppressed text gets
+      // folded into lastInterruption so the next chat() to Claude carries it as
+      // "you wrote this but the user did not hear it — re-articulate if relevant."
+      if (userState === 'speaking') {
+        appendSuppressedText(data.text)
         return
       }
 

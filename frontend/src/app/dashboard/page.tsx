@@ -587,11 +587,29 @@ export default function Dashboard() {
           if (r.ok) {
             const data = await r.json()
             lastSignals = { machineState: data.machineState, installedVersion: data.installedVersion }
-            // (1) Authoritative — server-side updateOsborn already finished.
-            if (data.lastUpdate?.status === 'success') {
-              return { success: true, version: data.lastUpdate.installedVersion ?? null }
+            // (1) Authoritative — server-side updateOsborn finished. But only
+            // trust it when the stored outcome is for THIS target version.
+            // Previously we accepted any prior success in lastUpdate, which let
+            // a stale "v0.9.35 update succeeded" entry mask a failed current
+            // attempt to v0.9.36 — dashboard showed "Update complete" while
+            // /health still reported 0.9.35.
+            const lastTargetMatches =
+              data.lastUpdate?.targetVersion && targetVersion
+                ? data.lastUpdate.targetVersion === targetVersion
+                : true
+            if (data.lastUpdate?.status === 'success' && lastTargetMatches) {
+              // Belt-and-suspenders: also require installedVersion to match
+              // the target before declaring success. updateOsborn could have
+              // marked success based on a stale signal; the live probe is
+              // authoritative.
+              if (
+                !targetVersion ||
+                (data.installedVersion && data.installedVersion === targetVersion)
+              ) {
+                return { success: true, version: data.lastUpdate.installedVersion ?? null }
+              }
             }
-            if (data.lastUpdate?.status === 'error') {
+            if (data.lastUpdate?.status === 'error' && lastTargetMatches) {
               return { success: false, error: data.lastUpdate.error ?? 'Update failed' }
             }
             // (2) Inferred — pod restarted, lastUpdate gone, but signals agree.
