@@ -132,30 +132,49 @@ export class RecallClient extends EventEmitter {
 
   /**
    * Fetch the bot's current transcript. Returns an array of "transcript turns"
-   * (each turn = one speaker's utterance) sorted by start time. Use the bot's
-   * `recordings[0].id` from getBotStatus / bot record to locate the recording,
-   * then list its transcripts.
+   * (each turn = one speaker's utterance) sorted by start time.
    *
-   * Per Recall docs:
-   *   GET /api/v1/bot/{bot_id} → bot record incl. `recordings: [...]`
-   *   GET /api/v1/transcript/{transcript_id} → transcript with download_url
-   *   Download the transcript JSON from download_url to get the actual content.
+   * Verified 2026-05-22 against the real us-west-2 API: there is NO simple
+   * `GET /bot/{id}/transcript` convenience endpoint. The actual chain is:
    *
-   * For the polling use case (called every ~30s), we use the simpler combined
-   * endpoint: `GET /api/v1/bot/{bot_id}/transcript` which Recall exposes as a
-   * convenience and returns the full transcript so far in one call. The caller
-   * is responsible for de-duping (keeping a since-cursor) so the LLM only sees
-   * new turns.
+   *   1. GET /api/v1/bot/{bot_id}
+   *   2. recordings[0].media_shortcuts.transcript.data.download_url   (S3 signed URL)
+   *   3. GET that URL  →  JSON array of TranscriptTurn objects
+   *
+   * The S3 URL is pre-signed and expires (~6h). Re-fetch step 1 each poll;
+   * don't cache the URL.
+   *
+   * If `recordings[0]` doesn't exist yet (bot still joining or pre-recording),
+   * returns []. Caller (MeetingTranscriptPoller) treats that as "no new turns
+   * yet" and waits for the next tick.
    */
   async getTranscript(botId: string): Promise<TranscriptTurn[]> {
-    const res = await fetch(`${RECALL_BASE_URL}/bot/${botId}/transcript`, {
+    const botRes = await fetch(`${RECALL_BASE_URL}/bot/${botId}`, {
       headers: { 'Authorization': `Token ${this.#apiKey}` },
     })
-    if (!res.ok) {
-      const err = await res.text().catch(() => '')
-      throw new Error(`Recall.ai transcript fetch failed: ${res.status} ${err.substring(0, 200)}`)
+    if (!botRes.ok) {
+      const err = await botRes.text().catch(() => '')
+      throw new Error(`Recall.ai bot fetch failed: ${botRes.status} ${err.substring(0, 200)}`)
     }
-    const turns = await res.json() as TranscriptTurn[]
+    const bot = await botRes.json() as {
+      recordings?: Array<{
+        media_shortcuts?: {
+          transcript?: { data?: { download_url?: string } }
+        }
+      }>
+    }
+    const downloadUrl = bot.recordings?.[0]?.media_shortcuts?.transcript?.data?.download_url
+    if (!downloadUrl) {
+      // Recording / transcript not ready yet — pre-call, just-joined, or
+      // recording_done event hasn't fired. Empty result is expected here.
+      return []
+    }
+    const txRes = await fetch(downloadUrl)
+    if (!txRes.ok) {
+      const err = await txRes.text().catch(() => '')
+      throw new Error(`Recall.ai transcript download failed: ${txRes.status} ${err.substring(0, 200)}`)
+    }
+    const turns = await txRes.json() as TranscriptTurn[]
     return Array.isArray(turns) ? turns : []
   }
 
