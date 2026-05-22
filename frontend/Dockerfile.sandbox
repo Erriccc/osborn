@@ -31,9 +31,22 @@ RUN npm install -g "osborn@${OSBORN_VERSION}" @anthropic-ai/claude-code
 # Persistent workspace + claude config dirs
 RUN mkdir -p /workspace /root/.claude
 
+# Marker so orchestration (machines.ts isManifestAware) can detect this image
+# supports the manifest-driven update flow. Pre-marker machines fall back to
+# the image-swap update path, which brings them onto a marker-aware image;
+# from then on, all updates use the manifest flow defined in the entrypoint.
+RUN touch /etc/osborn-manifest-aware
+
 ENV OSBORN_CWD=/workspace
 ENV OSBORN_API_PORT=8741
 ENV NODE_ENV=production
+
+# HOME points at the volume so user-space config from any tool that respects
+# HOME (gh, git, ssh, aws, etc.) automatically writes to the persistent
+# volume instead of the ephemeral container overlay. The existing /root/.claude
+# symlink machinery below stays in place — it's redundant with HOME=/workspace
+# but harmless.
+ENV HOME=/workspace
 
 WORKDIR /workspace
 
@@ -52,6 +65,10 @@ ln -sf /workspace/.claude /root/.claude
 # Suppress Claude Code interactive onboarding prompts
 ONBOARDING_JSON='{"numStartups":10,"installMethod":"npm","autoUpdates":false,"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true,"hasAcknowledgedCostThreshold":true,"effortCalloutV2Dismissed":true,"theme":"dark","projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true}}}'
 echo "$ONBOARDING_JSON" > /root/.claude.json
+# Additional write at $HOME/.claude.json. With HOME=/workspace this is where
+# Claude Code actually reads its top-level config from; the /root/.claude.json
+# write above becomes dead but is left in place (harmless).
+echo "$ONBOARDING_JSON" > /workspace/.claude.json
 mkdir -p /workspace/.claude
 echo "$ONBOARDING_JSON" > /workspace/.claude/.config.json
 echo "$ONBOARDING_JSON" > /workspace/.claude/claude.json
@@ -77,6 +94,23 @@ if [ -d "$PKG_SKILLS_DIR" ]; then
     cp -r "$d" "$HOME_SKILLS_DIR/$NAME"
     echo "[sandbox] seeded default skill: $NAME"
   done
+fi
+
+# Manifest-driven version check.
+# Orchestration writes /workspace/.osborn-want-version on update (machines.ts
+# updateViaManifest). On every boot we compare to the currently-installed
+# osborn and run `npm install -g osborn@<want>` if they differ. The install
+# lands in the container overlay (default npm prefix) — Fly wipes overlay on
+# stop/start so the install re-runs on every boot until the base image is
+# rebuilt with that version baked in. Update is fast between Fly restarts;
+# only the first boot after a restart pays the npm install cost.
+WANT=$(cat /workspace/.osborn-want-version 2>/dev/null | tr -d '[:space:]')
+if [ -n "$WANT" ]; then
+  CURRENT=$(osborn --version 2>/dev/null | head -1 | tr -d '[:space:]')
+  if [ "$WANT" != "$CURRENT" ]; then
+    echo "[sandbox] osborn ${CURRENT:-none} → ${WANT} (manifest install)"
+    npm install -g "osborn@${WANT}" || echo "[sandbox] install failed — running ${CURRENT:-image-baked} version"
+  fi
 fi
 
 exec osborn

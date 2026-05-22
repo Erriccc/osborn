@@ -745,6 +745,63 @@ export async function updateOsborn(
   return work
 }
 
+/**
+ * Real exec inside a running Fly Machine via POST /v1/apps/{app}/machines/{id}/exec.
+ *
+ * Distinct from execInSprite() below: that one is the backend-specific logs
+ * adapter retained for the /api/sandbox 'fetch-log' route, which historically
+ * predates this endpoint being wired up. New code should call this directly.
+ */
+async function execInMachine(
+  appName: string,
+  machineId: string,
+  cmd: string[],
+  timeoutSec = 60,
+): Promise<{ exitCode: number; stdOut: string; stdErr: string }> {
+  try {
+    const res = await fetch(
+      `${FLY_API_BASE}/v1/apps/${appName}/machines/${machineId}/exec`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${getApiToken()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ cmd, timeout: timeoutSec }),
+        signal: AbortSignal.timeout((timeoutSec + 10) * 1000),
+      },
+    )
+    if (!res.ok) {
+      const text = await res.text()
+      return { exitCode: 1, stdOut: '', stdErr: `exec API ${res.status}: ${text.substring(0, 300)}` }
+    }
+    const data = await res.json() as {
+      exit_code?: number; exitCode?: number
+      stdout?: string; stdOut?: string
+      stderr?: string; stdErr?: string
+    }
+    return {
+      exitCode: data.exit_code ?? data.exitCode ?? 1,
+      stdOut: data.stdout ?? data.stdOut ?? '',
+      stdErr: data.stderr ?? data.stdErr ?? '',
+    }
+  } catch (err) {
+    return { exitCode: 1, stdOut: '', stdErr: `execInMachine error: ${(err as Error).message}` }
+  }
+}
+
+/**
+ * Does this machine's image support the manifest-driven update flow?
+ * Detected via the /etc/osborn-manifest-aware marker file baked into the new
+ * Dockerfile. Pre-marker machines fall back to image-swap updates; that final
+ * image swap brings them onto a marker-aware image, after which all updates
+ * use the manifest path.
+ */
+async function isManifestAware(appName: string, machineId: string): Promise<boolean> {
+  const res = await execInMachine(appName, machineId, ['test', '-f', '/etc/osborn-manifest-aware'], 10)
+  return res.exitCode === 0
+}
+
 async function updateOsbornImpl(
   sandboxId: string,
   userId: string,
@@ -819,7 +876,25 @@ async function updateOsbornImpl(
     return finish({ success: false, version: null, log: `No machine found for app ${appName}` }, targetVersion)
   }
 
-  // Step 2: Stop the machine cold before changing config
+  // Step 2: Pick the update mechanism based on whether this machine's image
+  // supports the manifest flow. New images have /etc/osborn-manifest-aware;
+  // old ones fall back to image-swap (which brings them onto the new image,
+  // so the next update uses the manifest flow).
+  const manifestAware = await isManifestAware(appName, machine.id)
+  if (manifestAware) {
+    console.log(`[machines] updateOsborn: manifest-aware machine — using exec/restart flow`)
+    return finish(
+      await updateViaManifest(appName, machine.id, userId, targetVersion),
+      targetVersion,
+    )
+  }
+  console.log(`[machines] updateOsborn: pre-marker machine — falling back to image-swap (one-time migration to manifest-aware image)`)
+
+  // Step 3 onward: legacy image-swap path. After this completes once on an
+  // existing machine, the new image's marker enables the manifest flow for
+  // every subsequent update.
+
+  // Step 3a: Stop the machine cold before changing config
   console.log(`[machines] updateOsborn: stopping machine ${machine.id}`)
   const stopped = await stopMachineCold(sandboxId)
   if (!stopped) {
@@ -918,6 +993,71 @@ async function updateOsbornImpl(
     },
     targetVersion,
   )
+}
+
+/**
+ * Manifest-driven update for machines whose image carries the
+ * /etc/osborn-manifest-aware marker.
+ *
+ * Flow:
+ *   1. Write target version to /workspace/.osborn-want-version via exec
+ *   2. Reuse the existing restartService path (same code as the "Restart agent"
+ *      dashboard button) so we're not introducing a new restart mechanism
+ *   3. Wait for /health on the restarted machine and confirm the version
+ *
+ * The manifest-aware entrypoint (Dockerfile.sandbox) reads the want-version
+ * on boot and runs `npm install -g osborn@<want>` if it differs from the
+ * currently-installed version. No image swap, no overlay-wipe of runtime-
+ * installed tools (gh, gh auth, gitconfig, etc.) — only the osborn process
+ * restarts. Everything user-space living under HOME=/workspace persists.
+ */
+async function updateViaManifest(
+  appName: string,
+  machineId: string,
+  userId: string,
+  targetVersion: string,
+): Promise<{ success: boolean; version: string | null; log: string }> {
+  // 1. Write the manifest file. The shell-quote keeps this safe against
+  // unexpected characters in targetVersion (it's a semver string, but be
+  // explicit about the boundary anyway).
+  console.log(`[machines] updateViaManifest: writing /workspace/.osborn-want-version=${targetVersion}`)
+  const write = await execInMachine(appName, machineId, [
+    'sh', '-c', `printf '%s' '${targetVersion.replace(/'/g, "'\\''")}' > /workspace/.osborn-want-version`,
+  ], 10)
+  if (write.exitCode !== 0) {
+    return { success: false, version: null, log: `Failed to write manifest: ${write.stdErr || write.stdOut || 'exit ' + write.exitCode}` }
+  }
+
+  // 2. Restart via the existing path. restartService = stopMachineCold +
+  // startSandbox. Fly wipes overlay on stop/start (per Fly docs), the
+  // entrypoint then runs, reads the manifest, and npm-installs the desired
+  // version. Same code as the "Restart agent" dashboard button.
+  console.log(`[machines] updateViaManifest: triggering restartService`)
+  const restarted = await restartService(appName, userId)
+  if (!restarted) {
+    return { success: false, version: null, log: 'restartService did not confirm machine came back up' }
+  }
+
+  // 3. Verify /health reports the target version. The entrypoint's npm install
+  // can take ~30s; restartService already waits for /health to be 200, but
+  // we double-check the actual version field.
+  const installed = await readInstalledOsbornVersion(appName)
+  if (!installed) {
+    return { success: false, version: null, log: 'Machine running but /health did not return a version' }
+  }
+  if (installed !== targetVersion) {
+    return {
+      success: false,
+      version: installed,
+      log: `Machine running on v${installed} but expected v${targetVersion} — manifest install did not take effect`,
+    }
+  }
+  console.log(`[machines] updateViaManifest: success — osborn installed=${installed} on ${appName}`)
+  return {
+    success: true,
+    version: installed,
+    log: `Updated to osborn@${installed} via manifest`,
+  }
 }
 
 /**
