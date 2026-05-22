@@ -799,12 +799,12 @@ async function execInMachine(
 }
 
 /**
- * Does this machine's image support the manifest-driven update flow?
- * Detected via the /etc/osborn-manifest-aware marker file baked into the new
- * Dockerfile. Pre-marker machines fall back to image-swap updates; that final
- * image swap brings them onto a marker-aware image, after which all updates
- * use the manifest path.
+ * Probe whether this machine's image has the /etc/osborn-manifest-aware
+ * marker. Currently unused by any active update flow (see comment near
+ * updateViaManifest below for why the manifest path was abandoned), but kept
+ * as a diagnostic helper for ad-hoc operator queries / future tooling.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function isManifestAware(appName: string, machineId: string): Promise<boolean> {
   const res = await execInMachine(appName, machineId, ['test', '-f', '/etc/osborn-manifest-aware'], 10)
   return res.exitCode === 0
@@ -884,25 +884,37 @@ async function updateOsbornImpl(
     return finish({ success: false, version: null, log: `No machine found for app ${appName}` }, targetVersion)
   }
 
-  // Step 2: Pick the update mechanism based on whether this machine's image
-  // supports the manifest flow. New images have /etc/osborn-manifest-aware;
-  // old ones fall back to image-swap (which brings them onto the new image,
-  // so the next update uses the manifest flow).
-  const manifestAware = await isManifestAware(appName, machine.id)
-  if (manifestAware) {
-    console.log(`[machines] updateOsborn: manifest-aware machine — using exec/restart flow`)
-    return finish(
-      await updateViaManifest(appName, machine.id, userId, targetVersion),
-      targetVersion,
-    )
-  }
-  console.log(`[machines] updateOsborn: pre-marker machine — falling back to image-swap (one-time migration to manifest-aware image)`)
+  // Step 2: Use the image-swap update path.
+  //
+  // We previously branched here between a "manifest flow" (write manifest +
+  // restartService) and image-swap based on whether the machine had the
+  // /etc/osborn-manifest-aware marker. That manifest flow was REMOVED because:
+  //   - restartService doesn't PATCH the image config, so the container restarts
+  //     on the SAME old image. The entrypoint then sees a version mismatch and
+  //     attempts `npm install -g osborn@<target>` AT RUNTIME, on every boot.
+  //   - That runtime install is fragile (network blip → hang → container never
+  //     reaches `exec osborn` → boot loops). Production incident 2026-05-22:
+  //     v0.9.40 update hung the agent + required manual recovery via SSH.
+  //   - The install also doesn't persist (Fly wipes overlay on stop/start),
+  //     so EVERY restart pays the install cost.
+  //
+  // The image-swap path (PATCH config to new image tag) is the only mechanism
+  // that actually works reliably on Fly Machines without NPM_CONFIG_PREFIX on
+  // the volume. New image has the desired osborn baked in → entrypoint sees no
+  // mismatch → no runtime install → fast clean boot.
+  //
+  // The marker file `/etc/osborn-manifest-aware` is still baked in (Dockerfile
+  // line 36) and the entrypoint's manifest check is still there as a SAFETY
+  // NET for future use (e.g. if someone manually writes the manifest), but
+  // it's no longer the primary mechanism.
+  //
+  // Clear any stale manifest file from the failed flow (best-effort, fire-and-
+  // forget). If the file is present when the new image boots, the entrypoint
+  // will try to install again — which is fine if the manifest matches the
+  // image-baked version, but a safety wipe avoids edge cases.
+  execInMachine(appName, machine.id, ['rm', '-f', '/workspace/.osborn-want-version'], 5).catch(() => {})
 
-  // Step 3 onward: legacy image-swap path. After this completes once on an
-  // existing machine, the new image's marker enables the manifest flow for
-  // every subsequent update.
-
-  // Step 3a: Stop the machine cold before changing config
+  // Step 3: Stop the machine cold before changing config
   console.log(`[machines] updateOsborn: stopping machine ${machine.id}`)
   const stopped = await stopMachineCold(sandboxId)
   if (!stopped) {
@@ -1003,70 +1015,26 @@ async function updateOsbornImpl(
   )
 }
 
-/**
- * Manifest-driven update for machines whose image carries the
- * /etc/osborn-manifest-aware marker.
- *
- * Flow:
- *   1. Write target version to /workspace/.osborn-want-version via exec
- *   2. Reuse the existing restartService path (same code as the "Restart agent"
- *      dashboard button) so we're not introducing a new restart mechanism
- *   3. Wait for /health on the restarted machine and confirm the version
- *
- * The manifest-aware entrypoint (Dockerfile.sandbox) reads the want-version
- * on boot and runs `npm install -g osborn@<want>` if it differs from the
- * currently-installed version. No image swap, no overlay-wipe of runtime-
- * installed tools (gh, gh auth, gitconfig, etc.) — only the osborn process
- * restarts. Everything user-space living under HOME=/workspace persists.
- */
-async function updateViaManifest(
-  appName: string,
-  machineId: string,
-  userId: string,
-  targetVersion: string,
-): Promise<{ success: boolean; version: string | null; log: string }> {
-  // 1. Write the manifest file. The shell-quote keeps this safe against
-  // unexpected characters in targetVersion (it's a semver string, but be
-  // explicit about the boundary anyway).
-  console.log(`[machines] updateViaManifest: writing /workspace/.osborn-want-version=${targetVersion}`)
-  const write = await execInMachine(appName, machineId, [
-    'sh', '-c', `printf '%s' '${targetVersion.replace(/'/g, "'\\''")}' > /workspace/.osborn-want-version`,
-  ], 10)
-  if (write.exitCode !== 0) {
-    return { success: false, version: null, log: `Failed to write manifest: ${write.stdErr || write.stdOut || 'exit ' + write.exitCode}` }
-  }
-
-  // 2. Restart via the existing path. restartService = stopMachineCold +
-  // startSandbox. Fly wipes overlay on stop/start (per Fly docs), the
-  // entrypoint then runs, reads the manifest, and npm-installs the desired
-  // version. Same code as the "Restart agent" dashboard button.
-  console.log(`[machines] updateViaManifest: triggering restartService`)
-  const restarted = await restartService(appName, userId)
-  if (!restarted) {
-    return { success: false, version: null, log: 'restartService did not confirm machine came back up' }
-  }
-
-  // 3. Verify /health reports the target version. The entrypoint's npm install
-  // can take ~30s; restartService already waits for /health to be 200, but
-  // we double-check the actual version field.
-  const installed = await readInstalledOsbornVersion(appName)
-  if (!installed) {
-    return { success: false, version: null, log: 'Machine running but /health did not return a version' }
-  }
-  if (installed !== targetVersion) {
-    return {
-      success: false,
-      version: installed,
-      log: `Machine running on v${installed} but expected v${targetVersion} — manifest install did not take effect`,
-    }
-  }
-  console.log(`[machines] updateViaManifest: success — osborn installed=${installed} on ${appName}`)
-  return {
-    success: true,
-    version: installed,
-    log: `Updated to osborn@${installed} via manifest`,
-  }
-}
+// REMOVED 2026-05-22: updateViaManifest function.
+//
+// Was meant as a faster update mechanism that wrote a manifest file to the
+// volume, then called restartService to let the entrypoint npm-install the
+// new version at boot. In practice it broke updates in production:
+//   - restartService restarts on the SAME image config (no PATCH), so the
+//     entrypoint always sees a version mismatch when the desired version
+//     differs from the image-baked one.
+//   - The runtime `npm install -g osborn@<target>` hung on the Fly machine
+//     (network blip + 363 deps to fetch), preventing the entrypoint from
+//     ever reaching `exec osborn` → container boot-looped.
+//   - Even on successful install, Fly wipes overlay on every stop/start, so
+//     the install doesn't persist — every restart pays the same cost.
+//
+// Image-swap (PATCH config to new image tag) is the only path that works
+// reliably without NPM_CONFIG_PREFIX=/workspace/.npm-global. The marker file
+// (/etc/osborn-manifest-aware) + entrypoint manifest check are still in
+// place as harmless infrastructure for potential future use, but no caller
+// invokes them from this file anymore. See updateOsbornImpl above for the
+// active flow.
 
 /**
  * Fetch recent log output from a Fly Machines sandbox via the Fly logs API.
