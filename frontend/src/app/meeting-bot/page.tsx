@@ -10,46 +10,39 @@
  *   room    — same LiveKit room name the osborn agent is in
  *   botId   — Recall bot ID (for display only)
  *
- * Audio flow (Phase 2 — bidirectional via LiveKit):
- *   - getUserMedia captures meeting audio (Recall's headless browser auto-grants
- *     permission and exposes the meeting's audio stream as the default mic).
- *     We disable echoCancellation / noiseSuppression / autoGainControl per
- *     Runway's documented pattern to preserve raw meeting audio quality.
- *   - The captured track is published to LiveKit as `meeting-audio`. The agent's
- *     existing STT pipeline (Deepgram Flux with end-of-turn detection) processes
- *     it the same way as any other participant's mic — ONE chat() call per actual
- *     end-of-turn, NOT per sentence fragment as Recall's webhook STT was doing.
- *   - <RoomAudioRenderer /> subscribes to osborn's TTS track and plays it via the
- *     page's audio output. Recall captures that output and injects it into the
- *     meeting. SpeechHandle on osborn's side serializes the playback (one
- *     utterance at a time) — kills the parallel-speech overlap bug.
+ * ARCHITECTURE (post-2026-05-22 redesign)
  *
- * Why this beats the legacy WebSocket+WAV pipe:
- *   The old path (synthesizeForMeeting → meetingOutputWs) spawned a fire-and-
- *   forget WAV pump per tts_say event. Multiple events back-to-back meant
- *   multiple WAV streams pumping in parallel → meeting heard overlapping audio.
- *   The LiveKit path uses session.say() → SpeechHandle queue → sequential by
- *   design. Plus we get bidirectional audio (meeting → LiveKit → agent STT) for
- *   free, and can disable Recall's per-fragment webhook STT that was firing
- *   ~10 chat() calls per actual utterance.
+ * This page is OUTPUT-ONLY now. It subscribes to osborn's LiveKit audio track
+ * and plays it via track.attach() → Recall captures the page's audio output
+ * and injects it into the meeting. That's the entire job.
  *
- * Visual: minimal dark page with status dot + agent name + last spoken text.
- * Recall captures the rendered page as the bot's camera feed.
+ * It does NOT call getUserMedia or publishTrack. The earlier Phase 2 attempt
+ * that tried to capture meeting audio from inside Recall's headless browser
+ * and publish it to LiveKit produced (a) silent input capture for the user
+ * when voice-native was muted, and (b) garbled audio output to the meeting.
  *
- * This page does NOT render the full chat UI (intentional — meeting participants
- * shouldn't see a chat sidebar in the bot's camera tile).
+ * Meeting audio INPUT is handled by Recall's documented WebSocket protocol
+ * (recording_config.audio_separate_raw + realtime_endpoint websocket), which
+ * streams per-participant PCM directly to the agent's /meeting-audio-in
+ * handler. The agent feeds those frames into Deepgram STT independently of
+ * this page. See recall-client.ts joinMeeting + index.ts meetingAudioInWss
+ * for that pipeline.
  *
- * Reference implementation: https://github.com/runwayml/runway-characters-meet/blob/main/public/bot.html
+ * Implementation: raw livekit-client SDK (not @livekit/components-react). The
+ * React wrappers (LiveKitRoom + RoomAudioRenderer) were observed producing
+ * garbled audio in Recall's headless browser. Manual track.attach() on
+ * TrackSubscribed events matches what works in Runway's bot.html reference.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  LiveKitRoom,
-  RoomAudioRenderer,
-  useDataChannel,
-  useLocalParticipant,
-} from '@livekit/components-react'
-import '@livekit/components-styles'
+  Room,
+  RoomEvent,
+  Track,
+  type RemoteTrack,
+  type DataPacket_Kind,
+  type RemoteParticipant,
+} from 'livekit-client'
 
 interface MeetingBotParams {
   token: string
@@ -58,160 +51,17 @@ interface MeetingBotParams {
   botId: string
 }
 
-/**
- * Publishes the page's getUserMedia audio to the LiveKit room as `meeting-audio`.
- *
- * Recall's headless browser auto-grants the mic permission and exposes whatever
- * the bot is hearing (the meeting audio) as the default mic input. We disable
- * the standard browser audio processing flags so the meeting audio passes
- * through raw — echoCancellation/etc are designed for human users on noisy
- * microphones, not for streams that have already been processed by the meeting
- * platform.
- */
-function PublishMeetingAudio() {
-  const { localParticipant } = useLocalParticipant()
-  const [published, setPublished] = useState(false)
-  const [publishError, setPublishError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!localParticipant || published) return
-    let cancelled = false
-
-    const publish = async () => {
-      try {
-        // setMicrophoneEnabled is LiveKit's higher-level API for publishing the
-        // local mic. It accepts AudioCaptureOptions so we can override the
-        // default echoCancellation/noiseSuppression/autoGainControl flags.
-        await localParticipant.setMicrophoneEnabled(true, {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        })
-        if (!cancelled) {
-          setPublished(true)
-          console.log('[meeting-bot] published meeting-audio track')
-        }
-      } catch (err) {
-        if (!cancelled) {
-          const msg = err instanceof Error ? err.message : String(err)
-          setPublishError(msg)
-          console.error('[meeting-bot] failed to publish meeting-audio:', msg)
-        }
-      }
-    }
-    publish()
-
-    return () => {
-      cancelled = true
-    }
-  }, [localParticipant, published])
-
-  // No visible UI — pure side-effect component. Errors are surfaced via console.
-  // The status indicator in MeetingBotUI shows the connected/speaking state.
-  if (publishError) {
-    return (
-      <div
-        style={{
-          position: 'fixed',
-          bottom: 28,
-          left: 0,
-          right: 0,
-          textAlign: 'center',
-          fontSize: 10,
-          color: '#ef4444',
-          opacity: 0.6,
-        }}
-      >
-        publish error: {publishError.substring(0, 100)}
-      </div>
-    )
-  }
-  return null
-}
-
-function MeetingBotUI({ botId }: { botId: string }) {
-  const [lastSpoken, setLastSpoken] = useState('')
-  const [isSpeaking, setIsSpeaking] = useState(false)
-
-  // Listen for assistant_response / claude_output events to display the
-  // currently-spoken text. Reuses the same topic + event shape as the chat UI.
-  useDataChannel('osborn-updates', (msg) => {
-    try {
-      const text = new TextDecoder().decode(msg.payload)
-      const data = JSON.parse(text)
-      const spoken = (data.type === 'assistant_response' || data.type === 'claude_output') ? data.text : null
-      if (spoken && typeof spoken === 'string' && spoken.trim()) {
-        setLastSpoken(spoken)
-        setIsSpeaking(true)
-        // Clear "speaking" state ~6s after last update so the indicator dims
-        // when osborn finishes a long utterance and no new chunks arrive.
-        const t = setTimeout(() => setIsSpeaking(false), 6000)
-        return () => clearTimeout(t)
-      }
-    } catch {
-      // Non-JSON or unrelated event — ignore
-    }
-  })
-
-  return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: '#0a0a0f',
-        color: '#fff',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '24px',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      }}
-    >
-      {/* Header — status dot + OSBORN label */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '32px' }}>
-        <span
-          style={{
-            width: '12px',
-            height: '12px',
-            borderRadius: '50%',
-            background: isSpeaking ? '#f59e0b' : '#3b82f6',
-            boxShadow: isSpeaking
-              ? '0 0 16px rgba(245, 158, 11, 0.6)'
-              : '0 0 8px rgba(59, 130, 246, 0.4)',
-            transition: 'all 300ms ease',
-          }}
-        />
-        <span style={{ fontSize: '20px', fontWeight: 600, letterSpacing: '0.1em' }}>OSBORN</span>
-      </div>
-
-      {/* Currently-spoken text */}
-      <div
-        style={{
-          maxWidth: '80%',
-          textAlign: 'center',
-          fontSize: '28px',
-          lineHeight: 1.4,
-          opacity: lastSpoken ? 1 : 0.3,
-          transition: 'opacity 400ms ease',
-          minHeight: '120px',
-        }}
-      >
-        {lastSpoken || 'Listening…'}
-      </div>
-
-      {/* Footer — bot ID (small, debug) */}
-      <div style={{ position: 'absolute', bottom: '12px', fontSize: '10px', opacity: 0.3 }}>
-        bot {botId.slice(0, 8)}
-      </div>
-    </div>
-  )
-}
-
 export default function MeetingBotPage() {
   const [params, setParams] = useState<MeetingBotParams | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [lastSpoken, setLastSpoken] = useState('')
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const [status, setStatus] = useState<'connecting' | 'ready' | 'error'>('connecting')
+  const roomRef = useRef<Room | null>(null)
+  const audioElementsRef = useRef<HTMLAudioElement[]>([])
+  const speakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Read URL params on mount
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search)
     const token = sp.get('token')
@@ -219,35 +69,116 @@ export default function MeetingBotPage() {
     const room = sp.get('room')
     const botId = sp.get('botId') || 'unknown'
 
-    if (!token) {
-      setError('Missing token query param')
-      return
-    }
-    if (!url) {
-      setError('Missing url query param (and NEXT_PUBLIC_LIVEKIT_URL not set)')
-      return
-    }
-    if (!room) {
-      setError('Missing room query param')
-      return
-    }
-
+    if (!token) return setError('Missing token query param')
+    if (!url) return setError('Missing url query param (and NEXT_PUBLIC_LIVEKIT_URL not set)')
+    if (!room) return setError('Missing room query param')
     setParams({ token, url, room, botId })
   }, [])
+
+  // Set up the LiveKit room — raw SDK, mirrors Runway's bot.html
+  useEffect(() => {
+    if (!params) return
+    let cancelled = false
+
+    const setup = async () => {
+      const room = new Room({
+        adaptiveStream: false,
+        dynacast: false,
+      })
+      roomRef.current = room
+
+      // Audio playback: attach remote audio tracks to <audio> elements appended
+      // to document.body. This is what Recall captures as the bot's mic output
+      // for the meeting. NOT RoomAudioRenderer — that React component was
+      // observed producing garbled output in Recall's headless browser.
+      room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub, _participant: RemoteParticipant) => {
+        if (track.kind === Track.Kind.Audio) {
+          const audioEl = track.attach() as HTMLAudioElement
+          audioEl.volume = 1.0
+          audioEl.autoplay = true
+          document.body.appendChild(audioEl)
+          audioElementsRef.current.push(audioEl)
+          console.log('[meeting-bot] attached remote audio track from', _participant.identity)
+        }
+      })
+
+      room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
+        if (track.kind === Track.Kind.Audio) {
+          const elements = track.detach() as HTMLAudioElement[]
+          elements.forEach(el => {
+            el.remove()
+            const idx = audioElementsRef.current.indexOf(el)
+            if (idx >= 0) audioElementsRef.current.splice(idx, 1)
+          })
+        }
+      })
+
+      // Listen for assistant_response / claude_output data channel events to
+      // display the currently-spoken text on screen for the meeting camera.
+      room.on(RoomEvent.DataReceived, (payload: Uint8Array, _participant?: RemoteParticipant, _kind?: DataPacket_Kind, topic?: string) => {
+        if (topic !== 'osborn-updates') return
+        try {
+          const text = new TextDecoder().decode(payload)
+          const data = JSON.parse(text)
+          const spoken = (data.type === 'assistant_response' || data.type === 'claude_output')
+            ? data.text
+            : null
+          if (spoken && typeof spoken === 'string' && spoken.trim()) {
+            setLastSpoken(spoken)
+            setIsSpeaking(true)
+            if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current)
+            speakingTimerRef.current = setTimeout(() => setIsSpeaking(false), 6000)
+          }
+        } catch {
+          // Non-JSON or unrelated event — ignore
+        }
+      })
+
+      try {
+        // Connect to LiveKit room (subscribe-only — we don't publish anything).
+        await room.connect(params.url, params.token)
+        if (cancelled) {
+          await room.disconnect()
+          return
+        }
+        setStatus('ready')
+        console.log('[meeting-bot] connected to LiveKit room:', params.room)
+        // No getUserMedia / publishTrack. Meeting → osborn audio is handled
+        // by Recall's documented audio_separate_raw WebSocket protocol; see
+        // agent/src/index.ts /meeting-audio-in handler.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[meeting-bot] setup failed:', msg)
+        if (!cancelled) {
+          setError(msg)
+          setStatus('error')
+        }
+      }
+    }
+
+    setup()
+
+    return () => {
+      cancelled = true
+      if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current)
+      // Detach + remove all audio elements
+      audioElementsRef.current.forEach(el => el.remove())
+      audioElementsRef.current = []
+      // Disconnect
+      if (roomRef.current) {
+        roomRef.current.disconnect().catch(() => {})
+        roomRef.current = null
+      }
+    }
+  }, [params])
 
   if (error) {
     return (
       <div
         style={{
-          position: 'fixed',
-          inset: 0,
-          background: '#0a0a0f',
-          color: '#ef4444',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '24px',
-          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+          position: 'fixed', inset: 0, background: '#0a0a0f', color: '#ef4444',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '24px', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
           fontSize: '14px',
         }}
       >
@@ -260,13 +191,8 @@ export default function MeetingBotPage() {
     return (
       <div
         style={{
-          position: 'fixed',
-          inset: 0,
-          background: '#0a0a0f',
-          color: '#666',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          position: 'fixed', inset: 0, background: '#0a0a0f', color: '#666',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
         }}
       >
@@ -276,23 +202,46 @@ export default function MeetingBotPage() {
   }
 
   return (
-    <LiveKitRoom
-      token={params.token}
-      serverUrl={params.url}
-      connect={true}
-      // We don't use audio={true} — PublishMeetingAudio publishes manually with
-      // custom AudioCaptureOptions (echo/noise/AGC disabled). audio={true} would
-      // use the LiveKit defaults (all three enabled), distorting meeting audio.
-      audio={false}
-      video={false}
-      // Bot context — disable adaptive bitrate + simulcast for predictable audio.
-      // Recall's headless browser has fixed-cost bandwidth and we don't need
-      // multi-quality streams.
-      options={{ adaptiveStream: false, dynacast: false }}
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: '#0a0a0f', color: '#fff',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', padding: '24px',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      }}
     >
-      <RoomAudioRenderer />
-      <PublishMeetingAudio />
-      <MeetingBotUI botId={params.botId} />
-    </LiveKitRoom>
+      {/* Header — status dot + OSBORN label */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '32px' }}>
+        <span
+          style={{
+            width: '12px', height: '12px', borderRadius: '50%',
+            background: isSpeaking ? '#f59e0b' : status === 'ready' ? '#3b82f6' : '#666',
+            boxShadow: isSpeaking
+              ? '0 0 16px rgba(245, 158, 11, 0.6)'
+              : status === 'ready'
+                ? '0 0 8px rgba(59, 130, 246, 0.4)'
+                : 'none',
+            transition: 'all 300ms ease',
+          }}
+        />
+        <span style={{ fontSize: '20px', fontWeight: 600, letterSpacing: '0.1em' }}>OSBORN</span>
+      </div>
+
+      {/* Currently-spoken text or status placeholder */}
+      <div
+        style={{
+          maxWidth: '80%', textAlign: 'center', fontSize: '28px', lineHeight: 1.4,
+          opacity: lastSpoken ? 1 : 0.3,
+          transition: 'opacity 400ms ease', minHeight: '120px',
+        }}
+      >
+        {lastSpoken || (status === 'ready' ? 'Listening…' : `${status}…`)}
+      </div>
+
+      {/* Footer — bot ID + audio element count (debug) */}
+      <div style={{ position: 'absolute', bottom: '12px', fontSize: '10px', opacity: 0.3 }}>
+        bot {params.botId.slice(0, 8)} · status {status}
+      </div>
+    </div>
   )
 }

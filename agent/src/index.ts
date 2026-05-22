@@ -3,7 +3,11 @@ import 'dotenv/config'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { Room, RoomEvent, RemoteParticipant, LocalParticipant } from '@livekit/rtc-node'
+import {
+  Room, RoomEvent, RemoteParticipant, LocalParticipant,
+  AudioSource, AudioFrame, LocalAudioTrack, TrackPublishOptions,
+  TrackSource,
+} from '@livekit/rtc-node'
 import { AccessToken } from 'livekit-server-sdk'
 
 // Initialize logger before anything else
@@ -163,6 +167,12 @@ process.on('uncaughtException', (error) => {
 let currentRoomCode: string | null = null
 // Meeting output WebSocket — module-level so both startApiServer and main() can access it
 let meetingOutputWs: WebSocket | null = null
+// Module-level AgentSession reference so /meeting-audio-in WS handler can switch
+// the RoomIO-linked participant when meeting audio starts/stops (B2 design).
+let activeAgentSession: voice.AgentSession | null = null
+// Identity of the local user participant the session was originally listening to
+// — captured at the moment we switch to the meeting publisher, restored on cleanup.
+let preMeetingUserIdentity: string | null = null
 
 function sendToMeetingOutput(msg: object): void {
   if (meetingOutputWs && meetingOutputWs.readyState === WebSocket.OPEN) {
@@ -970,17 +980,219 @@ function startApiServer(workingDir: string, port: number): void {
   setInterval(cleanStaleUploadDirs, 10 * 60 * 1000)
 
   // ============================================================
-  // Meeting Output WebSocket — /meeting-audio
+  // Meeting Output WebSocket — /meeting-audio (LEGACY)
   // ============================================================
-  // Recall's headless browser opens meeting-output.html which connects here.
-  // We push: JSON { type: 'speak', text } for display, binary PCM for audio (future).
+  // Recall's headless browser used to open meeting-output.html which connects
+  // here. With the new /meeting-bot Next.js page (Phase 2 + LiveKit), Recall
+  // points at frontend/meeting-bot instead — this handler exists only for
+  // backwards-compat with old machine images still serving the legacy path.
   const meetingOutputWss = new WebSocketServer({ noServer: true })
   meetingOutputWss.on('connection', (ws) => {
-    console.log('📺 Meeting output browser connected')
+    console.log('📺 Meeting output browser connected (legacy /meeting-audio)')
     meetingOutputWs = ws
     ws.on('close', () => {
-      console.log('📺 Meeting output browser disconnected')
+      console.log('📺 Meeting output browser disconnected (legacy)')
       if (meetingOutputWs === ws) meetingOutputWs = null
+    })
+  })
+
+  // ============================================================
+  // Recall.ai meeting-audio-in WebSocket — /meeting-audio-in
+  // ============================================================
+  // Recall.ai's per-participant real-time audio protocol. Bot is configured
+  // (in recall-client.ts joinMeeting) with audio_separate_raw + a realtime
+  // endpoint pointing at this URL. Recall sends JSON events containing
+  // base64-encoded PCM (S16LE, 16kHz, mono) for every meeting participant
+  // (bot's own audio NOT included by default — no feedback loop possible).
+  //
+  // Flow: Recall → /meeting-audio-in → open a SECOND LiveKit connection from
+  //       this agent process as a publisher participant → publish PCM as an
+  //       audio track in the same LiveKit room → the existing AgentSession's
+  //       STT subscribes to it as a remote track → routes to currentLLM.chat()
+  //       via the same pipeline as voice-native user mic.
+  //
+  // The advantage of this design vs a parallel STT pipeline: meeting audio
+  // becomes "just another participant" in the LiveKit room — same end-of-turn
+  // detection, same interrupt handling, same conversation context, no parallel
+  // chat() paths to maintain.
+  //
+  // Wait until activeAgentSession._roomIO exists AND the publisher participant
+  // is visible to the agent's room. Both can race against join_meeting:
+  //   - Agent session may still be starting up when Recall connects.
+  //   - LiveKit takes a moment to propagate the publisher's join to the agent
+  //     side after publishTrack() returns on our side.
+  // Bounded poll (200ms cadence) avoids both timing gaps.
+  async function waitForRoomIOAndParticipant(
+    publisherIdentity: string,
+    timeoutMs: number,
+  ): Promise<{ roomIO: any; participantVisible: boolean }> {
+    const deadline = Date.now() + timeoutMs
+    let roomIO: any = null
+    let participantVisible = false
+    while (Date.now() < deadline) {
+      roomIO = (activeAgentSession as any)?._roomIO
+      if (roomIO && typeof roomIO.setParticipant === 'function') {
+        const agentRoom = roomIO.rtcRoom
+        const remotes = agentRoom?.remoteParticipants
+        if (remotes && typeof remotes.values === 'function') {
+          for (const p of remotes.values()) {
+            if (p?.identity === publisherIdentity) {
+              participantVisible = true
+              break
+            }
+          }
+        }
+        if (participantVisible) return { roomIO, participantVisible }
+      }
+      await new Promise(r => setTimeout(r, 200))
+    }
+    // Timed out — return whatever we have. Caller decides whether to proceed.
+    return { roomIO, participantVisible }
+  }
+
+  const meetingAudioInWss = new WebSocketServer({ noServer: true })
+  meetingAudioInWss.on('connection', async (recallWs) => {
+    console.log('🎙️ Recall audio-in WebSocket connected — setting up LiveKit publisher')
+
+    const livekitUrl = process.env.LIVEKIT_URL
+    const apiKey = process.env.LIVEKIT_API_KEY
+    const apiSecret = process.env.LIVEKIT_API_SECRET
+    if (!livekitUrl || !apiKey || !apiSecret) {
+      console.warn('⚠️ LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET not set — meeting audio publisher disabled')
+      recallWs.close()
+      return
+    }
+    if (!currentRoomCode) {
+      console.warn('⚠️ No active LiveKit room (currentRoomCode null) — meeting audio publisher cannot attach')
+      recallWs.close()
+      return
+    }
+    const roomName = `osborn-${currentRoomCode}`
+
+    // Mint a publisher token via livekit-server-sdk (already imported for
+    // /api/token style flows). Long TTL — meetings can run for hours.
+    const identity = `meeting-audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const at = new AccessToken(apiKey, apiSecret, {
+      identity,
+      ttl: 14400, // 4 hours
+      metadata: JSON.stringify({ role: 'meeting-audio-publisher' }),
+    })
+    at.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: false })
+    const token = await at.toJwt()
+
+    let room: Room | null = null
+    let source: AudioSource | null = null
+    let track: LocalAudioTrack | null = null
+
+    const cleanup = async () => {
+      // Restore AgentSession STT input to the original user participant before
+      // tearing down the publisher track. If we don't switch back, the session
+      // will be stuck waiting on a participant that's about to disappear.
+      try {
+        const roomIO = (activeAgentSession as any)?._roomIO
+        if (roomIO && typeof roomIO.setParticipant === 'function') {
+          if (preMeetingUserIdentity) {
+            roomIO.setParticipant(preMeetingUserIdentity)
+            console.log(`🔁 Restored AgentSession STT input to user: ${preMeetingUserIdentity}`)
+          } else {
+            roomIO.unsetParticipant()
+            console.log('🔁 Cleared AgentSession STT input (no original user to restore)')
+          }
+        }
+      } catch (err) {
+        console.warn('⚠️ Failed to restore RoomIO participant on cleanup:', (err as Error).message)
+      }
+      preMeetingUserIdentity = null
+      try { if (track) await track.close(true) } catch {}
+      try { if (source) await source.close() } catch {}
+      try { if (room) await room.disconnect() } catch {}
+      room = null; source = null; track = null
+    }
+
+    try {
+      room = new Room()
+      await room.connect(livekitUrl, token)
+      if (!room.localParticipant) throw new Error('LiveKit connected but localParticipant missing')
+
+      // Recall sends S16LE PCM at 16kHz mono. AudioSource matches the format.
+      source = new AudioSource(16000, 1)
+      track = LocalAudioTrack.createAudioTrack('meeting-audio', source)
+      await room.localParticipant.publishTrack(
+        track,
+        new TrackPublishOptions({ source: TrackSource.SOURCE_MICROPHONE }),
+      )
+      console.log(`🎙️ Meeting audio publisher connected to ${roomName} as ${identity}`)
+
+      // B2 — switch the existing AgentSession's RoomIO input from the local user
+      // to this meeting-audio publisher. While the meeting is active, the user
+      // talks via the meeting (Recall captures it and sends PCM here), and the
+      // agent treats this publisher as the "speaking" participant for STT/EOT.
+      // Original user identity is stashed so cleanup() can restore it.
+      //
+      // 15s timeout accommodates: session-start race (agent still booting when
+      // user clicks "join meeting"), LiveKit participant-join propagation
+      // (~hundreds of ms), and Fly cold-path latency on first request.
+      try {
+        const { roomIO, participantVisible } = await waitForRoomIOAndParticipant(identity, 15000)
+        if (!roomIO) {
+          console.warn('⚠️ Timed out waiting for AgentSession._roomIO (15s) — meeting audio published but STT not switched. Meeting audio will be ignored until a session starts.')
+        } else if (!participantVisible) {
+          // RoomIO exists but our publisher hasn't propagated to the agent's
+          // room view yet. setParticipant stores the identity and links on
+          // participant-connected event, so this is still safe to call —
+          // RoomIO will pick up the link when the event arrives.
+          preMeetingUserIdentity = roomIO.linkedParticipant?.identity ?? null
+          roomIO.setParticipant(identity)
+          console.log(`🔁 Switched AgentSession STT input (publisher not yet visible — will link on connect): ${preMeetingUserIdentity ?? '(none)'} → ${identity}`)
+        } else {
+          preMeetingUserIdentity = roomIO.linkedParticipant?.identity ?? null
+          roomIO.setParticipant(identity)
+          console.log(`🔁 Switched AgentSession STT input: ${preMeetingUserIdentity ?? '(none)'} → ${identity}`)
+        }
+      } catch (err) {
+        console.warn('⚠️ Failed to switch RoomIO participant:', (err as Error).message)
+      }
+    } catch (err) {
+      console.error('❌ Failed to set up LiveKit publisher for meeting audio:', err instanceof Error ? err.message : err)
+      try { recallWs.close() } catch {}
+      await cleanup()
+      return
+    }
+
+    // Recall → us: JSON events with base64-encoded PCM. Decode, wrap as
+    // AudioFrame, and capture into the source. AgentSession in the main room
+    // will subscribe to this published track and STT it via the normal pipeline.
+    // Payload shape from
+    // docs.recall.ai/docs/how-to-get-separate-audio-per-participant-realtime:
+    //   { event: 'audio_separate_raw.data', data: { data: { buffer: '<base64>', ... }, participant: {...} } }
+    recallWs.on('message', async (raw) => {
+      if (!source) return
+      try {
+        const msg = JSON.parse(raw.toString())
+        if (msg.event !== 'audio_separate_raw.data') return
+        const b64: string | undefined = msg.data?.data?.buffer
+        if (!b64) return
+        const pcmBuf = Buffer.from(b64, 'base64')
+        // AudioFrame expects Int16Array. The PCM buffer is S16LE — view it
+        // directly without copy. Length / 2 = samples (each sample 2 bytes).
+        const samplesPerChannel = pcmBuf.byteLength / 2
+        const int16 = new Int16Array(pcmBuf.buffer, pcmBuf.byteOffset, samplesPerChannel)
+        const frame = new AudioFrame(int16, 16000, 1, samplesPerChannel)
+        await source.captureFrame(frame)
+      } catch (err) {
+        // Don't log every frame parse failure — could be noisy if Recall sends
+        // non-audio_separate_raw events on the same channel.
+        if ((err as Error).message?.includes('JSON')) return
+        console.warn('⚠️ meeting audio capture error:', err instanceof Error ? err.message : err)
+      }
+    })
+
+    recallWs.on('close', async () => {
+      console.log('🎙️ Recall audio-in WebSocket closed — tearing down LiveKit publisher')
+      await cleanup()
+    })
+    recallWs.on('error', (err) => {
+      console.warn('⚠️ Recall WS error:', err instanceof Error ? err.message : err)
     })
   })
 
@@ -989,6 +1201,10 @@ function startApiServer(workingDir: string, port: number): void {
     if (url.pathname === '/meeting-audio') {
       meetingOutputWss.handleUpgrade(req, socket, head, (ws) => {
         meetingOutputWss.emit('connection', ws, req)
+      })
+    } else if (url.pathname === '/meeting-audio-in') {
+      meetingAudioInWss.handleUpgrade(req, socket, head, (ws) => {
+        meetingAudioInWss.emit('connection', ws, req)
       })
     } else {
       socket.destroy()
@@ -2750,6 +2966,7 @@ async function main() {
     }
     lastCompletedResearch = null
     currentSession = null
+    activeAgentSession = null
     currentAgent = null
     // Same disconnect-leak fix as the other two cleanup sites — kill the Claude SDK
     // subprocess BEFORE dropping the reference. See killCurrentLLM() for full context.
@@ -2794,6 +3011,7 @@ async function main() {
         currentSession.removeAllListeners()
       } catch {}
       currentSession = null
+      activeAgentSession = null
       currentAgent = null
       // Same disconnect-leak fix — kill the previous user's Claude subprocess
       // before binding currentLLM to the new user's session below.
@@ -2946,6 +3164,7 @@ async function main() {
       agent = result.agent
     }
     currentSession = session
+    activeAgentSession = session
     currentAgent = agent  // Store for updateChatCtx() context injection
 
     // ============================================================
@@ -3114,6 +3333,7 @@ async function main() {
           // Clean up dead session — match realtime recovery's thoroughness
           try { sess.removeAllListeners() } catch {}
           currentSession = null
+          activeAgentSession = null
           currentAgent = null
 
           // Clear stale state from crashed session
@@ -3171,6 +3391,7 @@ async function main() {
             const newSession = result.session
             const newAgent = result.agent
             currentSession = newSession
+            activeAgentSession = newSession
             currentAgent = newAgent
 
             // Re-wire event listeners on the new session
@@ -3227,6 +3448,7 @@ async function main() {
           // Clean up dead session
           try { sess.removeAllListeners() } catch {}
           currentSession = null
+          activeAgentSession = null
           currentAgent = null
 
           // Clear voice queue — stale injections from the crashed session
@@ -3246,6 +3468,7 @@ async function main() {
             const newSession = result.session
             const newAgent = result.agent
             currentSession = newSession
+            activeAgentSession = newSession
             currentAgent = newAgent
 
             // Re-wire event listeners on the new session
@@ -3451,6 +3674,7 @@ async function main() {
     if (currentSession) {
       const sessionToClose = currentSession
       currentSession = null
+      activeAgentSession = null
       // Track async close so new connections can wait for byte stream handler to be released
       pendingSessionClose = (async () => {
         try { await sessionToClose.close() } catch {}

@@ -77,6 +77,24 @@ export class RecallClient extends EventEmitter {
     //   - `url` and `events` are flat on the endpoint object (NOT nested under `config`)
     //   - `transcription_options` does NOT exist — use `transcript.provider`
     //   - Both transcript.provider AND realtime_endpoints must be set, or no events delivered
+    //
+    // ARCHITECTURE (post-2026-05-22 redesign):
+    //   Input (meeting → osborn): Recall's documented WebSocket audio protocol.
+    //     `audio_separate_raw` config + websocket realtime endpoint streams
+    //     per-participant PCM (S16LE 16kHz mono, base64 in JSON) to the agent's
+    //     /meeting-audio-in WS handler. Bot's own audio is excluded by default
+    //     → zero possibility of feedback loop, no echo cancellation needed.
+    //   Output (osborn → meeting): webpage output_media (LiveKit-on-page). Bot
+    //     page subscribes to osborn's LiveKit audio track and plays it via
+    //     track.attach(); Recall captures the page's audio output and injects
+    //     into the meeting.
+    //   Webhook transcripts (transcript.data): retained as a SECONDARY signal —
+    //     the agent index.ts handler for this event currently logs but does NOT
+    //     forward to the LLM (intentionally disabled). The Deepgram WS path
+    //     above is the LLM input.
+    const httpBase = webhookBaseUrl.replace(/\/$/, '')
+    const wsBase = httpBase.replace(/^https?:\/\//, m => m === 'https://' ? 'wss://' : 'ws://')
+
     const res = await fetch(`${RECALL_BASE_URL}/bot`, {
       method: 'POST',
       headers: {
@@ -91,25 +109,39 @@ export class RecallClient extends EventEmitter {
             provider: {
               // recallai_streaming is built-in — no external API key needed,
               // low-latency, works across all meeting platforms.
+              // Kept for the secondary webhook signal (display / future use);
+              // LLM input now comes from the Deepgram WS pipe below.
               recallai_streaming: {
                 mode: 'prioritize_low_latency',
                 language_code: 'en',
               },
             },
           },
-          realtime_endpoints: [{
-            type: 'webhook',
-            url: `${webhookBaseUrl}/webhook/recall`,
-            events: ['transcript.data'],
-          }],
+          // Per-participant raw PCM audio stream. Bot's own audio is excluded
+          // (we don't set include_bot_in_recording.audio:true).
+          audio_separate_raw: {},
+          realtime_endpoints: [
+            {
+              // Transcript webhook (secondary signal; LLM forwarding disabled).
+              type: 'webhook',
+              url: `${httpBase}/webhook/recall`,
+              events: ['transcript.data'],
+            },
+            {
+              // Per-participant PCM audio → agent's Deepgram STT pipe.
+              type: 'websocket',
+              url: `${wsBase}/meeting-audio-in`,
+              events: ['audio_separate_raw.data'],
+            },
+          ],
         },
         output_media: {
           camera: {
             // `kind` (not `type`) — confirmed from prior debugging.
-            // The page Recall renders is responsible for joining the same LiveKit
-            // room as the osborn agent: meeting audio captured via getUserMedia is
-            // published into the room; osborn's TTS audio (already in the room) is
-            // played by the page and captured by Recall as the bot's mic output.
+            // The page Recall renders connects to LiveKit and plays osborn's
+            // TTS audio via track.attach(); Recall captures the page audio.
+            // The page does NOT call getUserMedia anymore — input now comes
+            // from the audio_separate_raw WebSocket above.
             kind: 'webpage',
             config: {
               url: outputPageUrl,
