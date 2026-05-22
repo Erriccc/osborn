@@ -759,6 +759,13 @@ async function execInMachine(
   timeoutSec = 60,
 ): Promise<{ exitCode: number; stdOut: string; stdErr: string }> {
   try {
+    // IMPORTANT: Fly's exec endpoint has TWO accepted body shapes:
+    //   - { cmd: "shell string here", ... }       — `cmd` is a string (shell-interpreted)
+    //   - { command: ["bin", "arg1", ...], ... }  — `command` is an array (no shell)
+    // Sending `cmd: [array]` returns 400 "cannot unmarshal array into ... cmd of type string"
+    // (the original v0.9.38 implementation hit this and every update fell back to image-swap
+    // because isManifestAware silently returned false on the 400). We use `command` (array)
+    // here because it's safer: no shell escaping needed for arbitrary args.
     const res = await fetch(
       `${FLY_API_BASE}/v1/apps/${appName}/machines/${machineId}/exec`,
       {
@@ -767,7 +774,7 @@ async function execInMachine(
           'Authorization': `Bearer ${getApiToken()}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ cmd, timeout: timeoutSec }),
+        body: JSON.stringify({ command: cmd, timeout: timeoutSec }),
         signal: AbortSignal.timeout((timeoutSec + 10) * 1000),
       },
     )
@@ -775,6 +782,7 @@ async function execInMachine(
       const text = await res.text()
       return { exitCode: 1, stdOut: '', stdErr: `exec API ${res.status}: ${text.substring(0, 300)}` }
     }
+    // Fly's response uses snake_case: { stdout, stderr, exit_code, exit_signal }
     const data = await res.json() as {
       exit_code?: number; exitCode?: number
       stdout?: string; stdOut?: string
