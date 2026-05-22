@@ -193,6 +193,35 @@ async function waitForMachineState(
 }
 
 /**
+ * Poll machine state via GET until it leaves a transitional state (e.g. "replacing").
+ * Returns the final state, or null on timeout / error. Used after a config PATCH:
+ * the Fly `/wait?state=...` endpoint refuses (HTTP 400) when the post-replace
+ * target state is ambiguous (replaced-from-stopped lands in stopped, not started),
+ * so we poll directly and let the caller decide what to do with the resolved state.
+ */
+async function waitForReplacementComplete(
+  appName: string,
+  machineId: string,
+  timeoutSec = 120,
+): Promise<string | null> {
+  const deadline = Date.now() + timeoutSec * 1000
+  while (Date.now() < deadline) {
+    try {
+      const m = await api<{ state?: string }>('GET', `/v1/apps/${appName}/machines/${machineId}`)
+      const state = m?.state
+      if (state && state !== 'replacing' && state !== 'creating') {
+        return state
+      }
+    } catch (err) {
+      console.warn(`[machines] waitForReplacementComplete poll failed: ${(err as Error).message}`)
+    }
+    await new Promise(r => setTimeout(r, 2000))
+  }
+  console.warn(`[machines] waitForReplacementComplete timed out after ${timeoutSec}s`)
+  return null
+}
+
+/**
  * Poll the agent's /health endpoint until it returns 200.
  */
 export async function waitForHealth(previewUrl: string, maxAttempts = 30): Promise<boolean> {
@@ -947,21 +976,35 @@ async function updateOsbornImpl(
     )
   }
 
-  // Step 4: Wait for the replacement to complete.
+  // Step 4: Wait for the replacement to settle, then start.
   // A config PATCH with a new image triggers an in-place machine replacement on Fly.
-  // The machine transitions through "replacing" → "started" automatically — calling
-  // /start during this window returns 412 failed_precondition: machine getting replaced.
-  // Poll for "started" (up to 120s). If it doesn't reach "started" (e.g. it lands in
-  // "stopped" or the poll times out), fall back to an explicit startSandbox call.
-  console.log(`[machines] updateOsborn: waiting for machine replacement to reach started state`)
-  const reachedStarted = await waitForMachineState(appName, machine.id, 'started', 120)
+  // The replacement lands in whatever state the machine was in BEFORE the PATCH —
+  // we just stopped it in step 2, so it lands in "stopped". The earlier flow tried
+  // /wait?state=started which Fly rejects with HTTP 400 in this case (the machine
+  // isn't transitioning toward started), then fell through to startSandbox which
+  // hit 412 ("machine getting replaced, refusing to start") because the replacement
+  // was still in flight.
+  //
+  // Correct flow: poll GET /machines/{id} until state leaves "replacing" (lands in
+  // "stopped"), then explicitly start. This is robust to Fly's state machine and
+  // avoids depending on the /wait endpoint's quirks across transition boundaries.
+  console.log(`[machines] updateOsborn: waiting for replacement to settle`)
+  const settledState = await waitForReplacementComplete(appName, machine.id, 120)
+  if (!settledState) {
+    return finish(
+      { success: false, version: null, log: 'Machine replacement did not settle within 120s' },
+      targetVersion,
+    )
+  }
+  console.log(`[machines] updateOsborn: replacement settled in state=${settledState}`)
 
   let info: SandboxInfo | null = null
-  if (reachedStarted) {
-    // Machine booted itself as part of the replacement — just wait for health.
+  if (settledState === 'started') {
+    // Replacement auto-started (rare in our flow, since we stopped first — but
+    // possible if Fly's behavior changes). Just poll health.
     const previewUrl = `https://${appName}.fly.dev`
-    console.log(`[machines] updateOsborn: machine reached started state, polling health`)
-    const healthy = await waitForHealth(previewUrl, 30) // 30 × 2s = 60s
+    console.log(`[machines] updateOsborn: machine already started post-replace, polling health`)
+    const healthy = await waitForHealth(previewUrl, 30)
     info = {
       id: appName,
       status: healthy ? 'running' : 'error',
@@ -971,8 +1014,8 @@ async function updateOsbornImpl(
       ...(healthy ? {} : { error: 'Agent did not pass health check after update' }),
     }
   } else {
-    // Replacement did not auto-boot (landed stopped, or timed out) — start explicitly.
-    console.log(`[machines] updateOsborn: machine did not auto-start after replacement, calling startSandbox`)
+    // Normal post-stop replace path: machine is now in "stopped" — start it.
+    console.log(`[machines] updateOsborn: starting machine after replacement`)
     info = await startSandbox(sandboxId, userId)
   }
 

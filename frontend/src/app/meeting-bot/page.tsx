@@ -91,15 +91,34 @@ export default function MeetingBotPage() {
       // to document.body. This is what Recall captures as the bot's mic output
       // for the meeting. NOT RoomAudioRenderer — that React component was
       // observed producing garbled output in Recall's headless browser.
-      room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub, _participant: RemoteParticipant) => {
-        if (track.kind === Track.Kind.Audio) {
-          const audioEl = track.attach() as HTMLAudioElement
-          audioEl.volume = 1.0
-          audioEl.autoplay = true
-          document.body.appendChild(audioEl)
-          audioElementsRef.current.push(audioEl)
-          console.log('[meeting-bot] attached remote audio track from', _participant.identity)
+      //
+      // CRITICAL feedback-loop filter — skip the `meeting-audio-publisher`
+      // participant. That participant is OUR agent re-publishing the meeting's
+      // own PCM frames (received from Recall's audio_separate_raw WebSocket)
+      // into the LiveKit room so the AgentSession STT can hear it. If we
+      // play its track out here, Recall captures the playback as bot output
+      // and sends it INTO the meeting — meeting participants hear themselves
+      // with ~1-2s of delay, on infinite loop. The publisher identity is set
+      // in agent/src/index.ts meetingAudioInWss handler (`meeting-audio-*`).
+      //
+      // The user's voice-native browser mic is NOT filtered out here — even
+      // though the user is also physically in the meeting, the bot page
+      // playing the user's voice-native mic back is the original (working)
+      // path that lets the user "ask osborn something via the meeting bot
+      // page". It's only the meeting-audio republish that creates the loop.
+      room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub, participant: RemoteParticipant) => {
+        if (track.kind !== Track.Kind.Audio) return
+        const identity = participant.identity || ''
+        if (identity.startsWith('meeting-audio-')) {
+          console.log('[meeting-bot] SKIP audio from meeting-audio-publisher (feedback prevention):', identity)
+          return
         }
+        const audioEl = track.attach() as HTMLAudioElement
+        audioEl.volume = 1.0
+        audioEl.autoplay = true
+        document.body.appendChild(audioEl)
+        audioElementsRef.current.push(audioEl)
+        console.log('[meeting-bot] attached remote audio track from', identity)
       })
 
       room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {

@@ -1165,20 +1165,56 @@ function startApiServer(workingDir: string, port: number): void {
     // Payload shape from
     // docs.recall.ai/docs/how-to-get-separate-audio-per-participant-realtime:
     //   { event: 'audio_separate_raw.data', data: { data: { buffer: '<base64>', ... }, participant: {...} } }
+    //
+    // Diagnostic counters so we can tell from prod logs whether (a) Recall is
+    // streaming any frames at all, (b) they're decoding correctly, and (c)
+    // captureFrame is succeeding. Logged every 100 frames (~5s at 50fps).
+    let totalMessages = 0
+    let audioFrames = 0
+    let bytesIn = 0
+    let lastSpeakerSeen: string | undefined
+    const startTs = Date.now()
     recallWs.on('message', async (raw) => {
+      totalMessages++
       if (!source) return
       try {
         const msg = JSON.parse(raw.toString())
-        if (msg.event !== 'audio_separate_raw.data') return
+        if (msg.event !== 'audio_separate_raw.data') {
+          // First-time event-type diagnostic — log unknown event types once so
+          // we know if Recall's payload shape changed
+          if (totalMessages <= 3) {
+            console.log(`[meeting-audio-in] non-audio event: ${msg.event}`)
+          }
+          return
+        }
         const b64: string | undefined = msg.data?.data?.buffer
-        if (!b64) return
+        if (!b64) {
+          if (audioFrames === 0) {
+            console.warn(`[meeting-audio-in] first audio event had no buffer field. payload keys=${Object.keys(msg.data?.data ?? {}).join(',')}`)
+          }
+          return
+        }
         const pcmBuf = Buffer.from(b64, 'base64')
+        bytesIn += pcmBuf.byteLength
+        const speakerName = msg.data?.data?.participant?.name || msg.data?.participant?.name
+        if (speakerName && speakerName !== lastSpeakerSeen) {
+          console.log(`[meeting-audio-in] now hearing: ${speakerName}`)
+          lastSpeakerSeen = speakerName
+        }
         // AudioFrame expects Int16Array. The PCM buffer is S16LE — view it
         // directly without copy. Length / 2 = samples (each sample 2 bytes).
         const samplesPerChannel = pcmBuf.byteLength / 2
         const int16 = new Int16Array(pcmBuf.buffer, pcmBuf.byteOffset, samplesPerChannel)
         const frame = new AudioFrame(int16, 16000, 1, samplesPerChannel)
         await source.captureFrame(frame)
+        audioFrames++
+        if (audioFrames === 1) {
+          console.log(`[meeting-audio-in] FIRST audio frame captured (${pcmBuf.byteLength} bytes, ${samplesPerChannel} samples)`)
+        }
+        if (audioFrames % 100 === 0) {
+          const elapsed = ((Date.now() - startTs) / 1000).toFixed(1)
+          console.log(`[meeting-audio-in] heartbeat: ${audioFrames} frames, ${(bytesIn / 1024).toFixed(1)} KB in ${elapsed}s (last speaker: ${lastSpeakerSeen ?? 'unknown'})`)
+        }
       } catch (err) {
         // Don't log every frame parse failure — could be noisy if Recall sends
         // non-audio_separate_raw events on the same channel.
@@ -1188,7 +1224,8 @@ function startApiServer(workingDir: string, port: number): void {
     })
 
     recallWs.on('close', async () => {
-      console.log('🎙️ Recall audio-in WebSocket closed — tearing down LiveKit publisher')
+      const elapsed = ((Date.now() - startTs) / 1000).toFixed(1)
+      console.log(`🎙️ Recall audio-in WebSocket closed — tearing down LiveKit publisher. Total: ${audioFrames} audio frames / ${totalMessages} messages / ${(bytesIn / 1024).toFixed(1)} KB over ${elapsed}s`)
       await cleanup()
     })
     recallWs.on('error', (err) => {
