@@ -46,7 +46,26 @@ export class RecallClient extends EventEmitter {
     this.#apiKey = apiKey
   }
 
-  async joinMeeting(meetingUrl: string, webhookBaseUrl: string, botName = 'Osborn'): Promise<string> {
+  /**
+   * Join a meeting via Recall.ai.
+   *
+   * @param meetingUrl       Zoom / Google Meet / Teams URL the bot should dial in to
+   * @param webhookBaseUrl   Base URL for the agent's HTTP endpoints (transcript webhook)
+   * @param opts.outputPageUrl  Full URL for the bot's camera/audio page. If provided,
+   *                            replaces the default `${webhookBaseUrl}/meeting-output`.
+   *                            Used to point at the frontend-hosted /meeting-bot page
+   *                            with token + room embedded as query params, so the page
+   *                            connects to LiveKit and audio flows through the same
+   *                            room as the osborn agent (no separate WebSocket+WAV pipe).
+   * @param opts.botName     Display name of the bot in the meeting
+   */
+  async joinMeeting(
+    meetingUrl: string,
+    webhookBaseUrl: string,
+    opts?: { outputPageUrl?: string; botName?: string },
+  ): Promise<string> {
+    const botName = opts?.botName ?? 'Osborn'
+    const outputPageUrl = opts?.outputPageUrl ?? `${webhookBaseUrl}/meeting-output`
     // Authoritative structure per https://docs.recall.ai/reference/bot_create
     // and https://docs.recall.ai/docs/real-time-transcription:
     //
@@ -87,10 +106,13 @@ export class RecallClient extends EventEmitter {
         output_media: {
           camera: {
             // `kind` (not `type`) — confirmed from prior debugging.
-            // Output webpage plays TTS audio so meeting participants can hear the agent.
+            // The page Recall renders is responsible for joining the same LiveKit
+            // room as the osborn agent: meeting audio captured via getUserMedia is
+            // published into the room; osborn's TTS audio (already in the room) is
+            // played by the page and captured by Recall as the bot's mic output.
             kind: 'webpage',
             config: {
-              url: `${webhookBaseUrl}/meeting-output`,
+              url: outputPageUrl,
             },
           },
         },
@@ -103,7 +125,7 @@ export class RecallClient extends EventEmitter {
     }
 
     const bot = (await res.json()) as RecallBot
-    console.log(`🤖 Recall.ai bot joined meeting: ${bot.id}`)
+    console.log(`🤖 Recall.ai bot joined meeting: ${bot.id} (output page: ${outputPageUrl})`)
     return bot.id
   }
 

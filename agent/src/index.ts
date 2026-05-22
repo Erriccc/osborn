@@ -1272,27 +1272,46 @@ async function main() {
   // No manual queuing — the Claude SDK handles sequential queries internally
 
   // ============================================================
-  // Recall.ai — Meeting Transcript Routing
+  // Recall.ai — Meeting Transcript Listener
   // ============================================================
+  // NOTE: LLM-forwarding via Recall webhook STT was DISABLED in the Phase 2
+  // LiveKit-based meeting-bot migration. Reason: Recall sends transcripts as
+  // sentence-level fragments (e.g. "transcript.data" events fire ~once per
+  // sentence). The old code below called currentLLM.chat() PER FRAGMENT, which
+  // meant the agent fired ~10 chat() calls during a single user utterance —
+  // each one prompting a separate response. The agent ended up speaking over
+  // itself answering partial fragments.
+  //
+  // Phase 2 routes meeting audio through LiveKit instead (see
+  // frontend/src/app/meeting-bot/page.tsx). The agent's existing Deepgram Flux
+  // STT processes that audio via end-of-turn detection — ONE chat() call per
+  // actual completed utterance, no fragment storms.
+  //
+  // We keep the listener registered so we have a hook for future work (e.g.
+  // forwarding the live transcript to the frontend chat panel as a read-only
+  // "what was said in the meeting" display, separate from the LLM input path).
   const recall = getRecallClient()
   if (recall) {
-    console.log('🎥 Recall.ai client initialized (RECALL_API_KEY present)')
+    console.log('🎥 Recall.ai client initialized (webhook STT receiver — LLM forwarding disabled, see meeting-bot Phase 2)')
     recall.on('transcript', ({ botId, speaker, text }: { botId: string, speaker: string, text: string }) => {
       console.log(`📝 Meeting transcript [${speaker}]: ${text}`)
-      // Route meeting transcripts to Claude as user text with speaker attribution
-      if (currentLLM && currentSession) {
-        const meetingText = `[Meeting — ${speaker}]: ${text}`
-        // Use the same pipeline as user_text data channel messages
-        try {
-          if (currentVoiceMode === 'pipeline' || currentVoiceMode === 'direct') {
-            const chatCtx = new llm.ChatContext()
-            chatCtx.addMessage({ role: 'user', content: meetingText })
-            ;(currentLLM as any).chat({ chatCtx })
-          }
-        } catch (err) {
-          console.error('❌ Failed to route meeting transcript:', err)
-        }
-      }
+      // INTENTIONALLY DISABLED — see comment above. Audio path is now LiveKit
+      // → meeting-bot page publishes meeting audio → agent STT processes it.
+      // The line below is preserved as a reference for future re-enablement
+      // (e.g. as a display-only feature, NOT as LLM input).
+      //
+      // if (currentLLM && currentSession) {
+      //   const meetingText = `[Meeting — ${speaker}]: ${text}`
+      //   try {
+      //     if (currentVoiceMode === 'pipeline' || currentVoiceMode === 'direct') {
+      //       const chatCtx = new llm.ChatContext()
+      //       chatCtx.addMessage({ role: 'user', content: meetingText })
+      //       ;(currentLLM as any).chat({ chatCtx })
+      //     }
+      //   } catch (err) {
+      //     console.error('❌ Failed to route meeting transcript:', err)
+      //   }
+      // }
     })
   }
 
@@ -1721,9 +1740,33 @@ async function main() {
       skipTTSQueue: true,
       onCompactionEvent: (event) => {
         try {
-          // Forward every field — frontend renders stage + detail + skill list during compaction.
-          // Spread covers compaction_started/progress/complete (different fields per type).
+          // Forward the raw event so the dedicated banner UI can render it (if/when fixed).
           sendToFrontend({ ...event } as any)
+          // ALSO emit as a claude_output chat bubble — reuses the existing message path
+          // that's already working end-to-end. PreCompact → in-progress bubble.
+          // PostCompact → completion bubble with the skills summary. The dedicated
+          // banner has been unreliable in production (data path works on backend, banner
+          // never appears on iPad/iPhone where dev tools aren't accessible). Chat bubbles
+          // are visible without dev tools.
+          if (event.type === 'compaction_started') {
+            const triggerLabel = (event as any).trigger ? ` (${(event as any).trigger})` : ''
+            sendToFrontend({
+              type: 'claude_output',
+              text: `🧠 _Crystallizing session memory…_${triggerLabel}`,
+              agentRole: 'direct',
+            })
+          } else if (event.type === 'compaction_complete') {
+            const ev = event as any
+            const n = ev.skillsWritten ?? 0
+            const names = Array.isArray(ev.skillNames) && ev.skillNames.length > 0
+              ? ` — ${ev.skillNames.join(', ')}`
+              : ''
+            sendToFrontend({
+              type: 'claude_output',
+              text: `🧠 Memory crystallized — ${n} skill${n === 1 ? '' : 's'} updated${names}.`,
+              agentRole: 'direct',
+            })
+          }
         } catch { /* non-fatal */ }
       },
     })
@@ -1939,14 +1982,17 @@ async function main() {
       console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
 
       // Forward spoken text + audio to meeting output page when bot is in a meeting.
-      // Text appears immediately; audio uses the same configured TTS (directConfig.tts)
-      // so voice/provider stays consistent — no separate hardcoded provider.
+      // Uses DIRECT_MODE_TTS (same OpenAI fable voice as the live session) — was
+      // previously using directConfig.tts which falls back to DEFAULT_CONFIG.direct.tts
+      // (Deepgram aura-2-asteria-en) when no user config exists, producing a different
+      // voice in the meeting than what the user hears in voice-native. Both paths now
+      // share the single source of truth.
       // PCM frames are WAV-encoded and pushed as binary WebSocket frames.
       // Recall captures the browser page's audio output and injects it into the meeting.
       if (activeMeetingBotId) {
         sendToMeetingOutput({ type: 'speak', text: data.text })
         if (meetingOutputWs) {
-          synthesizeForMeeting(data.text, directConfig.tts).catch((err) =>
+          synthesizeForMeeting(data.text, DIRECT_MODE_TTS).catch((err) =>
             console.warn('⚠️ Meeting TTS error:', err)
           )
         }
@@ -2097,9 +2143,33 @@ async function main() {
       resumeSessionId,
       onCompactionEvent: (event) => {
         try {
-          // Forward every field — frontend renders stage + detail + skill list during compaction.
-          // Spread covers compaction_started/progress/complete (different fields per type).
+          // Forward the raw event so the dedicated banner UI can render it (if/when fixed).
           sendToFrontend({ ...event } as any)
+          // ALSO emit as a claude_output chat bubble — reuses the existing message path
+          // that's already working end-to-end. PreCompact → in-progress bubble.
+          // PostCompact → completion bubble with the skills summary. The dedicated
+          // banner has been unreliable in production (data path works on backend, banner
+          // never appears on iPad/iPhone where dev tools aren't accessible). Chat bubbles
+          // are visible without dev tools.
+          if (event.type === 'compaction_started') {
+            const triggerLabel = (event as any).trigger ? ` (${(event as any).trigger})` : ''
+            sendToFrontend({
+              type: 'claude_output',
+              text: `🧠 _Crystallizing session memory…_${triggerLabel}`,
+              agentRole: 'direct',
+            })
+          } else if (event.type === 'compaction_complete') {
+            const ev = event as any
+            const n = ev.skillsWritten ?? 0
+            const names = Array.isArray(ev.skillNames) && ev.skillNames.length > 0
+              ? ` — ${ev.skillNames.join(', ')}`
+              : ''
+            sendToFrontend({
+              type: 'claude_output',
+              text: `🧠 Memory crystallized — ${n} skill${n === 1 ? '' : 's'} updated${names}.`,
+              agentRole: 'direct',
+            })
+          }
         } catch { /* non-fatal */ }
       },
     })
@@ -3973,8 +4043,54 @@ async function main() {
                 (process.env.FLY_APP_NAME
                   ? `https://${process.env.FLY_APP_NAME}.fly.dev`
                   : `http://localhost:${apiPort}`)
+              // Try to mint a LiveKit bot token + construct the frontend-hosted
+              // meeting-bot page URL. The bot page joins the same LiveKit room
+              // as this agent so meeting audio flows through LiveKit directly
+              // (no agent-side WebSocket+WAV pipe). Falls back to the legacy
+              // /meeting-output webpage if no frontend URL is resolvable, so
+              // the old code path keeps working during the migration window.
+              //
+              // Frontend URL resolution (in priority order):
+              //   1. data.frontendBase — the public URL the user's browser is on,
+              //      passed through the join_meeting data channel message. Works
+              //      automatically for localhost dev + production without any
+              //      env var.
+              //   2. OSBORN_FRONTEND_URL — existing convention from sprites.ts
+              //      (frontend/src/lib/sprites.ts:241) that injects the public
+              //      frontend URL into sandbox env vars. Defense in depth.
+              //
+              // Auth: the endpoint uses LiveKit room-presence as the auth check
+              // — no shared secret needed. The agent must already be in the
+              // requested room (which it is by this point) for the mint to
+              // succeed.
+              let outputPageUrl: string | undefined
+              const frontendUrl = (data.frontendBase as string)
+                || process.env.OSBORN_FRONTEND_URL
+              if (frontendUrl) {
+                try {
+                  const botLkId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                  const tokenRes = await fetch(`${frontendUrl}/api/meeting-bot-token`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ botId: botLkId, roomName }),
+                  })
+                  if (tokenRes.ok) {
+                    const { token, url } = await tokenRes.json() as { token: string; url: string }
+                    const params = new URLSearchParams({ token, url, room: roomName, botId: botLkId })
+                    outputPageUrl = `${frontendUrl}/meeting-bot?${params.toString()}`
+                    console.log(`🎫 Meeting-bot token minted for room=${roomName} bot=${botLkId}`)
+                  } else {
+                    const errText = await tokenRes.text().catch(() => '')
+                    console.warn(`⚠️ meeting-bot-token mint failed (HTTP ${tokenRes.status}: ${errText.substring(0, 120)}) — falling back to legacy /meeting-output path`)
+                  }
+                } catch (mintErr) {
+                  console.warn(`⚠️ meeting-bot-token mint threw — falling back: ${(mintErr as Error).message}`)
+                }
+              } else {
+                console.log('ℹ️ No frontend URL (data.frontendBase + OSBORN_FRONTEND_URL both empty) — using legacy /meeting-output path')
+              }
               await sendToFrontend({ type: 'meeting_joining', message: 'Osborn is joining your meeting...' })
-              const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase)
+              const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { outputPageUrl })
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
               recallJoin.registerBot(botId, sessionId)
               activeMeetingBotId = botId

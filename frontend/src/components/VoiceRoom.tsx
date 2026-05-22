@@ -2243,6 +2243,11 @@ function VoiceRoomInner({
       type: 'join_meeting',
       url: meetingUrl,
       webhookBase: agentUrl,
+      // Pass the public frontend origin so the agent can construct the
+      // meeting-bot page URL (`<frontendBase>/meeting-bot?...`). Works for
+      // localhost dev and production without an env var on the agent. Falls
+      // back to OSBORN_FRONTEND_URL env if not supplied.
+      frontendBase: typeof window !== 'undefined' ? window.location.origin : undefined,
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, agentUrl])
