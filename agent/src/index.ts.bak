@@ -42,7 +42,6 @@ import { askHaiku, askFastBrain, updateSpecFromJSONL, processResearchCompletion,
 import { DIRECT_MODE_PROMPT, getRealtimeInstructions, getScriptInjection, getProactiveInjection, getNotificationInjection, getResearchCompleteInjection, getResearchUpdateInjection } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { getRecallClient } from './recall-client.js'
-import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -1141,7 +1140,6 @@ async function main() {
   // session-only path (no user prefix).
   let currentUserId: string = ''
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
-  let activeMeetingPoller: MeetingTranscriptPoller | null = null  // Transcript poller bound to that bot
 
   // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
@@ -2611,6 +2609,7 @@ async function main() {
     }
     lastCompletedResearch = null
     currentSession = null
+    activeAgentSession = null
     currentAgent = null
     // Same disconnect-leak fix as the other two cleanup sites — kill the Claude SDK
     // subprocess BEFORE dropping the reference. See killCurrentLLM() for full context.
@@ -2655,6 +2654,7 @@ async function main() {
         currentSession.removeAllListeners()
       } catch {}
       currentSession = null
+      activeAgentSession = null
       currentAgent = null
       // Same disconnect-leak fix — kill the previous user's Claude subprocess
       // before binding currentLLM to the new user's session below.
@@ -2814,6 +2814,7 @@ async function main() {
       agent = result.agent
     }
     currentSession = session
+    activeAgentSession = session
     currentAgent = agent  // Store for updateChatCtx() context injection
 
     // ============================================================
@@ -2982,6 +2983,7 @@ async function main() {
           // Clean up dead session — match realtime recovery's thoroughness
           try { sess.removeAllListeners() } catch {}
           currentSession = null
+          activeAgentSession = null
           currentAgent = null
 
           // Clear stale state from crashed session
@@ -3039,6 +3041,7 @@ async function main() {
             const newSession = result.session
             const newAgent = result.agent
             currentSession = newSession
+            activeAgentSession = newSession
             currentAgent = newAgent
 
             // Re-wire event listeners on the new session
@@ -3095,6 +3098,7 @@ async function main() {
           // Clean up dead session
           try { sess.removeAllListeners() } catch {}
           currentSession = null
+          activeAgentSession = null
           currentAgent = null
 
           // Clear voice queue — stale injections from the crashed session
@@ -3114,6 +3118,7 @@ async function main() {
             const newSession = result.session
             const newAgent = result.agent
             currentSession = newSession
+            activeAgentSession = newSession
             currentAgent = newAgent
 
             // Re-wire event listeners on the new session
@@ -3319,6 +3324,7 @@ async function main() {
     if (currentSession) {
       const sessionToClose = currentSession
       currentSession = null
+      activeAgentSession = null
       // Track async close so new connections can wait for byte stream handler to be released
       pendingSessionClose = (async () => {
         try { await sessionToClose.close() } catch {}
@@ -3335,10 +3341,6 @@ async function main() {
     clearPipelineFastBrainSession()
 
     // Auto-leave any active meeting bot when user disconnects from the room
-    if (activeMeetingPoller) {
-      activeMeetingPoller.stop()
-      activeMeetingPoller = null
-    }
     if (activeMeetingBotId) {
       const recallDisconnect = getRecallClient()
       if (recallDisconnect) {
@@ -3915,61 +3917,58 @@ async function main() {
                 (process.env.FLY_APP_NAME
                   ? `https://${process.env.FLY_APP_NAME}.fly.dev`
                   : `http://localhost:${apiPort}`)
-              // Polling architecture (post-2026-05-22): the bot joins by name
-              // only — no output_media webpage, no LiveKit republish, no audio
-              // pipeline at all. Recall captures the meeting audio internally
-              // and we pull the transcript via its REST API every ~30s.
+              // Try to mint a LiveKit bot token + construct the frontend-hosted
+              // meeting-bot page URL. The bot page joins the same LiveKit room
+              // as this agent so meeting audio flows through LiveKit directly
+              // (no agent-side WebSocket+WAV pipe). Falls back to the legacy
+              // /meeting-output webpage if no frontend URL is resolvable, so
+              // the old code path keeps working during the migration window.
+              //
+              // Frontend URL resolution (in priority order):
+              //   1. data.frontendBase — the public URL the user's browser is on,
+              //      passed through the join_meeting data channel message. Works
+              //      automatically for localhost dev + production without any
+              //      env var.
+              //   2. OSBORN_FRONTEND_URL — existing convention from sprites.ts
+              //      (frontend/src/lib/sprites.ts:241) that injects the public
+              //      frontend URL into sandbox env vars. Defense in depth.
+              //
+              // Auth: the endpoint uses LiveKit room-presence as the auth check
+              // — no shared secret needed. The agent must already be in the
+              // requested room (which it is by this point) for the mint to
+              // succeed.
+              let outputPageUrl: string | undefined
+              const frontendUrl = (data.frontendBase as string)
+                || process.env.OSBORN_FRONTEND_URL
+              if (frontendUrl) {
+                try {
+                  const botLkId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                  const tokenRes = await fetch(`${frontendUrl}/api/meeting-bot-token`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ botId: botLkId, roomName }),
+                  })
+                  if (tokenRes.ok) {
+                    const { token, url } = await tokenRes.json() as { token: string; url: string }
+                    const params = new URLSearchParams({ token, url, room: roomName, botId: botLkId })
+                    outputPageUrl = `${frontendUrl}/meeting-bot?${params.toString()}`
+                    console.log(`🎫 Meeting-bot token minted for room=${roomName} bot=${botLkId}`)
+                  } else {
+                    const errText = await tokenRes.text().catch(() => '')
+                    console.warn(`⚠️ meeting-bot-token mint failed (HTTP ${tokenRes.status}: ${errText.substring(0, 120)}) — falling back to legacy /meeting-output path`)
+                  }
+                } catch (mintErr) {
+                  console.warn(`⚠️ meeting-bot-token mint threw — falling back: ${(mintErr as Error).message}`)
+                }
+              } else {
+                console.log('ℹ️ No frontend URL (data.frontendBase + OSBORN_FRONTEND_URL both empty) — using legacy /meeting-output path')
+              }
               await sendToFrontend({ type: 'meeting_joining', message: 'Osborn is joining your meeting...' })
-              const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase)
+              const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { outputPageUrl })
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
               recallJoin.registerBot(botId, sessionId)
               activeMeetingBotId = botId
               await sendToFrontend({ type: 'meeting_joined', botId, message: 'Osborn has joined the meeting' })
-
-              // System injection so the LLM knows it's in a meeting and which
-              // skill to apply. The meetings skill (agent/.claude/skills/meetings/SKILL.md)
-              // teaches the agent: don't speak in response to [MEETING — *]:
-              // messages, keep meeting-todos.md updated in the workspace, etc.
-              if (currentLLM) {
-                try {
-                  const sysCtx = new llm.ChatContext()
-                  sysCtx.addMessage({
-                    role: 'user',
-                    content: `[SYSTEM] You are now in a meeting (Recall bot ID: ${botId}, URL: ${meetingUrl}). Transcript chunks will arrive every ~30 seconds tagged \`[MEETING — ${botId}]:\`. Follow the meetings skill: do NOT speak in response (no TTS output), instead maintain meeting-todos.md in the session workspace, optionally trigger background research silently. The voice-native user can still interact normally — only the meeting-tagged messages are the silent-observer path. Acknowledge by writing the initial meeting-todos.md skeleton.`,
-                  })
-                  currentLLM.chat({ chatCtx: sysCtx })
-                  console.log('📓 Meeting system injection sent to LLM')
-                } catch (sysErr) {
-                  console.warn('⚠️ Meeting system injection failed:', (sysErr as Error).message)
-                }
-              }
-
-              // Start polling the transcript every 30s. Each batch of new turns
-              // is pushed to currentLLM.chat() tagged [MEETING — botId]: so the
-              // skill kicks in. Poller dedups via first-word timestamp cursor.
-              if (activeMeetingPoller) {
-                activeMeetingPoller.stop()
-                activeMeetingPoller = null
-              }
-              activeMeetingPoller = new MeetingTranscriptPoller({
-                botId,
-                recall: recallJoin,
-                onTurns: async ({ formatted }) => {
-                  if (!currentLLM) {
-                    console.warn('📓 Meeting transcript arrived but currentLLM is null — dropping')
-                    return
-                  }
-                  const tagged = `[MEETING — ${botId}]:\n${formatted}`
-                  try {
-                    const turnCtx = new llm.ChatContext()
-                    turnCtx.addMessage({ role: 'user', content: tagged })
-                    currentLLM.chat({ chatCtx: turnCtx })
-                  } catch (err) {
-                    console.warn(`⚠️ Failed to forward meeting transcript to LLM: ${(err as Error).message}`)
-                  }
-                },
-              })
-              activeMeetingPoller.start()
             } catch (err: any) {
               console.error('❌ Recall.ai join error:', err)
               await sendToFrontend({ type: 'meeting_error', message: err.message })
@@ -3982,12 +3981,6 @@ async function main() {
         const recallLeave = getRecallClient()
         if (recallLeave && botId) {
           try {
-            // Stop the transcript poller FIRST so no more transcript chunks get
-            // forwarded to the LLM during the leave.
-            if (activeMeetingPoller) {
-              activeMeetingPoller.stop()
-              activeMeetingPoller = null
-            }
             await recallLeave.leaveMeeting(botId)
             activeMeetingBotId = null
             await sendToFrontend({ type: 'meeting_left', botId })

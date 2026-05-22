@@ -1349,6 +1349,12 @@ function VoiceRoomInner({
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
   const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
   const [meetingError, setMeetingError] = useState<string | null>(null)
+  // Meeting TODOs panel — fed by the agent writing meeting-todos.md in the
+  // workspace. `research_artifact_updated` already fires automatically when
+  // any file under /osb/ is written, and `get_research_artifact` returns the
+  // content. We just slice the `notes` file matching name `meeting-todos.md`.
+  const [meetingTodosContent, setMeetingTodosContent] = useState<string | null>(null)
+  const [meetingTodosUpdatedAt, setMeetingTodosUpdatedAt] = useState<number | null>(null)
   // Compaction status indicator — full lifecycle visualization
   // Compaction is a ~1-3 minute server-side process. Earlier UX used a tiny pill
   // that animated only for the brief moment between started/complete; users
@@ -1871,6 +1877,13 @@ function VoiceRoomInner({
               }
             : f
         ))
+        // Surface meeting-todos.md content into the dedicated meeting panel.
+        // The agent writes/edits this file repeatedly while in a meeting, so
+        // every research_artifact_content for it should keep the panel fresh.
+        if (data.fileName === 'meeting-todos.md' && typeof data.content === 'string') {
+          setMeetingTodosContent(data.content)
+          setMeetingTodosUpdatedAt(Date.now())
+        }
       } else if (data.type === 'session_artifacts') {
         // Bulk load existing session artifacts on resume/switch
         console.log('📁 Session artifacts received:', data.artifacts?.length || 0)
@@ -1990,6 +2003,8 @@ function VoiceRoomInner({
         console.log('🎥 Meeting: joining...')
         setMeetingStatus('joining')
         setMeetingError(null)
+        setMeetingTodosContent(null)
+        setMeetingTodosUpdatedAt(null)
       } else if (data.type === 'meeting_joined') {
         console.log('🎥 Meeting: joined, botId:', data.botId)
         setMeetingBotId(data.botId)
@@ -1998,6 +2013,8 @@ function VoiceRoomInner({
         console.log('🎥 Meeting: left')
         setMeetingBotId(null)
         setMeetingStatus('idle')
+        // Keep meetingTodosContent visible after leave — user may want to
+        // review the final TODO list. Cleared on next join.
       } else if (data.type === 'meeting_error') {
         console.log('❌ Meeting error:', data.message)
         setMeetingError(data.message)
@@ -2243,11 +2260,6 @@ function VoiceRoomInner({
       type: 'join_meeting',
       url: meetingUrl,
       webhookBase: agentUrl,
-      // Pass the public frontend origin so the agent can construct the
-      // meeting-bot page URL (`<frontendBase>/meeting-bot?...`). Works for
-      // localhost dev and production without an env var on the agent. Falls
-      // back to OSBORN_FRONTEND_URL env if not supplied.
-      frontendBase: typeof window !== 'undefined' ? window.location.origin : undefined,
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, agentUrl])
@@ -2917,6 +2929,38 @@ function VoiceRoomInner({
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Meeting TODO panel — visible whenever there's meeting-todos.md
+            content. Shows a scannable view of the agent's running notes from
+            the meeting. Stays visible after leaving the meeting so the user
+            can review; cleared on the next meeting join. */}
+        {(meetingStatus === 'joined' || meetingTodosContent) && (
+          <div className="px-3 sm:px-4 py-2.5 border-b bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-blue-500/10 border-blue-500/30">
+            <div className="max-w-3xl mx-auto">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-blue-300 text-sm font-semibold flex items-center gap-1.5">
+                  <svg className={`w-3.5 h-3.5 ${meetingStatus === 'joined' ? 'text-blue-400 animate-pulse' : 'text-blue-400/60'}`} fill="currentColor" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="6" />
+                  </svg>
+                  Meeting notes
+                </span>
+                {meetingStatus === 'joined' && <span className="text-[10px] text-blue-400/70">listening · poll every 30s</span>}
+                {meetingTodosUpdatedAt && (
+                  <span className="text-[10px] text-gray-500 ml-auto">updated {Math.floor((Date.now() - meetingTodosUpdatedAt) / 1000)}s ago</span>
+                )}
+              </div>
+              {meetingTodosContent ? (
+                <div className="text-xs text-gray-300 whitespace-pre-wrap max-h-48 overflow-y-auto font-mono leading-relaxed">
+                  {meetingTodosContent}
+                </div>
+              ) : (
+                <div className="text-xs text-gray-500 italic">
+                  Waiting for the first transcript chunk…
+                </div>
+              )}
             </div>
           </div>
         )}

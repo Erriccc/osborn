@@ -9,6 +9,27 @@ export interface RecallBot {
   status: string
 }
 
+/**
+ * One transcript turn = one speaker's continuous utterance.
+ * Shape returned by GET /api/v1/bot/{bot_id}/transcript.
+ *
+ * Per Recall docs each turn contains:
+ *   - speaker: participant name (or 'Unknown')
+ *   - words: array of { text, start_timestamp.relative, end_timestamp.relative }
+ *   - The `start_timestamp.relative` (seconds since recording start) on the
+ *     FIRST word is the turn's start; we use this as the dedup cursor.
+ */
+export interface TranscriptTurn {
+  speaker?: string
+  participant?: { id?: number; name?: string; is_host?: boolean }
+  words: Array<{
+    text: string
+    start_timestamp?: { relative?: number; absolute?: string }
+    end_timestamp?: { relative?: number; absolute?: string }
+  }>
+  language?: string
+}
+
 // Webhook payload shape per Recall.ai docs:
 // https://docs.recall.ai/docs/real-time-transcription
 // event: "transcript.data" (final) | "transcript.partial_data" (interim)
@@ -61,40 +82,22 @@ export class RecallClient extends EventEmitter {
    */
   async joinMeeting(
     meetingUrl: string,
-    webhookBaseUrl: string,
-    opts?: { outputPageUrl?: string; botName?: string },
+    _webhookBaseUrl: string,
+    opts?: { botName?: string },
   ): Promise<string> {
     const botName = opts?.botName ?? 'Osborn'
-    const outputPageUrl = opts?.outputPageUrl ?? `${webhookBaseUrl}/meeting-output`
-    // Authoritative structure per https://docs.recall.ai/reference/bot_create
-    // and https://docs.recall.ai/docs/real-time-transcription:
+    // ARCHITECTURE (post-2026-05-22 polling redesign):
+    //   The bot joins by name only — visible in the meeting participant list as
+    //   "Osborn" but with no audio output and no avatar. We do NOT configure any
+    //   `output_media`, `audio_separate_raw`, or `realtime_endpoints` — instead
+    //   the agent polls Recall's REST transcript API every ~30s
+    //   (see MeetingTranscriptPoller) and feeds new turns into the LLM as
+    //   `[MEETING — <botId>]:` tagged messages. The meetings skill teaches the
+    //   LLM not to respond out loud to those messages, only to take notes.
     //
-    //   recording_config.transcript.provider  — transcription provider config
-    //   recording_config.realtime_endpoints   — webhook/websocket delivery
-    //
-    // IMPORTANT:
-    //   - Field is `realtime_endpoints` (NOT `real_time_endpoints`)
-    //   - `url` and `events` are flat on the endpoint object (NOT nested under `config`)
-    //   - `transcription_options` does NOT exist — use `transcript.provider`
-    //   - Both transcript.provider AND realtime_endpoints must be set, or no events delivered
-    //
-    // ARCHITECTURE (post-2026-05-22 redesign):
-    //   Input (meeting → osborn): Recall's documented WebSocket audio protocol.
-    //     `audio_separate_raw` config + websocket realtime endpoint streams
-    //     per-participant PCM (S16LE 16kHz mono, base64 in JSON) to the agent's
-    //     /meeting-audio-in WS handler. Bot's own audio is excluded by default
-    //     → zero possibility of feedback loop, no echo cancellation needed.
-    //   Output (osborn → meeting): webpage output_media (LiveKit-on-page). Bot
-    //     page subscribes to osborn's LiveKit audio track and plays it via
-    //     track.attach(); Recall captures the page's audio output and injects
-    //     into the meeting.
-    //   Webhook transcripts (transcript.data): retained as a SECONDARY signal —
-    //     the agent index.ts handler for this event currently logs but does NOT
-    //     forward to the LLM (intentionally disabled). The Deepgram WS path
-    //     above is the LLM input.
-    const httpBase = webhookBaseUrl.replace(/\/$/, '')
-    const wsBase = httpBase.replace(/^https?:\/\//, m => m === 'https://' ? 'wss://' : 'ws://')
-
+    //   We DO keep `recording_config.transcript.provider.recallai_streaming` so
+    //   Recall actually transcribes the meeting — the REST endpoint we poll
+    //   requires this to be configured, otherwise transcripts are empty.
     const res = await fetch(`${RECALL_BASE_URL}/bot`, {
       method: 'POST',
       headers: {
@@ -107,44 +110,10 @@ export class RecallClient extends EventEmitter {
         recording_config: {
           transcript: {
             provider: {
-              // recallai_streaming is built-in — no external API key needed,
-              // low-latency, works across all meeting platforms.
-              // Kept for the secondary webhook signal (display / future use);
-              // LLM input now comes from the Deepgram WS pipe below.
               recallai_streaming: {
                 mode: 'prioritize_low_latency',
                 language_code: 'en',
               },
-            },
-          },
-          // Per-participant raw PCM audio stream. Bot's own audio is excluded
-          // (we don't set include_bot_in_recording.audio:true).
-          audio_separate_raw: {},
-          realtime_endpoints: [
-            {
-              // Transcript webhook (secondary signal; LLM forwarding disabled).
-              type: 'webhook',
-              url: `${httpBase}/webhook/recall`,
-              events: ['transcript.data'],
-            },
-            {
-              // Per-participant PCM audio → agent's Deepgram STT pipe.
-              type: 'websocket',
-              url: `${wsBase}/meeting-audio-in`,
-              events: ['audio_separate_raw.data'],
-            },
-          ],
-        },
-        output_media: {
-          camera: {
-            // `kind` (not `type`) — confirmed from prior debugging.
-            // The page Recall renders connects to LiveKit and plays osborn's
-            // TTS audio via track.attach(); Recall captures the page audio.
-            // The page does NOT call getUserMedia anymore — input now comes
-            // from the audio_separate_raw WebSocket above.
-            kind: 'webpage',
-            config: {
-              url: outputPageUrl,
             },
           },
         },
@@ -157,8 +126,37 @@ export class RecallClient extends EventEmitter {
     }
 
     const bot = (await res.json()) as RecallBot
-    console.log(`🤖 Recall.ai bot joined meeting: ${bot.id} (output page: ${outputPageUrl})`)
+    console.log(`🤖 Recall.ai bot joined meeting: ${bot.id} (polling-only, no audio pipeline)`)
     return bot.id
+  }
+
+  /**
+   * Fetch the bot's current transcript. Returns an array of "transcript turns"
+   * (each turn = one speaker's utterance) sorted by start time. Use the bot's
+   * `recordings[0].id` from getBotStatus / bot record to locate the recording,
+   * then list its transcripts.
+   *
+   * Per Recall docs:
+   *   GET /api/v1/bot/{bot_id} → bot record incl. `recordings: [...]`
+   *   GET /api/v1/transcript/{transcript_id} → transcript with download_url
+   *   Download the transcript JSON from download_url to get the actual content.
+   *
+   * For the polling use case (called every ~30s), we use the simpler combined
+   * endpoint: `GET /api/v1/bot/{bot_id}/transcript` which Recall exposes as a
+   * convenience and returns the full transcript so far in one call. The caller
+   * is responsible for de-duping (keeping a since-cursor) so the LLM only sees
+   * new turns.
+   */
+  async getTranscript(botId: string): Promise<TranscriptTurn[]> {
+    const res = await fetch(`${RECALL_BASE_URL}/bot/${botId}/transcript`, {
+      headers: { 'Authorization': `Token ${this.#apiKey}` },
+    })
+    if (!res.ok) {
+      const err = await res.text().catch(() => '')
+      throw new Error(`Recall.ai transcript fetch failed: ${res.status} ${err.substring(0, 200)}`)
+    }
+    const turns = await res.json() as TranscriptTurn[]
+    return Array.isArray(turns) ? turns : []
   }
 
   async leaveMeeting(botId: string): Promise<void> {
