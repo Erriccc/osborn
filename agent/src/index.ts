@@ -2652,45 +2652,16 @@ async function main() {
     localParticipant = room.localParticipant
   })
 
-  // EARLIEST possible "user is speaking" signal in our setup. Driven by LiveKit's
-  // server-side audio-level VAD on the participant's WebRTC track — fires ~50-100ms
-  // after mic onset, independent of Deepgram STT or any local VAD (we don't run one).
-  //
-  // Flow: user starts talking → ActiveSpeakersChanged includes a RemoteParticipant →
-  // if agent is currently speaking → interrupt the SpeechHandle to flush TTS playback.
-  // The existing handleSpeechDone callback (around line 1320) captures the spoken-text
-  // + JSONL context into lastInterruption; PipelineDirectLLM consumes it on the next
-  // chat() call to enrich the user's message with [INTERRUPTED] context — so the
-  // post-interrupt note flow is preserved even though we're cutting TTS earlier.
-  //
-  // Filter is `instanceof RemoteParticipant`. The agent IS the LocalParticipant in this
-  // room, and when its TTS plays it appears in the active-speakers list too. An earlier
-  // attempt that compared `s.identity !== room.localParticipant?.identity` failed because
-  // localParticipant.identity could be undefined at event-fire time, letting the agent's
-  // own speech trigger a self-interrupt. The type check is bulletproof.
-  //
-  // Realtime mode skipped — the SDK handles interruption internally there, and manual
-  // interrupt for Gemini realtime crashes its state machine (code 1008, memory v0.4.5).
-  let lastActiveSpeakerInterruptAt = 0
-  room.on(RoomEvent.ActiveSpeakersChanged, (speakers: any[]) => {
-    if (!Array.isArray(speakers) || speakers.length === 0) return
-    const remoteSpeakers = speakers.filter((s: any) => s instanceof RemoteParticipant)
-    if (remoteSpeakers.length === 0) return
-    if (currentVoiceMode === 'realtime') return
-    if (agentState !== 'speaking') return
-    const now = Date.now()
-    const debounced = now - lastActiveSpeakerInterruptAt < 1000
-    lastActiveSpeakerInterruptAt = now
-    try {
-      if (!debounced) {
-        const ids = remoteSpeakers.map((s: any) => s.identity).join(',')
-        console.log(`🎤 ActiveSpeakersChanged: remote speakers [${ids}] + agent speaking → interrupting TTS`)
-      }
-      currentSession?.interrupt()
-    } catch (err) {
-      if (!debounced) console.warn('⚠️ active-speaker interrupt failed:', err instanceof Error ? err.message : err)
-    }
-  })
+  // NOTE: previously this section also had a RoomEvent.ActiveSpeakersChanged
+  // handler that interrupted TTS on any sustained audio activity (~50ms after
+  // mic onset). That fired too eagerly — coughs, paper rustles, the agent's
+  // own TTS bleeding through the mic, and other non-speech sounds tripped it
+  // ~10-15% of the time, leaving the agent silent with no recovery path
+  // (because no STT transcript would follow). Dropped in favor of the
+  // user_state_changed → 'speaking' handler below, which is fed by Deepgram
+  // Flux STT's speech-vs-noise classification: slower (~100-300ms) but
+  // confidence-aware. The latency tradeoff is worth eliminating the false
+  // interrupts at the root.
 
   room.on(RoomEvent.Disconnected, () => {
     console.log('👋 Disconnected from room')
@@ -2983,12 +2954,13 @@ async function main() {
       })
 
       // User state tracking — prevents queue from colliding with server-side VAD.
-      // Also a secondary interrupt trigger: when Deepgram STT classifies speech onset
-      // it propagates here via agent_activity.onStartOfSpeech → _updateUserState('speaking').
-      // Fires later than ActiveSpeakersChanged (Deepgram has ~100-300ms classification
-      // latency vs LiveKit's ~50-100ms audio-level) but acts as a redundant fallback in
-      // case the room-level event drops. interrupt() is idempotent on an already-
-      // interrupted SpeechHandle so calling both paths is harmless.
+      // Also the PRIMARY interrupt trigger now that the over-eager ActiveSpeakersChanged
+      // path is gone. Fires when Deepgram Flux STT classifies frames as speech (not noise)
+      // and propagates via agent_activity.onStartOfSpeech → _updateUserState('speaking').
+      // Latency ~100-300ms after mic onset, which is the cost of confidence-aware
+      // detection — vs the prior ActiveSpeakers handler that fired at ~50ms on any audio
+      // activity and tripped ~10-15% false interrupts on coughs, paper rustle, agent's
+      // own TTS bleeding through the mic, etc.
       sess.on('user_state_changed' as any, (ev: any) => {
         const prev = userState
         userState = ev.newState
@@ -2996,7 +2968,7 @@ async function main() {
 
         if (ev.newState === 'speaking' && agentState === 'speaking' && sessionVoiceMode !== 'realtime') {
           try {
-            console.log('🎤 user_state_changed=speaking + agent speaking → interrupting TTS (fallback)')
+            console.log('🎤 user_state_changed=speaking + agent speaking → interrupting TTS')
             currentSession?.interrupt()
           } catch (err) {
             console.warn('⚠️ user-state interrupt failed:', err instanceof Error ? err.message : err)
