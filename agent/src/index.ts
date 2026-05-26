@@ -165,6 +165,31 @@ process.on('uncaughtException', (error) => {
 // Module-level room code so the HTTP server can expose it via GET /room-code
 let currentRoomCode: string | null = null
 
+// Module-level LiveKit connection state. Shared between main() (which runs the
+// connect-with-retry loop) and the /health handler in startApiServer (which
+// reports it to the frontend so the user sees a meaningful error instead of a
+// dashboard redirect when LiveKit is unreachable / out of quota / etc).
+//
+// We deliberately do NOT 503 /health on connect failure — Fly's machine
+// health-check uses /health, and returning non-2xx triggers a restart loop
+// which (a) burns the same failing LiveKit calls every 30s and (b) gets the
+// machine killed after 3 failed restarts. By staying 200 OK and surfacing the
+// status as a field, we keep the container alive long enough for LiveKit to
+// recover (auto-retry) or for the user to read the error and upgrade quota.
+const livekitState: {
+  status: 'connecting' | 'connected' | 'failed' | 'retrying'
+  error: string | null
+  errorCode: string | null  // best-effort categorization ('quota_exceeded', 'auth', 'network')
+  lastAttemptAt: number | null
+  attemptCount: number
+} = {
+  status: 'connecting',
+  error: null,
+  errorCode: null,
+  lastAttemptAt: null,
+  attemptCount: 0,
+}
+
 function startApiServer(workingDir: string, port: number): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // CORS headers for cloud frontend
@@ -239,7 +264,22 @@ function startApiServer(workingDir: string, port: number): void {
       } catch { /* version optional */ }
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ status: 'ok', workingDir, version }))
+      res.end(JSON.stringify({
+        status: 'ok',
+        workingDir,
+        version,
+        // LiveKit subsystem status — frontend can use this to surface a real
+        // error instead of treating the sandbox as totally broken. The HTTP
+        // status code stays 200 so Fly health-check stays green and the
+        // container isn't restart-looped while LiveKit is unreachable.
+        livekit: {
+          status: livekitState.status,
+          error: livekitState.error,
+          errorCode: livekitState.errorCode,
+          attemptCount: livekitState.attemptCount,
+          lastAttemptAt: livekitState.lastAttemptAt,
+        },
+      }))
       return
     }
 
@@ -4072,25 +4112,86 @@ async function main() {
   // Connect to Room
   // ============================================================
 
-  try {
-    await room.connect(livekitUrl, jwt, {
-      autoSubscribe: true,
-      dynacast: true,
-    })
+  // Connect to LiveKit with retry-on-failure.
+  //
+  // Earlier behavior: a single attempt followed by `process.exit(1)` on error.
+  // Combined with Fly's restart policy this produced a tight restart loop that
+  // (a) hit the same 429 / auth error every ~30s, (b) burned the LiveKit
+  // quota's retry budget, and (c) hit Fly's max-restart-count (3) and killed
+  // the machine — at which point the frontend's /api/sandbox probe saw the
+  // sandbox as failed and bounced the user back to the dashboard with no
+  // useful error.
+  //
+  // New behavior: bounded-backoff retry, infinite attempts. The API server
+  // stays up the whole time serving /health (which surfaces the LiveKit error
+  // as a field, NOT as an HTTP failure — see the /health handler comment).
+  // When the underlying issue is resolved (quota reset, key fixed, LiveKit
+  // service back), the next retry succeeds and the agent picks up where it
+  // left off without anyone needing to manually restart.
+  //
+  // Backoff: 5s → 10s → 20s → 40s → 60s (capped). Resets to 5s after each
+  // successful connect (so a single transient hiccup doesn't disable fast
+  // recovery on the next disconnect).
+  const connectWithRetry = async (): Promise<void> => {
+    const backoffSchedule = [5_000, 10_000, 20_000, 40_000, 60_000]
+    let backoffIdx = 0
+    while (true) {
+      livekitState.status = livekitState.attemptCount === 0 ? 'connecting' : 'retrying'
+      livekitState.lastAttemptAt = Date.now()
+      livekitState.attemptCount += 1
+      try {
+        await room.connect(livekitUrl, jwt, {
+          autoSubscribe: true,
+          dynacast: true,
+        })
+        localParticipant = room.localParticipant
+        livekitState.status = 'connected'
+        livekitState.error = null
+        livekitState.errorCode = null
+        backoffIdx = 0
+        console.log('✅ Connected to room:', roomName)
+        console.log('\n⏳ Waiting for user to connect...')
+        console.log(`   Room: ${roomCode}\n`)
+        return
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        // Categorize the error so the frontend can show specific guidance.
+        // Substring matching on the message because LiveKit's rtc-node SDK
+        // wraps the underlying HTTP status in a generic ConnectError.
+        let errorCode: string
+        if (/429|connection minutes limit/i.test(msg)) errorCode = 'quota_exceeded'
+        else if (/401|403|unauthorized|invalid/i.test(msg)) errorCode = 'auth'
+        else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(msg)) errorCode = 'network'
+        else errorCode = 'unknown'
 
-    localParticipant = room.localParticipant
-    console.log('✅ Connected to room:', roomName)
+        livekitState.status = 'failed'
+        livekitState.error = msg
+        livekitState.errorCode = errorCode
 
-    console.log('\n⏳ Waiting for user to connect...')
-    console.log(`   Room: ${roomCode}\n`)
-
-    // Keep process alive
-    await new Promise(() => {})
-
-  } catch (err) {
-    console.error('❌ Failed to connect:', err)
-    process.exit(1)
+        const waitMs = backoffSchedule[Math.min(backoffIdx, backoffSchedule.length - 1)]
+        backoffIdx += 1
+        console.error(`❌ LiveKit connect failed (${errorCode}, attempt ${livekitState.attemptCount}): ${msg.substring(0, 200)}`)
+        console.error(`   Retrying in ${waitMs / 1000}s — process staying alive; /health remains 200 with livekit.status='failed'`)
+        await new Promise(r => setTimeout(r, waitMs))
+        // loop — try again
+      }
+    }
   }
+
+  // Fire and forget; the retry loop keeps the process alive on its own (so
+  // we don't need the explicit `new Promise(() => {})` keepalive anymore).
+  // Errors that escape the retry loop should never happen, but if they do,
+  // log them rather than crash.
+  connectWithRetry().catch(err => {
+    console.error('❌ Unrecoverable error in LiveKit retry loop (should not happen):', err)
+    livekitState.status = 'failed'
+    livekitState.error = err instanceof Error ? err.message : String(err)
+    livekitState.errorCode = 'unrecoverable'
+  })
+
+  // Keep main() alive forever — without this the await chain ends and Node
+  // exits 0, which Fly treats as a clean shutdown.
+  await new Promise(() => {})
 }
 
 // Run
