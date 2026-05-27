@@ -750,6 +750,29 @@ export class ClaudeLLM extends llm.LLM {
           }
         }
 
+        // Compaction signals observed on the SDK iterator (parallel to hook path).
+        // The SDK emits TWO message subtypes during compaction independent of
+        // hook registration:
+        //   - type:'system', subtype:'compact_boundary'  (with compact_metadata)
+        //   - type:'system', subtype:'status', status:'compacting' | null
+        // We DON'T route these through onCompactionEvent (to avoid duplicate
+        // chat bubbles — hooks already do that), but we LOG them. If the hook
+        // path ever silently fails, these logs will be the only signal that
+        // compaction actually happened — making the failure obvious in fly logs.
+        if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
+          const meta = msg.compact_metadata || {}
+          console.log(`[COMPACT-SDK-ITER] compact_boundary observed: trigger=${meta.trigger ?? '?'} pre_tokens=${meta.pre_tokens ?? '?'} preserved=${meta.preserved_segment ? 'yes' : 'no'}`)
+          // Fire onCompactionEvent as a FALLBACK if hooks didn't fire — we
+          // detect this by checking whether we've seen 'compaction_started'
+          // recently. For now, log only; can wire as fallback if hooks fail.
+        }
+        if (msg.type === 'system' && msg.subtype === 'status') {
+          const status = msg.status
+          if (status === 'compacting' || status === null) {
+            console.log(`[COMPACT-SDK-ITER] status change: ${status === 'compacting' ? 'ENTERED compacting' : 'EXITED compacting'} session=${msg.session_id?.substring(0,8) ?? '?'}`)
+          }
+        }
+
         // Checkpoint capture
         if (msg.type === 'user' && msg.uuid) {
           callbacks.onCheckpoint(msg.uuid)

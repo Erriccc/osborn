@@ -54,8 +54,36 @@ EXPOSE 8741
 
 # Entrypoint: credential persistence + onboarding suppression + start
 COPY <<'ENTRYPOINT' /entrypoint.sh
-#!/bin/sh
+#!/bin/bash
 set -e
+
+# Persistent log capture for post-disconnect upload to Supabase Storage.
+# Fly Machines has NO REST endpoint for fetching machine logs (the previous
+# implementation hit /v1/apps/{app}/machines/{id}/logs which returns 404 → that
+# 404 error string was getting uploaded as "the log" for every session).
+# Volume-backed /workspace/osborn.log survives reboots and is readable via
+# the documented /exec endpoint (`tail -n 500 /workspace/osborn.log`).
+#
+# We use process substitution to tee output to BOTH the log file AND the
+# original stdout (so `flyctl logs` keeps working for ad-hoc debugging).
+# Requires bash, hence the #!/bin/bash shebang.
+#
+# Size cap: if log grows past 100 MB, keep only the last 50 MB. Prevents
+# disk-fill from long-running retry loops (we saw 17h × ~1 line/min = ~1000
+# lines today, but anything connecting to LiveKit produces orders of
+# magnitude more output).
+LOGFILE=/workspace/osborn.log
+mkdir -p /workspace
+if [ -f "$LOGFILE" ] && [ "$(stat -c%s "$LOGFILE" 2>/dev/null || echo 0)" -gt 104857600 ]; then
+  echo "[sandbox] Rotating /workspace/osborn.log (>100MB, keeping last 50MB)"
+  tail -c 52428800 "$LOGFILE" > "$LOGFILE.tmp" && mv "$LOGFILE.tmp" "$LOGFILE"
+fi
+echo "[sandbox] === boot at $(date -Iseconds) ===" >> "$LOGFILE"
+# Redirect all subsequent stdout+stderr from this script (and the eventual
+# `exec osborn`) to both the original fd (Fly stdout collector) AND the
+# append-only log file. tee runs as a backgrounded subshell that survives
+# the final exec replacement.
+exec > >(tee -a "$LOGFILE") 2>&1
 
 # Claude credential persistence (volume at /workspace)
 mkdir -p /workspace/.claude

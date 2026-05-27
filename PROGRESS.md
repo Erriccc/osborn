@@ -1,3 +1,16 @@
+## May 2026 — Meeting Polling, LiveKit Retry Resilience, Sandbox Log Capture
+
+- **Meeting bot rewrite** (`v0.9.44`): replaced LiveKit/WebSocket audio republish with REST polling. New `MeetingTranscriptPoller` (`agent/src/meeting-transcript-poller.ts`) pulls Recall transcripts every 30s and pushes new turns to the LLM as `[MEETING — botId]:` tagged messages. New `meetings` skill (`agent/.claude/skills/meetings/SKILL.md`) teaches the agent to maintain `meeting-todos.md` silently and to pull on-demand via Bash + curl. Frontend meeting-notes panel reads the file via the existing `research_artifact_updated` protocol. Removed: `/meeting-audio-in` WS, `/meeting-output` HTTP route, frontend `/meeting-bot/page.tsx`, `/api/meeting-bot-token`, B2 setParticipant switching, `meeting-output.html`. ~250 lines net deletion in `agent/src/index.ts`.
+- **LiveKit `room.connect` resilience** (`v0.9.45`): wrapped in bounded-backoff retry (`5s → 10s → 20s → 40s → 60s cap`, infinite). No more `process.exit(1)` on transient LiveKit failures, no more Fly restart loops on quota / auth / network errors. `/health` always returns 200 with a new `livekit:{status, error, errorCode, attemptCount, lastAttemptAt}` block — frontend can surface real errors instead of bouncing to dashboard. `errorCode` ∈ `quota_exceeded | auth | network | unknown`.
+- **Compaction event bridge fix** (`v0.9.44`): pipeline mode was silently dropping all `PreCompact`/`PostCompact` events because `onCompactionEvent` wasn't passed through `createPipelineDirectLLM(opts)`. Extracted `buildOnCompactionEvent()` helper used by all three session-creation paths. Added redundant SDK iterator listener (`compact_boundary` + `status:'compacting'` messages) verified against the installed SDK's `HOOK_EVENTS` constant. Added `[COMPACT-AGENT-*]` / `[COMPACT-FRONTEND-*]` log markers at every hop so future diagnosis is easy.
+- **Sandbox log capture** (Dockerfile + `frontend/src/lib/machines.ts`): every disconnect-time upload to Supabase Storage was 39 bytes of `Logs API error 404: 404 page not found` because Fly Machines has no REST `/logs` endpoint. Fixed by tee'ing the agent's stdout/stderr to `/workspace/osborn.log` (volume-backed, 100MB cap with 50MB tail rotation) and reading it via the documented `/exec` endpoint with `tail -n 500`. Dockerfile shebang switched to `#!/bin/bash` for process substitution.
+- **Fly Machines update flow fix** (`frontend/src/lib/machines.ts`): `updateOsborn()` was bouncing through `replacing → /wait?state=started 400 → 412 ('machine getting replaced')` on every image swap. New `waitForReplacementComplete()` polls `GET /machines/{id}` until state leaves `replacing`/`creating`, then `startSandbox()` runs safely.
+- **Fleet cleanup**: destroyed legacy `osborn-agent` Fly app (22-day uptime ghost from pre-sprite architecture, pointing at a third LiveKit project, idle but holding secrets).
+
+See [CHANGELOG.md](CHANGELOG.md) "v0.9.43 → v0.9.46" for full detail + reproduction evidence.
+
+---
+
 ## April 2026 — Fly.io Sprites Cloud Sandboxes
 
 - Replaced self-hosted Daytona with Fly.io Sprites for per-user cloud sandboxes
@@ -142,7 +155,7 @@ Session picker scans ALL `~/.claude/projects/*/` folders via `listAllClaudeSessi
 | `codex-llm.ts` / `codex-handler.ts` | Optional `@openai/codex-sdk` LLM wrapper (alternative to Claude) |
 | `bridge-llm.ts` | Factory for Gemini/GPT-4o LiveKit LLMs in pipelined voice configs |
 | `claude-handler.ts` | Standalone Agent SDK handler (predates persistent `ClaudeLLM`) |
-| `meeting-output.html` | Recall.ai bot Output Media webpage |
+| `meeting-transcript-poller.ts` | Recall.ai REST polling (every ~30s) — replaces the old WebSocket-audio meeting pipeline |
 
 ### Frontend (`frontend/src/`)
 

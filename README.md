@@ -19,7 +19,7 @@ Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SD
 - **Pipeline Fast Brain**: Gemini Flash AFC (Automatic Function Calling) observer runs in parallel with Claude. Three tools: `search_session` (ripgrep over the summary index + byte-offset reads), `get_recent`, and `emergency_stop` that aborts and restarts the Claude subprocess on destructive-action user signals.
 - **Summary Index**: Compact line-oriented index over JSONL session files with byte-offset reads (<5ms search). Lazy build + file watcher in pipeline mode.
 - **Ripgrep + BM25 Search**: Bundled `@vscode/ripgrep` binary for fast regex search across JSONL files; in-memory `minisearch` BM25 index over recent session messages.
-- **Meeting Integration**: Recall.ai bot joins Zoom/Google Meet and routes real-time transcripts to Claude as `[Meeting — Speaker]: text`.
+- **Meeting Integration**: Recall.ai bot joins Zoom/Google Meet silently and the agent polls Recall's REST transcript API every 30s, pushing new turns to Claude as `[MEETING — botId]:` tagged messages. The `meetings` skill (`agent/.claude/skills/meetings/SKILL.md`) teaches the agent to maintain a `meeting-todos.md` notes file in the workspace without speaking, plus on-demand transcript pulls via Bash + curl. Frontend renders the notes file live in a dedicated meeting panel. No LiveKit republish, no audio feedback loops. (See CHANGELOG v0.9.43 → v0.9.46 for the migration from the prior WebSocket-audio architecture.)
 - **JSONL Session Access**: 25+ functions in `session-access.ts` for reading FULL untruncated tool results, agent reasoning, and sub-agent transcripts from `~/.claude/projects/`.
 - **Non-Blocking Research**: `executeResearch()` runs background Claude queries; the SDK handles internal queuing. Progress is debounced (8s batch) and contextualized through the fast brain before voice relay.
 - **Parallel Sub-Agents**: Orchestrator spawns concurrent `Task` sub-agents for independent research streams.
@@ -51,7 +51,7 @@ As of April 2026, Sprites (`frontend/src/lib/sprites.ts`) replaces the self-host
 - **Marker-bootstrap install loop avoidance**: Bootstrap writes `/home/sprite/.osborn-installed-version` after a successful install. Subsequent restarts compare WANT vs marker and skip install when they match.
 - **Two-click delete confirmation**: Sprites does NOT soft-delete (probed 6 different undelete endpoint shapes — all 404). Trash icon arms on first click, deletes on second click within 4s. Auto-disarms otherwise.
 - **`fs/write` is asymmetric with container view**: writes via fs API land on the persistent disk and are NOT visible to the running container (overlay layer). Don't use it to "inject" files into a sprite — bake them into the bootstrap or copy them via service exec.
-- **`process.cwd()` is `/home/sprite/workspace`** (per `OSBORN_CWD`). Files shipped with the npm package must resolve via ESM `__dirname`, not cwd. See the `meeting-output.html` handler in `agent/src/index.ts` for the 3-candidate path pattern.
+- **`process.cwd()` is `/home/sprite/workspace`** (per `OSBORN_CWD`). Files shipped with the npm package must resolve via ESM `__dirname`, not cwd (the prior `meeting-output.html` handler, since deleted in v0.9.44 along with the rest of the WebSocket meeting pipeline, used this pattern — see git history if you need a reference).
 
 **Planned**: Pre-warm pool to reduce new-user wait to ~30s. Agent-side LiveKit reconnect watchdog so warm-wake doesn't require a service restart.
 
@@ -217,7 +217,7 @@ osborn/
 │   │   ├── codex-handler.ts            # Standalone Codex handler
 │   │   ├── bridge-llm.ts               # Gemini/GPT-4o LiveKit LLM factory for pipelined configs
 │   │   ├── claude-handler.ts           # Standalone Agent SDK handler (predates ClaudeLLM)
-│   │   └── meeting-output.html         # Recall.ai bot audio output page
+│   │   └── meeting-transcript-poller.ts # Recall.ai REST polling (every ~30s) — replaces the old LiveKit-audio meeting pipeline
 │   └── package.json
 ├── frontend/                           # Next.js 14 web frontend
 │   ├── src/

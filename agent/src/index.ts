@@ -1674,29 +1674,50 @@ async function main() {
   // previously skipped this entirely, so compaction events fired into the void
   // in pipeline mode.
   const buildOnCompactionEvent = () => (event: any) => {
+    // CRITICAL diagnostic — every compaction event MUST appear in the agent
+    // log first. If you don't see [COMPACT-AGENT-RX] for an event type, the
+    // ClaudeLLM hook isn't calling this callback (most likely culprits:
+    // PreCompact/PostCompact hook never registered, or the callback wasn't
+    // passed through createPipelineDirectLLM's opts). If you see RX but no
+    // CHAT-EMIT, the type didn't match the chat-emit branch. If you see both
+    // but the frontend log never shows [COMPACT-FRONTEND], the data channel
+    // dropped the message (room not connected, payload too big, etc.).
+    console.log(`[COMPACT-AGENT-RX] type=${event.type} keys=[${Object.keys(event).filter(k => k !== 'type').join(',')}]`)
     try {
       // Raw event → banner state machine (compaction_started/progress/complete handlers in VoiceRoom.tsx).
       sendToFrontend({ ...event } as any)
+      console.log(`[COMPACT-AGENT-RAW-SENT] type=${event.type}`)
+
       // Inline chat bubble — reuses the existing claude_output path that's already working.
       if (event.type === 'compaction_started') {
         const triggerLabel = event.trigger ? ` (${event.trigger})` : ''
+        const text = `🧠 _Crystallizing session memory…_${triggerLabel}`
         sendToFrontend({
           type: 'claude_output',
-          text: `🧠 _Crystallizing session memory…_${triggerLabel}`,
+          text,
           agentRole: 'direct',
         })
+        console.log(`[COMPACT-AGENT-CHAT-EMIT] started → "${text.substring(0, 60)}"`)
       } else if (event.type === 'compaction_complete') {
         const n = event.skillsWritten ?? 0
         const names = Array.isArray(event.skillNames) && event.skillNames.length > 0
           ? ` — ${event.skillNames.join(', ')}`
           : ''
+        const text = `🧠 Memory crystallized — ${n} skill${n === 1 ? '' : 's'} updated${names}.`
         sendToFrontend({
           type: 'claude_output',
-          text: `🧠 Memory crystallized — ${n} skill${n === 1 ? '' : 's'} updated${names}.`,
+          text,
           agentRole: 'direct',
         })
+        console.log(`[COMPACT-AGENT-CHAT-EMIT] complete → "${text.substring(0, 80)}"`)
+      } else {
+        // progress events don't get a chat bubble (too noisy) — they only feed the banner.
+        // Log at debug level so we can confirm they fired.
+        console.log(`[COMPACT-AGENT-CHAT-SKIP] type=${event.type} (progress events feed the banner only, no inline bubble)`)
       }
-    } catch { /* non-fatal */ }
+    } catch (err) {
+      console.error(`[COMPACT-AGENT-ERROR] ${(err as Error).message}`)
+    }
   }
 
   // Create DIRECT session (STT + Claude Agent SDK + TTS)

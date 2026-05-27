@@ -26,6 +26,99 @@
 
 ## Version History
 
+### v0.9.43 → v0.9.46 (May 22–27, 2026) — Meeting Polling Architecture, LiveKit Retry Resilience, Sandbox Log Capture
+
+Four interrelated changes shipped over this window, plus several diagnostics added. The unifying theme: replace fragile "must-be-running, must-be-connected" code paths with resilient ones that survive transient failures and surface real diagnostic signals.
+
+Agent bumps: `0.9.43 → 0.9.46`. Dockerfile.sandbox: image rebuild required (entrypoint changed).
+
+#### Meeting bot architecture rewrite — LiveKit/WebSocket pipeline replaced with REST polling (agent 0.9.44)
+
+The previous design republished meeting audio through LiveKit (Recall WebSocket → agent → AudioSource → LocalAudioTrack publish into the same room as the user). It worked but produced echo (feedback loop when the meeting-bot page re-played the agent's own re-publish), required a separate frontend `/meeting-bot` page + bot-token mint endpoint, and conflated meeting STT with voice-native STT.
+
+The rewrite is polling-only:
+- **Agent joins meeting via Recall** with no `output_media` and no `realtime_endpoints` — just `recording_config.transcript.provider.recallai_streaming` so Recall transcribes. Visible in the meeting as "Osborn" by name only, silent.
+- **New `MeetingTranscriptPoller`** (`agent/src/meeting-transcript-poller.ts`) — fires every 30s, fetches `GET /api/v1/bot/{bot_id}` from `us-west-2.recall.ai`, walks `recordings[0].media_shortcuts.transcript.data.download_url` (pre-signed S3 URL), downloads the JSON, dedups via first-word `start_timestamp.relative` cursor, pushes new turns to `currentLLM.chat()` as `[MEETING — botId]:\n<Speaker>: text\n...`. Bounded retry-safe; returns `[]` cleanly when `recordings[0]` doesn't exist yet (bot still joining, pre-recording).
+- **New `meetings` skill** (`agent/.claude/skills/meetings/SKILL.md` — 6 kB) teaches the agent two patterns: (1) auto-tagged `[MEETING — *]:` messages → DO NOT speak, maintain `meeting-todos.md` in the session workspace, optionally trigger silent research; (2) explicit user requests ("grab the meeting transcripts", "compile the todos", etc.) → use Bash + curl to pull on demand. The skill embeds the exact 2-step API chain + the critical us-west-2 region (not the SDK default).
+- **Frontend meeting notes panel** in `VoiceRoom.tsx` — surfaces `meeting-todos.md` content automatically via the existing `research_artifact_updated` → `research_artifact_content` protocol when the agent writes the file. Visible while a meeting is joined or any content exists; cleared on next join.
+- **Tear-out** (~250 lines from `agent/src/index.ts`): `/meeting-audio-in` WebSocket handler, `/meeting-output` HTTP route, `meetingOutputWss` / `meetingAudioInWss`, `sendToMeetingOutput` / `synthesizeForMeeting` helpers, `activeAgentSession` / `preMeetingUserIdentity` / `waitForRoomIOAndParticipant` (B2 setParticipant switching). Frontend `/meeting-bot/page.tsx` + `/api/meeting-bot-token/route.ts` deleted. `agent/src/meeting-output.html` deleted. `package.json` build script no longer copies the HTML to `dist/`.
+
+Verified end-to-end against a real meeting: agent joined, wrote initial skeleton to `meeting-todos.md`, frontend panel rendered live. Transcript fetch verified by curl from inside the sprite — `https://us-west-2.recall.ai/api/v1/bot/{id}` returns the recording chain; the documented `/bot/{id}/transcript` convenience endpoint does NOT exist (404), so `getTranscript()` in `recall-client.ts` walks the documented `recordings[0].media_shortcuts.transcript.data.download_url` path.
+
+**Files**: `agent/src/index.ts` (delete LiveKit pipeline + add join handler poller wire-up + system injection on bot join), `agent/src/meeting-transcript-poller.ts` (new), `agent/src/recall-client.ts` (drop `audio_separate_raw` + `output_media`, add `getTranscript()` that walks the right chain), `agent/.claude/skills/meetings/SKILL.md` (new), `frontend/src/components/VoiceRoom.tsx` (panel + state + reset).
+
+#### LiveKit `room.connect` retry resilience — no more restart loops (agent 0.9.45)
+
+A LiveKit 429 ("connection minutes limit exceeded") was crashing the agent with `process.exit(1)`. Fly's machine restart policy retried 3 times, then killed the machine. Frontend `/api/sandbox` saw the machine as failed, bounced the user to dashboard with no useful error. Worse: every failed restart kicked off a fresh `room.connect` attempt — burning more failed-but-not-counted requests at LiveKit.
+
+- **No more `process.exit(1)` on connect failure** — `room.connect` is now wrapped in bounded-backoff retry: `5s → 10s → 20s → 40s → 60s (cap)`, infinite attempts. When LiveKit recovers (quota reset, key fixed, outage ends), the next retry succeeds and the agent picks up where it left off without a manual restart.
+- **`/health` always returns 200** — Fly's machine health-check stays green so the container isn't restart-looped while LiveKit is unreachable. The HTTP path keeps working (`/sessions`, `/events`, future endpoints).
+- **`/health` JSON now includes a `livekit` block**: `{ status, error, errorCode, attemptCount, lastAttemptAt }`. `errorCode` categorized as `quota_exceeded` / `auth` / `network` / `unknown` by substring-matching the error message. Frontend can surface a real error message to the user instead of a generic "stuck on connecting".
+- **Module-level `livekitState`** at the top of `agent/src/index.ts` is the source of truth; both `main()`'s retry loop and `startApiServer`'s `/health` handler read it.
+
+Verified in production: confirmed via fly logs that 0.9.45+ machines hit the retry loop on persistent 401 ("invalid token") errors and stayed alive for 17.8 hours, racking up 1074 retry attempts without crashing. Before this fix the same failure would have killed the machine within 90 seconds.
+
+**Files**: `agent/src/index.ts` (module-level state, `connectWithRetry()`, /health response shape).
+
+**Lesson**: every long-running service that depends on an external connection should distinguish between "the connection failed once" (retry) and "the service is dead" (crash). The default `try/await/catch+exit` pattern conflates them. Fly's machine restart policy then turns one transient failure into an infinite loop.
+
+#### Compaction event bridge — was silently a no-op in pipeline mode (agent 0.9.44)
+
+The SDK's `PreCompact` + `PostCompact` hooks ran fine and the agent wrote crystallized skills to disk correctly — but **none of the events ever reached the frontend** in pipeline mode. The user could see `🧠 PostCompact: complete — N skill file(s) written` in fly logs but the inline chat bubble (`🧠 _Crystallizing session memory…_` / `🧠 Memory crystallized — N skill(s) updated`) never appeared.
+
+Root cause: `createPipelineDirectLLM(opts)` constructed its inner `new ClaudeLLM(opts)`. Pipeline mode never passed `onCompactionEvent`, so the inner ClaudeLLM had no listener. When `createDirectSession(resumeSessionId, pipelineLLM)` was called with the pre-built LLM, the `createClaudeLLM({...onCompactionEvent: ...})` block was skipped — it's behind a `llmOverride || ...` short-circuit. The `PreCompact` / `PostCompact` hooks fired, called `this.#opts.onCompactionEvent?.(...)`, the optional-chaining no-op'd, events died silently inside the agent process.
+
+- **Extracted `buildOnCompactionEvent()` helper** in `agent/src/index.ts` so direct / realtime / pipeline all use the same callback (no more drift between three inline copies).
+- **Pipeline mode now passes the callback** to `createPipelineDirectLLM`.
+- **Added redundant SDK iterator listener** — the SDK also emits `type:'system', subtype:'compact_boundary'` (with `compact_metadata.trigger` + `pre_tokens`) and `type:'system', subtype:'status', status:'compacting'|null` independently of hook registration. Logged as `[COMPACT-SDK-ITER]` markers so if hooks ever silently misfire, the iterator path catches it. Verified by reading `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts` — `HOOK_EVENTS` includes both `"PreCompact"` and `"PostCompact"`, and the iterator's `SDKCompactBoundaryMessage` + `SDKStatusMessage` shapes are documented in the same file.
+- **Diagnostic logging at every hop** so the next person debugging this can see exactly where events live or die:
+  - Agent: `[COMPACT-AGENT-RX]` (bridge received), `[COMPACT-AGENT-RAW-SENT]` (raw event over data channel), `[COMPACT-AGENT-CHAT-EMIT]` (inline bubble emitted), `[COMPACT-AGENT-CHAT-SKIP]` (progress events skip the chat bubble), `[COMPACT-AGENT-ERROR]`
+  - Frontend: `[COMPACT-FRONTEND-RX]` (raw event arrived → banner update), `[COMPACT-FRONTEND-BUBBLE]` (compaction bubble added to chat)
+
+**Files**: `agent/src/index.ts` (helper extraction + pipeline wiring + SDK iterator log), `frontend/src/components/VoiceRoom.tsx` (handler logging).
+
+#### Sandbox disconnect-log upload was always 39 bytes of the same 404 error (frontend, agent Dockerfile)
+
+`ChatSessionProvider.tsx` correctly fires `fetch-log` → `save-log` on disconnect, and the Supabase upload succeeded for every session — but every single log file was identical: 39 bytes, eTag `00ba5d83de42c9f21e31b06c8ec2c33d`, content `"Logs API error 404: 404 page not found\n"`.
+
+Root cause: `execInSprite()` (the Fly Machines variant of the function that fetches log content) was calling `${FLY_API_BASE}/v1/apps/{app}/machines/{id}/logs?limit=500` — but **that REST endpoint doesn't exist on Fly Machines**. `flyctl logs` uses a NATS-based streaming path; there's no REST equivalent. Every call 404'd and the error string itself got returned as "the log content" and dutifully uploaded.
+
+Confirmed by listing the Supabase bucket and downloading the most recent upload — verified the actual 39-byte payload. Also confirmed by directly curling `/v1/apps/.../machines/.../logs` against Fly's API — 404.
+
+- **Dockerfile entrypoint now tees stdout/stderr to `/workspace/osborn.log`** (volume-backed, survives reboots). Switched shebang `#!/bin/sh` → `#!/bin/bash` so `exec > >(tee -a "$LOGFILE") 2>&1` works (process substitution requires bash). `flyctl logs` continues to work — the file is in ADDITION to Fly's stdout collector, not in place of it.
+- **100 MB size cap** with 50 MB tail retention on boot — prevents disk fill from long retry loops.
+- **`execInSprite()` rewritten** to call the real `/exec` endpoint with `tail -n 500 /workspace/osborn.log`. Returns descriptive "log not readable; sprite likely on older image" error if the file doesn't exist (forensic signal that the entrypoint Dockerfile hasn't been re-baked yet on a given sprite).
+- **Dockerfiles synced** — `agent/Dockerfile.sandbox` is canonical; the prebuild script `frontend/scripts/copy-sandbox-dockerfile.mjs` refreshes `frontend/Dockerfile.sandbox` on every Railway build.
+
+To deploy this fix the sandbox image must be rebuilt (the Dockerfile change won't reach sprites via `npm publish` alone — needs `flyctl deploy --build-only --push` against `fly-sandbox.toml`).
+
+**Files**: `agent/Dockerfile.sandbox` (entrypoint), `frontend/Dockerfile.sandbox` (synced), `frontend/src/lib/machines.ts` (`execInSprite` body).
+
+**Lesson**: a silently-uploading-garbage pipeline is harder to diagnose than a failing one. The 200 OK on upload + the consistent file size masked the real failure for weeks. Always inspect at least one of the artifacts you're producing as part of acceptance testing.
+
+#### Fly Machines update flow — fixed 412 race during config-replace (frontend)
+
+`updateOsborn()` was stopping the machine, PATCHing config with a new image, then calling `/wait?state=started` (HTTP 400 — Fly's wait endpoint rejects when the post-replace target state is ambiguous), falling through to `startSandbox` which hit `412 failed_precondition: machine getting replaced`. Result: every update to a stopped machine bounced through `replacing` → 400 → 412 → image-swap fallback that actually did succeed but the dashboard reported "stuck" until the fallback completed.
+
+- **New `waitForReplacementComplete()` helper** polls `GET /machines/{id}` every 2s until `state` leaves `'replacing'` / `'creating'`. Returns the settled state (typically `stopped`).
+- **`updateOsbornImpl` now**: stop → PATCH image → wait for replacement to settle → `startSandbox` (now safe to call). No more `/wait?state=started` 400.
+
+**Files**: `frontend/src/lib/machines.ts` (`waitForReplacementComplete` helper + `updateOsbornImpl` flow rewrite).
+
+#### Cleanup: legacy `osborn-agent` Fly app destroyed
+
+22-day-uptime ghost from the pre-sprite architecture. Container running `node --import tsx/esm src/index.ts` (dev-style, from source), pointing at a third LiveKit project (`osborn-live-agent-kkjwjvfr`) separate from both the current production project and the new one we tested. Had LiveKit secrets stored, was idle (no active outbound TCP connections at audit time) but had been connected for an unknown portion of the 22 days. Destroyed (stop machine → delete machine → delete app) as part of fleet hygiene during this session's LiveKit quota investigation.
+
+#### Operational learnings
+
+- **Fly Machines does NOT expose a REST endpoint for machine logs.** The endpoint at `/v1/apps/.../machines/.../logs` returns 404. To capture logs for offline analysis, write to a persistent volume + read via `/exec`.
+- **`process.exit(1)` on a recoverable failure is almost always wrong** in a service managed by a restart policy. Conflates "operation failed" with "process is dead". Replace with bounded-backoff retry, surface state via health endpoint.
+- **SDK iterator messages are redundant with hooks** for compaction events. If hooks misregister, the iterator-stream messages (`subtype:'compact_boundary'`, `subtype:'status'`) are the fallback signal — log them to make registration failures visible.
+- **Recall.ai stores transcripts under `retention: 'forever'`** by default. Post-meeting transcript pulls work indefinitely. The pre-signed S3 download URL in `recordings[0].media_shortcuts.transcript.data.download_url` expires ~6h after issue — re-fetch the bot record to get a fresh URL.
+- **LiveKit Cloud free tier appears to share a connection-minute cap across projects on the same billing account.** Confirmed empirically: switching `LIVEKIT_URL` from one project to another on the same account still hit 429 immediately. Plan upgrade is the only path; spinning up a third project doesn't help.
+
+---
+
 ### v0.8.30 → v0.8.38 (May 1–2, 2026) — Sprites Stability: Naming, Warm-Wake, Bootstrap, Recall
 
 A long debugging night uncovered four independent layered bugs in the cloud-sprites flow. All shipped fixes are surgical (existing code paths preserved for legacy users).

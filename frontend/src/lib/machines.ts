@@ -1108,37 +1108,34 @@ export async function execInSprite(
       return { exitCode: 1, output: `No machine found for app ${appName}` }
     }
 
-    // Fetch recent logs from the Fly Machines logs endpoint
-    const res = await fetch(
-      `${FLY_API_BASE}/v1/apps/${appName}/machines/${machine.id}/logs?limit=500`,
-      {
-        headers: { 'Authorization': `Bearer ${getApiToken()}` },
-        signal: AbortSignal.timeout(10000),
-      },
+    // Fly Machines does NOT expose a REST /logs endpoint (the previous
+    // implementation hit /v1/apps/{app}/machines/{id}/logs which returns 404
+    // → that 404 string was getting uploaded as "the session log" for every
+    // disconnect since this code was written). Verified 2026-05-27 by curling
+    // it directly.
+    //
+    // Correct approach: read the persistent log file written by the entrypoint
+    // (tee'd to /workspace/osborn.log — see Dockerfile.sandbox). The exec API
+    // works fine; we used it for stopMachineCold and waitForReplacementComplete.
+    const result = await execInMachine(
+      appName,
+      machine.id,
+      ['tail', '-n', '500', '/workspace/osborn.log'],
+      15,
     )
-
-    if (!res.ok) {
-      const text = await res.text()
-      return { exitCode: 1, output: `Logs API error ${res.status}: ${text.substring(0, 200)}` }
+    if (result.exitCode === 0) {
+      return { exitCode: 0, output: result.stdOut || '(empty log)' }
     }
-
-    // Parse NDJSON log lines — each line is a JSON object with timestamp + message fields
-    const raw = await res.text()
-    const lines = raw.split('\n').filter(l => l.trim())
-    const output = lines
-      .map(line => {
-        try {
-          const entry = JSON.parse(line) as { timestamp?: string; message?: string; msg?: string }
-          const ts = entry.timestamp ?? ''
-          const msg = entry.message ?? entry.msg ?? line
-          return ts ? `[${ts}] ${msg}` : msg
-        } catch {
-          return line
-        }
-      })
-      .join('\n')
-
-    return { exitCode: 0, output }
+    // exit_code != 0 typically means the log file doesn't exist yet (sprite
+    // hasn't booted with the tee'd entrypoint yet — applies until image
+    // bake includes the new Dockerfile). Surface stderr for diagnostics.
+    const errMsg = result.stdErr.trim() || `tail exited ${result.exitCode}`
+    return {
+      exitCode: result.exitCode,
+      output: `[execInSprite] /workspace/osborn.log not readable: ${errMsg}\n` +
+              `This sprite is likely on an older image that doesn't tee stdout to the log file. ` +
+              `Update the sprite to pick up the latest osborn-sandbox image.`,
+    }
   } catch (err) {
     return { exitCode: 1, output: `execInSprite error: ${(err as Error).message}` }
   }

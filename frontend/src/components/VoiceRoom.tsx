@@ -1677,6 +1677,13 @@ function VoiceRoomInner({
           // Direct mode: show as main chat message (visible immediately)
           // Realtime mode: show as log (research agent output, not primary chat)
           const category = data.agentRole === 'direct' ? 'chat' : 'log'
+          // Compaction inline bubble — surfaces in this handler because the
+          // agent uses claude_output as the carrier (see buildOnCompactionEvent
+          // in agent/src/index.ts). If the bubble doesn't show, look here:
+          // is the text empty? is agentRole something other than 'direct'?
+          if (data.text.startsWith('🧠')) {
+            console.log('[COMPACT-FRONTEND-BUBBLE] adding compaction chat bubble, category=', category, 'preview=', data.text.substring(0, 80))
+          }
           addMessageRef.current?.('assistant', data.text, undefined, category)
         }
       } else if (data.type === 'permission_request') {
@@ -2021,16 +2028,22 @@ function VoiceRoomInner({
         setMeetingStatus('error')
         setTimeout(() => { setMeetingStatus('idle'); setMeetingError(null) }, 5000)
       } else if (data.type === 'compaction_started') {
-        console.log('🧠 [COMPACT] started, trigger:', data.trigger)
+        // Detailed logging: if this fires but the banner doesn't update, look at
+        // the state setter calls below. If banner DOES update but inline chat
+        // bubble doesn't appear, look at the `claude_output` handler — the
+        // agent emits a SEPARATE `claude_output` with `agentRole:'direct'` and
+        // a 🧠 emoji to add the inline bubble (see agent/src/index.ts
+        // buildOnCompactionEvent). Both events should fire in the same tick.
+        console.log('[COMPACT-FRONTEND-RX] compaction_started trigger=', data.trigger, 'full=', JSON.stringify(data).substring(0, 200))
         setCompactionStatus('compacting')
         setCompactionStartedAt(Date.now())
         setCompactionStages([{ stage: 'Compaction triggered', detail: data.trigger ?? 'auto', ts: Date.now() }])
         setCompactionSkills([])
       } else if (data.type === 'compaction_progress') {
-        console.log('🧠 [COMPACT] progress:', data.stage, data.detail ?? '')
+        console.log('[COMPACT-FRONTEND-RX] compaction_progress stage=', data.stage, 'detail=', data.detail ?? '')
         setCompactionStages(prev => [...prev, { stage: data.stage, detail: data.detail, ts: Date.now() }])
       } else if (data.type === 'compaction_complete') {
-        console.log('🧠 [COMPACT] complete, skillsWritten:', data.skillsWritten, 'skills:', data.skillNames)
+        console.log('[COMPACT-FRONTEND-RX] compaction_complete skillsWritten=', data.skillsWritten, 'skills=', data.skillNames, 'full=', JSON.stringify(data).substring(0, 200))
         setCompactionStatus('complete')
         setCompactionSkills(Array.isArray(data.skillNames) ? data.skillNames : [])
         setCompactionStages(prev => [...prev, {
