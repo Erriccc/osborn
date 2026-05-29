@@ -253,6 +253,19 @@ export class ClaudeLLM extends llm.LLM {
       mcpServers: this.#mcpServers,
       voiceMode: opts.voiceMode || 'realtime',
       skipTTSQueue: opts.skipTTSQueue || false,
+      // CRITICAL: the PreCompact / PostCompact hooks call
+      // `this.#opts.onCompactionEvent?.(...)` to invoke the bridge to the
+      // frontend (chat-bubble + banner). Without including the callback in
+      // this whitelisted literal, callers can pass it correctly via opts but
+      // it's silently dropped during construction → hooks invoke undefined →
+      // no chat bubble appears. This was the real reason the compaction UI
+      // never showed up in 0.9.44–0.9.46 despite the wiring at every caller
+      // looking right. Confirmed 2026-05-28 by reading the live dist on Fly
+      // and seeing PreCompact/PostCompact emoji logs + the SDK iterator
+      // marker [COMPACT-SDK-ITER] firing while [COMPACT-AGENT-RX] never did.
+      // `onPermissionRequest` is handled separately via its own private field
+      // and does NOT need to be in this literal.
+      onCompactionEvent: opts.onCompactionEvent,
     }
     this.#eventEmitter = opts.eventEmitter || new EventEmitter()
 
