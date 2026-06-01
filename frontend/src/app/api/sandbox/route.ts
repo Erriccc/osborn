@@ -146,7 +146,21 @@ export async function POST(request: Request) {
   switch (action) {
     case 'create': {
       const syncToken = await getSyncToken()
-      const info = await createSandbox(user.id, syncToken)
+      // Provider-dispatched call: sprites' createSandbox expects (userId, syncToken: string),
+      // machines' expects (userId, options: { sourceSnapshotId?, autostopMode? }).
+      // Pre-existing signature mismatch — see cloud.ts re-export. We pass the right shape
+      // per provider so neither backend ignores the arg.
+      //
+      // For machines: when FLY_GOLDEN_SNAPSHOT_ID is set on Railway env, provision the
+      // user's volume from that snapshot → first boot drops from ~60-90s to ~15-20s.
+      // When unset, the volume is created empty (existing behavior).
+      const provider = process.env.CLOUD_PROVIDER === 'machines' ? 'machines' : 'sprites'
+      const info = provider === 'machines'
+        ? await (createSandbox as unknown as (userId: string, opts: { sourceSnapshotId?: string }) => ReturnType<typeof createSandbox>)(
+            user.id,
+            { sourceSnapshotId: process.env.FLY_GOLDEN_SNAPSHOT_ID || undefined },
+          )
+        : await createSandbox(user.id, syncToken)
 
       if (info.status === 'running' && info.previewUrl) {
         // Save to DB — this becomes the user's agent URL

@@ -2,10 +2,42 @@
 # Installs osborn as npm package (not from source) for lightweight per-user machines.
 # Build: docker build -f Dockerfile.sandbox -t registry.fly.io/osborn-sandbox/agent:latest .
 # Push:  fly auth docker && docker push registry.fly.io/osborn-sandbox/agent:latest
+#
+# ARCHITECTURE — HOME-on-volume (no chroot)
+# ==========================================
+# The persistent Fly volume holds HOME and all user-mutable state, but osborn
+# itself lives in the IMAGE. Image-swap brings new osborn versions; the volume
+# preserves user OAuth, sessions, skills, gh tokens, ssh keys, git config, etc.
+#
+# Key env:
+#   - HOME=/workspace/home    → all HOME-derived paths persist on volume
+#   - OSBORN_CWD=/workspace   → osborn's project dir, also on volume
+#   - osborn comes from /usr/local/bin/osborn (image's native location)
+#
+# Updates:
+#   - Image-swap delivers new osborn binary + new system deps
+#   - No bind-mounts, no chroot, no runtime npm install
+#   - User state on volume survives image rebuilds
+#
+# WHY NOT CHROOT (history)
+# ------------------------
+# We built and verified a chroot architecture on 2026-05-28 that bind-mounted
+# /usr /lib /lib64 /bin /sbin /opt from image into a chroot at /workspace/root-chroot,
+# with HOME=/root pointing inside the chroot. Real Fly A/B test 2026-05-28 showed:
+#   - First-boot time:    chroot 102s vs no-chroot 111s   (within polling noise)
+#   - EBUSY on shutdown:  chroot 8    vs no-chroot 8       (identical — not a chroot issue)
+#   - Persistence:        both pass
+#   - LOC in entrypoint:  chroot ~270 vs no-chroot ~165   (no-chroot saves ~100 LOC)
+#   - Path layout:        chroot /workspace/root-chroot/root/...  vs  /workspace/home/...
+# Subagent research confirmed chroot in our codebase solves only HOME-and-persistence
+# layout, NOT library access (Linux dynamic linker is mount-agnostic per ld.so(8)).
+# Since HOME=/workspace/home achieves the same persistence with ~100 fewer LOC and
+# no bind-mount complexity, the chroot version was retired.
+# Archive: docs/archive/Dockerfile.sandbox.chroot-2026-05-28.md
 
 FROM node:22-slim
 
-# Runtime deps for osborn + claude-code
+# Runtime deps (same as chroot variant — comes from image, image-swap upgrades)
 RUN apt-get update -qq && \
     apt-get install --no-install-recommends -y \
     ca-certificates \
@@ -16,131 +48,137 @@ RUN apt-get update -qq && \
     python-is-python3 && \
     rm -rf /var/lib/apt/lists/*
 
-# Pin osborn to an explicit version so Docker layer cache invalidates whenever
-# the version changes. Earlier `RUN npm install -g osborn@latest` looked correct
-# but it never invalidated: `latest` is a tag resolved by npm at install time,
-# but Docker's layer cache keys on the literal RUN command string. So every
-# rebuild reused the cached layer from when "latest" was a previous version,
-# producing images labeled :0.9.21 that actually contained osborn 0.9.19 inside.
-#
-# Pass --build-arg OSBORN_VERSION=X.Y.Z when building. image-build-check.ts
-# does this automatically using the npm-registry-resolved latest version.
 ARG OSBORN_VERSION=latest
 RUN npm install -g "osborn@${OSBORN_VERSION}" @anthropic-ai/claude-code
 
-# Persistent workspace + claude config dirs
-RUN mkdir -p /workspace /root/.claude
+# Persistent volume mount point
+RUN mkdir -p /workspace
 
-# Marker so orchestration (machines.ts isManifestAware) can detect this image
-# supports the manifest-driven update flow. Pre-marker machines fall back to
-# the image-swap update path, which brings them onto a marker-aware image;
-# from then on, all updates use the manifest flow defined in the entrypoint.
-RUN touch /etc/osborn-manifest-aware
+# Markers (preserved for back-compat probes from machines.ts):
+#   /etc/osborn-manifest-aware  — older marker (still here)
+#   /etc/osborn-option-d-aware  — new marker; machines.ts can detect this variant
+RUN touch /etc/osborn-manifest-aware /etc/osborn-option-d-aware
 
-ENV OSBORN_CWD=/workspace
 ENV OSBORN_API_PORT=8741
 ENV NODE_ENV=production
+ENV OSBORN_IMAGE_VERSION=${OSBORN_VERSION}
 
-# HOME points at the volume so user-space config from any tool that respects
-# HOME (gh, git, ssh, aws, etc.) automatically writes to the persistent
-# volume instead of the ephemeral container overlay. The existing /root/.claude
-# symlink machinery below stays in place — it's redundant with HOME=/workspace
-# but harmless.
-ENV HOME=/workspace
+# THE KEY DIFFERENCE FROM CHROOT VARIANT:
+# HOME and OSBORN_CWD are set as IMAGE-LEVEL ENV here. The entrypoint reads
+# them, ensures the dirs exist on the volume, and execs osborn. No bind-mount
+# trickery — HOME just IS on the volume because the path resolves to a volume
+# subdir.
+ENV HOME=/workspace/home
+ENV OSBORN_CWD=/workspace
 
 WORKDIR /workspace
-
 EXPOSE 8741
 
-# Entrypoint: credential persistence + onboarding suppression + start
+# Entrypoint: HOME-on-volume seed + onboarding + start
 COPY <<'ENTRYPOINT' /entrypoint.sh
 #!/bin/bash
 set -e
 
-# Persistent log capture for post-disconnect upload to Supabase Storage.
-# Fly Machines has NO REST endpoint for fetching machine logs (the previous
-# implementation hit /v1/apps/{app}/machines/{id}/logs which returns 404 → that
-# 404 error string was getting uploaded as "the log" for every session).
-# Volume-backed /workspace/osborn.log survives reboots and is readable via
-# the documented /exec endpoint (`tail -n 500 /workspace/osborn.log`).
-#
-# We use process substitution to tee output to BOTH the log file AND the
-# original stdout (so `flyctl logs` keeps working for ad-hoc debugging).
-# Requires bash, hence the #!/bin/bash shebang.
-#
-# Size cap: if log grows past 100 MB, keep only the last 50 MB. Prevents
-# disk-fill from long-running retry loops (we saw 17h × ~1 line/min = ~1000
-# lines today, but anything connecting to LiveKit produces orders of
-# magnitude more output).
+# === Persistent log capture ===
+# Same as chroot variant: tee stdout/stderr to /workspace/osborn.log (volume).
+# Rotates at 100MB → keeps last 50MB.
 LOGFILE=/workspace/osborn.log
 mkdir -p /workspace
 if [ -f "$LOGFILE" ] && [ "$(stat -c%s "$LOGFILE" 2>/dev/null || echo 0)" -gt 104857600 ]; then
-  echo "[sandbox] Rotating /workspace/osborn.log (>100MB, keeping last 50MB)"
+  echo "[sandbox-d] Rotating /workspace/osborn.log (>100MB, keeping last 50MB)"
   tail -c 52428800 "$LOGFILE" > "$LOGFILE.tmp" && mv "$LOGFILE.tmp" "$LOGFILE"
 fi
-echo "[sandbox] === boot at $(date -Iseconds) ===" >> "$LOGFILE"
-# Redirect all subsequent stdout+stderr from this script (and the eventual
-# `exec osborn`) to both the original fd (Fly stdout collector) AND the
-# append-only log file. tee runs as a backgrounded subshell that survives
-# the final exec replacement.
+echo "[sandbox-d] === boot at $(date -Iseconds) ===" >> "$LOGFILE"
 exec > >(tee -a "$LOGFILE") 2>&1
 
-# Claude credential persistence (volume at /workspace)
-mkdir -p /workspace/.claude
-rm -rf /root/.claude
-ln -sf /workspace/.claude /root/.claude
-
-# Suppress Claude Code interactive onboarding prompts
+# Onboarding-suppression JSON
 ONBOARDING_JSON='{"numStartups":10,"installMethod":"npm","autoUpdates":false,"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true,"hasAcknowledgedCostThreshold":true,"effortCalloutV2Dismissed":true,"theme":"dark","projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true}}}'
-echo "$ONBOARDING_JSON" > /root/.claude.json
-# Additional write at $HOME/.claude.json. With HOME=/workspace this is where
-# Claude Code actually reads its top-level config from; the /root/.claude.json
-# write above becomes dead but is left in place (harmless).
-echo "$ONBOARDING_JSON" > /workspace/.claude.json
-mkdir -p /workspace/.claude
-echo "$ONBOARDING_JSON" > /workspace/.claude/.config.json
-echo "$ONBOARDING_JSON" > /workspace/.claude/claude.json
 
-# Restore OAuth token if persisted on volume
-if [ -f /workspace/.claude/.oauth-token ]; then
-  export CLAUDE_CODE_OAUTH_TOKEN="$(cat /workspace/.claude/.oauth-token)"
-  echo "[sandbox] Restored CLAUDE_CODE_OAUTH_TOKEN from volume"
+# ============================================================
+# === HOME-on-volume seed ===
+# ============================================================
+# HOME=/workspace/home, set via ENV in Dockerfile. Ensure the dir exists on
+# the volume and seed Claude/onboarding/skills on first boot. Idempotent.
+echo "[sandbox-d] HOME=$HOME OSBORN_CWD=$OSBORN_CWD"
+mkdir -p "$HOME" "$HOME/.claude" "$HOME/.osborn"
+
+# === Legacy migration ===
+# Existing production sandboxes have credentials at /workspace/.claude/
+# (the pre-D legacy symlink architecture). Migrate to HOME=/workspace/home/.claude/
+# on first boot of the D image. Atomic mv — safe.
+if [ -d /workspace/.claude ] && [ ! -d "$HOME/.claude/projects" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
+  echo "[sandbox-d] migrating legacy /workspace/.claude → \$HOME/.claude"
+  # Move CONTENTS, not the dir itself (target may already exist with seeded skills)
+  for item in /workspace/.claude/.* /workspace/.claude/*; do
+    [ -e "$item" ] || continue
+    BASENAME=$(basename "$item")
+    [ "$BASENAME" = "." ] && continue
+    [ "$BASENAME" = ".." ] && continue
+    [ -e "$HOME/.claude/$BASENAME" ] && continue
+    mv "$item" "$HOME/.claude/$BASENAME" 2>/dev/null || true
+  done
+  rmdir /workspace/.claude 2>/dev/null || true
+fi
+if [ -f /workspace/.claude.json ] && [ ! -f "$HOME/.claude.json" ]; then
+  echo "[sandbox-d] migrating legacy /workspace/.claude.json → \$HOME/.claude.json"
+  mv /workspace/.claude.json "$HOME/.claude.json"
 fi
 
-# Seed default skills into ~/.claude/skills/ — single source of truth.
-# The agent only loads skills from this path; defaults shipped in the npm
-# package get copied here on first boot. Idempotent: existing skills
-# (learned via PostCompact or manually edited) are preserved across restarts.
-HOME_SKILLS_DIR=/root/.claude/skills
-PKG_SKILLS_DIR=/usr/local/lib/node_modules/osborn/.claude/skills
+# Onboarding config (overwrites every boot — intentional, deterministic state)
+echo "$ONBOARDING_JSON" > "$HOME/.claude.json"
+echo "$ONBOARDING_JSON" > "$HOME/.claude/.config.json"
+echo "$ONBOARDING_JSON" > "$HOME/.claude/claude.json"
+
+# Restore OAuth token if persisted
+if [ -f "$HOME/.claude/.oauth-token" ]; then
+  export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.claude/.oauth-token")"
+  echo "[sandbox-d] restored CLAUDE_CODE_OAUTH_TOKEN from volume"
+fi
+
+# === Seed default skills with version-aware refresh (ported from chroot B6 fix) ===
+# Same invariants as chroot variant:
+#   (1) USER-ADDED skills preserved across image upgrades
+#   (2) IMAGE-DEFAULT skills refreshed when image version changes
+HOME_SKILLS_DIR="$HOME/.claude/skills"
+PKG_SKILLS_DIR="/usr/local/lib/node_modules/osborn/.claude/skills"
+SEED_VERSION_FILE="${HOME_SKILLS_DIR}/.seed-version"
 mkdir -p "$HOME_SKILLS_DIR"
+CURRENT_SEED_VERSION=$(cat "$SEED_VERSION_FILE" 2>/dev/null | tr -d '[:space:]' || echo "")
+IMAGE_SEED_VERSION="${OSBORN_IMAGE_VERSION:-latest}"
 if [ -d "$PKG_SKILLS_DIR" ]; then
+  REFRESHED=0
+  SEEDED=0
   for d in "$PKG_SKILLS_DIR"/*/; do
     [ -d "$d" ] || continue
     NAME=$(basename "$d")
-    [ -d "$HOME_SKILLS_DIR/$NAME" ] && continue
-    cp -r "$d" "$HOME_SKILLS_DIR/$NAME"
-    echo "[sandbox] seeded default skill: $NAME"
+    if [ ! -d "$HOME_SKILLS_DIR/$NAME" ]; then
+      cp -r "$d" "$HOME_SKILLS_DIR/$NAME"
+      echo "[sandbox-d] seeded default skill: $NAME"
+      SEEDED=$((SEEDED+1))
+    elif [ "$CURRENT_SEED_VERSION" != "$IMAGE_SEED_VERSION" ]; then
+      rm -rf "$HOME_SKILLS_DIR/$NAME"
+      cp -r "$d" "$HOME_SKILLS_DIR/$NAME"
+      echo "[sandbox-d] refreshed default skill: $NAME (image $CURRENT_SEED_VERSION → $IMAGE_SEED_VERSION)"
+      REFRESHED=$((REFRESHED+1))
+    fi
   done
-fi
-
-# Manifest-driven version check.
-# Orchestration writes /workspace/.osborn-want-version on update (machines.ts
-# updateViaManifest). On every boot we compare to the currently-installed
-# osborn and run `npm install -g osborn@<want>` if they differ. The install
-# lands in the container overlay (default npm prefix) — Fly wipes overlay on
-# stop/start so the install re-runs on every boot until the base image is
-# rebuilt with that version baked in. Update is fast between Fly restarts;
-# only the first boot after a restart pays the npm install cost.
-WANT=$(cat /workspace/.osborn-want-version 2>/dev/null | tr -d '[:space:]')
-if [ -n "$WANT" ]; then
-  CURRENT=$(osborn --version 2>/dev/null | head -1 | tr -d '[:space:]')
-  if [ "$WANT" != "$CURRENT" ]; then
-    echo "[sandbox] osborn ${CURRENT:-none} → ${WANT} (manifest install)"
-    npm install -g "osborn@${WANT}" || echo "[sandbox] install failed — running ${CURRENT:-image-baked} version"
+  if [ "$CURRENT_SEED_VERSION" != "$IMAGE_SEED_VERSION" ]; then
+    echo "$IMAGE_SEED_VERSION" > "$SEED_VERSION_FILE"
+    [ "$REFRESHED" -gt 0 ] && echo "[sandbox-d] skills marker: $CURRENT_SEED_VERSION → $IMAGE_SEED_VERSION (refreshed $REFRESHED, seeded $SEEDED)"
   fi
 fi
 
+# Container-view session inventory (debugging)
+if [ -d "$HOME/.claude/projects" ]; then
+  echo "[sandbox-d] Session inventory:"
+  for slug_dir in "$HOME/.claude/projects"/*/; do
+    [ -d "$slug_dir" ] || continue
+    count=$(find "$slug_dir" -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')
+    echo "[sandbox-d]   $(basename "$slug_dir"): ${count} jsonl files"
+  done
+fi
+
+echo "[sandbox-d] exec'ing osborn (no chroot, HOME=$HOME)"
 exec osborn
 ENTRYPOINT
 

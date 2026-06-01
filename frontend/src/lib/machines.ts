@@ -282,10 +282,15 @@ async function allocateIp(appName: string): Promise<boolean> {
  * Get platform env vars to inject into every machine.
  */
 function getPlatformEnvVars(userId: string): Record<string, string> {
+  // NOTE: HOME and OSBORN_CWD are deliberately NOT set here as of 0.9.47.
+  // The entrypoint chroots into /workspace/root-chroot and sets HOME=/root
+  // (chroot-relative) and OSBORN_CWD=/workspace (chroot-relative) itself.
+  // The legacy fallback path also sets them, so the image is self-contained.
+  // Forcing them at the platform level would override what the entrypoint
+  // does after chroot, causing osborn to spawn Claude Code with the wrong
+  // cwd (and a slug mismatch that breaks session resume).
   const envVars: Record<string, string> = {
     OSBORN_API_PORT: String(OSBORN_HTTP_PORT),
-    OSBORN_CWD: '/workspace',
-    HOME: '/root',
     LIVEKIT_ROOM: `osborn-${userId.substring(0, 8)}`,
   }
   const forwardKeys = [
@@ -324,8 +329,14 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
  * Caller can opt in to Fly-managed autostop by passing `autostopMode: 'stop'`.
  *
  * @param options.autostopMode - 'off' (default, manual lifecycle) or 'stop' (Fly-managed cold stop/start)
+ * @param options.sourceSnapshotId - Optional Fly volume snapshot ID to provision the volume FROM.
+ *   When set, the new user's volume comes up pre-seeded with everything in the snapshot —
+ *   typically a "golden" snapshot baked by the build pipeline containing the chroot skeleton,
+ *   seeded /etc, and default skills. Drops first-boot from ~60-90s to ~15-20s for new users.
+ *   When unset, the volume is created empty and the entrypoint does the full first-boot seed
+ *   (existing behavior).
  */
-export async function createSandbox(userId: string, options?: { autostopMode?: 'off' | 'stop' }): Promise<SandboxInfo> {
+export async function createSandbox(userId: string, options?: { autostopMode?: 'off' | 'stop'; sourceSnapshotId?: string }): Promise<SandboxInfo> {
   if (!isMachinesConfigured()) {
     return { id: '', status: 'error', userId, createdAt: new Date().toISOString(), error: 'FLY_API_TOKEN not configured' }
   }
@@ -356,9 +367,15 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
         region: process.env.FLY_REGION || 'iad',
         size_gb: 10,
         encrypted: true,
+        // Optional: provision from a "golden snapshot" so first boot is fast
+        // (~15-20s vs ~60-90s for empty volume). Build pipeline produces this
+        // snapshot and exposes its ID via FLY_GOLDEN_SNAPSHOT_ID env. Caller
+        // threads it through options.sourceSnapshotId. When unset, the volume
+        // comes up empty and the entrypoint does the full first-boot seed.
+        ...(options?.sourceSnapshotId ? { snapshot_id: options.sourceSnapshotId } : {}),
       })
       volumeId = vol.id
-      console.log(`[machines] Volume created: ${vol.id}`)
+      console.log(`[machines] Volume created: ${vol.id}${options?.sourceSnapshotId ? ` (from snapshot ${options.sourceSnapshotId})` : ' (empty)'}`)
     } catch (err) {
       console.warn(`[machines] Volume creation failed (may already exist): ${(err as Error).message}`)
       // Try to get existing volume
@@ -913,34 +930,31 @@ async function updateOsbornImpl(
     return finish({ success: false, version: null, log: `No machine found for app ${appName}` }, targetVersion)
   }
 
-  // Step 2: Use the image-swap update path.
+  // Step 2: IMAGE-SWAP UPDATE PATH (primary, only path as of 0.9.47).
   //
-  // We previously branched here between a "manifest flow" (write manifest +
-  // restartService) and image-swap based on whether the machine had the
-  // /etc/osborn-manifest-aware marker. That manifest flow was REMOVED because:
-  //   - restartService doesn't PATCH the image config, so the container restarts
-  //     on the SAME old image. The entrypoint then sees a version mismatch and
-  //     attempts `npm install -g osborn@<target>` AT RUNTIME, on every boot.
-  //   - That runtime install is fragile (network blip → hang → container never
-  //     reaches `exec osborn` → boot loops). Production incident 2026-05-22:
-  //     v0.9.40 update hung the agent + required manual recovery via SSH.
-  //   - The install also doesn't persist (Fly wipes overlay on stop/start),
-  //     so EVERY restart pays the install cost.
+  // Sacrificial verification 2026-05-28 confirmed two things:
+  //   1. The chroot architecture works (/opt/npm-global on volume, osborn
+  //      boots inside chroot, /health 200).
+  //   2. In-place `chroot npm install -g osborn@X` works but is SLOWER than
+  //      image-swap (~3 min for 440-package npm install vs ~1-2 min for
+  //      image-swap). Also OOM-prone on 2GB machines because the
+  //      onnxruntime-node postinstall extracts 1.5GB+ of CUDA libs in
+  //      memory while osborn is concurrently running. `--ignore-scripts`
+  //      avoids the OOM but is fragile across dep version bumps.
   //
-  // The image-swap path (PATCH config to new image tag) is the only mechanism
-  // that actually works reliably on Fly Machines without NPM_CONFIG_PREFIX on
-  // the volume. New image has the desired osborn baked in → entrypoint sees no
-  // mismatch → no runtime install → fast clean boot.
+  // So we keep image-swap as the only active update path. The NEW
+  // Dockerfile entrypoint (chroot architecture) detects OSBORN_IMAGE_VERSION
+  // mismatch on boot and re-extracts /opt/npm-global from the new image's
+  // baked seed tarball (~5s). End-to-end: image-swap (~1-2 min) + tarball
+  // re-extract (~5s) = ~1-2 min total, same as legacy image-swap, but with
+  // volume-as-truth architecture in place.
   //
-  // The marker file `/etc/osborn-manifest-aware` is still baked in (Dockerfile
-  // line 36) and the entrypoint's manifest check is still there as a SAFETY
-  // NET for future use (e.g. if someone manually writes the manifest), but
-  // it's no longer the primary mechanism.
+  // The `updateOsbornInChroot()` helper below is kept as a private function
+  // for ops scenarios (e.g. manual recovery from corrupted /opt/npm-global)
+  // but is NOT wired into the active update path.
   //
-  // Clear any stale manifest file from the failed flow (best-effort, fire-and-
-  // forget). If the file is present when the new image boots, the entrypoint
-  // will try to install again — which is fine if the manifest matches the
-  // image-baked version, but a safety wipe avoids edge cases.
+  // Clear any stale manifest file from the abandoned manifest-flow (best-
+  // effort, fire-and-forget).
   execInMachine(appName, machine.id, ['rm', '-f', '/workspace/.osborn-want-version'], 5).catch(() => {})
 
   // Step 3: Stop the machine cold before changing config
@@ -1056,6 +1070,149 @@ async function updateOsbornImpl(
     },
     targetVersion,
   )
+}
+
+/**
+ * In-place osborn update via chroot npm install.
+ *
+ * NOT WIRED INTO THE ACTIVE UPDATE PATH as of 0.9.47 — see updateOsbornImpl
+ * step 2 for rationale (image-swap is faster and more reliable than in-place
+ * npm install on 2GB machines due to onnxruntime-node OOM risk during
+ * postinstall). Kept as a manual recovery helper for corrupted volumes.
+ *
+ * Runs `chroot /workspace/root-chroot npm install -g osborn@<version>` against
+ * a running Fly Machine. The new binary lands in /opt/npm-global on the
+ * persistent volume (because NPM_CONFIG_PREFIX is set inside the chroot), then
+ * we restart the machine so the entrypoint re-exec's osborn from the updated
+ * /opt/npm-global/bin/osborn path.
+ *
+ * Why this is faster than image-swap: no PATCH config, no Fly machine
+ * replacement, no image pull, no /usr re-seed. Just an npm install (~15-25s)
+ * + a stop/start cycle (~10-15s) = ~30-45s vs ~55-95s for image-swap.
+ *
+ * Why we still need a restart: the running osborn process holds the OLD code
+ * in memory. The new binary on disk only becomes effective when osborn
+ * re-execs from the volume-backed path — that happens via the entrypoint
+ * after the machine restarts. We can't `kill -HUP` the running process
+ * because osborn doesn't have a self-restart handler (yet).
+ *
+ * If anything fails, caller falls back to image-swap.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function updateOsbornInChroot(
+  appName: string,
+  machineId: string,
+  targetVersion: string,
+  userId: string,
+): Promise<{ success: boolean; version: string | null; log: string }> {
+  // 1. npm install inside chroot — this is the actual update.
+  //    Timeout 180s: npm install on slow connections can take a while.
+  console.log(`[machines] in-chroot: running npm install -g osborn@${targetVersion}`)
+  const install = await execInMachine(
+    appName,
+    machineId,
+    [
+      'chroot', '/workspace/root-chroot',
+      'env',
+      'NPM_CONFIG_PREFIX=/opt/npm-global',
+      'PATH=/opt/npm-global/bin:/usr/local/bin:/usr/bin:/bin',
+      'npm', 'install', '-g', `osborn@${targetVersion}`,
+    ],
+    180,
+  )
+  if (install.exitCode !== 0) {
+    return {
+      success: false,
+      version: null,
+      log: `chroot npm install failed (exit ${install.exitCode}): ${(install.stdErr || install.stdOut).substring(0, 400)}`,
+    }
+  }
+
+  // 2. Verify the install landed by reading the binary's --version inside chroot.
+  const verify = await execInMachine(
+    appName,
+    machineId,
+    [
+      'chroot', '/workspace/root-chroot',
+      'env',
+      'PATH=/opt/npm-global/bin:/usr/local/bin:/usr/bin:/bin',
+      '/opt/npm-global/bin/osborn', '--version',
+    ],
+    15,
+  )
+  // osborn --version output format: "osborn vX.Y.Z" or just "X.Y.Z" — extract last token
+  const installedRaw = verify.stdOut.trim().split(/\s+/).pop() ?? ''
+  const installedVersion = installedRaw.replace(/^v/, '')
+  if (verify.exitCode !== 0 || !installedVersion) {
+    return {
+      success: false,
+      version: null,
+      log: `chroot osborn --version failed: exit=${verify.exitCode} stdout="${verify.stdOut.substring(0, 200)}" stderr="${verify.stdErr.substring(0, 200)}"`,
+    }
+  }
+  if (installedVersion !== targetVersion) {
+    return {
+      success: false,
+      version: installedVersion,
+      log: `chroot install reports v${installedVersion} but expected v${targetVersion}`,
+    }
+  }
+
+  // 3. Write the manifest marker so the entrypoint's version-sync block on
+  //    subsequent boots is a no-op (it'll see WANT===CURRENT and skip).
+  //    Fire-and-forget — non-fatal if it fails.
+  execInMachine(
+    appName,
+    machineId,
+    ['sh', '-c', `echo ${targetVersion} > /workspace/.osborn-want-version`],
+    5,
+  ).catch(() => {})
+
+  // 4. Restart the machine so the entrypoint re-exec's osborn from the new
+  //    /opt/npm-global/bin/osborn (the running osborn still holds the old
+  //    code in memory; we need a process restart for the update to take
+  //    effect). The volume persists — credentials, sessions, skills stay put.
+  console.log(`[machines] in-chroot: restarting machine to load updated osborn binary`)
+  const restarted = await restartService(appName, userId)
+  if (!restarted) {
+    return {
+      success: false,
+      version: installedVersion,
+      log: `npm install succeeded (osborn@${installedVersion} on volume) but machine restart failed; next boot will pick up the new version automatically`,
+    }
+  }
+
+  // 5. Wait for /health, then confirm reported version matches target.
+  const previewUrl = `https://${appName}.fly.dev`
+  const healthy = await waitForHealth(previewUrl, 30)
+  if (!healthy) {
+    return {
+      success: false,
+      version: installedVersion,
+      log: `osborn@${installedVersion} installed on volume but /health did not respond within 30s post-restart`,
+    }
+  }
+  const reported = await readInstalledOsbornVersion(appName)
+  if (!reported) {
+    return {
+      success: false,
+      version: installedVersion,
+      log: 'Machine running but /health did not return a version after in-place update',
+    }
+  }
+  if (reported !== targetVersion) {
+    return {
+      success: false,
+      version: reported,
+      log: `agent reports v${reported} after restart, expected v${targetVersion} — in-place install may have been overridden`,
+    }
+  }
+
+  return {
+    success: true,
+    version: reported,
+    log: `In-place chroot update OK — osborn@${reported} on volume, no image swap needed`,
+  }
 }
 
 // REMOVED 2026-05-22: updateViaManifest function.

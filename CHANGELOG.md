@@ -1,5 +1,44 @@
 # Osborn Changelog
 
+## 2026-06-01 — Volume-as-HOME architecture (post 0.9.47)
+
+Replaces the legacy `/workspace/.claude` symlink architecture with `HOME=/workspace/home`,
+making the entire user home directory persist on the Fly volume — Claude OAuth, gh
+tokens, ssh keys, git config, npm cache, skills, sessions, osborn config all survive
+image-swap upgrades.
+
+### Architecture decision
+
+Multi-round design exploration considered three approaches:
+
+| Approach | Result |
+|---|---|
+| **Chroot + bind-mounts** | Built + verified working (2026-05-28). Real A/B test showed equivalent runtime behavior with ~100 LOC of bind-mount complexity. Retired. |
+| **Pre-warm machine pool** | Subagent verification found ~400-500 LOC refactor + Fly env-PATCH triggers machine replacement, defeating "instant claim" benefit. Deferred. |
+| **HOME-on-volume (chosen)** | Set `HOME=/workspace/home` in Dockerfile ENV. Every HOME-respecting tool persists. Simplest entrypoint (~165 LOC). |
+
+### Key findings from real Fly A/B (2026-05-28)
+
+- Boot time: chroot 102s vs no-chroot 111s — within 5s polling noise
+- EBUSY on `umount /workspace` at shutdown: 8 errors in BOTH variants (not caused by chroot — osborn's cwd=/workspace alone holds the mount)
+- Persistence: both pass for `~/.osborn/config.yaml`, `~/.config/gh/`, etc.
+- Image size identical (~1.4 GB on Fly)
+
+Per `ld.so(8)`, the Linux dynamic linker is mount-agnostic — binaries on the volume can link against libraries from the image without any chroot. So chroot was solving a non-problem (it never solved a "library access" issue we feared); the only thing it actually solved was HOME persistence, which `HOME=/workspace/home` solves with no bind-mount overhead.
+
+### Companion changes shipping in this batch
+
+- `agent/Dockerfile.sandbox` — Option D (no-chroot, HOME-on-volume) entrypoint
+- `frontend/src/lib/machines.ts` — `createSandbox` accepts optional `sourceSnapshotId` for golden-snapshot fast-start
+- `frontend/src/app/api/sandbox/route.ts` — provider-dispatched `createSandbox` call; reads `FLY_GOLDEN_SNAPSHOT_ID` env for new-user provisioning
+- `frontend/scripts/bake-golden-snapshot.mjs` — CI script to produce a "golden state" volume snapshot for fast new-user provisioning (~15-20s vs ~60-90s first-boot)
+- Skill seed-version refresh — `agent/Dockerfile.sandbox` now refreshes image-default skills when osborn version bumps (was: skip-if-exists, locked old content forever)
+- `~/.claude/skills/ground-assumptions/SKILL.md` — new skill enforcing test-first hypothesis verification during planning (already deployed to live machine `osborn-1b9d70e5-2a4`)
+
+### Archive
+
+The chroot-based Dockerfile.sandbox is preserved at `docs/archive/Dockerfile.sandbox.chroot-2026-05-28.md` for reference. Includes the full bind-mount entrypoint, first-boot seed logic, and legacy fallback path. Useful if Fly mount semantics ever change or if a future requirement actually needs `/etc` and `/opt` on the volume.
+
 ## What Was Working
 
 ### Voice Providers
