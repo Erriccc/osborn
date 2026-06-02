@@ -2679,6 +2679,31 @@ async function main() {
     currentLLM = null
     clearFastBrainSession()
     clearPipelineFastBrainSession()
+
+    // ── Ghost-agent fix (2026-06-01) ──
+    // When LiveKit Cloud evicts our WebSocket (idle, network blip, or quota window),
+    // the previous code stopped here — agent process kept running but no longer in
+    // any room. /health continued returning "livekit.status:connected" because the
+    // status was never written back. Frontend's checkOsbornHealth only validates
+    // HTTP 200, so the ghost state was invisible. Users got stuck in "Connecting..."
+    // forever because their LiveKit-token-minted room had no agent in it.
+    //
+    // Fix: re-arm the retry loop. connectWithRetry() will try to reconnect with
+    // the same room name (so the room code stays stable for any in-flight frontend
+    // token requests), backing off 5s → 60s. If the disconnect was permanent
+    // (e.g. JWT expired — they're 24h), the retry will fail and surface
+    // livekit.status=failed, which the (also-fixed) frontend health check will
+    // see and trigger restartService.
+    //
+    // Note: we mark status='retrying' immediately so /health reflects the real
+    // state — closing the lie window between Disconnected and the next attempt.
+    livekitState.status = 'retrying'
+    livekitState.error = 'LiveKit room disconnected; attempting to rejoin'
+    livekitState.errorCode = 'disconnected'
+    console.log('🔄 Rejoining LiveKit room after disconnect...')
+    connectWithRetry().catch(err => {
+      console.error('❌ Reconnect attempt threw (should not happen — connectWithRetry loops):', err)
+    })
   })
 
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {

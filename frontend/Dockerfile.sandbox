@@ -31,7 +31,7 @@
 #   - Path layout:        chroot /workspace/root-chroot/root/...  vs  /workspace/home/...
 # Subagent research confirmed chroot in our codebase solves only HOME-and-persistence
 # layout, NOT library access (Linux dynamic linker is mount-agnostic per ld.so(8)).
-# Since HOME=/workspace/home achieves the same persistence with ~100 fewer LOC and
+# Since HOME=/workspace achieves the same persistence with ~100 fewer LOC and
 # no bind-mount complexity, the chroot version was retired.
 # Archive: docs/archive/Dockerfile.sandbox.chroot-2026-05-28.md
 
@@ -63,13 +63,44 @@ ENV OSBORN_API_PORT=8741
 ENV NODE_ENV=production
 ENV OSBORN_IMAGE_VERSION=${OSBORN_VERSION}
 
-# THE KEY DIFFERENCE FROM CHROOT VARIANT:
-# HOME and OSBORN_CWD are set as IMAGE-LEVEL ENV here. The entrypoint reads
-# them, ensures the dirs exist on the volume, and execs osborn. No bind-mount
-# trickery — HOME just IS on the volume because the path resolves to a volume
-# subdir.
-ENV HOME=/workspace/home
+# HOME=/workspace — the volume mount point itself is the home directory.
+# This means ~/.claude resolves to /workspace/.claude, which is EXACTLY where
+# the legacy symlink architecture (/root/.claude -> /workspace/.claude) already
+# put credentials and sessions. So there is ZERO migration: an existing machine
+# updating to this image finds its data already at ~/.claude with no file moves.
+#
+# Why not /workspace/home (the earlier Option D choice)? That required MOVING
+# legacy data from /workspace/.claude into /workspace/home/.claude — an `mv`
+# loop that is destructive (deletes source as it goes), non-atomic across
+# multiple files (interruption = split state), and catastrophic if HOME ever
+# resolved off-volume (mv would send data to the ephemeral overlay). Pointing
+# HOME at /workspace eliminates the migration entirely: nothing moves, so
+# nothing can be lost in a move. The only cosmetic cost is dotfiles sitting at
+# the volume root — identical to what the legacy symlink effectively did.
+#
+# NOTE on overrides: these are Dockerfile ENV *defaults*. A Fly machine-config
+# `env.HOME` (or app secret) OVERRIDES them at runtime. updateOsborn strips
+# HOME/OSBORN_CWD from existing machine configs during image-swap so this
+# default actually takes effect on migrated machines — without that, a stale
+# HOME=/root from an older provisioning would silently win. See
+# frontend/src/lib/machines.ts updateOsbornImpl.
+ENV HOME=/workspace
 ENV OSBORN_CWD=/workspace
+
+# HYBRID: user-installed global npm packages persist on the volume.
+# osborn itself was already installed above into the DEFAULT prefix (/usr/local,
+# image layer) — that RUN happened BEFORE this ENV, so osborn stays in the image
+# and updates via image-swap (atomic, no runtime OOM, toolchain present at build).
+# Setting NPM_CONFIG_PREFIX here only affects RUNTIME `npm install -g <x>` the
+# user/agent runs: those land in /workspace/.npm-global on the persistent volume
+# and survive restarts + image-swaps. PATH puts that bin dir first so installed
+# CLIs are immediately runnable. Verified end-to-end on real Fly 2026-06-01:
+# pure-JS (cowsay) AND native-compiled (node-pty via node-gyp) both install at
+# runtime, persist across restart, no OOM (toolchain is in the image).
+# Caveat: native user modules are tied to the image's Node ABI (currently 22) —
+# a future Node-major image bump would need an `npm rebuild` of volume globals.
+ENV NPM_CONFIG_PREFIX=/workspace/.npm-global
+ENV PATH=/workspace/.npm-global/bin:$PATH
 
 WORKDIR /workspace
 EXPOSE 8741
@@ -95,34 +126,23 @@ exec > >(tee -a "$LOGFILE") 2>&1
 ONBOARDING_JSON='{"numStartups":10,"installMethod":"npm","autoUpdates":false,"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true,"hasAcknowledgedCostThreshold":true,"effortCalloutV2Dismissed":true,"theme":"dark","projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true}}}'
 
 # ============================================================
-# === HOME-on-volume seed ===
+# === HOME-on-volume setup (HOME=/workspace) ===
 # ============================================================
-# HOME=/workspace/home, set via ENV in Dockerfile. Ensure the dir exists on
-# the volume and seed Claude/onboarding/skills on first boot. Idempotent.
-echo "[sandbox-d] HOME=$HOME OSBORN_CWD=$OSBORN_CWD"
+# HOME=/workspace, set via ENV in Dockerfile (and enforced by updateOsborn
+# stripping any stale HOME from existing machine configs). Because HOME is the
+# volume mount itself, ~/.claude == /workspace/.claude — which is exactly where
+# the legacy symlink architecture already stored credentials + sessions.
+#
+# THEREFORE: NO MIGRATION. An existing machine's data is already at ~/.claude
+# the instant HOME points at /workspace. We removed the old `mv` migration
+# block entirely (it was destructive + non-atomic + catastrophic if HOME ever
+# resolved off-volume). Nothing moves, so nothing can be lost in a move.
+echo "[sandbox-d] HOME=$HOME OSBORN_CWD=$OSBORN_CWD NPM_CONFIG_PREFIX=$NPM_CONFIG_PREFIX"
 mkdir -p "$HOME" "$HOME/.claude" "$HOME/.osborn"
-
-# === Legacy migration ===
-# Existing production sandboxes have credentials at /workspace/.claude/
-# (the pre-D legacy symlink architecture). Migrate to HOME=/workspace/home/.claude/
-# on first boot of the D image. Atomic mv — safe.
-if [ -d /workspace/.claude ] && [ ! -d "$HOME/.claude/projects" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
-  echo "[sandbox-d] migrating legacy /workspace/.claude → \$HOME/.claude"
-  # Move CONTENTS, not the dir itself (target may already exist with seeded skills)
-  for item in /workspace/.claude/.* /workspace/.claude/*; do
-    [ -e "$item" ] || continue
-    BASENAME=$(basename "$item")
-    [ "$BASENAME" = "." ] && continue
-    [ "$BASENAME" = ".." ] && continue
-    [ -e "$HOME/.claude/$BASENAME" ] && continue
-    mv "$item" "$HOME/.claude/$BASENAME" 2>/dev/null || true
-  done
-  rmdir /workspace/.claude 2>/dev/null || true
-fi
-if [ -f /workspace/.claude.json ] && [ ! -f "$HOME/.claude.json" ]; then
-  echo "[sandbox-d] migrating legacy /workspace/.claude.json → \$HOME/.claude.json"
-  mv /workspace/.claude.json "$HOME/.claude.json"
-fi
+# HYBRID: ensure the volume-backed npm global prefix exists so user
+# `npm install -g <x>` has a target on first use (npm would create it anyway,
+# but pre-making it keeps perms predictable + visible in the boot log).
+mkdir -p /workspace/.npm-global
 
 # Onboarding config (overwrites every boot — intentional, deterministic state)
 echo "$ONBOARDING_JSON" > "$HOME/.claude.json"

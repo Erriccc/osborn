@@ -282,13 +282,16 @@ async function allocateIp(appName: string): Promise<boolean> {
  * Get platform env vars to inject into every machine.
  */
 function getPlatformEnvVars(userId: string): Record<string, string> {
-  // NOTE: HOME and OSBORN_CWD are deliberately NOT set here as of 0.9.47.
-  // The entrypoint chroots into /workspace/root-chroot and sets HOME=/root
-  // (chroot-relative) and OSBORN_CWD=/workspace (chroot-relative) itself.
-  // The legacy fallback path also sets them, so the image is self-contained.
-  // Forcing them at the platform level would override what the entrypoint
-  // does after chroot, causing osborn to spawn Claude Code with the wrong
-  // cwd (and a slug mismatch that breaks session resume).
+  // NOTE: HOME and OSBORN_CWD are deliberately NOT set here.
+  // The image's Dockerfile ENV sets HOME=/workspace and OSBORN_CWD=/workspace
+  // so the entire home dir (Claude OAuth, sessions, skills, gh/ssh/git config,
+  // npm cache) lives on the persistent volume. If we set HOME here at the
+  // machine-config level, it would OVERRIDE the image default — and any stale
+  // value (e.g. an old HOME=/root from earlier provisioning) would silently win,
+  // sending writes to the ephemeral overlay → data loss on restart. So we leave
+  // HOME unset in machine config and let the image default take effect.
+  // updateOsbornImpl additionally STRIPS HOME from existing machine configs on
+  // image-swap, so machines provisioned before this change get corrected too.
   const envVars: Record<string, string> = {
     OSBORN_API_PORT: String(OSBORN_HTTP_PORT),
     LIVEKIT_ROOM: `osborn-${userId.substring(0, 8)}`,
@@ -621,6 +624,16 @@ export function isSpritesConfigured(): boolean {
  * Single health probe with 5s timeout, no retry loop.
  * Drop-in parity with sprites.ts checkOsbornHealth().
  *
+ * Inspects the `livekit.status` field in the response body, not just HTTP 200.
+ * Pre-fix (before 2026-06-01) this only checked `res.ok` — which meant a "ghost"
+ * agent (process alive, LiveKit room dropped, never rejoined) was reported as
+ * healthy. /api/sandbox `room-code` would then skip `restartService` and return
+ * the stale room code; the frontend would mint a token for an empty room and
+ * the user would be stuck in "Connecting..." forever. Now we require
+ * `livekit.status === 'connected'` to consider the agent healthy. Statuses like
+ * 'connecting', 'retrying', 'failed' all return false → caller invokes
+ * restartService → fresh process → fresh LiveKit connection.
+ *
  * @param previewUrl - full base URL (e.g. https://osborn-abc.fly.dev)
  */
 export async function checkOsbornHealth(previewUrl: string): Promise<boolean> {
@@ -628,7 +641,21 @@ export async function checkOsbornHealth(previewUrl: string): Promise<boolean> {
     const res = await fetch(`${previewUrl}/health`, {
       signal: AbortSignal.timeout(5000),
     })
-    return res.ok
+    if (!res.ok) return false
+    // Parse body to inspect livekit.status — the agent lies HTTP-200 when its
+    // LiveKit room dropped. We need to look at the structured field to detect
+    // ghost state. Defensive: if body parse fails or shape is unexpected, fall
+    // back to the original res.ok behavior so we don't regress against older
+    // image versions that don't return JSON (legacy / pre-0.8.x).
+    try {
+      const body = await res.json() as { status?: string; livekit?: { status?: string } }
+      if (body?.status === 'ok' && body?.livekit?.status && body.livekit.status !== 'connected') {
+        return false
+      }
+    } catch {
+      // Non-JSON or unparseable — fall through and trust HTTP 200
+    }
+    return true
   } catch {
     return false
   }
@@ -975,11 +1002,28 @@ async function updateOsbornImpl(
   // "Update to vX.Y.Z" click would silently re-install the old version.
   // Pinning to the resolved target version makes upgrades deterministic.
   const newImage = getSandboxImage(targetVersion)
-  console.log(`[machines] updateOsborn: patching machine config image=${newImage}`)
+  // Strip HOME / OSBORN_CWD from the existing machine config env before the
+  // PATCH. The Fly machine update replaces the full config, but we build it by
+  // spreading the EXISTING config — which carries any stale env baked in at
+  // original provisioning time (notably HOME=/root from pre-HOME-on-volume
+  // machines). A stale HOME=/root would override the new image's HOME=/workspace
+  // and send all writes (OAuth, sessions) to the ephemeral overlay → wiped on
+  // every restart. By deleting HOME/OSBORN_CWD here, the image's Dockerfile ENV
+  // defaults (HOME=/workspace, OSBORN_CWD=/workspace) take effect, so ~/.claude
+  // resolves to /workspace/.claude (the volume, where data already lives). This
+  // is what makes an existing-machine update actually migrate to the volume
+  // instead of silently staying broken. (Found 2026-06-01: osbornojure ran the
+  // new image but kept stale HOME=/root, persisting nothing.)
+  const existingConfig = (machine.config ?? {}) as Record<string, unknown>
+  const cleanedEnv = { ...((existingConfig.env as Record<string, string>) ?? {}) }
+  delete cleanedEnv.HOME
+  delete cleanedEnv.OSBORN_CWD
+  console.log(`[machines] updateOsborn: patching machine config image=${newImage} (stripped stale HOME/OSBORN_CWD from env)`)
   try {
     await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, {
       config: {
-        ...(machine.config ?? {}),
+        ...existingConfig,
+        env: cleanedEnv,
         image: newImage,
       },
     })
