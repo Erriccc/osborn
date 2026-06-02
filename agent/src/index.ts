@@ -1156,6 +1156,21 @@ async function main() {
     if (!currentLLM) return
     try {
       const llm = currentLLM as any
+      // Heap-OOM fix (2026-06-02): stop the PipelineDirectLLM summary-index
+      // watcher BEFORE we abort + drop the reference. The watcher is a 10s
+      // setInterval whose closure retains the entire PipelineDirectLLM →
+      // ClaudeLLM object graph. killCurrentLLM is the single chokepoint all
+      // three cleanup sites (Disconnected, previous-session-cleanup,
+      // ParticipantDisconnected) call, but it previously only aborted the
+      // SDK subprocess — leaving the interval (and the whole graph) alive and
+      // uncollectable on every disconnect/reconnect. A reconnect-heavy session
+      // (e.g. 15 reconnects from a frontend redeploy) leaked 15 timers + 15
+      // retained graphs, each re-reading JSONL every 10s, until the node heap
+      // OOM'd (~980MB) and the process crashed. Stopping the watcher here lets
+      // the abandoned graph be GC'd. Duck-typed: only PipelineDirectLLM has it.
+      if (typeof llm.stopIndexWatcher === 'function') {
+        llm.stopIndexWatcher()
+      }
       if (typeof llm.abortQuery === 'function') {
         llm.abortQuery()
       } else if (typeof llm.abortAgent === 'function') {
