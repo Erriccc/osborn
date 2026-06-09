@@ -1058,11 +1058,21 @@ async function updateOsbornImpl(
   // Correct flow: poll GET /machines/{id} until state leaves "replacing" (lands in
   // "stopped"), then explicitly start. This is robust to Fly's state machine and
   // avoids depending on the /wait endpoint's quirks across transition boundaries.
+  // 300s (was 120s). Measured on a production-scale volume (974 JSONL / 690MB,
+  // 2026-06-09): a normal replace settles in ~39s warm / ~64s cold — the only
+  // big, variable cost is the image pull (24–55s). The volume open (~2–6s) and
+  // session inventory (<1s over 974 files) are negligible. But the old 120s
+  // ceiling had almost no margin: a cold pull + a transient Fly-infra latency
+  // spike (a 38s prepare→volume gap + the EBUSY-unclean-unmount aftermath)
+  // stacked past 120s once and left the machine wedged in `replacing`, offline
+  // (the "stuck on 5.1" incident — required manual rollback to recover). 300s
+  // gives ~5x headroom over the typical replace so a transient spike is absorbed
+  // instead of bricking the update.
   console.log(`[machines] updateOsborn: waiting for replacement to settle`)
-  const settledState = await waitForReplacementComplete(appName, machine.id, 120)
+  const settledState = await waitForReplacementComplete(appName, machine.id, 300)
   if (!settledState) {
     return finish(
-      { success: false, version: null, log: 'Machine replacement did not settle within 120s' },
+      { success: false, version: null, log: 'Machine replacement did not settle within 300s' },
       targetVersion,
     )
   }
