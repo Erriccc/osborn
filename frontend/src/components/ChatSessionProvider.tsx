@@ -321,6 +321,34 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         // room-code unavailable — token API will generate a fresh room
       }
 
+      // Step 2.5: Ensure the agent is in its LiveKit room before we join.
+      // The agent leaves the room whenever no user is present (idle/alone timer
+      // or explicit leave) to stop connection-minute burn, so on reconnect we
+      // must ask it to rejoin — otherwise the user lands in an empty room stuck
+      // "Connecting". Fired BEFORE the token mint so the agent's ~1-2s rejoin
+      // overlaps the token + WebRTC handshake. Best-effort: if the agent never
+      // left (boot-connect / still connected) this is a harmless no-op.
+      try {
+        if (connectionMode === 'cloud') {
+          await fetch('/api/sandbox', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'connect-room' }),
+          }).catch(() => {})
+        } else {
+          const isMixed =
+            window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
+          if (!isMixed) {
+            await fetch(`${resolvedUrl}/connect-room`, {
+              method: 'POST',
+              signal: AbortSignal.timeout(3000),
+            }).catch(() => {})
+          }
+        }
+      } catch {
+        // best-effort — the agent's boot-connect / retry loop is the backstop
+      }
+
       // Step 3: Get LiveKit token
       let url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}`
       if (code) url += `&roomCode=${code}`
@@ -362,6 +390,23 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   }, [])
 
   const disconnect = useCallback(() => {
+    // Leave the agent's LiveKit room immediately so connection-minute burn stops
+    // the instant the user clicks leave — don't wait for the agent-side 3-min
+    // alone timer. Cloud: proxy via /api/sandbox (CORS-safe). Local: direct,
+    // with a mixed-content guard. Fire-and-forget; navigation proceeds regardless.
+    if (activeSandboxId) {
+      fetch('/api/sandbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'leave-room', sandboxId: activeSandboxId }),
+      }).catch(() => {})
+    } else if (
+      agentUrl &&
+      !(window.location.protocol === 'https:' && agentUrl.startsWith('http:'))
+    ) {
+      fetch(`${agentUrl}/leave-room`, { method: 'POST' }).catch(() => {})
+    }
+
     // Fire-and-forget log capture: fetch log from sprite then save to Supabase Storage.
     // Must not block or throw — disconnect proceeds unconditionally.
     if (activeSandboxId) {
@@ -390,7 +435,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         })
     }
     router.push('/dashboard')
-  }, [router, activeSandboxId, preSelectedSessionId])
+  }, [router, activeSandboxId, preSelectedSessionId, agentUrl])
 
   const markAgentReady = useCallback(() => {
     // Reset activity clock + clear idle state on connection so the machine

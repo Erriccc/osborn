@@ -368,7 +368,13 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
       const vol = await api<{ id: string }>('POST', `/v1/apps/${appName}/volumes`, {
         name: 'workspace',
         region: process.env.FLY_REGION || 'iad',
-        size_gb: 10,
+        // 20GB (was 10GB). Volume holds the user's HOME (sessions, skills,
+        // npm cache, user global installs via NPM_CONFIG_PREFIX) which grows
+        // over time. Bumped alongside the 4GB machine memory on 2026-06-02
+        // after a real session thrashed a 2GB/1-vCPU machine (memory→41MiB
+        // available, disk I/O 100% throttled) running osborn + concurrent
+        // Claude Code sub-agents. Existing machines were extended to 20GB too.
+        size_gb: 20,
         encrypted: true,
         // Optional: provision from a "golden snapshot" so first boot is fast
         // (~15-20s vs ~60-90s for empty volume). Build pipeline produces this
@@ -394,12 +400,18 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
       image: getSandboxImage(),
       init: { exec: ['/entrypoint.sh'] },
       env: envVars,
-      // performance-1x:2048MB — dedicated vCPU prevents audio jitter from CPU-steal;
-      // 2GB RAM gives headroom for osborn + Claude Code subprocess + large JSONL replay
-      // without hitting OOM. Matches the performance class used by Sprites.
-      // (shared-cpu-1x:1024MB caused event-loop pauses under memory pressure,
-      // degrading both STT and TTS simultaneously mid-conversation.)
-      guest: { cpu_kind: 'performance', cpus: 1, memory_mb: 2048 },
+      // performance-2x: 2 dedicated vCPUs + 4GB RAM. Bumped from 1vCPU/2GB on
+      // 2026-06-02 after a real production session thrashed the smaller machine:
+      // Grafana showed RAM climbing to ~1.9GB (Available→41MiB, no swap), CPU
+      // pegged ~100% with load avg 800-1000%, and disk I/O 100% saturated +
+      // ~12,500 throttled events — all from osborn spawning concurrent Claude
+      // Code sub-agents (a real build) on top of the voice loop. Under that
+      // thrash, Deepgram STT failed to parse and the machine went unresponsive.
+      // 2vCPU absorbs the sub-agent fan-out; 4GB gives heap headroom for long
+      // sessions (the prior 2GB also hit a V8 heap OOM at ~980MB on an 88-min
+      // session). Existing machines were bumped to match. (shared-cpu caused
+      // event-loop pauses degrading STT+TTS; never go below dedicated CPU.)
+      guest: { cpu_kind: 'performance', cpus: 2, memory_mb: 4096 },
       services: [{
         protocol: 'tcp',
         internal_port: OSBORN_HTTP_PORT,

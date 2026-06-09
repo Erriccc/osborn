@@ -177,7 +177,7 @@ let currentRoomCode: string | null = null
 // status as a field, we keep the container alive long enough for LiveKit to
 // recover (auto-retry) or for the user to read the error and upgrade quota.
 const livekitState: {
-  status: 'connecting' | 'connected' | 'failed' | 'retrying'
+  status: 'connecting' | 'connected' | 'failed' | 'retrying' | 'idle'
   error: string | null
   errorCode: string | null  // best-effort categorization ('quota_exceeded', 'auth', 'network')
   lastAttemptAt: number | null
@@ -189,6 +189,31 @@ const livekitState: {
   lastAttemptAt: null,
   attemptCount: 0,
 }
+
+// ── Room-presence lifecycle (2026-06-09) ──────────────────────────────────────
+// The agent used to eager-connect to LiveKit on boot and hold the room for the
+// machine's entire life. With 1 participant (the agent itself), LiveKit never
+// considers the room empty, so it never closes — a single forgotten session
+// burned 25h of connection-minutes (room osborn-jzs94j) before we caught it.
+//
+// Fix: the agent now LEAVES the LiveKit room when no user is present, and only
+// rejoins when a user actually connects. Two triggers, both feeding room.disconnect():
+//   1. Agent-side "alone" timer — armed in ParticipantDisconnected once a real
+//      session has ended; if no user rejoins within ALONE_GRACE_MS, the agent
+//      leaves on its own. This is tab-close-proof (does not depend on the
+//      frontend's JS still running — the exact gap that let the 25h room linger).
+//   2. POST /leave-room — the frontend's explicit "leave" button leaves instantly.
+// Rejoin happens via POST /connect-room (frontend connect flow) which re-runs the
+// connect-with-retry loop.
+//
+// `intentionalLeave` distinguishes a voluntary leave from an involuntary LiveKit
+// eviction. The ghost-agent fix in RoomEvent.Disconnected auto-rejoins on drop;
+// that must NOT fire after a voluntary leave (it would recreate the burn we just
+// stopped). The hooks below are populated by main() (which owns `room` and the
+// connect-with-retry loop) so the module-level HTTP server can drive them.
+let intentionalLeave = false
+let connectRoomHook: (() => Promise<void>) | null = null
+let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
 
 function startApiServer(workingDir: string, port: number): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -307,6 +332,34 @@ function startApiServer(workingDir: string, port: number): void {
     if (req.method === 'GET' && url.pathname === '/room-code') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ roomCode: currentRoomCode }))
+      return
+    }
+
+    // POST /connect-room — the frontend connect flow calls this so the agent
+    // joins LiveKit for an incoming user. Idempotent: if already connected it's
+    // a no-op. Must complete (agent in room) BEFORE the user joins, because the
+    // voice session is created from the ParticipantConnected event, which only
+    // fires for participants who join AFTER the agent. The frontend polls
+    // /health for livekit.status==='connected' before minting its token.
+    if (req.method === 'POST' && url.pathname === '/connect-room') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, status: livekitState.status }))
+      if (connectRoomHook) {
+        connectRoomHook().catch((e) => console.error('❌ /connect-room hook failed:', e))
+      }
+      return
+    }
+
+    // POST /leave-room — the frontend's explicit "leave"/disconnect leaves the
+    // LiveKit room immediately so connection-minute burn stops the instant the
+    // user is done (no waiting for the agent-side alone timer). Sets
+    // intentionalLeave so the Disconnected handler does NOT auto-rejoin.
+    if (req.method === 'POST' && url.pathname === '/leave-room') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+      if (leaveRoomHook) {
+        leaveRoomHook('frontend_leave').catch((e) => console.error('❌ /leave-room hook failed:', e))
+      }
       return
     }
 
@@ -1133,6 +1186,35 @@ async function main() {
   let currentSession: voice.AgentSession | null = null
   let currentAgent: voice.Agent | null = null  // For updateChatCtx() context injection
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
+
+  // Agent-side "alone in room" leave timer (see Room-presence lifecycle note up
+  // top). Armed in ParticipantDisconnected once a user has left; if no one
+  // rejoins within the grace window the agent leaves LiveKit on its own.
+  // Cancelled in ParticipantConnected. 3 min: long enough to ride out a brief
+  // reconnect (page refresh, network blip), short enough that a forgotten
+  // session costs ~3 min of connection-minutes instead of hours.
+  let aloneTimer: ReturnType<typeof setTimeout> | null = null
+  const ALONE_GRACE_MS = 3 * 60 * 1000
+
+  // Arm (or re-arm) the alone timer: if no remote participant is present, leave
+  // the LiveKit room after the grace window. Called on Connected (covers a
+  // machine woken but then abandoned before the user joined) and on
+  // ParticipantDisconnected (covers a finished session). Cancelled the moment a
+  // user joins. Net invariant: the agent never holds an empty room beyond
+  // ALONE_GRACE_MS, in any scenario — the root cause of the 25h burn.
+  const armAloneTimer = () => {
+    if (aloneTimer) clearTimeout(aloneTimer)
+    aloneTimer = null
+    if (room.remoteParticipants.size > 0) return
+    aloneTimer = setTimeout(() => {
+      aloneTimer = null
+      if (room.remoteParticipants.size === 0 && livekitState.status === 'connected') {
+        console.log(`🕊️ Alone in room ${ALONE_GRACE_MS / 1000}s — leaving LiveKit to stop connection-minute burn`)
+        intentionalLeave = true
+        room.disconnect().catch((e) => console.error('alone-leave room.disconnect failed:', e))
+      }
+    }, ALONE_GRACE_MS)
+  }
 
   /**
    * Hard-kill the in-flight Claude SDK query AND the persistent subprocess.
@@ -2657,6 +2739,10 @@ async function main() {
   room.on(RoomEvent.Connected, () => {
     console.log('✅ Connected to room:', roomName)
     localParticipant = room.localParticipant
+    // Arm the alone timer: if we connected but no user joins within the grace
+    // window (e.g. machine woken then abandoned mid-handshake), leave the room
+    // rather than hold it indefinitely. Cancelled in ParticipantConnected.
+    armAloneTimer()
   })
 
   // NOTE: previously this section also had a RoomEvent.ActiveSpeakersChanged
@@ -2712,6 +2798,21 @@ async function main() {
     //
     // Note: we mark status='retrying' immediately so /health reflects the real
     // state — closing the lie window between Disconnected and the next attempt.
+    // ── Voluntary-leave guard (2026-06-09) ──
+    // If we left the room ON PURPOSE (user clicked leave → /leave-room, or the
+    // agent-side alone timer fired), do NOT auto-rejoin — rejoining would
+    // recreate the connection-minute burn we just stopped. Mark the connection
+    // 'idle' (machine stays warm, /health still 200) and wait for the next
+    // /connect-room. Reset the flag so a later involuntary drop still rejoins.
+    if (intentionalLeave) {
+      intentionalLeave = false
+      livekitState.status = 'idle'
+      livekitState.error = null
+      livekitState.errorCode = null
+      console.log('🕊️ Left LiveKit room intentionally — idle, awaiting /connect-room (no auto-rejoin)')
+      return
+    }
+
     livekitState.status = 'retrying'
     livekitState.error = 'LiveKit room disconnected; attempting to rejoin'
     livekitState.errorCode = 'disconnected'
@@ -2723,6 +2824,9 @@ async function main() {
 
   room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
+
+    // A user is present — cancel any pending agent-side "alone" leave.
+    if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
 
     // Wait for previous session's byte stream handler to fully deregister.
     // Quick reconnects (< ~6s) crash with "byte stream handler already set" without this.
@@ -3448,6 +3552,11 @@ async function main() {
         activeMeetingBotId = null
       }
     }
+
+    // Arm the agent-side "alone" leave timer (tab-close-proof — runs on the
+    // agent, not the frontend, so it fires even if the user closed the tab
+    // without clicking leave).
+    armAloneTimer()
 
     console.log('⏳ Waiting for new user...\n')
   })
@@ -4237,6 +4346,24 @@ async function main() {
         // loop — try again
       }
     }
+  }
+
+  // Wire the module-level HTTP control hooks now that `room` and the
+  // connect-with-retry loop exist (see Room-presence lifecycle note up top).
+  // The /connect-room and /leave-room endpoints in startApiServer call these.
+  connectRoomHook = async () => {
+    intentionalLeave = false
+    if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
+    if (livekitState.status === 'connected') return  // already in the room — no-op
+    console.log('🔌 /connect-room — joining LiveKit for incoming user')
+    await connectWithRetry()
+  }
+  leaveRoomHook = async (reason: string) => {
+    if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
+    if (livekitState.status !== 'connected') return  // already out — no-op
+    intentionalLeave = true
+    console.log(`🚪 Leaving LiveKit room (${reason}) — stops connection-minute burn`)
+    try { await room.disconnect() } catch (e) { console.error('leave-room room.disconnect failed:', e) }
   }
 
   // Fire and forget; the retry loop keeps the process alive on its own (so

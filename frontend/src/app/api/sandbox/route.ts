@@ -293,6 +293,46 @@ export async function POST(request: Request) {
       return NextResponse.json({ roomCode, agentUrl: sb.previewUrl })
     }
 
+    case 'connect-room': {
+      // Tell the agent to (re)join its LiveKit room for an incoming user. The
+      // agent leaves the room whenever no user is present (idle/alone timer or
+      // explicit leave); this brings it back. Idempotent on the agent side
+      // (no-op if already connected). Server-side fetch — no CORS.
+      const sbCR = await findUserSandbox(user.id, await getKnownSandboxId())
+      if (!sbCR?.previewUrl) {
+        return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
+      }
+      try {
+        const r = await fetch(`${sbCR.previewUrl}/connect-room`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(5000),
+        })
+        return NextResponse.json({ success: r.ok })
+      } catch {
+        return NextResponse.json({ success: false })
+      }
+    }
+
+    case 'leave-room': {
+      // Tell the agent to leave its LiveKit room immediately (user clicked
+      // leave / went idle). Stops connection-minute burn without stopping the
+      // machine. No-op if the sandbox isn't running (already in no room).
+      // Server-side fetch — no CORS.
+      const sbLR = await findUserSandbox(user.id, await getKnownSandboxId())
+      if (!sbLR?.previewUrl || sbLR.status !== 'running') {
+        return NextResponse.json({ success: true })
+      }
+      try {
+        const r = await fetch(`${sbLR.previewUrl}/leave-room`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(5000),
+        })
+        return NextResponse.json({ success: r.ok })
+      } catch {
+        return NextResponse.json({ success: false })
+      }
+    }
+
     case 'persist-auth': {
       // Persist an OAuth token to the sprite's host-persistent filesystem.
       // Credentials written inside the service container's ephemeral overlay
