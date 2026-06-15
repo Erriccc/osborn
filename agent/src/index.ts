@@ -1270,6 +1270,26 @@ async function main() {
   // Session-level always-allow list: paths the user has approved for this session without prompting
   let sessionAlwaysAllowPaths = new Set<string>()
   let userState = 'listening'  // Track user speech state for queue safety
+  // Leading-edge debounce for the TTS interrupt below — restores the same
+  // anti-flap protection the removed ActiveSpeakersChanged handler had pre-0.9.39
+  // (May 21 / c345c98). Wall-clock timestamp + ms compare; no setTimeout, no
+  // promise, no new API. Suppresses repeat interrupts within the window so a
+  // single user-input transition fires at most one interrupt() call per second.
+  // Without it, TTS echo bleeding through the mic causes user_state to oscillate
+  // speaking ↔ listening across rapid Deepgram frames, each transition firing a
+  // fresh interrupt — and even after 1.4.x's stricter error classification, the
+  // first one survives but the cascade kills the session.
+  let lastInterruptAt = 0
+  // Self-echo guard for the TTS interrupt below. Updated by the
+  // ActiveSpeakersChanged listener registered near the other room.on(...) handlers.
+  // user_state_changed carries NO speaker identity (verified against the SDK type
+  // — UserStateChangedEvent has only oldState/newState/createdAt), so a separate
+  // remote-speaker timestamp is the only way to distinguish "real user spoke" from
+  // "agent's own TTS echoed through the mic". Independent producer: rtc-node
+  // emits activeSpeakersChanged from server WebRTC audio-level reports
+  // (room.js:213), with NO reference to AgentSession or STT — so there's no
+  // dependency loop with user_state_changed's STT-driven producer.
+  let lastRemoteSpeakerAt = 0
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
   let currentProvider: string = realtimeConfig.provider  // Track active realtime provider
   // Authenticated Supabase userId from participant metadata. Used to scope
@@ -2745,6 +2765,21 @@ async function main() {
     armAloneTimer()
   })
 
+  // Self-echo guard producer. Server WebRTC audio-level reports drive this
+  // (rtc-node room.js:213, ~50-100ms latency from mic onset — faster than
+  // Deepgram STT classification, so by the time user_state_changed fires
+  // lastRemoteSpeakerAt is already current). Filter speakers to RemoteParticipant
+  // — LocalParticipant is the agent itself and including it would defeat the
+  // whole point (the echo we're guarding against IS the agent's local audio).
+  // This is the speaker-identity filter the removed ActiveSpeakersChanged
+  // handler had (May 21 / c345c98) — minus the interrupt() call, since the
+  // user_state_changed handler now owns interrupt firing.
+  room.on(RoomEvent.ActiveSpeakersChanged, (speakers: any[]) => {
+    if (speakers.some((s: any) => s instanceof RemoteParticipant)) {
+      lastRemoteSpeakerAt = Date.now()
+    }
+  })
+
   // NOTE: previously this section also had a RoomEvent.ActiveSpeakersChanged
   // handler that interrupted TTS on any sustained audio activity (~50ms after
   // mic onset). That fired too eagerly — coughs, paper rustles, the agent's
@@ -3110,11 +3145,32 @@ async function main() {
         console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
 
         if (ev.newState === 'speaking' && agentState === 'speaking' && sessionVoiceMode !== 'realtime') {
-          try {
-            console.log('🎤 user_state_changed=speaking + agent speaking → interrupting TTS')
-            currentSession?.interrupt()
-          } catch (err) {
-            console.warn('⚠️ user-state interrupt failed:', err instanceof Error ? err.message : err)
+          const now = Date.now()
+          // Self-echo guard FIRST. Reject this trigger entirely if no remote
+          // participant has been heard speaking in the last 500ms — at that
+          // point user_state=speaking is almost certainly TTS bleeding through
+          // the mic (Deepgram correctly identifies it as "speech", we add the
+          // identity filter the high-level event lacks). 500ms is wider than
+          // the ~50-300ms gap between ActiveSpeakersChanged and user_state_changed
+          // firing, so a real user is comfortably inside the window.
+          if (now - lastRemoteSpeakerAt > 500) {
+            console.log('🔇 Skipping interrupt — no recent remote-speaker activity (self-echo guard)')
+            return
+          }
+          // Leading-edge 1s debounce — verbatim shape of the removed
+          // ActiveSpeakersChanged handler's anti-flap (see lastInterruptAt
+          // declaration). Belt + suspenders with the self-echo guard above.
+          const debounced = now - lastInterruptAt < 1000
+          lastInterruptAt = now
+          if (debounced) {
+            console.log('🔇 user-state interrupt debounced (< 1s since last)')
+          } else {
+            try {
+              console.log('🎤 user_state_changed=speaking + agent speaking + remote-speaker confirmed → interrupting TTS')
+              currentSession?.interrupt()
+            } catch (err) {
+              console.warn('⚠️ user-state interrupt failed:', err instanceof Error ? err.message : err)
+            }
           }
         }
 
