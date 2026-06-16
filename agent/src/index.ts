@@ -1341,16 +1341,6 @@ async function main() {
   // Session-level always-allow list: paths the user has approved for this session without prompting
   let sessionAlwaysAllowPaths = new Set<string>()
   let userState = 'listening'  // Track user speech state for queue safety
-  // Self-echo guard for the TTS interrupt below. Updated by the
-  // ActiveSpeakersChanged listener registered near the other room.on(...) handlers.
-  // user_state_changed carries NO speaker identity (verified against the SDK type
-  // — UserStateChangedEvent has only oldState/newState/createdAt), so a separate
-  // remote-speaker timestamp is the only way to distinguish "real user spoke" from
-  // "agent's own TTS echoed through the mic". Independent producer: rtc-node
-  // emits activeSpeakersChanged from server WebRTC audio-level reports
-  // (room.js:213), with NO reference to AgentSession or STT — so there's no
-  // dependency loop with user_state_changed's STT-driven producer.
-  let lastRemoteSpeakerAt = 0
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
   let currentProvider: string = realtimeConfig.provider  // Track active realtime provider
   // Authenticated Supabase userId from participant metadata. Used to scope
@@ -2247,29 +2237,22 @@ async function main() {
           minDelay: 500,    // Wait 500ms after STT commits before generating reply
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
         },
-        // Echo-driven false-interrupt protection at the SDK level (1.2.x has these knobs,
-        // we just never set them — defaults are minDuration:500ms / minWords:0 which let
-        // through every short echo blip). Both knobs gate the SDK's internal
-        // interruptByAudioActivity() (agent_activity.js — runs on Deepgram interim
-        // transcripts AND speechDuration updates), which is the path that was firing
-        // even after our user_state_changed handler skipped the trigger.
+        // 0.9.57: bump falseInterruptionTimeout from default 2000ms → 3000ms.
+        // This is the silence-after-interrupt window the SDK waits before
+        // emitting agentFalseInterruption + resuming. Extending it gives the
+        // user a fuller breath between low-level audio activity moments to
+        // accumulate a clean silence, which helps when echo or ambient noise
+        // keeps resetting the 2s window. Other tunables in this same block
+        // (NOT changed yet — try the timeout first, escalate if needed):
+        //   - minDuration (default 500ms) — minimum sustained speech to count
+        //   - minWords (default 0) — minimum word count in interim transcript
+        //   - enabled (default true) — kept ON (auto-interrupt path active)
+        //   - resumeFalseInterruption (default true) — auto-resume kept ON
+        //   - discardAudioIfUninterruptible (default true)
         interruption: {
-          // SDK auto-interrupt fully DISABLED (0.9.55). Even with minDuration:750
-          // and minWords:2 in 0.9.54, the SDK's onInterimTranscript path bypasses
-          // duration gating (it fires on first interim text) and minWords gates
-          // against accumulated transcript wordcount — so once a real user utters
-          // ≥2 words, every subsequent echo passes. Worse: double-fires within
-          // 200ms corrupt SegmentSynchronizerImpl state (pushAudio called after
-          // close → markPlaybackFinished before input done → playback hangs).
-          // With enabled:false the SDK won't fire interruptByAudioActivity at all;
-          // our user_state_changed handler at index.ts:3162 with the self-echo
-          // guard (lastRemoteSpeakerAt + ActiveSpeakersChanged) becomes the SOLE
-          // interrupt path. We control timing, deduplication, and identity.
-          enabled: false,
-          // The values below have no effect with enabled:false but kept for
-          // documentation in case enabled is flipped back on for testing.
-          minDuration: 750,
-          minWords: 2,
+          falseInterruptionTimeout: 3000,  // 2000 → 3000 (extra second of silence before resume)
+          minDuration: 1000,                // 500 → 1000 (need 1s sustained speech to count)
+          minWords: 3,                      // 0 → 3 (interim transcript needs ≥3 words)
         },
       },
     })
@@ -2850,21 +2833,6 @@ async function main() {
     armAloneTimer()
   })
 
-  // Self-echo guard producer. Server WebRTC audio-level reports drive this
-  // (rtc-node room.js:213, ~50-100ms latency from mic onset — faster than
-  // Deepgram STT classification, so by the time user_state_changed fires
-  // lastRemoteSpeakerAt is already current). Filter speakers to RemoteParticipant
-  // — LocalParticipant is the agent itself and including it would defeat the
-  // whole point (the echo we're guarding against IS the agent's local audio).
-  // This is the speaker-identity filter the removed ActiveSpeakersChanged
-  // handler had (May 21 / c345c98) — minus the interrupt() call, since the
-  // user_state_changed handler now owns interrupt firing.
-  room.on(RoomEvent.ActiveSpeakersChanged, (speakers: any[]) => {
-    if (speakers.some((s: any) => s instanceof RemoteParticipant)) {
-      lastRemoteSpeakerAt = Date.now()
-    }
-  })
-
   // NOTE: previously this section also had a RoomEvent.ActiveSpeakersChanged
   // handler that interrupted TTS on any sustained audio activity (~50ms after
   // mic onset). That fired too eagerly — coughs, paper rustles, the agent's
@@ -3230,34 +3198,16 @@ async function main() {
         console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
 
         if (ev.newState === 'speaking' && agentState === 'speaking' && sessionVoiceMode !== 'realtime') {
-          const now = Date.now()
-          // Self-echo guard. Reject this trigger entirely if no remote
-          // participant has been heard speaking in the last 500ms — at that
-          // point user_state=speaking is almost certainly TTS bleeding through
-          // the mic (Deepgram correctly identifies it as "speech", we add the
-          // identity filter the high-level event lacks). 500ms is wider than
-          // the ~50-300ms gap between ActiveSpeakersChanged and user_state_changed
-          // firing, so a real user is comfortably inside the window.
-          //
-          // The 1s leading-edge debounce that used to live here was removed in
-          // 0.9.54 — the SDK-side `turnHandling.interruption.minDuration:750` +
-          // `minWords:2` now do the heavy lifting on echo filtering, and stacking
-          // an extra cooldown on top risked masking the SDK's own resume timing.
-          if (now - lastRemoteSpeakerAt > 500) {
-            console.log('🔇 Skipping interrupt — no recent remote-speaker activity (self-echo guard)')
-            return
-          }
+          // Reverted to the simple post-May-22 (c345c98 / 0.9.39) shape in 0.9.56.
+          // The self-echo guard via lastRemoteSpeakerAt was defeated by the same
+          // physics it was trying to filter — TTS bleeds into the user's mic →
+          // LiveKit registers their participant as a remote speaker → the guard
+          // passes → we interrupt anyway. Verified in osbornojure logs 2026-06-16
+          // (2 of 3 interrupts that session were from this handler firing on echo).
+          // Echo prevention moved to browser AEC on the publisher side.
           try {
-            // force:true bypasses the SpeechHandle's allowInterruptions check
-            // (speech_handle.js:93-99). Required because turnHandling.interruption.enabled=false
-            // sets allowInterruptions=false on every SpeechHandle (agent_activity.js:329-331),
-            // which is what blocks the SDK's auto-interrupt path — but without
-            // force:true, this manual call from our handler would also throw
-            // "This generation handle does not allow interruptions". Combined,
-            // they let US interrupt (with self-echo guard already verified above)
-            // while keeping the SDK's auto-trigger off.
-            console.log('🎤 user_state_changed=speaking + agent speaking + remote-speaker confirmed → interrupting TTS (force)')
-            currentSession?.interrupt({ force: true })
+            console.log('🎤 user_state_changed=speaking + agent speaking → interrupting TTS')
+            currentSession?.interrupt()
           } catch (err) {
             console.warn('⚠️ user-state interrupt failed:', err instanceof Error ? err.message : err)
           }

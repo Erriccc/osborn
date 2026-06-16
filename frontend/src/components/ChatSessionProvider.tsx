@@ -389,11 +389,61 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Two disconnect paths — they ONLY differ in whether they ask the agent to
+  // leave its LiveKit room.
+  //
+  // disconnect() — called by the explicit "Leave" button in VoiceRoom + the
+  //   chat-page header. We KNOW the user is done with this session, so we
+  //   POST /leave-room to make the agent leave its LiveKit room immediately
+  //   (stops connection-minute burn — the whole point of room-presence v0.9.52).
+  //
+  // disconnectFromLiveKitLifecycle() — bound to the <LiveKitRoom> element's
+  //   onDisconnected. This fires on ANY LiveKit drop, including transient
+  //   network blips, tab visibility changes, mobile background pauses, and
+  //   anything else that briefly closes the WebRTC connection. In that case
+  //   we MUST NOT tell the agent to leave its room — the user is likely
+  //   reconnecting in seconds and we don't want to kick the agent out of the
+  //   room they're trying to rejoin. Just capture the log and navigate.
+  //
+  // Bug fix 2026-06-16 (post-0.9.55 deploy): we previously bound disconnect()
+  // to both — so every LiveKit lifecycle disconnect made the agent leave its
+  // room, leaving the user stuck on "back to dashboard" loops on every
+  // resume attempt. The agent-side alone-timer (3 min if no participant)
+  // is the right backstop for the lifecycle case; explicit /leave-room is
+  // only for the explicit button.
+
+  // Fire-and-forget log capture: fetch log from sprite then save to Supabase Storage.
+  // Must not block or throw — caller proceeds unconditionally.
+  const captureSessionLog = useCallback(() => {
+    if (!activeSandboxId) return
+    const spriteName = activeSandboxId
+    fetch('/api/sandbox', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'fetch-log', sandboxId: spriteName }),
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`fetch-log ${res.status}`))))
+      .then((data: { log: string }) => {
+        return fetch('/api/sandbox', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'save-log',
+            sandboxId: spriteName,
+            spriteName,
+            logContent: data.log,
+            sessionId: preSelectedSessionId ?? undefined,
+          }),
+        })
+      })
+      .catch(() => {
+        // Log capture is best-effort — swallow all errors silently
+      })
+  }, [activeSandboxId, preSelectedSessionId])
+
+  // Explicit user leave (Leave button). Tell the agent to leave its LiveKit
+  // room so connection-minute burn stops immediately.
   const disconnect = useCallback(() => {
-    // Leave the agent's LiveKit room immediately so connection-minute burn stops
-    // the instant the user clicks leave — don't wait for the agent-side 3-min
-    // alone timer. Cloud: proxy via /api/sandbox (CORS-safe). Local: direct,
-    // with a mixed-content guard. Fire-and-forget; navigation proceeds regardless.
     if (activeSandboxId) {
       fetch('/api/sandbox', {
         method: 'POST',
@@ -406,36 +456,18 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     ) {
       fetch(`${agentUrl}/leave-room`, { method: 'POST' }).catch(() => {})
     }
-
-    // Fire-and-forget log capture: fetch log from sprite then save to Supabase Storage.
-    // Must not block or throw — disconnect proceeds unconditionally.
-    if (activeSandboxId) {
-      const spriteName = activeSandboxId
-      fetch('/api/sandbox', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'fetch-log', sandboxId: spriteName }),
-      })
-        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`fetch-log ${res.status}`))))
-        .then((data: { log: string }) => {
-          return fetch('/api/sandbox', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              action: 'save-log',
-              sandboxId: spriteName,
-              spriteName,
-              logContent: data.log,
-              sessionId: preSelectedSessionId ?? undefined,
-            }),
-          })
-        })
-        .catch(() => {
-          // Log capture is best-effort — swallow all errors silently
-        })
-    }
+    captureSessionLog()
     router.push('/dashboard')
-  }, [router, activeSandboxId, preSelectedSessionId, agentUrl])
+  }, [router, activeSandboxId, agentUrl, captureSessionLog])
+
+  // LiveKit lifecycle disconnect (transient drops, tab close, mobile background).
+  // Do NOT call /leave-room — the user is likely reconnecting in seconds and
+  // we don't want to kick the agent out of the room they're trying to rejoin.
+  // The agent's 3-min alone-timer is the backstop if the user truly walked away.
+  const disconnectFromLiveKitLifecycle = useCallback(() => {
+    captureSessionLog()
+    router.push('/dashboard')
+  }, [router, captureSessionLog])
 
   const markAgentReady = useCallback(() => {
     // Reset activity clock + clear idle state on connection so the machine
@@ -496,9 +528,23 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           token={token}
           serverUrl={livekitUrl}
           connect={true}
-          audio={true}
+          audio={{
+            // Browser-side Acoustic Echo Cancellation (AEC) — strips the agent's
+            // TTS audio out of the mic capture BEFORE it gets published to
+            // LiveKit. Root-cause fix for the "agent interrupts itself" loop:
+            // without AEC, TTS plays through device speakers → mic captures the
+            // echo → LiveKit publishes it as user audio → Deepgram classifies it
+            // as speech → agent's user_state_changed handler interrupts its own
+            // TTS. WebRTC supports these as MediaTrackConstraints in all modern
+            // browsers, including iPad Safari. Echo cancellation is the primary
+            // defense; noiseSuppression filters fan/HVAC; autoGainControl
+            // smooths mic level so soft speech still triggers turn detection.
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }}
           video={enableVideo}
-          onDisconnected={disconnect}
+          onDisconnected={disconnectFromLiveKitLifecycle}
           className="w-full flex justify-center"
         >
           <RoomAudioRenderer />
