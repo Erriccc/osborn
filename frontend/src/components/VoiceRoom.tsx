@@ -2042,6 +2042,24 @@ function VoiceRoomInner({
       } else if (data.type === 'compaction_progress') {
         console.log('[COMPACT-FRONTEND-RX] compaction_progress stage=', data.stage, 'detail=', data.detail ?? '')
         setCompactionStages(prev => [...prev, { stage: data.stage, detail: data.detail, ts: Date.now() }])
+      } else if (data.type === 'bug_report') {
+        // bug-reporter skill (agent-side) emitted a bug report. Forward to the
+        // backend API which has the Supabase keys and will INSERT the row +
+        // upload the log tail. Fire-and-forget — we don't block the voice UI on
+        // Supabase round-trips. Errors are logged but not surfaced to the user;
+        // the agent already told them "Filed."
+        console.log('🪲 Bug report received from agent:', data.reportId, data.payload?.title)
+        fetch('/api/sandbox', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'submit-bug-report',
+            reportId: data.reportId,
+            payload: data.payload,
+            context: data.context || {},
+            sessionId: preSelectedSessionId ?? null,
+          }),
+        }).catch((err) => console.error('[bug-report] submit-bug-report failed:', err))
       } else if (data.type === 'compaction_complete') {
         console.log('[COMPACT-FRONTEND-RX] compaction_complete skillsWritten=', data.skillsWritten, 'skills=', data.skillNames, 'full=', JSON.stringify(data).substring(0, 200))
         setCompactionStatus('complete')

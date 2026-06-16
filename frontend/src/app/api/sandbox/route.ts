@@ -490,6 +490,108 @@ export async function POST(request: Request) {
       return NextResponse.json({ path: storagePath })
     }
 
+    case 'submit-bug-report': {
+      // Receives a bug report or feature request originally filed by the
+      // bug-reporter skill on the workspace agent and forwarded here through
+      // the LiveKit data channel. We do the actual Supabase work (the agent
+      // never holds Supabase credentials): upload a log tail to Storage and
+      // INSERT a row into bug_reports.
+      const { reportId, payload, context, sessionId: bugSessionId } = body as {
+        reportId?: string
+        payload?: {
+          type: 'bug' | 'feature'
+          severity: 'low' | 'medium' | 'high' | 'critical'
+          title: string
+          description: string
+          reproduction_notes?: string
+          tags?: string[]
+        }
+        context?: {
+          voice_mode?: string
+          sandbox_id?: string
+          osborn_version?: string
+        }
+        sessionId?: string | null
+      }
+      if (!reportId || !payload?.type || !payload?.title || !payload?.description) {
+        return NextResponse.json(
+          { error: 'reportId, payload.type, payload.title, payload.description required' },
+          { status: 400 },
+        )
+      }
+
+      // Find the user's sandbox so we can pull the log tail from the right machine
+      const { data: bugInstance } = await supabase
+        .from('instances')
+        .select('sandbox_id')
+        .eq('user_id', user.id)
+        .single()
+      const targetSandboxId = bugInstance?.sandbox_id || context?.sandbox_id || null
+
+      // Pull log tail (best-effort — bug report still files if exec fails)
+      let logUrl: string | null = null
+      if (targetSandboxId) {
+        try {
+          const logResult = await execInSprite(
+            targetSandboxId,
+            'sh',
+            ['-c', 'tail -500 /workspace/osborn.log 2>/dev/null || echo "log unavailable"'],
+            15,
+          )
+          if (logResult.output && logResult.output.length > 0) {
+            const storagePath = `bug-logs/${reportId}.log`
+            const { error: upErr } = await supabase.storage
+              .from('osborn-storage')
+              .upload(storagePath, logResult.output, {
+                contentType: 'text/plain',
+                upsert: false,
+              })
+            if (!upErr) {
+              logUrl = storagePath
+            } else {
+              console.error('[bug-report] log upload failed', upErr)
+            }
+          }
+        } catch (e) {
+          console.error('[bug-report] exec to fetch log failed:', e)
+        }
+      }
+
+      // Insert the row
+      const { data: inserted, error: insertErr } = await supabase
+        .from('bug_reports')
+        .insert({
+          id: reportId,
+          type: payload.type,
+          severity: payload.severity || 'medium',
+          status: 'open',
+          reporter_user_id: user.id,
+          reporter_email: user.email ?? null,
+          title: payload.title,
+          description: payload.description,
+          reproduction_notes: payload.reproduction_notes ?? null,
+          osborn_version: context?.osborn_version ?? 'unknown',
+          voice_mode: context?.voice_mode ?? null,
+          session_id: bugSessionId ?? null,
+          sandbox_id: targetSandboxId,
+          log_url: logUrl,
+          tags: Array.isArray(payload.tags) ? payload.tags : [],
+          metadata: {},
+        })
+        .select('id, type, severity, title, created_at')
+        .single()
+
+      if (insertErr) {
+        console.error('[bug-report] insert failed', insertErr)
+        return NextResponse.json(
+          { error: 'Failed to write report', details: insertErr.message },
+          { status: 500 },
+        )
+      }
+      console.log(`[bug-report] filed ${inserted?.id.slice(0, 8)} (${inserted?.type}/${inserted?.severity}): ${inserted?.title}`)
+      return NextResponse.json({ success: true, report: inserted, logUrl })
+    }
+
     case 'check-version': {
       // Find sandbox for this user
       const cvSandbox = await findUserSandbox(user.id, await getKnownSandboxId())

@@ -22,6 +22,7 @@ import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtem
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { PassThrough } from 'node:stream'
 import { createGunzip } from 'node:zlib'
@@ -214,6 +215,23 @@ const livekitState: {
 let intentionalLeave = false
 let connectRoomHook: (() => Promise<void>) | null = null
 let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
+// Hook for the bug-reporter skill. The /report-bug HTTP endpoint validates the
+// payload + generates the reportId in the module-level handler, then delegates
+// to this hook which lives in main() (where sendToFrontend, currentVoiceMode,
+// and currentSession are in scope). The frontend listens for the data channel
+// message type 'bug_report' and writes the row to Supabase — same architecture
+// as the existing fetch-log/save-log flow so we don't ship Supabase credentials
+// to the Fly machine.
+let bugReportHook: ((reportId: string, payload: BugReportPayload) => void) | null = null
+
+interface BugReportPayload {
+  type: 'bug' | 'feature'
+  severity: 'low' | 'medium' | 'high' | 'critical'
+  title: string
+  description: string
+  reproduction_notes?: string
+  tags?: string[]
+}
 
 function startApiServer(workingDir: string, port: number): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -360,6 +378,59 @@ function startApiServer(workingDir: string, port: number): void {
       if (leaveRoomHook) {
         leaveRoomHook('frontend_leave').catch((e) => console.error('❌ /leave-room hook failed:', e))
       }
+      return
+    }
+
+    // POST /report-bug — invoked by the bug-reporter skill (running inside Claude
+    // Code on this same machine) when the user describes an Osborn bug or
+    // requests a feature. We validate the payload, generate a reportId, and emit
+    // a data channel message via bugReportHook → sendToFrontend. The frontend
+    // owns the actual Supabase write (it already has the keys for the log-upload
+    // flow, no need to ship them to the Fly machine).
+    if (req.method === 'POST' && url.pathname === '/report-bug') {
+      let body = ''
+      req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body || '{}') as Partial<BugReportPayload>
+          const errors: string[] = []
+          if (parsed.type !== 'bug' && parsed.type !== 'feature') errors.push('type must be "bug" or "feature"')
+          if (!parsed.title || typeof parsed.title !== 'string' || parsed.title.length < 3) errors.push('title required (>= 3 chars)')
+          if (!parsed.description || typeof parsed.description !== 'string') errors.push('description required')
+          const sev = parsed.severity || 'medium'
+          if (!['low', 'medium', 'high', 'critical'].includes(sev)) errors.push('severity invalid')
+          if (errors.length) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'invalid payload', details: errors }))
+            return
+          }
+          const reportId = randomUUID()
+          const payload: BugReportPayload = {
+            type: parsed.type as 'bug' | 'feature',
+            severity: sev as BugReportPayload['severity'],
+            title: parsed.title!.trim().slice(0, 200),
+            description: parsed.description!.trim().slice(0, 8000),
+            reproduction_notes: typeof parsed.reproduction_notes === 'string'
+              ? parsed.reproduction_notes.trim().slice(0, 4000)
+              : undefined,
+            tags: Array.isArray(parsed.tags)
+              ? parsed.tags.filter((t) => typeof t === 'string').slice(0, 20)
+              : undefined,
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ reportId, status: 'submitted' }))
+          if (bugReportHook) {
+            try { bugReportHook(reportId, payload) } catch (e) {
+              console.error('❌ bugReportHook threw:', e)
+            }
+          } else {
+            console.warn('⚠️ /report-bug fired but no bugReportHook registered (frontend may not receive)')
+          }
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'invalid JSON', details: (e as Error).message }))
+        }
+      })
       return
     }
 
@@ -2183,11 +2254,22 @@ async function main() {
         // transcripts AND speechDuration updates), which is the path that was firing
         // even after our user_state_changed handler skipped the trigger.
         interruption: {
-          minDuration: 750,  // 500 → 750: require 750ms of sustained audio activity
-          minWords: 2,       // 0 → 2: require ≥2 transcript words (filters single-word echo blips)
-          // SDK defaults kept: enabled=true, resumeFalseInterruption=true,
-          // falseInterruptionTimeout=2000ms (that 2s timer is what resumed your audio
-          // exactly where it stopped — confirmed working as designed).
+          // SDK auto-interrupt fully DISABLED (0.9.55). Even with minDuration:750
+          // and minWords:2 in 0.9.54, the SDK's onInterimTranscript path bypasses
+          // duration gating (it fires on first interim text) and minWords gates
+          // against accumulated transcript wordcount — so once a real user utters
+          // ≥2 words, every subsequent echo passes. Worse: double-fires within
+          // 200ms corrupt SegmentSynchronizerImpl state (pushAudio called after
+          // close → markPlaybackFinished before input done → playback hangs).
+          // With enabled:false the SDK won't fire interruptByAudioActivity at all;
+          // our user_state_changed handler at index.ts:3162 with the self-echo
+          // guard (lastRemoteSpeakerAt + ActiveSpeakersChanged) becomes the SOLE
+          // interrupt path. We control timing, deduplication, and identity.
+          enabled: false,
+          // The values below have no effect with enabled:false but kept for
+          // documentation in case enabled is flipped back on for testing.
+          minDuration: 750,
+          minWords: 2,
         },
       },
     })
@@ -3166,8 +3248,16 @@ async function main() {
             return
           }
           try {
-            console.log('🎤 user_state_changed=speaking + agent speaking + remote-speaker confirmed → interrupting TTS')
-            currentSession?.interrupt()
+            // force:true bypasses the SpeechHandle's allowInterruptions check
+            // (speech_handle.js:93-99). Required because turnHandling.interruption.enabled=false
+            // sets allowInterruptions=false on every SpeechHandle (agent_activity.js:329-331),
+            // which is what blocks the SDK's auto-interrupt path — but without
+            // force:true, this manual call from our handler would also throw
+            // "This generation handle does not allow interruptions". Combined,
+            // they let US interrupt (with self-echo guard already verified above)
+            // while keeping the SDK's auto-trigger off.
+            console.log('🎤 user_state_changed=speaking + agent speaking + remote-speaker confirmed → interrupting TTS (force)')
+            currentSession?.interrupt({ force: true })
           } catch (err) {
             console.warn('⚠️ user-state interrupt failed:', err instanceof Error ? err.message : err)
           }
@@ -4419,6 +4509,36 @@ async function main() {
     intentionalLeave = true
     console.log(`🚪 Leaving LiveKit room (${reason}) — stops connection-minute burn`)
     try { await room.disconnect() } catch (e) { console.error('leave-room room.disconnect failed:', e) }
+  }
+
+  // bug-reporter skill hook — forwards a validated bug payload to the frontend
+  // via the LiveKit data channel. Frontend (which holds the Supabase keys for
+  // the existing log-upload flow) is responsible for the actual Supabase write.
+  // Enriches with the agent-side facts the frontend doesn't already have on
+  // hand (voice_mode + sandbox_id from FLY_MACHINE_ID — version it can read
+  // from /health, session_id it tracks via preSelectedSessionId).
+  bugReportHook = (reportId, payload) => {
+    const sandboxId = process.env.FLY_MACHINE_ID || null
+    let osbornVersion: string | undefined
+    try {
+      for (const rel of ['../package.json', '../../package.json']) {
+        try {
+          const pkg = JSON.parse(readFileSync(join(__dirname, rel), 'utf8'))
+          if (pkg.name === 'osborn' && pkg.version) { osbornVersion = pkg.version; break }
+        } catch { /* try next */ }
+      }
+    } catch { /* version optional */ }
+    console.log(`🪲 Bug report ${reportId.slice(0, 8)} (${payload.type}/${payload.severity}): ${payload.title}`)
+    sendToFrontend({
+      type: 'bug_report',
+      reportId,
+      payload,
+      context: {
+        voice_mode: currentVoiceMode,
+        sandbox_id: sandboxId,
+        osborn_version: osbornVersion,
+      },
+    }).catch((e) => console.error('❌ bugReportHook sendToFrontend failed:', e))
   }
 
   // Fire and forget; the retry loop keeps the process alive on its own (so
