@@ -1270,16 +1270,6 @@ async function main() {
   // Session-level always-allow list: paths the user has approved for this session without prompting
   let sessionAlwaysAllowPaths = new Set<string>()
   let userState = 'listening'  // Track user speech state for queue safety
-  // Leading-edge debounce for the TTS interrupt below — restores the same
-  // anti-flap protection the removed ActiveSpeakersChanged handler had pre-0.9.39
-  // (May 21 / c345c98). Wall-clock timestamp + ms compare; no setTimeout, no
-  // promise, no new API. Suppresses repeat interrupts within the window so a
-  // single user-input transition fires at most one interrupt() call per second.
-  // Without it, TTS echo bleeding through the mic causes user_state to oscillate
-  // speaking ↔ listening across rapid Deepgram frames, each transition firing a
-  // fresh interrupt — and even after 1.4.x's stricter error classification, the
-  // first one survives but the cascade kills the session.
-  let lastInterruptAt = 0
   // Self-echo guard for the TTS interrupt below. Updated by the
   // ActiveSpeakersChanged listener registered near the other room.on(...) handlers.
   // user_state_changed carries NO speaker identity (verified against the SDK type
@@ -2185,6 +2175,19 @@ async function main() {
           mode: 'fixed' as any,
           minDelay: 500,    // Wait 500ms after STT commits before generating reply
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
+        },
+        // Echo-driven false-interrupt protection at the SDK level (1.2.x has these knobs,
+        // we just never set them — defaults are minDuration:500ms / minWords:0 which let
+        // through every short echo blip). Both knobs gate the SDK's internal
+        // interruptByAudioActivity() (agent_activity.js — runs on Deepgram interim
+        // transcripts AND speechDuration updates), which is the path that was firing
+        // even after our user_state_changed handler skipped the trigger.
+        interruption: {
+          minDuration: 750,  // 500 → 750: require 750ms of sustained audio activity
+          minWords: 2,       // 0 → 2: require ≥2 transcript words (filters single-word echo blips)
+          // SDK defaults kept: enabled=true, resumeFalseInterruption=true,
+          // falseInterruptionTimeout=2000ms (that 2s timer is what resumed your audio
+          // exactly where it stopped — confirmed working as designed).
         },
       },
     })
@@ -3146,31 +3149,27 @@ async function main() {
 
         if (ev.newState === 'speaking' && agentState === 'speaking' && sessionVoiceMode !== 'realtime') {
           const now = Date.now()
-          // Self-echo guard FIRST. Reject this trigger entirely if no remote
+          // Self-echo guard. Reject this trigger entirely if no remote
           // participant has been heard speaking in the last 500ms — at that
           // point user_state=speaking is almost certainly TTS bleeding through
           // the mic (Deepgram correctly identifies it as "speech", we add the
           // identity filter the high-level event lacks). 500ms is wider than
           // the ~50-300ms gap between ActiveSpeakersChanged and user_state_changed
           // firing, so a real user is comfortably inside the window.
+          //
+          // The 1s leading-edge debounce that used to live here was removed in
+          // 0.9.54 — the SDK-side `turnHandling.interruption.minDuration:750` +
+          // `minWords:2` now do the heavy lifting on echo filtering, and stacking
+          // an extra cooldown on top risked masking the SDK's own resume timing.
           if (now - lastRemoteSpeakerAt > 500) {
             console.log('🔇 Skipping interrupt — no recent remote-speaker activity (self-echo guard)')
             return
           }
-          // Leading-edge 1s debounce — verbatim shape of the removed
-          // ActiveSpeakersChanged handler's anti-flap (see lastInterruptAt
-          // declaration). Belt + suspenders with the self-echo guard above.
-          const debounced = now - lastInterruptAt < 1000
-          lastInterruptAt = now
-          if (debounced) {
-            console.log('🔇 user-state interrupt debounced (< 1s since last)')
-          } else {
-            try {
-              console.log('🎤 user_state_changed=speaking + agent speaking + remote-speaker confirmed → interrupting TTS')
-              currentSession?.interrupt()
-            } catch (err) {
-              console.warn('⚠️ user-state interrupt failed:', err instanceof Error ? err.message : err)
-            }
+          try {
+            console.log('🎤 user_state_changed=speaking + agent speaking + remote-speaker confirmed → interrupting TTS')
+            currentSession?.interrupt()
+          } catch (err) {
+            console.warn('⚠️ user-state interrupt failed:', err instanceof Error ? err.message : err)
           }
         }
 
