@@ -2266,8 +2266,8 @@ async function main() {
       // Bumping both watchdogs to 30s gives the forwarder room to ride out
       // normal between-message pauses without timing out. Independent of the
       // interruption block above, which is doing its job (0 interrupts fired).
-      ttsReadIdleTimeout: 30_000,                 // default 10000 → 30000
-      forwardAudioIdleTimeout: 30_000,            // default 10000 → 30000
+      ttsReadIdleTimeout: 40_000,                 // default 10000 → 30000
+      forwardAudioIdleTimeout: 40_000,            // default 10000 → 30000
       // connOptions: {
       //   maxUnrecoverableErrors: 15,               // default 3 (left at default)
       // },
@@ -2282,9 +2282,9 @@ async function main() {
         // a full 3s window to keep talking before deciding it was false and
         // resuming. Other two knobs left at SDK defaults.
         interruption: {
-          minDuration: 2000,                  // default 500  — require 2s sustained speech
-          minWords: 3,                        // default 0    — require ≥3 transcript words
-          falseInterruptionTimeout: 3000,     // default 2000 — wait 3s before auto-resume
+          minDuration: 2500,                  // default 500  — require 2s sustained speech
+          minWords: 4,                        // default 0    — require ≥3 transcript words
+          falseInterruptionTimeout: 4000,     // default 2000 — wait 3s before auto-resume
           // resumeFalseInterruption: true,      // default true  (unchanged)
           // discardAudioIfUninterruptible: true,// default true  (unchanged)
         },
