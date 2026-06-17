@@ -2231,28 +2231,32 @@ async function main() {
     const session = new voice.AgentSession({
       turnDetection: 'stt',
       preemptiveGeneration: false,  // Only fire LLM on final committed transcript, not partial preemptives
+      // First-line echo defense: drop mic frames from BOTH the recognition stream
+      // and the realtime audio stream for this many ms after the agent first
+      // enters 'speaking' state. STT receives no audio during the warmup → no
+      // interim/final transcripts can fire → echo cannot trigger an interrupt.
+      // 1.4.x default is 3000; bumping to 5000 widens the safe zone at session start.
+      // One-shot per session (NOT re-armed each turn), so this protects only the
+      // first agent response. After that the in-block interruption settings handle it.
+      aecWarmupDuration: 5000,
       turnHandling: {
         endpointing: {
           mode: 'fixed' as any,
           minDelay: 500,    // Wait 500ms after STT commits before generating reply
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
         },
-        // 0.9.57: bump falseInterruptionTimeout from default 2000ms → 3000ms.
-        // This is the silence-after-interrupt window the SDK waits before
-        // emitting agentFalseInterruption + resuming. Extending it gives the
-        // user a fuller breath between low-level audio activity moments to
-        // accumulate a clean silence, which helps when echo or ambient noise
-        // keeps resetting the 2s window. Other tunables in this same block
-        // (NOT changed yet — try the timeout first, escalate if needed):
-        //   - minDuration (default 500ms) — minimum sustained speech to count
-        //   - minWords (default 0) — minimum word count in interim transcript
-        //   - enabled (default true) — kept ON (auto-interrupt path active)
-        //   - resumeFalseInterruption (default true) — auto-resume kept ON
-        //   - discardAudioIfUninterruptible (default true)
+        // 1.4.x SDK fully wires these — minDuration now applies to the STT path
+        // (not just VAD), falseInterruptionTimeout actually fires the
+        // agentFalseInterruption event with auto-resume, discardAudioIfUninterruptible
+        // is checked at runtime. All inert in 1.2.1; live in 1.4.x.
         interruption: {
-          falseInterruptionTimeout: 3000,  // 2000 → 3000 (extra second of silence before resume)
-          minDuration: 1000,                // 500 → 1000 (need 1s sustained speech to count)
-          minWords: 3,                      // 0 → 3 (interim transcript needs ≥3 words)
+          // enabled defaults true — kept default (don't set to false; cascades into
+          // allowInterruptions:false which breaks manual interrupt() calls).
+          minDuration: 1000,                 // 1.4.x: now gates STT-path; require 1s sustained speech
+          minWords: 3,                       // require ≥3 words in interim transcript
+          falseInterruptionTimeout: 2000,    // emit agentFalseInterruption after 2s silence
+          resumeFalseInterruption: true,     // auto-resume TTS on false interrupt detection
+          discardAudioIfUninterruptible: true, // drop buffered echo audio
         },
       },
     })
@@ -3198,13 +3202,11 @@ async function main() {
         console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
 
         if (ev.newState === 'speaking' && agentState === 'speaking' && sessionVoiceMode !== 'realtime') {
-          // Reverted to the simple post-May-22 (c345c98 / 0.9.39) shape in 0.9.56.
-          // The self-echo guard via lastRemoteSpeakerAt was defeated by the same
-          // physics it was trying to filter — TTS bleeds into the user's mic →
-          // LiveKit registers their participant as a remote speaker → the guard
-          // passes → we interrupt anyway. Verified in osbornojure logs 2026-06-16
-          // (2 of 3 interrupts that session were from this handler firing on echo).
-          // Echo prevention moved to browser AEC on the publisher side.
+          // Simple manual interrupt for echo-side defense fallback. With 1.4.x
+          // the SDK's interrupt-by-audio-activity path is properly gated by
+          // turnHandling.interruption.{minDuration, minWords, falseInterruptionTimeout},
+          // and resumeFalseInterruption auto-recovers if echo was misclassified.
+          // This handler stays as a secondary trigger only.
           try {
             console.log('🎤 user_state_changed=speaking + agent speaking → interrupting TTS')
             currentSession?.interrupt()
