@@ -2257,11 +2257,19 @@ async function main() {
       // SDK 1.4.6 (matching what silently ran via caret-resolved 1.4.5 throughout
       // the user's last-working month) are restored by leaving these unset.
       //
-      // aecWarmupDuration: 5000,                    // default 3000
-      // ttsReadIdleTimeout: 30_000,                 // default 10000
-      // forwardAudioIdleTimeout: 30_000,            // default 10000
+      // aecWarmupDuration: 5000,                    // default 3000 (left at default)
+      // 0.9.64 evidence (0.9.63 osbornojure logs): the ONE stall in a long
+      // session fired AFTER session.say DONE during a ~73s silent gap before
+      // the next agent response — the forwarder's 10s idle timer fired during
+      // an LLM-think pause, not from an interrupt (OVERLAPPING SPEECH: 0,
+      // AGENT FALSE INTERRUPTION: 0, interrupting TTS: 0 in that session).
+      // Bumping both watchdogs to 30s gives the forwarder room to ride out
+      // normal between-message pauses without timing out. Independent of the
+      // interruption block above, which is doing its job (0 interrupts fired).
+      ttsReadIdleTimeout: 30_000,                 // default 10000 → 30000
+      forwardAudioIdleTimeout: 30_000,            // default 10000 → 30000
       // connOptions: {
-      //   maxUnrecoverableErrors: 15,               // default 3
+      //   maxUnrecoverableErrors: 15,               // default 3 (left at default)
       // },
       turnHandling: {
         endpointing: {
