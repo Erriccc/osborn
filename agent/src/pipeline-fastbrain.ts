@@ -37,7 +37,7 @@ export interface PipelineFastBrainOptions {
 // CONSTANTS
 // ============================================================
 
-const GEMINI_MODEL = 'gemini-2.0-flash'
+const GEMINI_MODEL = 'gemini-2.5-flash'  // 0.9.67: was gemini-2.0-flash — 404 deprecated by Google
 const TIMEOUT_MS = 20_000  // AFC needs time for tool calls + processing + synthesis
 const MAX_AFC_CALLS = 4
 

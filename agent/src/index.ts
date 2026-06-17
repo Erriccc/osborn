@@ -3232,16 +3232,46 @@ async function main() {
         console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
 
         if (ev.newState === 'speaking' && agentState === 'speaking' && sessionVoiceMode !== 'realtime') {
-          // Simple manual interrupt for echo-side defense fallback. With 1.4.x
-          // the SDK's interrupt-by-audio-activity path is properly gated by
-          // turnHandling.interruption.{minDuration, minWords, falseInterruptionTimeout},
-          // and resumeFalseInterruption auto-recovers if echo was misclassified.
-          // This handler stays as a secondary trigger only.
+          // 0.9.67: action commented out, condition + debug kept.
+          //
+          // Why removed: in @livekit/agents 1.4.x SpeechHandle.interrupt() calls
+          //   replyAbortController.abort() → AbortSignal.any composes into the
+          //   OpenAI TTS HTTP fetch → arrayBuffer() throws AbortError →
+          //   APIUserAbortError (openai/client.mjs:364) → SDK marks the error
+          //   recoverable:false → connOptions.maxUnrecoverableErrors counter trips
+          //   → session collapses. In 1.2.1 the same call was a hard-kill that
+          //   never reached an HTTP fetch — that's why it ran fine for ~1 month
+          //   under the silently caret-resolved 1.4.5 (which had inherited the
+          //   abort plumbing) until it crossed the unrecoverable-errors threshold.
+          //
+          // What handles interruption now: SDK 1.4.x's gated path —
+          //   turnHandling.interruption.{minDuration:2500, minWords:4,
+          //   falseInterruptionTimeout:4000, resumeFalseInterruption:true}
+          //   pauses TTS via audioOutput.pause() (no abort) and either resumes
+          //   on a false trigger or hard-interrupts on a confirmed barge-in.
+          //
+          // Debug: this block now ONLY observes — logs what we'd have interrupted
+          //   on so we can compare against the SDK's own behavior. If the SDK
+          //   under-reacts to real barge-ins we can re-enable selectively.
           try {
-            console.log('🎤 user_state_changed=speaking + agent speaking → interrupting TTS')
-            currentSession?.interrupt()
+            const evKeys = ev && typeof ev === 'object' ? Object.keys(ev) : []
+            const evShape = evKeys.reduce((acc: any, k) => {
+              const v = (ev as any)[k]
+              acc[k] = (v && typeof v === 'object') ? `<object:${Object.keys(v).join(',')}>` : v
+              return acc
+            }, {})
+            console.log('🔎 [DEBUG] manual-interrupt WOULD HAVE FIRED — SDK gated path now owns it:', JSON.stringify({
+              t: new Date().toISOString(),
+              userPrev: prev,
+              userNew: ev.newState,
+              agentState,
+              sessionVoiceMode,
+              evKeys,
+              evShape,
+            }))
+            // currentSession?.interrupt()  // ← 0.9.67 DISABLED: cascades to APIUserAbortError → recoverable:false → session collapse
           } catch (err) {
-            console.warn('⚠️ user-state interrupt failed:', err instanceof Error ? err.message : err)
+            console.warn('⚠️ user-state interrupt debug failed:', err instanceof Error ? err.message : err)
           }
         }
 

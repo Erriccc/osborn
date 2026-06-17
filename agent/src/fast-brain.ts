@@ -81,7 +81,7 @@ let initialized = false
 
 // Model IDs — configurable per provider
 const ANTHROPIC_FAST_MODEL = 'claude-haiku-4-5-20251001'
-const GEMINI_FAST_MODEL = 'gemini-2.0-flash'
+const GEMINI_FAST_MODEL = 'gemini-2.5-flash'  // 0.9.67: was gemini-2.0-flash — 404 deprecated by Google (verified against @livekit/agents-plugin-google test default)
 
 // ============================================================
 // Conversation history — sourced from agent.chatCtx (LiveKit in-memory context)
