@@ -6,7 +6,9 @@ import {
   BarVisualizer,
   useDataChannel,
   useLocalParticipant,
+  useRoomContext,
 } from '@livekit/components-react'
+import { RoomEvent, ConnectionState, Track } from 'livekit-client'
 import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
 import { LogsDrawer } from './LogsDrawer'
@@ -1495,6 +1497,7 @@ function VoiceRoomInner({
   }, [])
 
   const { state, audioTrack } = useVoiceAssistant()
+  const room = useRoomContext()
 
   useEffect(() => {
     if (state === 'listening' || state === 'speaking' || state === 'thinking') {
@@ -1504,6 +1507,106 @@ function VoiceRoomInner({
       }
     }
   }, [state, agentConnected, onAgentReady])
+
+  // ============================================================
+  // 0.9.68 — Audio + room instrumentation
+  //
+  // Captures every LiveKit RoomEvent + audio track lifecycle event so we can
+  // correlate frontend-side audio drops with backend TTS abort cascades.
+  // Each line is JSON-serializable for easy grep + tooling.
+  // ============================================================
+  useEffect(() => {
+    if (!room) return
+    const log = (event: string, data: Record<string, unknown> = {}) => {
+      console.log(`[FE-AUDIO] ${event}`, JSON.stringify({ t: new Date().toISOString(), agentState: state, sid: room.name, ...data }))
+    }
+    log('mount', { sid: room.name, connectionState: room.state, canPlayback: room.canPlaybackAudio })
+
+    const onConnected = () => log('RoomConnected', { sid: room.name })
+    const onDisconnected = (reason: unknown) => log('RoomDisconnected', { reason: String(reason) })
+    const onReconnecting = () => log('RoomReconnecting')
+    const onReconnected = () => log('RoomReconnected')
+    const onConnState = (s: ConnectionState) => log('ConnectionStateChanged', { state: s })
+    const onTrackSubscribed = (track: any, pub: any, participant: any) => {
+      const isAgent = !participant.isLocal
+      const isAudio = track.kind === Track.Kind.Audio
+      if (isAgent && isAudio) {
+        log('AgentAudioTrackSubscribed', { src: track.source, sid: pub?.trackSid, participant: participant.identity })
+        const onMuted = () => log('AgentAudioTrackMuted_LIVE', { sid: pub?.trackSid })
+        const onUnmuted = () => log('AgentAudioTrackUnmuted_LIVE', { sid: pub?.trackSid })
+        const onEnded = () => log('AgentAudioTrackEnded', { sid: pub?.trackSid })
+        track.on?.('muted', onMuted)
+        track.on?.('unmuted', onUnmuted)
+        track.on?.('ended', onEnded)
+      } else {
+        log('TrackSubscribed', { kind: track.kind, participant: participant.identity })
+      }
+    }
+    const onTrackUnsubscribed = (track: any, pub: any, participant: any) =>
+      log('TrackUnsubscribed', { kind: track.kind, participant: participant.identity, sid: pub?.trackSid })
+    const onTrackMuted = (pub: any, participant: any) =>
+      log('TrackMuted', { kind: pub?.kind, participant: participant.identity, sid: pub?.trackSid, isLocal: participant.isLocal })
+    const onTrackUnmuted = (pub: any, participant: any) =>
+      log('TrackUnmuted', { kind: pub?.kind, participant: participant.identity, sid: pub?.trackSid, isLocal: participant.isLocal })
+    const onActiveSpeakers = (speakers: any[]) =>
+      log('ActiveSpeakersChanged', { count: speakers.length, identities: speakers.map(s => s.identity) })
+    const onConnQuality = (q: any, p: any) =>
+      log('ConnectionQualityChanged', { participant: p.identity, quality: q })
+    const onAudioPlayback = () =>
+      log('AudioPlaybackStatusChanged', { canPlay: room.canPlaybackAudio })
+    const onMediaDevicesError = (err: Error) =>
+      log('MediaDevicesError', { err: err.message })
+    const onParticipantConnected = (p: any) =>
+      log('ParticipantConnected', { identity: p.identity, isAgent: !p.isLocal })
+    const onParticipantDisconnected = (p: any) =>
+      log('ParticipantDisconnected', { identity: p.identity, isAgent: !p.isLocal })
+
+    room.on(RoomEvent.Connected, onConnected)
+    room.on(RoomEvent.Disconnected, onDisconnected)
+    room.on(RoomEvent.Reconnecting, onReconnecting)
+    room.on(RoomEvent.Reconnected, onReconnected)
+    room.on(RoomEvent.ConnectionStateChanged, onConnState)
+    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed)
+    room.on(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed)
+    room.on(RoomEvent.TrackMuted, onTrackMuted)
+    room.on(RoomEvent.TrackUnmuted, onTrackUnmuted)
+    room.on(RoomEvent.ActiveSpeakersChanged, onActiveSpeakers)
+    room.on(RoomEvent.ConnectionQualityChanged, onConnQuality)
+    room.on(RoomEvent.AudioPlaybackStatusChanged, onAudioPlayback)
+    room.on(RoomEvent.MediaDevicesError, onMediaDevicesError)
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected)
+    room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
+
+    return () => {
+      room.off(RoomEvent.Connected, onConnected)
+      room.off(RoomEvent.Disconnected, onDisconnected)
+      room.off(RoomEvent.Reconnecting, onReconnecting)
+      room.off(RoomEvent.Reconnected, onReconnected)
+      room.off(RoomEvent.ConnectionStateChanged, onConnState)
+      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed)
+      room.off(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed)
+      room.off(RoomEvent.TrackMuted, onTrackMuted)
+      room.off(RoomEvent.TrackUnmuted, onTrackUnmuted)
+      room.off(RoomEvent.ActiveSpeakersChanged, onActiveSpeakers)
+      room.off(RoomEvent.ConnectionQualityChanged, onConnQuality)
+      room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioPlayback)
+      room.off(RoomEvent.MediaDevicesError, onMediaDevicesError)
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected)
+      room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
+    }
+  }, [room, state])
+
+  // 0.9.68 — log every agent state transition with precise timestamp.
+  // Cross-reference against backend "🤖 State:" logs to see propagation lag.
+  useEffect(() => {
+    console.log(`[FE-AUDIO] AgentStateChanged`, JSON.stringify({
+      t: new Date().toISOString(),
+      state,
+      hasAudioTrack: !!audioTrack,
+      trackMuted: audioTrack?.publication?.isMuted,
+      trackSubscribed: audioTrack?.publication?.isSubscribed,
+    }))
+  }, [state, audioTrack])
 
   const { send: sendToAgent } = useDataChannel('user-input')
 

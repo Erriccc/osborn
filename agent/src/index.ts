@@ -2859,7 +2859,16 @@ async function main() {
   // ============================================================
 
   room.on(RoomEvent.Connected, () => {
-    console.log('✅ Connected to room:', roomName)
+    // 0.9.68: log Room SID + name PROMINENTLY so we can cross-reference
+    // this specific session in LiveKit Cloud dashboard → Sessions tab.
+    // @livekit/rtc-node Room exposes SID via async getSid() (it's resolved
+    // after WebRTC handshake), so we fetch it asynchronously and log when ready.
+    console.log(`✅ Connected to room: ${roomName} | t=${new Date().toISOString()}`)
+    room.getSid().then((sid: string) => {
+      console.log(`🔗 [LIVEKIT-DASHBOARD] room sid=${sid} name=${roomName} — search at https://cloud.livekit.io/projects → Sessions → "${sid}"`)
+    }).catch((err: unknown) => {
+      console.log(`⚠️ [LIVEKIT-DASHBOARD] failed to fetch room SID: ${err instanceof Error ? err.message : String(err)}`)
+    })
     localParticipant = room.localParticipant
     // Arm the alone timer: if we connected but no user joins within the grace
     // window (e.g. machine woken then abandoned mid-handshake), leave the room
@@ -3348,9 +3357,27 @@ async function main() {
         }
       })
 
+      // 0.9.68: mirror SDK's internal unrecoverable-error counters so we can
+      // see EXACTLY how close we are to closeImpl() firing (default threshold 3).
+      // Counter resets on each successful "speaking" transition (agent_session.js:740).
+      let __ttsErrorCounter = 0
+      let __llmErrorCounter = 0
+      const __maxUnrecov = 3 // SDK default DEFAULT_SESSION_CONNECT_OPTIONS.maxUnrecoverableErrors
+
       // Error handler
       sess.on('error' as any, (ev: any) => {
         const msg = ev.error?.message || String(ev.error)
+        const errType = ev.type || 'unknown'
+        const recoverable = ev.recoverable
+
+        // 0.9.68: counter mirror — increment for recoverable:false same as SDK does
+        if (recoverable === false) {
+          if (errType === 'tts_error') __ttsErrorCounter++
+          else if (errType === 'llm_error') __llmErrorCounter++
+        }
+        const willCloseNext = (__ttsErrorCounter > __maxUnrecov || __llmErrorCounter > __maxUnrecov)
+        console.log(`📊 [ERROR-COUNTER] type=${errType} recoverable=${recoverable} ttsErrorCount=${__ttsErrorCounter}/${__maxUnrecov} llmErrorCount=${__llmErrorCounter}/${__maxUnrecov} willCloseNext=${willCloseNext} t=${new Date().toISOString()}`)
+
         // OpenAI race: voice queue collided with server-side VAD auto-response
         if (msg.includes('conversation_already_has_active_response') || msg.includes('active_response')) {
           console.log('⚠️ OpenAI active response collision — queue will retry on next listening state')
@@ -3362,6 +3389,16 @@ async function main() {
           return
         }
         console.error('❌ Session error:', ev.error)
+      })
+
+      // 0.9.68: reset error counter mirror when SDK does (on speaking transition).
+      // Reuses the existing agent_state_changed handler logic — fires AFTER.
+      sess.on('agent_state_changed' as any, (ev: any) => {
+        if (ev.newState === 'speaking' && (__ttsErrorCounter > 0 || __llmErrorCounter > 0)) {
+          console.log(`📊 [COUNTER-RESET] speaking transition cleared ttsErrorCount=${__ttsErrorCounter}→0 llmErrorCount=${__llmErrorCounter}→0`)
+          __ttsErrorCounter = 0
+          __llmErrorCounter = 0
+        }
       })
 
       // Capture voice mode at session creation — prevents state confusion
