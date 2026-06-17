@@ -2269,13 +2269,16 @@ async function main() {
           minDelay: 500,    // Wait 500ms after STT commits before generating reply
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
         },
-        // Commented out — see note above the AgentSession constructor.
+        // Tightened gates: only commit to the pause path when the STT layer is
+        // confident this is real speech, not echo. Once paused, give the user
+        // a full 3s window to keep talking before deciding it was false and
+        // resuming. Other two knobs left at SDK defaults.
         interruption: {
-          minDuration: 2000,                  // default 500
-          minWords: 3,                        // default 0
-          falseInterruptionTimeout: 3000,     // default 2000 (same)
-        //   resumeFalseInterruption: true,      // default true (same)
-        //   discardAudioIfUninterruptible: true,// default true (same)
+          minDuration: 2000,                  // default 500  — require 2s sustained speech
+          minWords: 3,                        // default 0    — require ≥3 transcript words
+          falseInterruptionTimeout: 3000,     // default 2000 — wait 3s before auto-resume
+          // resumeFalseInterruption: true,      // default true  (unchanged)
+          // discardAudioIfUninterruptible: true,// default true  (unchanged)
         },
       },
     })
@@ -3238,6 +3241,64 @@ async function main() {
         if (ev.newState === 'listening' && voiceQueue.length > 0) {
           setTimeout(() => processVoiceQueue(), 500)
         }
+      })
+
+      // ============================================================
+      // Interrupt-debug instrumentation (0.9.63) — log every SDK event
+      // that touches the pause/resume + transcript path so we can correlate
+      // a "TTS stream stalled" or visible cutoff to the exact transcript
+      // text + timing that triggered it.
+      //
+      // The events below are emitted by AgentSession in @livekit/agents 1.4.6.
+      // Each line prints with a wall-clock timestamp so it can be cross-referenced
+      // against the WARN/ERROR lines from the SDK itself.
+      // ============================================================
+
+      // user_input_transcribed — the actual transcript Deepgram emitted.
+      // Fires for BOTH interim and final transcripts. This is the smoking-gun
+      // log for false interrupts: if echo bleeds through and Deepgram transcribes
+      // a 1-2 word fragment, you'll see it here a fraction of a second before
+      // user_state_changed=speaking or the SDK fires interruptByAudioActivity.
+      sess.on('user_input_transcribed' as any, (ev: any) => {
+        const t = ev.transcript ?? ''
+        const isFinal = !!ev.isFinal
+        const words = t.trim().split(/\s+/).filter(Boolean).length
+        const tag = isFinal ? '📝 FINAL' : '✏️  interim'
+        console.log(`${tag} transcript (${words}w, ${t.length}c) [${new Date().toISOString()}]: "${t.slice(0, 120)}${t.length > 120 ? '…' : ''}"`)
+      })
+
+      // overlapping_speech — SDK detected user audio while agent was speaking.
+      // This is the moment the pause path fires (before any interrupt() call).
+      sess.on('overlapping_speech' as any, (ev: any) => {
+        console.log(`🔁 OVERLAPPING SPEECH detected [${new Date().toISOString()}]:`, JSON.stringify({
+          type: ev.type,
+          isInterruption: ev.isInterruption,
+          interruptedAt: ev.interruptedAt,
+          // Whatever else SDK provides — dump it all for now
+          fields: Object.keys(ev),
+        }))
+      })
+
+      // agent_false_interruption — the SDK's "actually that was a false alarm,
+      // resuming TTS" event. Fires falseInterruptionTimeout after a pause.
+      // resumed:true means the TTS audio was resumed cleanly; resumed:false
+      // means resume was attempted but blocked (canPause check, etc.) — the
+      // canonical signal for our deadlock scenario.
+      sess.on('agent_false_interruption' as any, (ev: any) => {
+        console.log(`✅ AGENT FALSE INTERRUPTION [${new Date().toISOString()}]:`, JSON.stringify({
+          resumed: ev.resumed,
+          createdAt: ev.createdAt,
+        }))
+      })
+
+      // speech_created — every time TTS audio is queued. Lets us correlate
+      // a speech-handle id back to the transcript that triggered it.
+      sess.on('speech_created' as any, (ev: any) => {
+        console.log(`🗣️  SPEECH CREATED [${new Date().toISOString()}]:`, JSON.stringify({
+          speechId: ev.speechHandle?.id,
+          source: ev.source,
+          userInitiated: ev.userInitiated,
+        }))
       })
 
 
