@@ -2228,51 +2228,54 @@ async function main() {
       turnDetection: 'stt',
     })
 
+    // 0.9.62: REVERT to the AgentSession config that was deployed during the
+    // user's known-good month (0.9.52, Jun 09). Pre-48h evidence shows the
+    // explicit interruption block introduced in 0.9.60 + the timer bumps in
+    // 0.9.61 made things WORSE, not better — osbornojure logs showed 5+
+    // consecutive TTS stalls on a single TTS-say, each one re-triggering
+    // because the underlying pause-and-resume deadlock (workflow finding:
+    // waitUntilTimeout signal-blind, audioOutput.pause without _currentSpeech.interrupt,
+    // captureFrame parked on playbackEnabledFuture) is INHERENT to the
+    // 1.4.x pause path and our tuned thresholds (minDuration: 1000, minWords: 3)
+    // simply make each rare-but-deadlocking trigger more catastrophic.
+    //
+    // Stripped back to SDK defaults for every interrupt-related knob. SDK
+    // 1.4.6 defaults (aecWarmupDuration: 3000, minDuration: 500, minWords: 0,
+    // falseInterruptionTimeout: 2000, resumeFalseInterruption: true,
+    // discardAudioIfUninterruptible: true, ttsReadIdleTimeout: 10000,
+    // maxUnrecoverableErrors: 3) are what was silently running via caret-resolved
+    // 1.4.5 throughout the user's working month. Restoring them.
     const session = new voice.AgentSession({
       turnDetection: 'stt',
       preemptiveGeneration: false,  // Only fire LLM on final committed transcript, not partial preemptives
-      // First-line echo defense: drop mic frames from BOTH the recognition stream
-      // and the realtime audio stream for this many ms after the agent first
-      // enters 'speaking' state. STT receives no audio during the warmup → no
-      // interim/final transcripts can fire → echo cannot trigger an interrupt.
-      // 1.4.x default is 3000; bumping to 5000 widens the safe zone at session start.
-      // One-shot per session (NOT re-armed each turn), so this protects only the
-      // first agent response. After that the in-block interruption settings handle it.
-      aecWarmupDuration: 5000,
-      // TTS stall mitigations (0.9.61). The 1.4.x SDK added a 10s default
-      // readIdleTimeout in generation.js:519 (PR livekit/agents-js#1461) — when
-      // the TTS stream goes silent for >10s, it force-closes via reader.cancel()
-      // which trips the OpenAI SDK's AbortSignal → APIUserAbortError →
-      // tts_error recoverable:false. Root cause is upstream: the OpenAI plugin
-      // BUFFERS the entire tts-1 PCM response (arrayBuffer()) before emitting a
-      // single frame. Long sentences intermittently exceed 10s end-to-end with
-      // tts-1. Raising both watchdogs to 30s gives slow OpenAI responses room
-      // to complete; raising maxUnrecoverableErrors from default 3 to 15 prevents
-      // a transient burst of stalls from killing the AgentSession outright (the
-      // counter resets on every successful speaking transition).
-      ttsReadIdleTimeout: 30_000,
-      forwardAudioIdleTimeout: 30_000,
-      connOptions: {
-        maxUnrecoverableErrors: 15,
-      },
+      // Commented out — kept for reference. These were added across 0.9.60/0.9.61
+      // to try to harden interrupt + TTS handling, but evidence (osbornojure
+      // 2026-06-16/17 logs + the interrupt-stall workflow) showed they made
+      // things worse: tighter gates concentrated the rare-but-deadlocking pause
+      // path triggers into longer events that the SDK's signal-blind read loop
+      // (utils.js:624 waitUntilTimeout) couldn't recover from. Defaults from
+      // SDK 1.4.6 (matching what silently ran via caret-resolved 1.4.5 throughout
+      // the user's last-working month) are restored by leaving these unset.
+      //
+      // aecWarmupDuration: 5000,                    // default 3000
+      // ttsReadIdleTimeout: 30_000,                 // default 10000
+      // forwardAudioIdleTimeout: 30_000,            // default 10000
+      // connOptions: {
+      //   maxUnrecoverableErrors: 15,               // default 3
+      // },
       turnHandling: {
         endpointing: {
           mode: 'fixed' as any,
           minDelay: 500,    // Wait 500ms after STT commits before generating reply
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
         },
-        // 1.4.x SDK fully wires these — minDuration now applies to the STT path
-        // (not just VAD), falseInterruptionTimeout actually fires the
-        // agentFalseInterruption event with auto-resume, discardAudioIfUninterruptible
-        // is checked at runtime. All inert in 1.2.1; live in 1.4.x.
+        // Commented out — see note above the AgentSession constructor.
         interruption: {
-          // enabled defaults true — kept default (don't set to false; cascades into
-          // allowInterruptions:false which breaks manual interrupt() calls).
-          minDuration: 1000,                 // 1.4.x: now gates STT-path; require 1s sustained speech
-          minWords: 3,                       // require ≥3 words in interim transcript
-          falseInterruptionTimeout: 2000,    // emit agentFalseInterruption after 2s silence
-          resumeFalseInterruption: true,     // auto-resume TTS on false interrupt detection
-          discardAudioIfUninterruptible: true, // drop buffered echo audio
+          minDuration: 2000,                  // default 500
+          minWords: 3,                        // default 0
+          falseInterruptionTimeout: 3000,     // default 2000 (same)
+        //   resumeFalseInterruption: true,      // default true (same)
+        //   discardAudioIfUninterruptible: true,// default true (same)
         },
       },
     })
