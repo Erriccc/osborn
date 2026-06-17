@@ -2239,6 +2239,22 @@ async function main() {
       // One-shot per session (NOT re-armed each turn), so this protects only the
       // first agent response. After that the in-block interruption settings handle it.
       aecWarmupDuration: 5000,
+      // TTS stall mitigations (0.9.61). The 1.4.x SDK added a 10s default
+      // readIdleTimeout in generation.js:519 (PR livekit/agents-js#1461) — when
+      // the TTS stream goes silent for >10s, it force-closes via reader.cancel()
+      // which trips the OpenAI SDK's AbortSignal → APIUserAbortError →
+      // tts_error recoverable:false. Root cause is upstream: the OpenAI plugin
+      // BUFFERS the entire tts-1 PCM response (arrayBuffer()) before emitting a
+      // single frame. Long sentences intermittently exceed 10s end-to-end with
+      // tts-1. Raising both watchdogs to 30s gives slow OpenAI responses room
+      // to complete; raising maxUnrecoverableErrors from default 3 to 15 prevents
+      // a transient burst of stalls from killing the AgentSession outright (the
+      // counter resets on every successful speaking transition).
+      ttsReadIdleTimeout: 30_000,
+      forwardAudioIdleTimeout: 30_000,
+      connOptions: {
+        maxUnrecoverableErrors: 15,
+      },
       turnHandling: {
         endpointing: {
           mode: 'fixed' as any,
