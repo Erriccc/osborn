@@ -1561,6 +1561,29 @@ function VoiceRoomInner({
     const onParticipantDisconnected = (p: any) =>
       log('ParticipantDisconnected', { identity: p.identity, isAgent: !p.isLocal })
 
+    // 0.9.71: high-value FE-only events not present in BE @livekit/rtc-node 0.13.x —
+    // surface them so any audio/interruption regression has a paired signal here.
+    const onLocalAudioSilence = (publication: any) =>
+      log('LocalAudioSilenceDetected', { sid: publication?.trackSid, source: publication?.source })
+    const onMediaDevicesChanged = () =>
+      log('MediaDevicesChanged')
+    const onActiveDeviceChanged = (kind: string, deviceId: string) =>
+      log('ActiveDeviceChanged', { kind, deviceId })
+    const onTrackStreamState = (pub: any, state: any, p: any) =>
+      log('TrackStreamStateChanged', { participant: p?.identity, kind: pub?.kind, sid: pub?.trackSid, state })
+    const onMetricsReceived = (m: any, p: any) =>
+      log('MetricsReceived', { participant: p?.identity, type: (m as any)?.type, label: (m as any)?.label })
+    const onTranscriptionReceived = (segments: any[], p: any) =>
+      log('TranscriptionReceived', { participant: p?.identity, segmentCount: segments?.length, lastText: segments?.[segments.length - 1]?.text?.slice(0, 80) })
+    const onDCBufferStatus = (full: boolean, kind: any) =>
+      log('DCBufferStatusChanged', { full, kind })
+    const onParticipantPermissions = (prev: any, p: any) =>
+      log('ParticipantPermissionsChanged', { participant: p?.identity, canPublish: (p as any)?.permissions?.canPublish })
+    const onParticipantActive = (p: any) =>
+      log('ParticipantActive', { identity: p?.identity })
+    const onSignalConnected = () => log('SignalConnected')
+    const onSignalReconnecting = () => log('SignalReconnecting')
+
     room.on(RoomEvent.Connected, onConnected)
     room.on(RoomEvent.Disconnected, onDisconnected)
     room.on(RoomEvent.Reconnecting, onReconnecting)
@@ -1576,6 +1599,17 @@ function VoiceRoomInner({
     room.on(RoomEvent.MediaDevicesError, onMediaDevicesError)
     room.on(RoomEvent.ParticipantConnected, onParticipantConnected)
     room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
+    room.on(RoomEvent.LocalAudioSilenceDetected, onLocalAudioSilence)
+    room.on(RoomEvent.MediaDevicesChanged, onMediaDevicesChanged)
+    room.on(RoomEvent.ActiveDeviceChanged, onActiveDeviceChanged)
+    room.on(RoomEvent.TrackStreamStateChanged, onTrackStreamState)
+    room.on(RoomEvent.MetricsReceived as any, onMetricsReceived)
+    room.on(RoomEvent.TranscriptionReceived, onTranscriptionReceived)
+    room.on(RoomEvent.DCBufferStatusChanged, onDCBufferStatus)
+    room.on(RoomEvent.ParticipantPermissionsChanged, onParticipantPermissions)
+    room.on(RoomEvent.ParticipantActive, onParticipantActive)
+    room.on(RoomEvent.SignalConnected, onSignalConnected)
+    room.on(RoomEvent.SignalReconnecting, onSignalReconnecting)
 
     return () => {
       room.off(RoomEvent.Connected, onConnected)
@@ -1593,8 +1627,42 @@ function VoiceRoomInner({
       room.off(RoomEvent.MediaDevicesError, onMediaDevicesError)
       room.off(RoomEvent.ParticipantConnected, onParticipantConnected)
       room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
+      room.off(RoomEvent.LocalAudioSilenceDetected, onLocalAudioSilence)
+      room.off(RoomEvent.MediaDevicesChanged, onMediaDevicesChanged)
+      room.off(RoomEvent.ActiveDeviceChanged, onActiveDeviceChanged)
+      room.off(RoomEvent.TrackStreamStateChanged, onTrackStreamState)
+      room.off(RoomEvent.MetricsReceived as any, onMetricsReceived)
+      room.off(RoomEvent.TranscriptionReceived, onTranscriptionReceived)
+      room.off(RoomEvent.DCBufferStatusChanged, onDCBufferStatus)
+      room.off(RoomEvent.ParticipantPermissionsChanged, onParticipantPermissions)
+      room.off(RoomEvent.ParticipantActive, onParticipantActive)
+      room.off(RoomEvent.SignalConnected, onSignalConnected)
+      room.off(RoomEvent.SignalReconnecting, onSignalReconnecting)
     }
   }, [room, state])
+
+  // 0.9.71: one-time FE SDK version + room options snapshot
+  useEffect(() => {
+    if (!room) return
+    try {
+      const opts: any = (room as any).options ?? {}
+      console.log('🧪 [FE-SDK-VERSIONS]', JSON.stringify({
+        t: new Date().toISOString(),
+        livekitClient: (window as any).__LIVEKIT_CLIENT_VERSION,
+        userAgent: navigator.userAgent,
+        roomOptions: {
+          adaptiveStream: opts.adaptiveStream,
+          dynacast: opts.dynacast,
+          audioCaptureDefaults: opts.audioCaptureDefaults,
+          audioOutput: opts.audioOutput,
+          stopLocalTrackOnUnpublish: opts.stopLocalTrackOnUnpublish,
+          reconnectPolicy: opts.reconnectPolicy ? '[set]' : '[default]',
+        },
+      }))
+    } catch (err) {
+      console.log('🧪 [FE-SDK-VERSIONS] failed:', (err as Error).message)
+    }
+  }, [room])
 
   // 0.9.68 — log every agent state transition with precise timestamp.
   // Cross-reference against backend "🤖 State:" logs to see propagation lag.
@@ -1607,6 +1675,97 @@ function VoiceRoomInner({
       trackSubscribed: audioTrack?.publication?.isSubscribed,
     }))
   }, [state, audioTrack])
+
+  // 0.9.71 — Mic / local-publication observability.
+  //   • MediaStreamTrack.getSettings() reveals the browser-applied
+  //     echoCancellation / noiseSuppression / autoGainControl / sampleRate /
+  //     channelCount values — what the OS actually negotiated, not what we
+  //     requested. Critical when diagnosing "agent thinks I'm speaking" / AEC
+  //     leakage / mic preprocessing.
+  //   • Polled audio-level lets us correlate mic activity at the FE with
+  //     backend STT interim/final emissions and user_state_changed timing.
+  useEffect(() => {
+    if (!localParticipant) return
+    const lp = localParticipant as any
+    const micPub = lp.getTrackPublication?.(Track.Source.Microphone)
+                || lp.getTrack?.(Track.Source.Microphone)
+    const mediaTrack: MediaStreamTrack | undefined =
+      micPub?.track?.mediaStreamTrack ?? micPub?.mediaStreamTrack
+    if (!mediaTrack) {
+      console.log('[FE-AUDIO] MicTrack absent at mount', JSON.stringify({
+        t: new Date().toISOString(), hasPub: !!micPub,
+      }))
+      return
+    }
+    try {
+      const settings: MediaTrackSettings = mediaTrack.getSettings?.() ?? {}
+      const caps: MediaTrackCapabilities = (mediaTrack as any).getCapabilities?.() ?? {}
+      const constraints = mediaTrack.getConstraints?.() ?? {}
+      console.log('[FE-AUDIO] MicTrackSettings', JSON.stringify({
+        t: new Date().toISOString(),
+        label: mediaTrack.label,
+        readyState: mediaTrack.readyState,
+        muted: mediaTrack.muted,
+        enabled: mediaTrack.enabled,
+        // What the browser actually applied:
+        echoCancellation: (settings as any).echoCancellation,
+        noiseSuppression: (settings as any).noiseSuppression,
+        autoGainControl: (settings as any).autoGainControl,
+        sampleRate: (settings as any).sampleRate,
+        channelCount: (settings as any).channelCount,
+        deviceId: (settings as any).deviceId,
+        latency: (settings as any).latency,
+        // What was asked for:
+        constraints,
+        // What the device supports:
+        capabilityFlags: {
+          ec: (caps as any).echoCancellation,
+          ns: (caps as any).noiseSuppression,
+          agc: (caps as any).autoGainControl,
+        },
+      }))
+    } catch (err) {
+      console.log('[FE-AUDIO] MicTrackSettings_FAILED', JSON.stringify({
+        t: new Date().toISOString(),
+        err: err instanceof Error ? err.message : String(err),
+      }))
+    }
+
+    // Per-track lifecycle: mute / unmute fired directly on the MediaStreamTrack
+    // (separate from LiveKit's RoomEvent.TrackMuted which fires on PUBLICATION).
+    const onMuteRaw = () => console.log('[FE-AUDIO] MicMediaTrack_MUTED_BY_BROWSER', JSON.stringify({ t: new Date().toISOString(), reason: 'os-level' }))
+    const onUnmuteRaw = () => console.log('[FE-AUDIO] MicMediaTrack_UNMUTED_BY_BROWSER', JSON.stringify({ t: new Date().toISOString() }))
+    const onEndedRaw = () => console.log('[FE-AUDIO] MicMediaTrack_ENDED', JSON.stringify({ t: new Date().toISOString() }))
+    mediaTrack.addEventListener('mute', onMuteRaw)
+    mediaTrack.addEventListener('unmute', onUnmuteRaw)
+    mediaTrack.addEventListener('ended', onEndedRaw)
+    return () => {
+      mediaTrack.removeEventListener('mute', onMuteRaw)
+      mediaTrack.removeEventListener('unmute', onUnmuteRaw)
+      mediaTrack.removeEventListener('ended', onEndedRaw)
+    }
+  }, [localParticipant])
+
+  // 0.9.71 — Mic publication state from LiveKit (separate from raw track).
+  // Tracks whether we have ACTUALLY published audio to the room.
+  useEffect(() => {
+    if (!localParticipant) return
+    const lp = localParticipant as any
+    const summary = {
+      t: new Date().toISOString(),
+      identity: lp.identity,
+      isMicrophoneEnabled: lp.isMicrophoneEnabled,
+      trackCount: lp.trackPublications?.size ?? 0,
+      audioTracks: Array.from(lp.audioTrackPublications?.values?.() ?? []).map((p: any) => ({
+        sid: p?.trackSid,
+        source: p?.source,
+        muted: p?.isMuted,
+        subscribed: p?.isSubscribed,
+        kind: p?.kind,
+      })),
+    }
+    console.log('[FE-AUDIO] LocalParticipantSnapshot', JSON.stringify(summary))
+  }, [localParticipant, (localParticipant as any)?.isMicrophoneEnabled])
 
   const { send: sendToAgent } = useDataChannel('user-input')
 

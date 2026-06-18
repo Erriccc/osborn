@@ -23,6 +23,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { createRequire } from 'node:module'
+
+// 0.9.71: createRequire for resolving package.json versions inside ESM
+const __sdkVersionRequire = createRequire(import.meta.url)
 import { homedir, tmpdir } from 'node:os'
 import { PassThrough } from 'node:stream'
 import { createGunzip } from 'node:zlib'
@@ -2291,6 +2295,34 @@ async function main() {
       },
     })
 
+    // 0.9.71: dump the RESOLVED AgentSession options (after defaults applied)
+    // so prod logs prove exactly what tuning is live for any given session.
+    try {
+      const so: any = (session as any).sessionOptions ?? {}
+      const detect = (session as any).interruptionDetection
+      const turn = so.turnHandling ?? {}
+      console.log('🧪 [BE-AGENT-SESSION-CONFIG]', JSON.stringify({
+        t: new Date().toISOString(),
+        maxToolSteps: so.maxToolSteps,
+        userAwayTimeout: so.userAwayTimeout,
+        aecWarmupDuration: so.aecWarmupDuration,
+        ttsReadIdleTimeout: so.ttsReadIdleTimeout,
+        forwardAudioIdleTimeout: so.forwardAudioIdleTimeout,
+        useTtsAlignedTranscript: so.useTtsAlignedTranscript,
+        ttsTextTransforms: so.ttsTextTransforms,
+        interruptionDetectionMode: detect, // 'vad' | 'adaptive' | undefined
+        turnHandling: {
+          turnDetection: turn.turnDetection,
+          endpointing: turn.endpointing,
+          interruption: turn.interruption,
+          preemptiveGeneration: turn.preemptiveGeneration,
+          userTurnLimit: turn.userTurnLimit,
+        },
+      }))
+    } catch (err) {
+      console.log('🧪 [BE-AGENT-SESSION-CONFIG] failed:', err instanceof Error ? err.message : String(err))
+    }
+
     return { session, agent }
   }
 
@@ -2869,6 +2901,33 @@ async function main() {
     }).catch((err: unknown) => {
       console.log(`⚠️ [LIVEKIT-DASHBOARD] failed to fetch room SID: ${err instanceof Error ? err.message : String(err)}`)
     })
+
+    // 0.9.71: SDK + runtime snapshot — proves what's actually running so
+    // future log forensics can rule out version drift in one grep.
+    try {
+      const pkgs: any = {}
+      for (const name of [
+        'osborn',
+        '@livekit/agents',
+        '@livekit/agents-plugin-openai',
+        '@livekit/agents-plugin-deepgram',
+        '@livekit/agents-plugin-silero',
+        '@livekit/agents-plugin-google',
+        '@livekit/agents-plugin-elevenlabs',
+        '@livekit/agents-plugin-livekit',
+        '@livekit/rtc-node',
+        'livekit-server-sdk',
+        '@anthropic-ai/claude-agent-sdk',
+        '@google/genai',
+        'openai',
+      ]) {
+        try { pkgs[name] = __sdkVersionRequire(`${name}/package.json`).version } catch {}
+      }
+      console.log('🧪 [BE-SDK-VERSIONS]', JSON.stringify({ t: new Date().toISOString(), node: process.version, pkgs }))
+    } catch (err) {
+      console.log('🧪 [BE-SDK-VERSIONS] failed:', err instanceof Error ? err.message : String(err))
+    }
+
     localParticipant = room.localParticipant
     // Arm the alone timer: if we connected but no user joins within the grace
     // window (e.g. machine woken then abandoned mid-handshake), leave the room
@@ -2886,6 +2945,41 @@ async function main() {
   // Flux STT's speech-vs-noise classification: slower (~100-300ms) but
   // confidence-aware. The latency tradeoff is worth eliminating the false
   // interrupts at the root.
+
+  // 0.9.71: Room-level audio observability — observe-only logs so we can
+  // cross-reference user mic mute/quality changes against TTS cutoffs without
+  // re-introducing the over-eager ActiveSpeakers interrupt.
+  room.on(RoomEvent.ActiveSpeakersChanged, (speakers: any[]) => {
+    try {
+      const ids = (speakers || []).map((s: any) => s?.identity).filter(Boolean)
+      console.log(`🎙️ [ROOM-SPEAKERS] count=${ids.length} ids=${JSON.stringify(ids)} t=${new Date().toISOString()}`)
+    } catch {}
+  })
+  room.on(RoomEvent.ConnectionQualityChanged, (quality: any, participant: any) => {
+    try {
+      console.log(`📶 [ROOM-QUALITY] participant=${participant?.identity} quality=${quality} t=${new Date().toISOString()}`)
+    } catch {}
+  })
+  room.on(RoomEvent.TrackMuted, (publication: any, participant: any) => {
+    try {
+      console.log(`🔇 [ROOM-TRACK-MUTED] participant=${participant?.identity} kind=${publication?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+    } catch {}
+  })
+  room.on(RoomEvent.TrackUnmuted, (publication: any, participant: any) => {
+    try {
+      console.log(`🔊 [ROOM-TRACK-UNMUTED] participant=${participant?.identity} kind=${publication?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+    } catch {}
+  })
+  room.on(RoomEvent.TrackSubscribed, (track: any, publication: any, participant: any) => {
+    try {
+      console.log(`📥 [ROOM-TRACK-SUBSCRIBED] participant=${participant?.identity} kind=${track?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+    } catch {}
+  })
+  room.on(RoomEvent.TrackUnsubscribed, (track: any, publication: any, participant: any) => {
+    try {
+      console.log(`📤 [ROOM-TRACK-UNSUBSCRIBED] participant=${participant?.identity} kind=${track?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+    } catch {}
+  })
 
   room.on(RoomEvent.Disconnected, () => {
     console.log('👋 Disconnected from room')
@@ -3352,9 +3446,75 @@ async function main() {
       // FALLBACK: playout_completed
       sess.on('playout_completed' as any, (ev: any) => {
         const message = ev.message || ev.text || ev.content
+        console.log(`🎧 PLAYOUT COMPLETED [${new Date().toISOString()}]:`, JSON.stringify({
+          speechId: ev.speechHandle?.id ?? ev.speechId,
+          interrupted: ev.interrupted,
+          durationMs: ev.durationMs,
+          messageLen: message ? message.length : 0,
+        }))
         if (message && message.length > 0) {
           sendAgentTranscript(message, 'playout')
         }
+      })
+
+      // 0.9.71: metrics_collected — per-call latency for STT/TTS/LLM/VAD/EOU/Interruption.
+      // SINGLE highest-signal event for diagnosing audio cutoffs.
+      //   • TTSMetrics.ttfbMs / durationMs / audioDurationMs / cancelled → directly answers
+      //     "did the OpenAI HTTP fetch hang or did it complete and the SDK aborted?"
+      //   • STTMetrics.audioDurationMs / durationMs → Deepgram latency per utterance
+      //   • LLMMetrics.ttftMs → cold-vs-warm Claude subprocess
+      //   • EOUMetrics.endOfUtteranceDelayMs / transcriptionDelayMs → end-of-turn timing
+      //   • InterruptionMetrics.{detectionDelay, numInterruptions, numBackchannels} →
+      //     turn-detector signal at the source
+      sess.on('metrics_collected' as any, (ev: any) => {
+        const m = ev?.metrics
+        if (!m) return
+        const compact: any = { type: m.type, label: m.label, t: new Date().toISOString() }
+        // Per-type subset — keep tight
+        if (m.type === 'tts_metrics') {
+          compact.ttfbMs = Math.round(m.ttfbMs ?? -1)
+          compact.durationMs = Math.round(m.durationMs ?? -1)
+          compact.audioDurationMs = Math.round(m.audioDurationMs ?? -1)
+          compact.cancelled = !!m.cancelled
+          compact.charactersCount = m.charactersCount
+          compact.streamed = !!m.streamed
+          compact.speechId = m.speechId
+        } else if (m.type === 'stt_metrics') {
+          compact.audioDurationMs = Math.round(m.audioDurationMs ?? -1)
+          compact.durationMs = Math.round(m.durationMs ?? -1)
+          compact.streamed = !!m.streamed
+        } else if (m.type === 'llm_metrics') {
+          compact.ttftMs = Math.round(m.ttftMs ?? -1)
+          compact.durationMs = Math.round(m.durationMs ?? -1)
+          compact.cancelled = !!m.cancelled
+          compact.completionTokens = m.completionTokens
+          compact.promptTokens = m.promptTokens
+          compact.speechId = m.speechId
+        } else if (m.type === 'vad_metrics') {
+          compact.idleTimeMs = Math.round(m.idleTimeMs ?? -1)
+          compact.inferenceCount = m.inferenceCount
+        } else if (m.type === 'eou_metrics') {
+          compact.endOfUtteranceDelayMs = Math.round(m.endOfUtteranceDelayMs ?? -1)
+          compact.transcriptionDelayMs = Math.round(m.transcriptionDelayMs ?? -1)
+          compact.onUserTurnCompletedDelayMs = Math.round(m.onUserTurnCompletedDelayMs ?? -1)
+          compact.speechId = m.speechId
+        } else if (m.type === 'interruption_metrics') {
+          compact.detectionDelay = Math.round(m.detectionDelay ?? -1)
+          compact.predictionDuration = Math.round(m.predictionDuration ?? -1)
+          compact.numInterruptions = m.numInterruptions
+          compact.numBackchannels = m.numBackchannels
+          compact.numRequests = m.numRequests
+        }
+        console.log(`📈 [METRICS]`, JSON.stringify(compact))
+      })
+
+      // 0.9.71: function_tools_executed — when a tool batch completes inside the SDK.
+      sess.on('function_tools_executed' as any, (ev: any) => {
+        try {
+          const calls = ev?.functionCalls?.length ?? 0
+          const outputs = ev?.functionOutputs?.length ?? 0
+          console.log(`🛠️ [TOOLS-EXECUTED] calls=${calls} outputs=${outputs} t=${new Date().toISOString()}`)
+        } catch {}
       })
 
       // 0.9.68: mirror SDK's internal unrecoverable-error counters so we can

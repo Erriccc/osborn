@@ -177,7 +177,8 @@ export const DIRECT_MODE_STT: STTConfig = {
 export const DIRECT_MODE_TTS: TTSConfig = {
   // provider: 'deepgram', model: 'aura-2-asteria-en',  // WebSocket-based: handles TTS abort cleanly (no unrecoverable crash on interruption)
   // provider: 'gemini', model: 'gemini-2.5-flash-preview-tts', voice: 'apollo',
-  provider: 'openai', model: 'tts-1', voice: 'fable',  // HTTP streaming: throws APIUserAbortError on interrupt → unrecoverable session crash
+  // provider: 'openai', model: 'tts-1', voice: 'fable',  // HTTP streaming: throws APIUserAbortError on interrupt → unrecoverable session crash
+  provider: 'openai', model: 'tts-1-hd', voice: 'fable',  // 0.9.70: test tts-1-hd — tts-1 had chronic per-sentence HTTP hangs (40s SDK watchdog → APIUserAbortError mid-message)
   // provider: 'groq-orpheus', model: 'canopylabs/orpheus-v1-english', voice: 'autumn',  // $22/M chars — voices: autumn, diana, hannah, austin, daniel, troy
 }
 
