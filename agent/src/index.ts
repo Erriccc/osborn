@@ -2286,9 +2286,9 @@ async function main() {
         // a full 3s window to keep talking before deciding it was false and
         // resuming. Other two knobs left at SDK defaults.
         interruption: {
-          minDuration: 2500,                  // default 500  — require 2s sustained speech
-          minWords: 4,                        // default 0    — require ≥3 transcript words
-          falseInterruptionTimeout: 4000,     // default 2000 — wait 3s before auto-resume
+          minDuration: 1500,                  // default 500  — require 1.5s sustained speech (faster barge-in than 2500)
+          minWords: 2,                        // default 0    — require ≥2 transcript words
+          falseInterruptionTimeout: 3500,     // default 2000 — 3.5s false-interrupt window (belt-and-suspenders since minDuration was loosened)
           // resumeFalseInterruption: true,      // default true  (unchanged)
           // discardAudioIfUninterruptible: true,// default true  (unchanged)
         },
