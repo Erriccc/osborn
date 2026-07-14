@@ -1291,6 +1291,80 @@ async function main() {
     }, ALONE_GRACE_MS)
   }
 
+  // ── 0.9.73: Idle machine self-stop (the $123 Fly bill fix) ──
+  // After an intentional alone-leave the agent used to sit "idle, awaiting
+  // /connect-room" forever — process alive, Fly machine `started`, billing
+  // performance-2x 24/7 (~$62/mo). Confirmed twice: room osborn-3h6htr held
+  // a zombie WS Jun 18→22 (5,700+ min "In progress" on the LiveKit dashboard),
+  // and the July invoice ($123.61) showed two 4GB machines running the whole
+  // cycle. The machine's restart policy is `on-failure`, so `process.exit(0)`
+  // cleanly STOPS the machine (billing stops, volume + JSONL persist) while
+  // crashes still auto-restart. The frontend's startSandbox() boots a stopped
+  // machine on the next Resume, so warm-idle buys nothing but cost.
+  //
+  // Armed when livekitState.status flips to 'idle' (intentional leave), and by
+  // the zombie watchdog below. Cancelled implicitly: before exiting we re-check
+  // that we're still idle/disconnected — any /connect-room in the window aborts.
+  // Local dev (no FLY_APP_NAME) never exits. Override with OSBORN_IDLE_EXIT=0.
+  const IDLE_EXIT_GRACE_MS = 10 * 60 * 1000  // 10 min: rides out a page refresh + re-auth
+  let idleExitTimer: ReturnType<typeof setTimeout> | null = null
+  const armIdleExitTimer = (reason: string) => {
+    if (!process.env.FLY_APP_NAME || process.env.OSBORN_IDLE_EXIT === '0') return
+    if (idleExitTimer) clearTimeout(idleExitTimer)
+    console.log(`⏻ [IDLE-EXIT] armed (${IDLE_EXIT_GRACE_MS / 60000} min) — reason: ${reason}`)
+    idleExitTimer = setTimeout(() => {
+      idleExitTimer = null
+      const stillIdle = livekitState.status === 'idle' || livekitState.status === 'failed'
+      const empty = room.remoteParticipants.size === 0
+      if (stillIdle && empty) {
+        console.log(`⏻ [IDLE-EXIT] still idle after grace — exiting 0 so Fly stops the machine (billing stops; next Resume boots it)`)
+        // Give the log tee a beat to flush, then stop the machine.
+        setTimeout(() => process.exit(0), 2000)
+      } else {
+        console.log(`⏻ [IDLE-EXIT] aborted — status=${livekitState.status} participants=${room.remoteParticipants.size}`)
+      }
+    }, IDLE_EXIT_GRACE_MS)
+  }
+  const cancelIdleExitTimer = () => {
+    if (idleExitTimer) {
+      clearTimeout(idleExitTimer)
+      idleExitTimer = null
+      console.log('⏻ [IDLE-EXIT] cancelled — activity resumed')
+    }
+  }
+
+  // ── 0.9.73: Zombie-presence watchdog (poll-based) ──
+  // The Jun 18 zombie proved the event-driven alone-timer has a blind spot:
+  // when the LiveKit WS goes half-dead, RoomEvent callbacks stop firing entirely
+  // (agent log went silent for 4 days while the dashboard logged "Participant
+  // resumed" on every network blip). A poll can't be starved by a dead event
+  // stream. Every 60s: if we believe we're connected but the room has no remote
+  // participants, count it; after ALONE_GRACE_MS worth of consecutive empty
+  // polls, force the same intentional-leave path the timer uses. If the
+  // disconnect itself hangs (zombie WS), the idle-exit timer armed alongside
+  // still stops the machine.
+  const WATCHDOG_POLL_MS = 60 * 1000
+  let emptyPolls = 0
+  setInterval(() => {
+    try {
+      if (livekitState.status !== 'connected') { emptyPolls = 0; return }
+      if (room.remoteParticipants.size > 0) { emptyPolls = 0; return }
+      emptyPolls++
+      const emptyForMs = emptyPolls * WATCHDOG_POLL_MS
+      if (emptyForMs >= ALONE_GRACE_MS) {
+        console.log(`🧟 [ZOMBIE-WATCHDOG] room empty for ${emptyPolls} consecutive polls (${emptyForMs / 1000}s) — forcing leave`)
+        emptyPolls = 0
+        intentionalLeave = true
+        room.disconnect().catch((e) => console.error('watchdog room.disconnect failed:', e))
+        // Belt-and-suspenders: if the WS is zombied the Disconnected event may
+        // never fire (so the idle-exit arm in that handler won't run). Arm here too.
+        armIdleExitTimer('zombie-watchdog forced leave')
+      }
+    } catch (err) {
+      console.error('🧟 [ZOMBIE-WATCHDOG] poll error:', err instanceof Error ? err.message : err)
+    }
+  }, WATCHDOG_POLL_MS)
+
   /**
    * Hard-kill the in-flight Claude SDK query AND the persistent subprocess.
    *
@@ -3035,6 +3109,9 @@ async function main() {
       livekitState.error = null
       livekitState.errorCode = null
       console.log('🕊️ Left LiveKit room intentionally — idle, awaiting /connect-room (no auto-rejoin)')
+      // 0.9.73: idle machines must not bill forever — stop the Fly machine
+      // after the grace window unless a /connect-room revives us first.
+      armIdleExitTimer('intentional leave → idle')
       return
     }
 
@@ -3052,6 +3129,8 @@ async function main() {
 
     // A user is present — cancel any pending agent-side "alone" leave.
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
+    // 0.9.73: and any pending idle machine self-stop.
+    cancelIdleExitTimer()
 
     // Wait for previous session's byte stream handler to fully deregister.
     // Quick reconnects (< ~6s) crash with "byte stream handler already set" without this.
@@ -4766,15 +4845,22 @@ async function main() {
   connectRoomHook = async () => {
     intentionalLeave = false
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
+    // 0.9.73: a user is on the way — cancel any pending idle machine self-stop.
+    cancelIdleExitTimer()
     if (livekitState.status === 'connected') return  // already in the room — no-op
     console.log('🔌 /connect-room — joining LiveKit for incoming user')
     await connectWithRetry()
   }
+  // 0.9.73: explicit frontend leave should also start the idle-exit countdown —
+  // the user is done; the machine shouldn't idle-bill waiting for a maybe-return.
+  // (leaveRoomHook sets intentionalLeave → Disconnected handler arms it, but
+  //  arm here too in case the disconnect event is swallowed by a zombie WS.)
   leaveRoomHook = async (reason: string) => {
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
     if (livekitState.status !== 'connected') return  // already out — no-op
     intentionalLeave = true
     console.log(`🚪 Leaving LiveKit room (${reason}) — stops connection-minute burn`)
+    armIdleExitTimer(`explicit leave (${reason})`)
     try { await room.disconnect() } catch (e) { console.error('leave-room room.disconnect failed:', e) }
   }
 
