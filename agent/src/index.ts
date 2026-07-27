@@ -18,7 +18,7 @@ setMaxListeners(50)
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { WebSocket, WebSocketServer } from 'ws'
-import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, createWriteStream } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, utimesSync, createWriteStream } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -639,6 +639,17 @@ function startApiServer(workingDir: string, port: number): void {
               // the only structural change; file contents are immutable historical
               // record and must roundtrip cleanly between environments.
               cpSync(sp, dp, { force: true })
+              // 0.9.75: preserve the source mtime on the copy. cpSync stamps the
+              // destination with "now", which scrambled session ordering after
+              // every sync — the frontend's auto-resume picks most-recent-by-mtime,
+              // so a fresh import made a random tar-order file (often a tiny
+              // months-old session) look newest, and users kept "resuming" into
+              // stale June sessions (confirmed in prod 2026-07-27, 3× in a row).
+              // The tarball carries original mtimes; copying must not discard them.
+              try {
+                const srcStat = statSync(sp)
+                utimesSync(dp, srcStat.atime, srcStat.mtime)
+              } catch { /* best-effort — ordering degrades gracefully */ }
               filesWritten++
             }
             // skip symlinks, sockets, etc.
