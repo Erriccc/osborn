@@ -766,7 +766,16 @@ function startApiServer(workingDir: string, port: number): void {
           return
         }
       }
+      // 0.9.74: default targetWorkDir to this machine's own working directory.
+      // Stale sync clients that omit the param used to get source slugs written
+      // verbatim — those sessions LIST fine (the scanner walks all slugs) but
+      // silently fail to RESUME (the SDK resumes at cwd=workingDir, whose slug
+      // they don't match). Confirmed in prod 2026-07-27 after a stale-skill
+      // upload. On a cloud machine, remapping into our own workspace is always
+      // the right default; a client that genuinely wants source slugs preserved
+      // (e.g. laptop→laptop mirroring) must now opt in with preserveSlugs=1.
       const targetWorkDir = url.searchParams.get('targetWorkDir')
+        ?? (url.searchParams.get('preserveSlugs') === '1' ? null : workingDir)
 
       const tmpDir = mkdtempSync(join(tmpdir(), 'osborn-import-'))
       const tarProc = spawn('tar', ['-xf', '-', '-C', tmpDir])

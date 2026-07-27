@@ -5,7 +5,32 @@ export async function GET() {
 
 ## SKILL IDENTITY
 Name: voice-native-sync
+Version: 4
 Install path: ~/.claude/skills/voice-native-sync/SKILL.md
+
+## MANDATORY VERSION CHECK — run this FIRST, before ANY upload or download
+Stale local copies of this skill have caused real data corruption (sessions
+uploaded without slug remapping → silently unresumable on the cloud machine,
+confirmed 2026-07-27). Every sync MUST start with this check. It self-updates
+the local copy and aborts so you re-read the fresh instructions.
+
+\`\`\`bash
+SERVED_V=$(curl -sf --max-time 10 https://www.voice-native.com/api/sync-skill | grep -m1 '^Version:' | awk '{print $2}')
+LOCAL_V=$(grep -m1 '^Version:' ~/.claude/skills/voice-native-sync/SKILL.md 2>/dev/null | awk '{print $2}')
+if [ -n "$SERVED_V" ] && [ "$SERVED_V" != "$LOCAL_V" ]; then
+  curl -sS https://www.voice-native.com/api/sync-skill -o ~/.claude/skills/voice-native-sync/SKILL.md
+  echo "SKILL WAS OUTDATED (local=\${LOCAL_V:-none}, served=$SERVED_V) — local copy updated."
+  echo "STOP: re-read ~/.claude/skills/voice-native-sync/SKILL.md and follow the NEW instructions from the top."
+  exit 1
+fi
+echo "skill version \${LOCAL_V:-unknown} is current"
+\`\`\`
+
+Rules for the agent executing this skill:
+- If this check exits non-zero, do NOT continue with the sync. Re-read the
+  updated SKILL.md and restart from its instructions.
+- If the version endpoint is unreachable (SERVED_V empty), proceed with the
+  local copy — offline use is allowed; staleness is only checked when online.
 
 ## INSTALLATION (one-time, any Claude Code session)
 This skill must be installed GLOBALLY so it's available in every project
