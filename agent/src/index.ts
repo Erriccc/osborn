@@ -4921,6 +4921,15 @@ async function main() {
   leaveRoomHook = async (reason: string) => {
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
     if (livekitState.status !== 'connected') return  // already out — no-op
+    // Never abandon a user who is CURRENTLY in the room. Stale/racing
+    // leave-room calls (a previous client's teardown landing after a new
+    // client joined) were kicking the agent out mid-adopt, stranding the new
+    // user on "Connecting..." (observed 2026-07-28). The alone-timer handles
+    // the real departure when they actually leave.
+    if (room.remoteParticipants.size > 0) {
+      console.log(`🛑 /leave-room ignored (${reason}) — ${room.remoteParticipants.size} participant(s) still in room`)
+      return
+    }
     intentionalLeave = true
     console.log(`🚪 Leaving LiveKit room (${reason}) — stops connection-minute burn`)
     armIdleExitTimer(`explicit leave (${reason})`)
