@@ -1418,6 +1418,32 @@ async function main() {
     }
   }, WATCHDOG_POLL_MS)
 
+  // ── 0.9.80: Event-loss adopter (poll-based) ──
+  // After a leave/rejoin cycle the same Room instance can stop delivering
+  // ParticipantConnected entirely — observed 2026-07-28: the leave-room guard
+  // saw "1 participant(s) still in room" while the agent sat at "Waiting for
+  // user to connect" (state knew, events never fired; user stuck on
+  // "Connecting..." forever). Same blind-spot family as the zombie watchdog:
+  // never trust the event stream alone. Every 5s: participant present but no
+  // voice session → re-emit ParticipantConnected (60s per-identity cooldown
+  // so a slow in-flight session creation isn't double-fired).
+  const adoptAttempts = new Map<string, number>()
+  setInterval(() => {
+    try {
+      if (livekitState.status !== 'connected') return
+      if (currentSession) return
+      const p = room.remoteParticipants.values().next().value
+      if (!p) return
+      const last = adoptAttempts.get(p.identity) ?? 0
+      if (Date.now() - last < 60_000) return
+      adoptAttempts.set(p.identity, Date.now())
+      console.log(`📥 [ADOPT-POLL] ${p.identity} present with no session — re-emitting ParticipantConnected`)
+      ;(room as any).emit(RoomEvent.ParticipantConnected, p)
+    } catch (err) {
+      console.error('📥 [ADOPT-POLL] error:', err instanceof Error ? err.message : err)
+    }
+  }, 5_000)
+
   /**
    * Hard-kill the in-flight Claude SDK query AND the persistent subprocess.
    *
