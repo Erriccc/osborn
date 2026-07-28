@@ -18,7 +18,7 @@ setMaxListeners(50)
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { WebSocket, WebSocketServer } from 'ws'
-import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, utimesSync, createWriteStream } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, utimesSync, createWriteStream, openSync, readSync, closeSync, fstatSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -1298,6 +1298,8 @@ async function main() {
   // Track state
   let pendingSessionClose: Promise<void> | null = null  // Tracks async session close for reconnect safety
   let currentSession: voice.AgentSession | null = null
+  // 0.9.81: callable handler reference — see registration site for why.
+  let participantConnectedHandler: ((p: RemoteParticipant) => Promise<void>) | null = null
   let currentAgent: voice.Agent | null = null  // For updateChatCtx() context injection
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
 
@@ -1437,8 +1439,8 @@ async function main() {
       const last = adoptAttempts.get(p.identity) ?? 0
       if (Date.now() - last < 60_000) return
       adoptAttempts.set(p.identity, Date.now())
-      console.log(`📥 [ADOPT-POLL] ${p.identity} present with no session — re-emitting ParticipantConnected`)
-      ;(room as any).emit(RoomEvent.ParticipantConnected, p)
+      console.log(`📥 [ADOPT-POLL] ${p.identity} present with no session — invoking ParticipantConnected handler directly`)
+      participantConnectedHandler?.(p).catch((e) => console.error('📥 [ADOPT-POLL] handler error:', e instanceof Error ? e.message : e))
     } catch (err) {
       console.error('📥 [ADOPT-POLL] error:', err instanceof Error ? err.message : err)
     }
@@ -3203,7 +3205,13 @@ async function main() {
     })
   })
 
-  room.on(RoomEvent.ParticipantConnected, async (participant: RemoteParticipant) => {
+  // 0.9.81: handler extracted to a named reference so the adopt-poll and
+  // /connect-room adopt can CALL it directly. Synthetic `room.emit(...)` does
+  // NOT reach listeners on rtc-node's Room (observed 2026-07-28: ADOPT-POLL
+  // re-emitted for three successive participants, zero sessions created) —
+  // the event dispatch is internal, so direct invocation is the only
+  // reliable path for state-driven adoption.
+  participantConnectedHandler = async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
 
     // A user is present — cancel any pending agent-side "alone" leave.
@@ -4072,7 +4080,8 @@ async function main() {
     } catch (err) {
       console.error('❌ Failed to start session:', err)
     }
-  })
+  }
+  room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => { participantConnectedHandler?.(p) })
 
   room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
     console.log(`👋 User left: ${participant.identity}`)
@@ -4936,8 +4945,8 @@ async function main() {
     // Re-emit the event for every pre-existing participant so the session is
     // created exactly as if they had joined after us.
     for (const p of room.remoteParticipants.values()) {
-      console.log(`👥 Participant already in room at join: ${p.identity} — adopting (re-emitting ParticipantConnected)`)
-      ;(room as any).emit(RoomEvent.ParticipantConnected, p)
+      console.log(`👥 Participant already in room at join: ${p.identity} — adopting (invoking handler directly)`)
+      participantConnectedHandler?.(p).catch((e) => console.error('👥 adopt handler error:', e instanceof Error ? e.message : e))
     }
   }
   // 0.9.73: explicit frontend leave should also start the idle-exit countdown —
