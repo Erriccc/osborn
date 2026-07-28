@@ -349,6 +349,33 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         // best-effort — the agent's boot-connect / retry loop is the backstop
       }
 
+      // Step 2.6: Wait until the agent is actually IN the room before minting
+      // our token. Agent-side ParticipantConnected only fires for users who
+      // join AFTER the agent — if we win the join race, no voice session is
+      // created and the UI hangs at "Connecting...". (Agent 0.9.76+ also
+      // adopts pre-existing participants, but ordering correctly here means
+      // we don't depend on the machine running a fixed version.)
+      try {
+        const isMixed =
+          window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
+        if (!isMixed) {
+          const deadline = Date.now() + 30_000
+          while (Date.now() < deadline) {
+            const h = await fetch(`${resolvedUrl}/health`, {
+              signal: AbortSignal.timeout(3000),
+            })
+              .then((r) => (r.ok ? r.json() : null))
+              .catch(() => null)
+            // Break on connected — or on agents too old to report livekit
+            // status, where waiting longer can't tell us anything.
+            if (!h || !h.livekit || h.livekit.status === 'connected') break
+            await new Promise((r) => setTimeout(r, 1000))
+          }
+        }
+      } catch {
+        // best-effort — worst case we reproduce the old race odds
+      }
+
       // Step 3: Get LiveKit token
       let url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}`
       if (code) url += `&roomCode=${code}`

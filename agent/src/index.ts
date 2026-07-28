@@ -1375,7 +1375,21 @@ async function main() {
         console.log(`🧟 [ZOMBIE-WATCHDOG] room empty for ${emptyPolls} consecutive polls (${emptyForMs / 1000}s) — forcing leave`)
         emptyPolls = 0
         intentionalLeave = true
-        room.disconnect().catch((e) => console.error('watchdog room.disconnect failed:', e))
+        // Update state FIRST, don't wait for the Disconnected event — a zombie
+        // WS is precisely the case where that event never arrives. Observed
+        // 2026-07-27: after a forced leave the status stayed 'connected', so
+        // /health lied, /connect-room no-op'd, and the next user joined a room
+        // the agent wasn't in (UI stuck at "Connecting..."). Setting idle here
+        // makes the next /connect-room actually rejoin. If the Disconnected
+        // event does fire later, its handler sets the same state — idempotent.
+        livekitState.status = 'idle'
+        const disconnectWatch = setTimeout(
+          () => console.error('🧟 [ZOMBIE-WATCHDOG] room.disconnect() still pending after 10s — WS likely zombied; idle-exit timer is the backstop'),
+          10_000,
+        )
+        room.disconnect()
+          .then(() => { clearTimeout(disconnectWatch); console.log('🧟 [ZOMBIE-WATCHDOG] forced leave completed') })
+          .catch((e) => { clearTimeout(disconnectWatch); console.error('watchdog room.disconnect failed:', e) })
         // Belt-and-suspenders: if the WS is zombied the Disconnected event may
         // never fire (so the idle-exit arm in that handler won't run). Arm here too.
         armIdleExitTimer('zombie-watchdog forced leave')
@@ -4870,6 +4884,16 @@ async function main() {
     if (livekitState.status === 'connected') return  // already in the room — no-op
     console.log('🔌 /connect-room — joining LiveKit for incoming user')
     await connectWithRetry()
+    // Join-race fix: ParticipantConnected only fires for participants who join
+    // AFTER us. If the user's browser won the race (its token mint + WebRTC
+    // handshake finished before our rejoin), they're already in the room when
+    // we arrive — no event, no voice session, UI hangs at "Connecting...".
+    // Re-emit the event for every pre-existing participant so the session is
+    // created exactly as if they had joined after us.
+    for (const p of room.remoteParticipants.values()) {
+      console.log(`👥 Participant already in room at join: ${p.identity} — adopting (re-emitting ParticipantConnected)`)
+      ;(room as any).emit(RoomEvent.ParticipantConnected, p)
+    }
   }
   // 0.9.73: explicit frontend leave should also start the idle-exit countdown —
   // the user is done; the machine shouldn't idle-bill waiting for a maybe-return.
