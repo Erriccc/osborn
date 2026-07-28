@@ -1229,8 +1229,21 @@ async function main() {
     console.log('   🔥 Full coding capabilities!')
   }
 
-  // Determine room code
-  const roomCode = cliArgs.roomCode || generateRoomCode()
+  // Determine room code. STABLE PER MACHINE: persisted to ~/.osborn/room-code
+  // (the volume on cloud machines) so process restarts don't rotate the room.
+  // Rotation raced any client that fetched /room-code just before a restart —
+  // observed 2026-07-28: tester joined osborn-bz2m8n while the rebooted agent
+  // created fnz7nz; the client sat on "Connecting..." forever. Idle-exit
+  // auto-stop/start cycles (0.9.73+) made this race common.
+  const roomCodeFile = join(homedir(), '.osborn', 'room-code')
+  let persistedRoomCode: string | null = null
+  try { persistedRoomCode = readFileSync(roomCodeFile, 'utf8').trim() || null } catch { /* first boot */ }
+  const roomCode = cliArgs.roomCode || persistedRoomCode || generateRoomCode()
+  if (!cliArgs.roomCode && roomCode !== persistedRoomCode) {
+    try { mkdirSync(dirname(roomCodeFile), { recursive: true }); writeFileSync(roomCodeFile, roomCode) } catch (e) {
+      console.warn('⚠️ could not persist room code (rotation race protection disabled):', e instanceof Error ? e.message : e)
+    }
+  }
   currentRoomCode = roomCode
   const roomName = `osborn-${roomCode}`
 
