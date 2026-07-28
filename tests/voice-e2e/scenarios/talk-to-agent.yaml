@@ -1,0 +1,10 @@
+name: talk-to-agent
+description: Baseline natural voice conversation — improvised, different every run.
+entry: fresh
+conversation:
+  goal: >
+    Have a natural short conversation: greet the assistant, ask what it can
+    help with, pick ONE capability it mentions and ask a concrete follow-up,
+    then thank it and end. Max 3 things said by you.
+  maxTurns: 4
+  minAudibleReplies: 2

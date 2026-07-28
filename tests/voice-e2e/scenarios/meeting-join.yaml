@@ -1,0 +1,11 @@
+name: meeting-join
+description: Ask the agent BY VOICE to join a meeting link (Zoom / Google Meet via Recall.ai). Requires OSBORN_MEETING_URL env with a live meeting link.
+entry: fresh
+requiresEnv: OSBORN_MEETING_URL
+conversation:
+  goal: >
+    Ask the assistant to join the meeting at the link shown in EXTRA CONTEXT,
+    reading the URL naturally. Wait for it to confirm the bot is joining,
+    ask it to confirm the meeting status, then end. Max 3 things said by you.
+  maxTurns: 4
+  minAudibleReplies: 2

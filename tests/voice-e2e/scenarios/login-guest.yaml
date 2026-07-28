@@ -1,0 +1,13 @@
+name: login-guest
+description: Landing-page entry — arrive at the site root and get into a working voice session via the guest path (no OAuth).
+url: "/"
+entry: fresh
+steps:
+  - act: "If this is a landing or login page, choose the guest / connect-without-account option to enter the app"
+  - pause: 3000
+conversation:
+  goal: >
+    You just entered as a guest. Say hello and confirm the assistant can hear
+    you. End after its reply. Max 1 thing said by you.
+  maxTurns: 2
+  minAudibleReplies: 1

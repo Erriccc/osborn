@@ -1,0 +1,10 @@
+name: resume-session
+description: Resume the most recent previous session (vs starting fresh) and verify the agent has context.
+entry: resume
+conversation:
+  goal: >
+    You are resuming a previous conversation. Ask the assistant what you two
+    were talking about last time, and ask one follow-up about whatever it
+    says. Then end politely. Max 2 things said by you.
+  maxTurns: 3
+  minAudibleReplies: 1

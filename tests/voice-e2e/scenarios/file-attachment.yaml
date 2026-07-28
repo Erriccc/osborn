@@ -1,0 +1,14 @@
+name: file-attachment
+description: End-to-end file attachment — upload a text file through the chat UI, then ask the agent about its contents by voice.
+entry: fresh
+steps:
+  - upload: "fixtures/sample-note.txt"
+  - pause: 4000
+conversation:
+  goal: >
+    You just attached a text file to the chat. Ask the assistant what the
+    attached file says. It should mention the phrase "crimson jellyfish".
+    Confirm and end. Max 2 things said by you.
+  maxTurns: 3
+  minAudibleReplies: 1
+  assertHeard: "crimson jellyfish|jellyfish"

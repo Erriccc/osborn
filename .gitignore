@@ -27,10 +27,14 @@ Thumbs.db
 *.log
 npm-debug.log*
 
-# Claude Code
-.claude/
+# Claude Code — ignore local state but version the skills
+.claude/*
+!.claude/skills/
+.claude/skills/*/settings.local.json
 
-/tests/
+# tests — version the voice-e2e harness only
+/tests/*
+!/tests/voice-e2e/
 
 # Osborn Code
 .osborn/

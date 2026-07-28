@@ -1,0 +1,9 @@
+node_modules/
+test-results/
+playwright-report/
+results/
+profiles/
+knowledge/
+*.wav
+*.webm
+*.m4a

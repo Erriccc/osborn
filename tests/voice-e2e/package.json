@@ -1,0 +1,21 @@
+{
+  "name": "osborn-voice-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "description": "End-to-end voice testing harness for Osborn — Playwright drives the real browser with a fake mic fed from WAV fixtures, through the real LiveKit path, asserting on transcripts, agent responses, and connection lifecycle.",
+  "type": "module",
+  "scripts": {
+    "fixtures": "sh scripts/make-fixtures.sh",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  },
+  "dependencies": {
+    "@browserbasehq/stagehand": "^3.7.1",
+    "@types/js-yaml": "^4.0.9",
+    "js-yaml": "^5.2.2"
+  }
+}

@@ -1,0 +1,15 @@
+name: mobile-responsiveness
+description: iPhone-size viewport — click around the main UI controls and verify nothing is broken, then hold a short voice exchange.
+viewport: { width: 390, height: 844 }
+entry: fresh
+steps:
+  - act: "Open the menu or settings control if one is visible"
+  - pause: 2000
+  - act: "Close any panel or menu that is open so the main voice screen is visible"
+  - pause: 1000
+conversation:
+  goal: >
+    Quick mobile check-in: say hello and ask the assistant to confirm it can
+    hear you clearly. End after its reply. Max 1 thing said by you.
+  maxTurns: 2
+  minAudibleReplies: 1

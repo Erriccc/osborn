@@ -1,0 +1,25 @@
+# Voice-E2E tester machine. Run-on-start: `fly machine start` (or the Machines
+# API) boots it, it runs OSBORN_TEST_SPEC, stores artifacts on the volume at
+# /data/runs/<timestamp>/, then exits and the machine stops — billing only
+# while a test is actually running.
+app = "osborn-voice-e2e"
+primary_region = "ord"
+
+[env]
+  # Site-knowledge profiles (cached actions) persist on the volume — the
+  # tester machine gets smarter/cheaper with every run.
+  OSBORN_KNOWLEDGE_DIR = "/data/knowledge"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[[mounts]]
+  source = "e2e_results"
+  destination = "/data"
+
+[[restart]]
+  policy = "never"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2048mb"
