@@ -1229,17 +1229,23 @@ async function main() {
     console.log('   🔥 Full coding capabilities!')
   }
 
-  // Determine room code. STABLE PER MACHINE: persisted to ~/.osborn/room-code
-  // (the volume on cloud machines) so process restarts don't rotate the room.
-  // Rotation raced any client that fetched /room-code just before a restart —
-  // observed 2026-07-28: tester joined osborn-bz2m8n while the rebooted agent
-  // created fnz7nz; the client sat on "Connecting..." forever. Idle-exit
-  // auto-stop/start cycles (0.9.73+) made this race common.
+  // Determine room code. STABLE PER MACHINE, derived from identity we
+  // already have: the Fly app name (one app per user). No new storage, no
+  // rotation — the same user always lands in the same room, and the room
+  // name itself binds to the machine identity. Rotation previously raced
+  // any client that fetched /room-code just before a restart (observed
+  // 2026-07-28: tester joined osborn-bz2m8n while the rebooted agent created
+  // fnz7nz — stuck "Connecting..." forever; idle-exit stop/start cycles made
+  // this common). Local/dev fallback: persist a generated code so restarts
+  // stay stable there too.
+  const identityCode = process.env.FLY_APP_NAME?.replace(/^osborn-/, '') || null
   const roomCodeFile = join(homedir(), '.osborn', 'room-code')
   let persistedRoomCode: string | null = null
-  try { persistedRoomCode = readFileSync(roomCodeFile, 'utf8').trim() || null } catch { /* first boot */ }
-  const roomCode = cliArgs.roomCode || persistedRoomCode || generateRoomCode()
-  if (!cliArgs.roomCode && roomCode !== persistedRoomCode) {
+  if (!identityCode) {
+    try { persistedRoomCode = readFileSync(roomCodeFile, 'utf8').trim() || null } catch { /* first boot */ }
+  }
+  const roomCode = cliArgs.roomCode || identityCode || persistedRoomCode || generateRoomCode()
+  if (!cliArgs.roomCode && !identityCode && roomCode !== persistedRoomCode) {
     try { mkdirSync(dirname(roomCodeFile), { recursive: true }); writeFileSync(roomCodeFile, roomCode) } catch (e) {
       console.warn('⚠️ could not persist room code (rotation race protection disabled):', e instanceof Error ? e.message : e)
     }
