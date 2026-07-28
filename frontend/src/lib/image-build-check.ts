@@ -300,8 +300,11 @@ async function buildAndPushImage(version: string, flySandboxApp: string): Promis
 
 export async function checkImageBuild(): Promise<void> {
   try {
-    const FLY_API_TOKEN = process.env.FLY_API_TOKEN
-    const FLY_SANDBOX_APP = process.env.FLY_SANDBOX_APP || 'osborn-sandbox'
+    const FLY_API_TOKEN = process.env.FLY_API_TOKEN?.trim()
+    // trim(): a whitespace-padded value on Railway made the registry URL
+    // /v2/%20osborn-sandbox2%20/tags/list → 404 → the check died before ever
+    // building (verified in Railway logs 2026-07-28: "app= osborn-sandbox2 ").
+    const FLY_SANDBOX_APP = (process.env.FLY_SANDBOX_APP || 'osborn-sandbox').trim()
 
     // Ensure FLY_ORG_SLUG has a default so flyctl picks it up automatically.
     if (!process.env.FLY_ORG_SLUG) process.env.FLY_ORG_SLUG = 'personal'
