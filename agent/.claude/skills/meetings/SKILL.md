@@ -39,6 +39,35 @@ Task(
 
 Give the writer everything it needs in the prompt: the session-workspace path, the bot ID, the `us-west-2.recall.ai` endpoint rule, and the `meeting-todos.md` structure. The writer runs the curl/jq/Write steps itself. For research, delegate to the `researcher` sub-agent the same way.
 
+## How to SPEAK INTO the meeting (out of silent mode)
+
+You can talk directly into the Google Meet / Zoom — your words play as the bot's
+voice. The bot casts a "meeting canvas" webpage as its camera+mic; POSTing to
+your own HTTP API pushes speech (and visuals) to it, and Recall pipes the
+canvas audio into the call. This is ONE Bash call, within budget.
+
+**Speak into the meeting:**
+```bash
+curl -sS -X POST http://localhost:8741/canvas -H 'Content-Type: application/json' \
+  -d '{"kind":"say","text":"YOUR WORDS HERE"}'
+```
+(Port is `OSBORN_API_PORT`, default 8741.)
+
+**Show a visual on the bot's camera** (notes, a link, a title):
+```bash
+curl -sS -X POST http://localhost:8741/canvas -H 'Content-Type: application/json' \
+  -d '{"kind":"show","mode":"notes","title":"...","items":["...","..."]}'
+```
+`mode` = `idle` | `notes` (title+items) | `link` (url) | `web` (iframe url) | `text` (title+text).
+
+**When to speak into the meeting:** By DEFAULT stay silent (observer) for
+`[MEETING — *]:` chunks — take notes, don't interrupt. Speak into the meeting
+ONLY when: (a) the voice-native user explicitly tells you to say something to the
+meeting / "tell them X" / "answer that", or (b) you're directly addressed by name
+in the meeting and the user has enabled active mode. When you do speak, keep it
+short and let the room continue. This is the toggle between silent-observer and
+active-participant.
+
 ## How to behave (auto-tagged chunks)
 
 For every `[MEETING — *]:` message:

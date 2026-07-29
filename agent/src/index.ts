@@ -1599,6 +1599,31 @@ async function main() {
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
   let activeMeetingPoller: MeetingTranscriptPoller | null = null  // Transcript poller bound to that bot
 
+  // LIVE meeting transcript → LLM (buffered webhook finals). See recall.on('transcript').
+  const meetingTranscriptBuffer: string[] = []
+  let meetingFlushTimer: ReturnType<typeof setInterval> | null = null
+  const startMeetingFlush = (botId: string) => {
+    stopMeetingFlush()
+    console.log(`📓 Meeting transcript flush timer started (bot ${botId}, 20s)`)
+    meetingFlushTimer = setInterval(() => {
+      if (!meetingTranscriptBuffer.length || !currentLLM) return
+      const turns = meetingTranscriptBuffer.splice(0) // drain
+      const tagged = `[MEETING — ${botId}]:\n${turns.join('\n')}`
+      try {
+        const ctx = new llm.ChatContext()
+        ctx.addMessage({ role: 'user', content: tagged })
+        currentLLM.chat({ chatCtx: ctx })
+        console.log(`📓 Flushed ${turns.length} meeting turn(s) to LLM`)
+      } catch (err) {
+        console.warn(`⚠️ Meeting flush failed: ${(err as Error).message}`)
+      }
+    }, 20_000)
+  }
+  const stopMeetingFlush = () => {
+    if (meetingFlushTimer) { clearInterval(meetingFlushTimer); meetingFlushTimer = null; console.log('📓 Meeting flush timer stopped') }
+    meetingTranscriptBuffer.length = 0
+  }
+
   // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
   let currentResumeSessionId: string | undefined
@@ -1653,26 +1678,17 @@ async function main() {
   // "what was said in the meeting" display, separate from the LLM input path).
   const recall = getRecallClient()
   if (recall) {
-    console.log('🎥 Recall.ai client initialized (webhook STT receiver — LLM forwarding disabled, see meeting-bot Phase 2)')
-    recall.on('transcript', ({ botId, speaker, text }: { botId: string, speaker: string, text: string }) => {
-      console.log(`📝 Meeting transcript [${speaker}]: ${text}`)
-      // INTENTIONALLY DISABLED — see comment above. Audio path is now LiveKit
-      // → meeting-bot page publishes meeting audio → agent STT processes it.
-      // The line below is preserved as a reference for future re-enablement
-      // (e.g. as a display-only feature, NOT as LLM input).
-      //
-      // if (currentLLM && currentSession) {
-      //   const meetingText = `[Meeting — ${speaker}]: ${text}`
-      //   try {
-      //     if (currentVoiceMode === 'pipeline' || currentVoiceMode === 'direct') {
-      //       const chatCtx = new llm.ChatContext()
-      //       chatCtx.addMessage({ role: 'user', content: meetingText })
-      //       ;(currentLLM as any).chat({ chatCtx })
-      //     }
-      //   } catch (err) {
-      //     console.error('❌ Failed to route meeting transcript:', err)
-      //   }
-      // }
+    console.log('🎥 Recall.ai client initialized — LIVE webhook finals buffered → LLM (batch poller download_url is empty mid-call, so the webhook is the only live transcript source)')
+    // LIVE meeting transcript → LLM. The realtime webhook (handleWebhook) emits
+    // every partial + final. We buffer FINALS (partials are too noisy) and a
+    // flush timer (started on join_meeting) batches them to currentLLM.chat()
+    // as [MEETING — botId]: every ~20s — so the agent actually sees the meeting
+    // and can take notes / delegate to the writer. Previously this was DISABLED
+    // and the poller (batch endpoint) was the only LLM path — but that endpoint
+    // is empty until the meeting ENDS, so mid-call the LLM saw nothing.
+    recall.on('transcript', ({ botId, speaker, text, partial }: { botId: string, speaker: string, text: string, partial?: boolean }) => {
+      console.log(`📝 Meeting transcript [${speaker}]${partial ? ' (partial)' : ''}: ${text}`)
+      if (!partial && text.trim()) meetingTranscriptBuffer.push(`${speaker}: ${text.trim()}`)
     })
   }
 
@@ -4234,6 +4250,7 @@ async function main() {
     clearPipelineFastBrainSession()
 
     // Auto-leave any active meeting bot when user disconnects from the room
+    stopMeetingFlush()
     if (activeMeetingPoller) {
       activeMeetingPoller.stop()
       activeMeetingPoller = null
@@ -4910,6 +4927,9 @@ async function main() {
                 },
               })
               activeMeetingPoller.start()
+              // LIVE path: buffer webhook finals + flush to the LLM every 20s.
+              // (The poller above only lands data after the meeting ENDS.)
+              startMeetingFlush(botId)
             } catch (err: any) {
               console.error('❌ Recall.ai join error:', err)
               await sendToFrontend({ type: 'meeting_error', message: err.message })
@@ -4922,8 +4942,9 @@ async function main() {
         const recallLeave = getRecallClient()
         if (recallLeave && botId) {
           try {
-            // Stop the transcript poller FIRST so no more transcript chunks get
-            // forwarded to the LLM during the leave.
+            // Stop the transcript poller + live flush FIRST so no more chunks
+            // get forwarded to the LLM during the leave.
+            stopMeetingFlush()
             if (activeMeetingPoller) {
               activeMeetingPoller.stop()
               activeMeetingPoller = null
