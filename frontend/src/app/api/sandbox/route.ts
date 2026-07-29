@@ -305,9 +305,12 @@ export async function POST(request: Request) {
       try {
         const r = await fetch(`${sbCR.previewUrl}/connect-room`, {
           method: 'POST',
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(6000),
         })
-        return NextResponse.json({ success: r.ok })
+        // Forward the roomName the agent returns (0.9.83+ temporary rooms) so
+        // the client mints its token for the room the agent actually joined.
+        const body = r.ok ? await r.json().catch(() => ({})) : {}
+        return NextResponse.json({ success: r.ok, roomName: (body as any)?.roomName ?? null })
       } catch {
         return NextResponse.json({ success: false })
       }

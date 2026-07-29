@@ -321,28 +321,30 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         // room-code unavailable — token API will generate a fresh room
       }
 
-      // Step 2.5: Ensure the agent is in its LiveKit room before we join.
-      // The agent leaves the room whenever no user is present (idle/alone timer
-      // or explicit leave) to stop connection-minute burn, so on reconnect we
-      // must ask it to rejoin — otherwise the user lands in an empty room stuck
-      // "Connecting". Fired BEFORE the token mint so the agent's ~1-2s rejoin
-      // overlaps the token + WebRTC handshake. Best-effort: if the agent never
-      // left (boot-connect / still connected) this is a harmless no-op.
+      // Step 2.5: Ensure the agent is in its LiveKit room before we join, and
+      // — critically for agent 0.9.83+ (temporary rooms) — use the roomName it
+      // RETURNS to mint our token. Each /connect-room creates a FRESH room with
+      // a unique suffix (osborn-<code>-<ts>); the room-code fetched above may be
+      // stale/different, so joining it lands us in an empty room stuck
+      // "Connecting". connect-room's returned roomName is the authoritative one.
+      // (Older agents don't return roomName → we keep the room-code value.)
       try {
         if (connectionMode === 'cloud') {
-          await fetch('/api/sandbox', {
+          const cr = await fetch('/api/sandbox', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'connect-room' }),
-          }).catch(() => {})
+          }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+          if (cr?.roomName) code = String(cr.roomName).replace(/^osborn-/, '')
         } else {
           const isMixed =
             window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
           if (!isMixed) {
-            await fetch(`${resolvedUrl}/connect-room`, {
+            const cr = await fetch(`${resolvedUrl}/connect-room`, {
               method: 'POST',
-              signal: AbortSignal.timeout(3000),
-            }).catch(() => {})
+              signal: AbortSignal.timeout(5000),
+            }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+            if (cr?.roomName) code = String(cr.roomName).replace(/^osborn-/, '')
           }
         }
       } catch {
