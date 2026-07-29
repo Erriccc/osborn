@@ -23,6 +23,11 @@ const CHAT_URL = `${APP_URL}/chat?provider=gemini&voiceArch=pipeline&agent=claud
 const MEETING_URL = process.env.OSBORN_MEETING_URL || ''
 const CDP_PORT = 9250
 
+// Always leave the room properly — NEVER just close the tab. Abruptly closing
+// leaves a ghost participant until the alone-timer, compounding room poisoning
+// (user-diagnosed 2026-07-29: "spamming rooms and closing the tab").
+test.afterEach(async () => { await fetch(`${AGENT_URL}/leave-room`, { method: 'POST' }).catch(() => {}) })
+
 test('SESSION TOUR: skills explorer then meeting join, one continuous room session', async () => {
   test.setTimeout(420_000)
   const t0 = Date.now()
@@ -74,7 +79,15 @@ test('SESSION TOUR: skills explorer then meeting join, one continuous room sessi
   // ===== SECTION 2: MEETING JOIN (never left the room) =====
   if (MEETING_URL) {
     mark('meeting-start')
-    await brain('Click the "Join a meeting" button — a small icon in the controls, tooltip "Join a meeting"')
+    // New labeled UI: click the join button (data-testid), type URL, submit.
+    await page.click('[data-testid="join-meeting"]').catch(async () => {
+      await brain('Click the "Join a meeting" button (video camera icon in the top-right controls)')
+    })
+    await page.waitForTimeout(1_500)
+    await page.fill('[data-testid="join-meeting"] ~ div input, input[placeholder*="Meet"]', MEETING_URL).catch(() => {})
+    await page.click('[data-testid="join-meeting-submit"]').catch(async () => {
+      await brain('Type the meeting URL into the input and click "Send bot to meeting"')
+    })
     await page.waitForTimeout(4_000)
     flight({ type: 'meeting-join-clicked', url: MEETING_URL })
     console.log(`[tour] meeting join clicked for ${MEETING_URL}`)
@@ -86,6 +99,11 @@ test('SESSION TOUR: skills explorer then meeting join, one continuous room sessi
   writeFileSync(test.info().outputPath('sections.json'), JSON.stringify(marks, null, 2))
   await test.info().attach('sections', { path: test.info().outputPath('sections.json'), contentType: 'application/json' })
 
+  // GRACEFUL END: leave the room like a user would, settle, THEN close.
+  await brain('Click the Disconnect or Leave button to end the voice session').catch(() => {})
+  await page.waitForTimeout(2_000)
+  await fetch(`${AGENT_URL}/leave-room`, { method: 'POST' }).catch(() => {})
+  await page.waitForTimeout(2_000)
   const video = page.video()
   await stagehand.close().catch(() => {})
   await context.close().catch(() => {})

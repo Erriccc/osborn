@@ -78,6 +78,9 @@ test('MEETING COPILOT: agent joins a live meeting, tester summons it privately',
   } catch { flight({ type: 'no-reply', scenario: 'meeting-copilot' }) }
   await page.waitForTimeout(4_000)
 
+  // Graceful end before capture/close — leave via UI, don't just kill the tab.
+  await brain('Click the Disconnect or Leave button to end the voice session').catch(() => {})
+  await page.waitForTimeout(2_000)
   const out = test.info().outputPath('meeting-copilot-capture.webm')
   const cap = await saveCapture(page, out).catch(() => ({ bytes: 0 } as any))
   await test.info().attach('agent-audio', { path: out, contentType: 'audio/webm' }).catch(() => {})

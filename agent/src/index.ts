@@ -217,7 +217,7 @@ const livekitState: {
 // stopped). The hooks below are populated by main() (which owns `room` and the
 // connect-with-retry loop) so the module-level HTTP server can drive them.
 let intentionalLeave = false
-let connectRoomHook: (() => Promise<void>) | null = null
+let connectRoomHook: (() => Promise<string>) | null = null
 let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
 // Hook for the bug-reporter skill. The /report-bug HTTP endpoint validates the
 // payload + generates the reportId in the module-level handler, then delegates
@@ -351,6 +351,10 @@ function startApiServer(workingDir: string, port: number): void {
     }
 
 
+    // GET /room-code — LEGACY (0.9.83). Returns the LAST-CREATED full room NAME
+    // (not a short code anymore) so old frontends that fetch this before joining
+    // keep working during rollout. New frontends should instead call
+    // POST /connect-room and use the returned { roomName }. Kept as a fallback.
     if (req.method === 'GET' && url.pathname === '/room-code') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ roomCode: currentRoomCode }))
@@ -358,17 +362,29 @@ function startApiServer(workingDir: string, port: number): void {
     }
 
     // POST /connect-room — the frontend connect flow calls this so the agent
-    // joins LiveKit for an incoming user. Idempotent: if already connected it's
-    // a no-op. Must complete (agent in room) BEFORE the user joins, because the
-    // voice session is created from the ParticipantConnected event, which only
-    // fires for participants who join AFTER the agent. The frontend polls
-    // /health for livekit.status==='connected' before minting its token.
+    // joins LiveKit for an incoming user. 0.9.83: creates a FRESH, UNIQUE room
+    // per session and AWAITS the join so we can return the room NAME the
+    // frontend must mint its token against — eliminating the /room-code fetch
+    // race. Response: { ok, roomName }. The frontend should bind to roomName
+    // directly (mint its LiveKit token for it) rather than fetching /room-code.
+    // The agent is in the room by the time this responds, so the user's join
+    // fires ParticipantConnected (or is caught by the adopt-sweep either way).
     if (req.method === 'POST' && url.pathname === '/connect-room') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, status: livekitState.status }))
-      if (connectRoomHook) {
-        connectRoomHook().catch((e) => console.error('❌ /connect-room hook failed:', e))
+      if (!connectRoomHook) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'agent not ready' }))
+        return
       }
+      connectRoomHook()
+        .then((roomName) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, roomName, status: livekitState.status }))
+        })
+        .catch((e) => {
+          console.error('❌ /connect-room hook failed:', e)
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e), status: livekitState.status }))
+        })
       return
     }
 
@@ -1250,16 +1266,21 @@ async function main() {
       console.warn('⚠️ could not persist room code (rotation race protection disabled):', e instanceof Error ? e.message : e)
     }
   }
-  currentRoomCode = roomCode
-  const roomName = `osborn-${roomCode}`
+  // `roomCode` is the STABLE, identity-derived PREFIX (per machine/user). Under
+  // the temporary-rooms architecture (0.9.83) we no longer join ONE fixed room
+  // for the machine's life — each user session gets a FRESH, unique room name
+  // built by appending a base36 timestamp to this prefix:
+  //   osborn-${roomCode}-${Date.now().toString(36)}
+  // The stable prefix is preserved purely for log forensics (grep by user).
+  // currentRoomCode holds the LAST-CREATED full room NAME so the legacy
+  // GET /room-code endpoint keeps working for old frontends during rollout
+  // (see note in createRoomSession + the /room-code handler).
+  const buildRoomName = () => `osborn-${roomCode}-${Date.now().toString(36)}`
 
   if (cliArgs.roomCode) {
-    console.log(`🔗 Joining room: ${roomCode}`)
+    console.log(`🔗 Room code prefix: ${roomCode}`)
   } else {
-    console.log(`\n✨ Created new room: ${roomCode}`)
-    console.log(`\n📋 Share this with the frontend or run:`)
-    console.log(`   Open: https://osborn.app?room=${roomCode}`)
-    console.log(`   Or enter code "${roomCode}" in the frontend\n`)
+    console.log(`\n✨ Room code prefix: ${roomCode} — each session mints a fresh room osborn-${roomCode}-<ts>\n`)
   }
 
   // Start HTTP API server for frontend session browsing
@@ -1267,33 +1288,40 @@ async function main() {
   startApiServer(workingDir, apiPort)
 
   // ============================================================
-  // Create Access Token for Agent
+  // Agent access token — minted FRESH per room session (0.9.83)
   // ============================================================
-  console.log('🔑 Creating access token...')
-
-  const token = new AccessToken(apiKey, apiSecret, {
-    identity: 'osborn-agent',
-    name: 'Osborn AI',
-    metadata: JSON.stringify({ type: 'agent', version: '0.3.0' }),
-  })
-
-  token.addGrant({
-    roomJoin: true,
-    room: roomName,
-    canPublish: true,
-    canSubscribe: true,
-    canPublishData: true,
-  })
-
-  const jwt = await token.toJwt()
+  // A LiveKit JWT grant is scoped to a specific room name. Since every user
+  // session now joins a UNIQUE temporary room (buildRoomName), the token must
+  // be minted per room, not once at boot. mintAgentToken(roomName) returns a
+  // fresh JWT grant for the given room.
+  const mintAgentToken = async (targetRoom: string): Promise<string> => {
+    const token = new AccessToken(apiKey, apiSecret, {
+      identity: 'osborn-agent',
+      name: 'Osborn AI',
+      metadata: JSON.stringify({ type: 'agent', version: '0.3.0' }),
+    })
+    token.addGrant({
+      roomJoin: true,
+      room: targetRoom,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    })
+    return token.toJwt()
+  }
 
   // ============================================================
-  // Connect to Room
+  // Room session (0.9.83): FRESH Room instance per user session
   // ============================================================
-  console.log('📡 Connecting to LiveKit...')
-
-  const room = new Room()
-  room.setMaxListeners(50)  // Prevent MaxListenersExceeded warnings on reconnect
+  // rtc-node's Room is single-use: Room.disconnect() ends with
+  // removeAllListeners() (room.js:584), wiping EVERY room.on() handler, and its
+  // signal-less waitFor + hasCleanedUp reset make a reused Room deaf after any
+  // leave/rejoin cycle. So we NEVER reuse a Room after disconnect — instead we
+  // create a brand-new Room (with full handler wiring) per session via
+  // createRoomSession(), and discard it via destroyRoomSession(). activeRoom is
+  // null while the agent is idle (between sessions).
+  let activeRoom: Room | null = null
+  let activeRoomName: string | null = null  // the temporary room name currently joined
 
   // Track state
   let pendingSessionClose: Promise<void> | null = null  // Tracks async session close for reconnect safety
@@ -1321,16 +1349,41 @@ async function main() {
   const armAloneTimer = () => {
     if (aloneTimer) clearTimeout(aloneTimer)
     aloneTimer = null
-    if (room.remoteParticipants.size > 0) return
+    if (!activeRoom || activeRoom.remoteParticipants.size > 0) return
     aloneTimer = setTimeout(() => {
       aloneTimer = null
-      if (room.remoteParticipants.size === 0 && livekitState.status === 'connected') {
-        console.log(`🕊️ Alone in room ${ALONE_GRACE_MS / 1000}s — leaving LiveKit to stop connection-minute burn`)
+      if (activeRoom && activeRoom.remoteParticipants.size === 0 && livekitState.status === 'connected') {
+        console.log(`🕊️ Alone in room ${ALONE_GRACE_MS / 1000}s — destroying room session to stop connection-minute burn`)
         intentionalLeave = true
-        room.disconnect().catch((e) => console.error('alone-leave room.disconnect failed:', e))
+        // Fresh-Room-per-session (0.9.83): tear down + discard the instance
+        // rather than room.disconnect() on a reused Room.
+        destroyRoomSession('alone-timer').catch((e) => console.error('alone-leave destroyRoomSession failed:', e))
       }
     }, ALONE_GRACE_MS)
   }
+
+  // 0.9.83: Fast tab-close leave. When a real session ENDS (user left / closed
+  // the tab), LiveKit has already dropped that participant server-side, so we
+  // don't need the full 3-min alone grace — free the room in ~20s. A short
+  // grace still rides out a quick refresh/rejoin. This shrinks the "ghost
+  // participant" window that compounds room churn; the 3-min alone-timer
+  // remains for the woken-but-never-joined case (armed on connect).
+  let fastLeaveTimer: ReturnType<typeof setTimeout> | null = null
+  const POST_LEAVE_GRACE_MS = 20 * 1000
+  const armFastLeaveTimer = () => {
+    if (fastLeaveTimer) clearTimeout(fastLeaveTimer)
+    fastLeaveTimer = null
+    if (!activeRoom || activeRoom.remoteParticipants.size > 0) return
+    fastLeaveTimer = setTimeout(() => {
+      fastLeaveTimer = null
+      if (activeRoom && activeRoom.remoteParticipants.size === 0 && livekitState.status === 'connected') {
+        console.log(`🚪 Room empty ${POST_LEAVE_GRACE_MS / 1000}s after session end (tab close / leave) — destroying room session`)
+        intentionalLeave = true
+        destroyRoomSession('fast-leave').catch((e) => console.error('fast-leave destroyRoomSession failed:', e))
+      }
+    }, POST_LEAVE_GRACE_MS)
+  }
+  const cancelFastLeaveTimer = () => { if (fastLeaveTimer) { clearTimeout(fastLeaveTimer); fastLeaveTimer = null } }
 
   // ── 0.9.73: Idle machine self-stop (the $123 Fly bill fix) ──
   // After an intentional alone-leave the agent used to sit "idle, awaiting
@@ -1356,13 +1409,13 @@ async function main() {
     idleExitTimer = setTimeout(() => {
       idleExitTimer = null
       const stillIdle = livekitState.status === 'idle' || livekitState.status === 'failed'
-      const empty = room.remoteParticipants.size === 0
+      const empty = !activeRoom || activeRoom.remoteParticipants.size === 0
       if (stillIdle && empty) {
         console.log(`⏻ [IDLE-EXIT] still idle after grace — exiting 0 so Fly stops the machine (billing stops; next Resume boots it)`)
         // Give the log tee a beat to flush, then stop the machine.
         setTimeout(() => process.exit(0), 2000)
       } else {
-        console.log(`⏻ [IDLE-EXIT] aborted — status=${livekitState.status} participants=${room.remoteParticipants.size}`)
+        console.log(`⏻ [IDLE-EXIT] aborted — status=${livekitState.status} participants=${activeRoom?.remoteParticipants.size ?? 0}`)
       }
     }, IDLE_EXIT_GRACE_MS)
   }
@@ -1374,77 +1427,20 @@ async function main() {
     }
   }
 
-  // ── 0.9.73: Zombie-presence watchdog (poll-based) ──
-  // The Jun 18 zombie proved the event-driven alone-timer has a blind spot:
-  // when the LiveKit WS goes half-dead, RoomEvent callbacks stop firing entirely
-  // (agent log went silent for 4 days while the dashboard logged "Participant
-  // resumed" on every network blip). A poll can't be starved by a dead event
-  // stream. Every 60s: if we believe we're connected but the room has no remote
-  // participants, count it; after ALONE_GRACE_MS worth of consecutive empty
-  // polls, force the same intentional-leave path the timer uses. If the
-  // disconnect itself hangs (zombie WS), the idle-exit timer armed alongside
-  // still stops the machine.
-  const WATCHDOG_POLL_MS = 60 * 1000
-  let emptyPolls = 0
-  setInterval(() => {
-    try {
-      if (livekitState.status !== 'connected') { emptyPolls = 0; return }
-      if (room.remoteParticipants.size > 0) { emptyPolls = 0; return }
-      emptyPolls++
-      const emptyForMs = emptyPolls * WATCHDOG_POLL_MS
-      if (emptyForMs >= ALONE_GRACE_MS) {
-        console.log(`🧟 [ZOMBIE-WATCHDOG] room empty for ${emptyPolls} consecutive polls (${emptyForMs / 1000}s) — forcing leave`)
-        emptyPolls = 0
-        intentionalLeave = true
-        // Update state FIRST, don't wait for the Disconnected event — a zombie
-        // WS is precisely the case where that event never arrives. Observed
-        // 2026-07-27: after a forced leave the status stayed 'connected', so
-        // /health lied, /connect-room no-op'd, and the next user joined a room
-        // the agent wasn't in (UI stuck at "Connecting..."). Setting idle here
-        // makes the next /connect-room actually rejoin. If the Disconnected
-        // event does fire later, its handler sets the same state — idempotent.
-        livekitState.status = 'idle'
-        const disconnectWatch = setTimeout(
-          () => console.error('🧟 [ZOMBIE-WATCHDOG] room.disconnect() still pending after 10s — WS likely zombied; idle-exit timer is the backstop'),
-          10_000,
-        )
-        room.disconnect()
-          .then(() => { clearTimeout(disconnectWatch); console.log('🧟 [ZOMBIE-WATCHDOG] forced leave completed') })
-          .catch((e) => { clearTimeout(disconnectWatch); console.error('watchdog room.disconnect failed:', e) })
-        // Belt-and-suspenders: if the WS is zombied the Disconnected event may
-        // never fire (so the idle-exit arm in that handler won't run). Arm here too.
-        armIdleExitTimer('zombie-watchdog forced leave')
-      }
-    } catch (err) {
-      console.error('🧟 [ZOMBIE-WATCHDOG] poll error:', err instanceof Error ? err.message : err)
-    }
-  }, WATCHDOG_POLL_MS)
-
-  // ── 0.9.80: Event-loss adopter (poll-based) ──
-  // After a leave/rejoin cycle the same Room instance can stop delivering
-  // ParticipantConnected entirely — observed 2026-07-28: the leave-room guard
-  // saw "1 participant(s) still in room" while the agent sat at "Waiting for
-  // user to connect" (state knew, events never fired; user stuck on
-  // "Connecting..." forever). Same blind-spot family as the zombie watchdog:
-  // never trust the event stream alone. Every 5s: participant present but no
-  // voice session → re-emit ParticipantConnected (60s per-identity cooldown
-  // so a slow in-flight session creation isn't double-fired).
-  const adoptAttempts = new Map<string, number>()
-  setInterval(() => {
-    try {
-      if (livekitState.status !== 'connected') return
-      if (currentSession) return
-      const p = room.remoteParticipants.values().next().value
-      if (!p) return
-      const last = adoptAttempts.get(p.identity) ?? 0
-      if (Date.now() - last < 60_000) return
-      adoptAttempts.set(p.identity, Date.now())
-      console.log(`📥 [ADOPT-POLL] ${p.identity} present with no session — invoking ParticipantConnected handler directly`)
-      participantConnectedHandler?.(p).catch((e) => console.error('📥 [ADOPT-POLL] handler error:', e instanceof Error ? e.message : e))
-    } catch (err) {
-      console.error('📥 [ADOPT-POLL] error:', err instanceof Error ? err.message : err)
-    }
-  }, 5_000)
+  // ── 0.9.83: Zombie-presence watchdog + event-loss adopter DELETED ──
+  // Both poll-based layers existed solely to compensate for Room-reuse damage:
+  //   • zombie-watchdog: RoomEvent callbacks stopped firing after a leave/rejoin
+  //     cycle because Room.disconnect() had already run removeAllListeners()
+  //     (room.js:584), so even real disconnects went unobserved.
+  //   • adopt-poll: ParticipantConnected stopped being delivered on a reused
+  //     Room for the same reason.
+  // Under fresh-Room-per-session (createRoomSession / destroyRoomSession) the
+  // event stream is trustworthy again — every session gets a Room with freshly
+  // wired handlers, and we NEVER reuse a Room after disconnect. The legitimate
+  // race the adopt-poll also covered (a participant already in the room at join
+  // time, who fires no ParticipantConnected event) is now handled once, at the
+  // right moment, by the adopt-sweep inside createRoomSession(). The idle-exit
+  // timer (above) remains as the billing backstop.
 
   /**
    * Hard-kill the in-flight Claude SDK query AND the persistent subprocess.
@@ -3042,17 +3038,28 @@ async function main() {
   }
 
   // ============================================================
-  // Room Event Handlers
+  // Room Event Handlers (0.9.83: registered per-session via wireRoomHandlers)
   // ============================================================
+  //
+  // Every handler BODY lives here in main()'s scope (closing over currentSession,
+  // sendToFrontend, etc.). The actual `room.on(...)` REGISTRATION happens inside
+  // wireRoomHandlers(room) — called once per fresh Room in createRoomSession().
+  // We never re-use a Room after disconnect (rtc-node's Room.disconnect() runs
+  // removeAllListeners() at room.js:584, wiping every listener), so handlers are
+  // wired fresh onto each new instance.
 
-  room.on(RoomEvent.Connected, () => {
+  // Post-connect setup. RoomEvent.Connected is NEVER emitted by rtc-node (grep
+  // of dist finds zero emit("connected") — only connectionStateChanged), so this
+  // body — which used to live in a dead RoomEvent.Connected handler — is now
+  // called directly from createRoomSession() after connect() resolves.
+  const postConnectSetup = (room: Room, connectedRoomName: string) => {
     // 0.9.68: log Room SID + name PROMINENTLY so we can cross-reference
     // this specific session in LiveKit Cloud dashboard → Sessions tab.
     // @livekit/rtc-node Room exposes SID via async getSid() (it's resolved
     // after WebRTC handshake), so we fetch it asynchronously and log when ready.
-    console.log(`✅ Connected to room: ${roomName} | t=${new Date().toISOString()}`)
+    console.log(`✅ Connected to room: ${connectedRoomName} | t=${new Date().toISOString()}`)
     room.getSid().then((sid: string) => {
-      console.log(`🔗 [LIVEKIT-DASHBOARD] room sid=${sid} name=${roomName} — search at https://cloud.livekit.io/projects → Sessions → "${sid}"`)
+      console.log(`🔗 [LIVEKIT-DASHBOARD] room sid=${sid} name=${connectedRoomName} — search at https://cloud.livekit.io/projects → Sessions → "${sid}"`)
     }).catch((err: unknown) => {
       console.log(`⚠️ [LIVEKIT-DASHBOARD] failed to fetch room SID: ${err instanceof Error ? err.message : String(err)}`)
     })
@@ -3088,7 +3095,7 @@ async function main() {
     // window (e.g. machine woken then abandoned mid-handshake), leave the room
     // rather than hold it indefinitely. Cancelled in ParticipantConnected.
     armAloneTimer()
-  })
+  }
 
   // NOTE: previously this section also had a RoomEvent.ActiveSpeakersChanged
   // handler that interrupted TTS on any sustained audio activity (~50ms after
@@ -3101,43 +3108,14 @@ async function main() {
   // confidence-aware. The latency tradeoff is worth eliminating the false
   // interrupts at the root.
 
-  // 0.9.71: Room-level audio observability — observe-only logs so we can
-  // cross-reference user mic mute/quality changes against TTS cutoffs without
-  // re-introducing the over-eager ActiveSpeakers interrupt.
-  room.on(RoomEvent.ActiveSpeakersChanged, (speakers: any[]) => {
-    try {
-      const ids = (speakers || []).map((s: any) => s?.identity).filter(Boolean)
-      console.log(`🎙️ [ROOM-SPEAKERS] count=${ids.length} ids=${JSON.stringify(ids)} t=${new Date().toISOString()}`)
-    } catch {}
-  })
-  room.on(RoomEvent.ConnectionQualityChanged, (quality: any, participant: any) => {
-    try {
-      console.log(`📶 [ROOM-QUALITY] participant=${participant?.identity} quality=${quality} t=${new Date().toISOString()}`)
-    } catch {}
-  })
-  room.on(RoomEvent.TrackMuted, (publication: any, participant: any) => {
-    try {
-      console.log(`🔇 [ROOM-TRACK-MUTED] participant=${participant?.identity} kind=${publication?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
-    } catch {}
-  })
-  room.on(RoomEvent.TrackUnmuted, (publication: any, participant: any) => {
-    try {
-      console.log(`🔊 [ROOM-TRACK-UNMUTED] participant=${participant?.identity} kind=${publication?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
-    } catch {}
-  })
-  room.on(RoomEvent.TrackSubscribed, (track: any, publication: any, participant: any) => {
-    try {
-      console.log(`📥 [ROOM-TRACK-SUBSCRIBED] participant=${participant?.identity} kind=${track?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
-    } catch {}
-  })
-  room.on(RoomEvent.TrackUnsubscribed, (track: any, publication: any, participant: any) => {
-    try {
-      console.log(`📤 [ROOM-TRACK-UNSUBSCRIBED] participant=${participant?.identity} kind=${track?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
-    } catch {}
-  })
-
-  room.on(RoomEvent.Disconnected, () => {
+  // Disconnected handler body (0.9.83: reworked for fresh-Room-per-session).
+  // The Room instance that just fired this is ALREADY dead (rtc-node ran
+  // cleanupOnDisconnect + removeAllListeners). We NEVER reconnect it. If the
+  // disconnect was involuntary mid-session, we create a BRAND-NEW Room joining
+  // the SAME LiveKit room name so any in-flight frontend token stays valid.
+  const handleRoomDisconnected = () => {
     console.log('👋 Disconnected from room')
+    const disconnectedRoomName = activeRoomName
     // Clean up active research and voice queue
     voiceQueue.length = 0
     isProcessingQueue = false
@@ -3161,34 +3139,21 @@ async function main() {
     clearFastBrainSession()
     clearPipelineFastBrainSession()
 
-    // ── Ghost-agent fix (2026-06-01) ──
-    // When LiveKit Cloud evicts our WebSocket (idle, network blip, or quota window),
-    // the previous code stopped here — agent process kept running but no longer in
-    // any room. /health continued returning "livekit.status:connected" because the
-    // status was never written back. Frontend's checkOsbornHealth only validates
-    // HTTP 200, so the ghost state was invisible. Users got stuck in "Connecting..."
-    // forever because their LiveKit-token-minted room had no agent in it.
-    //
-    // Fix: re-arm the retry loop. connectWithRetry() will try to reconnect with
-    // the same room name (so the room code stays stable for any in-flight frontend
-    // token requests), backing off 5s → 60s. If the disconnect was permanent
-    // (e.g. JWT expired — they're 24h), the retry will fail and surface
-    // livekit.status=failed, which the (also-fixed) frontend health check will
-    // see and trigger restartService.
-    //
-    // Note: we mark status='retrying' immediately so /health reflects the real
-    // state — closing the lie window between Disconnected and the next attempt.
-    // ── Voluntary-leave guard (2026-06-09) ──
+    // ── Voluntary-leave guard ──
     // If we left the room ON PURPOSE (user clicked leave → /leave-room, or the
     // agent-side alone timer fired), do NOT auto-rejoin — rejoining would
-    // recreate the connection-minute burn we just stopped. Mark the connection
-    // 'idle' (machine stays warm, /health still 200) and wait for the next
-    // /connect-room. Reset the flag so a later involuntary drop still rejoins.
+    // recreate the connection-minute burn we just stopped. The
+    // destroyRoomSession() path already set intentionalLeave and will null out
+    // activeRoom + arm idle-exit; here we just do bookkeeping and bail. Reset
+    // the flag so a later involuntary drop still rejoins.
     if (intentionalLeave) {
       intentionalLeave = false
       livekitState.status = 'idle'
       livekitState.error = null
       livekitState.errorCode = null
+      // The Room instance is dead. Drop our reference so nothing reuses it.
+      activeRoom = null
+      activeRoomName = null
       console.log('🕊️ Left LiveKit room intentionally — idle, awaiting /connect-room (no auto-rejoin)')
       // 0.9.73: idle machines must not bill forever — stop the Fly machine
       // after the grace window unless a /connect-room revives us first.
@@ -3196,26 +3161,81 @@ async function main() {
       return
     }
 
+    // ── Involuntary drop (LiveKit evicted our WS: idle, network blip, quota) ──
+    // The old code called room.connect() on the SAME (now-listener-less) Room —
+    // which "succeeded" but produced a deaf agent every time (no events reached
+    // the wiped listeners). Fix: discard the dead instance and create a FRESH
+    // Room rejoining the SAME LiveKit room name so any in-flight frontend token
+    // stays valid. status='retrying' closes the lie window until reconnect.
+    activeRoom = null
+    activeRoomName = null
     livekitState.status = 'retrying'
     livekitState.error = 'LiveKit room disconnected; attempting to rejoin'
     livekitState.errorCode = 'disconnected'
-    console.log('🔄 Rejoining LiveKit room after disconnect...')
-    connectWithRetry().catch(err => {
-      console.error('❌ Reconnect attempt threw (should not happen — connectWithRetry loops):', err)
+    console.log(`🔄 Rejoining LiveKit room after involuntary disconnect (fresh Room, same name: ${disconnectedRoomName})...`)
+    createRoomSession(disconnectedRoomName || buildRoomName()).catch(err => {
+      console.error('❌ Reconnect createRoomSession threw:', err)
+      livekitState.status = 'failed'
+      livekitState.error = err instanceof Error ? err.message : String(err)
     })
-  })
+  }
 
-  // 0.9.81: handler extracted to a named reference so the adopt-poll and
-  // /connect-room adopt can CALL it directly. Synthetic `room.emit(...)` does
-  // NOT reach listeners on rtc-node's Room (observed 2026-07-28: ADOPT-POLL
-  // re-emitted for three successive participants, zero sessions created) —
-  // the event dispatch is internal, so direct invocation is the only
-  // reliable path for state-driven adoption.
+  // wireRoomHandlers(room): register EVERY room.on(...) listener onto a fresh
+  // Room instance. Called once per session from createRoomSession(). The bodies
+  // close over main()-scope state; `room` is the fresh instance passed in.
+  const wireRoomHandlers = (room: Room) => {
+    // 0.9.71: Room-level audio observability — observe-only logs so we can
+    // cross-reference user mic mute/quality changes against TTS cutoffs without
+    // re-introducing the over-eager ActiveSpeakers interrupt.
+    room.on(RoomEvent.ActiveSpeakersChanged, (speakers: any[]) => {
+      try {
+        const ids = (speakers || []).map((s: any) => s?.identity).filter(Boolean)
+        console.log(`🎙️ [ROOM-SPEAKERS] count=${ids.length} ids=${JSON.stringify(ids)} t=${new Date().toISOString()}`)
+      } catch {}
+    })
+    room.on(RoomEvent.ConnectionQualityChanged, (quality: any, participant: any) => {
+      try {
+        console.log(`📶 [ROOM-QUALITY] participant=${participant?.identity} quality=${quality} t=${new Date().toISOString()}`)
+      } catch {}
+    })
+    room.on(RoomEvent.TrackMuted, (publication: any, participant: any) => {
+      try {
+        console.log(`🔇 [ROOM-TRACK-MUTED] participant=${participant?.identity} kind=${publication?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+      } catch {}
+    })
+    room.on(RoomEvent.TrackUnmuted, (publication: any, participant: any) => {
+      try {
+        console.log(`🔊 [ROOM-TRACK-UNMUTED] participant=${participant?.identity} kind=${publication?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+      } catch {}
+    })
+    room.on(RoomEvent.TrackSubscribed, (track: any, publication: any, participant: any) => {
+      try {
+        console.log(`📥 [ROOM-TRACK-SUBSCRIBED] participant=${participant?.identity} kind=${track?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+      } catch {}
+    })
+    room.on(RoomEvent.TrackUnsubscribed, (track: any, publication: any, participant: any) => {
+      try {
+        console.log(`📤 [ROOM-TRACK-UNSUBSCRIBED] participant=${participant?.identity} kind=${track?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+      } catch {}
+    })
+
+    room.on(RoomEvent.Disconnected, handleRoomDisconnected)
+    room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => { participantConnectedHandler?.(p) })
+    room.on(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected)
+    room.on(RoomEvent.DataReceived, handleDataReceived)
+  }
+
+  // 0.9.83: handler kept as a named reference so createRoomSession's adopt-sweep
+  // can CALL it directly for participants already in the room at join time
+  // (they fire no ParticipantConnected event — rtc-node populates them from the
+  // connect callback, not via events).
   participantConnectedHandler = async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
 
     // A user is present — cancel any pending agent-side "alone" leave.
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
+    // 0.9.83: and the fast tab-close leave (user rejoined within the grace).
+    cancelFastLeaveTimer()
     // 0.9.73: and any pending idle machine self-stop.
     cancelIdleExitTimer()
 
@@ -3751,7 +3771,7 @@ async function main() {
             console.log(`⚠️ Recovery too frequent — scheduling retry in ${MIN_RECOVERY_INTERVAL}ms`)
             setTimeout(async () => {
               // Re-check: if session was already recovered or user left, skip
-              if (currentSession || !room.remoteParticipants.size) return
+              if (currentSession || !activeRoom || !activeRoom.remoteParticipants.size) return
               console.log('🔄 Retrying direct mode recovery after guard interval...')
               // Trigger recovery by emitting a synthetic close
               sess.emit('close' as any, { reason: 'error' })
@@ -3827,7 +3847,7 @@ async function main() {
             // Re-wire event listeners on the new session
             wireSessionEvents(newSession, newAgent)
 
-            await newSession.start({ agent: newAgent, room })
+            await newSession.start({ agent: newAgent, room: activeRoom! })
 
             // Sync state
             agentState = 'listening'
@@ -3902,7 +3922,7 @@ async function main() {
             // Re-wire event listeners on the new session
             wireSessionEvents(newSession, newAgent)
 
-            await newSession.start({ agent: newAgent, room })
+            await newSession.start({ agent: newAgent, room: activeRoom! })
 
             // Sync state
             agentState = 'listening'
@@ -3946,7 +3966,7 @@ async function main() {
     console.log('🎬 Starting voice session...')
 
     try {
-      await session.start({ agent, room })
+      await session.start({ agent, room: activeRoom! })
       console.log('✅ Voice session started!')
       console.log('🎤 Ready - speak to begin!\n')
 
@@ -4081,9 +4101,11 @@ async function main() {
       console.error('❌ Failed to start session:', err)
     }
   }
-  room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => { participantConnectedHandler?.(p) })
 
-  room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
+  // ParticipantConnected is registered in wireRoomHandlers (delegates to
+  // participantConnectedHandler above).
+
+  const handleParticipantDisconnected = (participant: RemoteParticipant) => {
     console.log(`👋 User left: ${participant.identity}`)
 
     // Full cleanup — stop all background work to avoid accumulating API usage
@@ -4132,15 +4154,16 @@ async function main() {
       }
     }
 
-    // Arm the agent-side "alone" leave timer (tab-close-proof — runs on the
-    // agent, not the frontend, so it fires even if the user closed the tab
-    // without clicking leave).
-    armAloneTimer()
+    // 0.9.83: a real session just ended → use the FAST leave (~20s), not the
+    // 3-min alone grace. Runs on the agent, so it fires even on an abrupt tab
+    // close. Cancelled if a user rejoins within the grace (handled where the
+    // participant-join cancels timers).
+    armFastLeaveTimer()
 
     console.log('⏳ Waiting for new user...\n')
-  })
+  }
 
-  room.on(RoomEvent.DataReceived, async (payload, participant, kind, topic) => {
+  const handleDataReceived = async (payload: Uint8Array, participant: RemoteParticipant | undefined, kind: unknown, topic: string | undefined) => {
     if (topic !== 'user-input') return
 
     try {
@@ -4879,120 +4902,188 @@ async function main() {
         }
       }
     } catch {}
-  })
+  }
 
   // ============================================================
-  // Connect to Room
+  // Room session lifecycle (0.9.83): fresh Room per user session
   // ============================================================
 
-  // Connect to LiveKit with retry-on-failure.
+  // createRoomSession(roomName): mint a FRESH Room, wire ALL handlers onto it,
+  // mint a room-scoped JWT, connect with a bounded retry, run the post-connect
+  // setup + adopt-sweep, and mark status='connected'. The caller AWAITS this so
+  // /connect-room can respond only once the agent is actually in the room.
   //
-  // Earlier behavior: a single attempt followed by `process.exit(1)` on error.
-  // Combined with Fly's restart policy this produced a tight restart loop that
-  // (a) hit the same 429 / auth error every ~30s, (b) burned the LiveKit
-  // quota's retry budget, and (c) hit Fly's max-restart-count (3) and killed
-  // the machine — at which point the frontend's /api/sandbox probe saw the
-  // sandbox as failed and bounced the user back to the dashboard with no
-  // useful error.
-  //
-  // New behavior: bounded-backoff retry, infinite attempts. The API server
-  // stays up the whole time serving /health (which surfaces the LiveKit error
-  // as a field, NOT as an HTTP failure — see the /health handler comment).
-  // When the underlying issue is resolved (quota reset, key fixed, LiveKit
-  // service back), the next retry succeeds and the agent picks up where it
-  // left off without anyone needing to manually restart.
-  //
-  // Backoff: 5s → 10s → 20s → 40s → 60s (capped). Resets to 5s after each
-  // successful connect (so a single transient hiccup doesn't disable fast
-  // recovery on the next disconnect).
-  const connectWithRetry = async (): Promise<void> => {
-    const backoffSchedule = [5_000, 10_000, 20_000, 40_000, 60_000]
-    let backoffIdx = 0
-    while (true) {
-      livekitState.status = livekitState.attemptCount === 0 ? 'connecting' : 'retrying'
-      livekitState.lastAttemptAt = Date.now()
-      livekitState.attemptCount += 1
-      try {
-        await room.connect(livekitUrl, jwt, {
-          autoSubscribe: true,
-          dynacast: true,
-        })
-        localParticipant = room.localParticipant
-        livekitState.status = 'connected'
-        livekitState.error = null
-        livekitState.errorCode = null
-        backoffIdx = 0
-        console.log('✅ Connected to room:', roomName)
-        console.log('\n⏳ Waiting for user to connect...')
-        console.log(`   Room: ${roomCode}\n`)
-        return
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        // Categorize the error so the frontend can show specific guidance.
-        // Substring matching on the message because LiveKit's rtc-node SDK
-        // wraps the underlying HTTP status in a generic ConnectError.
-        let errorCode: string
-        if (/429|connection minutes limit/i.test(msg)) errorCode = 'quota_exceeded'
-        else if (/401|403|unauthorized|invalid/i.test(msg)) errorCode = 'auth'
-        else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(msg)) errorCode = 'network'
-        else errorCode = 'unknown'
-
-        livekitState.status = 'failed'
-        livekitState.error = msg
-        livekitState.errorCode = errorCode
-
-        const waitMs = backoffSchedule[Math.min(backoffIdx, backoffSchedule.length - 1)]
-        backoffIdx += 1
-        console.error(`❌ LiveKit connect failed (${errorCode}, attempt ${livekitState.attemptCount}): ${msg.substring(0, 200)}`)
-        console.error(`   Retrying in ${waitMs / 1000}s — process staying alive; /health remains 200 with livekit.status='failed'`)
-        await new Promise(r => setTimeout(r, waitMs))
-        // loop — try again
+  // Bounded retry (3 attempts, backoff 5s→10s→20s): the caller is awaiting, so
+  // we can't loop forever like the old boot-time connectWithRetry did. If all
+  // attempts fail we surface status='failed' and rethrow so the caller sees it.
+  // A single transient blip is absorbed; a persistent failure (quota/auth) is
+  // reported promptly rather than hanging the connect flow.
+  let creatingRoomSession = false
+  const createRoomSession = async (targetRoomName: string): Promise<void> => {
+    if (creatingRoomSession) {
+      console.log('⏳ createRoomSession already in progress — skipping duplicate')
+      return
+    }
+    creatingRoomSession = true
+    try {
+      // Discard any prior (dead/stale) instance without reuse.
+      if (activeRoom) {
+        console.warn('⚠️ createRoomSession called with an existing activeRoom — discarding it (no reuse)')
+        activeRoom = null
       }
+      const room = new Room()
+      room.setMaxListeners(50)  // Prevent MaxListenersExceeded warnings
+      wireRoomHandlers(room)
+
+      const backoffSchedule = [5_000, 10_000, 20_000]
+      let lastErr: unknown = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        livekitState.status = livekitState.attemptCount === 0 ? 'connecting' : 'retrying'
+        livekitState.lastAttemptAt = Date.now()
+        livekitState.attemptCount += 1
+        try {
+          const jwt = await mintAgentToken(targetRoomName)
+          await room.connect(livekitUrl, jwt, {
+            autoSubscribe: true,
+            dynacast: true,
+          })
+          // Success — adopt this instance as the active room.
+          activeRoom = room
+          activeRoomName = targetRoomName
+          currentRoomCode = targetRoomName  // legacy /room-code returns last-created NAME
+          localParticipant = room.localParticipant
+          livekitState.status = 'connected'
+          livekitState.error = null
+          livekitState.errorCode = null
+          console.log('✅ Connected to room:', targetRoomName)
+
+          // Post-connect setup (re-homed from the dead RoomEvent.Connected handler).
+          postConnectSetup(room, targetRoomName)
+
+          // Adopt-sweep: ParticipantConnected only fires for participants who join
+          // AFTER us. Anyone already in the room at connect time is populated by
+          // rtc-node from the connect callback (no event) — invoke the handler
+          // directly so their voice session is created. Runs exactly once per
+          // connect (replaces the old adopt-poll + connectRoomHook adopt loop).
+          for (const p of room.remoteParticipants.values()) {
+            console.log(`👥 Participant already in room at join: ${p.identity} — adopting (invoking handler directly)`)
+            participantConnectedHandler?.(p).catch((e) => console.error('👥 adopt handler error:', e instanceof Error ? e.message : e))
+          }
+          console.log('\n⏳ Waiting for user to connect...')
+          console.log(`   Room: ${targetRoomName}\n`)
+          return
+        } catch (err) {
+          lastErr = err
+          const msg = err instanceof Error ? err.message : String(err)
+          // Categorize the error so the frontend can show specific guidance.
+          let errorCode: string
+          if (/429|connection minutes limit/i.test(msg)) errorCode = 'quota_exceeded'
+          else if (/401|403|unauthorized|invalid/i.test(msg)) errorCode = 'auth'
+          else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(msg)) errorCode = 'network'
+          else errorCode = 'unknown'
+          livekitState.status = 'failed'
+          livekitState.error = msg
+          livekitState.errorCode = errorCode
+          console.error(`❌ LiveKit connect failed (${errorCode}, attempt ${attempt + 1}/3): ${msg.substring(0, 200)}`)
+          if (attempt < 2) {
+            const waitMs = backoffSchedule[attempt]
+            console.error(`   Retrying in ${waitMs / 1000}s...`)
+            await new Promise(r => setTimeout(r, waitMs))
+          }
+        }
+      }
+      // All attempts failed. Drop the dead instance; leave status='failed' so
+      // /health surfaces it and the frontend can retry /connect-room.
+      activeRoom = null
+      activeRoomName = null
+      console.error('❌ createRoomSession: all 3 connect attempts failed — giving up (status=failed)')
+      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+    } finally {
+      creatingRoomSession = false
     }
   }
 
-  // Wire the module-level HTTP control hooks now that `room` and the
-  // connect-with-retry loop exist (see Room-presence lifecycle note up top).
-  // The /connect-room and /leave-room endpoints in startApiServer call these.
-  connectRoomHook = async () => {
-    intentionalLeave = false
-    if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
-    // 0.9.73: a user is on the way — cancel any pending idle machine self-stop.
-    cancelIdleExitTimer()
-    if (livekitState.status === 'connected') return  // already in the room — no-op
-    console.log('🔌 /connect-room — joining LiveKit for incoming user')
-    await connectWithRetry()
-    // Join-race fix: ParticipantConnected only fires for participants who join
-    // AFTER us. If the user's browser won the race (its token mint + WebRTC
-    // handshake finished before our rejoin), they're already in the room when
-    // we arrive — no event, no voice session, UI hangs at "Connecting...".
-    // Re-emit the event for every pre-existing participant so the session is
-    // created exactly as if they had joined after us.
-    for (const p of room.remoteParticipants.values()) {
-      console.log(`👥 Participant already in room at join: ${p.identity} — adopting (invoking handler directly)`)
-      participantConnectedHandler?.(p).catch((e) => console.error('👥 adopt handler error:', e instanceof Error ? e.message : e))
+  // destroyRoomSession(reason): tear down the active room session and DISCARD
+  // the Room instance (never reused). A hung rtc-node disconnect() (signal-less
+  // waitFor at room.js:579) is made harmless by racing it against a 10s timeout:
+  // on timeout we just log and drop the instance — nothing reuses it, so a
+  // zombie WS at the Rust layer can't wedge the next session. Idempotent.
+  let destroyingRoomSession = false
+  const destroyRoomSession = async (reason: string): Promise<void> => {
+    if (destroyingRoomSession) return
+    if (!activeRoom) {
+      // Already idle — still ensure billing backstop is armed.
+      livekitState.status = 'idle'
+      armIdleExitTimer(`destroyRoomSession(${reason}) — already idle`)
+      return
     }
+    destroyingRoomSession = true
+    const room = activeRoom
+    // Drop the reference immediately so nothing (handlers, sweeps) touches it.
+    activeRoom = null
+    activeRoomName = null
+    if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
+    cancelFastLeaveTimer()
+    intentionalLeave = true  // suppress the Disconnected handler's auto-rejoin
+    console.log(`🚪 Destroying room session (${reason}) — disconnecting + discarding Room instance`)
+    try {
+      const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 10_000))
+      const result = await Promise.race([room.disconnect().then(() => 'ok' as const), timeout])
+      if (result === 'timeout') {
+        console.error('⚠️ room.disconnect() still pending after 10s (zombie WS) — abandoning the instance')
+        try { (room as any).ffiHandle?.dispose?.() } catch {}
+      }
+    } catch (e) {
+      console.error('destroyRoomSession room.disconnect failed:', e)
+    }
+    livekitState.status = 'idle'
+    livekitState.error = null
+    livekitState.errorCode = null
+    armIdleExitTimer(`destroyRoomSession(${reason})`)
+    destroyingRoomSession = false
   }
-  // 0.9.73: explicit frontend leave should also start the idle-exit countdown —
-  // the user is done; the machine shouldn't idle-bill waiting for a maybe-return.
-  // (leaveRoomHook sets intentionalLeave → Disconnected handler arms it, but
-  //  arm here too in case the disconnect event is swallowed by a zombie WS.)
+
+  // Wire the module-level HTTP control hooks now that the room-session lifecycle
+  // functions exist. The /connect-room and /leave-room endpoints call these.
+  //
+  // NOTE (frontend migration): ChatSessionProvider should later call
+  // POST /connect-room FIRST and mint its LiveKit token from the returned
+  // { roomName } (which connectRoomHook resolves to). During rollout, the legacy
+  // GET /room-code endpoint keeps returning the last-created room NAME so old
+  // frontends still function.
+  connectRoomHook = async (): Promise<string> => {
+    intentionalLeave = false
+    cancelIdleExitTimer()
+    // Idempotency: an active session with a user present is reused (return its
+    // room name). An active-but-empty session (agent joined, user never showed,
+    // or a stale race) is torn down and replaced with a fresh one.
+    if (activeRoom && activeRoomName) {
+      if (activeRoom.remoteParticipants.size > 0) {
+        console.log(`🔌 /connect-room — already connected with a user present, reusing ${activeRoomName}`)
+        return activeRoomName
+      }
+      console.log('🔌 /connect-room — active room is empty; tearing down + creating fresh')
+      await destroyRoomSession('connect-room replacing empty session')
+    }
+    const targetRoomName = buildRoomName()
+    console.log(`🔌 /connect-room — creating fresh room session: ${targetRoomName}`)
+    await createRoomSession(targetRoomName)
+    return targetRoomName
+  }
   leaveRoomHook = async (reason: string) => {
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
-    if (livekitState.status !== 'connected') return  // already out — no-op
+    if (!activeRoom) return  // already out — no-op
     // Never abandon a user who is CURRENTLY in the room. Stale/racing
     // leave-room calls (a previous client's teardown landing after a new
     // client joined) were kicking the agent out mid-adopt, stranding the new
     // user on "Connecting..." (observed 2026-07-28). The alone-timer handles
     // the real departure when they actually leave.
-    if (room.remoteParticipants.size > 0) {
-      console.log(`🛑 /leave-room ignored (${reason}) — ${room.remoteParticipants.size} participant(s) still in room`)
+    if (activeRoom.remoteParticipants.size > 0) {
+      console.log(`🛑 /leave-room ignored (${reason}) — ${activeRoom.remoteParticipants.size} participant(s) still in room`)
       return
     }
-    intentionalLeave = true
-    console.log(`🚪 Leaving LiveKit room (${reason}) — stops connection-minute burn`)
-    armIdleExitTimer(`explicit leave (${reason})`)
-    try { await room.disconnect() } catch (e) { console.error('leave-room room.disconnect failed:', e) }
+    console.log(`🚪 /leave-room (${reason}) — destroying room session`)
+    await destroyRoomSession(`explicit leave (${reason})`)
   }
 
   // bug-reporter skill hook — forwards a validated bug payload to the frontend
@@ -5025,19 +5116,20 @@ async function main() {
     }).catch((e) => console.error('❌ bugReportHook sendToFrontend failed:', e))
   }
 
-  // Fire and forget; the retry loop keeps the process alive on its own (so
-  // we don't need the explicit `new Promise(() => {})` keepalive anymore).
-  // Errors that escape the retry loop should never happen, but if they do,
-  // log them rather than crash.
-  connectWithRetry().catch(err => {
-    console.error('❌ Unrecoverable error in LiveKit retry loop (should not happen):', err)
-    livekitState.status = 'failed'
-    livekitState.error = err instanceof Error ? err.message : String(err)
-    livekitState.errorCode = 'unrecoverable'
-  })
+  // 0.9.83: boot IDLE — do NOT eager-connect to LiveKit at startup. Under the
+  // fresh-Room-per-session model there is no persistent room to join at boot;
+  // the agent only joins when a user arrives via POST /connect-room (which
+  // awaits createRoomSession). This also removes the old boot-time
+  // connectWithRetry() eager connect entirely. The idle-exit timer is armed so
+  // a machine that boots but never receives a /connect-room still stops itself
+  // (billing protection) instead of idling forever.
+  livekitState.status = 'idle'
+  console.log('🟢 Agent booted — idle, awaiting POST /connect-room to join LiveKit')
+  armIdleExitTimer('boot idle (no session yet)')
 
   // Keep main() alive forever — without this the await chain ends and Node
-  // exits 0, which Fly treats as a clean shutdown.
+  // exits 0, which Fly treats as a clean shutdown. The HTTP API server + timers
+  // keep the process responsive.
   await new Promise(() => {})
 }
 
