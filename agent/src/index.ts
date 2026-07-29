@@ -341,6 +341,12 @@ function startApiServer(workingDir: string, port: number): void {
       req.on('end', () => {
         try {
           const payload = JSON.parse(body)
+          // 0.9.86: log every receipt so we can SEE what Recall streams
+          // (event type + word count) — the handler was silent, making it
+          // impossible to tell whether webhooks arrive or are just filtered.
+          const evt = payload?.event ?? 'unknown'
+          const wc = (payload?.data?.data?.words ?? []).length
+          console.log(`📨 Recall webhook: event=${evt} words=${wc}`)
           const recall = getRecallClient()
           if (recall) recall.handleWebhook(payload)
         } catch (e) {

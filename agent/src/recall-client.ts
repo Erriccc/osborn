@@ -221,9 +221,20 @@ export class RecallClient extends EventEmitter {
     return bot.status_changes?.at(-1)?.code ?? 'unknown'
   }
 
+  // 0.9.86: track the last text we emitted per speaker so partials don't
+  // spam the LLM with every incremental word — only emit when the utterance
+  // grows meaningfully or finalizes.
+  #lastEmitted = new Map<string, string>()
+
   handleWebhook(payload: TranscriptPayload): void {
-    // Only process final transcripts (transcript.data), skip partials
-    if (payload.event !== 'transcript.data') return
+    // Accept BOTH finals (transcript.data) AND partials (transcript.partial_data).
+    // recallai_streaming in prioritize_low_latency mode emits partials DURING
+    // the call and finals lag — ignoring partials (the old behavior) meant no
+    // live transcript at all (confirmed 2026-07-29: 0 webhook-processed turns
+    // mid-call). We emit partials for liveness, deduped against the last text.
+    const isFinal = payload.event === 'transcript.data'
+    const isPartial = payload.event === 'transcript.partial_data'
+    if (!isFinal && !isPartial) return
 
     const words = payload.data?.data?.words ?? []
     const text = words.map(w => w.text).join(' ').trim()
@@ -231,8 +242,15 @@ export class RecallClient extends EventEmitter {
 
     const speaker = payload.data?.data?.participant?.name ?? 'Unknown'
     const botId = payload.data?.bot?.id ?? 'unknown'
+    const key = `${botId}:${speaker}`
 
-    this.emit('transcript', { botId, speaker, text })
+    // Dedup: skip a partial that just repeats/prefixes what we already sent.
+    const prev = this.#lastEmitted.get(key) ?? ''
+    if (!isFinal && (text === prev || (prev && text.startsWith(prev) && text.length - prev.length < 8))) return
+    this.#lastEmitted.set(key, text)
+    if (isFinal) this.#lastEmitted.delete(key) // reset for the next utterance
+
+    this.emit('transcript', { botId, speaker, text, partial: !isFinal })
   }
 
   registerBot(botId: string, sessionId: string): void {
