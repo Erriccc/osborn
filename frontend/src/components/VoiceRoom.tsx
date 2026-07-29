@@ -2597,11 +2597,19 @@ function VoiceRoomInner({
 
   // Meeting (Recall.ai) handlers
   const handleJoinMeeting = useCallback((meetingUrl: string) => {
+    // Cast the meeting CANVAS as the bot's camera+mic (Recall output_media) —
+    // /meeting-canvas subscribes to the agent's /canvas-stream and becomes the
+    // bot's face (visuals) + voice. Passing castUrl explicitly overrides any
+    // stale OSBORN_MEETING_CAST_URL env on the agent (which otherwise points the
+    // cast at the bare homepage). agentUrl is the agent's public URL the canvas
+    // needs for its SSE subscription.
+    const castUrl = `${window.location.origin}/meeting-canvas?agent=${encodeURIComponent(agentUrl)}`
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({
       type: 'join_meeting',
       url: meetingUrl,
       webhookBase: agentUrl,
+      castUrl,
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, agentUrl])
