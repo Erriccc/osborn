@@ -228,6 +228,27 @@ let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
 // to the Fly machine.
 let bugReportHook: ((reportId: string, payload: BugReportPayload) => void) | null = null
 
+// ── Meeting canvas broadcaster ───────────────────────────────────────────────
+// The "meeting canvas" is a single webpage Recall renders as the bot's camera +
+// microphone (output_media). Recall streams BOTH the page's video (as camera)
+// AND its audio (as mic) into the meeting, and grants the page mic access to the
+// meeting audio — so ONE page is the bot's face (visuals), voice (TTS it plays),
+// and ears. The page connects to GET /canvas-stream (SSE) and receives commands:
+//   { kind: 'say',  text }                    → page speaks it → meeting hears it
+//   { kind: 'show', mode, title?, items?, url?, text? } → page shows a visual
+// Drive it via POST /canvas (director/testing) or pushCanvas() from meeting logic.
+type CanvasEvent =
+  | { kind: 'say'; text: string }
+  | { kind: 'show'; mode: 'idle' | 'notes' | 'link' | 'web' | 'text'; title?: string; items?: string[]; url?: string; text?: string }
+const canvasClients = new Set<ServerResponse>()
+let latestCanvasShow: CanvasEvent | null = null // last 'show' so a reconnecting canvas resyncs its visual
+function pushCanvas(evt: CanvasEvent): void {
+  if (evt.kind === 'show') latestCanvasShow = evt
+  const line = `data: ${JSON.stringify(evt)}\n\n`
+  for (const res of canvasClients) { try { res.write(line) } catch { canvasClients.delete(res) } }
+  console.log(`🖼️ canvas ${evt.kind}: ${evt.kind === 'say' ? evt.text.slice(0, 60) : (evt as { mode: string }).mode} → ${canvasClients.size} client(s)`)
+}
+
 interface BugReportPayload {
   type: 'bug' | 'feature'
   severity: 'low' | 'medium' | 'high' | 'critical'
@@ -505,6 +526,47 @@ function startApiServer(workingDir: string, port: number): void {
         console.log('[events] SSE client disconnected')
       })
       console.log('[events] SSE client connected')
+      return
+    }
+
+    // ── Meeting canvas: SSE stream the Recall webpage subscribes to ──────────
+    // The canvas page (frontend /meeting-canvas) opens this as an EventSource.
+    // Recall renders that page as the bot's camera+mic, so whatever we push here
+    // becomes what the meeting sees + hears. On connect we resync the current
+    // visual so a page reload doesn't blank the bot's camera.
+    if (req.method === 'GET' && url.pathname === '/canvas-stream') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      })
+      res.write(`: canvas connected ${new Date().toISOString()}\n\n`)
+      res.write(`data: ${JSON.stringify(latestCanvasShow ?? { kind: 'show', mode: 'idle' })}\n\n`)
+      canvasClients.add(res)
+      const hb = setInterval(() => { try { res.write(`: ping ${Date.now()}\n\n`) } catch {} }, 10_000)
+      req.on('close', () => { clearInterval(hb); canvasClients.delete(res); console.log('[canvas] client disconnected') })
+      console.log(`[canvas] client connected (${canvasClients.size} total)`)
+      return
+    }
+
+    // ── Meeting canvas: control endpoint (director / agent tool) ─────────────
+    // POST /canvas  { kind:'say', text } | { kind:'show', mode, title?, items?, url?, text? }
+    if (req.method === 'POST' && url.pathname === '/canvas') {
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        try {
+          const evt = JSON.parse(body || '{}') as CanvasEvent
+          if (evt.kind !== 'say' && evt.kind !== 'show') throw new Error("kind must be 'say' or 'show'")
+          pushCanvas(evt)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, clients: canvasClients.size }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
       return
     }
 
@@ -4757,15 +4819,22 @@ async function main() {
                 (process.env.FLY_APP_NAME
                   ? `https://${process.env.FLY_APP_NAME}.fly.dev`
                   : `http://localhost:${apiPort}`)
-              // Polling architecture (post-2026-05-22): the bot joins by name
-              // only — no output_media webpage, no LiveKit republish, no audio
-              // pipeline at all. Recall captures the meeting audio internally
-              // and we pull the transcript via its REST API every ~30s.
+              // Transcript: Recall captures meeting audio internally; we get it
+              // live via the realtime webhook (+ REST poll backstop). Output:
+              // the bot casts the meeting canvas as its camera+mic (below), so
+              // it can show visuals and speak into the meeting on demand.
               await sendToFrontend({ type: 'meeting_joining', message: 'Osborn is joining your meeting...' })
-              // 0.9.85: optional castUrl — a webpage to display as the bot's
-              // camera (live feed / seeded site). Passed from the frontend or
-              // env OSBORN_MEETING_CAST_URL for testing.
-              const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || undefined
+              // Cast target = the bot's camera+mic webpage (Recall output_media).
+              // DEFAULT is the meeting canvas (frontend /meeting-canvas), pointed
+              // at THIS agent's public URL so it can subscribe to /canvas-stream
+              // and become the bot's face (visuals) + voice (TTS it speaks). An
+              // explicit castUrl from the frontend or OSBORN_MEETING_CAST_URL
+              // overrides it (e.g. to cast a live feed or a seeded site instead).
+              const frontendUrl = (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/$/, '')
+              const canvasUrl = /^https:\/\//.test(webhookBase)
+                ? `${frontendUrl}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
+                : undefined
+              const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || canvasUrl
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { castUrl })
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
               recallJoin.registerBot(botId, sessionId)

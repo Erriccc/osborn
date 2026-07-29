@@ -10,20 +10,27 @@
  *   npx tsx scripts/session-engine.ts
  *
  * Then control it over HTTP (default :8781; live viewer on :8080):
- *   GET  /status              → { inRoom, tabs, marks, live }
- *   POST /act    {instruction}→ brain acts (Stagehand, cached)
- *   POST /say    {text}       → speak into the mic (reactive)
+ *   GET  /status              → { inRoom, tabs, marks, live, taskCount, recordingStartedAt }
+ *   GET  /tasks               → replay index: every task's window into the recording
+ *   POST /act    {instruction}→ brain acts (Stagehand, cached). Returns { window }.
+ *   POST /say    {text}       → speak into the mic (reactive). Returns { window }.
  *   POST /hear                → transcript of what the agent said recently
  *   POST /shot                → base64 screenshot of the active tab
  *   POST /tab    {op,url,i}   → open | switch | list tabs
- *   POST /end                 → graceful leave + save video + shut down
+ *   POST /recover             → reload the active tab (unstick a blank page)
+ *   POST /end                 → graceful leave + save video + tasks.json + shut down
+ *
+ * REPLAY MODEL: one continuous recordVideo recording per session; each task is
+ * a labeled window (rel0..rel1 ms) into it. No per-request video encoding — the
+ * recording already holds every task's footage. Seek to a task's window to
+ * replay exactly it. The live viewer streams in parallel off its own screencast.
  *
  * Auth flow by default (profiles/osbornojure) when present; guest link if not.
  */
 import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { createServer } from 'http'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
@@ -88,23 +95,48 @@ async function main() {
   const json = (res: any, body: any, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
   const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({}) } }) })
 
+  let reqN = 0
+  const reqShot = async (label: string) => {
+    try { reqN++; const p = join(OUT_DIR, `req-${String(reqN).padStart(3,'0')}-${label}.jpg`)
+      await active.screenshot({ path: p, type: 'jpeg', quality: 60 }); mark(`artifact: ${p}`); return p } catch { return null }
+  }
+  // TASK-WINDOW LEDGER — the replay model.
+  // There is ONE continuous Playwright recordVideo recording for the whole
+  // session (saved on /end). We do NOT cut a separate video per request; the
+  // recording already holds every task's footage. Instead each /act or /say
+  // records its window — wall-clock plus offset into the recording (relative to
+  // tCapture, when recording began) — so a viewer seeks straight to [rel0,rel1]
+  // to see exactly that task. Same footage a one-shot run hands you, just
+  // labeled by task. The live stream runs off its own screencast in parallel
+  // and never affects this recording.
+  const tasks: Array<{ n: number; label: string; text?: string; startMs: number; endMs: number; rel0: number; rel1: number; artifact?: string | null }> = []
+  const stampTask = (n: number, label: string, startMs: number, artifact: string | null, text?: string) => {
+    const endMs = Date.now()
+    const rec = { n, label, text, startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), artifact }
+    tasks.push(rec); return rec
+  }
   let ending = false
   const server = createServer(async (req, res) => {
     try {
       const path = (req.url || '').split('?')[0]
       if (req.method === 'GET' && path === '/status') {
-        return json(res, { inRoom: true, useAuth, live: live?.url, tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12) })
+        return json(res, { inRoom: true, useAuth, live: live?.url, recordingStartedAt: tCapture, taskCount: tasks.length, tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12) })
       }
       const body = await readBody(req)
-      if (path === '/act') { const r = await brain(body.instruction); mark(`act: ${String(body.instruction).slice(0, 60)}`); return json(res, { ok: true, result: r }) }
-      if (path === '/say') { await speakText(active, body.text); mark(`say: ${String(body.text).slice(0, 60)}`); return json(res, { ok: true }) }
+      if (path === '/act') { const t0 = Date.now(); const r = await brain(body.instruction); mark(`act: ${String(body.instruction).slice(0, 60)}`); const shot = await reqShot('act'); const window = stampTask(reqN, 'act', t0, shot, body.instruction); return json(res, { ok: true, result: r, artifact: shot, window }) }
+      if (path === '/say') { const t0 = Date.now(); await speakText(active, body.text); mark(`say: ${String(body.text).slice(0, 60)}`); await active.waitForTimeout(6000); const shot = await reqShot('say'); const window = stampTask(reqN, 'say', t0, shot, body.text); return json(res, { ok: true, artifact: shot, window }) }
       if (path === '/hear') { const since = Date.now() - tCapture - (body.lastMs ?? 20000); const heard = await hearSince(active, Math.max(0, since)).catch(() => ''); return json(res, { heard }) }
       if (path === '/shot') { const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64') }) }
+      if (req.method === 'GET' && path === '/tasks') {
+        // The replay index: every task's window into the single recording.
+        return json(res, { recordingStartedAt: tCapture, recording: 'session-engine.webm (saved on /end)', tasks })
+      }
       if (path === '/tab') {
         if (body.op === 'open') { active = await openTab(context, body.url); mark(`tab open: ${body.url ?? ''}`) }
         else if (body.op === 'switch') { active = await switchTab(context, body.i); mark(`tab switch: ${body.i}`) }
         return json(res, { ok: true, tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })) })
       }
+      if (path === '/recover') { await active.reload({ timeout: 45000 }).catch(()=>{}); await active.waitForTimeout(4000); const shot = await reqShot('recover'); mark('recovered (page reloaded)'); return json(res, { ok: true, artifact: shot }) }
       if (path === '/end') {
         ending = true
         mark('end requested — graceful leave')
@@ -119,12 +151,15 @@ async function main() {
         await live?.stop().catch(() => {})
         await context.close().catch(() => {})
         if (video) await video.saveAs(join(OUT_DIR, 'session-engine.webm')).catch(() => {})
+        // Ship the replay index next to the recording: each task's window
+        // (rel0..rel1 ms into session-engine.webm) + its screenshot.
+        try { writeFileSync(join(OUT_DIR, 'tasks.json'), JSON.stringify({ recording: 'session-engine.webm', recordingStartedAt: tCapture, tasks }, null, 2)) } catch { /* ignore */ }
         await browser.close()
         server.close()
         console.log(`[engine] done — artifacts in ${OUT_DIR}`)
         process.exit(0)
       }
-      json(res, { error: 'unknown', paths: ['/status', '/act', '/say', '/hear', '/shot', '/tab', '/end'] }, 404)
+      json(res, { error: 'unknown', paths: ['/status', '/tasks', '/act', '/say', '/hear', '/shot', '/tab', '/recover', '/end'] }, 404)
     } catch (e) { json(res, { error: (e as Error).message }, 500) }
   })
   server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})`))

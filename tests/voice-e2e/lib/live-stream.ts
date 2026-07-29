@@ -13,9 +13,18 @@ import { createServer, type Server } from 'http'
  *
  * Vendor-free: the Fly machine is already in the cloud and provides the URL.
  * No Browserbase/Browserless needed. Locally it binds 127.0.0.1 for a preview.
+ *
+ * This is LIVE VIEW ONLY. It runs off its own CDP screencast and never touches
+ * the Playwright `recordVideo` file — the session recording is the replay
+ * artifact, and each task's window into it is tracked separately (see the task
+ * ledger in session-engine.ts). No per-request clip encoding here; the one
+ * continuous recording already contains every task's footage.
  */
 
-export type LiveStream = { url: string; stop: () => Promise<void> }
+export type LiveStream = {
+  url: string
+  stop: () => Promise<void>
+}
 
 export async function startLiveStream(page: Page, opts?: { port?: number; host?: string }): Promise<LiveStream> {
   const port = opts?.port ?? Number(process.env.LIVE_STREAM_PORT ?? 8080)

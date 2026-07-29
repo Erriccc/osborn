@@ -103,5 +103,36 @@ export default function ChatPage() {
     return <VoiceRoom waitingMode={false} />
   }
 
-  return null
+  // ─── Disconnected / idle dead-state ───────────────
+  // We fall here when: not connecting, no error, and no live token/room
+  // (LiveKit dropped on server-side idle timeout, token expiry, or the agent
+  // leaving — state was cleared but there's nothing to render). Previously
+  // this returned null → a BLANK GRAY PAGE with no way back (the bug the user
+  // kept hitting). Show an explicit "session paused, room saved" screen with a
+  // Reconnect button (rejoins the SAME room) so it's never a dead blank tab.
+  return (
+    <main className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center p-8 gap-6">
+      <div className="text-4xl">💤</div>
+      <div className="text-center">
+        <p className="text-[var(--text-primary)] text-lg font-medium">Session paused</p>
+        <p className="text-[var(--text-muted)] text-sm mt-1">
+          Your room is saved — no credits used while idle. Reconnect to pick up where you left off.
+        </p>
+      </div>
+      <div className="flex gap-3">
+        <button
+          onClick={reconnect}
+          className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:opacity-90 transition-opacity"
+        >
+          Reconnect
+        </button>
+        <button
+          onClick={disconnect}
+          className="px-4 py-2 rounded-lg text-[var(--text-muted)] text-sm hover:text-[var(--text-secondary)] transition-colors"
+        >
+          Back to dashboard
+        </button>
+      </div>
+    </main>
+  )
 }
