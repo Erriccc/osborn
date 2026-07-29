@@ -30,6 +30,12 @@ import { load as loadYaml } from 'js-yaml'
  * { assertScreen: regex } · { upload: path } file into <input type=file>.
  */
 
+// Playwright's own trace.zip truncates when we close the CDP-attached browser
+// ourselves, and the reporter then fails the test reading it — AFTER all real
+// assertions passed. Our replays (video + audio + flight log) supersede the
+// trace for these specs, so disable it.
+test.use({ trace: 'off' })
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const AGENT_URL = process.env.OSBORN_AGENT_URL || 'https://osborn-d4f24f46-v2.fly.dev'
 const APP_URL = process.env.OSBORN_APP_URL || 'https://www.voice-native.com'
