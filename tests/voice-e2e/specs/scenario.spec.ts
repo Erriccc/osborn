@@ -53,7 +53,9 @@ type Scenario = {
   viewport?: { width: number; height: number }
   requiresEnv?: string
   profile?: string // profiles/<name>/state.json — start logged in (saved via scripts/save-profile.ts)
+  room?: boolean // false = dashboard-only scenario: no voice room, no capture
   steps?: Array<Record<string, any>>
+  after?: Array<Record<string, any>> // steps run AFTER the conversation (leave room, explore panels...)
   conversation?: {
     goal: string
     maxTurns?: number
@@ -110,11 +112,13 @@ for (const file of files) {
     const tVideoStart = Date.now()
     await installReactiveMic(page)
 
-    await fetch(`${AGENT_URL}/connect-room`, { method: 'POST' }).catch(() => {})
-    await expect(async () => {
-      const h: any = await fetch(`${AGENT_URL}/health`).then((r) => r.json())
-      expect(h?.livekit?.status).toBe('connected')
-    }).toPass({ timeout: 60_000, intervals: [1_000] })
+    if (scenario.room !== false) {
+      await fetch(`${AGENT_URL}/connect-room`, { method: 'POST' }).catch(() => {})
+      await expect(async () => {
+        const h: any = await fetch(`${AGENT_URL}/health`).then((r) => r.json())
+        expect(h?.livekit?.status).toBe('connected')
+      }).toPass({ timeout: 60_000, intervals: [1_000] })
+    }
 
     const version: any = await fetch(`http://127.0.0.1:${cdpPort}/json/version`).then((r) => r.json())
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
@@ -131,12 +135,17 @@ for (const file of files) {
     const chatUrl = scenario.url
       ? `${APP_URL}${scenario.url}`
       : `${APP_URL}/chat?provider=gemini&voiceArch=pipeline&agent=claude&agentUrl=${encodeURIComponent(AGENT_URL)}`
+    let tCaptureStart = Date.now()
+    if (scenario.room === false) {
+      await page.goto(chatUrl, { timeout: 45_000 })
+      await page.waitForTimeout(3_000)
+    } else {
     const { captureStartedAt } = await enterFreshRoom(page, brain, chatUrl, {
       earsOn: true,
       agentUrl: AGENT_URL,
       entry: scenario.entry ?? 'fresh',
     })
-    let tCaptureStart = captureStartedAt ?? Date.now()
+    tCaptureStart = captureStartedAt ?? Date.now()
     // Stall watchdog: never sit on a dead "Connecting..." screen — recover
     // or exit with evidence (screenshot + DevTools view). A reload wipes
     // in-page capture state, so re-arm.
@@ -154,11 +163,13 @@ for (const file of files) {
       await startElementCapture(page)
       tCaptureStart = Date.now()
     }
+    }
     console.log(`[scenario:${scenario.name}] in room (live) +${Date.now() - t0}ms`)
     flight({ type: 'in-room', scenario: scenario.name, ms: Date.now() - t0 })
 
     // ---- deterministic steps ----
-    for (const step of scenario.steps ?? []) {
+    const runSteps = async (list?: Array<Record<string, any>>) => {
+    for (const step of list ?? []) {
       if (step.act) await brain(step.act)
       else if (step.say) { await drainSpeechEvents(page); await speakText(page, step.say) }
       else if (step.waitSpeech) await waitForSpeechEvent(page, step.waitSpeech === 'stop' ? 'speech-stop' : 'speech-start', 90_000)
@@ -170,6 +181,8 @@ for (const file of files) {
         console.log(`[scenario:${scenario.name}] uploaded ${step.upload}`)
       }
     }
+    }
+    await runSteps(scenario.steps)
 
     // ---- improvised conversation phase ----
     let agentReplies = 0
@@ -210,15 +223,24 @@ for (const file of files) {
       }
     }
 
+    // ---- post-conversation steps (leave room, explore panels, sign out) ----
+    if (scenario.after?.length) {
+      console.log(`[scenario:${scenario.name}] running ${scenario.after.length} after-steps`)
+      await runSteps(scenario.after)
+      flight({ type: 'after-steps-done', scenario: scenario.name })
+    }
+
     // ---- capture, verify, replay, log ----
+    let heard = ''
+    let out = ''
+    if (scenario.room !== false) {
     // Don't clip the agent's final words: wait for silence before stopping.
     await waitForSpeechEvent(page, 'speech-stop', 12_000).catch(() => {})
     await page.waitForTimeout(3_000)
-    const out = test.info().outputPath(`${scenario.name}-capture.webm`)
+    out = test.info().outputPath(`${scenario.name}-capture.webm`)
     const cap = await saveCapture(page, out)
-    const heard = await transcribe(out)
+    heard = await transcribe(out)
     console.log(`[scenario:${scenario.name}] heard: "${heard.slice(0, 300)}"`)
-    flight({ type: 'scenario-complete', scenario: scenario.name, agentReplies })
     logResult(`scenario:${scenario.name}`, {
       agentReplies,
       testerTurns: history.filter((h) => h.speaker === 'tester').map((h) => h.text),
@@ -226,6 +248,21 @@ for (const file of files) {
       heard: heard.slice(0, 600),
     })
     await test.info().attach('agent-audio', { path: out, contentType: 'audio/webm' })
+    }
+    flight({ type: 'scenario-complete', scenario: scenario.name, agentReplies })
+
+    // GRACEFUL OUTRO — no abrupt endings. Leave the session the way a user
+    // would, let the UI land, and hold a settle beat so the recording closes
+    // on a calm, completed frame instead of a mid-action kill. The leave
+    // click compiles into the site's action cache on first run, so "how to
+    // end properly" is LEARNED once and replayed free on every scenario.
+    if (scenario.room !== false && !(scenario.after ?? []).some((st) => /leave|exit|hang|disconnect|end/i.test(JSON.stringify(st)))) {
+      await brain('Find and click the control that LEAVES or ENDS the voice session (a leave button, hang-up icon, or disconnect control). If none is visible, do nothing.').catch(() => {})
+      await page.waitForTimeout(4_000)
+    }
+    await page.waitForTimeout(2_500) // settle beat — end on a finished-looking frame
+    flight({ type: 'graceful-outro-complete', scenario: scenario.name })
+
     // TEARDOWN MUST NEVER HANG. stagehand.close()/context.close()/saveAs can
     // block indefinitely on a half-dead CDP connection (observed: teardown
     // froze until the 10-min test timeout force-killed the browser). Race
@@ -242,9 +279,11 @@ for (const file of files) {
       if (saved) {
         try {
           const offsetSec = ((tCaptureStart - tVideoStart) / 1000).toFixed(2)
-          const replay = test.info().outputPath('replay-with-audio.webm')
-          execSync(`ffmpeg -y -loglevel error -i "${vidPath}" -itsoffset ${offsetSec} -i "${out}" -map 0:v -map 1:a -c copy "${replay}"`, { timeout: 60_000 })
-          await test.info().attach('replay-with-audio', { path: replay, contentType: 'video/webm' })
+          if (out) {
+            const replay = test.info().outputPath('replay-with-audio.webm')
+            execSync(`ffmpeg -y -loglevel error -i "${vidPath}" -itsoffset ${offsetSec} -i "${out}" -map 0:v -map 1:a -c copy "${replay}"`, { timeout: 60_000 })
+            await test.info().attach('replay-with-audio', { path: replay, contentType: 'video/webm' })
+          }
         } catch { /* best-effort */ }
       }
     }

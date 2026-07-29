@@ -1,18 +1,18 @@
 name: dashboard-explore
-description: Logged-in dashboard exploration — see recent chats, settings, agent health; click around and record findings. Requires the saved osbornojure profile.
-url: "/dashboard"
+description: Logged-in dashboard exploration via the test account — settings, environment, recent chats, and entry into a conversation the way a real user does.
+room: false
 profile: osbornojure
+url: "/dashboard"
 steps:
-  - act: "You are on a user dashboard. Open the settings or preferences area if visible"
+  - pause: 4000
+  - assertScreen: "osborn|new conversation|environment"
+  - pause: 6000
+  - assertScreen: "cloud|resume|running|starting"
+  - act: "Open the settings area if there is a settings control visible"
   - pause: 3000
-  - act: "Navigate back to the main dashboard view"
+  - act: "Return to the main dashboard view if a panel or settings screen is open"
   - pause: 2000
-  - act: "Open the most recent conversation/chat from the recent list"
+  - act: "Click the New conversation button or the most recent conversation in the recent list"
+  - pause: 12000
+  - assertScreen: "connecting|listening|previous sessions|resuming|starting"
   - pause: 5000
-conversation:
-  goal: >
-    You just opened a recent conversation from the dashboard. Say hello and ask
-    the assistant to confirm this session resumed with context. End after its
-    reply. Max 1 thing said by you.
-  maxTurns: 2
-  minAudibleReplies: 1

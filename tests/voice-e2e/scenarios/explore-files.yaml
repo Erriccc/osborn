@@ -1,0 +1,19 @@
+name: explore-files
+description: Ask the agent to create a note file by voice, then explore the session files panel and preview it.
+entry: fresh
+conversation:
+  goal: >
+    Ask the assistant to create a short note file in the session workspace
+    called sunset-note containing one line about a test at sunset. Wait for
+    it to confirm the file was written, thank it, and end. Max 2 things said
+    by you.
+  maxTurns: 3
+  minAudibleReplies: 1
+after:
+  - pause: 4000
+  - act: "Open the files, artifacts, or documents panel in this voice app UI"
+  - pause: 4000
+  - assertScreen: "sunset|note|\\.md|file"
+  - act: "Click the most recent file to open or preview it"
+  - pause: 4000
+  - act: "Close the file preview or files panel"

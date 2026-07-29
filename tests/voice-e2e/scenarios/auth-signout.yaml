@@ -1,0 +1,15 @@
+name: auth-signout
+description: >
+  DELIBERATE-ONLY (destroys the saved profile session): from the logged-in
+  dashboard, sign out, verify the landing page. Requires OSBORN_ALLOW_SIGNOUT=1
+  and a saved profile; re-run scripts/save-profile.ts after each use.
+room: false
+profile: osbornojure
+url: "/dashboard"
+requiresEnv: OSBORN_ALLOW_SIGNOUT
+steps:
+  - pause: 4000
+  - assertScreen: "new conversation|recent|settings"
+  - act: "Open the user profile or account menu and choose sign out / log out"
+  - pause: 5000
+  - assertScreen: "sign in|log in|continue with|get started"

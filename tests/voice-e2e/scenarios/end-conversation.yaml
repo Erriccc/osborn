@@ -1,0 +1,15 @@
+name: end-conversation
+description: End a conversation gracefully — goodbye by voice, then exit the room via the UI and verify a clean landing.
+entry: fresh
+conversation:
+  goal: >
+    Say hello and confirm the assistant can hear you. After its reply, say a
+    clear goodbye (e.g. that you're done for now, thanks) and end. Max 2
+    things said by you.
+  maxTurns: 2
+  minAudibleReplies: 1
+after:
+  - pause: 3000
+  - act: "Find and click the control that LEAVES or ENDS the voice session (a leave button, hang-up icon, or disconnect control). Do not use browser navigation."
+  - pause: 6000
+  - assertScreen: "new conversation|dashboard|sign in|get started|osborn"

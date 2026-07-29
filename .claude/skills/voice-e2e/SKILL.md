@@ -42,6 +42,26 @@ Target selection: `OSBORN_AGENT_URL` (default `https://osborn-d4f24f46-v2.fly.de
 `OSBORN_APP_URL` (default `https://www.voice-native.com`). Guest mode via
 `/chat?...&agentUrl=<url>` needs no auth (known-open gap, deliberate for testing).
 
+## Verify the media — never take the tester's word for it
+
+A green assertion is a CLAIM, not proof of experience. Before reporting a
+result (especially "logged in", "resumed", "explored X"), the supervising
+agent MUST review the artifacts itself:
+
+```bash
+ffmpeg -i replay.mp4 -vf "fps=1/5" /tmp/frames/f%02d.jpg   # then Read the frames
+```
+
+- Watch key video frames (entry, mid-flow, ending) and check the UI actually
+  shows the claimed state — real case: a "logged-in dashboard" run passed all
+  assertions while the frames showed "Local (offline)" and zero conversations
+  (authenticated cookie, wrong mode — assertions were too weak to notice).
+- Listen to / transcribe the audio capture when the claim is about speech.
+- Read devtools-diagnostics + flight log against the narrative.
+- If frames contradict the assertions, the TEST is wrong — tighten its
+  assertions (assert account-specific evidence: avatar/email, session counts,
+  "Cloud (running)"), then rerun. Report only what the media shows.
+
 ## Dual-view testing — who sees what
 
 The TESTER (Stagehand brain + harness) is app-agnostic: its only senses are

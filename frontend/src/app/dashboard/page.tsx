@@ -218,6 +218,20 @@ export default function Dashboard() {
     if (p) setProvider(p)
     if (v) setVoiceArch(v)
     if (m) setConnectionMode(m)
+    else {
+      // No saved preference (fresh browser/new device): auto-detect. A signed-in
+      // user with a cloud instance previously landed in 'local' mode — dashboard
+      // probed localhost:8741, showed "Local (offline)" with zero conversations,
+      // and looked logged-out despite a valid session (found by the E2E harness
+      // + user report, 2026-07-29). If the account has a cloud sandbox, start
+      // in cloud; only ever applied when the user hasn't chosen explicitly.
+      fetch('/api/sandbox')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d?.available && d?.sandbox) setConnectionMode('cloud')
+        })
+        .catch(() => {})
+    }
   }, [])
 
   // Persist prefs
