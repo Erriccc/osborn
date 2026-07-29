@@ -4756,7 +4756,11 @@ async function main() {
               // pipeline at all. Recall captures the meeting audio internally
               // and we pull the transcript via its REST API every ~30s.
               await sendToFrontend({ type: 'meeting_joining', message: 'Osborn is joining your meeting...' })
-              const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase)
+              // 0.9.85: optional castUrl — a webpage to display as the bot's
+              // camera (live feed / seeded site). Passed from the frontend or
+              // env OSBORN_MEETING_CAST_URL for testing.
+              const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || undefined
+              const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { castUrl })
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
               recallJoin.registerBot(botId, sessionId)
               activeMeetingBotId = botId

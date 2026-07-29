@@ -83,9 +83,20 @@ export class RecallClient extends EventEmitter {
   async joinMeeting(
     meetingUrl: string,
     webhookBaseUrl: string,
-    opts?: { botName?: string },
+    opts?: { botName?: string; castUrl?: string },
   ): Promise<string> {
     const botName = opts?.botName ?? 'Osborn'
+    // 0.9.85: optional CAST — display a webpage as the bot's camera in the
+    // meeting (Recall output_media, the piece the v0.9.44 rewrite removed).
+    // Point castUrl at the session-engine live-feed viewer, a seeded site
+    // (e.g. voice-native's LinkedIn), or a research/output page. This is the
+    // "the client sees content" visual side of the copilot. Left off by
+    // default (silent, invisible observer) — only casts when castUrl is set.
+    const cast = opts?.castUrl && /^https?:\/\//.test(opts.castUrl)
+      ? { output_media: { camera: { kind: 'webpage', config: { url: opts.castUrl } } } }
+      : {}
+    if (opts?.castUrl && !Object.keys(cast).length) console.log(`⚠️ castUrl ignored (not http(s)): ${opts.castUrl}`)
+    else if (Object.keys(cast).length) console.log(`📺 Meeting cast enabled — bot camera = ${opts!.castUrl}`)
     // 0.9.84: LIVE transcript via realtime_endpoints. The v0.9.44 rewrite
     // removed this and left only 30s polling of the batch download_url — but
     // that URL is a POST-PROCESSING artifact (empty until the meeting ends),
@@ -120,6 +131,7 @@ export class RecallClient extends EventEmitter {
       body: JSON.stringify({
         meeting_url: meetingUrl,
         bot_name: botName,
+        ...cast,
         recording_config: {
           transcript: {
             provider: {
