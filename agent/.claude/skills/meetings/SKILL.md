@@ -22,18 +22,35 @@ Two trigger patterns:
 
 **Do NOT use this skill** for normal user voice-native messages that don't fit those patterns — those get spoken responses as usual.
 
+## CRITICAL: delegate the file + transcript work to the `writer` sub-agent
+
+The main orchestrator agent has a **hard limit of 3 direct tool calls per turn** (enforced in PreToolUse — Read/Write/Bash/Glob are DENIED after the 3rd call). Writing `meeting-todos.md` and pulling transcripts (curl + jq + Write) is far more than 3 calls, so **doing it directly gets you blocked** ("all tools blocked").
+
+**Sub-agents are exempt from this budget and have full permissions.** So for ALL meeting file/transcript work, **delegate to the `writer` sub-agent in ONE `Task` call** and let it do the whole job (fetch transcript, parse, write `meeting-todos.md`). That's a single tool call for you, and the writer has no budget cap.
+
+```
+Task(
+  subagent_type: 'writer',
+  run_in_background: true,   // silent — don't block voice
+  description: 'update meeting-todos.md',
+  prompt: '<the full instructions below: workspace path, bot ID, what to fetch/parse/write>'
+)
+```
+
+Give the writer everything it needs in the prompt: the session-workspace path, the bot ID, the `us-west-2.recall.ai` endpoint rule, and the `meeting-todos.md` structure. The writer runs the curl/jq/Write steps itself. For research, delegate to the `researcher` sub-agent the same way.
+
 ## How to behave (auto-tagged chunks)
 
 For every `[MEETING — *]:` message:
 
 1. **Do NOT speak.** No TTS output. No conversational reply.
-2. **Update `meeting-todos.md`** in the session workspace. Append new action items, decisions, open questions. One file, evolving.
-3. **Optionally trigger background research silently** via Task tool.
+2. **Delegate to the `writer` sub-agent** (see above) to append new action items, decisions, and open questions to `meeting-todos.md`. Do NOT write the file yourself — you'll hit the 3-call budget and get blocked. Batch chunks if they arrive faster than the writer finishes; one evolving file.
+3. **Delegate research to the `researcher` sub-agent** via `Task` (background, silent) when a chunk warrants it.
 4. **Don't consume voice-native attention.** The user can interrupt with a voice-native message at any time — that's the only kind that gets spoken responses.
 
 ## How to pull transcripts on demand (Bash + curl)
 
-When the user explicitly asks (see triggers above), run these commands. Speak briefly first ("On it"), do the work, then speak the result.
+When the user explicitly asks (see triggers above): speak briefly first ("On it"), then **delegate the fetch+parse+write to the `writer` sub-agent** in one `Task` call (the steps below are what you put in the writer's prompt — they're 4+ Bash/Write calls, over your 3-call budget). When the writer finishes, speak the result. The commands below are the recipe the writer runs, not calls you make directly.
 
 ### Step 1: Get the bot ID
 

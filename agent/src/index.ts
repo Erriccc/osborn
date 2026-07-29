@@ -550,6 +550,31 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    // ── Meeting canvas: TTS audio for speaking INTO the meeting ──────────────
+    // GET /tts?text=... → mp3 (OpenAI TTS). The canvas plays this as a real
+    // <audio> element so Recall's webpage output pipes it into the meeting —
+    // speechSynthesis is NOT captured by Recall, a media element IS.
+    if (req.method === 'GET' && url.pathname === '/tts') {
+      const text = (url.searchParams.get('text') || '').slice(0, 4000)
+      const voice = url.searchParams.get('voice') || 'alloy'
+      const key = process.env.OPENAI_API_KEY
+      if (!text || !key) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: !key ? 'no OPENAI_API_KEY' : 'no text' })); return }
+      try {
+        const tts = await fetch('https://api.openai.com/v1/audio/speech', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice, input: text, response_format: 'mp3' }),
+        })
+        if (!tts.ok) { const e = await tts.text().catch(() => ''); res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: `tts ${tts.status}`, detail: e.slice(0, 200) })); return }
+        const buf = Buffer.from(await tts.arrayBuffer())
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store', 'Content-Length': buf.length })
+        res.end(buf)
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: (e as Error).message }))
+      }
+      return
+    }
+
     // ── Meeting canvas: control endpoint (director / agent tool) ─────────────
     // POST /canvas  { kind:'say', text } | { kind:'show', mode, title?, items?, url?, text? }
     if (req.method === 'POST' && url.pathname === '/canvas') {
