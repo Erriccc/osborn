@@ -100,6 +100,14 @@ async function main() {
     try { reqN++; const p = join(OUT_DIR, `req-${String(reqN).padStart(3,'0')}-${label}.jpg`)
       await active.screenshot({ path: p, type: 'jpeg', quality: 60 }); mark(`artifact: ${p}`); return p } catch { return null }
   }
+  // Per-task VIDEO clip — every /act and /say gets its own reviewable mp4 from
+  // the live-stream ring buffer, so we confirm the engine actually did the work
+  // (not just trust a screenshot or the text result). Named to the same counter.
+  const reqClip = async (label: string, seconds = 20) => {
+    if (!live?.clip) return null
+    try { const p = join(OUT_DIR, `req-${String(reqN).padStart(3,'0')}-${label}.mp4`)
+      const out = await live.clip(p, seconds); if (out) mark(`clip: ${out}`); return out } catch { return null }
+  }
   // TASK-WINDOW LEDGER — the replay model.
   // There is ONE continuous Playwright recordVideo recording for the whole
   // session (saved on /end). We do NOT cut a separate video per request; the
@@ -123,8 +131,8 @@ async function main() {
         return json(res, { inRoom: true, useAuth, live: live?.url, recordingStartedAt: tCapture, taskCount: tasks.length, tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12) })
       }
       const body = await readBody(req)
-      if (path === '/act') { const t0 = Date.now(); const r = await brain(body.instruction); mark(`act: ${String(body.instruction).slice(0, 60)}`); const shot = await reqShot('act'); const window = stampTask(reqN, 'act', t0, shot, body.instruction); return json(res, { ok: true, result: r, artifact: shot, window }) }
-      if (path === '/say') { const t0 = Date.now(); await speakText(active, body.text); mark(`say: ${String(body.text).slice(0, 60)}`); await active.waitForTimeout(6000); const shot = await reqShot('say'); const window = stampTask(reqN, 'say', t0, shot, body.text); return json(res, { ok: true, artifact: shot, window }) }
+      if (path === '/act') { const t0 = Date.now(); const r = await brain(body.instruction); mark(`act: ${String(body.instruction).slice(0, 60)}`); const shot = await reqShot('act'); const clip = await reqClip('act', body.clipSeconds ?? 20); const window = stampTask(reqN, 'act', t0, shot, body.instruction); return json(res, { ok: true, result: r, artifact: shot, clip, window }) }
+      if (path === '/say') { const t0 = Date.now(); await speakText(active, body.text); mark(`say: ${String(body.text).slice(0, 60)}`); await active.waitForTimeout(6000); const shot = await reqShot('say'); const clip = await reqClip('say', body.clipSeconds ?? 14); const window = stampTask(reqN, 'say', t0, shot, body.text); return json(res, { ok: true, artifact: shot, clip, window }) }
       if (path === '/hear') { const since = Date.now() - tCapture - (body.lastMs ?? 20000); const heard = await hearSince(active, Math.max(0, since)).catch(() => ''); return json(res, { heard }) }
       if (path === '/shot') { const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64') }) }
       if (req.method === 'GET' && path === '/tasks') {

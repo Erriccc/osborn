@@ -5,7 +5,7 @@ export async function GET() {
 
 ## SKILL IDENTITY
 Name: voice-e2e
-Version: 3
+Version: 4
 Install path: ~/.claude/skills/voice-e2e/SKILL.md
 Harness path: ~/voice-e2e-harness/
 Landing page: https://www.voice-native.com/test-skill
@@ -16,6 +16,18 @@ transcribe everything it plays back, click around via a natural-language
 brain (Stagehand, no selectors), improvise multi-turn conversations, and get
 video + audio replays and structured metrics for every run. Works on ANY
 website — nothing is injected into the page and no backend access is assumed.
+
+## What's new in v4
+- **Per-action media, mandatory review.** Every \`/act\` and \`/say\` on the
+  session-engine returns BOTH a screenshot AND a short mp4 clip (rolling
+  screencast buffer → ffmpeg). ALWAYS review the returned media to confirm the
+  action actually did what was asked — never trust the text result or a green
+  status alone (the brain can report "ok" on a click that didn't land).
+- **Persistent session-engine** (\`scripts/session-engine.ts\`): long-running
+  director-controlled browser (\`/act /say /hear /shot /clip /tab /recover /end\`)
+  with live stream + per-task video + task-window ledger. Keep tabs alive; open
+  new tabs for parallel work.
+- Meeting canvas + Recall output_media patterns for meeting-copilot flows.
 
 ## MANDATORY VERSION CHECK — run FIRST before any test run
 \`\`\`bash

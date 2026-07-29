@@ -65,17 +65,18 @@ function CanvasInner() {
       if (evt.kind === 'show') {
         setShow({ mode: evt.mode, title: evt.title, items: evt.items, url: evt.url, text: evt.text })
       } else if (evt.kind === 'say' && evt.text) {
+        const sayText: string = evt.text
         // Play agent-generated TTS as a real <audio> element — Recall's webpage
         // output pipes media-element audio into the meeting (speechSynthesis is
         // NOT captured). Fall back to browser speech if the endpoint/autoplay fails.
         try {
-          const a = new Audio(`${base}/tts?text=${encodeURIComponent(evt.text)}`)
-          a.play().catch(() => speak(evt.text))
-        } catch { speak(evt.text) }
-        setCaption(evt.text)
+          const a = new Audio(`${base}/tts?text=${encodeURIComponent(sayText)}`)
+          a.play().catch(() => speak(sayText))
+        } catch { speak(sayText) }
+        setCaption(sayText)
         if (captionTimer.current) clearTimeout(captionTimer.current)
         // Hold the caption roughly as long as it takes to speak (~12 chars/sec).
-        captionTimer.current = setTimeout(() => setCaption(''), Math.max(3500, evt.text.length * 90))
+        captionTimer.current = setTimeout(() => setCaption(''), Math.max(3500, sayText.length * 90))
       }
     }
     return () => { es.close() }

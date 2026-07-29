@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic'
  * so an installing agent can write them to disk. Read live from the repo
  * checkout that ships alongside the frontend (Railway deploys the full repo).
  */
-const HARNESS_VERSION = 3
+const HARNESS_VERSION = 4
 
 const INCLUDE_DIRS = ['lib', 'specs', 'scenarios', 'scripts']
 const INCLUDE_ROOT = ['package.json', 'playwright.config.ts', 'Dockerfile', 'fly.toml', '.gitignore', '.dockerignore']
