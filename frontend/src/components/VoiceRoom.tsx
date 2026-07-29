@@ -674,6 +674,11 @@ function ControlMenu({
   onLoadMcpStatus,
   skills,
   onAddSkill,
+  onViewSkill,
+  onRemoveSkill,
+  onInstallFromCatalog,
+  skillRemoveArm,
+  setSkillRemoveArm,
   showAddSkill,
   setShowAddSkill,
   newSkillName,
@@ -691,8 +696,13 @@ function ControlMenu({
   mcpServers?: McpServerStatus[]
   onMcpToggle?: (serverKey: string, enabled: boolean) => void
   onLoadMcpStatus?: () => void
-  skills?: { name: string; description: string }[]
+  skills?: { name: string; description: string; folder?: string }[]
   onAddSkill?: (name: string, content: string) => void
+  onViewSkill?: (folder: string) => void
+  onRemoveSkill?: (folder: string) => void
+  onInstallFromCatalog?: (name: string, url: string) => void
+  skillRemoveArm?: string | null
+  setSkillRemoveArm?: (v: string | null) => void
   showAddSkill?: boolean
   setShowAddSkill?: (show: boolean) => void
   newSkillName?: string
@@ -873,20 +883,48 @@ function ControlMenu({
                 )}
                 {skills && skills.length > 0 ? (
                   <div className="space-y-1">
-                    {skills.map((skill) => (
+                    {skills.map((skill) => {
+                      const folder = skill.folder || skill.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')
+                      const armed = skillRemoveArm === folder
+                      return (
                       <div
-                        key={skill.name}
+                        key={folder}
                         className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
                       >
-                        <span className="text-sm font-medium text-gray-200">{skill.name}</span>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium text-gray-200 truncate">{skill.name}</span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              onClick={() => onViewSkill?.(folder)}
+                              className="text-[10px] text-amber-400 hover:text-amber-300"
+                            >View</button>
+                            <button
+                              onClick={() => {
+                                if (armed) { onRemoveSkill?.(folder) }
+                                else { setSkillRemoveArm?.(folder); setTimeout(() => setSkillRemoveArm?.(null), 4000) }
+                              }}
+                              className={`text-[10px] ${armed ? 'text-red-400 font-semibold' : 'text-gray-500 hover:text-red-400'}`}
+                            >{armed ? 'Confirm?' : 'Remove'}</button>
+                          </div>
+                        </div>
                         {skill.description && (
                           <p className="text-[11px] text-gray-500 truncate">{skill.description}</p>
                         )}
                       </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 ) : (
                   <p className="text-[11px] text-gray-500">No skills installed</p>
+                )}
+                {/* Catalog: one-tap official skills */}
+                {skills && !skills.some((sk) => /voice-e2e/i.test(sk.folder || sk.name)) && (
+                  <button
+                    onClick={() => onInstallFromCatalog?.('voice-e2e', '/api/test-skill')}
+                    className="mt-2 w-full py-1.5 text-[11px] rounded-lg bg-gray-800/70 border border-amber-500/20 text-amber-400 hover:bg-gray-800 transition-colors"
+                  >
+                    ⤓ Install Voice-E2E testing skill (official)
+                  </button>
                 )}
               </div>
 
@@ -1340,7 +1378,9 @@ function VoiceRoomInner({
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
   // Skills state
-  const [skills, setSkills] = useState<{ name: string; description: string }[]>([])
+  const [skills, setSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
+  const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
+  const [skillRemoveArm, setSkillRemoveArm] = useState<string | null>(null)
   const [showAddSkill, setShowAddSkill] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
   const [newSkillName, setNewSkillName] = useState('')
@@ -2224,6 +2264,13 @@ function VoiceRoomInner({
         if (data.skills && Array.isArray(data.skills)) {
           setSkills(data.skills)
         }
+      } else if (data.type === 'skill_content') {
+        if (data.content) setViewedSkill({ name: data.name, content: data.content })
+      } else if (data.type === 'skill_remove_result') {
+        if (data.skills && Array.isArray(data.skills)) {
+          setSkills(data.skills)
+        }
+        setSkillRemoveArm(null)
       } else if (data.type === 'skill_add_result') {
         if (data.success && data.skills) {
           setSkills(data.skills)
@@ -2577,6 +2624,24 @@ function VoiceRoomInner({
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent])
+
+  const handleViewSkill = useCallback((folder: string) => {
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'skill_get', name: folder })), { reliable: true })
+  }, [sendToAgent])
+
+  const handleRemoveSkill = useCallback((folder: string) => {
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'skill_remove', name: folder })), { reliable: true })
+  }, [sendToAgent])
+
+  // One-tap catalog install: fetch a served skill (same-origin) and add it.
+  const handleInstallFromCatalog = useCallback(async (name: string, url: string) => {
+    try {
+      const content = await fetch(url).then((r) => r.text())
+      handleAddSkill(name, content)
+    } catch { /* surfaced via missing skill_add_result */ }
+  }, [handleAddSkill])
 
   // Helper: complete the session gate (unmute mic, send session_selected to backend)
   const completeSessionGate = useCallback((sessionId: string | null) => {
@@ -2999,6 +3064,11 @@ function VoiceRoomInner({
               onLoadMcpStatus={handleLoadMcpStatus}
               skills={skills}
               onAddSkill={handleAddSkill}
+              onViewSkill={handleViewSkill}
+              onRemoveSkill={handleRemoveSkill}
+              onInstallFromCatalog={handleInstallFromCatalog}
+              skillRemoveArm={skillRemoveArm}
+              setSkillRemoveArm={setSkillRemoveArm}
               showAddSkill={showAddSkill}
               setShowAddSkill={setShowAddSkill}
               newSkillName={newSkillName}
@@ -3006,6 +3076,19 @@ function VoiceRoomInner({
               newSkillContent={newSkillContent}
               setNewSkillContent={setNewSkillContent}
             /></div>
+
+            {/* Skill viewer modal — mobile-friendly full SKILL.md reader */}
+            {viewedSkill && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setViewedSkill(null)}>
+                <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+                    <h3 className="text-sm font-semibold text-white truncate">📚 {viewedSkill.name}</h3>
+                    <button onClick={() => setViewedSkill(null)} className="text-gray-400 hover:text-white text-lg leading-none">×</button>
+                  </div>
+                  <pre className="flex-1 overflow-auto p-4 text-[11px] leading-relaxed text-gray-300 whitespace-pre-wrap font-mono">{viewedSkill.content}</pre>
+                </div>
+              </div>
+            )}
 
             {/* Mobile menu button */}
             <button onClick={() => setShowMobileMenu(true)}

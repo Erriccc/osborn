@@ -66,10 +66,10 @@ import { z } from 'zod'
 // ============================================================
 
 // Load skills list with name + description for frontend display
-function loadSkillsList(agentDir: string): { name: string; description: string }[] {
+function loadSkillsList(agentDir: string): { name: string; description: string; folder: string }[] {
   const skillsDir = join(agentDir, '.claude', 'skills')
   if (!existsSync(skillsDir)) return []
-  const skills: { name: string; description: string }[] = []
+  const skills: { name: string; description: string; folder: string }[] = []
   try {
     for (const skillName of readdirSync(skillsDir)) {
       const skillFile = join(skillsDir, skillName, 'SKILL.md')
@@ -81,7 +81,7 @@ function loadSkillsList(agentDir: string): { name: string; description: string }
         // Extract description from first paragraph after heading
         const descMatch = content.match(/^#[^\n]+\n+([^\n#]+)/m)
         const description = descMatch ? descMatch[1].trim() : ''
-        skills.push({ name, description })
+        skills.push({ name, description, folder: skillName })
       }
     }
   } catch (err) {
@@ -4689,6 +4689,30 @@ async function main() {
           } catch (err) {
             console.error('❌ Failed to add skill:', err)
             await sendToFrontend({ type: 'skill_add_result', success: false, error: String(err) })
+          }
+        }
+      }
+      else if (data.type === 'skill_get') {
+        const folder = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+        const p = join(sessionBaseDir, '.claude', 'skills', folder, 'SKILL.md')
+        if (folder && existsSync(p)) {
+          await sendToFrontend({ type: 'skill_content', name: folder, content: readFileSync(p, 'utf-8') })
+        } else {
+          await sendToFrontend({ type: 'skill_content', name: folder, error: 'skill not found' })
+        }
+      }
+      else if (data.type === 'skill_remove') {
+        const folder = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+        const dir = join(sessionBaseDir, '.claude', 'skills', folder)
+        if (!folder || !existsSync(dir)) {
+          await sendToFrontend({ type: 'skill_remove_result', success: false, error: 'skill not found' })
+        } else {
+          try {
+            rmSync(dir, { recursive: true, force: true })
+            console.log(`🗑️ Skill removed: ${folder}`)
+            await sendToFrontend({ type: 'skill_remove_result', success: true, skills: loadSkillsList(sessionBaseDir) })
+          } catch (err) {
+            await sendToFrontend({ type: 'skill_remove_result', success: false, error: String(err) })
           }
         }
       }
