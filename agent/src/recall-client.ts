@@ -106,8 +106,12 @@ export class RecallClient extends EventEmitter {
     // transcript turn to /webhook/recall as it's spoken — the receiver
     // (handleWebhook) already exists. Polling stays as the after-the-fact
     // backstop. Only wire the webhook when we have a public URL to receive on.
+    // Subscribe to transcript (content) AND participant speech VAD events. The
+    // speech_on/speech_off events fire from raw audio (faster than transcription)
+    // and tell us WHO is speaking WHEN — used for interruption (human speaks while
+    // the bot is talking → stop) and for chunking on natural silence boundaries.
     const realtime = /^https:\/\//.test(webhookBaseUrl)
-      ? [{ type: 'webhook', url: `${webhookBaseUrl}/webhook/recall`, events: ['transcript.data', 'transcript.partial_data'] }]
+      ? [{ type: 'webhook', url: `${webhookBaseUrl}/webhook/recall`, events: ['transcript.data', 'transcript.partial_data', 'participant_events.speech_on', 'participant_events.speech_off'] }]
       : []
     if (!realtime.length) console.log('⚠️ Recall realtime webhook skipped (no public https URL) — polling only')
     // ARCHITECTURE (post-2026-05-22 polling redesign):
@@ -227,6 +231,21 @@ export class RecallClient extends EventEmitter {
   #lastEmitted = new Map<string, string>()
 
   handleWebhook(payload: TranscriptPayload): void {
+    // Participant speech VAD (speech_on/speech_off) — fires from raw audio, ahead
+    // of transcription. Emit a 'speech' event so index.ts can (a) interrupt the
+    // bot when a HUMAN starts talking over it, and (b) chunk the transcript on
+    // natural silence boundaries. The bot's own output_media audio may also fire
+    // speech_on for its own participant — index.ts filters that by name.
+    if (payload.event === 'participant_events.speech_on' || payload.event === 'participant_events.speech_off') {
+      const p = (payload as unknown as { data?: { data?: { participant?: { name?: string, is_host?: boolean } }, bot?: { id?: string } } }).data
+      this.emit('speech', {
+        botId: p?.bot?.id ?? 'unknown',
+        participant: p?.data?.participant?.name ?? 'Unknown',
+        isHost: !!p?.data?.participant?.is_host,
+        active: payload.event === 'participant_events.speech_on',
+      })
+      return
+    }
     // Accept BOTH finals (transcript.data) AND partials (transcript.partial_data).
     // recallai_streaming in prioritize_low_latency mode emits partials DURING
     // the call and finals lag — ignoring partials (the old behavior) meant no

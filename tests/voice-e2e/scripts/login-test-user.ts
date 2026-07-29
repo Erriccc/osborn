@@ -67,7 +67,11 @@ const state = {
     },
   ],
 }
-const out = join(__dirname, '..', 'profiles', 'osbornojure', 'state.json')
+// Which profile dir to write. Defaults to ozyjunks (the separate test account
+// so the engine doesn't collide with your osbornojure usage — see session-engine
+// OSBORN_TEST_PROFILE). Put that account's creds in profiles/test-user.env first.
+const profileName = process.env.OSBORN_TEST_PROFILE || 'ozyjunks'
+const out = join(__dirname, '..', 'profiles', profileName, 'state.json')
 mkdirSync(dirname(out), { recursive: true })
 writeFileSync(out, JSON.stringify(state, null, 2))
-console.log(`✅ storageState written to ${out} (${cookies.length} cookie chunk(s))`)
+console.log(`✅ storageState for '${profileName}' (${session.user?.email}) written to ${out} (${cookies.length} cookie chunk(s))`)

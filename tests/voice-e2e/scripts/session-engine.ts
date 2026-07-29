@@ -55,8 +55,15 @@ const marks: { t: number; mark: string }[] = []
 const mark = (m: string) => { marks.push({ t: Date.now(), mark: m }); console.log(`[engine] ${m}`) }
 
 async function main() {
-  const profile = join(__dirname, '..', 'profiles', 'osbornojure', 'state.json')
+  // Which voice-native test account the engine drives. Default ozyjunks (a
+  // separate test account) so the engine's meeting/session doesn't collide with
+  // your own osbornojure usage — one machine restart won't interrupt the other.
+  // Override with OSBORN_TEST_PROFILE. If no saved profile exists for it, the
+  // engine falls back to the guest link (works, but not the real auth path).
+  const profileName = process.env.OSBORN_TEST_PROFILE || 'ozyjunks'
+  const profile = join(__dirname, '..', 'profiles', profileName, 'state.json')
   const useAuth = existsSync(profile)
+  mark(`test account: ${profileName} (${useAuth ? 'auth profile found' : 'no profile → guest link'})`)
   const browser: Browser = await chromium.launch({
     channel: 'chrome', headless: false,
     args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',

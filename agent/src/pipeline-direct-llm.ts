@@ -50,6 +50,10 @@ export class PipelineDirectLLM extends llm.LLM {
   #turnAbort: AbortController | null = null
   #indexWatcher: IndexWatcher | null = null
   #indexBuilding = false
+  // True while the in-flight turn is a [MEETING —] chunk — the tts_say gate in
+  // index.ts reads this to skip browser session.say() (meeting audio goes via
+  // /canvas, not the laptop speakers → no same-room feedback). Set per chat().
+  public suppressMeetingTTS = false
 
   constructor(opts: PipelineDirectOptions) {
     super()
@@ -226,11 +230,22 @@ export class PipelineDirectLLM extends llm.LLM {
       }
     }
 
+    // Meeting chunks ([MEETING —]) are the silent-observer / addressed-response
+    // path. They must NOT drive the browser voice session: (a) no session.say()
+    // TTS — the Meet mic re-captures browser audio in the same room → feedback;
+    // the agent speaks INTO the meeting via /canvas instead; (b) no fast brain —
+    // it's chat-panel noise ("Is there something you'd like to know?") on meeting
+    // speech. Set BEFORE the response streams so the tts_say gate (index.ts) sees
+    // it. Cleared implicitly by the next real user turn (which isn't a [MEETING]).
+    const isMeetingChunk = userText.startsWith('[MEETING')
+    this.suppressMeetingTTS = isMeetingChunk
+
     // Fire Claude
     const claudeStream = this.#claudeLLM.chat({ chatCtx, toolCtx, connOptions, abortController })
 
-    // Fire pipeline fast brain in background — no await, no blocking
-    if (userText.trim()) {
+    // Fire pipeline fast brain in background — no await, no blocking. Skip for
+    // meeting chunks (silent observer / meeting-response path, not a user turn).
+    if (userText.trim() && !isMeetingChunk) {
       this.#firePipelineFastBrain(userText)
     }
 

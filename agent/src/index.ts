@@ -239,14 +239,36 @@ let bugReportHook: ((reportId: string, payload: BugReportPayload) => void) | nul
 // Drive it via POST /canvas (director/testing) or pushCanvas() from meeting logic.
 type CanvasEvent =
   | { kind: 'say'; text: string }
-  | { kind: 'show'; mode: 'idle' | 'notes' | 'link' | 'web' | 'text'; title?: string; items?: string[]; url?: string; text?: string }
+  | { kind: 'stop' } // interruption — stop any in-flight TTS immediately
+  | { kind: 'show'; mode: 'idle' | 'notes' | 'stream' | 'link' | 'web' | 'text'; title?: string; items?: string[]; url?: string; text?: string }
 const canvasClients = new Set<ServerResponse>()
 let latestCanvasShow: CanvasEvent | null = null // last 'show' so a reconnecting canvas resyncs its visual
 function pushCanvas(evt: CanvasEvent): void {
   if (evt.kind === 'show') latestCanvasShow = evt
   const line = `data: ${JSON.stringify(evt)}\n\n`
   for (const res of canvasClients) { try { res.write(line) } catch { canvasClients.delete(res) } }
-  console.log(`🖼️ canvas ${evt.kind}: ${evt.kind === 'say' ? evt.text.slice(0, 60) : (evt as { mode: string }).mode} → ${canvasClients.size} client(s)`)
+  const desc = evt.kind === 'say' ? evt.text.slice(0, 60) : evt.kind === 'show' ? evt.mode : evt.kind
+  console.log(`🖼️ canvas ${evt.kind}: ${desc} → ${canvasClients.size} client(s)`)
+}
+
+// ── Meeting interruption state (module scope — shared by the /canvas HTTP
+// handler and the recall speech handler in main()) ──────────────────────────
+const meetingBotName = 'Osborn' // the bot's name in the meeting; ignore its own speech_on
+// True while the bot's TTS is (probably) still playing into the meeting. Set when
+// a /canvas say is pushed; cleared after an estimated duration OR on interruption.
+// A HUMAN's speech_on while this is true → interrupt.
+let meetingAgentSpeaking = false
+let meetingSpeakClearTimer: ReturnType<typeof setTimeout> | null = null
+let meetingAgentSpeakingText = ''
+// Prepended to the next flush: what the bot was cut off saying + who interrupted
+// (same pattern as voice-native interruptions).
+let meetingInterruptContext = ''
+function markMeetingSpeaking(text: string): void {
+  meetingAgentSpeaking = true
+  meetingAgentSpeakingText = text
+  if (meetingSpeakClearTimer) clearTimeout(meetingSpeakClearTimer)
+  const ms = Math.min(30_000, 3_000 + (text.split(/\s+/).length / 2.5) * 1000) // ~2.5 wps + ~3s Recall lag
+  meetingSpeakClearTimer = setTimeout(() => { meetingAgentSpeaking = false; meetingAgentSpeakingText = '' }, ms)
 }
 
 interface BugReportPayload {
@@ -583,8 +605,10 @@ function startApiServer(workingDir: string, port: number): void {
       req.on('end', () => {
         try {
           const evt = JSON.parse(body || '{}') as CanvasEvent
-          if (evt.kind !== 'say' && evt.kind !== 'show') throw new Error("kind must be 'say' or 'show'")
+          if (evt.kind !== 'say' && evt.kind !== 'show' && evt.kind !== 'stop') throw new Error("kind must be 'say', 'show', or 'stop'")
           pushCanvas(evt)
+          // Track that the bot is now speaking into the meeting → enables interruption.
+          if (evt.kind === 'say') markMeetingSpeaking(evt.text)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: true, clients: canvasClients.size }))
         } catch (e) {
@@ -1602,22 +1626,31 @@ async function main() {
   // LIVE meeting transcript → LLM (buffered webhook finals). See recall.on('transcript').
   const meetingTranscriptBuffer: string[] = []
   let meetingFlushTimer: ReturnType<typeof setInterval> | null = null
+  // Flush the buffered meeting turns to the LLM. `addressed=true` (the agent was
+  // called by name / asked directly) tags the message so the agent RESPONDS by
+  // speaking into the meeting; otherwise it's a silent-observer note-taking batch.
+  const flushMeetingBuffer = (botId: string, addressed = false) => {
+    if (!meetingTranscriptBuffer.length || !currentLLM) return
+    const turns = meetingTranscriptBuffer.splice(0) // drain
+    const header = addressed
+      ? `[MEETING — ${botId}] — YOU WERE ADDRESSED. Respond OUT LOUD into the meeting now: POST http://localhost:${apiPort}/canvas {"kind":"say","text":"..."} with a short, direct reply. Then note it.`
+      : `[MEETING — ${botId}]:`
+    // Prepend + consume any interruption context (bot was cut off mid-sentence).
+    const interrupt = meetingInterruptContext ? `${meetingInterruptContext}\n` : ''
+    meetingInterruptContext = ''
+    try {
+      const ctx = new llm.ChatContext()
+      ctx.addMessage({ role: 'user', content: `${interrupt}${header}\n${turns.join('\n')}` })
+      currentLLM.chat({ chatCtx: ctx })
+      console.log(`📓 Flushed ${turns.length} meeting turn(s) to LLM${addressed ? ' (ADDRESSED — respond)' : ''}`)
+    } catch (err) {
+      console.warn(`⚠️ Meeting flush failed: ${(err as Error).message}`)
+    }
+  }
   const startMeetingFlush = (botId: string) => {
     stopMeetingFlush()
     console.log(`📓 Meeting transcript flush timer started (bot ${botId}, 20s)`)
-    meetingFlushTimer = setInterval(() => {
-      if (!meetingTranscriptBuffer.length || !currentLLM) return
-      const turns = meetingTranscriptBuffer.splice(0) // drain
-      const tagged = `[MEETING — ${botId}]:\n${turns.join('\n')}`
-      try {
-        const ctx = new llm.ChatContext()
-        ctx.addMessage({ role: 'user', content: tagged })
-        currentLLM.chat({ chatCtx: ctx })
-        console.log(`📓 Flushed ${turns.length} meeting turn(s) to LLM`)
-      } catch (err) {
-        console.warn(`⚠️ Meeting flush failed: ${(err as Error).message}`)
-      }
-    }, 20_000)
+    meetingFlushTimer = setInterval(() => flushMeetingBuffer(botId, false), 20_000)
   }
   const stopMeetingFlush = () => {
     if (meetingFlushTimer) { clearInterval(meetingFlushTimer); meetingFlushTimer = null; console.log('📓 Meeting flush timer stopped') }
@@ -1688,7 +1721,38 @@ async function main() {
     // is empty until the meeting ENDS, so mid-call the LLM saw nothing.
     recall.on('transcript', ({ botId, speaker, text, partial }: { botId: string, speaker: string, text: string, partial?: boolean }) => {
       console.log(`📝 Meeting transcript [${speaker}]${partial ? ' (partial)' : ''}: ${text}`)
-      if (!partial && text.trim()) meetingTranscriptBuffer.push(`${speaker}: ${text.trim()}`)
+      if (!partial && text.trim()) {
+        meetingTranscriptBuffer.push(`${speaker}: ${text.trim()}`)
+        // Addressed by name → flush NOW (don't wait the 20s batch) and tag it so
+        // the agent replies out loud into the meeting. This is the chat-mode path:
+        // named/asked → prompt response. Un-addressed chunks stay in the silent
+        // 20s batch for note-taking. That's the two-mode seam, mechanically.
+        if (/\bosborn\b/i.test(text)) {
+          console.log('📓 Addressed by name — immediate flush for a response')
+          flushMeetingBuffer(botId, true)
+        }
+      }
+    })
+
+    // Participant speech VAD → interruption + silence-boundary chunking.
+    recall.on('speech', ({ botId, participant, active }: { botId: string, participant: string, isHost?: boolean, active: boolean }) => {
+      const isBot = participant === meetingBotName || participant === 'Osborn' || participant === 'Unknown'
+      if (active) {
+        // A HUMAN started talking. If the bot is mid-speech → INTERRUPT: stop the
+        // bot's audio and record what it was cut off saying so the next flush can
+        // tell it what it missed (same pattern as voice-native interruptions).
+        if (meetingAgentSpeaking && !isBot) {
+          console.log(`✋ Interruption — ${participant} spoke while bot was talking. Stopping bot audio.`)
+          pushCanvas({ kind: 'stop' })
+          meetingInterruptContext = `[MEETING — interrupted] You were speaking ("${meetingAgentSpeakingText.slice(0, 140)}") when ${participant} started talking and cut you off. They likely didn't hear the rest. When you respond, briefly acknowledge and adapt — don't just repeat.`
+          meetingAgentSpeaking = false
+          if (meetingSpeakClearTimer) clearTimeout(meetingSpeakClearTimer)
+        }
+      } else {
+        // speech_off — a natural silence boundary. Flush the buffered turns now
+        // (chunk on conversational pauses, not an arbitrary clock), unless empty.
+        if (!isBot && meetingTranscriptBuffer.length) flushMeetingBuffer(botId, false)
+      }
     })
   }
 
@@ -2366,6 +2430,15 @@ async function main() {
       }
       if (!data.text?.trim()) {
         console.log(`🔇 tts_say fired but text is empty — skipping`)
+        return
+      }
+
+      // Suppress browser TTS for meeting-chunk responses — the agent speaks INTO
+      // the meeting via /canvas, not the laptop speakers (which the Meet mic
+      // re-captures in the same room → feedback). Set by PipelineDirectLLM.chat()
+      // when the turn is a [MEETING —] chunk. Normal user turns are unaffected.
+      if ((directLLM as unknown as { suppressMeetingTTS?: boolean }).suppressMeetingTTS) {
+        console.log(`🔇 tts_say suppressed (meeting turn — response goes to /canvas, not browser): "${data.text.slice(0, 60)}"`)
         return
       }
 

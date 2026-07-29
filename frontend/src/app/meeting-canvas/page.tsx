@@ -21,7 +21,7 @@ import { useEffect, useRef, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 type Show = {
-  mode: 'idle' | 'notes' | 'link' | 'web' | 'text'
+  mode: 'idle' | 'notes' | 'stream' | 'link' | 'web' | 'text'
   title?: string
   items?: string[]
   url?: string
@@ -43,6 +43,38 @@ function speak(text: string) {
   } catch { /* speech unavailable */ }
 }
 
+// Play agent TTS via the Web Audio API — decode + playback happen on the audio
+// rendering thread, NOT the main thread. Osborn's own in-meeting debugging found
+// (A/B, 3×) that an `<audio>` element (or SpeechSynthesis) goes choppy when a
+// heavy iframe is rendering in the canvas ("web" mode) because they contend for
+// the main thread. Web Audio is immune to that, so visual (browsing) + audio
+// (speaking) work simultaneously. One shared AudioContext avoids memory churn.
+let sharedAudioCtx: AudioContext | null = null
+let currentTTSSource: AudioBufferSourceNode | null = null
+async function playTTS(url: string): Promise<void> {
+  const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!Ctx) throw new Error('no AudioContext')
+  if (!sharedAudioCtx) sharedAudioCtx = new Ctx()
+  if (sharedAudioCtx.state === 'suspended') { try { await sharedAudioCtx.resume() } catch { /* ignore */ } }
+  stopTTS() // don't overlap — a new say supersedes the old
+  const resp = await fetch(url)
+  if (!resp.ok) throw new Error(`tts ${resp.status}`)
+  const bytes = await resp.arrayBuffer()
+  const decoded = await sharedAudioCtx.decodeAudioData(bytes)
+  const src = sharedAudioCtx.createBufferSource()
+  src.buffer = decoded
+  src.connect(sharedAudioCtx.destination)
+  src.onended = () => { if (currentTTSSource === src) currentTTSSource = null }
+  currentTTSSource = src
+  src.start()
+}
+// Interruption: cut the bot's audio immediately (a human started talking).
+function stopTTS() {
+  try { currentTTSSource?.stop() } catch { /* already stopped */ }
+  currentTTSSource = null
+  try { window.speechSynthesis?.cancel() } catch { /* ignore */ }
+}
+
 function CanvasInner() {
   const params = useSearchParams()
   const agent = params.get('agent') || ''
@@ -62,17 +94,19 @@ function CanvasInner() {
     es.onmessage = (e) => {
       let evt: { kind: string } & Show & { text?: string }
       try { evt = JSON.parse(e.data) } catch { return }
-      if (evt.kind === 'show') {
+      if (evt.kind === 'stop') {
+        // Interruption — a human started talking; cut the bot's audio now.
+        stopTTS()
+        setCaption('')
+      } else if (evt.kind === 'show') {
         setShow({ mode: evt.mode, title: evt.title, items: evt.items, url: evt.url, text: evt.text })
       } else if (evt.kind === 'say' && evt.text) {
         const sayText: string = evt.text
-        // Play agent-generated TTS as a real <audio> element — Recall's webpage
-        // output pipes media-element audio into the meeting (speechSynthesis is
-        // NOT captured). Fall back to browser speech if the endpoint/autoplay fails.
-        try {
-          const a = new Audio(`${base}/tts?text=${encodeURIComponent(sayText)}`)
-          a.play().catch(() => speak(sayText))
-        } catch { speak(sayText) }
+        // Play agent TTS via Web Audio (off the main thread → smooth even while a
+        // page is rendering in "web" mode). Recall's webpage output captures the
+        // audio-graph output into the meeting. Fall back to browser speech only if
+        // Web Audio / the endpoint fails.
+        playTTS(`${base}/tts?text=${encodeURIComponent(sayText)}`).catch(() => speak(sayText))
         setCaption(sayText)
         if (captionTimer.current) clearTimeout(captionTimer.current)
         // Hold the caption roughly as long as it takes to speak (~12 chars/sec).
@@ -135,6 +169,16 @@ function CanvasInner() {
 
         {show.mode === 'web' && show.url && (
           <iframe src={show.url} title="web" style={{ width: '100%', height: '100%', border: 'none', borderRadius: 14, background: '#fff' }} />
+        )}
+
+        {/* Live browser feed — the voice-e2e engine's CDP screencast served as
+            MJPEG. This is a VIDEO stream of a REAL browser (not an iframe): shows
+            any site (no X-Frame-Options), and it's just an <img> decode so it
+            doesn't fight the main thread. `url` is the engine's public feed base;
+            we append /stream. This is the "watch it actually browse" surface. */}
+        {show.mode === 'stream' && show.url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={`${show.url.replace(/\/$/, '')}/stream`} alt="live browser" style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 14, boxShadow: '0 0 40px #000' }} />
         )}
       </div>
 
