@@ -155,6 +155,13 @@ for (const file of files) {
       ? `${APP_URL}${scenario.url}`
       : `${APP_URL}/chat?provider=gemini&voiceArch=pipeline&agent=claude&agentUrl=${encodeURIComponent(AGENT_URL)}`
     let tCaptureStart = Date.now()
+    // ALWAYS-ARTIFACTS: any failure between here and packaging is captured,
+    // packaging runs regardless (video/replay/diagnostics are most valuable
+    // on FAILED runs), then the error re-throws so the verdict is honest.
+    let agentReplies = 0
+    const history: Turn[] = []
+    let runError: unknown = null
+    try {
     if (scenario.room === false) {
       await page.goto(chatUrl, { timeout: 45_000 })
       await page.waitForTimeout(3_000)
@@ -204,8 +211,6 @@ for (const file of files) {
     await runSteps(scenario.steps)
 
     // ---- improvised conversation phase ----
-    let agentReplies = 0
-    const history: Turn[] = []
     if (scenario.conversation) {
       const extra = scenario.requiresEnv ? `\nEXTRA CONTEXT: ${scenario.requiresEnv}=${process.env[scenario.requiresEnv]}` : ''
       const maxTurns = scenario.conversation.maxTurns ?? 4
@@ -248,6 +253,11 @@ for (const file of files) {
       await runSteps(scenario.after)
       flight({ type: 'after-steps-done', scenario: scenario.name })
     }
+    } catch (e) {
+      runError = e
+      console.log(`[scenario:${scenario.name}] run error (artifacts still packaged): ${(e as Error).message?.slice(0, 140)}`)
+      flight({ type: 'run-error', scenario: scenario.name, error: (e as Error).message?.slice(0, 200) })
+    }
 
     // ---- capture, verify, replay, log ----
     let heard = ''
@@ -257,8 +267,8 @@ for (const file of files) {
     await waitForSpeechEvent(page, 'speech-stop', 12_000).catch(() => {})
     await page.waitForTimeout(3_000)
     out = test.info().outputPath(`${scenario.name}-capture.webm`)
-    const cap = await saveCapture(page, out)
-    heard = await transcribe(out)
+    const cap = await saveCapture(page, out).catch(() => ({ bytes: 0, durationMs: 0 } as any))
+    heard = cap.bytes > 5_000 ? await transcribe(out).catch(() => '') : ''
     console.log(`[scenario:${scenario.name}] heard: "${heard.slice(0, 300)}"`)
     logResult(`scenario:${scenario.name}`, {
       agentReplies,
@@ -266,7 +276,12 @@ for (const file of files) {
       captureBytes: cap.bytes,
       heard: heard.slice(0, 600),
     })
-    await test.info().attach('agent-audio', { path: out, contentType: 'audio/webm' })
+    // Only attach if the capture file actually exists (a run that stalled
+    // before entering the room never writes one — attaching then throws
+    // ENOENT and masks the real failure).
+    if (out && existsSync(out)) {
+      await test.info().attach('agent-audio', { path: out, contentType: 'audio/webm' }).catch(() => {})
+    }
     }
     flight({ type: 'scenario-complete', scenario: scenario.name, agentReplies })
 
@@ -308,6 +323,7 @@ for (const file of files) {
     }
     await within(10_000, browser.close())
 
+    if (runError) throw runError
     if (scenario.conversation?.minAudibleReplies)
       expect(agentReplies, 'audible agent replies').toBeGreaterThanOrEqual(scenario.conversation.minAudibleReplies)
     if (scenario.conversation?.assertHeard)

@@ -1,0 +1,14 @@
+name: skills-explorer
+description: Ground-truth the skills explorer UI — open Tools, see the installed skills list, view a skill's content. Verifies version-dependent behavior against the live agent.
+entry: fresh
+steps:
+  - pause: 4000
+  - act: "Click the button labeled Research at the top of the voice interface — despite its label it opens the settings dropdown"
+  - pause: 3000
+  - act: "Click the Tools tab inside the dropdown that opened"
+  - pause: 3000
+  - assertScreen: "skills"
+  - act: "Click the View button next to the first skill in the Skills list"
+  - pause: 4000
+  - act: "If a skill content viewer or modal opened, close it. Otherwise do nothing."
+  - pause: 2000

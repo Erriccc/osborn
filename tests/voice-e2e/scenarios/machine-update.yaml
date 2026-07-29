@@ -1,0 +1,14 @@
+name: machine-update
+description: Update the user's machine to the latest agent version THROUGH the dashboard UI (the real user flow), then verify the new version is running.
+room: false
+profile: osbornojure
+url: "/dashboard"
+requiresEnv: OSBORN_EXPECT_VERSION
+steps:
+  - pause: 8000
+  - act: "Click the gear (settings) icon in the top-right header of the dashboard"
+  - pause: 4000
+  - act: "Inside the settings panel, find the agent or machine section showing a version number, and click its Update button. Confirm if asked."
+  - pause: 25000
+  - assertScreen: "0\\.9\\.82|updating|updated"
+  - pause: 20000
