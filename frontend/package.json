@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "prebuild": "node scripts/copy-sandbox-dockerfile.mjs",
+    "prebuild": "node scripts/copy-sandbox-dockerfile.mjs && node scripts/build-harness-bundle.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"

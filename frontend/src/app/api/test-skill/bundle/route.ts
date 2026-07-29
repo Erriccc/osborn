@@ -17,8 +17,16 @@ const INCLUDE_ROOT = ['package.json', 'playwright.config.ts', 'Dockerfile', 'fly
 const TEXT_EXT = /\.(ts|js|json|yaml|yml|sh|md|toml|gitignore|dockerignore)$|^Dockerfile$/
 
 export async function GET() {
+  // Prefer the build-time snapshot (survives containers that prune tests/);
+  // fall back to the live repo dir for local dev freshness.
+  const snapshot = join(process.cwd(), 'public', 'voice-e2e-bundle.json')
   const root = join(process.cwd(), '..', 'tests', 'voice-e2e')
   if (!existsSync(root)) {
+    if (existsSync(snapshot)) {
+      return new NextResponse(readFileSync(snapshot, 'utf8'), {
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      })
+    }
     return NextResponse.json({ error: 'harness source not present in this deployment' }, { status: 503 })
   }
   const files: Record<string, string> = {}
