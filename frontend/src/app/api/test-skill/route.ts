@@ -5,7 +5,7 @@ export async function GET() {
 
 ## SKILL IDENTITY
 Name: voice-e2e
-Version: 1
+Version: 2
 Install path: ~/.claude/skills/voice-e2e/SKILL.md
 Harness path: ~/voice-e2e-harness/
 Landing page: https://www.voice-native.com/test-skill
@@ -49,7 +49,17 @@ print(f"harness v{b['version']}: {len(b['files'])} files written to {root}")
 EOF
 cd ~/voice-e2e-harness && npm install && npx playwright install chromium
 \`\`\`
-3. Keys (ask the user; put them in the environment or ~/voice-e2e-harness/.env):
+3. Configuration (ask the user for BOTH; put them in the environment or
+   ~/voice-e2e-harness/.env):
+   - VOICE_E2E_BROWSER_URL — WHERE the browser runs (security: always the
+     user's explicit choice, never implicit). One line, three shapes:
+       (blank)                                  → launch Chrome locally
+       http://localhost:9222                    → attach to your own long-lived
+                                                  Chrome / Docker container
+       wss://production-sfo.browserless.io?token=...   → Browserless cloud
+       (Browserbase session connectUrl)         → Browserbase cloud
+     Fly-hosted engine: deploy the included fly.toml and trigger runs there
+     instead of attaching a remote browser.
    - GOOGLE_API_KEY — REQUIRED. Powers the Stagehand brain (Gemini Flash).
      Get one at https://aistudio.google.com/apikey (free tier works).
    - OPENAI_API_KEY — recommended. Natural TTS mouth + conversation tester.

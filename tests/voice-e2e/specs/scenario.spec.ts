@@ -90,15 +90,35 @@ for (const file of files) {
     const t0 = Date.now()
     const cdpPort = 9300 + Math.floor(Math.random() * 200)
 
-    const browser = await chromium.launch({
-      ...(process.env.OSBORN_TEST_CONTAINER ? { headless: true } : { channel: 'chrome' as const, headless: false }),
-      args: [
-        '--use-fake-ui-for-media-stream',
-        '--use-fake-device-for-media-stream',
-        '--autoplay-policy=no-user-gesture-required',
-        `--remote-debugging-port=${cdpPort}`,
-      ],
-    })
+    // BRING-YOUR-OWN BROWSER: one env var selects where the browser runs —
+    // blank = launch locally; http(s)://host:port = attach to a long-lived
+    // Chrome / Docker container (resolves /json/version); ws(s)://... =
+    // Browserless/Browserbase connect URL. Same tests, any browser home.
+    const BROWSER_URL = (process.env.VOICE_E2E_BROWSER_URL || '').trim()
+    let browser
+    let stagehandCdpUrl: string
+    if (BROWSER_URL) {
+      let cdp = BROWSER_URL
+      if (/^https?:/.test(cdp)) {
+        const v: any = await fetch(`${cdp.replace(/\/$/, '')}/json/version`).then((r) => r.json())
+        cdp = v.webSocketDebuggerUrl
+      }
+      browser = await chromium.connectOverCDP(cdp)
+      stagehandCdpUrl = cdp
+      console.log(`[scenario:${scenario.name}] attached to remote browser`)
+    } else {
+      browser = await chromium.launch({
+        ...(process.env.OSBORN_TEST_CONTAINER ? { headless: true } : { channel: 'chrome' as const, headless: false }),
+        args: [
+          '--use-fake-ui-for-media-stream',
+          '--use-fake-device-for-media-stream',
+          '--autoplay-policy=no-user-gesture-required',
+          `--remote-debugging-port=${cdpPort}`,
+        ],
+      })
+      const v: any = await fetch(`http://127.0.0.1:${cdpPort}/json/version`).then((r) => r.json())
+      stagehandCdpUrl = v.webSocketDebuggerUrl
+    }
     const profilePath = scenario.profile ? join(__dirname, '..', 'profiles', scenario.profile, 'state.json') : null
     test.skip(!!profilePath && !existsSync(profilePath), `profile ${scenario.profile} not saved — run scripts/save-profile.ts`)
     const context = await browser.newContext({
@@ -120,11 +140,10 @@ for (const file of files) {
       }).toPass({ timeout: 60_000, intervals: [1_000] })
     }
 
-    const version: any = await fetch(`http://127.0.0.1:${cdpPort}/json/version`).then((r) => r.json())
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
     const stagehand = new Stagehand({
       env: 'LOCAL',
-      localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
+      localBrowserLaunchOptions: { cdpUrl: stagehandCdpUrl },
       model: 'google/gemini-2.5-flash',
       modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
       verbose: 0,
