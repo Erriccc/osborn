@@ -1,11 +1,18 @@
 name: meeting-join
-description: Ask the agent BY VOICE to join a meeting link (Zoom / Google Meet via Recall.ai). Requires OSBORN_MEETING_URL env with a live meeting link.
+description: Join a live meeting via the UI (Recall bot), verify the agent hears it, and use the agent as a private meeting copilot from the voice room.
 entry: fresh
 requiresEnv: OSBORN_MEETING_URL
+steps:
+  - pause: 3000
+  - act: "Click the Join a meeting button in the toolbar"
+  - pause: 2500
 conversation:
   goal: >
-    Ask the assistant to join the meeting at the link shown in EXTRA CONTEXT,
-    reading the URL naturally. Wait for it to confirm the bot is joining,
-    ask it to confirm the meeting status, then end. Max 3 things said by you.
+    You are in a live meeting (link in EXTRA CONTEXT) together with the
+    assistant's bot. First ask the assistant to join the meeting at that link
+    if it hasn't already. Then ask it to briefly tell you what is being said
+    in the meeting so far. Then ask one follow-up about what it heard. End
+    politely. Max 3 things said by you.
   maxTurns: 4
   minAudibleReplies: 2
+  turnGapMs: 4000

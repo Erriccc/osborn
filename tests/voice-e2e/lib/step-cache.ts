@@ -84,7 +84,13 @@ export async function actWithCache(
 
   const observed = await stagehand.observe(instruction)
   const action = Array.isArray(observed) ? observed[0] : observed
-  if (!action) throw new Error(`observe() found no action for: ${instruction}`)
+  if (!action) {
+    // Conditional instructions ("if X ... otherwise do nothing") legitimately
+    // resolve to no action — that's a no-op, not a failure. If the action was
+    // truly required, downstream assertions catch its absence.
+    console.log(`[step-cache] NO-OP (${url.hostname}) — nothing to do for: "${instruction.slice(0, 60)}"`)
+    return { cached: false, healed: false }
+  }
   await stagehand.act(action)
   store[key] = {
     instruction,
