@@ -23,3 +23,11 @@ primary_region = "ord"
 [[vm]]
   size = "shared-cpu-2x"
   memory = "2048mb"
+
+# Live browser stream (CDP screencast → MJPEG) served during a run.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 0

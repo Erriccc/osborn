@@ -21,7 +21,9 @@ COPY scenarios ./scenarios
 
 ARG HARNESS_SHA=dev
 ENV HARNESS_SHA=$HARNESS_SHA
+EXPOSE 8080
 ENV OSBORN_TEST_CONTAINER=1
+ENV LIVE_STREAM_PORT=8080
 # Keys at runtime: -e OPENAI_API_KEY -e GOOGLE_API_KEY -e DEEPGRAM_API_KEY
 # (on Fly these come from `fly secrets`). OSBORN_TEST_SPEC picks the spec.
 CMD ["sh", "scripts/fly-run.sh"]

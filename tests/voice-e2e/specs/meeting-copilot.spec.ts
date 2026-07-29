@@ -1,6 +1,7 @@
 import { test, expect, chromium } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { startElementCapture, saveCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive, waitForSpeechEvent, drainSpeechEvents } from '../lib/steps'
 import { attachDevtools } from '../lib/devtools'
@@ -43,6 +44,7 @@ test('MEETING COPILOT: agent joins a live meeting, tester summons it privately',
   // The join-meeting button opens a native prompt(); pre-answer it.
   page.on('dialog', (d) => d.accept(MEETING_URL).catch(() => {}))
   await installReactiveMic(page)
+  await installActionVisualizer(page)
 
   const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
   process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')

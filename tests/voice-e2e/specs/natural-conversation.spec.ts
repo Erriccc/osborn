@@ -1,6 +1,7 @@
 import { test, expect, chromium } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { startElementCapture, saveCapture } from '../lib/audio-capture'
 import { enterFreshRoom, drainSpeechEvents, waitForSpeechEvent, logResult } from '../lib/steps'
 import { nextUtterance, screenTail, type Turn } from '../lib/converse'
@@ -63,6 +64,7 @@ test('NATURAL CONVERSATION: LLM tester improvises a multi-turn voice chat', asyn
   const page = await context.newPage()
   const tVideoStart = Date.now()
   await installReactiveMic(page)
+  await installActionVisualizer(page)
 
   await fetch(`${AGENT_URL}/connect-room`, { method: 'POST' }).catch(() => {})
   await expect(async () => {

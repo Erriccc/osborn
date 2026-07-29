@@ -1,6 +1,7 @@
 import { test, expect, chromium } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { startElementCapture, saveCapture } from '../lib/audio-capture'
 import { ensureAgentInRoom, enterFreshRoom, drainSpeechEvents, waitForSpeechEvent, logResult } from '../lib/steps'
 import { envKey } from '../lib/env'
@@ -66,6 +67,7 @@ test('BARGE-IN: interrupt mid-story, TTS stops fast, agent pivots to new questio
   const page = await context.newPage()
   const tVideoStart = Date.now()
   await installReactiveMic(page)
+  await installActionVisualizer(page)
 
   await ensureAgentInRoom(AGENT_URL)
 

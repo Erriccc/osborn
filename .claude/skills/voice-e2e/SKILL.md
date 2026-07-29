@@ -42,7 +42,31 @@ Target selection: `OSBORN_AGENT_URL` (default `https://osborn-d4f24f46-v2.fly.de
 `OSBORN_APP_URL` (default `https://www.voice-native.com`). Guest mode via
 `/chat?...&agentUrl=<url>` needs no auth (known-open gap, deliberate for testing).
 
-## Verify the media — never take the tester's word for it
+## MANDATORY REVIEW STEP — not optional, part of every run
+
+Reviewing the media is a REQUIRED STEP of the process, not a suggestion. A
+run is NOT complete until the supervising agent has personally reviewed the
+artifacts and reported from them. Skipping it is skipping the proof.
+
+Every run's closing sequence MUST be:
+  1. Extract frames from the replay (`ffmpeg -vf fps=1/5`) and READ them.
+  2. Listen to / transcribe the audio capture when the claim involves speech.
+  3. Read devtools-diagnostics + flight log against the narrative.
+  4. State explicitly "reviewed frames/audio — they show X" — only then report.
+  5. Deliver the media to the user (video + key frames + LIVE URL if streaming).
+If frames contradict the assertions, the TEST is wrong — tighten and rerun.
+
+## Live stream — return the URL so the user watches in real time
+
+When `startLiveStream()` is active (session-tour, or any spec that starts it),
+it prints `[live-stream] watch live at <URL>`. On the Fly tester machine this
+is the machine's public `https://<app>.fly.dev/` MJPEG viewer. ALWAYS return
+this URL to the user at the start of a run so they can watch the browser,
+the click ripples, and the request/feedback loop happening live — and talk to
+the agent while watching. The recorded replay is the after-the-fact proof;
+the live URL is the during-the-run window.
+
+## Verify the media — how (the mechanics of the mandatory step above)
 
 A green assertion is a CLAIM, not proof of experience. Before reporting a
 result (especially "logged in", "resumed", "explored X"), the supervising

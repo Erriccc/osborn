@@ -1,6 +1,7 @@
 import { test, expect, chromium } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { saveCapture } from '../lib/audio-capture'
 import { enterFreshRoom, drainSpeechEvents, waitForSpeechEvent, logResult } from '../lib/steps'
 import { envKey } from '../lib/env'
@@ -57,6 +58,7 @@ test('CLOUD BROWSER: Browserless-hosted Chrome runs the voice conversation', asy
   const context = browser.contexts()[0] ?? (await browser.newContext())
   const page = await context.newPage()
   await installReactiveMic(page)
+  await installActionVisualizer(page)
 
   // Same brain, attached to the same remote browser.
   process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')

@@ -1,12 +1,14 @@
 import { test, expect, chromium } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { installReactiveMic } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { startElementCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { attachDevtools } from '../lib/devtools'
 import { flight } from '../lib/flightlog'
 import { envKey } from '../lib/env'
 import { actWithCache } from '../lib/step-cache'
+import { startLiveStream } from '../lib/live-stream'
 import { writeFileSync } from 'fs'
 
 /**
@@ -48,6 +50,9 @@ test('SESSION TOUR: skills explorer then meeting join, one continuous room sessi
   const dt = attachDevtools(page)
   page.on('dialog', (d) => d.accept(MEETING_URL).catch(() => {}))
   await installReactiveMic(page)
+  await installActionVisualizer(page)
+  const live = await startLiveStream(page).catch(() => null)
+  if (live) console.log(`[tour] LIVE: ${live.url}`)
 
   const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
   process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
@@ -112,6 +117,7 @@ test('SESSION TOUR: skills explorer then meeting join, one continuous room sessi
     await video.saveAs(vp).catch(() => {})
     await test.info().attach('tour-video', { path: vp, contentType: 'video/webm' }).catch(() => {})
   }
+  await live?.stop().catch(() => {})
   await browser.close()
   expect(marks['in-room']).toBeGreaterThan(0)
 })

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { installReactiveMic, waitForMicOpen, speakText } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { readFileSync, writeFileSync } from 'fs'
 
 /**
@@ -34,6 +35,7 @@ test('REACTIVE MIC: two on-demand utterances heard by a mic-consuming page', asy
   test.setTimeout(120_000)
 
   await installReactiveMic(page)
+  await installActionVisualizer(page)
 
   // Secure-context page (data: URLs have no mediaDevices).
   await page.route('http://localhost:4799/**', (route) =>

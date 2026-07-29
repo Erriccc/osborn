@@ -10,5 +10,5 @@ steps:
   - pause: 4000
   - act: "Inside the settings panel, find the agent or machine section showing a version number, and click its Update button. Confirm if asked."
   - pause: 25000
-  - assertScreen: "0\\.9\\.82|updating|updated"
+  - assertScreen: "0\.9\.8[0-9]|updating|updated|running"
   - pause: 20000

@@ -1,6 +1,7 @@
 import { test, expect, chromium } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { installReactiveMic, waitForMicOpen, speakText } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { saveCapture } from '../lib/audio-capture'
 import { enterFreshRoom, drainSpeechEvents, waitForSpeechEvent } from '../lib/steps'
 import { envKey } from '../lib/env'
@@ -78,6 +79,7 @@ test('STAGEHAND CONVERSATION: agent brain navigates, reactive mic converses', as
   const page = await context.newPage()
   const tVideoStart = Date.now()
   await installReactiveMic(page)
+  await installActionVisualizer(page)
 
   // Make sure the agent is in its room before the browser joins (join-race fix).
   await fetch(`${AGENT_URL}/connect-room`, { method: 'POST' }).catch(() => {})

@@ -1,6 +1,7 @@
 import { test, expect, chromium } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { saveCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive, drainSpeechEvents, waitForSpeechEvent, logResult } from '../lib/steps'
 import { startElementCapture } from '../lib/audio-capture'
@@ -131,6 +132,7 @@ for (const file of files) {
     const dt = attachDevtools(page) // the tester's DevTools sense — console + network, app-agnostic
     const tVideoStart = Date.now()
     await installReactiveMic(page)
+  await installActionVisualizer(page)
 
     if (scenario.room !== false) {
       await fetch(`${AGENT_URL}/connect-room`, { method: 'POST' }).catch(() => {})

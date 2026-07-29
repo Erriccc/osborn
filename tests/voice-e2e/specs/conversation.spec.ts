@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { startCapture, saveCapture } from '../lib/audio-capture'
 import { installReactiveMic, waitForMicOpen, speakText } from '../lib/reactive-mic'
+import { installActionVisualizer } from '../lib/action-visualizer'
 import { readFileSync } from 'fs'
 
 /**
@@ -46,6 +47,7 @@ test('CONVERSATION: two reactive turns — riddle, then recall of own answer', a
   const t0 = Date.now()
 
   await installReactiveMic(page)
+  await installActionVisualizer(page)
 
   // Pre-connect the agent to its room BEFORE the browser joins. The deployed
   // frontend loses the join race when the agent has idle-left (fixed in
