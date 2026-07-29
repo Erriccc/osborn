@@ -5,7 +5,7 @@ export async function GET() {
 
 ## SKILL IDENTITY
 Name: voice-e2e
-Version: 2
+Version: 3
 Install path: ~/.claude/skills/voice-e2e/SKILL.md
 Harness path: ~/voice-e2e-harness/
 Landing page: https://www.voice-native.com/test-skill
@@ -68,6 +68,10 @@ cd ~/voice-e2e-harness && npm install && npx playwright install chromium
    - DEEPGRAM_API_KEY — recommended. Lets the harness VERIFY speech by
      transcribing what it heard. Without it audio is recorded but unverified.
    Export before running: \`export OSBORN_ENV_FILE=~/voice-e2e-harness/.env\`
+
+## TWO MODES
+- SHORT one-shot: \`OSBORN_SCENARIO=<name> npx playwright test specs/scenario.spec.ts\` — fire a scenario, get a clip, done.
+- LONG-RUNNING: \`npx tsx scripts/session-engine.ts\` — ONE persistent browser that STAYS ALIVE, streams live, holds its room, and takes commands over HTTP (:8781: /status /act /say /hear /shot /tab /end) with a live viewer (:8080, or the Fly machine's public URL). Hook in, act, open tabs, get feedback — never abruptly closes. This is the director-controlled mode.
 
 ## USAGE — test any website
 Point the runner at a target and a scenario:

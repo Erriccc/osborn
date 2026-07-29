@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = join(__dirname, '..', '..', 'tests', 'voice-e2e')
 const out = join(__dirname, '..', 'public', 'voice-e2e-bundle.json')
 
-const HARNESS_VERSION = 2
+const HARNESS_VERSION = 3
 const INCLUDE_DIRS = ['lib', 'specs', 'scenarios', 'scripts']
 const INCLUDE_ROOT = ['package.json', 'playwright.config.ts', 'Dockerfile', 'fly.toml', '.gitignore', '.dockerignore']
 const TEXT_EXT = /\.(ts|js|json|yaml|yml|sh|md|toml|gitignore|dockerignore)$|^Dockerfile$/

@@ -82,10 +82,23 @@ export class RecallClient extends EventEmitter {
    */
   async joinMeeting(
     meetingUrl: string,
-    _webhookBaseUrl: string,
+    webhookBaseUrl: string,
     opts?: { botName?: string },
   ): Promise<string> {
     const botName = opts?.botName ?? 'Osborn'
+    // 0.9.84: LIVE transcript via realtime_endpoints. The v0.9.44 rewrite
+    // removed this and left only 30s polling of the batch download_url — but
+    // that URL is a POST-PROCESSING artifact (empty until the meeting ends),
+    // so mid-call there was nothing to fetch (confirmed live 2026-07-29:
+    // transcript stayed `processing` during the call, downloaded only after
+    // the bot left). Registering a realtime webhook makes Recall stream each
+    // transcript turn to /webhook/recall as it's spoken — the receiver
+    // (handleWebhook) already exists. Polling stays as the after-the-fact
+    // backstop. Only wire the webhook when we have a public URL to receive on.
+    const realtime = /^https:\/\//.test(webhookBaseUrl)
+      ? [{ type: 'webhook', url: `${webhookBaseUrl}/webhook/recall`, events: ['transcript.data', 'transcript.partial_data'] }]
+      : []
+    if (!realtime.length) console.log('⚠️ Recall realtime webhook skipped (no public https URL) — polling only')
     // ARCHITECTURE (post-2026-05-22 polling redesign):
     //   The bot joins by name only — visible in the meeting participant list as
     //   "Osborn" but with no audio output and no avatar. We do NOT configure any
@@ -116,6 +129,7 @@ export class RecallClient extends EventEmitter {
               },
             },
           },
+          ...(realtime.length ? { realtime_endpoints: realtime } : {}),
         },
       }),
     })
