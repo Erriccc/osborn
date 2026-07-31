@@ -352,12 +352,23 @@ async function main() {
   const WEBHOOK_URL = process.env.OSBORN_WEBHOOK_URL || null
   const WEBHOOK_TOKEN = process.env.OSBORN_WEBHOOK_TOKEN || null
   let webhookFailures = 0
+  // LIVE EVENT SUBSCRIPTION — the in-session twin of webhooks: GET /events is
+  // an SSE stream on the same control connection. Subscribers get every event
+  // the moment it happens (plus the last 25 on connect, so a reconnect misses
+  // nothing recent). A sleeping engine says goodbye first (engine_stopping),
+  // so subscribers KNOW the stream died on purpose. SSE listeners do NOT hold
+  // the engine awake (commands and stream viewers do).
+  const eventClients = new Set<import('http').ServerResponse>()
+  const eventRing: Array<Record<string, unknown>> = []
   const notify = (event: string, payload: Record<string, unknown> = {}) => {
+    const evt = { event, t: Date.now(), run: RUN_STAMP, ...payload }
+    eventRing.push(evt); if (eventRing.length > 25) eventRing.shift()
+    for (const c of eventClients) { try { c.write(`data: ${JSON.stringify(evt)}\n\n`) } catch { eventClients.delete(c) } }
     if (!WEBHOOK_URL) return
     fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(WEBHOOK_TOKEN ? { 'x-engine-token': WEBHOOK_TOKEN } : {}) },
-      body: JSON.stringify({ event, t: Date.now(), run: RUN_STAMP, ...payload }),
+      body: JSON.stringify(evt),
       signal: AbortSignal.timeout(5000),
     }).then(() => { webhookFailures = 0 })
       .catch(() => { if (++webhookFailures === 1) mark(`webhook delivery failing → ${WEBHOOK_URL}`) })
@@ -467,6 +478,15 @@ async function main() {
       if (path === '/webhook-sink') {
         if (req.method === 'POST') { webhookSink.push(body); if (webhookSink.length > 20) webhookSink.shift(); return json(res, { ok: true }) }
         return json(res, { received: webhookSink })
+      }
+      if (req.method === 'GET' && path === '/events') {
+        // Subscribe: SSE feed of everything the engine does, live.
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' })
+        res.write(`: engine events — run ${RUN_STAMP}\n\n`)
+        for (const e of eventRing) res.write(`data: ${JSON.stringify(e)}\n\n`)
+        eventClients.add(res)
+        req.on('close', () => eventClients.delete(res))
+        return
       }
       if (path === '/act') {
         const owned = guardOwnership(body)
