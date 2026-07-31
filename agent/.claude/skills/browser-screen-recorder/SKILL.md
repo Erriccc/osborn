@@ -13,6 +13,13 @@ capture, DevTools diagnostics, and metrics. It can speak into the page's mic
 (synthesized on the fly), hear and transcribe what it plays back, click via a
 natural-language brain, and improvise conversations. Works on any website.
 
+USE IT BROADLY — not just for tests: MANDATORY for debugging anything
+web-reachable (real browser + DevTools on camera + /logs, never debug a
+frontend blind) and for verifying deployed web changes (journey + clip, or it
+is a claim, not a verification). Also: reproducing user issues (mobile view),
+the meeting-canvas cast source, site research, voice testing. Every use
+returns media — review it and deliver it to the user, no silent runs.
+
 ## UPDATE CHECK (notify-first, run before major runs)
 This packaged copy ships with every machine and may lag the served version.
 Check, then NOTIFY the user before updating — never silently force:

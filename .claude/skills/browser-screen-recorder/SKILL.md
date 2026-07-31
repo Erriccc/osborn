@@ -6,6 +6,20 @@ an intent, and it drives the app — speaking to it, hearing its replies,
 interrupting it, checking UI flows — and records proof (per-action screenshot +
 mp4, audio, DevTools diagnostics, latency metrics).
 
+**BROAD TRIGGERS (2026-08-01 — reach for this whenever the web is involved):**
+1. **Debugging anything web-reachable — MANDATORY step**: reproduce in the real
+   browser, DevTools on camera (`OSBORN_DEVTOOLS=1`), read `/logs` alongside
+   the video. Never debug a frontend blind from code alone.
+2. **Verification — MANDATORY before claiming a deployed web change works**:
+   run a journey exercising it, attach the clip. No recorded proof = a claim.
+3. Reproducing user-reported issues (incl. mobile: `viewport:"mobile"`).
+4. Meetings: the engine is the approved cast source for the meeting canvas
+   (public MJPEG → `stream` mode, no tunnels) and can drive the join UI.
+5. Research/exploration of any site — browse with proof, accumulate journeys.
+6. Voice testing (the original use).
+**MEDIA EVERY TIME:** every use ends with clip + screenshot + devtools state
+reviewed by the director AND delivered to the user. No silent runs.
+
 (Formerly "voice-e2e". Renamed 2026-07-31; the harness SOURCE dir is still
 `tests/voice-e2e/`. Served source of truth: https://www.voice-native.com/api/browser-screen-recorder)
 

@@ -5,7 +5,7 @@ export async function GET() {
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 5
+Version: 6
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Landing page: https://www.voice-native.com/browser-screen-recorder
@@ -23,6 +23,49 @@ and no backend access is assumed.
 
 Input: a target URL + what you want done. Output: it doing that, plus the media
 and metadata that prove it (per-action screenshot + mp4, audio capture, metrics).
+
+## WHEN TO USE (broad — reach for this whenever the web is involved)
+This is not just a test tool. It is the standard way for an agent to SEE and
+PROVE the web. Trigger it for:
+1. DEBUGGING anything web-reachable — MANDATORY step: reproduce the issue in
+   the real browser, DevTools on camera (OSBORN_DEVTOOLS=1), read /logs
+   (console + network + websockets) alongside the video. Never debug a
+   frontend blind from code alone.
+2. VERIFICATION — MANDATORY before claiming a deployed web change works: run a
+   journey that exercises the change and attach the clip. "It works" without
+   recorded proof is a claim, not a verification.
+3. Reproducing user-reported issues — including mobile (\`/tab\` with
+   \`viewport:"mobile"\` = real 390×844).
+4. MEETINGS — the engine is the approved cast source for the meeting canvas
+   (\`stream\` mode: its public MJPEG feeds the bot's camera; NO tunnels), and
+   it can drive the meeting-join UI itself.
+5. Research/exploration of ANY website — browse with proof, accumulate
+   journeys and site knowledge as you go.
+6. Voice testing (the original use) — mouth/ears/brain full loop.
+
+MEDIA EVERY TIME: every engine task returns a clip + screenshot + devtools
+state + (for /say) heard audio. Review it, then DELIVER the media to the user
+on every use — no silent runs, ever.
+
+## What's new in v6
+- **Journey learning layer** — \`POST /journey {op:start|end|list}\`: frame
+  every test as a named journey; \`end\` cleans up (closes extra tabs, resets
+  viewport) and saves the proven step sequence to
+  \`knowledge/<site>/journeys/<name>.yaml\`. Each deployment LEARNS its sites'
+  real paths over time; consult \`journey list\` before acting.
+- **Full-window capture** — headful Chrome on a virtual display (Xvfb +
+  openbox + x11grab): real tab strip, URL bar, and cursor in the stream and
+  clips, at true real-time speed.
+- **DevTools on camera** (\`OSBORN_DEVTOOLS=1\`) + \`POST /eval\` (drive the
+  page console programmatically; output lands in /logs).
+- **On-demand lifecycle** — visiting the live URL wakes a stopped Fly machine
+  (~40s to pixels, "waking up" screen); the engine self-stops after idle
+  (OSBORN_IDLE_STOP_MS) and restores its tab layout on the next wake.
+- **Multi-agent tab registry** — tabs can be claimed per director
+  (\`owner\`); acts on someone else's tab are refused (409).
+- **Per-task debug data** — every task response carries console/network
+  state; \`GET /logs\` serves full buffers; \`GET /clip?n\` + \`GET /artifact?n\`
+  download the proof media remotely.
 
 ## What's new in v5
 - **Renamed voice-e2e → browser-screen-recorder.** Same harness, clearer name:
@@ -97,7 +140,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 
 ## TWO MODES
 - SHORT one-shot: \`OSBORN_SCENARIO=<name> npx playwright test specs/scenario.spec.ts\` — fire a scenario, get a clip, done.
-- LONG-RUNNING: \`npx tsx scripts/session-engine.ts\` — ONE persistent browser that STAYS ALIVE, streams live, holds its room, and takes commands over HTTP (:8781: /status /act /say /hear /shot /tab /end) with a live viewer (:8080, or the Fly machine's public URL). Hook in, act, open tabs, get feedback — never abruptly closes. This is the director-controlled mode.
+- LONG-RUNNING: \`npx tsx scripts/session-engine.ts\` — ONE persistent browser that STAYS ALIVE, streams live, holds its room, and takes commands over HTTP (:8781: /status /tasks /act /say /hear /shot /eval /tab /journey /clip /artifact /logs /brain /recover /end; token-protect with OSBORN_ENGINE_TOKEN) with a live viewer (:8080, or the Fly machine's public URL). Hook in, act, open tabs, get feedback — never abruptly closes. This is the director-controlled mode.
 
 ## USAGE — record any website
 Point the runner at a target and a scenario:
@@ -116,7 +159,10 @@ and metrics appended to results/runs.jsonl.
 ## DOCTRINE (binding for the supervising agent)
 - VERIFY THE MEDIA: after each run, extract frames (ffmpeg -vf fps=1/5) and
   READ them; transcribe audio claims; never report a green assertion without
-  checking the replay agrees.
+  checking the replay agrees. Then deliver the media to the USER — every use.
+- FRAME EVERY TEST AS A JOURNEY: \`journey list\` first (reuse known paths),
+  \`journey start\` before acting, \`journey end\` after (cleanup + save). Tasks
+  without framing are disconnected robot actions that teach the site nothing.
 - Site knowledge lives in knowledge/<hostname>/ — cached UI actions
   (self-healing), rules.md (user-taught, binding), site.md (findings). Read
   rules before operating on a site; append what you learn.
