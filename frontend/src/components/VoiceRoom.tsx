@@ -773,8 +773,8 @@ function SkillsPanel({
               key={folder}
               className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-medium text-gray-200 truncate">{skill.name}</span>
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-sm font-medium text-gray-200 break-words leading-snug">{skill.name}</span>
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={() => onViewSkill?.(folder)}
@@ -847,7 +847,7 @@ function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean }) {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-2 w-[min(20rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
+          <div className="absolute right-0 top-full mt-2 w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">✨ Skills</span>
               <span className="text-[10px] text-gray-500">{count} installed</span>
