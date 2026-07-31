@@ -1646,6 +1646,12 @@ async function main() {
   // Empty string = anonymous / unauthenticated; uploads fall back to a
   // session-only path (no user prefix).
   let currentUserId: string = ''
+  // Per-user named agents (DB-backed) — sent by the frontend via set_agents
+  // after agent_ready. Kept here so agent-side LLM recreations (session
+  // switch/resume) reuse them without waiting for a frontend resend. Merged
+  // OVER the built-in NAMED_AGENTS (same-name user rows shadow built-ins).
+  let userNamedAgents: Record<string, { description: string; prompt: string; tools?: string[]; model?: string }> | null = null
+
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
   let activeMeetingPoller: MeetingTranscriptPoller | null = null  // Transcript poller bound to that bot
 
@@ -2310,6 +2316,8 @@ async function main() {
       voiceMode: 'direct',
       skipTTSQueue: true,
       onCompactionEvent: buildOnCompactionEvent(),
+      // Per-user named agents survive LLM recreations (session switch/resume)
+      agents: userNamedAgents ? { ...NAMED_AGENTS, ...userNamedAgents } : undefined,
     })
     currentLLM = directLLM
 
@@ -4952,12 +4960,48 @@ async function main() {
         })
       }
       else if (data.type === 'get_agents') {
-        // Named sub-agents for the chat agents manager — same NAMED_AGENTS
-        // source as GET /agents (prompts omitted).
+        // Named sub-agents for the chat agents manager — built-ins merged with
+        // any per-user DB-backed definitions (prompts omitted from the list).
+        const effective = { ...NAMED_AGENTS, ...(userNamedAgents || {}) }
         await sendToFrontend({
           type: 'agents_status',
-          agents: Object.entries(NAMED_AGENTS).map(([name, a]: [string, any]) => ({
+          agents: Object.entries(effective).map(([name, a]: [string, any]) => ({
             name, description: a.description, model: a.model, tools: a.tools,
+            custom: !!userNamedAgents && name in userNamedAgents,
+          })),
+        })
+      }
+      else if (data.type === 'set_agents') {
+        // Per-user named agents from the DB (frontend fetches its user_agents
+        // rows and sends them here after agent_ready, and again after edits).
+        // Validated + merged over built-ins, applied via setAgents(). SDK
+        // constraint: takes effect at the next query cold start — a live
+        // subprocess keeps the agents it started with.
+        const MODELS = new Set(['sonnet', 'opus', 'haiku', 'fable', 'inherit'])
+        const rows = Array.isArray(data.agents) ? data.agents : []
+        const validated: NonNullable<typeof userNamedAgents> = {}
+        for (const r of rows) {
+          const name = String(r?.name || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+          const description = String(r?.description || '').trim()
+          const prompt = String(r?.prompt || '').trim()
+          if (!name || !description || !prompt) continue
+          if (prompt.length > 6000) { console.warn(`🤖 set_agents: '${name}' prompt >6KB — skipped`); continue }
+          validated[name] = {
+            description,
+            prompt,
+            ...(Array.isArray(r.tools) && r.tools.length ? { tools: r.tools.map(String) } : {}),
+            ...(r.model && (MODELS.has(r.model) || /^claude-/.test(r.model)) ? { model: String(r.model) } : {}),
+          }
+        }
+        userNamedAgents = Object.keys(validated).length ? validated : null
+        const merged = { ...NAMED_AGENTS, ...(userNamedAgents || {}) }
+        ;(currentLLM as any)?.setAgents?.(userNamedAgents ? merged : undefined)
+        console.log(`🤖 set_agents: ${Object.keys(validated).length} user agent(s) → effective set [${Object.keys(merged).join(', ')}]`)
+        await sendToFrontend({
+          type: 'agents_status',
+          agents: Object.entries(merged).map(([name, a]: [string, any]) => ({
+            name, description: a.description, model: a.model, tools: a.tools,
+            custom: !!userNamedAgents && name in userNamedAgents,
           })),
         })
       }

@@ -46,6 +46,11 @@ export interface ClaudeLLMOptions {
     | { type: 'compaction_progress'; stage: string; detail?: string }
     | { type: 'compaction_complete'; skillsWritten?: number; skillNames?: string[]; trigger?: string }
   ) => void
+  // Per-user named agents (DB-backed, sent by the frontend via set_agents).
+  // When set, used INSTEAD of the built-in NAMED_AGENTS at query creation.
+  // SDK constraint: agents are fixed once query() starts — changes apply on
+  // the next session (cold start / resume / switch), not mid-session.
+  agents?: Record<string, { description: string; prompt: string; tools?: string[]; model?: string }>
 }
 
 /**
@@ -512,6 +517,18 @@ export class ClaudeLLM extends llm.LLM {
 
   get sessionId(): string | null {
     return this.#sessionId
+  }
+
+  /**
+   * Set per-user named agents (DB-backed, from the frontend's set_agents).
+   * Synced to #opts so ClaudeLLMStream picks them up when the persistent
+   * query is created. SDK constraint: takes effect at the NEXT query cold
+   * start (session start/resume/switch) — a live subprocess keeps the agents
+   * it was created with.
+   */
+  setAgents(agents: ClaudeLLMOptions['agents']): void {
+    this.#opts.agents = agents
+    console.log(`🤖 Named agents ${agents ? `set (${Object.keys(agents).join(', ')})` : 'reset to built-ins'} — applies at next query cold start`)
   }
 
   /**
@@ -1447,9 +1464,9 @@ class ClaudeLLMStream extends llm.LLMStream {
           }]
         },
         // Named sub-agents — the orchestrator delegates to these specialists.
-        // Definitions live at module level (NAMED_AGENTS) so the HTTP API and
-        // frontend agents manager can list them. See top of file.
-        agents: NAMED_AGENTS,
+        // Built-in definitions live at module level (NAMED_AGENTS); per-user
+        // DB-backed definitions (opts.agents, via set_agents) take precedence.
+        agents: this.#opts.agents ?? NAMED_AGENTS,
       }
 
       // Run Claude Agent SDK query() and stream results

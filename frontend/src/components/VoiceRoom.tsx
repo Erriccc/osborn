@@ -15,6 +15,7 @@ import LiveClock from './LiveClock'
 import { LogsDrawer } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
+import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { formatTime, groupSessionsByDate } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 
@@ -669,10 +670,26 @@ export interface NamedAgent {
   description: string
   model: string
   tools: string[]
+  custom?: boolean  // true = user-defined (DB row), shadows/extends built-ins
 }
 
-function AgentsPopover({ agents, disabled }: { agents?: NamedAgent[]; disabled?: boolean }) {
+export interface UserAgentDraft {
+  name: string
+  description: string
+  prompt: string
+  model: string
+  tools: string[]
+}
+
+function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent }: {
+  agents?: NamedAgent[]
+  disabled?: boolean
+  onSaveAgent?: (a: UserAgentDraft) => void
+  onDeleteAgent?: (name: string) => void
+}) {
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<UserAgentDraft | null>(null)
+  const [deleteArm, setDeleteArm] = useState<string | null>(null)
   const count = agents?.length ?? 0
   return (
     <div className="relative">
@@ -707,18 +724,72 @@ function AgentsPopover({ agents, disabled }: { agents?: NamedAgent[]; disabled?:
           <div className="absolute right-0 top-full mt-2 w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">🤖 Named Agents</span>
-              <span className="text-[10px] text-gray-500">{count} configured</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-gray-500">{count} configured</span>
+                {onSaveAgent && (
+                  <button
+                    onClick={() => setEditing(editing ? null : { name: '', description: '', prompt: '', model: 'inherit', tools: [] })}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+                  >{editing ? 'Cancel' : '+ Add'}</button>
+                )}
+              </div>
             </div>
             <div className="max-h-96 overflow-y-auto p-3 space-y-1.5">
+              {editing && (
+                <div className="mb-2 p-2 rounded-lg bg-gray-800/50 border border-amber-500/20 space-y-1.5">
+                  <input type="text" value={editing.name}
+                    onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                    placeholder="agent-name (kebab-case)"
+                    className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500" />
+                  <input type="text" value={editing.description}
+                    onChange={(e) => setEditing({ ...editing, description: e.target.value })}
+                    placeholder="When should the orchestrator use this agent?"
+                    className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500" />
+                  <textarea value={editing.prompt}
+                    onChange={(e) => setEditing({ ...editing, prompt: e.target.value })}
+                    placeholder="System prompt — the agent's role, workflow, and rules" rows={4}
+                    className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500 resize-none font-mono" />
+                  <div className="flex gap-1.5">
+                    <select value={editing.model}
+                      onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+                      className="px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 focus:outline-none focus:border-amber-500">
+                      {['inherit', 'sonnet', 'opus', 'haiku', 'fable'].map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <input type="text" value={editing.tools.join(', ')}
+                      onChange={(e) => setEditing({ ...editing, tools: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+                      placeholder="Tools (comma-sep; empty = inherit all)"
+                      className="flex-1 px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500" />
+                  </div>
+                  <button
+                    onClick={() => { if (editing.name.trim() && editing.description.trim() && editing.prompt.trim()) { onSaveAgent?.(editing); setEditing(null) } }}
+                    disabled={!editing.name.trim() || !editing.description.trim() || !editing.prompt.trim()}
+                    className="w-full py-1.5 text-xs bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >Save agent (applies next session)</button>
+                </div>
+              )}
               {agents && agents.length > 0 ? agents.map((a) => (
                 <div key={a.name} className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30">
                   <div className="flex items-start justify-between gap-2">
-                    <span className="text-sm font-medium text-gray-200 capitalize">{a.name}</span>
-                    <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20 uppercase tracking-wide">{a.model}</span>
+                    <span className="text-sm font-medium text-gray-200 capitalize flex items-center gap-1.5">
+                      {a.name}
+                      {a.custom && <span className="px-1 py-px text-[8px] rounded bg-sky-500/15 text-sky-300 border border-sky-500/20 uppercase">custom</span>}
+                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20 uppercase tracking-wide">{a.model}</span>
+                      {a.custom && onDeleteAgent && (
+                        <button
+                          onClick={() => {
+                            if (deleteArm === a.name) { onDeleteAgent(a.name); setDeleteArm(null) }
+                            else { setDeleteArm(a.name); setTimeout(() => setDeleteArm(null), 4000) }
+                          }}
+                          className={`text-[10px] ${deleteArm === a.name ? 'text-red-400 font-semibold' : 'text-gray-500 hover:text-red-400'}`}
+                        >{deleteArm === a.name ? 'Confirm?' : 'Remove'}</button>
+                      )}
+                    </div>
                   </div>
                   <p className="text-[11px] text-gray-500 mt-0.5 leading-snug">{a.description}</p>
                   <div className="mt-1.5 flex flex-wrap gap-1">
-                    {a.tools.map((t) => (
+                    {a.tools?.map((t) => (
                       <span key={t} className="px-1.5 py-0.5 text-[9px] rounded bg-gray-900/80 text-gray-400 border border-gray-700/40">{t}</span>
                     ))}
                   </div>
@@ -2813,6 +2884,60 @@ function VoiceRoomInner({
   }, [sendToAgent, meetingBotId])
 
   // Add a new skill
+  // ── Per-user named agents (DB-backed) ──
+  // Fetch the signed-in user's user_agents rows once; whenever they change (or
+  // the agent [re]connects), push them via set_agents. The agent merges over
+  // built-ins and replies agents_status (drives the popover). Guests / no
+  // rows → nothing sent, built-ins stand. SDK constraint: edits apply at the
+  // NEXT session cold start.
+  const [userAgentRows, setUserAgentRows] = useState<UserAgentDraft[] | null>(null)
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return
+    const sb = createSupabaseBrowser()
+    sb.auth.getUser().then(({ data }) => {
+      if (!data?.user) return
+      sb.from('user_agents').select('name,description,prompt,model,tools').eq('enabled', true)
+        .then(({ data: rows }) => { if (Array.isArray(rows)) setUserAgentRows(rows as UserAgentDraft[]) })
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  useEffect(() => {
+    if (!agentConnected || userAgentRows === null) return
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents: userAgentRows })), { reliable: true })
+  }, [agentConnected, userAgentRows, sendToAgent])
+
+  const handleSaveAgent = useCallback((a: UserAgentDraft) => {
+    if (!isSupabaseConfigured()) return
+    const sb = createSupabaseBrowser()
+    sb.auth.getUser().then(({ data }) => {
+      if (!data?.user) return
+      const name = a.name.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+      sb.from('user_agents')
+        .upsert({ user_id: data.user.id, name, description: a.description.trim(), prompt: a.prompt.trim(), model: a.model, tools: a.tools, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })
+        .then(({ error }) => {
+          if (error) { console.error('user_agents upsert failed:', error.message); return }
+          setUserAgentRows((prev) => {
+            const rest = (prev || []).filter((r) => r.name !== name)
+            return [...rest, { ...a, name }]
+          })
+        })
+    })
+  }, [])
+
+  const handleDeleteAgent = useCallback((name: string) => {
+    if (!isSupabaseConfigured()) return
+    const sb = createSupabaseBrowser()
+    sb.auth.getUser().then(({ data }) => {
+      if (!data?.user) return
+      sb.from('user_agents').delete().eq('user_id', data.user.id).eq('name', name)
+        .then(({ error }) => {
+          if (error) { console.error('user_agents delete failed:', error.message); return }
+          setUserAgentRows((prev) => (prev || []).filter((r) => r.name !== name))
+        })
+    })
+  }, [])
+
   const handleAddSkill = useCallback((name: string, content: string) => {
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({
@@ -3302,8 +3427,9 @@ function VoiceRoomInner({
             {/* Live clock — always visible so screenshots carry the time */}
             <LiveClock />
 
-            {/* Named agents — first-class manager (researcher/reasoner/writer) */}
-            <AgentsPopover agents={namedAgents} disabled={!agentConnected} />
+            {/* Named agents — first-class manager (built-ins + DB-backed custom) */}
+            <AgentsPopover agents={namedAgents} disabled={!agentConnected}
+              onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} />
 
             {/* Skills — first-class button with count badge (all viewports) */}
             <SkillsPopover
