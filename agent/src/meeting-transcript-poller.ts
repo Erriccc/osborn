@@ -39,7 +39,19 @@ export interface MeetingTranscriptPollerOptions {
   intervalMs?: number
   /** Optional debug logger. */
   onError?: (err: Error) => void
+  /**
+   * Called ONCE when Recall reports the meeting is over (bot status reaches a
+   * terminal code: call_ended / done / fatal). Rides the same 30s tick — no
+   * extra webhook subscription needed. The meeting-copilot lifecycle uses this
+   * as the authoritative "meeting ended" signal now that the bot is DECOUPLED
+   * from the voice session (a voice disconnect no longer drops the bot, so
+   * something must still end it — this is that something).
+   */
+  onMeetingEnd?: (statusCode: string) => void
 }
+
+/** Recall bot status codes that mean the meeting/bot is definitively over. */
+const TERMINAL_STATUS_CODES = new Set(['call_ended', 'done', 'fatal'])
 
 export class MeetingTranscriptPoller {
   #opts: MeetingTranscriptPollerOptions
@@ -75,25 +87,41 @@ export class MeetingTranscriptPoller {
     if (this.#inFlight || this.#stopped) return
     this.#inFlight = true
     try {
+      // Meeting-end detection first: if the bot has reached a terminal status,
+      // fire onMeetingEnd (once — stop() sets #stopped so later ticks no-op)
+      // AFTER one final transcript pull below, so the last turns aren't lost.
+      let endedCode: string | null = null
+      if (this.#opts.onMeetingEnd) {
+        try {
+          const code = await this.#opts.recall.getBotStatus(this.#opts.botId)
+          if (TERMINAL_STATUS_CODES.has(code)) endedCode = code
+        } catch { /* status probe is best-effort; transcript pull continues */ }
+      }
       const all = await this.#opts.recall.getTranscript(this.#opts.botId)
       const fresh = all.filter(t => {
         const firstWordTs = t.words?.[0]?.start_timestamp?.relative
         return typeof firstWordTs === 'number' && firstWordTs > this.#cursor
       })
-      if (fresh.length === 0) return
+      if (fresh.length > 0) {
+        // Advance cursor to highest seen first-word ts (across all returned turns,
+        // not just the fresh ones — guards against Recall returning a paged subset).
+        for (const t of all) {
+          const ts = t.words?.[0]?.start_timestamp?.relative
+          if (typeof ts === 'number' && ts > this.#cursor) this.#cursor = ts
+        }
 
-      // Advance cursor to highest seen first-word ts (across all returned turns,
-      // not just the fresh ones — guards against Recall returning a paged subset).
-      for (const t of all) {
-        const ts = t.words?.[0]?.start_timestamp?.relative
-        if (typeof ts === 'number' && ts > this.#cursor) this.#cursor = ts
+        const formatted = formatTurns(fresh)
+        if (formatted) {
+          console.log(`📓 MeetingTranscriptPoller: ${fresh.length} new turn(s), cursor=${this.#cursor.toFixed(1)}s, chars=${formatted.length}`)
+          await this.#opts.onTurns({ botId: this.#opts.botId, turns: fresh, formatted })
+        }
       }
-
-      const formatted = formatTurns(fresh)
-      if (!formatted) return // pure-whitespace fresh batch — skip
-
-      console.log(`📓 MeetingTranscriptPoller: ${fresh.length} new turn(s), cursor=${this.#cursor.toFixed(1)}s, chars=${formatted.length}`)
-      await this.#opts.onTurns({ botId: this.#opts.botId, turns: fresh, formatted })
+      // Fire end-of-meeting AFTER the final transcript pull so the last turns land.
+      if (endedCode) {
+        console.log(`📓 MeetingTranscriptPoller: bot status '${endedCode}' — meeting ended`)
+        this.stop()
+        this.#opts.onMeetingEnd?.(endedCode)
+      }
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err))
       this.#opts.onError?.(e)

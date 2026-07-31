@@ -1657,6 +1657,56 @@ async function main() {
     meetingTranscriptBuffer.length = 0
   }
 
+  // ── Meeting lifecycle (centralized teardown, 0.9.95) ──
+  // The bot's lifecycle FOLLOWS the voice session (deliberate coupling — a
+  // decoupled always-on bot means untracked background agents; revisit only
+  // with a status/tracking UI). endMeeting() is the single teardown path,
+  // fired by: (a) explicit leave_meeting, (b) user disconnect (auto-leave),
+  // (c) Recall reporting a terminal bot status (call_ended/done/fatal —
+  // detected on the poller's 30s tick; fixes stale bot state when the meeting
+  // ends naturally), or (d) the max-duration backstop below.
+  const MEETING_MAX_MS = Math.max(10, Number(process.env.OSBORN_MEETING_MAX_MIN) || 180) * 60 * 1000  // default 3h
+  let meetingMaxTimer: ReturnType<typeof setTimeout> | null = null
+  const endMeeting = async (reason: string, opts: { leaveBot?: boolean } = {}): Promise<void> => {
+    const botId = activeMeetingBotId
+    if (!botId) return
+    console.log(`🏁 Meeting ended (${reason}) — bot ${botId}`)
+    // Stop inputs FIRST so no more chunks land mid-teardown.
+    stopMeetingFlush()
+    if (activeMeetingPoller) { activeMeetingPoller.stop(); activeMeetingPoller = null }
+    if (meetingMaxTimer) { clearTimeout(meetingMaxTimer); meetingMaxTimer = null }
+    activeMeetingBotId = null
+    // leaveBot=false when Recall itself reported the meeting over (bot already gone).
+    if (opts.leaveBot !== false) {
+      const recall = getRecallClient()
+      if (recall) await recall.leaveMeeting(botId).catch((e: any) => console.warn(`⚠️ leaveMeeting failed: ${e?.message}`))
+    }
+    sendToFrontend({ type: 'meeting_left', botId, reason }).catch(() => {})
+    // Orphan cleanup: if no user is connected, the LLM subprocess was kept alive
+    // solely to serve the meeting — release it now and let idle-exit stop the
+    // machine (same billing discipline as 0.9.73, deferred until meeting end).
+    const userPresent = activeRoom && activeRoom.remoteParticipants.size > 0
+    if (!userPresent && currentLLM) {
+      console.log('🏁 Meeting over with no user connected — releasing LLM + arming idle-exit')
+      killCurrentLLM(`meeting_ended(${reason})_no_user`)
+      currentLLM = null
+      clearFastBrainSession()
+      clearPipelineFastBrainSession()
+      armIdleExitTimer(`meeting ended (${reason}), no user`)
+    }
+  }
+  const armMeetingMaxTimer = (botId: string) => {
+    if (meetingMaxTimer) clearTimeout(meetingMaxTimer)
+    console.log(`⏲️ Meeting max-duration backstop armed: ${MEETING_MAX_MS / 60000} min (override OSBORN_MEETING_MAX_MIN)`)
+    meetingMaxTimer = setTimeout(() => {
+      meetingMaxTimer = null
+      if (activeMeetingBotId === botId) {
+        console.log('⏲️ Meeting max duration reached — auto-leaving (backstop, not Recall-reported end)')
+        void endMeeting('max_duration_backstop')
+      }
+    }, MEETING_MAX_MS)
+  }
+
   // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
   let currentResumeSessionId: string | undefined
@@ -4322,20 +4372,13 @@ async function main() {
     clearFastBrainSession()
     clearPipelineFastBrainSession()
 
-    // Auto-leave any active meeting bot when user disconnects from the room
-    stopMeetingFlush()
-    if (activeMeetingPoller) {
-      activeMeetingPoller.stop()
-      activeMeetingPoller = null
-    }
-    if (activeMeetingBotId) {
-      const recallDisconnect = getRecallClient()
-      if (recallDisconnect) {
-        console.log(`🤝 Auto-leaving meeting (bot ${activeMeetingBotId}) — user disconnected from room`)
-        recallDisconnect.leaveMeeting(activeMeetingBotId).catch(() => {})
-        activeMeetingBotId = null
-      }
-    }
+    // Auto-leave any active meeting bot when user disconnects from the room.
+    // DELIBERATE COUPLING: the bot's lifecycle follows the voice session — a
+    // decoupled always-on meeting bot means untracked background agents (no
+    // status surface for them yet). Revisit only WITH a tracking UI.
+    // endMeeting() centralizes the teardown (flush, poller, max-timer, Recall
+    // leave, frontend notify).
+    void endMeeting('user_disconnected')
 
     // 0.9.83: a real session just ended → use the FAST leave (~20s), not the
     // 3-min alone grace. Runs on the agent, so it fires even on an abrupt tab
@@ -4998,11 +5041,17 @@ async function main() {
                     console.warn(`⚠️ Failed to forward meeting transcript to LLM: ${(err as Error).message}`)
                   }
                 },
+                // Authoritative meeting-over signal: Recall's terminal bot status
+                // (call_ended/done/fatal), checked on the same 30s tick. The bot
+                // is already gone at that point, so don't re-issue leave.
+                onMeetingEnd: (code) => { void endMeeting(`recall_status:${code}`, { leaveBot: false }) },
               })
               activeMeetingPoller.start()
               // LIVE path: buffer webhook finals + flush to the LLM every 20s.
               // (The poller above only lands data after the meeting ENDS.)
               startMeetingFlush(botId)
+              // Billing backstop: a forgotten meeting can't hold the machine forever.
+              armMeetingMaxTimer(botId)
             } catch (err: any) {
               console.error('❌ Recall.ai join error:', err)
               await sendToFrontend({ type: 'meeting_error', message: err.message })
@@ -5011,24 +5060,13 @@ async function main() {
         }
       }
       else if (data.type === 'leave_meeting') {
-        const botId = data.botId as string
-        const recallLeave = getRecallClient()
-        if (recallLeave && botId) {
-          try {
-            // Stop the transcript poller + live flush FIRST so no more chunks
-            // get forwarded to the LLM during the leave.
-            stopMeetingFlush()
-            if (activeMeetingPoller) {
-              activeMeetingPoller.stop()
-              activeMeetingPoller = null
-            }
-            await recallLeave.leaveMeeting(botId)
-            activeMeetingBotId = null
-            await sendToFrontend({ type: 'meeting_left', botId })
-          } catch (err: any) {
-            console.error('❌ Recall.ai leave error:', err)
-            await sendToFrontend({ type: 'meeting_error', message: err.message })
-          }
+        // All teardown (flush, poller, max-timer, Recall leave, meeting_left,
+        // orphan LLM release) is centralized in endMeeting().
+        try {
+          await endMeeting('user_leave_meeting')
+        } catch (err: any) {
+          console.error('❌ Recall.ai leave error:', err)
+          await sendToFrontend({ type: 'meeting_error', message: err.message })
         }
       }
       else if (data.type === 'session_selected') {
