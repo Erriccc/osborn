@@ -12,7 +12,16 @@ const root = join(__dirname, '..', '..', 'tests', 'voice-e2e')
 const out = join(__dirname, '..', 'public', 'browser-screen-recorder-bundle.json')
 const legacyOut = join(__dirname, '..', 'public', 'voice-e2e-bundle.json')
 
-const HARNESS_VERSION = 6
+// SINGLE SOURCE OF TRUTH: tests/voice-e2e/SKILL.served.md carries the served
+// skill text AND its Version: line — this script copies it into public/ and
+// derives the bundle version from it. A git push IS the skill release.
+const servedSkillPath = join(root, 'SKILL.served.md')
+const servedSkill = existsSync(servedSkillPath) ? readFileSync(servedSkillPath, 'utf8') : null
+const HARNESS_VERSION = Number(servedSkill?.match(/^Version: (\d+)$/m)?.[1] ?? 6)
+if (servedSkill) {
+  writeFileSync(join(__dirname, '..', 'public', 'browser-screen-recorder-skill.md'), servedSkill)
+  console.log(`[harness-bundle] served skill v${HARNESS_VERSION} copied to public/browser-screen-recorder-skill.md`)
+}
 const INCLUDE_DIRS = ['lib', 'specs', 'scenarios', 'scripts']
 const INCLUDE_ROOT = ['package.json', 'playwright.config.ts', 'Dockerfile', 'fly.toml', '.gitignore', '.dockerignore']
 const TEXT_EXT = /\.(ts|js|json|yaml|yml|sh|md|toml|gitignore|dockerignore)$|^Dockerfile$/
