@@ -3,7 +3,10 @@
 # mouth, element-tap ears, Stagehand brain. No local Chrome, no macOS.
 FROM mcr.microsoft.com/playwright:v1.61.1-noble
 
-RUN apt-get update && apt-get install -y --no-install-recommends espeak-ng ffmpeg \
+# openbox: window manager for the Xvfb display — WITHOUT one, window
+# stacking/focus (bringToFront) silently no-ops and the display capture can
+# show the WRONG window (observed: mobile-tab clip showed the chat window).
+RUN apt-get update && apt-get install -y --no-install-recommends espeak-ng ffmpeg openbox \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /e2e

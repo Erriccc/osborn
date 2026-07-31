@@ -194,6 +194,27 @@ them at any CDP endpoint (Browserless container: `ws://host:3000/chromium/playwr
 ?token=...`; pin @playwright/test to the container's supported version). Linux/CI:
 use `mcr.microsoft.com/playwright` image + espeak-ng or OpenAI TTS for synthesis.
 
+## Journeys — how a deployment LEARNS each site (mandatory framing)
+
+Tasks without framing read as disconnected robot actions and nothing above the
+single-step cache ever accumulates. EVERY directed test on the session engine
+MUST be framed as a journey:
+
+1. Before starting: `POST /journey {"op":"list"}` — check what sequences this
+   deployment already knows for the site ("start-conversation" may already
+   encode login → dashboard → new conversation). Reuse known paths.
+2. `POST /journey {"op":"start","name":"mobile-audit","goal":"…"}` — then run
+   the /act, /say, /tab steps of the test.
+3. `POST /journey {"op":"end"}` — this CLEANS UP (closes extra tabs, restores
+   the default viewport — no DevTools/tab litter for the next test) and SAVES
+   the proven sequence to `knowledge/<site>/journeys/<name>.yaml`.
+   Pass `"save":false` for a failed/exploratory run.
+
+Journeys are the per-site memory of "how you actually do X here" — each
+installation builds its own over time; they ship with NOTHING. Preferences the
+user expresses ("always test mobile at 390×844") go to `rules.md` via
+`addSiteRule` — also binding, also per-deployment.
+
 ## Scenario store — workflows as files (the native format)
 
 `scenarios/<name>.yaml` = one stored workflow: `entry: fresh|resume`,

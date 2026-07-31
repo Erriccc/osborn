@@ -67,6 +67,7 @@ import { hearSince } from '../lib/converse'
 import { actWithCache } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
 import { attachDevtools, type DevtoolsBuffer } from '../lib/devtools'
+import { saveJourney, listJourneys } from '../lib/knowledge'
 import { envKey } from '../lib/env'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -152,6 +153,9 @@ async function main() {
     '--autoplay-policy=no-user-gesture-required', `--remote-debugging-port=${CDP_PORT}`]
   if (IN_CONTAINER) launchArgs.push('--no-sandbox') // container runs as root
   if (DISPLAY_MODE) launchArgs.push('--window-position=0,0', `--window-size=${(process.env.OSBORN_DISPLAY_SIZE || '1280x800').replace('x', ',')}`)
+  // DevTools ON CAMERA: OSBORN_DEVTOOLS=1 auto-opens the DevTools panel for
+  // every tab — console/network visible in the stream and clips.
+  if (process.env.OSBORN_DEVTOOLS) launchArgs.push('--auto-open-devtools-for-tabs')
   const browser: Browser = await chromium.launch({
     ...(IN_CONTAINER ? { headless: !DISPLAY_MODE } : { channel: 'chrome', headless: false }),
     args: launchArgs,
@@ -328,6 +332,15 @@ async function main() {
   const TOKEN = process.env.OSBORN_ENGINE_TOKEN
   let ending = false
   let lastActivity = Date.now()
+
+  // JOURNEY FRAMING — the "user feel" container around a test. A journey has
+  // a name and a beginning; /journey end CLEANS UP (extra tabs closed,
+  // default viewport restored) and PROMOTES the step sequence into
+  // knowledge/<site>/journeys/ — the layer where a deployment learns each
+  // site's real paths ("start a conversation" = login → dashboard → new
+  // conversation) over time. Without this, tasks read as disconnected
+  // actions and nothing above the single-step cache ever accumulates.
+  let journey: { name: string; goal?: string; startStep: number; startTaskN: number; startUrl: string } | null = null
   // GRACEFUL SHUTDOWN — used by POST /end AND the idle watchdog. Every step
   // bounded + a hard watchdog: a hung Stagehand/CDP close must never wedge
   // the engine (the manifest's predecessor tasks.json was lost to exactly
@@ -383,7 +396,8 @@ async function main() {
           run: RUN_STAMP, runDir: RUN_DIR, pageUrl, pageState, idlePaused,
           brain: brainAlive ? 'ready' : 'dead', useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
-          taskCount: tasks.length, activeTab: { i: context.pages().indexOf(active), url: active.url() },
+          taskCount: tasks.length, journey: journey?.name ?? null,
+          activeTab: { i: context.pages().indexOf(active), url: active.url() },
           tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
         })
       }
@@ -451,6 +465,21 @@ async function main() {
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
       if (path === '/shot') { const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64') }) }
+      if (path === '/eval') {
+        // Director's console: evaluate JS in the active tab's page context —
+        // the programmatic version of typing into the website console. The
+        // result AND any console output it triggers land in /logs + devtools.
+        const owned = guardOwnership(body)
+        if (owned) return json(res, { error: owned }, 409)
+        try {
+          const value = await Promise.race([
+            active.evaluate((expr: string) => { const r = (0, eval)(expr); return typeof r === 'object' ? JSON.stringify(r)?.slice(0, 4000) : String(r) }, String(body.expression)),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('eval timeout (10s)')), 10000)),
+          ])
+          mark(`eval: ${String(body.expression).slice(0, 50)}`)
+          return json(res, { ok: true, value })
+        } catch (e) { return json(res, { ok: false, error: (e as Error).message }) }
+      }
       if (path === '/tab') {
         // open | switch | close | claim | release | list. Optional per-op:
         //   owner: "<agent name>"      claims the opened tab / authorizes ops
@@ -480,8 +509,42 @@ async function main() {
           tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() }); mark(`tab claim: ${body.i} by ${body.owner}`)
         }
         else if (body.op === 'release') { const target = context.pages()[body.i]; if (target) tabOwners.delete(target); mark(`tab release: ${body.i}`) }
+        // Tab ops are journey steps too — a recipe missing "open the mobile
+        // tab" is not a recipe (first saved journey had steps:1 for this).
+        if (['open', 'switch', 'close'].includes(body.op)) {
+          scenarioSteps.push({ kind: 'tab', value: `${body.op}${body.url ? ' ' + body.url : ''}${body.viewport ? ' viewport=mobile' : ''}${body.i != null ? ' i=' + body.i : ''}` })
+          writeScenario()
+        }
         await updateTabHud(); saveTabState()
         return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
+      }
+      if (path === '/journey') {
+        const host = (() => { try { return new URL(active.url()).hostname } catch { return 'unknown' } })()
+        if (body.op === 'start') {
+          journey = { name: String(body.name || 'unnamed'), goal: body.goal, startStep: scenarioSteps.length, startTaskN: reqN, startUrl: active.url() }
+          mark(`journey start: ${journey.name}${journey.goal ? ` — ${journey.goal}` : ''}`)
+          return json(res, { ok: true, journey, knownJourneys: listJourneys(host) })
+        }
+        if (body.op === 'end') {
+          if (!journey) return json(res, { error: 'no journey in progress' }, 400)
+          const steps = scenarioSteps.slice(journey.startStep)
+          let saved: string | null = null
+          if (body.save !== false && steps.length) {
+            try { saved = saveJourney(host, journey.name, { goal: journey.goal ?? null, startUrl: journey.startUrl, auth: useAuth ? String(manifest.profile) : 'guest', savedAt: new Date().toISOString(), steps }) } catch { /* volume issue */ }
+          }
+          if (body.cleanup !== false) {
+            while (context.pages().length > 1) { try { active = await closeTab(context, context.pages().length - 1) } catch { break } }
+            await live?.retarget(active).catch(() => {})
+            try { await active.setViewportSize({ width: 1280, height: 720 }) } catch { /* ignore */ }
+            saveTabState()
+          }
+          mark(`journey end: ${journey.name} (${steps.length} step(s)${saved ? ', saved to knowledge' : ''})`)
+          const done = { ok: true, name: journey.name, steps: steps.length, saved, tasks: [journey.startTaskN + 1, reqN] }
+          journey = null
+          return json(res, done)
+        }
+        if (body.op === 'list') return json(res, { site: host, journeys: listJourneys(host) })
+        return json(res, { error: 'op must be start | end | list' }, 400)
       }
       if (path === '/brain') {
         // Recover a detached Stagehand without restarting the whole engine.
@@ -503,7 +566,7 @@ async function main() {
         void gracefulEnd('end requested')
         return
       }
-      json(res, { error: 'unknown', paths: ['/status', '/tasks', '/clip?n=N', '/artifact?n=N', '/act', '/say', '/hear', '/shot', '/tab', '/brain', '/recover', '/end'] }, 404)
+      json(res, { error: 'unknown', paths: ['/status', '/tasks', '/clip?n=N', '/artifact?n=N', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
     } catch (e) { json(res, { error: (e as Error).message, brain: brainAlive ? 'ready' : 'dead' }, 500) }
   })
   server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))

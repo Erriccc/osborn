@@ -23,7 +23,11 @@ if [ -n "$OSBORN_ENGINE" ]; then
     sleep 1
     export DISPLAY=:99
     export OSBORN_DISPLAY=:99
-    echo "[fly-run] Xvfb up on :99 (${SIZE}) — full-window capture enabled"
+    # Window manager — REQUIRED for reliable window raise/focus on the
+    # virtual display (bringToFront no-ops without one and the capture can
+    # show a stale window).
+    command -v openbox > /dev/null && openbox > /dev/null 2>&1 &
+    echo "[fly-run] Xvfb + openbox up on :99 (${SIZE}) — full-window capture enabled"
   fi
   exec npx tsx scripts/session-engine.ts
 fi

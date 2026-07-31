@@ -12,7 +12,7 @@ const root = join(__dirname, '..', '..', 'tests', 'voice-e2e')
 const out = join(__dirname, '..', 'public', 'browser-screen-recorder-bundle.json')
 const legacyOut = join(__dirname, '..', 'public', 'voice-e2e-bundle.json')
 
-const HARNESS_VERSION = 5
+const HARNESS_VERSION = 6
 const INCLUDE_DIRS = ['lib', 'specs', 'scenarios', 'scripts']
 const INCLUDE_ROOT = ['package.json', 'playwright.config.ts', 'Dockerfile', 'fly.toml', '.gitignore', '.dockerignore']
 const TEXT_EXT = /\.(ts|js|json|yaml|yml|sh|md|toml|gitignore|dockerignore)$|^Dockerfile$/
