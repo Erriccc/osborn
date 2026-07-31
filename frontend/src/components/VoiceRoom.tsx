@@ -11,6 +11,7 @@ import {
 import { RoomEvent, ConnectionState, Track } from 'livekit-client'
 import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
+import LiveClock from './LiveClock'
 import { LogsDrawer } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
@@ -660,31 +661,75 @@ function TextInput({
   )
 }
 
-// Live clock — always-visible ticking time in the header so every screenshot
-// carries a timestamp. Seconds tick + pulse dot keep the UI feeling alive.
-function LiveClock() {
-  const [now, setNow] = useState(() => new Date())
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000)
-    return () => clearInterval(t)
-  }, [])
-  const hh = String(now.getHours() % 12 || 12).padStart(2, '0')
-  const mm = String(now.getMinutes()).padStart(2, '0')
-  const ss = String(now.getSeconds()).padStart(2, '0')
-  const ampm = now.getHours() >= 12 ? 'PM' : 'AM'
+// Named agents manager — mirrors the SkillsPopover pattern: first-class header
+// button with count badge, opening a popover listing the orchestrator's named
+// sub-agents (researcher/reasoner/writer) with role, model, and tool set.
+export interface NamedAgent {
+  name: string
+  description: string
+  model: string
+  tools: string[]
+}
+
+function AgentsPopover({ agents, disabled }: { agents?: NamedAgent[]; disabled?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const count = agents?.length ?? 0
   return (
-    <div
-      className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800/40 border border-gray-700/30 select-none"
-      title={now.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-    >
-      <span className="relative flex h-1.5 w-1.5">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-40" />
-        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-400/80" />
-      </span>
-      <span className="font-mono text-[11px] tabular-nums text-gray-300 tracking-tight">
-        {hh}:{mm}<span className="text-gray-500">:{ss}</span>
-      </span>
-      <span className="text-[9px] font-medium text-gray-500">{ampm}</span>
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        aria-label="Agents"
+        data-testid="agents-button"
+        title="Named agents"
+        className={`relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all border ${
+          disabled
+            ? 'bg-gray-800/30 text-gray-600 border-transparent cursor-not-allowed'
+            : open
+              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
+              : 'bg-gradient-to-b from-gray-800/70 to-gray-800/40 text-gray-300 border-gray-700/40 hover:text-amber-300 hover:border-amber-500/30'
+        }`}
+      >
+        {/* Users/agents icon */}
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+        </svg>
+        <span className="hidden md:inline text-xs font-medium">Agents</span>
+        {count > 0 && (
+          <span className="min-w-[16px] h-4 px-1 flex items-center justify-center text-[9px] font-bold rounded-full bg-amber-500/25 text-amber-300 border border-amber-500/30">
+            {count}
+          </span>
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-2 w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
+            <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-200">🤖 Named Agents</span>
+              <span className="text-[10px] text-gray-500">{count} configured</span>
+            </div>
+            <div className="max-h-96 overflow-y-auto p-3 space-y-1.5">
+              {agents && agents.length > 0 ? agents.map((a) => (
+                <div key={a.name} className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-sm font-medium text-gray-200 capitalize">{a.name}</span>
+                    <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20 uppercase tracking-wide">{a.model}</span>
+                  </div>
+                  <p className="text-[11px] text-gray-500 mt-0.5 leading-snug">{a.description}</p>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {a.tools.map((t) => (
+                      <span key={t} className="px-1.5 py-0.5 text-[9px] rounded bg-gray-900/80 text-gray-400 border border-gray-700/40">{t}</span>
+                    ))}
+                  </div>
+                </div>
+              )) : (
+                <p className="text-[11px] text-gray-500">No named agents reported</p>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -1511,6 +1556,7 @@ function VoiceRoomInner({
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
   // Skills state
   const [skills, setSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
+  const [namedAgents, setNamedAgents] = useState<NamedAgent[]>([])
   const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
   const [skillRemoveArm, setSkillRemoveArm] = useState<string | null>(null)
   const [showAddSkill, setShowAddSkill] = useState(false)
@@ -2028,6 +2074,10 @@ function VoiceRoomInner({
         if (data.skills && Array.isArray(data.skills)) {
           setSkills(data.skills)
         }
+        // Store named agents from agent_ready (researcher/reasoner/writer)
+        if (data.namedAgents && Array.isArray(data.namedAgents)) {
+          setNamedAgents(data.namedAgents)
+        }
         // Only process session gate logic on the FIRST agent_ready (skip retries)
         if (!sessionGateCompletedRef.current && !showResumePromptRef.current) {
           // If a session was pre-selected from the session browser, skip the gate entirely
@@ -2397,6 +2447,10 @@ function VoiceRoomInner({
       } else if (data.type === 'skills_status') {
         if (data.skills && Array.isArray(data.skills)) {
           setSkills(data.skills)
+        }
+      } else if (data.type === 'agents_status') {
+        if (data.agents && Array.isArray(data.agents)) {
+          setNamedAgents(data.agents)
         }
       } else if (data.type === 'skill_content') {
         if (data.content) setViewedSkill({ name: data.name, content: data.content })
@@ -3247,6 +3301,9 @@ function VoiceRoomInner({
 
             {/* Live clock — always visible so screenshots carry the time */}
             <LiveClock />
+
+            {/* Named agents — first-class manager (researcher/reasoner/writer) */}
+            <AgentsPopover agents={namedAgents} disabled={!agentConnected} />
 
             {/* Skills — first-class button with count badge (all viewports) */}
             <SkillsPopover

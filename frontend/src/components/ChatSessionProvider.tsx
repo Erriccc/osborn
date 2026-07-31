@@ -228,13 +228,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     let resolvedUrl = agentUrl
 
     try {
-      // Step 1: Respect the user's connection mode preference from the dashboard
+      // Step 1: Respect the user's connection mode preference from the dashboard.
+      // Cloud is the DEFAULT (no saved preference = cloud); 'local' is opt-in.
       const connectionMode =
         typeof window !== 'undefined'
-          ? localStorage.getItem('osborn-connection-mode') || 'local'
-          : 'local'
+          ? localStorage.getItem('osborn-connection-mode') || 'cloud'
+          : 'cloud'
 
-      // Only check/start cloud sandbox if user explicitly chose cloud mode
+      // Check/start the cloud sandbox unless the user explicitly chose local
       if (connectionMode === 'cloud') {
         try {
           const sandboxRes = await fetch('/api/sandbox')

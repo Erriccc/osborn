@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import LiveClock from '@/components/LiveClock'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
@@ -131,6 +132,10 @@ export default function Dashboard() {
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  // Skills + named agents from the agent's HTTP API (GET /skills, GET /agents)
+  // — the dashboard has no LiveKit data channel, so these come over HTTP.
+  const [dashSkills, setDashSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
+  const [dashAgents, setDashAgents] = useState<{ name: string; description: string; model: string; tools: string[] }[]>([])
   const [installedVersion, setInstalledVersion] = useState<string | null>(null)
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
@@ -185,7 +190,9 @@ export default function Dashboard() {
   const [sandboxId, setSandboxId] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState(false)
   const [localAgentUrl] = useState('http://localhost:8741')
-  const [connectionMode, setConnectionMode] = useState<'local' | 'cloud'>('local')
+  // Cloud is the DEFAULT (2026-07-31): most users run the hosted machine; local
+  // is the opt-in dev lane. A saved explicit preference always wins.
+  const [connectionMode, setConnectionMode] = useState<'local' | 'cloud'>('cloud')
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
   const [expandedSessionLists, setExpandedSessionLists] = useState<Set<string>>(new Set())
   const [newProjectName, setNewProjectName] = useState('')
@@ -217,22 +224,25 @@ export default function Dashboard() {
     if (u) setAgentUrl(u)
     if (p) setProvider(p)
     if (v) setVoiceArch(v)
+    // Saved explicit preference wins; otherwise the useState default ('cloud')
+    // stands. (Historical: default used to be 'local' with a sandbox-probe
+    // auto-detect to rescue signed-in cloud users from a logged-out-looking
+    // "Local (offline)" dashboard — 2026-07-29. Cloud-by-default supersedes it.)
     if (m) setConnectionMode(m)
-    else {
-      // No saved preference (fresh browser/new device): auto-detect. A signed-in
-      // user with a cloud instance previously landed in 'local' mode — dashboard
-      // probed localhost:8741, showed "Local (offline)" with zero conversations,
-      // and looked logged-out despite a valid session (found by the E2E harness
-      // + user report, 2026-07-29). If the account has a cloud sandbox, start
-      // in cloud; only ever applied when the user hasn't chosen explicitly.
-      fetch('/api/sandbox')
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => {
-          if (d?.available && d?.sandbox) setConnectionMode('cloud')
-        })
-        .catch(() => {})
-    }
   }, [])
+
+  // Fetch skills + named agents from the agent's HTTP API when settings open.
+  // Older agents (<0.9.96) 404 these — sections just stay empty/hidden.
+  useEffect(() => {
+    if (!showSettings || !agentUrl) return
+    const base = agentUrl.replace(/\/$/, '')
+    fetch(`${base}/skills`).then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (Array.isArray(d?.skills)) setDashSkills(d.skills) })
+      .catch(() => {})
+    fetch(`${base}/agents`).then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (Array.isArray(d?.agents)) setDashAgents(d.agents) })
+      .catch(() => {})
+  }, [showSettings, agentUrl])
 
   // Persist prefs
   useEffect(() => {
@@ -359,8 +369,10 @@ export default function Dashboard() {
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
           setSandboxStatus(d.sandbox.status)
+          // Cloud default: no saved preference counts as cloud; only an
+          // explicit 'local' choice opts out.
           const savedMode = localStorage.getItem('osborn-connection-mode')
-          if (savedMode === 'cloud' && d.sandbox.previewUrl) {
+          if (savedMode !== 'local' && d.sandbox.previewUrl) {
             setConnectionMode('cloud')
             setAgentUrl(d.sandbox.previewUrl)
           }
@@ -955,6 +967,9 @@ export default function Dashboard() {
             </div>
 
             <div className="flex items-center gap-1.5">
+              {/* Live clock — date/time/timezone so screenshots carry when */}
+              <LiveClock showDate />
+
               {/* Connection badge — in cloud mode shows the rich sandbox
                   state (cold/warm/running/stopped) from /api/sandbox; in
                   local mode shows agent /health reachability. */}
@@ -1280,6 +1295,41 @@ export default function Dashboard() {
                 <ToggleCompact label="Provider" options={[['gemini','Gemini'],['openai','OpenAI']]}
                   value={provider} onChange={v => setProvider(v as Provider)} />
               </div>
+
+              {/* ── Skills & Named Agents (from the agent's HTTP API) ── */}
+              {(dashSkills.length > 0 || dashAgents.length > 0) && (
+                <div className="flex flex-col gap-3 pt-1 border-t border-[var(--border-subtle)]">
+                  {dashAgents.length > 0 && (
+                    <div>
+                      <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Agents ({dashAgents.length})</span>
+                      <div className="mt-1.5 flex flex-col gap-1">
+                        {dashAgents.map((a) => (
+                          <div key={a.name} className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--border-subtle)]">
+                            <span className="text-[12px] text-[var(--text-secondary)] capitalize font-medium">{a.name}</span>
+                            <span className="flex items-center gap-1.5">
+                              <span className="text-[9px] uppercase tracking-wide text-[var(--accent)] font-semibold">{a.model}</span>
+                              <span className="text-[10px] text-[var(--text-muted)]">{a.tools.length} tools</span>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {dashSkills.length > 0 && (
+                    <div>
+                      <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Skills ({dashSkills.length})</span>
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {dashSkills.map((s) => (
+                          <span key={s.folder || s.name} title={s.description}
+                            className="px-2 py-0.5 text-[10px] rounded-full bg-[var(--surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)]">
+                            {s.name.length > 34 ? s.name.slice(0, 32) + '…' : s.name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* ── Account ── */}
               {user && (

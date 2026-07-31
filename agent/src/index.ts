@@ -39,7 +39,7 @@ const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, listAllClaudeSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
-import { createClaudeLLM } from './claude-llm.js'
+import { createClaudeLLM, NAMED_AGENTS } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth } from './claude-auth.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -329,6 +329,32 @@ function startApiServer(workingDir: string, port: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ sessions: [], total: 0, error: 'Failed to list sessions' }))
       }
+      return
+    }
+
+    if (req.method === 'GET' && url.pathname === '/skills') {
+      // Installed skills — same list the chat's get_skills data-channel message
+      // returns, exposed over HTTP so the DASHBOARD (no LiveKit connection) can
+      // render the skills manager too. process.cwd() === sessionBaseDir (the
+      // osborn install dir where .claude/skills lives — see main()).
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ skills: loadSkillsList(process.cwd()) }))
+      return
+    }
+
+    if (req.method === 'GET' && url.pathname === '/agents') {
+      // Named sub-agents (researcher/reasoner/writer) — definitions come from
+      // claude-llm.ts NAMED_AGENTS (single source of truth, same object the SDK
+      // query uses). Prompts are omitted: the UI manager needs role/model/tools,
+      // not the full instruction text.
+      const agents = Object.entries(NAMED_AGENTS).map(([name, a]: [string, any]) => ({
+        name,
+        description: a.description,
+        model: a.model,
+        tools: a.tools,
+      }))
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+      res.end(JSON.stringify({ agents }))
       return
     }
 
@@ -4240,6 +4266,9 @@ async function main() {
           enabledMcpServers: enabledMcpNames,
           workingDirectory: workingDir,
           skills: loadSkillsList(sessionBaseDir),
+          namedAgents: Object.entries(NAMED_AGENTS).map(([name, a]: [string, any]) => ({
+            name, description: a.description, model: a.model, tools: a.tools,
+          })),
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -4920,6 +4949,16 @@ async function main() {
         await sendToFrontend({
           type: 'skills_status',
           skills: loadSkillsList(sessionBaseDir),
+        })
+      }
+      else if (data.type === 'get_agents') {
+        // Named sub-agents for the chat agents manager — same NAMED_AGENTS
+        // source as GET /agents (prompts omitted).
+        await sendToFrontend({
+          type: 'agents_status',
+          agents: Object.entries(NAMED_AGENTS).map(([name, a]: [string, any]) => ({
+            name, description: a.description, model: a.model, tools: a.tools,
+          })),
         })
       }
       else if (data.type === 'skill_add') {
