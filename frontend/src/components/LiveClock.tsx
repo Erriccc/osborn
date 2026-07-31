@@ -38,12 +38,14 @@ export default function LiveClock({ showDate = false }: { showDate?: boolean }) 
         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-40" />
         <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-400/80" />
       </span>
-      {showDate && <span className="text-[10px] font-medium text-gray-400">{date}</span>}
+      {/* Responsive: narrow screens keep "6:17 PM"; date/seconds/tz appear ≥sm
+          (they were overflowing the 390px header and hiding the whole clock) */}
+      {showDate && <span className="hidden sm:inline text-[10px] font-medium text-gray-400">{date}</span>}
       <span className="font-mono text-[11px] tabular-nums text-gray-300 tracking-tight">
-        {hh}:{mm}<span className="text-gray-500">:{ss}</span>
+        {hh}:{mm}<span className="hidden sm:inline text-gray-500">:{ss}</span>
       </span>
       <span className="text-[9px] font-medium text-gray-500">{ampm}</span>
-      {tz && <span className="text-[9px] font-medium text-gray-600">{tz}</span>}
+      {tz && <span className="hidden sm:inline text-[9px] font-medium text-gray-600">{tz}</span>}
     </div>
   )
 }

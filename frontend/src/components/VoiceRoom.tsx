@@ -681,11 +681,13 @@ export interface UserAgentDraft {
   tools: string[]
 }
 
-function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent }: {
+function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, onRestoreAgent }: {
   agents?: NamedAgent[]
   disabled?: boolean
   onSaveAgent?: (a: UserAgentDraft) => void
-  onDeleteAgent?: (name: string) => void
+  onDeleteAgent?: (name: string, isCustom: boolean) => void
+  removed?: string[]
+  onRestoreAgent?: (name: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<UserAgentDraft | null>(null)
@@ -776,10 +778,10 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent }: {
                     </span>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20 uppercase tracking-wide">{a.model}</span>
-                      {a.custom && onDeleteAgent && (
+                      {onDeleteAgent && (
                         <button
                           onClick={() => {
-                            if (deleteArm === a.name) { onDeleteAgent(a.name); setDeleteArm(null) }
+                            if (deleteArm === a.name) { onDeleteAgent(a.name, !!a.custom); setDeleteArm(null) }
                             else { setDeleteArm(a.name); setTimeout(() => setDeleteArm(null), 4000) }
                           }}
                           className={`text-[10px] ${deleteArm === a.name ? 'text-red-400 font-semibold' : 'text-gray-500 hover:text-red-400'}`}
@@ -796,6 +798,21 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent }: {
                 </div>
               )) : (
                 <p className="text-[11px] text-gray-500">No named agents reported</p>
+              )}
+              {/* Removed defaults — never gone forever, one tap to add back */}
+              {removed && removed.length > 0 && onRestoreAgent && (
+                <div className="pt-2 mt-1 border-t border-gray-800">
+                  <h5 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Available to add</h5>
+                  {removed.map((name) => (
+                    <div key={name} className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-gray-800/30 border border-dashed border-gray-700/40 mb-1">
+                      <span className="text-xs text-gray-400 capitalize">{name}</span>
+                      <button onClick={() => onRestoreAgent(name)}
+                        className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/20 hover:bg-amber-500/25 transition-colors">
+                        ⤓ Add
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
@@ -2891,21 +2908,28 @@ function VoiceRoomInner({
   // rows → nothing sent, built-ins stand. SDK constraint: edits apply at the
   // NEXT session cold start.
   const [userAgentRows, setUserAgentRows] = useState<UserAgentDraft[] | null>(null)
+  // Tombstoned built-ins (user_agents rows with enabled=false): removed from
+  // the effective set but always re-addable — defaults are never gone forever.
+  const [removedAgentNames, setRemovedAgentNames] = useState<string[]>([])
   useEffect(() => {
     if (!isSupabaseConfigured()) return
     const sb = createSupabaseBrowser()
     sb.auth.getUser().then(({ data }) => {
       if (!data?.user) return
-      sb.from('user_agents').select('name,description,prompt,model,tools').eq('enabled', true)
-        .then(({ data: rows }) => { if (Array.isArray(rows)) setUserAgentRows(rows as UserAgentDraft[]) })
+      sb.from('user_agents').select('name,description,prompt,model,tools,enabled')
+        .then(({ data: rows }) => {
+          if (!Array.isArray(rows)) return
+          setUserAgentRows(rows.filter((r: any) => r.enabled) as UserAgentDraft[])
+          setRemovedAgentNames(rows.filter((r: any) => !r.enabled).map((r: any) => r.name))
+        })
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   useEffect(() => {
     if (!agentConnected || userAgentRows === null) return
     const encoder = new TextEncoder()
-    sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents: userAgentRows })), { reliable: true })
-  }, [agentConnected, userAgentRows, sendToAgent])
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents: userAgentRows, removed: removedAgentNames })), { reliable: true })
+  }, [agentConnected, userAgentRows, removedAgentNames, sendToAgent])
 
   const handleSaveAgent = useCallback((a: UserAgentDraft) => {
     if (!isSupabaseConfigured()) return
@@ -2925,15 +2949,42 @@ function VoiceRoomInner({
     })
   }, [])
 
-  const handleDeleteAgent = useCallback((name: string) => {
+  const handleDeleteAgent = useCallback((name: string, isCustom: boolean) => {
+    if (!isSupabaseConfigured()) return
+    const sb = createSupabaseBrowser()
+    sb.auth.getUser().then(({ data }) => {
+      if (!data?.user) return
+      if (isCustom) {
+        // Custom agent → delete the row outright.
+        sb.from('user_agents').delete().eq('user_id', data.user.id).eq('name', name)
+          .then(({ error }) => {
+            if (error) { console.error('user_agents delete failed:', error.message); return }
+            setUserAgentRows((prev) => (prev || []).filter((r) => r.name !== name))
+          })
+      } else {
+        // Built-in default → tombstone (enabled=false). It moves to the
+        // "Available to add" list instead of vanishing forever.
+        sb.from('user_agents')
+          .upsert({ user_id: data.user.id, name, description: '(removed built-in)', prompt: '-', model: 'inherit', tools: [], enabled: false, updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })
+          .then(({ error }) => {
+            if (error) { console.error('user_agents tombstone failed:', error.message); return }
+            setUserAgentRows((prev) => prev ?? [])
+            setRemovedAgentNames((prev) => prev.includes(name) ? prev : [...prev, name])
+          })
+      }
+    })
+  }, [])
+
+  const handleRestoreAgent = useCallback((name: string) => {
     if (!isSupabaseConfigured()) return
     const sb = createSupabaseBrowser()
     sb.auth.getUser().then(({ data }) => {
       if (!data?.user) return
       sb.from('user_agents').delete().eq('user_id', data.user.id).eq('name', name)
         .then(({ error }) => {
-          if (error) { console.error('user_agents delete failed:', error.message); return }
-          setUserAgentRows((prev) => (prev || []).filter((r) => r.name !== name))
+          if (error) { console.error('user_agents restore failed:', error.message); return }
+          setRemovedAgentNames((prev) => prev.filter((n) => n !== name))
+          setUserAgentRows((prev) => prev ?? [])
         })
     })
   }, [])
@@ -3429,7 +3480,8 @@ function VoiceRoomInner({
 
             {/* Named agents — first-class manager (built-ins + DB-backed custom) */}
             <AgentsPopover agents={namedAgents} disabled={!agentConnected}
-              onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} />
+              onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
+              removed={removedAgentNames} onRestoreAgent={handleRestoreAgent} />
 
             {/* Skills — first-class button with count badge (all viewports) */}
             <SkillsPopover

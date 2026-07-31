@@ -1651,6 +1651,11 @@ async function main() {
   // switch/resume) reuse them without waiting for a frontend resend. Merged
   // OVER the built-in NAMED_AGENTS (same-name user rows shadow built-ins).
   let userNamedAgents: Record<string, { description: string; prompt: string; tools?: string[]; model?: string }> | null = null
+  // Built-ins the user has removed (tombstoned in user_agents with enabled=false).
+  // A removed built-in disappears from the effective set but stays re-addable
+  // from the frontend's "Available to add" list — default agents are never
+  // gone forever, matching the skill-catalog pattern.
+  let userRemovedAgents: string[] = []
 
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
   let activeMeetingPoller: MeetingTranscriptPoller | null = null  // Transcript poller bound to that bot
@@ -2317,7 +2322,11 @@ async function main() {
       skipTTSQueue: true,
       onCompactionEvent: buildOnCompactionEvent(),
       // Per-user named agents survive LLM recreations (session switch/resume)
-      agents: userNamedAgents ? { ...NAMED_AGENTS, ...userNamedAgents } : undefined,
+      agents: (userNamedAgents || userRemovedAgents.length) ? (() => {
+        const base: Record<string, any> = { ...NAMED_AGENTS }
+        for (const r of userRemovedAgents) delete base[r]
+        return { ...base, ...(userNamedAgents || {}) }
+      })() : undefined,
     })
     currentLLM = directLLM
 
@@ -4960,9 +4969,11 @@ async function main() {
         })
       }
       else if (data.type === 'get_agents') {
-        // Named sub-agents for the chat agents manager — built-ins merged with
-        // any per-user DB-backed definitions (prompts omitted from the list).
-        const effective = { ...NAMED_AGENTS, ...(userNamedAgents || {}) }
+        // Named sub-agents for the chat agents manager — built-ins (minus any
+        // user-removed) merged with per-user DB-backed definitions.
+        const effectiveBase: Record<string, any> = { ...NAMED_AGENTS }
+        for (const r of userRemovedAgents) delete effectiveBase[r]
+        const effective = { ...effectiveBase, ...(userNamedAgents || {}) }
         await sendToFrontend({
           type: 'agents_status',
           agents: Object.entries(effective).map(([name, a]: [string, any]) => ({
@@ -4994,9 +5005,14 @@ async function main() {
           }
         }
         userNamedAgents = Object.keys(validated).length ? validated : null
-        const merged = { ...NAMED_AGENTS, ...(userNamedAgents || {}) }
-        ;(currentLLM as any)?.setAgents?.(userNamedAgents ? merged : undefined)
-        console.log(`🤖 set_agents: ${Object.keys(validated).length} user agent(s) → effective set [${Object.keys(merged).join(', ')}]`)
+        // Removed built-ins (tombstones) — excluded from the effective set.
+        userRemovedAgents = Array.isArray(data.removed) ? data.removed.map(String) : []
+        const base: Record<string, any> = { ...NAMED_AGENTS }
+        for (const r of userRemovedAgents) delete base[r]
+        const merged = { ...base, ...(userNamedAgents || {}) }
+        const customized = !!userNamedAgents || userRemovedAgents.length > 0
+        ;(currentLLM as any)?.setAgents?.(customized ? merged : undefined)
+        console.log(`🤖 set_agents: ${Object.keys(validated).length} user agent(s), ${userRemovedAgents.length} removed → effective [${Object.keys(merged).join(', ')}]`)
         await sendToFrontend({
           type: 'agents_status',
           agents: Object.entries(merged).map(([name, a]: [string, any]) => ({
