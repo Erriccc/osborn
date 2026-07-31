@@ -11,15 +11,21 @@ import type { Page } from '@playwright/test'
  */
 export async function installActionVisualizer(page: Page) {
   await page.addInitScript(() => {
+    // BOLD ON PURPOSE: the capture pipeline can run as slow as ~2fps
+    // (heartbeat frames on static pages), so a subtle 620ms/46px ripple landed
+    // on zero or one frame and was invisible in clips. Big, bright, and slow
+    // (1.8s) guarantees several captured frames show the action.
     const style = document.createElement('style')
     style.textContent = `
-      @keyframes osb-ripple { from { transform: translate(-50%,-50%) scale(0.2); opacity: 0.9 }
-                              to   { transform: translate(-50%,-50%) scale(2.4); opacity: 0 } }
-      .osb-ripple { position: fixed; z-index: 2147483647; width: 46px; height: 46px; border-radius: 50%;
-        border: 3px solid #f5b301; background: rgba(245,179,1,0.18); pointer-events: none;
-        animation: osb-ripple 620ms ease-out forwards; }
-      .osb-flash { outline: 3px solid #f5b301 !important; outline-offset: 2px !important;
-        transition: outline-color 500ms ease-out; }
+      @keyframes osb-ripple { from { transform: translate(-50%,-50%) scale(0.25); opacity: 1 }
+                              to   { transform: translate(-50%,-50%) scale(2.6); opacity: 0 } }
+      .osb-ripple { position: fixed; z-index: 2147483647; width: 130px; height: 130px; border-radius: 50%;
+        border: 6px solid #ffb300; background: rgba(255,179,0,0.28); pointer-events: none;
+        box-shadow: 0 0 30px 8px rgba(255,179,0,0.55);
+        animation: osb-ripple 1800ms ease-out forwards; }
+      .osb-flash { outline: 5px solid #ffb300 !important; outline-offset: 3px !important;
+        box-shadow: 0 0 24px 4px rgba(255,179,0,0.65) !important;
+        transition: outline-color 1200ms ease-out; }
     `
     const attach = () => document.head?.appendChild(style)
     if (document.head) attach(); else document.addEventListener('DOMContentLoaded', attach)
@@ -29,12 +35,12 @@ export async function installActionVisualizer(page: Page) {
       el.className = 'osb-ripple'
       el.style.left = x + 'px'; el.style.top = y + 'px'
       document.body?.appendChild(el)
-      setTimeout(() => el.remove(), 640)
+      setTimeout(() => el.remove(), 1850)
     }
     window.addEventListener('pointerdown', (e) => {
       ripple((e as PointerEvent).clientX, (e as PointerEvent).clientY)
       const t = e.target as HTMLElement
-      if (t?.classList) { t.classList.add('osb-flash'); setTimeout(() => t.classList.remove('osb-flash'), 550) }
+      if (t?.classList) { t.classList.add('osb-flash'); setTimeout(() => t.classList.remove('osb-flash'), 1400) }
     }, true)
 
     // Expose a hook so the harness can flash an element the BRAIN is about to

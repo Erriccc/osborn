@@ -1,3 +1,4 @@
+import { envKey } from '../lib/env'
 import { test, expect } from '@playwright/test'
 import { startCapture, saveCapture } from '../lib/audio-capture'
 import { readFileSync } from 'fs'
@@ -14,7 +15,7 @@ import { readFileSync } from 'fs'
  * Guest mode needs no auth: /chat accepts agentUrl as a query param.
  */
 
-const AGENT_URL = process.env.OSBORN_AGENT_URL || 'https://osborn-d4f24f46-v2.fly.dev'
+const AGENT_URL = process.env.OSBORN_AGENT_URL || 'https://osborn-1b9d70e5-v2.fly.dev'
 const CHAT_URL = `/chat?provider=gemini&voiceArch=pipeline&agent=claude&agentUrl=${encodeURIComponent(AGENT_URL)}`
 
 // Room hygiene: always leave the LiveKit room on exit so the machine idles
@@ -23,10 +24,7 @@ test.afterEach(async () => { await fetch(`${AGENT_URL}/leave-room`, { method: 'P
 
 
 function deepgramKey(): string {
-  const env = readFileSync('/Users/newupgrade/Desktop/Developer/osborn/agent/.env', 'utf8')
-  const m = env.match(/^DEEPGRAM_API_KEY=(\S+)/m)
-  if (!m) throw new Error('DEEPGRAM_API_KEY not found in agent/.env')
-  return m[1]
+  return envKey('DEEPGRAM_API_KEY')
 }
 
 async function transcribe(webmPath: string): Promise<string> {

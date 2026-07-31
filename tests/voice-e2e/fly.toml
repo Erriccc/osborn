@@ -9,6 +9,13 @@ primary_region = "ord"
   # Site-knowledge profiles (cached actions) persist on the volume — the
   # tester machine gets smarter/cheaper with every run.
   OSBORN_KNOWLEDGE_DIR = "/data/knowledge"
+  # Engine-mode runs (per-task clips + manifest + scenario.yaml) persist too.
+  OSBORN_RESULTS_DIR = "/data/session-engine"
+  # This app's default job is the long-running session engine. `fly deploy`
+  # rebuilds machine config from this file, so machine-level env additions get
+  # WIPED on every deploy — the flag must live here. For a one-shot spec run,
+  # start a machine with OSBORN_ENGINE="" + OSBORN_TEST_SPEC=<spec> instead.
+  OSBORN_ENGINE = "1"
 
 [build]
   dockerfile = "Dockerfile"
@@ -24,10 +31,26 @@ primary_region = "ord"
   size = "shared-cpu-2x"
   memory = "2048mb"
 
-# Live browser stream (CDP screencast → MJPEG) served during a run.
+# Live browser stream (screencast/x11grab → MJPEG) served during a run.
+# auto_start: a request to a STOPPED engine boots the machine (~2min to ready);
+# stopping is handled by the ENGINE's own idle watchdog (OSBORN_IDLE_STOP_MS,
+# default 10min without commands/viewers) — graceful: manifest + audio saved,
+# room left. Together: true on-demand in both directions.
 [http_service]
   internal_port = 8080
   force_https = true
   auto_stop_machines = false
-  auto_start_machines = false
+  auto_start_machines = true
   min_machines_running = 0
+
+# Session-engine control API (engine mode only). Reachable at
+# https://osborn-voice-e2e.fly.dev:8781 — token-protected: the engine rejects
+# requests without x-engine-token when OSBORN_ENGINE_TOKEN (fly secret) is set.
+[[services]]
+  protocol = "tcp"
+  internal_port = 8781
+  auto_start_machines = true
+  auto_stop_machines = false
+  [[services.ports]]
+    port = 8781
+    handlers = ["tls", "http"]

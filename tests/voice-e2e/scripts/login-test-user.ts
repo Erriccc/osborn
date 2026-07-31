@@ -14,7 +14,10 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const feEnv = readFileSync('/Users/newupgrade/Desktop/Developer/osborn/frontend/.env.local', 'utf8')
+// Frontend env resolved relative to the repo (override: OSBORN_FRONTEND_ENV_FILE)
+// — no machine-specific absolute paths in the harness.
+const FE_ENV_PATH = process.env.OSBORN_FRONTEND_ENV_FILE || join(__dirname, '..', '..', '..', 'frontend', '.env.local')
+const feEnv = readFileSync(FE_ENV_PATH, 'utf8')
 const SUPABASE_URL = feEnv.match(/^NEXT_PUBLIC_SUPABASE_URL=(\S+)/m)![1]
 const ANON = feEnv.match(/^NEXT_PUBLIC_SUPABASE_ANON_KEY=(\S+)/m)![1]
 const creds = readFileSync(join(__dirname, '..', 'profiles', 'test-user.env'), 'utf8')
@@ -67,10 +70,11 @@ const state = {
     },
   ],
 }
-// Which profile dir to write. Defaults to ozyjunks (the separate test account
-// so the engine doesn't collide with your osbornojure usage — see session-engine
-// OSBORN_TEST_PROFILE). Put that account's creds in profiles/test-user.env first.
-const profileName = process.env.OSBORN_TEST_PROFILE || 'ozyjunks'
+// Which profile dir to write. Defaults to osborn-tester (the email/password
+// test account in profiles/test-user.env — the only kind this password-grant
+// flow can mint; Google-OAuth accounts like ozyjunks cannot be logged in
+// headlessly). See session-engine OSBORN_TEST_PROFILE.
+const profileName = process.env.OSBORN_TEST_PROFILE || 'osborn-tester'
 const out = join(__dirname, '..', 'profiles', profileName, 'state.json')
 mkdirSync(dirname(out), { recursive: true })
 writeFileSync(out, JSON.stringify(state, null, 2))

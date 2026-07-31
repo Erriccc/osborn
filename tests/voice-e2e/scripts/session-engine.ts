@@ -1,36 +1,61 @@
 /**
  * SESSION ENGINE — a persistent, director-controlled browser session.
  *
- * Unlike a one-shot test, this launches ONE browser and KEEPS IT ALIVE,
- * streaming live, holding its room connection, waiting for commands. The
- * director (a supervising agent or the user via curl) drives it step by step
- * and reads state between actions — no abrupt close, full coverage from the
- * live feed + the recorded clip.
+ * The self-hostable core of the Browser Screen Recorder skill: launch ONE
+ * browser and KEEP IT ALIVE, streaming live, holding its room connection,
+ * waiting for commands. The director (a supervising agent or the user via
+ * curl) drives it step by step and reads state between actions. Runs the same
+ * on a laptop (headed Chrome) or any container/Fly machine (bundled headless
+ * Chromium) — and the brain attaches over CDP, so a cloud browser vendor
+ * (Browserbase etc.) can substitute for the local launch.
  *
  *   npx tsx scripts/session-engine.ts
  *
- * Then control it over HTTP (default :8781; live viewer on :8080):
- *   GET  /status              → { inRoom, tabs, marks, live, taskCount, recordingStartedAt }
- *   GET  /tasks               → replay index: every task's window into the recording
- *   POST /act    {instruction}→ brain acts (Stagehand, cached). Returns { window }.
- *   POST /say    {text}       → speak into the mic (reactive). Returns { window }.
- *   POST /hear                → transcript of what the agent said recently
- *   POST /shot                → base64 screenshot of the active tab
+ * Control over HTTP (default :8781; live MJPEG viewer on :8080). When
+ * OSBORN_ENGINE_TOKEN is set (ALWAYS set it on public deployments), every
+ * request must carry `x-engine-token: <token>`.
+ *   GET  /status              → ground truth: pageUrl, pageState, idlePaused,
+ *                               brain ready/dead, lastFrameAgeMs, runDir
+ *   GET  /tasks               → this run's task index (from the manifest)
+ *   GET  /clip?n=N            → download task N's mp4 (video/mp4)
+ *   GET  /artifact?n=N        → download task N's screenshot (image/jpeg)
+ *   POST /act    {instruction}→ brain acts (Stagehand, cached). Returns clip.
+ *   POST /say    {text}       → speak into the mic. Returns clip + heard reply.
+ *   POST /hear   {lastMs}     → transcript of what the agent said recently
+ *   POST /shot                → base64 screenshot (on-demand look; NOT the
+ *                               per-task proof — video is)
  *   POST /tab    {op,url,i}   → open | switch | list tabs
+ *   POST /brain               → re-init a detached Stagehand brain in place
  *   POST /recover             → reload the active tab (unstick a blank page)
- *   POST /end                 → graceful leave + save video + tasks.json + shut down
+ *   POST /end                 → graceful leave + save audio + shut down (bounded)
  *
- * REPLAY MODEL: one continuous recordVideo recording per session; each task is
- * a labeled window (rel0..rel1 ms) into it. No per-request video encoding — the
- * recording already holds every task's footage. Seek to a task's window to
- * replay exactly it. The live viewer streams in parallel off its own screencast.
+ * RESULTS MODEL (v2): every engine run gets its own folder
+ *   <results>/runs/<stamp>/   (results dir: OSBORN_RESULTS_DIR or
+ *                              test-results/session-engine — on Fly point it
+ *                              at the /data volume)
+ * VIDEO IS THE PROOF MEDIUM (user decision 2026-07-31): every /act and /say
+ * returns its own mp4 clip from the live-stream ring buffer, delivered PER
+ * TASK — never batched to run end. No per-task screenshots. manifest.json is
+ * REWRITTEN ON EVERY EVENT — kill the engine at any point and the full task
+ * index is already on disk. No continuous recordVideo (the old model grew
+ * 1.3GB in 3 days and its index only wrote on a clean /end). Old runs are
+ * pruned at startup (keep OSBORN_KEEP_RUNS, default 10).
  *
- * Auth flow by default (profiles/osbornojure) when present; guest link if not.
+ * TWO MODES:
+ *  - DIRECTED: the user/agent drives via /act & /say, video proof per task.
+ *  - SELF-DRIVING (replay): every directed /act and /say also appends to this
+ *    run's scenario.yaml (same shape as scenarios/*.yaml). Copy it into
+ *    scenarios/ to canonize a workflow; the step-cache + knowledge/<site>/
+ *    files are the per-site step memory that makes replays cheap (cache HIT =
+ *    0 LLM calls) and self-healing on drift.
+ *
+ * Auth flow by default (profiles/<OSBORN_TEST_PROFILE>, default osborn-tester)
+ * when a saved profile exists; guest link if not.
  */
 import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { createServer } from 'http'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
@@ -40,57 +65,156 @@ import { saveCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince } from '../lib/converse'
 import { actWithCache } from '../lib/step-cache'
-import { openTab, switchTab, listTabs } from '../lib/tabs'
+import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
+import { attachDevtools, type DevtoolsBuffer } from '../lib/devtools'
 import { envKey } from '../lib/env'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const AGENT_URL = process.env.OSBORN_AGENT_URL || 'https://osborn-d4f24f46-v2.fly.dev'
+// Default agent = the TEST account's own machine (osborn-tester is routed to
+// osborn-1b9d70e5-v2 in the instances table since 2026-07-31), so engine runs
+// never collide with the owner's machine (osborn-d4f24f46-v2).
+const AGENT_URL = process.env.OSBORN_AGENT_URL || 'https://osborn-1b9d70e5-v2.fly.dev'
 const APP_URL = process.env.OSBORN_APP_URL || 'https://www.voice-native.com'
 const CONTROL_PORT = Number(process.env.SESSION_ENGINE_PORT ?? 8781)
 const CDP_PORT = 9280
-const OUT_DIR = join(__dirname, '..', 'test-results', 'session-engine')
-mkdirSync(OUT_DIR, { recursive: true })
+const OUT_DIR = process.env.OSBORN_RESULTS_DIR || join(__dirname, '..', 'test-results', 'session-engine')
+const RUNS_ROOT = join(OUT_DIR, 'runs')
+const RUN_STAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+const RUN_DIR = join(RUNS_ROOT, RUN_STAMP)
+mkdirSync(RUN_DIR, { recursive: true })
 
+// Retention: keep the newest OSBORN_KEEP_RUNS run folders (counting this one),
+// prune the rest at startup so the artifact dir can't balloon.
+const KEEP_RUNS = Number(process.env.OSBORN_KEEP_RUNS ?? 10)
+try {
+  const old = readdirSync(RUNS_ROOT).filter((d) => d !== RUN_STAMP).sort()
+  for (const d of old.slice(0, Math.max(0, old.length - (KEEP_RUNS - 1))))
+    rmSync(join(RUNS_ROOT, d), { recursive: true, force: true })
+} catch { /* first run */ }
+
+// INCREMENTAL MANIFEST — the crash-proof task index. Rewritten on every mark
+// and every task stamp; there is no end-of-run-only write anywhere.
 const marks: { t: number; mark: string }[] = []
-const mark = (m: string) => { marks.push({ t: Date.now(), mark: m }); console.log(`[engine] ${m}`) }
+const tasks: Array<{ n: number; label: string; text?: string; heard?: string; startMs: number; endMs: number; rel0: number; rel1: number; clip?: string | null }> = []
+const manifest: Record<string, unknown> = {
+  run: RUN_STAMP, startedAt: Date.now(), model: 'per-task video + incremental manifest (v2)',
+  agentUrl: AGENT_URL, appUrl: APP_URL, profile: null, useAuth: false, live: null,
+  tasks, endedAt: null, audioCapture: null,
+}
+const writeManifest = () => {
+  try { writeFileSync(join(RUN_DIR, 'manifest.json'), JSON.stringify({ ...manifest, marks: marks.slice(-200) }, null, 2)) } catch { /* ignore */ }
+}
+const mark = (m: string) => { marks.push({ t: Date.now(), mark: m }); writeManifest(); console.log(`[engine] ${m}`) }
+
+// MODE-2 STEP MEMORY: every directed /act and /say also lands in this run's
+// scenario.yaml (same shape as scenarios/*.yaml) — a directed session becomes
+// a replayable workflow. Copy into scenarios/ to canonize.
+const scenarioSteps: Array<{ kind: string; value: string }> = []
+const writeScenario = () => {
+  try {
+    const y = [
+      `name: run-${RUN_STAMP}`,
+      `description: Auto-exported from a directed engine session (${RUN_STAMP}).`,
+      `profile: ${manifest.profile ?? 'osborn-tester'}`,
+      'steps:',
+      ...scenarioSteps.map((s) => `  - ${s.kind}: ${JSON.stringify(s.value)}`),
+    ].join('\n')
+    writeFileSync(join(RUN_DIR, 'scenario.yaml'), y + '\n')
+  } catch { /* ignore */ }
+}
 
 async function main() {
-  // Which voice-native test account the engine drives. Default ozyjunks (a
-  // separate test account) so the engine's meeting/session doesn't collide with
-  // your own osbornojure usage — one machine restart won't interrupt the other.
+  // Which voice-native test account the engine drives. Default osborn-tester
+  // (osborn-tester@voice-native.com — the email/password account, so its
+  // profile is script-mintable via scripts/login-test-user.ts) so the engine's
+  // meeting/session doesn't collide with your own osbornojure usage. NOTE:
+  // ozyjunks@gmail.com is Google-OAuth and can NEVER be minted headlessly.
   // Override with OSBORN_TEST_PROFILE. If no saved profile exists for it, the
   // engine falls back to the guest link (works, but not the real auth path).
-  const profileName = process.env.OSBORN_TEST_PROFILE || 'ozyjunks'
+  const profileName = process.env.OSBORN_TEST_PROFILE || 'osborn-tester'
   const profile = join(__dirname, '..', 'profiles', profileName, 'state.json')
   const useAuth = existsSync(profile)
+  manifest.profile = profileName; manifest.useAuth = useAuth
   mark(`test account: ${profileName} (${useAuth ? 'auth profile found' : 'no profile → guest link'})`)
+  // Launch modes:
+  //  - Local Mac: real Chrome, headed (you see the real window yourself).
+  //  - Container + OSBORN_DISPLAY (Xvfb running, set by fly-run.sh): bundled
+  //    Chromium HEADFUL on the virtual display — the x11grab stream then shows
+  //    the FULL browser (real tab strip, URL bar, navigation).
+  //  - Container without a display: headless fallback (CDP capture + HUD).
+  const IN_CONTAINER = !!process.env.OSBORN_TEST_CONTAINER
+  const DISPLAY_MODE = !!process.env.OSBORN_DISPLAY
+  // Display mode: start the stream server BEFORE the browser — a wake-up
+  // visitor gets the viewer page in seconds and watches Chrome itself boot.
+  let live: Awaited<ReturnType<typeof startLiveStream>> | null = null
+  if (DISPLAY_MODE) live = await startLiveStream(null).catch(() => null)
+  const launchArgs = ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
+    '--autoplay-policy=no-user-gesture-required', `--remote-debugging-port=${CDP_PORT}`]
+  if (IN_CONTAINER) launchArgs.push('--no-sandbox') // container runs as root
+  if (DISPLAY_MODE) launchArgs.push('--window-position=0,0', `--window-size=${(process.env.OSBORN_DISPLAY_SIZE || '1280x800').replace('x', ',')}`)
   const browser: Browser = await chromium.launch({
-    channel: 'chrome', headless: false,
-    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
-      '--autoplay-policy=no-user-gesture-required', `--remote-debugging-port=${CDP_PORT}`],
+    ...(IN_CONTAINER ? { headless: !DISPLAY_MODE } : { channel: 'chrome', headless: false }),
+    args: launchArgs,
   })
   const context: BrowserContext = await browser.newContext({
     permissions: ['microphone'],
     ...(useAuth ? { storageState: profile } : {}),
-    recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
+    // NO recordVideo — per-task clips from the live-stream ring buffer are
+    // the video record (the continuous recording grew unbounded).
   })
+  // tsx/esbuild injects a __name helper that isn't defined in the browser's
+  // evaluate context. CONTEXT-level so EVERY page gets it — page-level missed
+  // tabs opened later (caught live by the devtools sense: "__name is not
+  // defined" pageerror on tab 1's HUD evaluate).
+  await context.addInitScript(() => { (globalThis as any).__name = (globalThis as any).__name || ((f: any) => f) })
   let active: Page = await context.newPage()
+  // DEVTOOLS SENSE per tab — console, page errors, failed network, websocket
+  // lifecycle. Every task response carries the active tab's summary so the
+  // DIRECTOR reviews debug state alongside the media before deciding the next
+  // step; GET /logs serves the full buffers; devtools.txt persists per run.
+  const devtoolsBufs = new Map<Page, DevtoolsBuffer>()
+  const watchPage = (p: Page) => { if (!devtoolsBufs.has(p)) devtoolsBufs.set(p, attachDevtools(p)) }
+  const writeDevtoolsFile = () => {
+    try {
+      const dump = context.pages().map((p, i) => {
+        const b = devtoolsBufs.get(p)
+        return b ? `===== TAB ${i} — ${p.url()}\n--- console\n${b.console.join('\n')}\n--- network\n${b.network.join('\n')}` : ''
+      }).filter(Boolean).join('\n\n')
+      writeFileSync(join(RUN_DIR, 'devtools.txt'), dump)
+    } catch { /* ignore */ }
+  }
+  watchPage(active)
   await installReactiveMic(active)
   await installActionVisualizer(active)
-  // tsx/esbuild injects a __name helper that isn't defined in the browser's
-  // page.evaluate context (the Playwright runner bundles differently). Shim it.
-  await active.addInitScript(() => { (globalThis as any).__name = (globalThis as any).__name || ((f: any) => f) })
-  const live = await startLiveStream(active).catch(() => null)
-  mark(`browser up (${useAuth ? 'auth' : 'guest'}) — live: ${live?.url ?? 'n/a'}`)
+  if (!live) live = await startLiveStream(active).catch(() => null)
+  manifest.live = live?.url ?? null
+  manifest.captureMode = DISPLAY_MODE ? 'display (full browser window)' : 'page (CDP)'
+  mark(`browser up (${useAuth ? 'auth' : 'guest'}${IN_CONTAINER ? ', container' : ''}, capture: ${DISPLAY_MODE ? 'full-window' : 'page'}) — live: ${live?.url ?? 'n/a'}`)
 
-  const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
-  process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
-  const stagehand = new Stagehand({
-    env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
-  })
-  await stagehand.init()
-  const brain = (i: string) => actWithCache(stagehand, active, i)
+  // BRAIN — re-initializable in place. A double page reload detaches Stagehand
+  // ("uninitialized Stagehand object") and previously killed /act for the rest
+  // of the session; now POST /brain rebuilds it over the same CDP endpoint.
+  let stagehand: Stagehand | null = null
+  let brainAlive = false
+  const initBrain = async () => {
+    const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
+    stagehand = new Stagehand({
+      env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
+      model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
+    })
+    await stagehand.init()
+    brainAlive = true
+  }
+  await initBrain()
+  const brain = async (i: string) => {
+    if (!stagehand || !brainAlive) throw new Error('brain dead — POST /brain to re-init')
+    try { return await actWithCache(stagehand, active, i) }
+    catch (e) {
+      if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; mark('brain detached — POST /brain to re-init') }
+      throw e
+    }
+  }
 
   const chatUrl = `${APP_URL}/chat?provider=gemini&voiceArch=pipeline&agent=claude&agentUrl=${encodeURIComponent(AGENT_URL)}`
   const url = useAuth ? `${APP_URL}/dashboard` : chatUrl
@@ -103,84 +227,298 @@ async function main() {
   const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({}) } }) })
 
   let reqN = 0
-  const reqShot = async (label: string) => {
-    try { reqN++; const p = join(OUT_DIR, `req-${String(reqN).padStart(3,'0')}-${label}.jpg`)
-      await active.screenshot({ path: p, type: 'jpeg', quality: 60 }); mark(`artifact: ${p}`); return p } catch { return null }
+  // PROOF MEDIA PER TASK (user requirement 2026-07-31): every /act and /say
+  // returns BOTH a video clip (ring buffer + heartbeat frames, so it is a
+  // continuous wall-clock record) AND a screenshot, in the SAME response —
+  // never batched to run end. Failures surface (clipError), they don't
+  // silently degrade to "trust me".
+  const reqClip = async (n: number, label: string, seconds = 20): Promise<{ clip: string | null; clipError: string | null }> => {
+    if (!live?.clip) return { clip: null, clipError: 'live stream unavailable — no clips this session' }
+    try {
+      const p = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-${label}.mp4`)
+      const out = await live.clip(p, seconds)
+      if (out) { mark(`clip: ${out}`); return { clip: out, clipError: null } }
+      return { clip: null, clipError: 'clip failed — ffmpeg unavailable or too few frames' }
+    } catch (e) { return { clip: null, clipError: (e as Error).message } }
   }
-  // Per-task VIDEO clip — every /act and /say gets its own reviewable mp4 from
-  // the live-stream ring buffer, so we confirm the engine actually did the work
-  // (not just trust a screenshot or the text result). Named to the same counter.
-  const reqClip = async (label: string, seconds = 20) => {
-    if (!live?.clip) return null
-    try { const p = join(OUT_DIR, `req-${String(reqN).padStart(3,'0')}-${label}.mp4`)
-      const out = await live.clip(p, seconds); if (out) mark(`clip: ${out}`); return out } catch { return null }
+  const reqShot = async (n: number, label: string): Promise<string | null> => {
+    try { const p = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-${label}.jpg`)
+      await active.screenshot({ path: p, type: 'jpeg', quality: 60 }); return p } catch { return null }
   }
-  // TASK-WINDOW LEDGER — the replay model.
-  // There is ONE continuous Playwright recordVideo recording for the whole
-  // session (saved on /end). We do NOT cut a separate video per request; the
-  // recording already holds every task's footage. Instead each /act or /say
-  // records its window — wall-clock plus offset into the recording (relative to
-  // tCapture, when recording began) — so a viewer seeks straight to [rel0,rel1]
-  // to see exactly that task. Same footage a one-shot run hands you, just
-  // labeled by task. The live stream runs off its own screencast in parallel
-  // and never affects this recording.
-  const tasks: Array<{ n: number; label: string; text?: string; startMs: number; endMs: number; rel0: number; rel1: number; artifact?: string | null }> = []
-  const stampTask = (n: number, label: string, startMs: number, artifact: string | null, text?: string) => {
+  // TAB HUD — ONLY for headless/CDP capture, where the screencast has no
+  // browser chrome and tabs would be invisible. In full-window (display) mode
+  // the REAL tab strip is on camera, so the injected badge is clutter on the
+  // page — removed per user (2026-07-31).
+  const updateTabHud = async () => {
+    if (DISPLAY_MODE) {
+      await Promise.all(context.pages().map((p) => p.evaluate(() => document.getElementById('__osb_tabhud')?.remove()).catch(() => {})))
+      return
+    }
+    const pages = context.pages()
+    const activeI = pages.indexOf(active)
+    await Promise.all(pages.map((p, i) => p.evaluate((info: { i: number; n: number; isActive: boolean }) => {
+      let el = document.getElementById('__osb_tabhud')
+      if (!el) {
+        el = document.createElement('div'); el.id = '__osb_tabhud'
+        Object.assign(el.style, { position: 'fixed', top: '8px', left: '50%', transform: 'translateX(-50%)', zIndex: '2147483647', background: 'rgba(15,15,20,0.88)', color: '#ffd479', font: '600 13px monospace', padding: '5px 14px', borderRadius: '8px', pointerEvents: 'none', border: '1px solid rgba(255,212,121,0.4)' })
+        document.documentElement.appendChild(el)
+      }
+      el.textContent = `TAB ${info.i + 1}/${info.n}${info.isActive ? ' • ACTIVE' : ''} — ${location.host}${location.pathname}`
+    }, { i, n: pages.length, isActive: i === activeI }).catch(() => { /* page navigating */ })))
+  }
+  // MULTI-AGENT TAB REGISTRY — several director agents can share one engine
+  // without stepping on each other: a tab can be CLAIMED by an owner name;
+  // /act & /say on a tab claimed by someone else are refused (409) unless the
+  // matching owner is passed. Unclaimed tabs are free-for-all. The registry
+  // travels in /status and persists across sleep with the tab state.
+  const tabOwners = new Map<Page, { owner: string; claimedAt: number }>()
+  const ownerOf = (p: Page) => tabOwners.get(p)?.owner ?? null
+  const guardOwnership = (body: any): string | null => {
+    const o = ownerOf(active)
+    if (o && body.owner !== o) return `tab ${context.pages().indexOf(active)} is claimed by "${o}" — pass matching owner or switch tabs`
+    return null
+  }
+
+  // STATE ACROSS SLEEP — persist the tab layout (urls, active index, owners)
+  // on every change; on boot, reopen it. The engine wakes where it left off.
+  const TAB_STATE = join(OUT_DIR, 'last-tabs.json')
+  const saveTabState = () => {
+    try {
+      const pages = context.pages()
+      writeFileSync(TAB_STATE, JSON.stringify({
+        savedAt: Date.now(), activeIndex: pages.indexOf(active),
+        tabs: pages.map((p) => ({ url: p.url(), owner: ownerOf(p) })),
+      }, null, 2))
+    } catch { /* ignore */ }
+  }
+
+  // Stamp a task into the manifest. rel0/rel1 are ms since audio-capture start
+  // (the audio timeline), so transcript windows line up with task windows.
+  // Every task records WHICH TAB it ran on ({i, url} at execution time) — the
+  // per-tab memory that lets a director reconstruct what happened where.
+  const activeTab = () => ({ i: context.pages().indexOf(active), url: active.url(), owner: ownerOf(active) })
+  const stampTask = (n: number, label: string, startMs: number, clip: string | null, artifact: string | null, text?: string, heard?: string) => {
     const endMs = Date.now()
-    const rec = { n, label, text, startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), artifact }
-    tasks.push(rec); return rec
+    const devtools = devtoolsBufs.get(active)?.summary() ?? null
+    const rec = { n, label, text, heard, tab: activeTab(), startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), clip, artifact, devtools }
+    tasks.push(rec); writeManifest(); writeDevtoolsFile(); saveTabState(); return rec
   }
+
+  // WAKE WHERE IT LEFT OFF: reopen the pre-sleep tab layout (urls + owners +
+  // active tab). Index 0 is skipped — the boot flow just rebuilt the chat tab.
+  // Disable with OSBORN_RESTORE_TABS=0.
+  if (process.env.OSBORN_RESTORE_TABS !== '0' && existsSync(TAB_STATE)) {
+    try {
+      const st = JSON.parse(readFileSync(TAB_STATE, 'utf8'))
+      const extra = (st.tabs ?? []).slice(1)
+      for (const t of extra) {
+        active = await openTab(context, t.url); watchPage(active)
+        if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
+      }
+      if (extra.length) {
+        const pages = context.pages()
+        active = await switchTab(context, Math.min(st.activeIndex ?? 0, pages.length - 1))
+        await live?.retarget(active).catch(() => {})
+        mark(`restored ${extra.length} tab(s) from pre-sleep state`)
+      }
+    } catch { /* fresh start */ }
+  }
+  // Self-host auth: when OSBORN_ENGINE_TOKEN is set (always on public
+  // deployments — Fly exposes the control port), every request must carry it.
+  const TOKEN = process.env.OSBORN_ENGINE_TOKEN
   let ending = false
+  let lastActivity = Date.now()
+  // GRACEFUL SHUTDOWN — used by POST /end AND the idle watchdog. Every step
+  // bounded + a hard watchdog: a hung Stagehand/CDP close must never wedge
+  // the engine (the manifest's predecessor tasks.json was lost to exactly
+  // that hang because it only wrote after a clean teardown).
+  const gracefulEnd = async (reason: string) => {
+    if (ending) return
+    ending = true
+    mark(`shutting down — ${reason}`)
+    const watchdog = setTimeout(() => { console.log('[engine] teardown watchdog — force exit'); manifest.endedAt = Date.now(); writeManifest(); process.exit(0) }, 45000)
+    const bounded = (p: Promise<unknown> | undefined | null, ms: number) =>
+      p ? Promise.race([p.catch(() => null), new Promise((r) => setTimeout(() => r(null), ms))]) : Promise.resolve(null)
+    await bounded(brain('Click the Disconnect or Leave button to end the voice session').catch(() => null), 12000)
+    await active.waitForTimeout(2000).catch(() => {})
+    await bounded(fetch(`${AGENT_URL}/leave-room`, { method: 'POST' }), 5000)
+    const audioOut = join(RUN_DIR, 'audio-capture.webm')
+    const savedAudio = await bounded(saveCapture(active, audioOut).then(() => audioOut), 10000)
+    manifest.audioCapture = savedAudio ? 'audio-capture.webm' : null
+    await bounded(stagehand?.close(), 8000)
+    await bounded(live?.stop(), 5000)
+    await bounded(context.close(), 8000)
+    await bounded(browser.close(), 8000)
+    manifest.endedAt = Date.now()
+    writeManifest()
+    clearTimeout(watchdog)
+    server.close()
+    console.log(`[engine] done — run artifacts in ${RUN_DIR}`)
+    process.exit(0)
+  }
   const server = createServer(async (req, res) => {
     try {
       const path = (req.url || '').split('?')[0]
+      if (TOKEN && req.headers['x-engine-token'] !== TOKEN) return json(res, { error: 'unauthorized — x-engine-token required' }, 401)
+      // Any authenticated director command counts as activity for idle-stop.
+      // /status is excluded (pollers/health checks must not keep it awake).
+      if (path !== '/status') lastActivity = Date.now()
       if (req.method === 'GET' && path === '/status') {
-        return json(res, { inRoom: true, useAuth, live: live?.url, recordingStartedAt: tCapture, taskCount: tasks.length, tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12) })
+        // GROUND TRUTH, not cached flags — the old `inRoom: true` reported a
+        // healthy room while the page sat on the "Session paused" idle screen.
+        let pageUrl = ''
+        let pageState = 'unresponsive'
+        let idlePaused = false
+        try {
+          pageUrl = active.url()
+          pageState = (await Promise.race([
+            active.evaluate(() => document.readyState),
+            new Promise((r) => setTimeout(() => r('unresponsive'), 3000)),
+          ])) as string
+          if (pageState !== 'unresponsive')
+            idlePaused = await active.evaluate(() => /session paused/i.test(document.body?.innerText || '')).catch(() => false)
+        } catch { /* page dead */ }
+        const lastFrame = live?.lastFrameAt() ?? null
+        return json(res, {
+          run: RUN_STAMP, runDir: RUN_DIR, pageUrl, pageState, idlePaused,
+          brain: brainAlive ? 'ready' : 'dead', useAuth, live: live?.url,
+          lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
+          taskCount: tasks.length, activeTab: { i: context.pages().indexOf(active), url: active.url() },
+          tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
+        })
+      }
+      if (req.method === 'GET' && (path === '/clip' || path === '/artifact')) {
+        // Retrieve task N's proof media — how a REMOTE director (or the
+        // user's machine) pulls video (/clip) and screenshot (/artifact) off
+        // a Fly-hosted engine.
+        const n = Number(new URL(req.url || '', 'http://x').searchParams.get('n'))
+        const t = tasks.find((t) => t.n === n) as any
+        const file = path === '/clip' ? t?.clip : t?.artifact
+        if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}` }, 404)
+        res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })
+        createReadStream(file).pipe(res)
+        return
+      }
+      if (req.method === 'GET' && path === '/logs') {
+        // Full devtools state, all tabs — console, network, websockets.
+        return json(res, {
+          pages: context.pages().map((p, i) => {
+            const b = devtoolsBufs.get(p)
+            return { i, url: p.url(), console: b?.console.slice(-80) ?? [], network: b?.network.slice(-80) ?? [] }
+          }),
+        })
+      }
+      if (req.method === 'GET' && path === '/tasks') {
+        // This run's task index — same data as manifest.json on disk.
+        return json(res, { run: RUN_STAMP, runDir: RUN_DIR, model: 'per-task video; rel0/rel1 are ms on the audio-capture timeline', recordingStartedAt: tCapture, tasks })
       }
       const body = await readBody(req)
-      if (path === '/act') { const t0 = Date.now(); const r = await brain(body.instruction); mark(`act: ${String(body.instruction).slice(0, 60)}`); const shot = await reqShot('act'); const clip = await reqClip('act', body.clipSeconds ?? 20); const window = stampTask(reqN, 'act', t0, shot, body.instruction); return json(res, { ok: true, result: r, artifact: shot, clip, window }) }
-      if (path === '/say') { const t0 = Date.now(); await speakText(active, body.text); mark(`say: ${String(body.text).slice(0, 60)}`); await active.waitForTimeout(6000); const shot = await reqShot('say'); const clip = await reqClip('say', body.clipSeconds ?? 14); const window = stampTask(reqN, 'say', t0, shot, body.text); return json(res, { ok: true, artifact: shot, clip, window }) }
-      if (path === '/hear') { const since = Date.now() - tCapture - (body.lastMs ?? 20000); const heard = await hearSince(active, Math.max(0, since)).catch(() => ''); return json(res, { heard }) }
+      if (path === '/act') {
+        const owned = guardOwnership(body)
+        if (owned) return json(res, { error: owned }, 409)
+        const t0 = Date.now()
+        await updateTabHud()
+        const r = await brain(body.instruction)
+        mark(`act: ${String(body.instruction).slice(0, 60)}`)
+        // POST-ACTION SETTLE: let the click's EFFECT (popover opening, page
+        // reacting) paint and get captured before the clip is cut — clips cut
+        // at brain-return ended right before the effect and proved nothing.
+        await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
+        const n = ++reqN
+        const { clip, clipError } = await reqClip(n, 'act', body.clipSeconds ?? 20)
+        const shot = await reqShot(n, 'act')
+        const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
+        scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
+        return json(res, { ok: true, result: r, clip, clipError, artifact: shot, window })
+      }
+      if (path === '/say') {
+        const ownedSay = guardOwnership(body)
+        if (ownedSay) return json(res, { error: ownedSay }, 409)
+        const t0 = Date.now(); await updateTabHud(); await speakText(active, body.text); mark(`say: ${String(body.text).slice(0, 60)}`); await active.waitForTimeout(6000)
+        // Join the audio to the task: what did the agent say back?
+        const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
+        const n = ++reqN
+        const { clip, clipError } = await reqClip(n, 'say', body.clipSeconds ?? 14)
+        const shot = await reqShot(n, 'say')
+        const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
+        scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
+        return json(res, { ok: true, clip, clipError, artifact: shot, heard, window })
+      }
+      if (path === '/hear') {
+        // Errors surface — a silent catch here hid the timeline-skew bug for a day.
+        const since = Date.now() - tCapture - (body.lastMs ?? 20000)
+        try { return json(res, { heard: await hearSince(active, Math.max(0, since)) }) }
+        catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
+      }
       if (path === '/shot') { const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64') }) }
-      if (req.method === 'GET' && path === '/tasks') {
-        // The replay index: every task's window into the single recording.
-        return json(res, { recordingStartedAt: tCapture, recording: 'session-engine.webm (saved on /end)', tasks })
-      }
       if (path === '/tab') {
-        if (body.op === 'open') { active = await openTab(context, body.url); mark(`tab open: ${body.url ?? ''}`) }
-        else if (body.op === 'switch') { active = await switchTab(context, body.i); mark(`tab switch: ${body.i}`) }
-        return json(res, { ok: true, tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })) })
+        // open | switch | close | claim | release | list. Optional per-op:
+        //   owner: "<agent name>"      claims the opened tab / authorizes ops
+        //   viewport: 'mobile' | {width,height}   (open) — e.g. mobile view
+        // After ANY change of active tab the screencast is retargeted so the
+        // live stream + clips show the tab work actually happens on.
+        if (body.op === 'open') {
+          active = await openTab(context, body.url); watchPage(active)
+          if (body.viewport === 'mobile') await active.setViewportSize({ width: 390, height: 844 })
+          else if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
+          if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
+          await live?.retarget(active).catch(() => {}); mark(`tab open: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${body.viewport ? ' (mobile)' : ''}`)
+        }
+        else if (body.op === 'switch') { active = await switchTab(context, body.i); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`) }
+        else if (body.op === 'close') {
+          const target = context.pages()[body.i]
+          const o = target ? ownerOf(target) : null
+          if (o && body.owner !== o) return json(res, { error: `tab ${body.i} is claimed by "${o}" — pass matching owner to close` }, 409)
+          if (target) tabOwners.delete(target)
+          active = await closeTab(context, body.i); await live?.retarget(active).catch(() => {}); mark(`tab close: ${body.i}`)
+        }
+        else if (body.op === 'claim') {
+          const target = context.pages()[body.i]
+          if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
+          const o = ownerOf(target)
+          if (o && o !== body.owner) return json(res, { error: `tab ${body.i} already claimed by "${o}"` }, 409)
+          tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() }); mark(`tab claim: ${body.i} by ${body.owner}`)
+        }
+        else if (body.op === 'release') { const target = context.pages()[body.i]; if (target) tabOwners.delete(target); mark(`tab release: ${body.i}`) }
+        await updateTabHud(); saveTabState()
+        return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
       }
-      if (path === '/recover') { await active.reload({ timeout: 45000 }).catch(()=>{}); await active.waitForTimeout(4000); const shot = await reqShot('recover'); mark('recovered (page reloaded)'); return json(res, { ok: true, artifact: shot }) }
+      if (path === '/brain') {
+        // Recover a detached Stagehand without restarting the whole engine.
+        try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
+        await initBrain()
+        mark('brain re-initialized')
+        return json(res, { ok: true, brain: 'ready' })
+      }
+      if (path === '/recover') {
+        await active.reload({ timeout: 45000 }).catch(() => {})
+        await active.waitForTimeout(4000)
+        const shot = join(RUN_DIR, `recover-${Date.now()}.jpg`)
+        await active.screenshot({ path: shot, type: 'jpeg', quality: 60 }).catch(() => {})
+        mark('recovered (page reloaded)')
+        return json(res, { ok: true, artifact: shot, brain: brainAlive ? 'ready' : 'dead' })
+      }
       if (path === '/end') {
-        ending = true
-        mark('end requested — graceful leave')
         json(res, { ok: true, msg: 'shutting down' })
-        await brain('Click the Disconnect or Leave button to end the voice session').catch(() => {})
-        await active.waitForTimeout(2000)
-        await fetch(`${AGENT_URL}/leave-room`, { method: 'POST' }).catch(() => {})
-        const out = join(OUT_DIR, 'session-engine-capture.webm')
-        await saveCapture(active, out).catch(() => {})
-        const video = active.video()
-        await stagehand.close().catch(() => {})
-        await live?.stop().catch(() => {})
-        await context.close().catch(() => {})
-        if (video) await video.saveAs(join(OUT_DIR, 'session-engine.webm')).catch(() => {})
-        // Ship the replay index next to the recording: each task's window
-        // (rel0..rel1 ms into session-engine.webm) + its screenshot.
-        try { writeFileSync(join(OUT_DIR, 'tasks.json'), JSON.stringify({ recording: 'session-engine.webm', recordingStartedAt: tCapture, tasks }, null, 2)) } catch { /* ignore */ }
-        await browser.close()
-        server.close()
-        console.log(`[engine] done — artifacts in ${OUT_DIR}`)
-        process.exit(0)
+        void gracefulEnd('end requested')
+        return
       }
-      json(res, { error: 'unknown', paths: ['/status', '/tasks', '/act', '/say', '/hear', '/shot', '/tab', '/recover', '/end'] }, 404)
-    } catch (e) { json(res, { error: (e as Error).message }, 500) }
+      json(res, { error: 'unknown', paths: ['/status', '/tasks', '/clip?n=N', '/artifact?n=N', '/act', '/say', '/hear', '/shot', '/tab', '/brain', '/recover', '/end'] }, 404)
+    } catch (e) { json(res, { error: (e as Error).message, brain: brainAlive ? 'ready' : 'dead' }, 500) }
   })
-  server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})`))
+  server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))
 
-  // Keep the process alive; safety leave if the director never ends it.
-  setInterval(() => { if (!ending) void tCapture }, 30000)
+  // IDLE AUTO-STOP (user request 2026-07-31): after OSBORN_IDLE_STOP_MS with
+  // no director commands AND nobody watching the live stream, shut down
+  // gracefully — on Fly the machine stops (restart policy 'never') and
+  // auto_start_machines boots it again on the next request. Default 10 min in
+  // containers, disabled locally (set OSBORN_IDLE_STOP_MS to override; 0 = off).
+  const IDLE_STOP_MS = Number(process.env.OSBORN_IDLE_STOP_MS ?? (IN_CONTAINER ? 600000 : 0))
+  setInterval(() => {
+    if (ending || !IDLE_STOP_MS) return
+    if ((live?.viewerCount() ?? 0) > 0) { lastActivity = Date.now(); return }
+    if (Date.now() - lastActivity > IDLE_STOP_MS) void gracefulEnd(`idle ${Math.round(IDLE_STOP_MS / 60000)}min — auto-stop`)
+  }, 30000)
 }
 
 main().catch((e) => { console.error('[engine] fatal:', e); process.exit(1) })

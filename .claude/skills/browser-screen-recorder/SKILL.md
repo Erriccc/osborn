@@ -71,6 +71,20 @@ the click ripples, and the request/feedback loop happening live — and talk to
 the agent while watching. The recorded replay is the after-the-fact proof;
 the live URL is the during-the-run window.
 
+### Casting the feed into a meeting — NO TUNNELS (policy, 2026-07-31)
+
+The meeting cast (`POST <agent>/canvas {"kind":"show","mode":"stream","url":<feed>}`
+→ SSE → meeting-canvas `<img src="{url}/stream">` → Recall bot camera) needs the
+MJPEG feed on a PUBLIC url. Do NOT tunnel a local engine to get one:
+- ngrok free tier: continuous MJPEG burned the entire monthly bandwidth cap in
+  one demo (`ERR_NGROK_725`, all traffic 403 until reset), plus the URL rotates
+  every restart and the two-account token saga cost hours.
+- The sanctioned path: run the engine ON the Fly tester machine (`fly.toml`
+  already exposes :8080; `FLY_APP_NAME` makes `live.url` the public
+  `https://<app>.fly.dev/` automatically). Stable URL, no vendor, no cap.
+- A local engine is for local runs and testing; if a cast demo is requested
+  while local, move the engine to Fly rather than reaching for a tunnel.
+
 ## Verify the media — how (the mechanics of the mandatory step above)
 
 A green assertion is a CLAIM, not proof of experience. Before reporting a

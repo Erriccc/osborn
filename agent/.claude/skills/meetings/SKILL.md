@@ -58,7 +58,15 @@ curl -sS -X POST http://localhost:8741/canvas -H 'Content-Type: application/json
 curl -sS -X POST http://localhost:8741/canvas -H 'Content-Type: application/json' \
   -d '{"kind":"show","mode":"notes","title":"...","items":["...","..."]}'
 ```
-`mode` = `idle` | `notes` (title+items) | `link` (url) | `web` (iframe url) | `text` (title+text).
+`mode` = `idle` | `notes` (title+items) | `link` (url) | `web` (iframe url) | `text` (title+text)
+| `stream` (url — renders `<img src="{url}/stream">`, a live MJPEG browser feed).
+
+**`stream` mode — NO TUNNELS policy:** the feed URL must be PUBLIC. Never
+tunnel a local browser engine to get one (ngrok's free tier burned its entire
+monthly bandwidth cap on one continuous-MJPEG demo — `ERR_NGROK_725`). Run the
+browser-screen-recorder engine on its Fly machine instead; its `:8080` MJPEG is
+already public at `https://<app>.fly.dev/`. See the browser-screen-recorder
+skill ("Casting the feed into a meeting") for details.
 
 **When to speak into the meeting:** By DEFAULT stay silent (observer) for
 `[MEETING — *]:` chunks — take notes, don't interrupt. Speak into the meeting

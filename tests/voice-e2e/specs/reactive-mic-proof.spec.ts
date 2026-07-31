@@ -1,3 +1,4 @@
+import { envKey } from '../lib/env'
 import { test, expect } from '@playwright/test'
 import { installReactiveMic, waitForMicOpen, speakText } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
@@ -13,10 +14,7 @@ import { readFileSync, writeFileSync } from 'fs'
  */
 
 function deepgramKey(): string {
-  const env = readFileSync('/Users/newupgrade/Desktop/Developer/osborn/agent/.env', 'utf8')
-  const m = env.match(/^DEEPGRAM_API_KEY=(\S+)/m)
-  if (!m) throw new Error('DEEPGRAM_API_KEY not found in agent/.env')
-  return m[1]
+  return envKey('DEEPGRAM_API_KEY')
 }
 
 async function transcribe(webmPath: string): Promise<string> {

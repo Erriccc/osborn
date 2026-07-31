@@ -33,3 +33,16 @@ export async function switchTab(
   await page.bringToFront()
   return page
 }
+
+/** Close a tab by index; returns the nearest remaining tab as the new active. */
+export async function closeTab(context: BrowserContext, which: number): Promise<Page> {
+  const pages = context.pages()
+  const page = pages[which]
+  if (!page) throw new Error(`no tab at index ${which}`)
+  if (pages.length === 1) throw new Error('refusing to close the last tab — use /end to shut the engine down')
+  await page.close({ runBeforeUnload: false }).catch(() => {})
+  const remaining = context.pages()
+  const next = remaining[Math.min(which, remaining.length - 1)]
+  await next.bringToFront()
+  return next
+}

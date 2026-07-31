@@ -94,6 +94,12 @@ export async function startElementCapture(page: Page): Promise<void> {
         src.connect(dest)
         src.connect(analyser)
         tapped.add(el)
+        // TIMELINE ANCHOR — the recording's audio timeline effectively starts
+        // when the FIRST source connects (verified 2026-07-31: words landed
+        // 38.3s "early" in the file vs wall clock, exactly the login→room-join
+        // gap before any <audio> existed). hearSince converts wall-clock
+        // windows into file time using this anchor.
+        if (!(window as any).__osbornAudioAnchor) (window as any).__osbornAudioAnchor = Date.now()
       } catch {
         /* element not ready yet — rescan will retry */
       }
@@ -119,7 +125,7 @@ export async function startElementCapture(page: Page): Promise<void> {
  * word timestamps, and comprehension comes from AUDIO — no reliance on the
  * app having a text transcript in its UI.
  */
-export async function peekCapture(page: Page): Promise<{ base64: string; sinceStartMs: number }> {
+export async function peekCapture(page: Page): Promise<{ base64: string; sinceStartMs: number; anchorOffsetMs: number }> {
   return await page.evaluate(async () => {
     const cap = (window as any).__osbornCapture
     if (!cap) throw new Error('startCapture was never called')
@@ -131,7 +137,10 @@ export async function peekCapture(page: Page): Promise<{ base64: string; sinceSt
     const bytes = new Uint8Array(buf)
     for (let i = 0; i < bytes.length; i += 0x8000)
       bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-    return { base64: btoa(bin), sinceStartMs: Date.now() - cap.startedAt }
+    // anchorOffsetMs: ms between capture start and the recording's actual
+    // audio-timeline zero (first tapped source). 0 if no source ever tapped.
+    const anchor = (window as any).__osbornAudioAnchor ?? cap.startedAt
+    return { base64: btoa(bin), sinceStartMs: Date.now() - cap.startedAt, anchorOffsetMs: Math.max(0, anchor - cap.startedAt) }
   })
 }
 

@@ -70,7 +70,7 @@ export async function screenTail(page: Page): Promise<string> {
 export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const { peekCapture } = await import('./audio-capture')
   const { envKey } = await import('./env')
-  const { base64 } = await peekCapture(page)
+  const { base64, anchorOffsetMs } = await peekCapture(page)
   const audio = Buffer.from(base64, 'base64')
   const res = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', {
     method: 'POST',
@@ -81,8 +81,12 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const j: any = await res.json()
   const words: Array<{ punctuated_word?: string; word: string; start: number }> =
     j?.results?.channels?.[0]?.alternatives?.[0]?.words ?? []
+  // Deepgram's word.start is seconds into the FILE, whose timeline begins at
+  // the first tapped source, NOT at capture start (verified 38.3s skew,
+  // 2026-07-31). Convert the wall-clock window into file time via the anchor.
+  const fileSinceMs = Math.max(0, sinceMs - anchorOffsetMs)
   return words
-    .filter((w) => w.start * 1000 >= sinceMs)
+    .filter((w) => w.start * 1000 >= fileSinceMs)
     .map((w) => w.punctuated_word ?? w.word)
     .join(' ')
 }

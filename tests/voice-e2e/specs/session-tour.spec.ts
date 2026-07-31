@@ -19,7 +19,7 @@ import { writeFileSync } from 'fs'
  * the single video can be clipped afterward. Meeting needs OSBORN_MEETING_URL.
  */
 
-const AGENT_URL = process.env.OSBORN_AGENT_URL || 'https://osborn-d4f24f46-v2.fly.dev'
+const AGENT_URL = process.env.OSBORN_AGENT_URL || 'https://osborn-1b9d70e5-v2.fly.dev'
 const APP_URL = process.env.OSBORN_APP_URL || 'https://www.voice-native.com'
 const CHAT_URL = `${APP_URL}/chat?provider=gemini&voiceArch=pipeline&agent=claude&agentUrl=${encodeURIComponent(AGENT_URL)}`
 const MEETING_URL = process.env.OSBORN_MEETING_URL || ''

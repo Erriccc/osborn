@@ -1,13 +1,16 @@
 import { readFileSync, existsSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 
 /**
  * Key resolution, portable: process env first (containers/CI pass keys that
- * way), then an env-file (OSBORN_ENV_FILE, or the local agent/.env on the
- * dev machine).
+ * way), then an env-file (OSBORN_ENV_FILE, or the repo's agent/.env resolved
+ * RELATIVE to this file — no machine-specific absolute paths).
  */
+const __envDirname = dirname(fileURLToPath(import.meta.url))
 const ENV_FILE_CANDIDATES = [
   process.env.OSBORN_ENV_FILE,
-  '/Users/newupgrade/Desktop/Developer/osborn/agent/.env',
+  join(__envDirname, '..', '..', '..', 'agent', '.env'),
   '/secrets/.env',
 ].filter(Boolean) as string[]
 
