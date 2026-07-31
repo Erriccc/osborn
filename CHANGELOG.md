@@ -1,5 +1,56 @@
 # Osborn Changelog
 
+## 2026-07 — Meeting copilot, session-engine, voice-e2e product, room-lifecycle hardening (0.9.49–0.9.94)
+
+### Cloud infrastructure & volume architecture
+- **Hybrid volume architecture (0.9.49)** — `HOME=/workspace` so the user home (Claude OAuth, sessions, skills, dotfiles, npm cache) persists on the Fly volume, while osborn itself stays in the image (atomic image-swap updates, build toolchain present, no runtime OOM). `NPM_CONFIG_PREFIX=/workspace/.npm-global` + PATH so user `npm install -g` lands on the volume and survives restarts. Zero-movement migration: `HOME=/workspace` makes `~/.claude` resolve to the existing `/workspace/.claude`. `updateOsborn` strips stale `HOME`/`OSBORN_CWD` from existing machine configs so the image default takes effect on update.
+- **Heap-OOM fix (0.9.51)** — `killCurrentLLM()` now stops the `PipelineDirectLLM` summary-index watcher (a 10s `setInterval` whose closure retains the entire `PipelineDirectLLM → ClaudeLLM` graph) BEFORE aborting the subprocess. Previously repeated reconnects leaked timers + retained graphs re-reading JSONL every 10s until node OOM'd (~980 MB).
+- **Room-presence lifecycle + `/connect-room` & `/leave-room` endpoints (0.9.52)** — the agent LEAVES its LiveKit room when no user is present and rejoins on demand, instead of eager-connecting on boot and holding the room for the machine's life (a single forgotten session burned 25h of connection-minutes). Volume increased to 20 GB; machine-replacement timeout raised to 300s.
+- **Idle machine self-stop + zombie-presence watchdog (0.9.73)** — after an intentional alone-leave the agent used to sit idle forever with the Fly machine `started`, billing 24/7 (the "$123 Fly bill fix"). Now `process.exit(0)` after a 10-min idle grace cleanly STOPS the machine (billing stops, volume + JSONL persist); the `on-failure` restart policy boots it on the next Resume. Local dev never exits; override with `OSBORN_IDLE_EXIT=0`.
+- **Golden-snapshot / skill-seed refresh** — image-default skills refresh on version bump; added `voice-native-sync`, `ground-assumptions` skills to the seed set.
+
+### Session-sync & ordering
+- **Mandatory version check for voice-native-sync skill (0.9.74)** — sync defaults `targetWorkDir` to the machine's own working dir. Stale clients that omitted it wrote source slugs verbatim; those sessions LISTed fine but silently failed to RESUME (SDK resumes at `cwd=workingDir`, whose slug didn't match).
+- **Preserve source mtime on file copy (0.9.75)** — `cpSync` stamped copies with "now", scrambling session ordering so the frontend's most-recent-by-mtime auto-resume picked a random file. Now uses `utimesSync` to preserve source mtime.
+
+### Room lifecycle / connection stability
+- **Ghost-agent rejoin (0.9.49)** — agent rejoins LiveKit on `RoomEvent.Disconnected` (was going ghost: process alive, room dropped, `/health` falsely reporting `connected`). `checkOsbornHealth` now inspects `livekit.status`.
+- **Dual disconnect paths (0.9.58)** — split `disconnect()` (explicit "Leave" → POST `/leave-room`) from `disconnectFromLiveKitLifecycle()` (transient LiveKit drop → do NOT tell agent to leave). Fixes a regression where every LiveKit lifecycle drop made the agent leave the room the user was reconnecting to.
+- **Participant-adopt + join-race fix (0.9.76)** — `/connect-room` adopts a user who won the join race (already in the room before the agent rejoined, so `ParticipantConnected` never fired). Zombie-watchdog forced-leave sets `livekitState.status = 'idle'` immediately instead of waiting for the `Disconnected` event.
+- **Stable room code (0.9.77)** — room code persisted to `~/.osborn/room-code` (on the volume) so restarts don't rotate the room. Rotation raced clients that fetched `/room-code` just before a restart, stranding them on "Connecting…".
+- **Periodic image build checks (0.9.78)**; trimmed whitespace from `FLY_API_TOKEN`/`FLY_SANDBOX_APP`.
+- **Leave-room guard (0.9.79)** — `/leave-room` ignored when participants are still in the room, so a stale/racing teardown can't kick the agent out mid-adopt.
+- **Event-loss adopter (0.9.80–0.9.81)** — 5s poll re-emits/adopts participants when a participant is present but has no voice session. 0.9.81: the handler is CALLED directly — synthetic `room.emit()` does not reach rtc-node listeners.
+- **Temporary rooms (0.9.83)** — a fresh `Room` instance per session (fixes rtc-node `removeAllListeners` deafness on leave/rejoin) plus fast tab-close leave (20s ghost window vs 3min). Frontend mints the LiveKit token from the `roomName` that `/connect-room` returns. Backwards-compatible with older agents.
+
+### Voice / audio quality
+- **Echo-prevention & interruption tuning (0.9.59–0.9.72)** — bumped `@livekit/*` 1.2.1→1.4.6, `rtc-node` 0.13.24→0.13.29; added `aecWarmupDuration`; refined `falseInterruptionTimeout`/`minDuration`/`minWords`. TTS stall mitigations (0.9.61). Gemini model → `2.5-flash` with adjusted interrupt handling (0.9.67). Extensive audio/agent-state observability logging (0.9.63, 0.9.68, 0.9.71). Idle-timeout tuning (0.9.64–0.9.65).
+
+### Meeting copilot
+- **Live meeting transcript via Recall (0.9.84)** — restored live transcript using Recall `realtime_endpoints` webhooks; the batch `download_url` only populates post-meeting.
+- **Meeting cast via `output_media` (0.9.85)** — display a webpage as the bot's camera in the meeting. Off by default (silent invisible observer).
+- **Accept `partial_data` transcripts (0.9.86)** — low-latency streaming emits partials during the call (finals lag); old code dropped all partials → no live transcript. Now accepts partials with dedup + logs every Recall webhook receipt.
+- **Meeting canvas + task ledger + blank-page fix (0.9.87)** — a single `/meeting-canvas` page becomes the bot's camera, mic (plays TTS), and ears; connects to `GET /canvas-stream` (SSE) with `say`/`show` commands and resyncs its visual on reconnect. Cast target defaults to the meeting canvas pointed at the agent's own public URL.
+- **Writer-subagent delegation + `/tts` audio into meeting (0.9.89)** — the `meetings` skill delegates ALL file/transcript work to the `writer` sub-agent in one `Task` call, because the main orchestrator's hard 3-tool-call budget blocks doing it directly.
+- **Live transcript buffering → LLM (0.9.92)** — buffered webhook finals drained on a 20s flush timer into `currentLLM.chat()` tagged `[MEETING — <botId>]`.
+- **Meeting interruption support (0.9.93)** — a human's `speech_on` while the bot's TTS is playing triggers an immediate `{ kind: 'stop' }` canvas event; the cut-off text + who interrupted is prepended to the next flush.
+
+### Session-engine (director-controlled browser)
+- **Persistent director-controlled browser + live-stream + tabs (0.9.84+)** — `tests/voice-e2e/scripts/session-engine.ts` maintains one long-lived browser session; live CDP screencast → MJPEG on the Fly machine's public URL; multi-tab helpers; canvas mock/smoke harness.
+
+### voice-e2e as a distributable product (0.9.82+)
+- **Versioned self-updating skill** served from `/api/test-skill` (+ `/bundle` harness file bundle, baked at build time to `public/voice-e2e-bundle.json`), notify-first update check, and a landing page with a copy-paste agent install message.
+- **Harness**: scenario runner, reactive mic, element ears, DevTools sense, supervisor flight-log channel, step cache, action visualizer, live browser stream, MANDATORY media-review step. Playwright trace disabled (trace.zip truncates on self-closed CDP browser).
+- **Bring-your-own-browser** (`VOICE_E2E_BROWSER_URL`: local launch / long-lived Chrome-Docker CDP / Browserless / Browserbase).
+- Packaged agent skills now versioned and shipped on every machine.
+
+### Frontend / misc
+- **Bug reporting system (0.9.55)** — API + Supabase schema (`003_bug_reports.sql`), reachable from VoiceRoom.
+- **Skills explorer** — view skill content, two-click remove, one-tap official-catalog install; agent `skill_get`/`skill_remove` protocol.
+- **Auto-detect cloud mode** on first dashboard visit for accounts with a cloud instance.
+- **Inline meeting-join input** replacing the fragile `prompt()`.
+- Seeded `ground-assumptions` skill; reframed to architectural-fit (0.9.50).
+
 ## 2026-06-01 — Volume-as-HOME architecture (post 0.9.47)
 
 Replaces the legacy `/workspace/.claude` symlink architecture with `HOME=/workspace/home`,

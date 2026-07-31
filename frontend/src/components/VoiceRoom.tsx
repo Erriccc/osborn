@@ -918,12 +918,12 @@ function ControlMenu({
                   <p className="text-[11px] text-gray-500">No skills installed</p>
                 )}
                 {/* Catalog: one-tap official skills */}
-                {skills && !skills.some((sk) => /voice-e2e/i.test(sk.folder || sk.name)) && (
+                {skills && !skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder || sk.name)) && (
                   <button
-                    onClick={() => onInstallFromCatalog?.('voice-e2e', '/api/test-skill')}
+                    onClick={() => onInstallFromCatalog?.('browser-screen-recorder', '/api/browser-screen-recorder')}
                     className="mt-2 w-full py-1.5 text-[11px] rounded-lg bg-gray-800/70 border border-amber-500/20 text-amber-400 hover:bg-gray-800 transition-colors"
                   >
-                    ⤓ Install Voice-E2E testing skill (official)
+                    ⤓ Install Browser Screen Recorder skill (official)
                   </button>
                 )}
               </div>

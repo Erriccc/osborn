@@ -1,8 +1,13 @@
-# Voice E2E Testing — ears, mouth, hands + brain for voice web apps
+# Browser Screen Recorder — drive any web app (voice, hands + a brain) and record proof
 
-Use this skill when asked to test, debug, or measure the osborn voice app (or ANY
-voice/audio web app) end-to-end in a real browser: speaking to it, hearing its
-replies, interrupting it, checking UI flows, or gathering latency metrics.
+Use this skill when asked to test, debug, measure, or demonstrate the osborn
+voice app (or ANY voice/web app) end-to-end in a real browser: give it a target +
+an intent, and it drives the app — speaking to it, hearing its replies,
+interrupting it, checking UI flows — and records proof (per-action screenshot +
+mp4, audio, DevTools diagnostics, latency metrics).
+
+(Formerly "voice-e2e". Renamed 2026-07-31; the harness SOURCE dir is still
+`tests/voice-e2e/`. Served source of truth: https://www.voice-native.com/api/browser-screen-recorder)
 
 ## What this is
 
@@ -155,6 +160,18 @@ assertion was the liar.
 - Manual `chromium.launch` bypasses config-level video recording — pass
   `recordVideo` on the context and `video.saveAs` after `context.close()` but
   before `browser.close()`.
+- AUDIO TIMELINE SKEW: the ears recording's file timeline starts at the FIRST
+  tapped source (room join), NOT at capture start — Deepgram word.start was
+  38.3s "early" vs wall clock and `hearSince` filtered every real word out,
+  returning '' while the audio provably contained the answer. Fixed 2026-07-31:
+  `__osbornAudioAnchor` stamps first-tap epoch; `hearSince` converts wall-clock
+  windows to file time via `anchorOffsetMs` from `peekCapture`. Never compare
+  transcript timestamps to wall-clock windows without the anchor.
+- Never `.catch(() => '')` around hearing/asserting paths — that exact silent
+  catch in `/hear` masked the timeline-skew bug as "agent said nothing".
+- Engine teardown MUST be time-bounded (Stagehand/CDP close can hang forever);
+  v2 `/end` races every step + a 45s watchdog, and the manifest is written
+  incrementally so nothing depends on a clean exit.
 
 ## Portability
 
