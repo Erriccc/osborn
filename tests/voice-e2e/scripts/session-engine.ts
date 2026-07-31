@@ -176,8 +176,17 @@ async function main() {
   // lifecycle. Every task response carries the active tab's summary so the
   // DIRECTOR reviews debug state alongside the media before deciding the next
   // step; GET /logs serves the full buffers; devtools.txt persists per run.
+  // Late-bound so watchPage (defined early) can emit webhooks (wired later).
+  let notifyRef: (event: string, payload?: Record<string, unknown>) => void = () => {}
   const devtoolsBufs = new Map<Page, DevtoolsBuffer>()
-  const watchPage = (p: Page) => { if (!devtoolsBufs.has(p)) devtoolsBufs.set(p, attachDevtools(p)) }
+  const watchPage = (p: Page) => {
+    if (devtoolsBufs.has(p)) return
+    devtoolsBufs.set(p, attachDevtools(p))
+    // Browser events → webhooks: navigations ("the browser got forwarded")
+    // and page errors, tagged with the tab they happened on.
+    p.on('framenavigated', (f) => { if (f === p.mainFrame()) notifyRef('navigation', { url: f.url(), tab: context.pages().indexOf(p) }) })
+    p.on('pageerror', (e) => notifyRef('page_error', { message: e.message.slice(0, 300), tab: context.pages().indexOf(p) }))
+  }
   const writeDevtoolsFile = () => {
     try {
       const dump = context.pages().map((p, i) => {
@@ -305,7 +314,9 @@ async function main() {
     const endMs = Date.now()
     const devtools = devtoolsBufs.get(active)?.summary() ?? null
     const rec = { n, label, text, heard, tab: activeTab(), startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), clip, artifact, devtools }
-    tasks.push(rec); writeManifest(); writeDevtoolsFile(); saveTabState(); return rec
+    tasks.push(rec); writeManifest(); writeDevtoolsFile(); saveTabState()
+    notifyRef('task', { task: { n, label, text, heard, tab: rec.tab }, clipUrl: clip ? `/clip?n=${n}` : null, artifactUrl: artifact ? `/artifact?n=${n}` : null })
+    return rec
   }
 
   // WAKE WHERE IT LEFT OFF: reopen the pre-sleep tab layout (urls + owners +
@@ -333,6 +344,31 @@ async function main() {
   let ending = false
   let lastActivity = Date.now()
 
+  // EVENT WEBHOOKS — push, not poll. When OSBORN_WEBHOOK_URL is set, the
+  // engine POSTs JSON events there (fire-and-forget, 5s cap): task completions
+  // (with media URLs), page navigations, tab changes, journey saves, page
+  // errors, engine lifecycle. Optional OSBORN_WEBHOOK_TOKEN rides along as
+  // x-engine-token. Failures mark once (no log spam) and never block work.
+  const WEBHOOK_URL = process.env.OSBORN_WEBHOOK_URL || null
+  const WEBHOOK_TOKEN = process.env.OSBORN_WEBHOOK_TOKEN || null
+  let webhookFailures = 0
+  const notify = (event: string, payload: Record<string, unknown> = {}) => {
+    if (!WEBHOOK_URL) return
+    fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(WEBHOOK_TOKEN ? { 'x-engine-token': WEBHOOK_TOKEN } : {}) },
+      body: JSON.stringify({ event, t: Date.now(), run: RUN_STAMP, ...payload }),
+      signal: AbortSignal.timeout(5000),
+    }).then(() => { webhookFailures = 0 })
+      .catch(() => { if (++webhookFailures === 1) mark(`webhook delivery failing → ${WEBHOOK_URL}`) })
+  }
+  // Delivery-proof sink: point OSBORN_WEBHOOK_URL at this engine's own
+  // /webhook-sink to verify the full HTTP push path, or read what an external
+  // receiver would have gotten.
+  const webhookSink: Array<Record<string, unknown>> = []
+  notifyRef = notify
+  notify('engine_ready', { live: live?.url, profile: manifest.profile, useAuth, captureMode: manifest.captureMode })
+
   // JOURNEY FRAMING — the "user feel" container around a test. A journey has
   // a name and a beginning; /journey end CLEANS UP (extra tabs closed,
   // default viewport restored) and PROMOTES the step sequence into
@@ -349,6 +385,7 @@ async function main() {
     if (ending) return
     ending = true
     mark(`shutting down — ${reason}`)
+    notify('engine_stopping', { reason })
     const watchdog = setTimeout(() => { console.log('[engine] teardown watchdog — force exit'); manifest.endedAt = Date.now(); writeManifest(); process.exit(0) }, 45000)
     const bounded = (p: Promise<unknown> | undefined | null, ms: number) =>
       p ? Promise.race([p.catch(() => null), new Promise((r) => setTimeout(() => r(null), ms))]) : Promise.resolve(null)
@@ -427,6 +464,10 @@ async function main() {
         return json(res, { run: RUN_STAMP, runDir: RUN_DIR, model: 'per-task video; rel0/rel1 are ms on the audio-capture timeline', recordingStartedAt: tCapture, tasks })
       }
       const body = await readBody(req)
+      if (path === '/webhook-sink') {
+        if (req.method === 'POST') { webhookSink.push(body); if (webhookSink.length > 20) webhookSink.shift(); return json(res, { ok: true }) }
+        return json(res, { received: webhookSink })
+      }
       if (path === '/act') {
         const owned = guardOwnership(body)
         if (owned) return json(res, { error: owned }, 409)
@@ -516,6 +557,7 @@ async function main() {
           writeScenario()
         }
         await updateTabHud(); saveTabState()
+        notify('tab', { op: body.op, activeTab: activeTab(), tabCount: context.pages().length })
         return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
       }
       if (path === '/journey') {
@@ -540,6 +582,7 @@ async function main() {
           }
           mark(`journey end: ${journey.name} (${steps.length} step(s)${saved ? ', saved to knowledge' : ''})`)
           const done = { ok: true, name: journey.name, steps: steps.length, saved, tasks: [journey.startTaskN + 1, reqN] }
+          notify('journey_end', { name: journey.name, goal: journey.goal ?? null, steps: steps.length, saved: !!saved })
           journey = null
           return json(res, done)
         }
