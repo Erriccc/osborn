@@ -660,6 +660,208 @@ function TextInput({
   )
 }
 
+// Live clock — always-visible ticking time in the header so every screenshot
+// carries a timestamp. Seconds tick + pulse dot keep the UI feeling alive.
+function LiveClock() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  const hh = String(now.getHours() % 12 || 12).padStart(2, '0')
+  const mm = String(now.getMinutes()).padStart(2, '0')
+  const ss = String(now.getSeconds()).padStart(2, '0')
+  const ampm = now.getHours() >= 12 ? 'PM' : 'AM'
+  return (
+    <div
+      className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800/40 border border-gray-700/30 select-none"
+      title={now.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+    >
+      <span className="relative flex h-1.5 w-1.5">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-40" />
+        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-400/80" />
+      </span>
+      <span className="font-mono text-[11px] tabular-nums text-gray-300 tracking-tight">
+        {hh}:{mm}<span className="text-gray-500">:{ss}</span>
+      </span>
+      <span className="text-[9px] font-medium text-gray-500">{ampm}</span>
+    </div>
+  )
+}
+
+// Shared skills panel — the single source of truth for the skills UI. Mounted
+// in TWO places: the first-class header SkillsPopover (primary, high-visibility)
+// and the ControlMenu Tools tab (kept for muscle memory).
+interface SkillsPanelProps {
+  skills?: { name: string; description: string; folder?: string }[]
+  onAddSkill?: (name: string, content: string) => void
+  onViewSkill?: (folder: string) => void
+  onRemoveSkill?: (folder: string) => void
+  onInstallFromCatalog?: (name: string, url: string) => void
+  skillRemoveArm?: string | null
+  setSkillRemoveArm?: (v: string | null) => void
+  showAddSkill?: boolean
+  setShowAddSkill?: (v: boolean) => void
+  newSkillName?: string
+  setNewSkillName?: (v: string) => void
+  newSkillContent?: string
+  setNewSkillContent?: (v: string) => void
+}
+
+function SkillsPanel({
+  skills,
+  onAddSkill,
+  onViewSkill,
+  onRemoveSkill,
+  onInstallFromCatalog,
+  skillRemoveArm,
+  setSkillRemoveArm,
+  showAddSkill,
+  setShowAddSkill,
+  newSkillName,
+  setNewSkillName,
+  newSkillContent,
+  setNewSkillContent,
+}: SkillsPanelProps) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Skills</h4>
+        <button
+          onClick={() => setShowAddSkill?.(!showAddSkill)}
+          className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+        >
+          {showAddSkill ? 'Cancel' : '+ Add'}
+        </button>
+      </div>
+      {showAddSkill && (
+        <div className="mb-2 p-2 rounded-lg bg-gray-800/50 border border-gray-700/30 space-y-2">
+          <input
+            type="text"
+            value={newSkillName || ''}
+            onChange={(e) => setNewSkillName?.(e.target.value)}
+            placeholder="Skill name (e.g. deploy-check)"
+            className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500"
+          />
+          <textarea
+            value={newSkillContent || ''}
+            onChange={(e) => setNewSkillContent?.(e.target.value)}
+            placeholder="# Skill: Name&#10;&#10;Description...&#10;&#10;## When to use&#10;...&#10;&#10;## How to execute&#10;..."
+            rows={5}
+            className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500 resize-none font-mono"
+          />
+          <button
+            onClick={() => {
+              if (newSkillName?.trim() && newSkillContent?.trim()) {
+                onAddSkill?.(newSkillName.trim(), newSkillContent.trim())
+              }
+            }}
+            disabled={!newSkillName?.trim() || !newSkillContent?.trim()}
+            className="w-full py-1.5 text-xs bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Save Skill
+          </button>
+        </div>
+      )}
+      {skills && skills.length > 0 ? (
+        <div className="space-y-1">
+          {skills.map((skill) => {
+            const folder = skill.folder || skill.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')
+            const armed = skillRemoveArm === folder
+            return (
+            <div
+              key={folder}
+              className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-gray-200 truncate">{skill.name}</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => onViewSkill?.(folder)}
+                    className="text-[10px] text-amber-400 hover:text-amber-300"
+                  >View</button>
+                  <button
+                    onClick={() => {
+                      if (armed) { onRemoveSkill?.(folder) }
+                      else { setSkillRemoveArm?.(folder); setTimeout(() => setSkillRemoveArm?.(null), 4000) }
+                    }}
+                    className={`text-[10px] ${armed ? 'text-red-400 font-semibold' : 'text-gray-500 hover:text-red-400'}`}
+                  >{armed ? 'Confirm?' : 'Remove'}</button>
+                </div>
+              </div>
+              {skill.description && (
+                <p className="text-[11px] text-gray-500 truncate">{skill.description}</p>
+              )}
+            </div>
+            )
+          })}
+        </div>
+      ) : (
+        <p className="text-[11px] text-gray-500">No skills installed</p>
+      )}
+      {/* Catalog: one-tap official skills */}
+      {skills && !skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder || sk.name)) && (
+        <button
+          onClick={() => onInstallFromCatalog?.('browser-screen-recorder', '/api/browser-screen-recorder')}
+          className="mt-2 w-full py-1.5 text-[11px] rounded-lg bg-gray-800/70 border border-amber-500/20 text-amber-400 hover:bg-gray-800 transition-colors"
+        >
+          ⤓ Install Browser Screen Recorder skill (official)
+        </button>
+      )}
+    </div>
+  )
+}
+
+// First-class Skills button — promotes skills out of the buried menu into the
+// header: sparkle icon + live count badge, opens a dedicated popover.
+function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const count = props.skills?.length ?? 0
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={props.disabled}
+        aria-label="Skills"
+        data-testid="skills-button"
+        title="Skills"
+        className={`relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all border ${
+          props.disabled
+            ? 'bg-gray-800/30 text-gray-600 border-transparent cursor-not-allowed'
+            : open
+              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
+              : 'bg-gradient-to-b from-gray-800/70 to-gray-800/40 text-gray-300 border-gray-700/40 hover:text-amber-300 hover:border-amber-500/30'
+        }`}
+      >
+        {/* Sparkles icon */}
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
+        </svg>
+        <span className="hidden md:inline text-xs font-medium">Skills</span>
+        {count > 0 && (
+          <span className="min-w-[16px] h-4 px-1 flex items-center justify-center text-[9px] font-bold rounded-full bg-amber-500/25 text-amber-300 border border-amber-500/30">
+            {count}
+          </span>
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-2 w-[min(20rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
+            <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-200">✨ Skills</span>
+              <span className="text-[10px] text-gray-500">{count} installed</span>
+            </div>
+            <div className="max-h-96 overflow-y-auto p-3">
+              <SkillsPanel {...props} />
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // Unified Control Menu - Combines mode toggle, session history, tools, and settings
 function ControlMenu({
   sessions,
@@ -841,92 +1043,22 @@ function ControlMenu({
           {/* Tools Tab */}
           {activeTab === 'tools' && (
             <div className="max-h-96 overflow-y-auto p-3 space-y-3">
-              {/* Skills Section */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Skills</h4>
-                  <button
-                    onClick={() => setShowAddSkill?.(!showAddSkill)}
-                    className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
-                  >
-                    {showAddSkill ? 'Cancel' : '+ Add'}
-                  </button>
-                </div>
-                {showAddSkill && (
-                  <div className="mb-2 p-2 rounded-lg bg-gray-800/50 border border-gray-700/30 space-y-2">
-                    <input
-                      type="text"
-                      value={newSkillName || ''}
-                      onChange={(e) => setNewSkillName?.(e.target.value)}
-                      placeholder="Skill name (e.g. deploy-check)"
-                      className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500"
-                    />
-                    <textarea
-                      value={newSkillContent || ''}
-                      onChange={(e) => setNewSkillContent?.(e.target.value)}
-                      placeholder="# Skill: Name&#10;&#10;Description...&#10;&#10;## When to use&#10;...&#10;&#10;## How to execute&#10;..."
-                      rows={5}
-                      className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500 resize-none font-mono"
-                    />
-                    <button
-                      onClick={() => {
-                        if (newSkillName?.trim() && newSkillContent?.trim()) {
-                          onAddSkill?.(newSkillName.trim(), newSkillContent.trim())
-                        }
-                      }}
-                      disabled={!newSkillName?.trim() || !newSkillContent?.trim()}
-                      className="w-full py-1.5 text-xs bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Save Skill
-                    </button>
-                  </div>
-                )}
-                {skills && skills.length > 0 ? (
-                  <div className="space-y-1">
-                    {skills.map((skill) => {
-                      const folder = skill.folder || skill.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')
-                      const armed = skillRemoveArm === folder
-                      return (
-                      <div
-                        key={folder}
-                        className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-medium text-gray-200 truncate">{skill.name}</span>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <button
-                              onClick={() => onViewSkill?.(folder)}
-                              className="text-[10px] text-amber-400 hover:text-amber-300"
-                            >View</button>
-                            <button
-                              onClick={() => {
-                                if (armed) { onRemoveSkill?.(folder) }
-                                else { setSkillRemoveArm?.(folder); setTimeout(() => setSkillRemoveArm?.(null), 4000) }
-                              }}
-                              className={`text-[10px] ${armed ? 'text-red-400 font-semibold' : 'text-gray-500 hover:text-red-400'}`}
-                            >{armed ? 'Confirm?' : 'Remove'}</button>
-                          </div>
-                        </div>
-                        {skill.description && (
-                          <p className="text-[11px] text-gray-500 truncate">{skill.description}</p>
-                        )}
-                      </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-[11px] text-gray-500">No skills installed</p>
-                )}
-                {/* Catalog: one-tap official skills */}
-                {skills && !skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder || sk.name)) && (
-                  <button
-                    onClick={() => onInstallFromCatalog?.('browser-screen-recorder', '/api/browser-screen-recorder')}
-                    className="mt-2 w-full py-1.5 text-[11px] rounded-lg bg-gray-800/70 border border-amber-500/20 text-amber-400 hover:bg-gray-800 transition-colors"
-                  >
-                    ⤓ Install Browser Screen Recorder skill (official)
-                  </button>
-                )}
-              </div>
+              {/* Skills Section — shared SkillsPanel (also mounted in the header SkillsPopover) */}
+              <SkillsPanel
+                skills={skills}
+                onAddSkill={onAddSkill}
+                onViewSkill={onViewSkill}
+                onRemoveSkill={onRemoveSkill}
+                onInstallFromCatalog={onInstallFromCatalog}
+                skillRemoveArm={skillRemoveArm}
+                setSkillRemoveArm={setSkillRemoveArm}
+                showAddSkill={showAddSkill}
+                setShowAddSkill={setShowAddSkill}
+                newSkillName={newSkillName}
+                setNewSkillName={setNewSkillName}
+                newSkillContent={newSkillContent}
+                setNewSkillContent={setNewSkillContent}
+              />
 
               {/* MCP Servers Section */}
               {(!mcpServers || mcpServers.length === 0) ? (
@@ -3112,6 +3244,27 @@ function VoiceRoomInner({
 
             {/* Spacer */}
             <div className="flex-1" />
+
+            {/* Live clock — always visible so screenshots carry the time */}
+            <LiveClock />
+
+            {/* Skills — first-class button with count badge (all viewports) */}
+            <SkillsPopover
+              disabled={!agentConnected}
+              skills={skills}
+              onAddSkill={handleAddSkill}
+              onViewSkill={handleViewSkill}
+              onRemoveSkill={handleRemoveSkill}
+              onInstallFromCatalog={handleInstallFromCatalog}
+              skillRemoveArm={skillRemoveArm}
+              setSkillRemoveArm={setSkillRemoveArm}
+              showAddSkill={showAddSkill}
+              setShowAddSkill={setShowAddSkill}
+              newSkillName={newSkillName}
+              setNewSkillName={setNewSkillName}
+              newSkillContent={newSkillContent}
+              setNewSkillContent={setNewSkillContent}
+            />
 
             {/* Compact Controls — meeting/files/copy hidden on mobile */}
             <div className="flex items-center gap-1.5">
