@@ -1,12 +1,12 @@
 import { test, expect, chromium } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
-import { installReactiveMic, speakText } from '../lib/reactive-mic'
-import { installActionVisualizer } from '../lib/action-visualizer'
-import { startElementCapture, saveCapture } from '../lib/audio-capture'
-import { enterFreshRoom, ensureSessionLive, waitForSpeechEvent, drainSpeechEvents } from '../lib/steps'
-import { attachDevtools } from '../lib/devtools'
-import { envKey } from '../lib/env'
-import { actWithCache } from '../lib/step-cache'
+import { installReactiveMic, speakText } from '../../lib/reactive-mic'
+import { installActionVisualizer } from '../../lib/action-visualizer'
+import { startElementCapture, saveCapture } from '../../lib/audio-capture'
+import { enterFreshRoom, ensureSessionLive, waitForSpeechEvent, drainSpeechEvents } from '../../lib/steps'
+import { attachDevtools } from '../../lib/devtools'
+import { envKey } from '../../lib/env'
+import { actWithCache } from '../../lib/step-cache'
 
 /**
  * REJOIN EXPERIMENT — answers "is temporary-rooms necessary?" empirically.

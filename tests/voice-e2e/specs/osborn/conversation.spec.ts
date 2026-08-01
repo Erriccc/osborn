@@ -1,8 +1,8 @@
-import { envKey } from '../lib/env'
+import { envKey } from '../../lib/env'
 import { test, expect } from '@playwright/test'
-import { startCapture, saveCapture } from '../lib/audio-capture'
-import { installReactiveMic, waitForMicOpen, speakText } from '../lib/reactive-mic'
-import { installActionVisualizer } from '../lib/action-visualizer'
+import { startCapture, saveCapture } from '../../lib/audio-capture'
+import { installReactiveMic, waitForMicOpen, speakText } from '../../lib/reactive-mic'
+import { installActionVisualizer } from '../../lib/action-visualizer'
 import { readFileSync } from 'fs'
 
 /**

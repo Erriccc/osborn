@@ -1,9 +1,9 @@
 import type { Page, CDPSession } from '@playwright/test'
 import { createServer, type Server } from 'http'
 import { spawn } from 'child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'fs'
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, createReadStream } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, basename } from 'path'
 
 /**
  * Live browser stream — watch the test happen in real time from any browser.
@@ -95,12 +95,22 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   }
 
   // x11grab source: constant-rate MJPEG of the whole display from ffmpeg's
-  // stdout, split on JPEG SOI/EOI markers and pushed into the same ring.
+  // stdout, split on JPEG SOI/EOI markers and pushed into the same ring —
+  // PLUS a second output: H.264 HLS segments, so /phone serves a REAL <video>
+  // (iOS native HLS → picture-in-picture, survives minimize; ~5-10s latency
+  // vs MJPEG's instant view — both run simultaneously off one grab).
   let grabber: import('child_process').ChildProcess | null = null
+  let hlsDir: string | null = null
   const startDisplayGrab = () => {
+    hlsDir = mkdtempSync(join(tmpdir(), 'bsr-hls-'))
     grabber = spawn('ffmpeg', ['-loglevel', 'error', '-f', 'x11grab', '-framerate', String(CAPTURE_FPS),
       '-video_size', process.env.OSBORN_DISPLAY_SIZE || '1280x800', '-i', DISPLAY!,
-      '-f', 'mjpeg', '-q:v', '6', 'pipe:1'])
+      // output 1: MJPEG frames → stdout (ring buffer + instant viewer)
+      '-f', 'mjpeg', '-q:v', '6', 'pipe:1',
+      // output 2: HLS for real video players
+      '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p',
+      '-g', String(CAPTURE_FPS * 2), '-f', 'hls', '-hls_time', '2', '-hls_list_size', '6',
+      '-hls_flags', 'delete_segments+independent_segments', join(hlsDir, 'live.m3u8')])
     let acc: Buffer = Buffer.alloc(0)
     grabber.stdout!.on('data', (d: Buffer) => {
       acc = Buffer.concat([acc, d])
@@ -151,6 +161,34 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     if (STREAM_TOKEN && pathName !== '/ready' && reqUrl.searchParams.get('key') !== STREAM_TOKEN) {
       res.writeHead(403, { 'Content-Type': 'text/plain' })
       res.end('stream locked — append ?key=<OSBORN_STREAM_TOKEN>')
+      return
+    }
+    if (pathName === '/phone') {
+      // Real <video> for phones — HLS plays natively on iOS Safari (PiP,
+      // survives minimize). Display mode only (needs the constant grab).
+      res.writeHead(200, { 'Content-Type': 'text/html' })
+      const key = STREAM_TOKEN ? `?key=${encodeURIComponent(reqUrl.searchParams.get('key') || '')}` : ''
+      res.end(hlsDir
+        ? `<!doctype html><html><head><title>BSR — phone view</title><meta name="viewport" content="width=device-width,initial-scale=1">
+           <style>body{margin:0;background:#0b0b0b;display:flex;align-items:center;justify-content:center;height:100vh}video{max-width:100vw;max-height:100vh}</style></head>
+           <body><video src="/hls/live.m3u8${key}" autoplay muted playsinline controls></video></body></html>`
+        : '<!doctype html><p style="font-family:monospace;color:#ffd479;background:#0b0b0b;padding:2em">phone view needs display-capture mode (cloud engine) — use / for the MJPEG viewer</p>')
+      return
+    }
+    if (pathName.startsWith('/hls/')) {
+      const f = hlsDir ? join(hlsDir, basename(pathName)) : null
+      if (!f || !existsSync(f)) { res.writeHead(404); res.end(); return }
+      if (f.endsWith('.m3u8')) {
+        // Append the stream key to segment URIs so tokened playback works.
+        let body = readFileSync(f, 'utf8')
+        if (STREAM_TOKEN) body = body.replace(/^(.+\.ts)$/gm, `/hls/$1?key=${encodeURIComponent(reqUrl.searchParams.get('key') || '')}`)
+        else body = body.replace(/^(.+\.ts)$/gm, '/hls/$1')
+        res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'no-store' })
+        res.end(body)
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'video/mp2t', 'Cache-Control': 'no-store' })
+      createReadStream(f).pipe(res)
       return
     }
     if (req.url === '/ready') {
@@ -237,6 +275,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     stop: async () => {
       if (heartbeat) clearInterval(heartbeat)
       try { grabber?.kill('SIGKILL') } catch { /* ignore */ }
+      try { if (hlsDir) rmSync(hlsDir, { recursive: true, force: true }) } catch { /* ignore */ }
       try { await cdp?.send('Page.stopScreencast') } catch { /* ignore */ }
       for (const res of clients) { try { res.end() } catch { /* ignore */ } }
       await new Promise<void>((r) => server.close(() => r()))

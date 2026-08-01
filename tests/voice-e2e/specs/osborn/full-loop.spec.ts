@@ -1,6 +1,6 @@
-import { envKey } from '../lib/env'
+import { envKey } from '../../lib/env'
 import { test, expect } from '@playwright/test'
-import { startCapture, saveCapture } from '../lib/audio-capture'
+import { startCapture, saveCapture } from '../../lib/audio-capture'
 import { readFileSync } from 'fs'
 
 /**

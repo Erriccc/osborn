@@ -16,7 +16,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 10
+Version: 11
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -113,6 +113,19 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v11
+- **Phone view (HLS)** — `/phone` on the live server serves a real `<video>`
+  (H.264 HLS off the same display grab): native on iOS Safari, supports
+  picture-in-picture, keeps playing minimized. ~5-10s latency; the MJPEG
+  viewer at `/` stays for instant watching. Display-capture mode only.
+  Honors the stream token (`/phone?key=…`).
+- **CI deploys** — pushes touching the harness auto-deploy the cloud engine
+  (GitHub Action), completing "git push = release" for skill, bundle, AND
+  engine.
+- **Clean installs** — osborn's own app tests moved to `specs/osborn/`
+  (repo-only); the installable bundle now ships ONLY the generic harness +
+  generic proof specs.
 
 ## What's new in v10
 Restructured for enforcement (borrowing Anthropic skill-authoring + superpowers

@@ -31,7 +31,7 @@ if [ -n "$OSBORN_ENGINE" ]; then
   fi
   exec npx tsx scripts/session-engine.ts
 fi
-SPEC="${OSBORN_TEST_SPEC:-specs/stagehand-conversation.spec.ts}"
+SPEC="${OSBORN_TEST_SPEC:-specs/osborn/stagehand-conversation.spec.ts}"
 echo "[fly-run] running $SPEC"
 npx playwright test "$SPEC"
 code=$?
