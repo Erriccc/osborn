@@ -20,6 +20,16 @@ export async function register() {
       // (one registry HTTP call), so a 15-min cadence closes the gap without
       // needing a Railway redeploy after every npm publish.
       setInterval(run, 15 * 60 * 1000)
+      // Same orchestrator pattern for the browser-screen-recorder engine:
+      // skill version (from the served file) vs Fly registry tag; when stale,
+      // materialize the harness bundle and fly-deploy the engine. No CI.
+      const { checkHarnessDeploy } = await import('./lib/harness-deploy-check')
+      const runHarness = () =>
+        checkHarnessDeploy().catch((err) => {
+          console.error('[instrumentation] harness deploy check failed:', err?.message ?? err)
+        })
+      runHarness()
+      setInterval(runHarness, 15 * 60 * 1000)
     } catch (err: unknown) {
       console.error('[instrumentation] failed to import image-build-check:', err)
     }
