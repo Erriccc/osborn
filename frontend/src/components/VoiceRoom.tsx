@@ -1655,6 +1655,16 @@ function VoiceRoomInner({
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
   const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
+  // MEETING = ACTIVITY (2026-08-01): the provider's 15-min voice-idle check was
+  // STOPPING the Fly machine mid-meeting (exit 130, "STT stopped after a
+  // while") — nobody touches the voice tab while talking in the Meet. While a
+  // meeting is joined, heartbeat the activity marker so idle-stop never fires.
+  useEffect(() => {
+    if (meetingStatus !== 'joined') return
+    onVoiceActivity?.()
+    const t = setInterval(() => onVoiceActivity?.(), 60_000)
+    return () => clearInterval(t)
+  }, [meetingStatus, onVoiceActivity])
   const [meetingError, setMeetingError] = useState<string | null>(null)
   // Meeting TODOs panel — fed by the agent writing meeting-todos.md in the
   // workspace. `research_artifact_updated` already fires automatically when
