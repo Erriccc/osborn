@@ -3990,6 +3990,22 @@ function VoiceRoomInner({
               {/* Handle bar */}
               <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-4" />
 
+              {/* TRAY RULE (2026-08-01): controls hidden from the mobile header
+                  COLLAPSE here — the menu is the backup for every viewport-cut
+                  control, nothing just disappears. */}
+
+              {/* Auto-approve toggle — hidden from mobile header (sm+ only) */}
+              <button onClick={() => setAutoApprovePermissions(v => !v)}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
+                <svg className={`w-5 h-5 ${autoApprovePermissions ? 'text-amber-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span className="text-sm text-gray-200">Auto-approve tools</span>
+                <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${autoApprovePermissions ? 'bg-amber-500/25 text-amber-300 border border-amber-500/30' : 'bg-gray-800 text-gray-500 border border-gray-700'}`}>
+                  {autoApprovePermissions ? 'ON' : 'OFF'}
+                </span>
+              </button>
+
               {/* Files */}
               <button onClick={() => { setIsFilesModalOpen(true); setShowMobileMenu(false) }}
                 className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
