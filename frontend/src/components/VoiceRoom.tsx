@@ -3605,7 +3605,7 @@ function VoiceRoomInner({
                   between a lock (off) and a lightning bolt (on). */}
               <button
                 onClick={() => setAutoApprovePermissions(v => !v)}
-                className={`p-2 rounded-lg transition-all ${
+                className={`hidden sm:block p-2 rounded-lg transition-all ${
                   autoApprovePermissions
                     ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 ring-1 ring-amber-500/50'
                     : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
@@ -3673,11 +3673,14 @@ function VoiceRoomInner({
                 )}
               </button>
 
-              {/* Disconnect button - prominent to save LiveKit minutes */}
+              {/* Disconnect button — ALWAYS visible on every viewport (ending
+                  the session stops billing; it must never clip off-screen —
+                  user screenshot 2026-08-01). shrink-0 guarantees it wins the
+                  header's width fight. */}
               {onDisconnect && (
                 <button
                   onClick={onDisconnect}
-                  className="p-2 rounded-lg transition-all bg-red-500/20 text-red-400 hover:bg-red-500/40 hover:text-red-300 border border-red-500/30"
+                  className="shrink-0 p-2 rounded-lg transition-all bg-red-500/20 text-red-400 hover:bg-red-500/40 hover:text-red-300 border border-red-500/30"
                   title="Disconnect (saves LiveKit minutes)"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
