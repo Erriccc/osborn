@@ -620,7 +620,7 @@ function startApiServer(workingDir: string, port: number): void {
           // WAV/linear16, not mp3: mp3 files carry encoder padding (leading/
           // trailing silence + boundary click) — back-to-back sentence clips
           // were heard as "cracking". WAV is gapless-safe and cheaper to decode.
-          const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&sample_rate=24000&container=wav', {
+          const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&sample_rate=48000&container=wav', {
             method: 'POST',
             headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ text }),

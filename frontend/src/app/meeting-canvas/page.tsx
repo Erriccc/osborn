@@ -90,7 +90,7 @@ async function playOneTTS(bytes: ArrayBuffer): Promise<void> {
     const src = ctx.createBufferSource()
     src.buffer = decoded
     src.connect(ctx.destination)
-    const startAt = Math.max(ctx.currentTime + 0.03, playheadTime)
+    const startAt = Math.max(ctx.currentTime + 0.09, playheadTime)
     playheadTime = startAt + decoded.duration
     src.onended = () => { if (currentTTSSource === src) currentTTSSource = null; resolve() }
     currentTTSSource = src
@@ -222,7 +222,7 @@ function CanvasInner() {
       {/* Live caption of what the bot is saying — overlay, never steals layout */}
       {caption && (
         <div style={{ position: 'fixed', left: 0, right: 0, bottom: 28, zIndex: 2, padding: '0 56px', display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div style={{ background: 'rgba(11,14,20,0.82)', border: '1px solid rgba(99,102,241,0.4)', borderRadius: 14, padding: '14px 24px', fontSize: 24, maxWidth: 1100, textAlign: 'center', backdropFilter: 'blur(6px)' }}>
+          <div style={{ background: 'rgba(11,14,20,0.92)', border: '1px solid rgba(99,102,241,0.4)', borderRadius: 14, padding: '14px 24px', fontSize: 24, maxWidth: 1100, textAlign: 'center' }}>
             {caption}
           </div>
         </div>
