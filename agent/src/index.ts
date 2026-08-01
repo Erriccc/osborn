@@ -1696,6 +1696,11 @@ async function main() {
   // REDIRECTED into the meeting canvas instead of suppressed — the regular
   // voice pipeline reused with the meeting as the sink (latency fix).
   let meetingAddressedUntil = 0
+  // Distinct human speakers seen in the current meeting. In a 1:1 (one human
+  // + the bot) EVERY utterance is addressed to the bot — no name needed
+  // (2026-08-01: "can you open carfax..." got observer-suppressed because
+  // the fresh session's latch was never opened by the name).
+  const meetingSpeakers = new Set<string>()
   let activeMeetingPoller: MeetingTranscriptPoller | null = null  // Transcript poller bound to that bot
 
   // LIVE meeting transcript → LLM (buffered webhook finals). See recall.on('transcript').
@@ -1773,6 +1778,7 @@ async function main() {
     if (meetingLeaveGraceTimer) { clearTimeout(meetingLeaveGraceTimer); meetingLeaveGraceTimer = null }
     activeMeetingBotId = null
     meetingAddressedUntil = 0
+    meetingSpeakers.clear()
     // leaveBot=false when Recall itself reported the meeting over (bot already gone).
     if (opts.leaveBot !== false) {
       const recall = getRecallClient()
@@ -1898,13 +1904,16 @@ async function main() {
         // the agent replies out loud into the meeting. This is the chat-mode path:
         // named/asked → prompt response. Un-addressed chunks stay in the silent
         // 20s batch for note-taking. That's the two-mode seam, mechanically.
+        meetingSpeakers.add(speaker)
         // Fuzzy name match: meeting STT routinely mangles "Osborn" — observed
         // live 2026-08-01: "Osborn can you hear me" → "i was born can you hear
         // me" (name trigger missed, bot stayed silent). Accept common
         // mis-transcriptions; mild false-positive risk is acceptable in a
-        // room that invited the bot.
-        if (/\b(osborne?|oz\s?born|os\s?born|was born|is born|ozborn|osbourne?|austin\b.{0,8}(hear|there|can you))/i.test(text)) {
-          console.log('📓 Addressed by name (fuzzy) — immediate flush for a response')
+        // room that invited the bot. AND: in a 1:1 meeting (one human + the
+        // bot) every utterance is addressed — no name needed.
+        const oneOnOne = meetingSpeakers.size <= 1
+        if (oneOnOne || /\b(osborne?|oz\s?born|os\s?born|was born|is born|ozborn|osbourne?|austin\b.{0,8}(hear|there|can you))/i.test(text)) {
+          console.log(`📓 Addressed (${oneOnOne ? '1:1 meeting' : 'by name'}) — immediate flush for a response`)
           flushMeetingBuffer(botId, true)
         }
       }
