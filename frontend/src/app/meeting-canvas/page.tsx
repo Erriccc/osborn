@@ -61,7 +61,7 @@ let currentTTSSource: AudioBufferSourceNode | null = null
 let ttsQueue: { bytes: Promise<ArrayBuffer> }[] = []
 let ttsDraining = false
 async function playTTS(url: string): Promise<void> {
-  const bytes = fetch(url).then((r) => { if (!r.ok) throw new Error(`tts ${r.status}`); return r.arrayBuffer() })
+  const bytes = fetch(url, { signal: AbortSignal.timeout(12000) }).then((r) => { if (!r.ok) throw new Error(`tts ${r.status}`); return r.arrayBuffer() })
   bytes.catch(() => {}) // avoid unhandled rejection if dropped before play
   ttsQueue.push({ bytes })
   if (!ttsDraining) void drainTTSQueue()
@@ -90,11 +90,9 @@ async function playOneTTS(bytes: ArrayBuffer): Promise<void> {
     const src = ctx.createBufferSource()
     src.buffer = decoded
     src.connect(ctx.destination)
-    const startAt = Math.max(ctx.currentTime + 0.09, playheadTime)
-    playheadTime = startAt + decoded.duration
     src.onended = () => { if (currentTTSSource === src) currentTTSSource = null; resolve() }
     currentTTSSource = src
-    src.start(startAt)
+    src.start()
   })
 }
 // Interruption: cut the bot's audio immediately (a human started talking)

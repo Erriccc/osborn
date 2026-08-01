@@ -2624,14 +2624,13 @@ async function main() {
         // (reuse of the regular speak path; no Bash roundtrip). Silent-observer
         // turns stay suppressed as before.
         if (activeMeetingBotId && Date.now() < meetingAddressedUntil) {
-          // Split into AT MOST 2 chunks: first sentence (fast first-audio) +
-          // the remainder as ONE chunk. Per-sentence files created an audible
-          // seam at every boundary (mp3 padding + scheduling jitter — heard as
-          // "cracking"); two chunks keeps the latency win with one seam max.
-          const m = data.text.match(/^([^.!?]+[.!?]+["']?)\s*([\s\S]*)$/)
-          const chunks = m && m[2]?.trim() ? [m[1].trim(), m[2].trim()] : [data.text.trim()]
-          console.log(`🔊➡️📽️ tts_say → canvas (${chunks.length} chunk(s), addressed turn) t=${new Date().toISOString()}: "${data.text.slice(0, 60)}"`)
-          for (const s of chunks) pushCanvas({ kind: 'say', text: s })
+          // ONE say per reply (2026-08-01 quality directive): chunking created
+          // seams no scheduler fully hid. A single utterance = a single clean
+          // audio file = zero seams — quality over ~1s of latency. (Structural
+          // fix queued: canvas as LiveKit subscriber playing the agent's real
+          // TTS track — the true "same browser experience" reuse.)
+          console.log(`🔊➡️📽️ tts_say → canvas (single utterance) t=${new Date().toISOString()}: "${data.text.slice(0, 60)}"`)
+          pushCanvas({ kind: 'say', text: data.text })
           markMeetingSpeaking(data.text)
           return
         }
