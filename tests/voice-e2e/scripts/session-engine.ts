@@ -346,6 +346,21 @@ async function main() {
   let ending = false
   let lastActivity = Date.now()
 
+  // MEETING AWARENESS (v14, from a real kill): the engine idle-stopped 10min
+  // into a live Google Meet (driver hadn't opened a journey, so hold-awake
+  // never engaged) and its shutdown clicked Disconnect — turning a survivable
+  // participant blip into an explicit leave that nulled the agent's LLM while
+  // the Recall bot sat deaf in the call. The engine now detects meeting state
+  // from its own page and self-protects, no driver discipline required.
+  const meetingActive = async (): Promise<boolean> => {
+    try {
+      return (await Promise.race([
+        active.evaluate(() => /In Meeting|Joining…|Joining\.\.\./i.test(document.body?.innerText || '')),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 2500)),
+      ])) as boolean
+    } catch { return false }
+  }
+
   // EVENT WEBHOOKS — push, not poll. When OSBORN_WEBHOOK_URL is set, the
   // engine POSTs JSON events there (fire-and-forget, 5s cap): task completions
   // (with media URLs), page navigations, tab changes, journey saves, page
@@ -407,9 +422,18 @@ async function main() {
     const watchdog = setTimeout(() => { console.log('[engine] teardown watchdog — force exit'); manifest.endedAt = Date.now(); writeManifest(); process.exit(0) }, 45000)
     const bounded = (p: Promise<unknown> | undefined | null, ms: number) =>
       p ? Promise.race([p.catch(() => null), new Promise((r) => setTimeout(() => r(null), ms))]) : Promise.resolve(null)
-    await bounded(brain('Click the Disconnect or Leave button to end the voice session').catch(() => null), 12000)
-    await active.waitForTimeout(2000).catch(() => {})
-    await bounded(fetch(`${AGENT_URL}/leave-room`, { method: 'POST' }), 5000)
+    // MEETING-AWARE SHUTDOWN (v14): while a meeting is active, do NOT click
+    // Disconnect or POST /leave-room — an explicit leave kills the copilot
+    // instantly, while a silent participant drop is absorbed by the agent's
+    // 75s leave-grace (0.9.102), so a quick engine restart resumes cleanly.
+    if (await meetingActive()) {
+      mark('shutdown WITHOUT disconnect — meeting active; drop rides the agent leave-grace')
+      notify('engine_stopping_meeting_active', { reason })
+    } else {
+      await bounded(brain('Click the Disconnect or Leave button to end the voice session').catch(() => null), 12000)
+      await active.waitForTimeout(2000).catch(() => {})
+      await bounded(fetch(`${AGENT_URL}/leave-room`, { method: 'POST' }), 5000)
+    }
     const audioOut = join(RUN_DIR, 'audio-capture.webm')
     const savedAudio = await bounded(saveCapture(active, audioOut).then(() => audioOut), 10000)
     manifest.audioCapture = savedAudio ? 'audio-capture.webm' : null
@@ -748,12 +772,15 @@ async function main() {
   // containers, disabled locally (set OSBORN_IDLE_STOP_MS to override; 0 = off).
   const IDLE_STOP_MS = Number(process.env.OSBORN_IDLE_STOP_MS ?? (IN_CONTAINER ? 600000 : 0))
   const MISSION_MAX_MS = 2 * 60 * 60 * 1000
-  setInterval(() => {
+  setInterval(async () => {
     if (ending || !IDLE_STOP_MS) return
     if ((live?.viewerCount() ?? 0) > 0) { lastActivity = Date.now(); return }
     // HOLD-AWAKE during missions (v13): an open journey keeps the engine up
     // (a meeting mission dozing mid-call was a real failure) — capped at 2h.
     if (journey && Date.now() - journey.startedAt < MISSION_MAX_MS) { lastActivity = Date.now(); return }
+    // MEETING HOLD-AWAKE (v14): journey or not, an active meeting on the page
+    // holds the engine up — the 10-min idle once killed a live Meet copilot.
+    if (Date.now() - lastActivity > IDLE_STOP_MS - 60000 && await meetingActive()) { lastActivity = Date.now(); mark('idle deferred — meeting active'); return }
     if (Date.now() - lastActivity > IDLE_STOP_MS) void gracefulEnd(`idle ${Math.round(IDLE_STOP_MS / 60000)}min — auto-stop`)
   }, 30000)
 

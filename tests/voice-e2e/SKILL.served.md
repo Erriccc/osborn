@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 13
+Version: 14
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -143,6 +143,14 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v14
+- **Meeting-aware self-protection** — the engine detects an active meeting on
+  its own page: idle-stop DEFERS while a Meet/Zoom is live (journey or not),
+  and shutdown SKIPS the Disconnect click + /leave-room during meetings so an
+  engine drop rides the agent's 75s leave-grace instead of killing the
+  copilot. (Real incident: 10-min idle stopped the engine mid-Meet; its
+  shutdown clicked Disconnect; the bot sat deaf in the call.)
 
 ## What's new in v13
 - **Mission lock + hold-awake** — `journey start` with an `owner` claims the
