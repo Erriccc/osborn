@@ -148,12 +148,12 @@ export async function checkHarnessDeploy(): Promise<void> {
     const result = await spawnAsync(flyBin, args, { cwd: ctx, env: buildEnvWithFlyPath(), timeoutMs: 900000 })
     if (result.stdout) console.log('[harness fly deploy stdout]\n' + result.stdout.slice(-2000))
     if (result.stderr) console.log('[harness fly deploy stderr]\n' + result.stderr.slice(-2000))
-    if (result.status !== 0) throw new Error(`fly deploy exited ${result.status}`)
+    if (result.status !== 0) throw new Error(`fly deploy exited ${result.status}: ${(result.stderr || result.stdout).slice(-400)}`)
     log(`engine deployed at ${tag}`)
     writeStatus(`deployed: ${tag}`)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[harness-deploy-check] ERROR: ${msg}`)
-    writeStatus(`error: ${msg.slice(0, 200)}`)
+    writeStatus(`error: ${msg.slice(0, 500)}`)
   }
 }
