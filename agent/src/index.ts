@@ -1716,6 +1716,7 @@ async function main() {
     stopMeetingFlush()
     if (activeMeetingPoller) { activeMeetingPoller.stop(); activeMeetingPoller = null }
     if (meetingMaxTimer) { clearTimeout(meetingMaxTimer); meetingMaxTimer = null }
+    if (meetingLeaveGraceTimer) { clearTimeout(meetingLeaveGraceTimer); meetingLeaveGraceTimer = null }
     activeMeetingBotId = null
     // leaveBot=false when Recall itself reported the meeting over (bot already gone).
     if (opts.leaveBot !== false) {
@@ -1736,6 +1737,30 @@ async function main() {
       armIdleExitTimer(`meeting ended (${reason}), no user`)
     }
   }
+  // WiFi-blip grace: a TRANSIENT participant drop must not kill the meeting
+  // (observed 2026-08-01: LiveKit WS blip → user_disconnected → bot left
+  // within seconds while the user rejoined moments later). Arm a grace timer
+  // instead; a rejoin inside the window cancels it. The deliberate coupling
+  // (bot follows the voice session) survives — it just tolerates blips.
+  const MEETING_LEAVE_GRACE_MS = 75_000
+  let meetingLeaveGraceTimer: ReturnType<typeof setTimeout> | null = null
+  const armMeetingLeaveGrace = () => {
+    if (!activeMeetingBotId || meetingLeaveGraceTimer) return
+    console.log(`🏁 Meeting leave-grace armed (${MEETING_LEAVE_GRACE_MS / 1000}s) — bot stays unless the user is really gone`)
+    meetingLeaveGraceTimer = setTimeout(() => {
+      meetingLeaveGraceTimer = null
+      const userPresent = activeRoom && activeRoom.remoteParticipants.size > 0
+      if (activeMeetingBotId && !userPresent) void endMeeting('user_disconnected_grace_expired')
+    }, MEETING_LEAVE_GRACE_MS)
+  }
+  const cancelMeetingLeaveGrace = () => {
+    if (meetingLeaveGraceTimer) {
+      clearTimeout(meetingLeaveGraceTimer)
+      meetingLeaveGraceTimer = null
+      console.log('🏁 Meeting leave-grace cancelled — user is back')
+    }
+  }
+
   const armMeetingMaxTimer = (botId: string) => {
     if (meetingMaxTimer) clearTimeout(meetingMaxTimer)
     console.log(`⏲️ Meeting max-duration backstop armed: ${MEETING_MAX_MS / 60000} min (override OSBORN_MEETING_MAX_MIN)`)
@@ -3510,6 +3535,8 @@ async function main() {
   // connect callback, not via events).
   participantConnectedHandler = async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
+    // A user (re)arriving cancels the meeting leave-grace — the bot stays.
+    cancelMeetingLeaveGrace()
 
     // A user is present — cancel any pending agent-side "alone" leave.
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
@@ -4428,7 +4455,7 @@ async function main() {
     // status surface for them yet). Revisit only WITH a tracking UI.
     // endMeeting() centralizes the teardown (flush, poller, max-timer, Recall
     // leave, frontend notify).
-    void endMeeting('user_disconnected')
+    armMeetingLeaveGrace()
 
     // 0.9.83: a real session just ended → use the FAST leave (~20s), not the
     // 3-min alone grace. Runs on the agent, so it fires even on an abrupt tab
