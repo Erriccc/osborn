@@ -987,19 +987,23 @@ export default function Dashboard() {
                       : 'bg-[var(--text-muted)]'
                     : agentOnline ? 'bg-emerald-400' : agentOnline === false ? 'bg-red-400' : 'bg-[var(--text-muted)]'
                 }`} />
-                <span className="text-[11px] text-[var(--text-muted)]">
-                  {isCloud
-                    ? sandboxStatus ? `Cloud (${sandboxStatus})` : 'Cloud'
-                    : agentOnline ? 'Local' : agentOnline === false ? 'Local (offline)' : 'Local'
-                  }
+                {/* Mobile: one word (dot carries the state); desktop: full detail */}
+                <span className="text-[11px] text-[var(--text-muted)] whitespace-nowrap">
+                  <span className="sm:hidden">{isCloud ? 'Cloud' : 'Local'}</span>
+                  <span className="hidden sm:inline">
+                    {isCloud
+                      ? sandboxStatus ? `Cloud (${sandboxStatus})` : 'Cloud'
+                      : agentOnline ? 'Local' : agentOnline === false ? 'Local (offline)' : 'Local'
+                    }
+                  </span>
                 </span>
               </div>
 
-              {/* Copy sync info */}
+              {/* Copy sync info — desktop only (mobile: in project ⋯ menus) */}
               <button
                 onClick={handleCopyGlobalSyncInfo}
                 title="Copy sync info"
-                className={`p-2 rounded-lg transition-all ${
+                className={`hidden sm:block p-2 rounded-lg transition-all ${
                   globalSyncCopied
                     ? 'text-emerald-400'
                     : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface)]'
@@ -1042,11 +1046,29 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {/* ── Settings panel ──────────────────────── */}
-        <div className="overflow-hidden transition-all duration-300 ease-out"
-          style={{ maxHeight: showSettings ? 420 : 0, opacity: showSettings ? 1 : 0 }}>
-          <div className="border-b border-[var(--border-subtle)]">
-            <div className="max-w-2xl mx-auto px-4 py-5 space-y-5">
+        {/* ── Settings panel — inline collapse on desktop, BOTTOM SHEET on mobile ── */}
+        {showSettings && (
+          <div className="sm:hidden fixed inset-0 z-40 bg-black/55 backdrop-blur-[2px]"
+            onClick={() => setShowSettings(false)} />
+        )}
+        <div className={[
+          // Desktop: the original max-height collapse
+          'sm:overflow-hidden sm:transition-all sm:duration-300 sm:ease-out',
+          showSettings ? 'sm:max-h-[560px] sm:opacity-100' : 'sm:max-h-0 sm:opacity-0',
+          // Mobile: bottom sheet
+          'max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:z-50',
+          'max-sm:rounded-t-3xl max-sm:border-t max-sm:border-[var(--border-subtle)]',
+          'max-sm:bg-[var(--background)] max-sm:shadow-[0_-12px_48px_rgba(0,0,0,0.6)]',
+          'max-sm:max-h-[85dvh] max-sm:overflow-y-auto',
+          'max-sm:transition-transform max-sm:duration-300 max-sm:ease-out',
+          showSettings ? 'max-sm:translate-y-0' : 'max-sm:translate-y-full max-sm:pointer-events-none',
+        ].join(' ')}>
+          {/* Drag-handle affordance (mobile sheet only) */}
+          <div className="sm:hidden sticky top-0 pt-2.5 pb-1 bg-[var(--background)] rounded-t-3xl">
+            <div className="mx-auto h-1 w-10 rounded-full bg-[var(--border)]" />
+          </div>
+          <div className="sm:border-b border-[var(--border-subtle)]">
+            <div className="max-w-2xl mx-auto px-4 py-5 max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-5">
 
               {/* ── Environment ── */}
               <div className="space-y-3">
@@ -1604,31 +1626,45 @@ export default function Dashboard() {
                         </div>
                       </div>
 
-                      {/* Expanded session list */}
+                      {/* Expanded session list — cards with staggered reveal */}
                       {expandedProjects.has(project.cwd) && (
-                        <div className="border-t border-[var(--border)] divide-y divide-[var(--border)]">
+                        <div className="border-t border-[var(--border)] p-2 space-y-1.5">
                           {(expandedSessionLists.has(project.cwd)
                             ? project.sessions
                             : project.sessions.slice(0, 15)
-                          ).map(s => (
+                          ).map((s, si) => (
                             <button
                               key={s.sessionId}
                               onClick={() => startChat(s.sessionId, s.cwd)}
-                              className="w-full px-4 py-3 text-left hover:bg-[var(--surface-2)] transition-colors"
+                              style={{ animation: 'fadeSlideIn .28s ease both', animationDelay: `${Math.min(si, 8) * 35}ms` }}
+                              className="w-full px-3 py-2.5 text-left rounded-xl bg-[var(--surface-2)]/50 border border-transparent hover:border-[var(--accent-dim)]/30 hover:bg-[var(--surface-2)] active:scale-[0.99] transition-all group/sess"
                             >
-                              <div className="text-sm text-[var(--text)] line-clamp-1">
-                                {s.lastMessage || 'New conversation'}
-                              </div>
-                              <div className="text-xs text-[var(--muted)] mt-0.5 flex items-center gap-2">
-                                <span>{formatDate(s.timestamp)}</span>
-                                {s.messageCount ? <span>{s.messageCount} messages</span> : null}
+                              <div className="flex items-center gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[13px] font-medium text-[var(--text-primary)] line-clamp-1">
+                                    {s.lastMessage || 'New conversation'}
+                                  </div>
+                                  <div className="text-[11px] text-[var(--text-muted)] mt-0.5 flex items-center gap-1.5">
+                                    <span>{formatDate(s.timestamp)}</span>
+                                    {s.messageCount ? (
+                                      <>
+                                        <span className="opacity-40">·</span>
+                                        <span className="font-mono">{s.messageCount} msgs</span>
+                                      </>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <svg className="w-3.5 h-3.5 text-[var(--text-muted)] opacity-0 group-hover/sess:opacity-100 transition-opacity flex-shrink-0"
+                                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                </svg>
                               </div>
                             </button>
                           ))}
                           {project.sessions.length > 15 && !expandedSessionLists.has(project.cwd) && (
                             <button
                               onClick={() => setExpandedSessionLists(s => { const n = new Set(s); n.add(project.cwd); return n })}
-                              className="w-full px-4 py-2 text-xs text-[var(--accent)] hover:bg-[var(--surface-2)] transition-colors text-left"
+                              className="w-full px-3 py-2 text-[11px] font-medium text-[var(--accent)] rounded-xl hover:bg-[var(--surface-2)] transition-colors text-center"
                             >
                               +{project.sessions.length - 15} more — show all
                             </button>

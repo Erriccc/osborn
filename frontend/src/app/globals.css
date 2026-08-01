@@ -42,3 +42,9 @@ body {
   outline: 1.5px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* ── Product motion (2026-07-31 polish sprint) ── */
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
