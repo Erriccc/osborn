@@ -2711,44 +2711,46 @@ async function main() {
     // Wire up TTS say — bypass LiveKit's BufferedTokenStream, speak directly via session.say()
     // Each text block from Claude gets spoken immediately as it arrives, no internal buffering
     directLLM.events.on('tts_say', (data) => {
-      // Guard: session must be alive — TTS errors can kill the session while background query runs
-      if (!currentSession) {
-        console.warn(`⚠️ tts_say fired but currentSession is null — text dropped (${data.text?.length || 0} chars): "${data.text || ''}"`)
-        return
-      }
       if (!data.text?.trim()) {
         console.log(`🔇 tts_say fired but text is empty — skipping`)
         return
       }
 
-      // Suppress browser TTS for meeting-chunk responses — the agent speaks INTO
-      // the meeting via /canvas, not the laptop speakers (which the Meet mic
-      // re-captures in the same room → feedback). Set by PipelineDirectLLM.chat()
-      // when the turn is a [MEETING —] chunk. Normal user turns are unaffected.
+      // MEETING PATH (fix 2026-08-01) — runs BEFORE the currentSession guard.
+      // A meeting reply routes to the meeting via speakIntoMeeting → Recall
+      // output_audio, which needs NO LiveKit voice session. Keeping this ahead
+      // of the guard is what lets the bot keep replying AFTER the browser voice
+      // session dropped (currentLLM is deliberately kept alive for exactly this;
+      // see handleParticipantDisconnected). Before the fix a participant blip
+      // nulled currentSession and EVERY meeting reply was "text dropped" — the
+      // deaf-bot bug proven live 2026-08-01 via synthetic transcript inject.
+      // Set by PipelineDirectLLM.chat() when the turn is a [MEETING —] chunk.
       if ((directLLM as unknown as { suppressMeetingTTS?: boolean }).suppressMeetingTTS) {
-        // MEETING MODE CONDITION (user directive 2026-08-01): says route to
-        // the NATIVE Recall sink by default — no room/Chrome relay (that path
-        // was moderately-to-extremely choppy). The LiveKit parity relay stays
-        // available behind OSBORN_MEETING_AUDIO=parity for future testing.
-        if (process.env.OSBORN_MEETING_AUDIO === 'parity' && meetingCanvasInRoom && activeMeetingBotId && Date.now() < meetingAddressedUntil) {
+        // Parity relay (behind OSBORN_MEETING_AUDIO=parity) speaks via
+        // session.say, so it still needs a live session — it falls through to
+        // the normal browser-TTS path below only when currentSession exists.
+        const parity = process.env.OSBORN_MEETING_AUDIO === 'parity' && meetingCanvasInRoom && activeMeetingBotId && Date.now() < meetingAddressedUntil && !!currentSession
+        if (parity) {
           console.log(`🔊🎼 meeting reply via NATIVE session.say (canvas relays): "${data.text.slice(0, 50)}"`)
           markMeetingSpeaking(data.text)
-          // no return — normal say proceeds below
-        } else
-        // ADDRESSED turn → REDIRECT the normal streaming reply into the meeting
-        // (reuse of the regular speak path; no Bash roundtrip). Silent-observer
-        // turns stay suppressed as before.
-        if (activeMeetingBotId && Date.now() < meetingAddressedUntil) {
-          // ONE say per reply (2026-08-01 quality directive): chunking created
-          // seams no scheduler fully hid. A single utterance = a single clean
-          // audio file = zero seams — quality over ~1s of latency. (Structural
-          // fix queued: canvas as LiveKit subscriber playing the agent's real
-          // TTS track — the true "same browser experience" reuse.)
+          // fall through to normal browser TTS (currentSession present)
+        } else if (activeMeetingBotId && Date.now() < meetingAddressedUntil) {
+          // NATIVE sink: one clean output_audio push into the meeting, NO
+          // LiveKit session required — this is the path that survives a
+          // voice-session drop.
           console.log(`🔊➡️📢 tts_say → meeting (native audio) t=${new Date().toISOString()}: "${data.text.slice(0, 60)}"`)
           void speakIntoMeeting(data.text)
           return
+        } else {
+          console.log(`🔇 tts_say suppressed (meeting turn — response goes to /canvas, not browser): "${data.text.slice(0, 60)}"`)
+          return
         }
-        console.log(`🔇 tts_say suppressed (meeting turn — response goes to /canvas, not browser): "${data.text.slice(0, 60)}"`)
+      }
+
+      // NORMAL BROWSER TTS (and the parity fall-through): needs a live session.
+      // TTS errors can kill the session while a background query still runs.
+      if (!currentSession) {
+        console.warn(`⚠️ tts_say fired but currentSession is null — text dropped (${data.text?.length || 0} chars): "${data.text || ''}"`)
         return
       }
 
@@ -4257,6 +4259,18 @@ async function main() {
       sess.on('close' as any, async (ev: any) => {
         console.log('🚪 Session closed:', ev.reason)
 
+        // ORPHAN-BOT GUARD (fix 2026-08-01): an abrupt AgentSession close
+        // (e.g. a driver tab killed → reason 'user_initiated', with NO clean
+        // ParticipantDisconnected) must not leave the Recall bot stuck in-call
+        // draining credits. Arm the meeting leave-grace so endMeeting() fires
+        // (bot leaves + LLM released) once the room is genuinely empty. A rejoin
+        // cancels it; error/disconnected closes still auto-recover below and the
+        // grace is harmless there (recovery + rejoin cancels it).
+        if (activeMeetingBotId) {
+          console.log('📽️ Meeting active on session close — arming leave-grace (bot leaves if no user returns)')
+          armMeetingLeaveGrace()
+        }
+
         // TTS abort from user interruption — SDK already killed the session internally,
         // so we MUST recover (can't just reset state — STT pipeline is dead).
         // Log it distinctly so we know it's an interrupt recovery, not a real crash.
@@ -4638,26 +4652,35 @@ async function main() {
       })()
     }
     currentAgent = null
-    // Kill the Claude SDK subprocess BEFORE dropping the reference, otherwise the
-    // persistent session keeps running tools and pushing TTS into a dead session.
-    killCurrentLLM('participant_disconnected')
-    currentLLM = null
-    clearFastBrainSession()
-    clearPipelineFastBrainSession()
 
-    // Auto-leave any active meeting bot when user disconnects from the room.
-    // DELIBERATE COUPLING: the bot's lifecycle follows the voice session — a
-    // decoupled always-on meeting bot means untracked background agents (no
-    // status surface for them yet). Revisit only WITH a tracking UI.
-    // endMeeting() centralizes the teardown (flush, poller, max-timer, Recall
-    // leave, frontend notify).
-    armMeetingLeaveGrace()
+    if (activeMeetingBotId) {
+      // MEETING SURVIVES A VOICE-SESSION DROP (fix 2026-08-01). The bot's brain
+      // is the persistent Claude LLM; killing it on every participant blip left
+      // the Recall bot permanently DEAF mid-call ("Addressed" fired but never
+      // "Flushed" — currentLLM was null; proven via synthetic transcript inject).
+      // Keep currentLLM alive so meeting transcripts still flush + reply
+      // (speakIntoMeeting is Recall-direct, needs no LiveKit session). The
+      // leave-grace below owns teardown: if the user is truly gone at 75s,
+      // endMeeting() releases the LLM (its !userPresent branch). A rejoin cancels
+      // the grace. DO NOT arm the 20s fast-leave here — it would destroy the room
+      // before the meeting grace and orphan the bot; the meeting grace is the
+      // single teardown while a meeting is live.
+      console.log('📽️ Meeting active — keeping currentLLM alive across the voice-session drop (leave-grace owns teardown)')
+      armMeetingLeaveGrace()
+    } else {
+      // Kill the Claude SDK subprocess BEFORE dropping the reference, otherwise the
+      // persistent session keeps running tools and pushing TTS into a dead session.
+      killCurrentLLM('participant_disconnected')
+      currentLLM = null
+      clearFastBrainSession()
+      clearPipelineFastBrainSession()
 
-    // 0.9.83: a real session just ended → use the FAST leave (~20s), not the
-    // 3-min alone grace. Runs on the agent, so it fires even on an abrupt tab
-    // close. Cancelled if a user rejoins within the grace (handled where the
-    // participant-join cancels timers).
-    armFastLeaveTimer()
+      // Auto-leave path for a NON-meeting session. 0.9.83: a real session just
+      // ended → use the FAST leave (~20s), not the 3-min alone grace. Fires even
+      // on an abrupt tab close; cancelled if a user rejoins within the grace.
+      armMeetingLeaveGrace()   // no-op when no meeting, kept for symmetry
+      armFastLeaveTimer()
+    }
 
     console.log('⏳ Waiting for new user...\n')
   }
