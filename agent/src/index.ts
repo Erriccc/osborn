@@ -275,7 +275,7 @@ async function synthMp3(text: string): Promise<Buffer | null> {
   const dgKey = process.env.DEEPGRAM_API_KEY
   if (dgKey) {
     try {
-      const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3&bit_rate=48000', {
+      const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-asteria-en&encoding=mp3&bit_rate=48000', {
         method: 'POST',
         headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: text.slice(0, 4000) }),
@@ -687,7 +687,7 @@ function startApiServer(workingDir: string, port: number): void {
           // WAV/linear16, not mp3: mp3 files carry encoder padding (leading/
           // trailing silence + boundary click) — back-to-back sentence clips
           // were heard as "cracking". WAV is gapless-safe and cheaper to decode.
-          const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&sample_rate=48000&container=wav', {
+          const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-asteria-en&encoding=linear16&sample_rate=48000&container=wav', {
             method: 'POST',
             headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ text }),
@@ -2017,9 +2017,15 @@ async function main() {
           if (meetingSpeakClearTimer) clearTimeout(meetingSpeakClearTimer)
         }
       } else {
-        // speech_off — a natural silence boundary. Flush the buffered turns now
-        // (chunk on conversational pauses, not an arbitrary clock), unless empty.
-        if (!isBot && meetingTranscriptBuffer.length) flushMeetingBuffer(botId, false)
+        // speech_off — a natural silence boundary = the speaker finished their
+        // utterance. When the conversation latch is open (1:1 or interactive
+        // mode), that boundary IS the bot's turn — flush ADDRESSED so it
+        // replies at natural pauses, VAD-driven, no name required
+        // (user directive 2026-08-01).
+        if (!isBot && meetingTranscriptBuffer.length) {
+          const latchOpen = Date.now() < meetingAddressedUntil || meetingSpeakers.size <= 1
+          flushMeetingBuffer(botId, latchOpen)
+        }
       }
     })
   }
@@ -2712,11 +2718,11 @@ async function main() {
       // re-captures in the same room → feedback). Set by PipelineDirectLLM.chat()
       // when the turn is a [MEETING —] chunk. Normal user turns are unaffected.
       if ((directLLM as unknown as { suppressMeetingTTS?: boolean }).suppressMeetingTTS) {
-        // BROWSER-PARITY PATH: canvas is in the LiveKit room → the normal
-        // session.say audio reaches the meeting through it. Fall through to
-        // the regular pipeline for addressed turns (identical audio to the
-        // browser experience); observer turns still stay silent.
-        if (meetingCanvasInRoom && activeMeetingBotId && Date.now() < meetingAddressedUntil) {
+        // MEETING MODE CONDITION (user directive 2026-08-01): says route to
+        // the NATIVE Recall sink by default — no room/Chrome relay (that path
+        // was moderately-to-extremely choppy). The LiveKit parity relay stays
+        // available behind OSBORN_MEETING_AUDIO=parity for future testing.
+        if (process.env.OSBORN_MEETING_AUDIO === 'parity' && meetingCanvasInRoom && activeMeetingBotId && Date.now() < meetingAddressedUntil) {
           console.log(`🔊🎼 meeting reply via NATIVE session.say (canvas relays): "${data.text.slice(0, 50)}"`)
           markMeetingSpeaking(data.text)
           // no return — normal say proceeds below
