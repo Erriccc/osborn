@@ -244,6 +244,7 @@ let bugReportHook: ((reportId: string, payload: BugReportPayload) => void) | nul
 // Drive it via POST /canvas (director/testing) or pushCanvas() from meeting logic.
 type CanvasEvent =
   | { kind: 'say'; text: string }
+  | { kind: 'caption'; text: string } // show the spoken text as a caption WITHOUT playing audio (voice is via output_audio)
   | { kind: 'stop' } // interruption — stop any in-flight TTS immediately
   | { kind: 'show'; mode: 'idle' | 'notes' | 'stream' | 'link' | 'web' | 'text'; title?: string; items?: string[]; url?: string; text?: string }
 const canvasClients = new Set<ServerResponse>()
@@ -305,6 +306,12 @@ async function synthMp3(text: string): Promise<Buffer | null> {
 
 // THE speak path for meetings (2026-08-01): Recall native output_audio FIRST
 // (direct, loud, no canvas capture chain), canvas Web-Audio say as FALLBACK.
+// THE meeting speak path (2026-08-01, live-verified A/B): VOICE via Recall
+// output_audio (reliable, doesn't depend on the headless canvas AudioContext),
+// VISUAL caption pushed to the canvas WITHOUT audio (kind:'caption') so the
+// bot's camera shows what it's saying — no double-audio. output_audio +
+// canvas camera coexist (confirmed: user heard output_audio while the canvas
+// was showing). Falls back to canvas 'say' (audio) only if output_audio fails.
 async function speakIntoMeeting(text: string): Promise<void> {
   const recall = getRecallClient()
   const botId = recall?.getActiveBotIds?.()[0]
@@ -312,11 +319,12 @@ async function speakIntoMeeting(text: string): Promise<void> {
     const mp3 = await synthMp3(text)
     if (mp3 && await recall.outputAudio(botId, mp3)) {
       console.log(`📢 spoke via Recall output_audio (${mp3.length}b): "${text.slice(0, 60)}"`)
+      pushCanvas({ kind: 'caption', text }) // visual only, no audio
       markMeetingSpeaking(text)
       return
     }
   }
-  console.log(`📽️ falling back to canvas say: "${text.slice(0, 50)}"`)
+  console.log(`📽️ falling back to canvas say (audio): "${text.slice(0, 50)}"`)
   pushCanvas({ kind: 'say', text })
   markMeetingSpeaking(text)
 }
@@ -732,7 +740,7 @@ function startApiServer(workingDir: string, port: number): void {
       req.on('end', () => {
         try {
           const evt = JSON.parse(body || '{}') as CanvasEvent
-          if (evt.kind !== 'say' && evt.kind !== 'show' && evt.kind !== 'stop') throw new Error("kind must be 'say', 'show', or 'stop'")
+          if (evt.kind !== 'say' && evt.kind !== 'caption' && evt.kind !== 'show' && evt.kind !== 'stop') throw new Error("kind must be 'say', 'caption', 'show', or 'stop'")
           if (evt.kind === 'say') {
             // Native-first speak path (Recall output_audio → canvas fallback).
             void speakIntoMeeting(evt.text)
@@ -5300,16 +5308,18 @@ async function main() {
               // the bot casts the meeting canvas as its camera+mic (below), so
               // it can show visuals and speak into the meeting on demand.
               await sendToFrontend({ type: 'meeting_joining', message: 'Osborn is joining your meeting...' })
-              // AUDIO-FIRST DEFAULT (2026-08-01, proven live): the webpage-camera
-              // output_media routes the bot's AUDIO through the canvas page's
-              // Web Audio — which sits SUSPENDED in Recall's headless Chrome (no
-              // user gesture) → the bot was inaudible all night. Default now = NO
-              // webpage camera, so the bot's voice is the direct Recall
-              // output_audio track (speakIntoMeeting → recall.outputAudio, ~1.8s
-              // synth, verified audible + clear). The browser CAST is opt-in via
-              // explicit data.castUrl / OSBORN_MEETING_CAST_URL until we split
-              // video(webpage) from audio(output_audio) to reclaim it cleanly.
-              const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || undefined
+              // CANVAS + AUDIO (2026-08-01, live-verified A/B): the canvas
+              // webpage camera shows VISUALS (captions, screenshots, transcript
+              // animation) AND Recall output_audio delivers the VOICE — the two
+              // coexist (confirmed: output_audio audible while the canvas camera
+              // was showing). speakIntoMeeting routes voice→output_audio +
+              // caption→canvas (no audio), so no double-audio. The canvas page's
+              // OWN Web Audio is NOT used for voice (it's suspended headless).
+              const frontendUrl = (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/$/, '')
+              const canvasUrl = /^https:\/\//.test(webhookBase)
+                ? `${frontendUrl}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
+                : undefined
+              const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || canvasUrl
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { castUrl })
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
               recallJoin.registerBot(botId, sessionId)

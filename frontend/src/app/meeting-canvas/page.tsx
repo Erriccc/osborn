@@ -201,6 +201,13 @@ function CanvasInner() {
         // Interruption — a human started talking; cut the bot's audio now.
         stopTTS()
         setCaption('')
+      } else if (evt.kind === 'caption' && evt.text) {
+        // Visual caption ONLY — the VOICE is delivered via Recall output_audio
+        // (reliable, not the headless-suspended page audio). Just animate words.
+        const cap: string = evt.text
+        setCaption(cap)
+        if (captionTimer.current) clearTimeout(captionTimer.current)
+        captionTimer.current = setTimeout(() => setCaption(''), Math.max(3500, cap.length * 90))
       } else if (evt.kind === 'show') {
         setShow({ mode: evt.mode, title: evt.title, items: evt.items, url: evt.url, text: evt.text })
       } else if (evt.kind === 'say' && evt.text) {
