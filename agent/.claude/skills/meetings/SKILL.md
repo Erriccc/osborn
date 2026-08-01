@@ -85,6 +85,46 @@ For every `[MEETING — *]:` message:
 3. **Delegate research to the `researcher` sub-agent** via `Task` (background, silent) when a chunk warrants it.
 4. **Don't consume voice-native attention.** The user can interrupt with a voice-native message at any time — that's the only kind that gets spoken responses.
 
+## ADDRESSED turns: REPLY FIRST, notes after (latency rule)
+
+When a chunk says **`YOU WERE ADDRESSED`**, people in the meeting are WAITING
+for your voice. Measured failure (2026-08-01): notes-writing inside the reply
+turn pushed speech→reply past 30 seconds ("very very delayed").
+
+**Mandatory turn shape when addressed:**
+1. **FIRST tool call = the `/canvas say` POST.** One short spoken reply (1–2
+   sentences, conversational). Nothing runs before it — no Read, no Edit, no
+   transcript pull, no sub-agent.
+2. **THEN** delegate note-taking / research to the writer/researcher
+   sub-agents in the background as usual.
+3. If you genuinely need a fact before answering, say a holding line FIRST
+   ("Good question — one second while I check"), then look it up, then follow
+   up with a second `/canvas say`. Never leave the room in silence while you
+   work.
+
+## Browse requests while CASTING a live stream — drive the ENGINE, not the canvas
+
+When the canvas is in **`stream` mode** (bot camera = the live
+browser-screen-recorder feed), requests like "pull up YouTube", "show them the
+site", "navigate to X" mean: **make the STREAMED BROWSER go there.** Do NOT
+flip the canvas to `link`/`web` mode — that silently replaces the live browser
+feed with a static card (observed failure 2026-08-01: "PULLING UP youtube.com"
+card replaced the stream).
+
+**Drive the engine** (one Bash call, needs `OSBORN_ENGINE_TOKEN` env):
+```bash
+curl -sS -X POST "https://osborn-voice-e2e.fly.dev:8781/act" \
+  -H "x-engine-token: $OSBORN_ENGINE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"instruction":"go to youtube.com"}'
+```
+(Or `/tab {"op":"open","url":"https://youtube.com"}` for a direct open. The
+cast keeps showing a REAL browser doing the thing — that's the product.)
+
+If `OSBORN_ENGINE_TOKEN` isn't set, SAY so ("I can't reach the browser engine
+from here — the engine token isn't configured on this machine") instead of
+downgrading the cast. Only use canvas `link`/`web` mode when there is NO
+active stream cast, or the user explicitly asks for a card instead.
+
 ## How to pull transcripts on demand (Bash + curl)
 
 When the user explicitly asks (see triggers above): speak briefly first ("On it"), then **delegate the fetch+parse+write to the `writer` sub-agent** in one `Task` call (the steps below are what you put in the writer's prompt — they're 4+ Bash/Write calls, over your 3-call budget). When the writer finishes, speak the result. The commands below are the recipe the writer runs, not calls you make directly.
