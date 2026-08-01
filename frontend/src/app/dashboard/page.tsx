@@ -136,6 +136,8 @@ export default function Dashboard() {
   // — the dashboard has no LiveKit data channel, so these come over HTTP.
   const [dashSkills, setDashSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
   const [dashAgents, setDashAgents] = useState<{ name: string; description: string; model: string; tools: string[] }[]>([])
+  // Mobile ⋯ overflow menu — which project's action menu is open
+  const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null)
   const [installedVersion, setInstalledVersion] = useState<string | null>(null)
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
@@ -1302,16 +1304,27 @@ export default function Dashboard() {
                   {dashAgents.length > 0 && (
                     <div>
                       <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Agents ({dashAgents.length})</span>
-                      <div className="mt-1.5 flex flex-col gap-1">
-                        {dashAgents.map((a) => (
-                          <div key={a.name} className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--border-subtle)]">
-                            <span className="text-[12px] text-[var(--text-secondary)] capitalize font-medium">{a.name}</span>
-                            <span className="flex items-center gap-1.5">
-                              <span className="text-[9px] uppercase tracking-wide text-[var(--accent)] font-semibold">{a.model}</span>
-                              <span className="text-[10px] text-[var(--text-muted)]">{a.tools.length} tools</span>
-                            </span>
-                          </div>
-                        ))}
+                      <div className="mt-2 grid gap-2">
+                        {dashAgents.map((a) => {
+                          const glyph = a.name === 'researcher' ? '🔍' : a.name === 'reasoner' ? '🧠' : a.name === 'writer' ? '✍️' : '🤖'
+                          return (
+                            <div key={a.name} className="flex gap-3 p-3 rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] hover:border-[var(--accent-dim)]/40 transition-colors">
+                              <div className="w-9 h-9 rounded-lg bg-gradient-to-b from-[var(--surface-2)] to-[var(--surface)] border border-[var(--border-subtle)] flex items-center justify-center text-base flex-shrink-0">
+                                {glyph}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-[13px] text-[var(--text-primary)] capitalize font-semibold tracking-tight">{a.name}</span>
+                                  <span className="flex items-center gap-1.5 flex-shrink-0">
+                                    <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--accent)] font-bold rounded-full bg-[var(--accent-dim)]/15 border border-[var(--accent-dim)]/25">{a.model}</span>
+                                    <span className="text-[10px] text-[var(--text-muted)] font-mono">{a.tools.length}⚒</span>
+                                  </span>
+                                </div>
+                                <p className="mt-0.5 text-[11px] leading-snug text-[var(--text-muted)] line-clamp-2">{a.description}</p>
+                              </div>
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   )}
@@ -1475,78 +1488,119 @@ export default function Dashboard() {
                             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                           </svg>
                         </button>
-                        {/* Per-project actions */}
+                        {/* Per-project actions — primary (+) always visible; the
+                            rest live inline on ≥sm and collapse into a ⋯ menu on
+                            mobile so the project NAME keeps its space. */}
                         <div className="flex items-center gap-1 flex-shrink-0">
-                          <button
-                            onClick={() => handleDownload(project.cwd)}
-                            title="Export project"
-                            className="p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors text-[var(--muted)] hover:text-[var(--text)]"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                            </svg>
-                          </button>
-                          <label
-                            title="Import sessions"
-                            className={`p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors cursor-pointer ${importingProject === project.cwd ? 'opacity-50' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
-                          >
-                            {importingProject === project.cwd ? (
-                              <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-                            ) : (
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12" />
-                              </svg>
-                            )}
-                            <input
-                              type="file"
-                              accept=".tar.gz,.tgz"
-                              className="hidden"
-                              onChange={e => {
-                                const f = e.target.files?.[0]
-                                if (f) handleImport(project.cwd, f)
-                                e.target.value = ''
-                              }}
-                            />
-                          </label>
-                          <button
-                            onClick={() => handleCopySyncInfo(project)}
-                            title="Copy sync info"
-                            className={`p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors ${skillCopied ? 'text-emerald-400' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                            </svg>
-                          </button>
                           <button
                             onClick={() => startChat(undefined, project.cwd)}
                             title="New conversation in this project"
-                            className="p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors text-[var(--muted)] hover:text-[var(--text)]"
+                            className="p-2 rounded-lg hover:bg-[var(--surface-2)] active:scale-95 transition-all text-[var(--muted)] hover:text-[var(--accent)]"
                           >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                             </svg>
                           </button>
-                          {/* Delete project — arms on first click, confirms on second within 4s */}
-                          <button
-                            onClick={() => handleDeleteProject(project)}
-                            title={armedProjectDelete === project.cwd ? 'Click again to confirm delete' : 'Delete project sessions'}
-                            className={`p-2 rounded-lg transition-colors ${
-                              deletingProject === project.cwd
-                                ? 'opacity-50 cursor-not-allowed text-[var(--muted)]'
-                                : armedProjectDelete === project.cwd
-                                ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                                : 'hover:bg-[var(--surface-2)] text-[var(--muted)] hover:text-red-400'
-                            }`}
-                            disabled={deletingProject === project.cwd}
-                          >
-                            {deletingProject === project.cwd ? (
-                              <div className="w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
-                            ) : (
+                          <div className="hidden sm:flex items-center gap-1">
+                            <button
+                              onClick={() => handleDownload(project.cwd)}
+                              title="Export project"
+                              className="p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors text-[var(--muted)] hover:text-[var(--text)]"
+                            >
                               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                               </svg>
+                            </button>
+                            <label
+                              title="Import sessions"
+                              className={`p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors cursor-pointer ${importingProject === project.cwd ? 'opacity-50' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
+                            >
+                              {importingProject === project.cwd ? (
+                                <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+                              ) : (
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12" />
+                                </svg>
+                              )}
+                              <input
+                                type="file"
+                                accept=".tar.gz,.tgz"
+                                className="hidden"
+                                onChange={e => {
+                                  const f = e.target.files?.[0]
+                                  if (f) handleImport(project.cwd, f)
+                                  e.target.value = ''
+                                }}
+                              />
+                            </label>
+                            <button
+                              onClick={() => handleCopySyncInfo(project)}
+                              title="Copy sync info"
+                              className={`p-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors ${skillCopied ? 'text-emerald-400' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                              </svg>
+                            </button>
+                            {/* Delete project — arms on first click, confirms on second within 4s */}
+                            <button
+                              onClick={() => handleDeleteProject(project)}
+                              title={armedProjectDelete === project.cwd ? 'Click again to confirm delete' : 'Delete project sessions'}
+                              className={`p-2 rounded-lg transition-colors ${
+                                deletingProject === project.cwd
+                                  ? 'opacity-50 cursor-not-allowed text-[var(--muted)]'
+                                  : armedProjectDelete === project.cwd
+                                  ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                                  : 'hover:bg-[var(--surface-2)] text-[var(--muted)] hover:text-red-400'
+                              }`}
+                              disabled={deletingProject === project.cwd}
+                            >
+                              {deletingProject === project.cwd ? (
+                                <div className="w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+                              ) : (
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                              )}
+                            </button>
+                          </div>
+                          {/* Mobile ⋯ overflow menu */}
+                          <div className="relative sm:hidden">
+                            <button
+                              onClick={() => setOpenProjectMenu(openProjectMenu === project.cwd ? null : project.cwd)}
+                              title="Project actions"
+                              className={`p-2 rounded-lg transition-colors ${openProjectMenu === project.cwd ? 'bg-[var(--surface-2)] text-[var(--text)]' : 'text-[var(--muted)] hover:bg-[var(--surface-2)]'}`}
+                            >
+                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                <circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" />
+                              </svg>
+                            </button>
+                            {openProjectMenu === project.cwd && (
+                              <>
+                                <div className="fixed inset-0 z-40" onClick={() => setOpenProjectMenu(null)} />
+                                <div className="absolute right-0 top-full mt-1 z-50 w-44 rounded-xl bg-[var(--surface-2)] border border-[var(--border-subtle)] shadow-2xl overflow-hidden py-1">
+                                  <button onClick={() => { handleDownload(project.cwd); setOpenProjectMenu(null) }}
+                                    className="w-full px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors">
+                                    Export project
+                                  </button>
+                                  <label className="block w-full px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors cursor-pointer">
+                                    {importingProject === project.cwd ? 'Importing…' : 'Import sessions'}
+                                    <input type="file" accept=".tar.gz,.tgz" className="hidden"
+                                      onChange={e => { const f = e.target.files?.[0]; if (f) handleImport(project.cwd, f); e.target.value = ''; setOpenProjectMenu(null) }} />
+                                  </label>
+                                  <button onClick={() => { handleCopySyncInfo(project); setOpenProjectMenu(null) }}
+                                    className="w-full px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors">
+                                    Copy sync info
+                                  </button>
+                                  <div className="h-px bg-[var(--border-subtle)] mx-2 my-1" />
+                                  <button onClick={() => handleDeleteProject(project)}
+                                    className={`w-full px-3 py-2.5 text-left text-[13px] transition-colors ${armedProjectDelete === project.cwd ? 'text-red-400 font-semibold bg-red-500/10' : 'text-red-400/80 hover:bg-[var(--surface)]'}`}>
+                                    {armedProjectDelete === project.cwd ? 'Tap again to confirm' : 'Delete project'}
+                                  </button>
+                                </div>
+                              </>
                             )}
-                          </button>
+                          </div>
                         </div>
                       </div>
 

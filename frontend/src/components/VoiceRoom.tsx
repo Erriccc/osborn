@@ -613,7 +613,9 @@ function TextInput({
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="flex items-center gap-1.5 sm:gap-2 p-2 sm:p-3">
+      {/* Composer — pill input, integrated attach, accent send; safe-area
+          padding so the iOS home indicator never crowds it. */}
+      <form onSubmit={handleSubmit} className="p-2 sm:p-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-3">
         <input
           ref={fileInputRef}
           type="file"
@@ -622,41 +624,40 @@ function TextInput({
           onChange={handleFileSelect}
           className="hidden"
         />
+        <div className="flex items-center gap-1.5 rounded-full bg-gray-800/60 border border-gray-700/50 focus-within:border-amber-500/50 focus-within:ring-2 focus-within:ring-amber-500/15 transition-all pl-1.5 pr-1.5 py-1">
+          {/* Attach */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="p-2 text-gray-500 hover:text-amber-300 rounded-full hover:bg-gray-700/50 active:scale-95 transition-all shrink-0"
+            title="Attach file"
+          >
+            <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+          </button>
 
-        {/* Attach button */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="p-2.5 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-xl transition-all"
-          title="Attach file"
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-          </svg>
-        </button>
-
-        {/* Text input */}
-        <div className="flex-1 relative">
+          {/* Text input — borderless inside the pill */}
           <input
             ref={inputRef}
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Type a message..."
-            className="w-full bg-gray-800/50 text-white px-4 py-2.5 rounded-xl border border-gray-700/50 focus:border-amber-500/50 focus:ring-2 focus:ring-amber-500/20 focus:outline-none transition-all placeholder:text-gray-500"
+            placeholder="Message Osborn…"
+            className="flex-1 min-w-0 bg-transparent text-[15px] text-white px-1 py-2 focus:outline-none placeholder:text-gray-500"
           />
-        </div>
 
-        {/* Send button */}
-        <button
-          type="submit"
-          disabled={!text.trim() && attachedFiles.length === 0}
-          className="p-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl transition-all shadow-lg disabled:shadow-none"
-        >
-          <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-          </svg>
-        </button>
+          {/* Send */}
+          <button
+            type="submit"
+            disabled={!text.trim() && attachedFiles.length === 0}
+            className="w-9 h-9 flex items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 hover:from-amber-500 hover:to-amber-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed active:scale-95 transition-all shadow-[0_2px_12px_rgba(245,158,11,0.35)] disabled:shadow-none shrink-0"
+          >
+            <svg className="w-4 h-4 text-gray-950" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.4}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14m0 0l-6-6m6 6l-6 6" />
+            </svg>
+          </button>
+        </div>
       </form>
     </div>
   )
