@@ -22,7 +22,7 @@ if (servedSkill) {
   writeFileSync(join(__dirname, '..', 'public', 'browser-screen-recorder-skill.md'), servedSkill)
   console.log(`[harness-bundle] served skill v${HARNESS_VERSION} copied to public/browser-screen-recorder-skill.md`)
 }
-const INCLUDE_DIRS = ['lib', 'specs', 'scenarios', 'scripts']
+const INCLUDE_DIRS = ['lib', 'specs', 'scenarios', 'scripts', 'references']
 const INCLUDE_ROOT = ['package.json', 'playwright.config.ts', 'Dockerfile', 'fly.toml', '.gitignore', '.dockerignore']
 const TEXT_EXT = /\.(ts|js|json|yaml|yml|sh|md|toml|gitignore|dockerignore)$|^Dockerfile$/
 

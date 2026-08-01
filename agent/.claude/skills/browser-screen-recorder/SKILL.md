@@ -17,8 +17,14 @@ USE IT BROADLY — not just for tests: MANDATORY for debugging anything
 web-reachable (real browser + DevTools on camera + /logs, never debug a
 frontend blind) and for verifying deployed web changes (journey + clip, or it
 is a claim, not a verification). Also: reproducing user issues (mobile view),
-the meeting-canvas cast source, site research, voice testing. Every use
-returns media — review it and deliver it to the user, no silent runs.
+the meeting-canvas cast source, site research, voice testing.
+
+IRON LAW (applies even before you fetch the served copy): NO RESULT REPORT
+WITHOUT FRAME-REVIEW EVIDENCE — a green assertion is a claim; a read frame is
+proof. The served skill contains a Run Checklist you MUST copy into your
+response and check off; `scripts/review-run.sh <clip>` in the harness does the
+frame extraction. Media is reviewed by you AND delivered to the user, every
+run, no exceptions.
 
 ## UPDATE CHECK (notify-first, run before major runs)
 This packaged copy ships with every machine and may lag the served version.
