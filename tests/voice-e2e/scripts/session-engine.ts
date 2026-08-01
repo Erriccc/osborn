@@ -68,6 +68,7 @@ import { actWithCache } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
 import { attachDevtools, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
+import { mintProfileFromEnv } from '../lib/mint-profile'
 import { envKey } from '../lib/env'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -134,6 +135,10 @@ async function main() {
   // engine falls back to the guest link (works, but not the real auth path).
   const profileName = process.env.OSBORN_TEST_PROFILE || 'osborn-tester'
   const profile = join(__dirname, '..', 'profiles', profileName, 'state.json')
+  // Cloud auth: no profile on disk (images ship guest-only) but operator
+  // provided creds via secrets → mint a fresh session right now. Runs every
+  // boot, so the ~1h Supabase session is always fresh after a wake.
+  if (!existsSync(profile)) await mintProfileFromEnv(profile, APP_URL)
   const useAuth = existsSync(profile)
   manifest.profile = profileName; manifest.useAuth = useAuth
   mark(`test account: ${profileName} (${useAuth ? 'auth profile found' : 'no profile → guest link'})`)
@@ -231,10 +236,12 @@ async function main() {
 
   const chatUrl = `${APP_URL}/chat?provider=gemini&voiceArch=pipeline&agent=claude&agentUrl=${encodeURIComponent(AGENT_URL)}`
   const url = useAuth ? `${APP_URL}/dashboard` : chatUrl
-  const { captureStartedAt } = await enterFreshRoom(active, brain, useAuth ? chatUrl : url, { earsOn: true, agentUrl: AGENT_URL })
-  await ensureSessionLive(active, brain, chatUrl, { agentUrl: AGENT_URL })
-  let tCapture = captureStartedAt ?? Date.now()
-  mark('in room — awaiting direction')
+  // BOOT ORDER (v8): the room join happens in the BACKGROUND, after the
+  // control server is listening. A wedged "Connecting..." must never leave
+  // the engine headless — 2026-07-31 a platform-side guest-connect regression
+  // did exactly that: no /status, no /shot, no way to see or steer the boot.
+  let tCapture = Date.now()
+  let roomReady = false
 
   const json = (res: any, body: any, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
   const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({}) } }) })
@@ -319,25 +326,7 @@ async function main() {
     return rec
   }
 
-  // WAKE WHERE IT LEFT OFF: reopen the pre-sleep tab layout (urls + owners +
-  // active tab). Index 0 is skipped — the boot flow just rebuilt the chat tab.
-  // Disable with OSBORN_RESTORE_TABS=0.
-  if (process.env.OSBORN_RESTORE_TABS !== '0' && existsSync(TAB_STATE)) {
-    try {
-      const st = JSON.parse(readFileSync(TAB_STATE, 'utf8'))
-      const extra = (st.tabs ?? []).slice(1)
-      for (const t of extra) {
-        active = await openTab(context, t.url); watchPage(active)
-        if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
-      }
-      if (extra.length) {
-        const pages = context.pages()
-        active = await switchTab(context, Math.min(st.activeIndex ?? 0, pages.length - 1))
-        await live?.retarget(active).catch(() => {})
-        mark(`restored ${extra.length} tab(s) from pre-sleep state`)
-      }
-    } catch { /* fresh start */ }
-  }
+  // (room join + tab restore run in background after server.listen — see below)
   // Self-host auth: when OSBORN_ENGINE_TOKEN is set (always on public
   // deployments — Fly exposes the control port), every request must carry it.
   const TOKEN = process.env.OSBORN_ENGINE_TOKEN
@@ -441,7 +430,7 @@ async function main() {
         } catch { /* page dead */ }
         const lastFrame = live?.lastFrameAt() ?? null
         return json(res, {
-          run: RUN_STAMP, runDir: RUN_DIR, pageUrl, pageState, idlePaused,
+          run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
           brain: brainAlive ? 'ready' : 'dead', useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
@@ -633,6 +622,41 @@ async function main() {
     } catch (e) { json(res, { error: (e as Error).message, brain: brainAlive ? 'ready' : 'dead' }, 500) }
   })
   server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))
+
+  // BACKGROUND ROOM JOIN + tab restore — the engine is already fully
+  // drivable (/status /shot /act /recover /eval) while this runs or wedges.
+  void (async () => {
+    try {
+      const { captureStartedAt } = await enterFreshRoom(active, brain, useAuth ? chatUrl : url, { earsOn: true, agentUrl: AGENT_URL })
+      await ensureSessionLive(active, brain, chatUrl, { agentUrl: AGENT_URL })
+      tCapture = captureStartedAt ?? Date.now()
+      roomReady = true
+      mark('in room — awaiting direction')
+      notify('room_ready', {})
+    } catch (e) {
+      mark(`room join FAILED: ${(e as Error).message.slice(0, 120)} — engine still drivable; use /recover or /act to steer`)
+      notify('room_join_failed', { error: (e as Error).message.slice(0, 200) })
+    }
+    // WAKE WHERE IT LEFT OFF: reopen the pre-sleep tab layout (urls + owners
+    // + active tab). Index 0 is skipped — the boot flow rebuilt the chat tab.
+    // Disable with OSBORN_RESTORE_TABS=0.
+    if (process.env.OSBORN_RESTORE_TABS !== '0' && existsSync(TAB_STATE)) {
+      try {
+        const st = JSON.parse(readFileSync(TAB_STATE, 'utf8'))
+        const extra = (st.tabs ?? []).slice(1)
+        for (const t of extra) {
+          active = await openTab(context, t.url); watchPage(active)
+          if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
+        }
+        if (extra.length) {
+          const pages = context.pages()
+          active = await switchTab(context, Math.min(st.activeIndex ?? 0, pages.length - 1))
+          await live?.retarget(active).catch(() => {})
+          mark(`restored ${extra.length} tab(s) from pre-sleep state`)
+        }
+      } catch (e) { mark(`tab restore failed: ${(e as Error).message.slice(0, 100)}`) }
+    }
+  })()
 
   // IDLE AUTO-STOP (user request 2026-07-31): after OSBORN_IDLE_STOP_MS with
   // no director commands AND nobody watching the live stream, shut down
