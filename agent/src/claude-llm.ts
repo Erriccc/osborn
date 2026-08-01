@@ -1142,6 +1142,17 @@ class ClaudeLLMStream extends llm.LLMStream {
           loadAllSkills(this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()),
         ].filter(Boolean).join('\n\n'),
         canUseTool: async (toolName, input, _options) => {
+          // Auto-approve Bash calls to the agent's OWN local API (/canvas,
+          // /tts) — how the agent SPEAKS into a meeting. A spoken reply must
+          // never wait on a permission dialog. Localhost-only, own endpoints
+          // only, no shell chaining — not a general curl allowance.
+          if ((toolName as string) === 'Bash') {
+            const cmd = String((input as any)?.command || '')
+            if (/^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts)\b/.test(cmd) && !/[;&|]/.test(cmd)) {
+              console.log(`✅ Auto-approved Bash → own API (canvas/tts speak path)`)
+              return { behavior: 'allow', updatedInput: input }
+            }
+          }
           // Auto-approve writes to session workspace (but block spec.md and library/ — fast brain manages those)
           if (toolName === 'Write' || toolName === 'Edit') {
             const filePath = String(input?.file_path || '')
@@ -1180,18 +1191,6 @@ class ClaudeLLMStream extends llm.LLMStream {
             if (/(^|\/)meeting-(todos|notes)\.md$/.test(filePath)) {
               console.log(`✅ Auto-approved ${toolName} to meeting notes: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
-            }
-            // Auto-approve Bash calls to the agent's OWN local API (/canvas,
-            // /tts) — this is how the agent SPEAKS into a meeting. A spoken
-            // reply must never wait on a permission dialog (the room is
-            // listening). Localhost-only, own-port-only — not a general curl
-            // allowance.
-            if (toolName === 'Bash') {
-              const cmd = String((input as any)?.command || '')
-              if (/^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts)\b/.test(cmd) && !/[;&|]/.test(cmd.replace(/\|\s*$/, ''))) {
-                console.log(`✅ Auto-approved Bash → own API (canvas/tts speak path)`)
-                return { behavior: 'allow', updatedInput: input }
-              }
             }
             // if (toolUseId && this.#approvedWriterToolUseIds.has(toolUseId)) {
             //   this.#approvedWriterToolUseIds.delete(toolUseId)
