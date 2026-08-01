@@ -51,25 +51,46 @@ function speak(text: string) {
 // (speaking) work simultaneously. One shared AudioContext avoids memory churn.
 let sharedAudioCtx: AudioContext | null = null
 let currentTTSSource: AudioBufferSourceNode | null = null
+// QUEUED playback (2026-08-01): consecutive `say` events used to CUT each
+// other off (stopTTS on every new say) — heard live as "clunky" choppy speech
+// when the agent sent sentence-by-sentence says. Now says play SEQUENTIALLY;
+// only an explicit {kind:'stop'} interrupt cuts audio and clears the queue.
+let ttsQueue: string[] = []
+let ttsDraining = false
 async function playTTS(url: string): Promise<void> {
+  ttsQueue.push(url)
+  if (!ttsDraining) void drainTTSQueue()
+}
+async function drainTTSQueue(): Promise<void> {
+  ttsDraining = true
+  while (ttsQueue.length > 0) {
+    const url = ttsQueue.shift()!
+    try { await playOneTTS(url) } catch { /* skip bad clip, keep queue moving */ }
+  }
+  ttsDraining = false
+}
+async function playOneTTS(url: string): Promise<void> {
   const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
   if (!Ctx) throw new Error('no AudioContext')
   if (!sharedAudioCtx) sharedAudioCtx = new Ctx()
   if (sharedAudioCtx.state === 'suspended') { try { await sharedAudioCtx.resume() } catch { /* ignore */ } }
-  stopTTS() // don't overlap — a new say supersedes the old
   const resp = await fetch(url)
   if (!resp.ok) throw new Error(`tts ${resp.status}`)
   const bytes = await resp.arrayBuffer()
   const decoded = await sharedAudioCtx.decodeAudioData(bytes)
-  const src = sharedAudioCtx.createBufferSource()
-  src.buffer = decoded
-  src.connect(sharedAudioCtx.destination)
-  src.onended = () => { if (currentTTSSource === src) currentTTSSource = null }
-  currentTTSSource = src
-  src.start()
+  await new Promise<void>((resolve) => {
+    const src = sharedAudioCtx!.createBufferSource()
+    src.buffer = decoded
+    src.connect(sharedAudioCtx!.destination)
+    src.onended = () => { if (currentTTSSource === src) currentTTSSource = null; resolve() }
+    currentTTSSource = src
+    src.start()
+  })
 }
-// Interruption: cut the bot's audio immediately (a human started talking).
+// Interruption: cut the bot's audio immediately (a human started talking)
+// AND drop anything queued — they interrupted the whole thought.
 function stopTTS() {
+  ttsQueue = []
   try { currentTTSSource?.stop() } catch { /* already stopped */ }
   currentTTSSource = null
   try { window.speechSynthesis?.cancel() } catch { /* ignore */ }
