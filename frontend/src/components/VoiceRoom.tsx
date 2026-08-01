@@ -724,7 +724,10 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, 
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-2 w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
+          {/* Mobile: viewport-anchored (button-anchored panels jut off-screen
+              when the trigger sits mid-header — user screenshot 2026-08-01);
+              sm+: anchored under the button as before. */}
+          <div className="fixed left-3 right-3 top-[56px] sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">🤖 Named Agents</span>
               <div className="flex items-center gap-2">
@@ -981,7 +984,10 @@ function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean }) {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-2 w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
+          {/* Mobile: viewport-anchored (button-anchored panels jut off-screen
+              when the trigger sits mid-header — user screenshot 2026-08-01);
+              sm+: anchored under the button as before. */}
+          <div className="fixed left-3 right-3 top-[56px] sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">✨ Skills</span>
               <span className="text-[10px] text-gray-500">{count} installed</span>
