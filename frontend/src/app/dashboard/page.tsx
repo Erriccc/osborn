@@ -2,6 +2,17 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { MagnifyingGlass, Brain, PenNib, Robot } from '@phosphor-icons/react'
+
+// Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
+// fall back to the uppercased code (still tells you WHERE-ish).
+const FLY_REGION_CITIES: Record<string, string> = {
+  ord: 'Chicago', iad: 'Ashburn, VA', ewr: 'New Jersey', dfw: 'Dallas',
+  sjc: 'San Jose', lax: 'Los Angeles', sea: 'Seattle', den: 'Denver',
+  mia: 'Miami', atl: 'Atlanta', phx: 'Phoenix', bos: 'Boston',
+  yyz: 'Toronto', yul: 'Montreal', lhr: 'London', ams: 'Amsterdam',
+  cdg: 'Paris', fra: 'Frankfurt', mad: 'Madrid', gru: 'São Paulo',
+  nrt: 'Tokyo', sin: 'Singapore', syd: 'Sydney', bom: 'Mumbai', jnb: 'Johannesburg',
+}
 import LiveClock from '@/components/LiveClock'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
@@ -139,6 +150,9 @@ export default function Dashboard() {
   const [dashAgents, setDashAgents] = useState<{ name: string; description: string; model: string; tools: string[] }[]>([])
   // Mobile ⋯ overflow menu — which project's action menu is open
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null)
+  // Machine's physical location (Fly region from agent /health) — the user
+  // wants to see WHERE the machine runs (city), not just their own clock.
+  const [machineRegion, setMachineRegion] = useState<string | null>(null)
   const [installedVersion, setInstalledVersion] = useState<string | null>(null)
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
@@ -246,6 +260,16 @@ export default function Dashboard() {
       .then((d) => { if (Array.isArray(d?.agents)) setDashAgents(d.agents) })
       .catch(() => {})
   }, [showSettings, agentUrl])
+
+  // Machine location (agent /health region, 0.9.100+) — fetched whenever the
+  // agent URL resolves, shown in the Cloud badge + machine card.
+  useEffect(() => {
+    if (!agentUrl || agentUrl.startsWith('http://localhost')) { setMachineRegion(null); return }
+    fetch(`${agentUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(8000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.region) setMachineRegion(FLY_REGION_CITIES[d.region] || String(d.region).toUpperCase()) })
+      .catch(() => {})
+  }, [agentUrl])
 
   // Persist prefs
   useEffect(() => {
@@ -988,12 +1012,13 @@ export default function Dashboard() {
                       : 'bg-[var(--text-muted)]'
                     : agentOnline ? 'bg-emerald-400' : agentOnline === false ? 'bg-red-400' : 'bg-[var(--text-muted)]'
                 }`} />
-                {/* Mobile: one word (dot carries the state); desktop: full detail */}
+                {/* Mobile: one word (dot carries the state); desktop: full detail
+                    incl. the machine's physical city (user ask 2026-08-01). */}
                 <span className="text-[11px] text-[var(--text-muted)] whitespace-nowrap">
-                  <span className="sm:hidden">{isCloud ? 'Cloud' : 'Local'}</span>
+                  <span className="sm:hidden">{isCloud ? (machineRegion || 'Cloud') : 'Local'}</span>
                   <span className="hidden sm:inline">
                     {isCloud
-                      ? sandboxStatus ? `Cloud (${sandboxStatus})` : 'Cloud'
+                      ? `${sandboxStatus ? `Cloud (${sandboxStatus})` : 'Cloud'}${machineRegion ? ` · ${machineRegion}` : ''}`
                       : agentOnline ? 'Local' : agentOnline === false ? 'Local (offline)' : 'Local'
                     }
                   </span>
@@ -1246,6 +1271,11 @@ export default function Dashboard() {
                         }`} />
                         <span className="text-[12px] text-[var(--text-secondary)] font-mono">{sandboxId.substring(0, 8)}</span>
                         <span className="text-[11px] text-[var(--text-muted)] capitalize">{sandboxStatus}</span>
+                        {machineRegion && (
+                          <span className="text-[11px] text-[var(--text-muted)] flex items-center gap-1">
+                            <span className="opacity-40">·</span>📍 {machineRegion}
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-1">
                         {(sandboxStatus === 'stopped' || sandboxStatus === 'warm' || sandboxStatus === 'cold') && (

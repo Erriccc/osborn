@@ -384,6 +384,10 @@ function startApiServer(workingDir: string, port: number): void {
         status: 'ok',
         workingDir,
         version,
+        // WHERE this machine physically runs — Fly sets FLY_REGION (e.g. 'ord').
+        // The dashboard maps it to a city ("Chicago") so the user always knows
+        // the machine's location, not just their own clock. Null in local dev.
+        region: process.env.FLY_REGION || null,
         // LiveKit subsystem status — frontend can use this to surface a real
         // error instead of treating the sandbox as totally broken. The HTTP
         // status code stays 200 so Fly health-check stays green and the
