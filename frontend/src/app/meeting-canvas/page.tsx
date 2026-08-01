@@ -177,15 +177,20 @@ function CanvasInner() {
             doesn't fight the main thread. `url` is the engine's public feed base;
             we append /stream. This is the "watch it actually browse" surface. */}
         {show.mode === 'stream' && show.url && (
+          // FULL-BLEED: the browser feed IS the camera — fill the whole tile
+          // (user report 2026-08-01: it rendered as a small inset card,
+          // "browser is in background instead of canvas"). Engine emits
+          // 1280×720 (16:9, same AR as the camera) so cover ≈ no crop.
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={`${show.url.replace(/\/$/, '')}/stream`} alt="live browser" style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 14, boxShadow: '0 0 40px #000' }} />
+          <img src={`${show.url.replace(/\/$/, '')}/stream`} alt="live browser"
+            style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', objectFit: 'cover', borderRadius: 0 }} />
         )}
       </div>
 
-      {/* Live caption of what the bot is saying */}
+      {/* Live caption of what the bot is saying — overlay, never steals layout */}
       {caption && (
-        <div style={{ padding: '0 56px 40px', display: 'flex', justifyContent: 'center' }}>
-          <div style={{ background: 'rgba(99,102,241,0.16)', border: '1px solid rgba(99,102,241,0.4)', borderRadius: 14, padding: '16px 26px', fontSize: 24, maxWidth: 1100, textAlign: 'center' }}>
+        <div style={{ position: 'fixed', left: 0, right: 0, bottom: 28, zIndex: 2, padding: '0 56px', display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+          <div style={{ background: 'rgba(11,14,20,0.82)', border: '1px solid rgba(99,102,241,0.4)', borderRadius: 14, padding: '14px 24px', fontSize: 24, maxWidth: 1100, textAlign: 'center', backdropFilter: 'blur(6px)' }}>
             {caption}
           </div>
         </div>
