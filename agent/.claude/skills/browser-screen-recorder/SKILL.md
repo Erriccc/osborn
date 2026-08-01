@@ -13,7 +13,10 @@ capture, DevTools diagnostics, and metrics. It can speak into the page's mic
 (synthesized on the fly), hear and transcribe what it plays back, click via a
 natural-language brain, and improvise conversations. Works on any website.
 
-USE IT BROADLY — not just for tests: MANDATORY for debugging anything
+USE IT BROADLY — not just for tests: it is THE QA PROTOCOL for UI work —
+IMMEDIATELY AFTER building/styling/changing any frontend, the final build
+step is recording proof at mobile + desktop widths (never ask the user to
+eyeball or screenshot your own change). Also MANDATORY for debugging anything
 web-reachable (real browser + DevTools on camera + /logs, never debug a
 frontend blind) and for verifying deployed web changes (journey + clip, or it
 is a claim, not a verification). Also: reproducing user issues (mobile view),

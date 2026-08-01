@@ -3,20 +3,23 @@ name: browser-screen-recorder
 description: >
   Drives any web app in a REAL browser (natural-language clicks, speaks into
   the mic, hears and transcribes audio) and records proof — per-task video
-  clips, screenshots, DevTools/network logs. Use whenever you are debugging
-  anything web-reachable (never debug a frontend blind), ABOUT TO CLAIM a
-  deployed web change works (no recorded proof = a claim, not a verification),
-  reproducing a user-reported UI issue (mobile viewport included), testing a
-  voice flow end-to-end, casting a live browser feed into a meeting, or
-  exploring any website with evidence. Make sure to use this skill for any
-  frontend debugging or web verification task.
+  clips, screenshots, DevTools/network logs. THE QA PROTOCOL FOR UI WORK: use
+  it IMMEDIATELY AFTER building, styling, or changing ANY frontend/UI — the
+  final step of the build loop is recording proof at mobile + desktop widths,
+  NEVER asking the user to eyeball or send screenshots of your own change.
+  Also use whenever debugging anything web-reachable (never debug a frontend
+  blind), about to claim a deployed web change works (no recorded proof = a
+  claim), reproducing a user-reported UI issue, testing a voice flow
+  end-to-end, casting a live browser feed into a meeting, or exploring any
+  website with evidence. Make sure to use this skill after every UI change
+  and for any frontend debugging or web verification task.
 ---
 
 # Browser Screen Recorder — see the web, prove what happened
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 11
+Version: 12
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -29,6 +32,12 @@ claim; a read frame is proof. Every run ends with media reviewed by you AND
 delivered to the user. No silent runs.
 
 ## Which workflow? (route by the moment you're in)
+- **Just built / styled / changed UI?** → BUILD-QA (the final step of every
+  frontend change, not an option): deploy, then run a journey that renders
+  the changed surface at BOTH mobile (`viewport:"mobile"`) and desktop
+  widths; the frames are the proof you attach to your report. Asking the
+  user "send me a screenshot / tell me if it looks off" for your own change
+  is the anti-pattern this skill exists to kill.
 - **About to claim a web fix/deploy works?** → VERIFY: run a journey that
   exercises the change; the clip is the verification. No clip = no claim.
 - **Debugging a reported web issue?** → DEBUG: engine with `OSBORN_DEVTOOLS=1`
@@ -72,6 +81,7 @@ soften the report.
 | "It's just a quick exploratory run" | Exploratory runs still end with media delivered and a journey saved/discarded deliberately. |
 | "The user is waiting" | An unverified report costs more than the 60 seconds review-run.sh takes. |
 | "The brain said ok" | The brain has reported ok on clicks that hit nothing (stale cache, wrong tab). Ok is not evidence. |
+| "I'll ask the user to check / send a screenshot" | The recorder renders exact iPhone/iPad/desktop widths and records it. Outsourcing QA of YOUR change to the user's eyes is the failure mode this skill exists to kill. |
 
 ## MANDATORY VERSION CHECK — run FIRST
 ```bash
@@ -114,12 +124,13 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
+## What's new in v12
+- **QA-protocol triggers** — this skill is the FINAL STEP of every UI build
+  loop: after changing frontend code, record proof at mobile + desktop widths
+  instead of asking the user to eyeball your change (new BUILD-QA workflow +
+  rationalization row).
+
 ## What's new in v11
-- **Phone view (HLS)** — `/phone` on the live server serves a real `<video>`
-  (H.264 HLS off the same display grab): native on iOS Safari, supports
-  picture-in-picture, keeps playing minimized. ~5-10s latency; the MJPEG
-  viewer at `/` stays for instant watching. Display-capture mode only.
-  Honors the stream token (`/phone?key=…`).
 - **CI deploys** — pushes touching the harness auto-deploy the cloud engine
   (GitHub Action), completing "git push = release" for skill, bundle, AND
   engine.
