@@ -43,6 +43,12 @@ for (const dir of INCLUDE_DIRS) {
     if (statSync(p).isFile() && (TEXT_EXT.test(f) || f === 'Dockerfile')) files[`${dir}/${f}`] = readFileSync(p, 'utf8')
   }
 }
+// fixtures/ is binary (WAVs) and can't ride a text bundle — but the
+// Dockerfile COPYs it, so a materialized build context MUST have the dir
+// (first autonomous orchestrator deploy failed on exactly this: COPY
+// fixtures → "/fixtures": not found). Runtime doesn't need the WAVs — the
+// reactive mic synthesizes speech.
+files['fixtures/.keep'] = '# placeholder — WAV fixtures are optional; the reactive mic synthesizes speech at runtime\n'
 mkdirSync(dirname(out), { recursive: true })
 const payload = JSON.stringify({ version: HARNESS_VERSION, generatedAt: new Date().toISOString(), files })
 writeFileSync(out, payload)
