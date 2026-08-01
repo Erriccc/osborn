@@ -55,28 +55,30 @@ let currentTTSSource: AudioBufferSourceNode | null = null
 // other off (stopTTS on every new say) — heard live as "clunky" choppy speech
 // when the agent sent sentence-by-sentence says. Now says play SEQUENTIALLY;
 // only an explicit {kind:'stop'} interrupt cuts audio and clears the queue.
-let ttsQueue: string[] = []
+// PREFETCH (2026-08-01 latency): audio download starts the moment a say is
+// ENQUEUED — while sentence N plays, N+1 is already synthesizing/downloading.
+// Sequential playback preserved; only explicit stop clears.
+let ttsQueue: { bytes: Promise<ArrayBuffer> }[] = []
 let ttsDraining = false
 async function playTTS(url: string): Promise<void> {
-  ttsQueue.push(url)
+  const bytes = fetch(url).then((r) => { if (!r.ok) throw new Error(`tts ${r.status}`); return r.arrayBuffer() })
+  bytes.catch(() => {}) // avoid unhandled rejection if dropped before play
+  ttsQueue.push({ bytes })
   if (!ttsDraining) void drainTTSQueue()
 }
 async function drainTTSQueue(): Promise<void> {
   ttsDraining = true
   while (ttsQueue.length > 0) {
-    const url = ttsQueue.shift()!
-    try { await playOneTTS(url) } catch { /* skip bad clip, keep queue moving */ }
+    const item = ttsQueue.shift()!
+    try { await playOneTTS(await item.bytes) } catch { /* skip bad clip, keep queue moving */ }
   }
   ttsDraining = false
 }
-async function playOneTTS(url: string): Promise<void> {
+async function playOneTTS(bytes: ArrayBuffer): Promise<void> {
   const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
   if (!Ctx) throw new Error('no AudioContext')
   if (!sharedAudioCtx) sharedAudioCtx = new Ctx()
   if (sharedAudioCtx.state === 'suspended') { try { await sharedAudioCtx.resume() } catch { /* ignore */ } }
-  const resp = await fetch(url)
-  if (!resp.ok) throw new Error(`tts ${resp.status}`)
-  const bytes = await resp.arrayBuffer()
   const decoded = await sharedAudioCtx.decodeAudioData(bytes)
   await new Promise<void>((resolve) => {
     const src = sharedAudioCtx!.createBufferSource()

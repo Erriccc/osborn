@@ -608,9 +608,35 @@ function startApiServer(workingDir: string, port: number): void {
     // speechSynthesis is NOT captured by Recall, a media element IS.
     if (req.method === 'GET' && url.pathname === '/tts') {
       const text = (url.searchParams.get('text') || '').slice(0, 4000)
+      if (!text) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no text' })); return }
+      const t0 = Date.now()
+      // Deepgram FIRST (2026-08-01 latency fix): same TTS family the regular
+      // voice pipeline uses — ~3-6x faster than the OpenAI full-file synth this
+      // endpoint used before (measured 2-4s of the meeting reply lag). OpenAI
+      // stays as fallback.
+      const dgKey = process.env.DEEPGRAM_API_KEY
+      if (dgKey) {
+        try {
+          const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3', {
+            method: 'POST',
+            headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+          })
+          if (dg.ok) {
+            const buf = Buffer.from(await dg.arrayBuffer())
+            console.log(`🗣️ /tts deepgram ${buf.length}b in ${Date.now() - t0}ms (${text.length} chars) t=${new Date().toISOString()}`)
+            res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store', 'Content-Length': buf.length })
+            res.end(buf)
+            return
+          }
+          console.warn(`⚠️ /tts deepgram ${dg.status} — falling back to OpenAI`)
+        } catch (e) {
+          console.warn(`⚠️ /tts deepgram error: ${(e as Error).message} — falling back to OpenAI`)
+        }
+      }
       const voice = url.searchParams.get('voice') || 'alloy'
       const key = process.env.OPENAI_API_KEY
-      if (!text || !key) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: !key ? 'no OPENAI_API_KEY' : 'no text' })); return }
+      if (!key) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no TTS provider keys' })); return }
       try {
         const tts = await fetch('https://api.openai.com/v1/audio/speech', {
           method: 'POST',
@@ -619,6 +645,7 @@ function startApiServer(workingDir: string, port: number): void {
         })
         if (!tts.ok) { const e = await tts.text().catch(() => ''); res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: `tts ${tts.status}`, detail: e.slice(0, 200) })); return }
         const buf = Buffer.from(await tts.arrayBuffer())
+        console.log(`🗣️ /tts openai ${buf.length}b in ${Date.now() - t0}ms t=${new Date().toISOString()}`)
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store', 'Content-Length': buf.length })
         res.end(buf)
       } catch (e) {
@@ -2582,8 +2609,13 @@ async function main() {
         // (reuse of the regular speak path; no Bash roundtrip). Silent-observer
         // turns stay suppressed as before.
         if (activeMeetingBotId && Date.now() < meetingAddressedUntil) {
-          console.log(`🔊➡️📽️ tts_say → canvas (addressed meeting turn): "${data.text.slice(0, 60)}"`)
-          pushCanvas({ kind: 'say', text: data.text })
+          // Sentence-split so the FIRST sentence synthesizes + plays while the
+          // rest queue behind it (canvas plays says sequentially + prefetches)
+          // — first-audio latency = one short sentence's synth, not the whole
+          // reply's.
+          const sentences = data.text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g)?.map((s: string) => s.trim()).filter(Boolean) || [data.text]
+          console.log(`🔊➡️📽️ tts_say → canvas (${sentences.length} sentence(s), addressed turn) t=${new Date().toISOString()}: "${data.text.slice(0, 60)}"`)
+          for (const s of sentences) pushCanvas({ kind: 'say', text: s })
           markMeetingSpeaking(data.text)
           return
         }
