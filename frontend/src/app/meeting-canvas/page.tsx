@@ -74,6 +74,11 @@ async function drainTTSQueue(): Promise<void> {
   }
   ttsDraining = false
 }
+// GAPLESS (2026-08-01): chain clips on the AUDIO CLOCK, not onended JS
+// callbacks — callback jitter between clips was audible as cracks/gaps.
+// Each clip starts exactly when the previous one ends (audio-time scheduled);
+// prefetch means the next buffer is usually decoded well before its slot.
+let playheadTime = 0
 async function playOneTTS(bytes: ArrayBuffer): Promise<void> {
   const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
   if (!Ctx) throw new Error('no AudioContext')
@@ -81,18 +86,22 @@ async function playOneTTS(bytes: ArrayBuffer): Promise<void> {
   if (sharedAudioCtx.state === 'suspended') { try { await sharedAudioCtx.resume() } catch { /* ignore */ } }
   const decoded = await sharedAudioCtx.decodeAudioData(bytes)
   await new Promise<void>((resolve) => {
-    const src = sharedAudioCtx!.createBufferSource()
+    const ctx = sharedAudioCtx!
+    const src = ctx.createBufferSource()
     src.buffer = decoded
-    src.connect(sharedAudioCtx!.destination)
+    src.connect(ctx.destination)
+    const startAt = Math.max(ctx.currentTime + 0.03, playheadTime)
+    playheadTime = startAt + decoded.duration
     src.onended = () => { if (currentTTSSource === src) currentTTSSource = null; resolve() }
     currentTTSSource = src
-    src.start()
+    src.start(startAt)
   })
 }
 // Interruption: cut the bot's audio immediately (a human started talking)
 // AND drop anything queued — they interrupted the whole thought.
 function stopTTS() {
   ttsQueue = []
+  playheadTime = 0
   try { currentTTSSource?.stop() } catch { /* already stopped */ }
   currentTTSSource = null
   try { window.speechSynthesis?.cancel() } catch { /* ignore */ }

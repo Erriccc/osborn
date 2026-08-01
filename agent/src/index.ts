@@ -617,15 +617,18 @@ function startApiServer(workingDir: string, port: number): void {
       const dgKey = process.env.DEEPGRAM_API_KEY
       if (dgKey) {
         try {
-          const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3', {
+          // WAV/linear16, not mp3: mp3 files carry encoder padding (leading/
+          // trailing silence + boundary click) — back-to-back sentence clips
+          // were heard as "cracking". WAV is gapless-safe and cheaper to decode.
+          const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&sample_rate=24000&container=wav', {
             method: 'POST',
             headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ text }),
           })
           if (dg.ok) {
             const buf = Buffer.from(await dg.arrayBuffer())
-            console.log(`🗣️ /tts deepgram ${buf.length}b in ${Date.now() - t0}ms (${text.length} chars) t=${new Date().toISOString()}`)
-            res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store', 'Content-Length': buf.length })
+            console.log(`🗣️ /tts deepgram wav ${buf.length}b in ${Date.now() - t0}ms (${text.length} chars) t=${new Date().toISOString()}`)
+            res.writeHead(200, { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store', 'Content-Length': buf.length })
             res.end(buf)
             return
           }
@@ -1713,8 +1716,12 @@ async function main() {
       // reply entirely) — measured as most of the 5-8s reply lag.
       meetingAddressedUntil = Date.now() + 90_000
     }
+    // PROMPT PARITY (user directive 2026-08-01): addressed turns carry ONLY a
+    // minimal tag — no behavioral re-instruction. The agent replies exactly as
+    // it would to a regular voice turn; the tts_say→canvas redirect handles
+    // where the words go. Same agent, same behavior, both fronts.
     const header = addressed
-      ? `[MEETING — ${botId}] — YOU WERE ADDRESSED. Reply now in PLAIN TEXT — your words are spoken into the meeting automatically (do NOT use Bash/curl to speak). One or two short conversational sentences first; then, if needed, delegate notes/research in the background.`
+      ? `[MEETING — ${botId}] (addressed — reply is spoken into the meeting):`
       : `[MEETING — ${botId}]:`
     // Prepend + consume any interruption context (bot was cut off mid-sentence).
     const interrupt = meetingInterruptContext ? `${meetingInterruptContext}\n` : ''
@@ -2609,13 +2616,14 @@ async function main() {
         // (reuse of the regular speak path; no Bash roundtrip). Silent-observer
         // turns stay suppressed as before.
         if (activeMeetingBotId && Date.now() < meetingAddressedUntil) {
-          // Sentence-split so the FIRST sentence synthesizes + plays while the
-          // rest queue behind it (canvas plays says sequentially + prefetches)
-          // — first-audio latency = one short sentence's synth, not the whole
-          // reply's.
-          const sentences = data.text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g)?.map((s: string) => s.trim()).filter(Boolean) || [data.text]
-          console.log(`🔊➡️📽️ tts_say → canvas (${sentences.length} sentence(s), addressed turn) t=${new Date().toISOString()}: "${data.text.slice(0, 60)}"`)
-          for (const s of sentences) pushCanvas({ kind: 'say', text: s })
+          // Split into AT MOST 2 chunks: first sentence (fast first-audio) +
+          // the remainder as ONE chunk. Per-sentence files created an audible
+          // seam at every boundary (mp3 padding + scheduling jitter — heard as
+          // "cracking"); two chunks keeps the latency win with one seam max.
+          const m = data.text.match(/^([^.!?]+[.!?]+["']?)\s*([\s\S]*)$/)
+          const chunks = m && m[2]?.trim() ? [m[1].trim(), m[2].trim()] : [data.text.trim()]
+          console.log(`🔊➡️📽️ tts_say → canvas (${chunks.length} chunk(s), addressed turn) t=${new Date().toISOString()}: "${data.text.slice(0, 60)}"`)
+          for (const s of chunks) pushCanvas({ kind: 'say', text: s })
           markMeetingSpeaking(data.text)
           return
         }
