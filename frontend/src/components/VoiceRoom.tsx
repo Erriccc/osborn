@@ -1482,55 +1482,45 @@ function PermissionModal({
 }
 
 // Modern status indicator
+// ── The Voice Orb — the interface IS the state (2026-08 "Warm Oracle") ──
+// One living orb whose color + motion carry the voice state peripherally:
+// idle = dim slow breathing · listening = amber amplitude pulse · thinking =
+// violet shimmer · speaking = sage rhythmic ripple. Label is quiet serif —
+// the orb does the talking. Same props/name as the old pill (call sites
+// untouched).
 function StatusIndicator({ state, isMuted }: { state: string; isMuted: boolean }) {
-  const config: Record<string, { gradient: string; icon: JSX.Element; label: string; pulse?: boolean }> = {
-    listening: {
-      gradient: 'from-green-400 to-emerald-500',
-      icon: (
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-        </svg>
-      ),
-      label: 'Listening',
-      pulse: true,
-    },
-    thinking: {
-      gradient: 'from-amber-400 to-orange-500',
-      icon: (
-        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-      ),
-      label: 'Thinking',
-    },
-    speaking: {
-      gradient: 'from-amber-400 to-yellow-500',
-      icon: (
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-        </svg>
-      ),
-      label: 'Speaking',
-    },
-    idle: {
-      gradient: 'from-gray-400 to-gray-500',
-      icon: (
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-      ),
-      label: 'Ready',
-    },
+  const config: Record<string, { color: string; anim: string; label: string }> = {
+    listening: { color: 'var(--voice-listening)', anim: 'orbPulse 1.6s ease-in-out infinite', label: 'Listening' },
+    thinking:  { color: 'var(--voice-thinking)',  anim: 'orbShimmer 2.4s linear infinite',    label: 'Thinking' },
+    speaking:  { color: 'var(--voice-speaking)',  anim: 'orbRipple 1.1s ease-out infinite',   label: 'Speaking' },
+    idle:      { color: 'var(--voice-idle)',      anim: 'orbBreathe 3.5s ease-in-out infinite', label: 'Ready' },
   }
-
-  const { gradient, icon, label, pulse } = config[state] || config.idle
+  const { color, anim, label } = config[state] || config.idle
 
   return (
-    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full bg-gradient-to-r ${gradient} shadow-lg`}>
-      <span className={pulse ? 'animate-pulse' : ''}>{icon}</span>
-      <span className="text-sm font-medium text-white">{label}</span>
+    <div className="flex items-center gap-2 sm:gap-2.5 pl-1 pr-2 py-1 select-none shrink-0">
+      {/* The orb */}
+      <div className="relative w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center">
+        {/* Halo */}
+        <div
+          className="absolute inset-[-6px] rounded-full blur-md transition-colors duration-500"
+          style={{ background: `radial-gradient(circle, ${color}44 0%, transparent 70%)` }}
+        />
+        {/* Core */}
+        <div
+          className="relative w-full h-full rounded-full transition-colors duration-500"
+          style={{
+            background: `radial-gradient(circle at 32% 30%, ${color} 0%, color-mix(in srgb, ${color} 55%, #0c0b09) 100%)`,
+            animation: anim,
+          }}
+        />
+      </div>
+      <span className="font-display italic text-[13px] sm:text-sm text-[var(--text-secondary)] transition-colors duration-500 tracking-tight"
+        style={{ color: state !== 'idle' ? color : undefined }}>
+        {label}
+      </span>
       {isMuted && (
-        <span className="text-xs bg-red-500/30 px-1.5 py-0.5 rounded text-red-200">Muted</span>
+        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-[var(--voice-error)]/40 text-[var(--voice-error)]">muted</span>
       )}
     </div>
   )

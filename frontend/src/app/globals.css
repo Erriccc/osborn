@@ -15,9 +15,20 @@
   --text-primary: #e8e4de;
   --text-secondary: #8a857a;
   --text-muted: #4a4740;
-  --font-sans: var(--font-sans-loaded), 'DM Sans', system-ui, -apple-system, sans-serif;
+  --font-sans: var(--font-sans-loaded), 'Instrument Sans', system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-mono-loaded), 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  --font-display: var(--font-display-loaded), 'Fraunces', Georgia, serif;
+
+  /* ── Voice-state grammar (2026-08 "Warm Oracle" redesign) ──
+     One color+motion per state; the orb + edge glows read these. */
+  --voice-idle: #4a4740;
+  --voice-listening: #d4a853;   /* amber — osborn's signature */
+  --voice-thinking: #9b8ec4;    /* soft violet shimmer */
+  --voice-speaking: #6faf8f;    /* sage — calm confirmation */
+  --voice-error: #c4756b;       /* terracotta, not alarm-red */
 }
+
+.font-display { font-family: var(--font-display); }
 
 * {
   box-sizing: border-box;
@@ -47,4 +58,26 @@ body {
 @keyframes fadeSlideIn {
   from { opacity: 0; transform: translateY(5px); }
   to   { opacity: 1; transform: none; }
+}
+
+/* ── Voice orb motion (2026-08 "Warm Oracle") ──
+   idle: slow breathing · listening: amplitude pulse · thinking: hue shimmer ·
+   speaking: rhythmic ripple. The orb is the interface — state reads
+   peripherally from color + motion, never from labels. */
+@keyframes orbBreathe {
+  0%, 100% { transform: scale(1); opacity: .55; }
+  50%      { transform: scale(1.06); opacity: .75; }
+}
+@keyframes orbPulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 24px 4px var(--voice-listening); }
+  50%      { transform: scale(1.12); box-shadow: 0 0 44px 10px var(--voice-listening); }
+}
+@keyframes orbShimmer {
+  0%   { filter: hue-rotate(0deg) brightness(1); transform: rotate(0deg) scale(1); }
+  50%  { filter: hue-rotate(24deg) brightness(1.18); transform: rotate(180deg) scale(1.04); }
+  100% { filter: hue-rotate(0deg) brightness(1); transform: rotate(360deg) scale(1); }
+}
+@keyframes orbRipple {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--voice-speaking) 45%, transparent); }
+  100% { box-shadow: 0 0 0 26px transparent; }
 }

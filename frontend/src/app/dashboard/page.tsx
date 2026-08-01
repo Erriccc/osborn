@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { MagnifyingGlass, Brain, PenNib, Robot } from '@phosphor-icons/react'
 import LiveClock from '@/components/LiveClock'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
@@ -965,7 +966,7 @@ export default function Dashboard() {
                   <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                 </svg>
               </div>
-              <span className="text-[var(--text-primary)] font-semibold text-[15px] tracking-tight">Osborn</span>
+              <span className="font-display text-[var(--text-primary)] font-semibold text-[16px] tracking-tight">Osborn</span>
             </div>
 
             <div className="flex items-center gap-1.5">
@@ -1328,11 +1329,11 @@ export default function Dashboard() {
                       <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Agents ({dashAgents.length})</span>
                       <div className="mt-2 grid gap-2">
                         {dashAgents.map((a) => {
-                          const glyph = a.name === 'researcher' ? '🔍' : a.name === 'reasoner' ? '🧠' : a.name === 'writer' ? '✍️' : '🤖'
+                          const Glyph = a.name === 'researcher' ? MagnifyingGlass : a.name === 'reasoner' ? Brain : a.name === 'writer' ? PenNib : Robot
                           return (
                             <div key={a.name} className="flex gap-3 p-3 rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] hover:border-[var(--accent-dim)]/40 transition-colors">
-                              <div className="w-9 h-9 rounded-lg bg-gradient-to-b from-[var(--surface-2)] to-[var(--surface)] border border-[var(--border-subtle)] flex items-center justify-center text-base flex-shrink-0">
-                                {glyph}
+                              <div className="w-9 h-9 rounded-lg bg-gradient-to-b from-[var(--surface-2)] to-[var(--surface)] border border-[var(--border-subtle)] flex items-center justify-center flex-shrink-0">
+                                <Glyph size={19} weight="duotone" color="var(--accent)" />
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center justify-between gap-2">
@@ -1383,6 +1384,15 @@ export default function Dashboard() {
 
         {/* ── Content ──────────────────────────────── */}
         <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-6">
+
+          {/* Serif greeting — the voice's presence on the page (Claude-style) */}
+          <div className="mb-5 mt-1" style={{ animation: 'fadeSlideIn .4s ease both' }}>
+            <h1 className="font-display text-[26px] sm:text-3xl font-medium text-[var(--text-primary)] leading-tight">
+              {(() => { const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening' })()}
+              {user?.user_metadata?.full_name ? `, ${String(user.user_metadata.full_name).split(' ')[0]}` : ''}.
+            </h1>
+            <p className="mt-1 text-[13px] text-[var(--text-secondary)]">What should we look into?</p>
+          </div>
 
           {/* New chat button */}
           <button onClick={() => startChat()}

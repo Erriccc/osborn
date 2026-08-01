@@ -13,6 +13,7 @@
     "@daytonaio/sdk": "^0.161.0",
     "@livekit/components-react": "^2.0.0",
     "@livekit/components-styles": "^1.0.0",
+    "@phosphor-icons/react": "^2.1.10",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.89.0",
     "@xterm/addon-attach": "^0.12.0",
