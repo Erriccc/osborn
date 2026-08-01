@@ -41,6 +41,9 @@ export type LiveStream = {
   // How many clients are watching /stream right now (idle-stop holds off
   // while someone is watching).
   viewerCount: () => number
+  // Latest frame as base64 jpeg — inline keyframes in act/say responses so
+  // the director can review-and-relay without downloading the clip first.
+  latestFrame: () => string | null
   // Re-bind the screencast to a different tab (the engine's active page).
   retarget: (page: Page) => Promise<void>
 }
@@ -226,6 +229,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     clip,
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
+    latestFrame: () => (latest ? latest.toString('base64') : null),
     retarget: async (p: Page) => {
       // Display mode captures the whole window — tab focus IS the retarget.
       if (DISPLAY) return

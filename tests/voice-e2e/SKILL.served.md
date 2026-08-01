@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 12
+Version: 13
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -35,9 +35,10 @@ delivered to the user. No silent runs.
 - **Just built / styled / changed UI?** → BUILD-QA (the final step of every
   frontend change, not an option): deploy, then run a journey that renders
   the changed surface at BOTH mobile (`viewport:"mobile"`) and desktop
-  widths; the frames are the proof you attach to your report. Asking the
-  user "send me a screenshot / tell me if it looks off" for your own change
-  is the anti-pattern this skill exists to kill.
+  widths; the frames are the proof you attach to your report. A deployed
+  page change gets a fresh render captured BEFORE the next iteration starts.
+  Asking the user "send me a screenshot / tell me if it looks off" for your
+  own change is the anti-pattern this skill exists to kill.
 - **About to claim a web fix/deploy works?** → VERIFY: run a journey that
   exercises the change; the clip is the verification. No clip = no claim.
 - **Debugging a reported web issue?** → DEBUG: engine with `OSBORN_DEVTOOLS=1`
@@ -51,6 +52,9 @@ delivered to the user. No silent runs.
   `OSBORN_APP_URL=<site>`; save what you learn as journeys.
 - **Voice flow testing?** → VOICE: `/say` a riddle, `/hear` the reply —
   comprehension from AUDIO, never from the DOM.
+- **User/operator says "can't hear / can't see / looks weird"?** → SYMPTOM:
+  FIRST action is capturing media of both ends (engine frames + the user's
+  view + relevant logs), never a code hypothesis. Diagnose from evidence.
 
 All commands and endpoints: references/harness-api.md.
 
@@ -72,6 +76,22 @@ Run Checklist [browser-screen-recorder]:
 **Gate:** the result report may only be written AFTER the evidence line. If
 frames contradict the assertion, the run FAILED — return to the steps, don't
 soften the report.
+
+## LIVE RELAY — review and forward media DURING the run, not after
+The default loop is **act → review → relay**, interleaved: every act/say
+response carries `keyframeB64` (the current frame, inline) — read it, say
+what it shows, forward media to the user, THEN take the next step. A `nag`
+field appears when the previous task's clip was never fetched — treat it as
+a stop sign, not a suggestion. Post-hoc media dumps hide mid-run failures
+(a modal false-ok was once caught ONLY because a frame was read between
+steps). After any act on a modal/state-changing control, the NEXT step is
+artifact review — no exceptions.
+
+## AUDIO CLAIMS NEED AUDIO PROOF
+After any audio-path change (TTS route, meeting speech), do not declare
+quality from code or logs: download the Recall bot's own recording
+(`GET /api/v1/bot/<id>` → `recordings[0].media_shortcuts` → download_url)
+and listen/waveform it. Frames prove pixels; only audio proves audio.
 
 ## Rationalization table — these excuses are pre-refuted
 | "…" | Reality |
@@ -123,6 +143,20 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v13
+- **Mission lock + hold-awake** — `journey start` with an `owner` claims the
+  engine (`mission` in /status; a second owner's start gets 409); an open
+  journey suspends idle-stop (2h cap). Born of two real mid-mission machine
+  kills, one from each driving agent.
+- **Live relay support** — act/say responses carry `keyframeB64` inline + a
+  `nag` when the previous clip was never fetched (the act-verify gate's
+  teeth). New LIVE RELAY doctrine: act → review → relay, interleaved.
+- **Cross-run media** — `GET /runs` lists all runs on the volume;
+  `/clip?run=<stamp>&n=N` (and /artifact) reach past runs (they used to 404
+  after every restart).
+- **Symptom + audio doctrine** — "can't hear/see/looks weird" → capture
+  media first; audio claims require the Recall recording, not logs.
 
 ## What's new in v12
 - **QA-protocol triggers** — this skill is the FINAL STEP of every UI build

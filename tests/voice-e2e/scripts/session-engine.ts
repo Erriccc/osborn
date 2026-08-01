@@ -386,10 +386,15 @@ async function main() {
   // a name and a beginning; /journey end CLEANS UP (extra tabs closed,
   // default viewport restored) and PROMOTES the step sequence into
   // knowledge/<site>/journeys/ — the layer where a deployment learns each
-  // site's real paths ("start a conversation" = login → dashboard → new
-  // conversation) over time. Without this, tasks read as disconnected
-  // actions and nothing above the single-step cache ever accumulates.
-  let journey: { name: string; goal?: string; startStep: number; startTaskN: number; startUrl: string } | null = null
+  // site's real paths over time. A journey with an `owner` is also the
+  // MISSION LOCK (v13, born of two real mid-mission machine kills — one from
+  // each track): /status carries `mission` so any other driver/deployer sees
+  // the engine is claimed, and idle-stop HOLDS while a mission is active
+  // (capped at 2h so a forgotten journey can't hold the machine forever).
+  let journey: { name: string; goal?: string; owner?: string; startStep: number; startTaskN: number; startUrl: string; startedAt: number } | null = null
+  // Fetch-nag (v13): clips that were returned but never downloaded — the
+  // act-verify gate's teeth. GET /clip marks a task reviewed-able.
+  const fetchedClips = new Set<number>()
   // GRACEFUL SHUTDOWN — used by POST /end AND the idle watchdog. Every step
   // bounded + a hard watchdog: a hung Stagehand/CDP close must never wedge
   // the engine (the manifest's predecessor tasks.json was lost to exactly
@@ -447,18 +452,43 @@ async function main() {
           brain: brainAlive ? 'ready' : 'dead', useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
+          mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: context.pages().indexOf(active), url: active.url() },
           tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
         })
       }
+      if (req.method === 'GET' && path === '/runs') {
+        // All runs on this volume, newest last — pair with /clip?run=.
+        let runs: Array<Record<string, unknown>> = []
+        try {
+          runs = readdirSync(RUNS_ROOT).sort().map((stamp) => {
+            try { const m = JSON.parse(readFileSync(join(RUNS_ROOT, stamp, 'manifest.json'), 'utf8')); return { run: stamp, startedAt: m.startedAt, endedAt: m.endedAt, tasks: (m.tasks ?? []).length } }
+            catch { return { run: stamp } }
+          })
+        } catch { /* empty */ }
+        return json(res, { current: RUN_STAMP, runs })
+      }
       if (req.method === 'GET' && (path === '/clip' || path === '/artifact')) {
         // Retrieve task N's proof media — how a REMOTE director (or the
         // user's machine) pulls video (/clip) and screenshot (/artifact) off
-        // a Fly-hosted engine.
-        const n = Number(new URL(req.url || '', 'http://x').searchParams.get('n'))
-        const t = tasks.find((t) => t.n === n) as any
-        const file = path === '/clip' ? t?.clip : t?.artifact
-        if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}` }, 404)
+        // a Fly-hosted engine. `run=<stamp>` reaches PAST runs (they persist
+        // on the volume; before v13 they 404'd after every restart).
+        const q = new URL(req.url || '', 'http://x').searchParams
+        const n = Number(q.get('n'))
+        const runParam = q.get('run')
+        let file: string | undefined
+        if (runParam && runParam !== RUN_STAMP) {
+          try {
+            const m = JSON.parse(readFileSync(join(RUNS_ROOT, runParam.replace(/[^A-Za-z0-9T:-]/g, ''), 'manifest.json'), 'utf8'))
+            const t = (m.tasks ?? []).find((t: { n: number }) => t.n === n)
+            file = path === '/clip' ? t?.clip : t?.artifact
+          } catch { /* fall through to 404 */ }
+        } else {
+          const t = tasks.find((t) => t.n === n) as any
+          file = path === '/clip' ? t?.clip : t?.artifact
+          if (path === '/clip' && file) fetchedClips.add(n)
+        }
+        if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs` }, 404)
         res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })
         createReadStream(file).pipe(res)
         return
@@ -501,12 +531,16 @@ async function main() {
         // reacting) paint and get captured before the clip is cut — clips cut
         // at brain-return ended right before the effect and proved nothing.
         await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
+        // Act-verify gate teeth (v13): surface the un-reviewed previous clip.
+        const prevTask = tasks[tasks.length - 1]
+        const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
         const n = ++reqN
         const { clip, clipError } = await reqClip(n, 'act', body.clipSeconds ?? 20)
         const shot = await reqShot(n, 'act')
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
         scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
-        return json(res, { ok: true, result: r, clip, clipError, artifact: shot, window })
+        // keyframe: latest frame inline — review-and-relay without a download.
+        return json(res, { ok: true, result: r, clip, clipError, artifact: shot, keyframeB64: live?.latestFrame() ?? null, nag, window })
       }
       if (path === '/say') {
         const ownedSay = guardOwnership(body)
@@ -519,7 +553,7 @@ async function main() {
         const shot = await reqShot(n, 'say')
         const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
         scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
-        return json(res, { ok: true, clip, clipError, artifact: shot, heard, window })
+        return json(res, { ok: true, clip, clipError, artifact: shot, keyframeB64: live?.latestFrame() ?? null, heard, window })
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
@@ -612,8 +646,9 @@ async function main() {
       if (path === '/journey') {
         const host = (() => { try { return new URL(active.url()).hostname } catch { return 'unknown' } })()
         if (body.op === 'start') {
-          journey = { name: String(body.name || 'unnamed'), goal: body.goal, startStep: scenarioSteps.length, startTaskN: reqN, startUrl: active.url() }
-          mark(`journey start: ${journey.name}${journey.goal ? ` — ${journey.goal}` : ''}`)
+          if (journey && journey.owner && body.owner !== journey.owner) return json(res, { error: `mission "${journey.name}" is active (owner: ${journey.owner}) — coordinate or wait for journey end`, mission: { name: journey.name, owner: journey.owner, startedAt: journey.startedAt } }, 409)
+          journey = { name: String(body.name || 'unnamed'), goal: body.goal, owner: body.owner ? String(body.owner) : undefined, startStep: scenarioSteps.length, startTaskN: reqN, startUrl: active.url(), startedAt: Date.now() }
+          mark(`journey start: ${journey.name}${journey.owner ? ` [${journey.owner}]` : ''}${journey.goal ? ` — ${journey.goal}` : ''}`)
           return json(res, { ok: true, journey, knownJourneys: listJourneys(host) })
         }
         if (body.op === 'end') {
@@ -712,9 +747,13 @@ async function main() {
   // auto_start_machines boots it again on the next request. Default 10 min in
   // containers, disabled locally (set OSBORN_IDLE_STOP_MS to override; 0 = off).
   const IDLE_STOP_MS = Number(process.env.OSBORN_IDLE_STOP_MS ?? (IN_CONTAINER ? 600000 : 0))
+  const MISSION_MAX_MS = 2 * 60 * 60 * 1000
   setInterval(() => {
     if (ending || !IDLE_STOP_MS) return
     if ((live?.viewerCount() ?? 0) > 0) { lastActivity = Date.now(); return }
+    // HOLD-AWAKE during missions (v13): an open journey keeps the engine up
+    // (a meeting mission dozing mid-call was a real failure) — capped at 2h.
+    if (journey && Date.now() - journey.startedAt < MISSION_MAX_MS) { lastActivity = Date.now(); return }
     if (Date.now() - lastActivity > IDLE_STOP_MS) void gracefulEnd(`idle ${Math.round(IDLE_STOP_MS / 60000)}min — auto-stop`)
   }, 30000)
 
