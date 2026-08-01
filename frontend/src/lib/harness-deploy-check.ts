@@ -36,6 +36,15 @@ function log(...args: unknown[]): void {
   console.log('[harness-deploy-check]', ...args)
 }
 
+// Observable heartbeat — the check writes its status here; the
+// /api/browser-screen-recorder/deploy-status route serves it. Born from a
+// real incident: Railway silently stopped deploying and the only way to know
+// whether this check ever ran was inference from the outside.
+const STATUS_FILE = join(tmpdir(), 'bsr-deploy-check.json')
+function writeStatus(result: string): void {
+  try { writeFileSync(STATUS_FILE, JSON.stringify({ lastRunAt: new Date().toISOString(), result })) } catch { /* ignore */ }
+}
+
 // Event-loop-safe spawn (spawnSync here would block Railway's healthcheck —
 // see the incident note in image-build-check.ts).
 function spawnAsync(
@@ -101,11 +110,11 @@ export async function checkHarnessDeploy(): Promise<void> {
   try {
     const FLY_API_TOKEN = process.env.FLY_API_TOKEN?.trim()
     const APP = (process.env.FLY_HARNESS_APP ?? 'osborn-voice-e2e').trim()
-    if (!FLY_API_TOKEN) { log('FLY_API_TOKEN not set — skipping'); return }
-    if (!APP) { log('FLY_HARNESS_APP empty — disabled'); return }
+    if (!FLY_API_TOKEN) { log('FLY_API_TOKEN not set — skipping'); writeStatus('skipped: no FLY_API_TOKEN'); return }
+    if (!APP) { log('FLY_HARNESS_APP empty — disabled'); writeStatus('disabled'); return }
 
     const publicDir = findPublicDir()
-    if (!publicDir) { log('skill file not found in public/ — skipping'); return }
+    if (!publicDir) { log('skill file not found in public/ — skipping'); writeStatus('skipped: no skill file'); return }
 
     // 1. Version from the served skill (single source of truth).
     const skill = readFileSync(join(publicDir, 'browser-screen-recorder-skill.md'), 'utf8')
@@ -116,6 +125,7 @@ export async function checkHarnessDeploy(): Promise<void> {
     // 2. Registry staleness check.
     if (await imageTagExists(tag, FLY_API_TOKEN, APP)) {
       log(`image ${APP}:${tag} exists — engine current`)
+      writeStatus(`current: ${tag} already in registry`)
       return
     }
     log(`image ${APP}:${tag} missing — deploying engine from the bundle`)
@@ -140,7 +150,10 @@ export async function checkHarnessDeploy(): Promise<void> {
     if (result.stderr) console.log('[harness fly deploy stderr]\n' + result.stderr.slice(-2000))
     if (result.status !== 0) throw new Error(`fly deploy exited ${result.status}`)
     log(`engine deployed at ${tag}`)
+    writeStatus(`deployed: ${tag}`)
   } catch (err) {
-    console.error(`[harness-deploy-check] ERROR: ${err instanceof Error ? err.message : String(err)}`)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[harness-deploy-check] ERROR: ${msg}`)
+    writeStatus(`error: ${msg.slice(0, 200)}`)
   }
 }
