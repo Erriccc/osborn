@@ -1662,6 +1662,10 @@ async function main() {
   let userRemovedAgents: string[] = []
 
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
+  // While set (Date.now() < value), the agent's streaming tts_say output is
+  // REDIRECTED into the meeting canvas instead of suppressed — the regular
+  // voice pipeline reused with the meeting as the sink (latency fix).
+  let meetingAddressedUntil = 0
   let activeMeetingPoller: MeetingTranscriptPoller | null = null  // Transcript poller bound to that bot
 
   // LIVE meeting transcript → LLM (buffered webhook finals). See recall.on('transcript').
@@ -1673,8 +1677,17 @@ async function main() {
   const flushMeetingBuffer = (botId: string, addressed = false) => {
     if (!meetingTranscriptBuffer.length || !currentLLM) return
     const turns = meetingTranscriptBuffer.splice(0) // drain
+    if (addressed) {
+      // REUSE the regular voice pipeline (2026-08-01 latency fix): during an
+      // addressed turn the agent's normal streaming tts_say output is REDIRECTED
+      // to the canvas (see the tts_say handler) — same speak path as regular
+      // mode, sink = meeting. The old prompt made the agent compose a Bash curl
+      // (extra LLM tool roundtrip, ate the 3-call budget, sometimes lost the
+      // reply entirely) — measured as most of the 5-8s reply lag.
+      meetingAddressedUntil = Date.now() + 90_000
+    }
     const header = addressed
-      ? `[MEETING — ${botId}] — YOU WERE ADDRESSED. Respond OUT LOUD into the meeting now: POST http://localhost:${apiPort}/canvas {"kind":"say","text":"..."} with a short, direct reply. Then note it.`
+      ? `[MEETING — ${botId}] — YOU WERE ADDRESSED. Reply now in PLAIN TEXT — your words are spoken into the meeting automatically (do NOT use Bash/curl to speak). One or two short conversational sentences first; then, if needed, delegate notes/research in the background.`
       : `[MEETING — ${botId}]:`
     // Prepend + consume any interruption context (bot was cut off mid-sentence).
     const interrupt = meetingInterruptContext ? `${meetingInterruptContext}\n` : ''
@@ -2565,6 +2578,15 @@ async function main() {
       // re-captures in the same room → feedback). Set by PipelineDirectLLM.chat()
       // when the turn is a [MEETING —] chunk. Normal user turns are unaffected.
       if ((directLLM as unknown as { suppressMeetingTTS?: boolean }).suppressMeetingTTS) {
+        // ADDRESSED turn → REDIRECT the normal streaming reply into the meeting
+        // (reuse of the regular speak path; no Bash roundtrip). Silent-observer
+        // turns stay suppressed as before.
+        if (activeMeetingBotId && Date.now() < meetingAddressedUntil) {
+          console.log(`🔊➡️📽️ tts_say → canvas (addressed meeting turn): "${data.text.slice(0, 60)}"`)
+          pushCanvas({ kind: 'say', text: data.text })
+          markMeetingSpeaking(data.text)
+          return
+        }
         console.log(`🔇 tts_say suppressed (meeting turn — response goes to /canvas, not browser): "${data.text.slice(0, 60)}"`)
         return
       }

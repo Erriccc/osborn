@@ -91,16 +91,19 @@ When a chunk says **`YOU WERE ADDRESSED`**, people in the meeting are WAITING
 for your voice. Measured failure (2026-08-01): notes-writing inside the reply
 turn pushed speech→reply past 30 seconds ("very very delayed").
 
-**Mandatory turn shape when addressed:**
-1. **FIRST tool call = the `/canvas say` POST.** One short spoken reply (1–2
-   sentences, conversational). Nothing runs before it — no Read, no Edit, no
-   transcript pull, no sub-agent.
+**Mandatory turn shape when addressed (0.9.106+):**
+1. **Just ANSWER in plain text — your words are spoken into the meeting
+   automatically.** The regular voice pipeline is redirected to the meeting
+   for addressed turns; do NOT use Bash/curl to speak (that adds a slow tool
+   roundtrip and can eat your tool budget). 1–2 short conversational
+   sentences, text first, before any tool call.
 2. **THEN** delegate note-taking / research to the writer/researcher
    sub-agents in the background as usual.
-3. If you genuinely need a fact before answering, say a holding line FIRST
-   ("Good question — one second while I check"), then look it up, then follow
-   up with a second `/canvas say`. Never leave the room in silence while you
-   work.
+3. If you genuinely need a fact before answering, SAY a holding line first
+   ("Good question — one second while I check"), look it up, then continue in
+   plain text. Never leave the room in silence while you work.
+(The `/canvas say` curl remains for NON-addressed cases: when the voice-native
+user says "tell the meeting X", or proactive announcements.)
 
 ## Browse requests while CASTING a live stream — drive the ENGINE, not the canvas
 
