@@ -1843,8 +1843,13 @@ async function main() {
         // the agent replies out loud into the meeting. This is the chat-mode path:
         // named/asked → prompt response. Un-addressed chunks stay in the silent
         // 20s batch for note-taking. That's the two-mode seam, mechanically.
-        if (/\bosborn\b/i.test(text)) {
-          console.log('📓 Addressed by name — immediate flush for a response')
+        // Fuzzy name match: meeting STT routinely mangles "Osborn" — observed
+        // live 2026-08-01: "Osborn can you hear me" → "i was born can you hear
+        // me" (name trigger missed, bot stayed silent). Accept common
+        // mis-transcriptions; mild false-positive risk is acceptable in a
+        // room that invited the bot.
+        if (/\b(osborne?|oz\s?born|os\s?born|was born|is born|ozborn|osbourne?|austin\b.{0,8}(hear|there|can you))/i.test(text)) {
+          console.log('📓 Addressed by name (fuzzy) — immediate flush for a response')
           flushMeetingBuffer(botId, true)
         }
       }
