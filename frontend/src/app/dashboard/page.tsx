@@ -1465,7 +1465,8 @@ export default function Dashboard() {
               ) : (
                 <div className="space-y-2">
                   {groupByProject(sessions, baseCwd).map(project => (
-                    <div key={project.cwd} className="rounded-2xl bg-[var(--surface)] overflow-hidden">
+                    {/* NOTE: no overflow-hidden — it clipped the mobile ⋯ dropdown */}
+                    <div key={project.cwd} className="rounded-2xl bg-[var(--surface)]">
                       {/* Project header row */}
                       <div className="flex items-center gap-3 px-4 py-3.5">
                         <button
