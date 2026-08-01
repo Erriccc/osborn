@@ -217,6 +217,26 @@ export class RecallClient extends EventEmitter {
     console.log(`👋 Recall.ai bot left meeting: ${botId}`)
   }
 
+  /**
+   * Speak DIRECTLY through the bot via Recall's native output_audio (mp3).
+   * No canvas page, no Web Audio, no capture chain — Recall plays the file as
+   * the bot's voice. Returns true on 2xx. (2026-08-01: canvas-audio quality
+   * was "barely bearable"; this is the direct loud path.)
+   */
+  async outputAudio(botId: string, mp3: Buffer): Promise<boolean> {
+    const res = await fetch(`${RECALL_BASE_URL}/bot/${botId}/output_audio/`, {
+      method: 'POST',
+      headers: { 'Authorization': `Token ${this.#apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'mp3', b64_data: mp3.toString('base64') }),
+    })
+    if (!res.ok) {
+      const e = await res.text().catch(() => '')
+      console.warn(`⚠️ Recall output_audio ${res.status}: ${e.slice(0, 160)}`)
+      return false
+    }
+    return true
+  }
+
   async getBotStatus(botId: string): Promise<string> {
     const res = await fetch(`${RECALL_BASE_URL}/bot/${botId}`, {
       headers: { 'Authorization': `Token ${this.#apiKey}` },

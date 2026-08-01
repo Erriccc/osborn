@@ -263,6 +263,59 @@ let meetingAgentSpeakingText = ''
 // Prepended to the next flush: what the bot was cut off saying + who interrupted
 // (same pattern as voice-native interruptions).
 let meetingInterruptContext = ''
+// Synthesize speech as MP3 (Deepgram fast path, OpenAI fallback) — for
+// Recall native output_audio, which requires mp3.
+async function synthMp3(text: string): Promise<Buffer | null> {
+  const t0 = Date.now()
+  const dgKey = process.env.DEEPGRAM_API_KEY
+  if (dgKey) {
+    try {
+      const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3&bit_rate=48000', {
+        method: 'POST',
+        headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text.slice(0, 4000) }),
+        signal: AbortSignal.timeout(12000),
+      })
+      if (dg.ok) {
+        const buf = Buffer.from(await dg.arrayBuffer())
+        console.log(`🗣️ synthMp3 deepgram ${buf.length}b in ${Date.now() - t0}ms`)
+        return buf
+      }
+    } catch (e) { console.warn(`⚠️ synthMp3 deepgram: ${(e as Error).message}`) }
+  }
+  const oa = process.env.OPENAI_API_KEY
+  if (oa) {
+    try {
+      const r = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${oa}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: 'alloy', input: text.slice(0, 4000), response_format: 'mp3' }),
+        signal: AbortSignal.timeout(15000),
+      })
+      if (r.ok) return Buffer.from(await r.arrayBuffer())
+    } catch { /* fall through */ }
+  }
+  return null
+}
+
+// THE speak path for meetings (2026-08-01): Recall native output_audio FIRST
+// (direct, loud, no canvas capture chain), canvas Web-Audio say as FALLBACK.
+async function speakIntoMeeting(text: string): Promise<void> {
+  const recall = getRecallClient()
+  const botId = recall?.getActiveBotIds?.()[0]
+  if (recall && botId) {
+    const mp3 = await synthMp3(text)
+    if (mp3 && await recall.outputAudio(botId, mp3)) {
+      console.log(`📢 spoke via Recall output_audio (${mp3.length}b): "${text.slice(0, 60)}"`)
+      markMeetingSpeaking(text)
+      return
+    }
+  }
+  console.log(`📽️ falling back to canvas say: "${text.slice(0, 50)}"`)
+  pushCanvas({ kind: 'say', text })
+  markMeetingSpeaking(text)
+}
+
 function markMeetingSpeaking(text: string): void {
   meetingAgentSpeaking = true
   meetingAgentSpeakingText = text
@@ -666,9 +719,12 @@ function startApiServer(workingDir: string, port: number): void {
         try {
           const evt = JSON.parse(body || '{}') as CanvasEvent
           if (evt.kind !== 'say' && evt.kind !== 'show' && evt.kind !== 'stop') throw new Error("kind must be 'say', 'show', or 'stop'")
-          pushCanvas(evt)
-          // Track that the bot is now speaking into the meeting → enables interruption.
-          if (evt.kind === 'say') markMeetingSpeaking(evt.text)
+          if (evt.kind === 'say') {
+            // Native-first speak path (Recall output_audio → canvas fallback).
+            void speakIntoMeeting(evt.text)
+          } else {
+            pushCanvas(evt)
+          }
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: true, clients: canvasClients.size }))
         } catch (e) {
@@ -1911,6 +1967,15 @@ async function main() {
         // mis-transcriptions; mild false-positive risk is acceptable in a
         // room that invited the bot. AND: in a 1:1 meeting (one human + the
         // bot) every utterance is addressed — no name needed.
+        // Spoken mode switch: "interactive mode"/"go interactive" opens the
+        // conversation latch; "observer mode"/"go silent" closes it.
+        if (/\b(interactive mode|go interactive|start responding|talk to (me|us))\b/i.test(text)) {
+          meetingAddressedUntil = Date.now() + 6 * 60 * 60 * 1000
+          void speakIntoMeeting('Interactive mode on — I will respond out loud.')
+        } else if (/\b(observer mode|silent mode|go silent|stop responding)\b/i.test(text)) {
+          meetingAddressedUntil = 0
+          void speakIntoMeeting('Going silent — just taking notes. Say interactive mode to bring me back.')
+        }
         const oneOnOne = meetingSpeakers.size <= 1
         if (oneOnOne || /\b(osborne?|oz\s?born|os\s?born|was born|is born|ozborn|osbourne?|austin\b.{0,8}(hear|there|can you))/i.test(text)) {
           console.log(`📓 Addressed (${oneOnOne ? '1:1 meeting' : 'by name'}) — immediate flush for a response`)
@@ -2638,9 +2703,8 @@ async function main() {
           // audio file = zero seams — quality over ~1s of latency. (Structural
           // fix queued: canvas as LiveKit subscriber playing the agent's real
           // TTS track — the true "same browser experience" reuse.)
-          console.log(`🔊➡️📽️ tts_say → canvas (single utterance) t=${new Date().toISOString()}: "${data.text.slice(0, 60)}"`)
-          pushCanvas({ kind: 'say', text: data.text })
-          markMeetingSpeaking(data.text)
+          console.log(`🔊➡️📢 tts_say → meeting (native audio) t=${new Date().toISOString()}: "${data.text.slice(0, 60)}"`)
+          void speakIntoMeeting(data.text)
           return
         }
         console.log(`🔇 tts_say suppressed (meeting turn — response goes to /canvas, not browser): "${data.text.slice(0, 60)}"`)
