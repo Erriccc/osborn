@@ -2,7 +2,7 @@
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 7
+Version: 8
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Landing page: https://www.voice-native.com/browser-screen-recorder
@@ -43,6 +43,22 @@ PROVE the web. Trigger it for:
 MEDIA EVERY TIME: every engine task returns a clip + screenshot + devtools
 state + (for /say) heard audio. Review it, then DELIVER the media to the user
 on every use — no silent runs, ever.
+
+## What's new in v8
+- **Tab economy** — REUSE-BEFORE-OPEN: `/tab open` navigates an existing
+  same-site tab instead of stacking a new one (`reuse:false` forces new);
+  new `/tab {op:"navigate", url, i?}` points any existing tab somewhere.
+  Check `/status` tabs BEFORE opening — new tabs are for genuinely parallel
+  work only.
+- **Tab staleness sweep** — background tabs untouched for
+  `OSBORN_TAB_STALE_MS` (default 30min) auto-close with a `tab_stale_closed`
+  event. Tab 0 (voice room) and the active tab are exempt.
+- **Activity events** — meeting transcripts and agent outputs the page
+  receives are promoted to `transcript` / `agent_output` events on `/events`
+  and webhooks: "is it hearing me?" is answered by one SSE stream.
+- **Recipe completeness** — `/eval` calls now record as journey steps.
+- **Honest tab close** — closing a dead/unresponsive page reports failure
+  instead of silently succeeding.
 
 ## What's new in v7
 - **Live event subscription** — `GET /events` (SSE, token-guarded): subscribe
@@ -188,6 +204,9 @@ and metrics appended to results/runs.jsonl.
 - FRAME EVERY TEST AS A JOURNEY: `journey list` first (reuse known paths),
   `journey start` before acting, `journey end` after (cleanup + save). Tasks
   without framing are disconnected robot actions that teach the site nothing.
+- TAB ECONOMY: check `/status` tabs and REUSE (navigate) an existing tab
+  before opening a new one; verify `activeTab` before every act (acts on the
+  wrong tab report ok and prove nothing). Stale tabs auto-close.
 - Site knowledge lives in knowledge/<hostname>/ — cached UI actions
   (self-healing), rules.md (user-taught, binding), site.md (findings),
   journeys/ (learned sequences). Read rules before operating on a site;

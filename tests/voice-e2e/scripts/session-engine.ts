@@ -184,13 +184,25 @@ async function main() {
   // Late-bound so watchPage (defined early) can emit webhooks (wired later).
   let notifyRef: (event: string, payload?: Record<string, unknown>) => void = () => {}
   const devtoolsBufs = new Map<Page, DevtoolsBuffer>()
+  // Per-tab last-use for the staleness sweep (touched by act/say/eval/tab ops).
+  const tabLastUsed = new Map<Page, number>()
+  const touchTab = (p: Page) => tabLastUsed.set(p, Date.now())
   const watchPage = (p: Page) => {
     if (devtoolsBufs.has(p)) return
     devtoolsBufs.set(p, attachDevtools(p))
+    touchTab(p)
     // Browser events → webhooks: navigations ("the browser got forwarded")
     // and page errors, tagged with the tab they happened on.
     p.on('framenavigated', (f) => { if (f === p.mainFrame()) notifyRef('navigation', { url: f.url(), tab: context.pages().indexOf(p) }) })
     p.on('pageerror', (e) => notifyRef('page_error', { message: e.message.slice(0, 300), tab: context.pages().indexOf(p) }))
+    // Meeting/agent activity → first-class events: the frontend logs its data
+    // messages to console; promote transcripts and agent output so directors
+    // detect activity on ONE stream instead of tailing three log sources.
+    p.on('console', (m) => {
+      const t = m.text()
+      if (/Meeting transcript|user_transcript/i.test(t)) notifyRef('transcript', { text: t.slice(0, 250), tab: context.pages().indexOf(p) })
+      else if (t.includes('claude_output')) notifyRef('agent_output', { text: t.slice(0, 200), tab: context.pages().indexOf(p) })
+    })
   }
   const writeDevtoolsFile = () => {
     try {
@@ -319,6 +331,7 @@ async function main() {
   const activeTab = () => ({ i: context.pages().indexOf(active), url: active.url(), owner: ownerOf(active) })
   const stampTask = (n: number, label: string, startMs: number, clip: string | null, artifact: string | null, text?: string, heard?: string) => {
     const endMs = Date.now()
+    touchTab(active)
     const devtools = devtoolsBufs.get(active)?.summary() ?? null
     const rec = { n, label, text, heard, tab: activeTab(), startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), clip, artifact, devtools }
     tasks.push(rec); writeManifest(); writeDevtoolsFile(); saveTabState()
@@ -527,6 +540,10 @@ async function main() {
             new Promise((_, rej) => setTimeout(() => rej(new Error('eval timeout (10s)')), 10000)),
           ])
           mark(`eval: ${String(body.expression).slice(0, 50)}`)
+          touchTab(active)
+          // Evals are journey steps too — the cloud meeting run saved a
+          // 0-step recipe because it was driven entirely via /eval.
+          scenarioSteps.push({ kind: 'eval', value: String(body.expression).slice(0, 140) }); writeScenario()
           return json(res, { ok: true, value })
         } catch (e) { return json(res, { ok: false, error: (e as Error).message }) }
       }
@@ -537,13 +554,36 @@ async function main() {
         // After ANY change of active tab the screencast is retargeted so the
         // live stream + clips show the tab work actually happens on.
         if (body.op === 'open') {
-          active = await openTab(context, body.url); watchPage(active)
+          // REUSE-BEFORE-OPEN (economy doctrine): an existing same-site tab
+          // (not tab 0 — that holds the voice room — and unclaimed or ours)
+          // gets NAVIGATED instead of stacking a new tab. reuse:false forces new.
+          let reused = false
+          if (body.reuse !== false && body.url) {
+            try {
+              const host = new URL(body.url).hostname
+              const pages = context.pages()
+              const cand = pages.find((p, idx) => { try { return idx > 0 && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
+              if (cand) { await cand.goto(String(body.url), { timeout: 45000 }); active = cand; reused = true }
+            } catch { /* fall through to a fresh tab */ }
+          }
+          if (!reused) { active = await openTab(context, body.url); watchPage(active) }
           if (body.viewport === 'mobile') await active.setViewportSize({ width: 390, height: 844 })
           else if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
           if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
-          await live?.retarget(active).catch(() => {}); mark(`tab open: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${body.viewport ? ' (mobile)' : ''}`)
+          touchTab(active)
+          await live?.retarget(active).catch(() => {}); mark(`tab ${reused ? 'reuse' : 'open'}: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${body.viewport ? ' (mobile)' : ''}`)
         }
-        else if (body.op === 'switch') { active = await switchTab(context, body.i); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`) }
+        else if (body.op === 'navigate') {
+          // Point an EXISTING tab at a new URL (the reuse primitive).
+          const target = body.i != null ? context.pages()[body.i] : active
+          if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
+          const o = ownerOf(target)
+          if (o && body.owner !== o) return json(res, { error: `tab is claimed by "${o}"` }, 409)
+          await target.goto(String(body.url), { timeout: 45000 })
+          active = target; touchTab(active)
+          await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
+        }
+        else if (body.op === 'switch') { active = await switchTab(context, body.i); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`) }
         else if (body.op === 'close') {
           const target = context.pages()[body.i]
           const o = target ? ownerOf(target) : null
@@ -561,7 +601,7 @@ async function main() {
         else if (body.op === 'release') { const target = context.pages()[body.i]; if (target) tabOwners.delete(target); mark(`tab release: ${body.i}`) }
         // Tab ops are journey steps too — a recipe missing "open the mobile
         // tab" is not a recipe (first saved journey had steps:1 for this).
-        if (['open', 'switch', 'close'].includes(body.op)) {
+        if (['open', 'switch', 'close', 'navigate'].includes(body.op)) {
           scenarioSteps.push({ kind: 'tab', value: `${body.op}${body.url ? ' ' + body.url : ''}${body.viewport ? ' viewport=mobile' : ''}${body.i != null ? ' i=' + body.i : ''}` })
           writeScenario()
         }
@@ -669,6 +709,29 @@ async function main() {
     if ((live?.viewerCount() ?? 0) > 0) { lastActivity = Date.now(); return }
     if (Date.now() - lastActivity > IDLE_STOP_MS) void gracefulEnd(`idle ${Math.round(IDLE_STOP_MS / 60000)}min — auto-stop`)
   }, 30000)
+
+  // TAB STALENESS SWEEP (user request 2026-08-01): background tabs untouched
+  // for OSBORN_TAB_STALE_MS (default 30min; 0 disables) get closed so tabs
+  // never silently stack up. Tab 0 (the voice room) and the active tab are
+  // exempt. Closes directly (no focus steal) and announces via events.
+  const TAB_STALE_MS = Number(process.env.OSBORN_TAB_STALE_MS ?? 1800000)
+  setInterval(async () => {
+    if (ending || !TAB_STALE_MS) return
+    const pages = context.pages()
+    for (let i = pages.length - 1; i >= 1; i--) {
+      const p = pages[i]
+      if (p === active) continue
+      if (!tabLastUsed.has(p)) { touchTab(p); continue }
+      if (Date.now() - (tabLastUsed.get(p) ?? 0) <= TAB_STALE_MS) continue
+      const url = p.url(); const owner = ownerOf(p)
+      await p.close({ runBeforeUnload: false }).catch(() => {})
+      if (!p.isClosed()) { mark(`stale tab ${i} refused to close: ${url.slice(0, 50)}`); continue }
+      tabOwners.delete(p); tabLastUsed.delete(p)
+      mark(`tab ${i} auto-closed (stale ${Math.round(TAB_STALE_MS / 60000)}min): ${url.slice(0, 50)}`)
+      notify('tab_stale_closed', { i, url, owner })
+      saveTabState()
+    }
+  }, 60000)
 }
 
 main().catch((e) => { console.error('[engine] fatal:', e); process.exit(1) })

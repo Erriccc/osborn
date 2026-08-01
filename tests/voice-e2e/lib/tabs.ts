@@ -41,6 +41,9 @@ export async function closeTab(context: BrowserContext, which: number): Promise<
   if (!page) throw new Error(`no tab at index ${which}`)
   if (pages.length === 1) throw new Error('refusing to close the last tab — use /end to shut the engine down')
   await page.close({ runBeforeUnload: false }).catch(() => {})
+  // No silent failures: a dead/unresponsive page can survive close() — say so
+  // (this bit the platform track: /tab close "succeeded" on zombie pages).
+  if (!page.isClosed()) throw new Error(`tab ${which} did not close (page unresponsive — try /recover or /end)`)
   const remaining = context.pages()
   const next = remaining[Math.min(which, remaining.length - 1)]
   await next.bringToFront()
