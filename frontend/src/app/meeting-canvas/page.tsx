@@ -113,6 +113,79 @@ function CanvasInner() {
   const [connected, setConnected] = useState(false)
   const captionTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // BROWSER-PARITY AUDIO (2026-08-01): join the agent's LiveKit room as a
+  // silent listener and play the agent's REAL TTS track — the exact audio the
+  // browser experience gets, engineered by LiveKit (no synth-file chain).
+  // When connected, the agent detects the 'meeting-canvas' participant and
+  // routes replies through normal session.say. SSE say stays as fallback.
+  useEffect(() => {
+    if (!agent) return
+    const base = agent.replace(/\/$/, '')
+    let lkRoom: { disconnect: () => void } | null = null
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch(`${base}/canvas-token`, { signal: AbortSignal.timeout(10000) })
+        if (!r.ok) return // agent pre-parity or no room — SSE path handles it
+        const { token, url } = await r.json()
+        if (!token || !url || cancelled) return
+        const lk = await import('livekit-client')
+        const room = new lk.Room()
+        await room.connect(url, token)
+        lkRoom = room
+        console.log('[canvas] LiveKit connected — browser-parity audio live')
+        const attach = (track: { kind: string; attach: () => HTMLMediaElement }) => {
+          if (track.kind !== 'audio') return
+          const el = track.attach()
+          el.autoplay = true
+          document.body.appendChild(el)
+        }
+        room.on(lk.RoomEvent.TrackSubscribed, (track) => attach(track as never))
+        // Attach any already-published agent tracks
+        room.remoteParticipants.forEach((p) => p.audioTrackPublications.forEach((pub) => { if (pub.track) attach(pub.track as never) }))
+      } catch (e) {
+        console.warn('[canvas] LiveKit parity path unavailable:', (e as Error).message)
+      }
+    })()
+    return () => { cancelled = true; try { lkRoom?.disconnect() } catch { /* ignore */ } }
+  }, [agent])
+
+  // BROWSER-PARITY AUDIO (2026-08-01): join the agent's LiveKit room as a
+  // silent listener and play the agent's REAL TTS track — the exact audio the
+  // browser experience gets, engineered by LiveKit (no synth-file chain).
+  // When connected, the agent detects the 'meeting-canvas' participant and
+  // routes replies through normal session.say. SSE say stays as fallback.
+  useEffect(() => {
+    if (!agent) return
+    const base = agent.replace(/\/$/, '')
+    let lkRoom: { disconnect: () => void } | null = null
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch(`${base}/canvas-token`, { signal: AbortSignal.timeout(10000) })
+        if (!r.ok) return // agent pre-parity or no room — SSE path handles it
+        const { token, url } = await r.json()
+        if (!token || !url || cancelled) return
+        const lk = await import('livekit-client')
+        const room = new lk.Room()
+        await room.connect(url, token)
+        lkRoom = room
+        console.log('[canvas] LiveKit connected — browser-parity audio live')
+        const attach = (track: { kind: string; attach: () => HTMLMediaElement }) => {
+          if (track.kind !== 'audio') return
+          const el = track.attach()
+          el.autoplay = true
+          document.body.appendChild(el)
+        }
+        room.on(lk.RoomEvent.TrackSubscribed, (track) => attach(track as never))
+        room.remoteParticipants.forEach((p) => p.audioTrackPublications.forEach((pub) => { if (pub.track) attach(pub.track as never) }))
+      } catch (e) {
+        console.warn('[canvas] LiveKit parity path unavailable:', (e as Error).message)
+      }
+    })()
+    return () => { cancelled = true; try { lkRoom?.disconnect() } catch { /* ignore */ } }
+  }, [agent])
+
   useEffect(() => {
     // Warm up the speech engine (voices load async in Chromium).
     try { window.speechSynthesis?.getVoices() } catch { /* ignore */ }

@@ -218,6 +218,11 @@ const livekitState: {
 // connect-with-retry loop) so the module-level HTTP server can drive them.
 let intentionalLeave = false
 let connectRoomHook: (() => Promise<string>) | null = null
+// Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
+// agent's room and play the agent's REAL TTS audio track — bit-identical to
+// the browser voice experience (2026-08-01 quality architecture; replaces the
+// synth-file chain when connected). Set from main() where the room name lives.
+let canvasTokenHook: (() => Promise<{ token: string; url: string; room: string } | null>) | null = null
 let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
 // Hook for the bug-reporter skill. The /report-bug HTTP endpoint validates the
 // payload + generates the reportId in the module-level handler, then delegates
@@ -382,6 +387,15 @@ function startApiServer(workingDir: string, port: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ sessions: [], total: 0, error: 'Failed to list sessions' }))
       }
+      return
+    }
+
+    if (req.method === 'GET' && url.pathname === '/canvas-token') {
+      // Listen-only LiveKit credentials for the meeting canvas (see hook doc).
+      const out = canvasTokenHook ? await canvasTokenHook() : null
+      if (!out) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no active room' })); return }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(out))
       return
     }
 
@@ -1752,6 +1766,10 @@ async function main() {
   // REDIRECTED into the meeting canvas instead of suppressed — the regular
   // voice pipeline reused with the meeting as the sink (latency fix).
   let meetingAddressedUntil = 0
+  // True while the meeting-canvas page is connected to the LiveKit room as a
+  // listener (browser-parity audio path). When set, meeting replies use the
+  // NORMAL session.say pipeline — no suppression, no redirect, no synth chain.
+  let meetingCanvasInRoom = false
   // Distinct human speakers seen in the current meeting. In a 1:1 (one human
   // + the bot) EVERY utterance is addressed to the bot — no name needed
   // (2026-08-01: "can you open carfax..." got observer-suppressed because
@@ -2694,6 +2712,15 @@ async function main() {
       // re-captures in the same room → feedback). Set by PipelineDirectLLM.chat()
       // when the turn is a [MEETING —] chunk. Normal user turns are unaffected.
       if ((directLLM as unknown as { suppressMeetingTTS?: boolean }).suppressMeetingTTS) {
+        // BROWSER-PARITY PATH: canvas is in the LiveKit room → the normal
+        // session.say audio reaches the meeting through it. Fall through to
+        // the regular pipeline for addressed turns (identical audio to the
+        // browser experience); observer turns still stay silent.
+        if (meetingCanvasInRoom && activeMeetingBotId && Date.now() < meetingAddressedUntil) {
+          console.log(`🔊🎼 meeting reply via NATIVE session.say (canvas relays): "${data.text.slice(0, 50)}"`)
+          markMeetingSpeaking(data.text)
+          // no return — normal say proceeds below
+        } else
         // ADDRESSED turn → REDIRECT the normal streaming reply into the meeting
         // (reuse of the regular speak path; no Bash roundtrip). Silent-observer
         // turns stay suppressed as before.
@@ -3682,6 +3709,14 @@ async function main() {
   // connect callback, not via events).
   participantConnectedHandler = async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
+    // The meeting canvas joining as a listener = browser-parity audio path is
+    // LIVE: the agent's normal session.say plays through the canvas into the
+    // meeting, so tts_say suppression/redirect must stand down.
+    if (participant.identity === 'meeting-canvas') {
+      meetingCanvasInRoom = true
+      console.log('📽️🔊 meeting-canvas joined the LiveKit room — native session.say relays to the meeting')
+      return // not a user; skip session setup for it
+    }
     // A user (re)arriving cancels the meeting leave-grace — the bot stays.
     cancelMeetingLeaveGrace()
 
@@ -5564,6 +5599,17 @@ async function main() {
   // { roomName } (which connectRoomHook resolves to). During rollout, the legacy
   // GET /room-code endpoint keeps returning the last-created room NAME so old
   // frontends still function.
+  canvasTokenHook = async () => {
+    if (!activeRoomName) return null
+    const t = new AccessToken(apiKey, apiSecret, {
+      identity: 'meeting-canvas',
+      name: 'Meeting Canvas',
+      metadata: JSON.stringify({ type: 'canvas' }),
+    })
+    t.addGrant({ roomJoin: true, room: activeRoomName, canPublish: false, canSubscribe: true, canPublishData: false })
+    return { token: await t.toJwt(), url: process.env.LIVEKIT_URL || '', room: activeRoomName }
+  }
+
   connectRoomHook = async (): Promise<string> => {
     intentionalLeave = false
     cancelIdleExitTimer()
