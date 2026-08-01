@@ -5300,17 +5300,16 @@ async function main() {
               // the bot casts the meeting canvas as its camera+mic (below), so
               // it can show visuals and speak into the meeting on demand.
               await sendToFrontend({ type: 'meeting_joining', message: 'Osborn is joining your meeting...' })
-              // Cast target = the bot's camera+mic webpage (Recall output_media).
-              // DEFAULT is the meeting canvas (frontend /meeting-canvas), pointed
-              // at THIS agent's public URL so it can subscribe to /canvas-stream
-              // and become the bot's face (visuals) + voice (TTS it speaks). An
-              // explicit castUrl from the frontend or OSBORN_MEETING_CAST_URL
-              // overrides it (e.g. to cast a live feed or a seeded site instead).
-              const frontendUrl = (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/$/, '')
-              const canvasUrl = /^https:\/\//.test(webhookBase)
-                ? `${frontendUrl}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
-                : undefined
-              const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || canvasUrl
+              // AUDIO-FIRST DEFAULT (2026-08-01, proven live): the webpage-camera
+              // output_media routes the bot's AUDIO through the canvas page's
+              // Web Audio — which sits SUSPENDED in Recall's headless Chrome (no
+              // user gesture) → the bot was inaudible all night. Default now = NO
+              // webpage camera, so the bot's voice is the direct Recall
+              // output_audio track (speakIntoMeeting → recall.outputAudio, ~1.8s
+              // synth, verified audible + clear). The browser CAST is opt-in via
+              // explicit data.castUrl / OSBORN_MEETING_CAST_URL until we split
+              // video(webpage) from audio(output_audio) to reclaim it cleanly.
+              const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || undefined
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { castUrl })
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
               recallJoin.registerBot(botId, sessionId)
