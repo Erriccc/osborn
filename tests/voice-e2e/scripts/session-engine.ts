@@ -666,7 +666,15 @@ async function main() {
   // BACKGROUND ROOM JOIN + tab restore — the engine is already fully
   // drivable (/status /shot /act /recover /eval) while this runs or wedges.
   void (async () => {
-    try {
+    // GENERIC ENTRY (open-source posture): OSBORN_ENTRY=none skips the
+    // voice-native room flow entirely — just load APP_URL and be a browser.
+    // Point the engine at ANY site: OSBORN_APP_URL=https://any.site OSBORN_ENTRY=none.
+    if (process.env.OSBORN_ENTRY === 'none') {
+      try { await active.goto(APP_URL, { timeout: 60000 }) } catch (e) { mark(`entry goto failed: ${(e as Error).message.slice(0, 80)}`) }
+      roomReady = true
+      mark(`entry: none — ${APP_URL} loaded, no room flow`)
+      notify('room_ready', { entry: 'none' })
+    } else try {
       const { captureStartedAt } = await enterFreshRoom(active, brain, useAuth ? chatUrl : url, { earsOn: true, agentUrl: AGENT_URL })
       await ensureSessionLive(active, brain, chatUrl, { agentUrl: AGENT_URL })
       tCapture = captureStartedAt ?? Date.now()

@@ -141,14 +141,25 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     }, HEARTBEAT_MS)
   }
 
+  // STREAM TOKEN — when OSBORN_STREAM_TOKEN is set, the viewer + stream
+  // require ?key=<token>. Default open (solo use); SET IT when self-hosting:
+  // a public stream URL both shows your browser AND wakes the machine (cost).
+  const STREAM_TOKEN = process.env.OSBORN_STREAM_TOKEN || null
   const server: Server = createServer((req, res) => {
+    const reqUrl = new URL(req.url || '/', 'http://x')
+    const pathName = reqUrl.pathname
+    if (STREAM_TOKEN && pathName !== '/ready' && reqUrl.searchParams.get('key') !== STREAM_TOKEN) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' })
+      res.end('stream locked — append ?key=<OSBORN_STREAM_TOKEN>')
+      return
+    }
     if (req.url === '/ready') {
       // Wake-up poll for the viewer page: are frames flowing yet?
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
       res.end(JSON.stringify({ streaming: !!lastFrameTime, lastFrameAgeMs: lastFrameTime ? Date.now() - lastFrameTime : null }))
       return
     }
-    if (req.url === '/stream') {
+    if (pathName === '/stream') {
       res.writeHead(200, {
         'Content-Type': 'multipart/x-mixed-replace; boundary=osbframe',
         'Cache-Control': 'no-store', Connection: 'close',
@@ -171,7 +182,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       #msg{font-size:26px;font-weight:700;text-shadow:0 0 20px rgba(255,179,0,.4)}
       .sub{color:#8a7b55;font-size:14px}
       @keyframes spin{to{transform:rotate(360deg)}}</style></head>
-      <body><img src="/stream" alt="live">
+      <body><img src="/stream${STREAM_TOKEN ? `?key=${encodeURIComponent(reqUrl.searchParams.get('key') || '')}` : ''}" alt="live">
       <div id="wake"><div class="brand">BROWSER&nbsp;SCREEN&nbsp;RECORDER</div><div class="dot"></div><div id="msg">engine waking up…</div>
       <div class="sub">the full browser will appear here as it boots (~40s)</div></div>
       <script>

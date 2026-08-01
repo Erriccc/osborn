@@ -2,7 +2,7 @@
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 8
+Version: 9
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Landing page: https://www.voice-native.com/browser-screen-recorder
@@ -43,6 +43,20 @@ PROVE the web. Trigger it for:
 MEDIA EVERY TIME: every engine task returns a clip + screenshot + devtools
 state + (for /say) heard audio. Review it, then DELIVER the media to the user
 on every use — no silent runs, ever.
+
+## What's new in v9
+- **Generic entry** — `OSBORN_ENTRY=none` skips the voice-native room flow:
+  point the engine at ANY website (`OSBORN_APP_URL=https://any.site`) and it
+  just loads the page and takes commands. The open-source posture: the voice
+  flow is one site pack, not the core.
+- **Stream token** — set `OSBORN_STREAM_TOKEN` and the live viewer + MJPEG
+  require `?key=<token>`. SET THIS when self-hosting: a public stream URL
+  both shows your browser and wakes your machine (costs money). Default open
+  for solo use.
+- **Cache target validation** — cached actions store a fingerprint of their
+  target element (aria-label|text); replay verifies the selector still exists
+  AND still points at the same element, else re-resolves via the LLM. Kills
+  the "cached click silently hits nothing after a UI redesign" false-ok.
 
 ## What's new in v8
 - **Tab economy** — REUSE-BEFORE-OPEN: `/tab open` navigates an existing
