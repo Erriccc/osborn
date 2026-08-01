@@ -1172,6 +1172,15 @@ class ClaudeLLMStream extends llm.LLMStream {
               console.log(`✅ Auto-approved writer ${toolName} to skill dir: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
+            // Auto-approve the meetings skill's notes file. It lives at the
+            // WORKING DIRECTORY root (not /osb/), so it missed the workspace
+            // auto-approve — every meeting notes write stalled the turn behind
+            // a permission dialog nobody in a live meeting can answer (found
+            // live 2026-08-01: addressed replies froze >30s, bot went silent).
+            if (/(^|\/)meeting-(todos|notes)\.md$/.test(filePath)) {
+              console.log(`✅ Auto-approved ${toolName} to meeting notes: ${filePath}`)
+              return { behavior: 'allow', updatedInput: input }
+            }
             // if (toolUseId && this.#approvedWriterToolUseIds.has(toolUseId)) {
             //   this.#approvedWriterToolUseIds.delete(toolUseId)
             //   console.log(`✅ Writer pre-approved ${toolName}: ${filePath}`)
