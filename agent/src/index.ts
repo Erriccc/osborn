@@ -1714,7 +1714,14 @@ async function main() {
       // mode, sink = meeting. The old prompt made the agent compose a Bash curl
       // (extra LLM tool roundtrip, ate the 3-call budget, sometimes lost the
       // reply entirely) — measured as most of the 5-8s reply lag.
-      meetingAddressedUntil = Date.now() + 90_000
+      // ONCE ADDRESSED, STAY CONVERSATIONAL (2026-08-01 fix): the old 90s
+      // window silently ATE every reply generated after it expired — the agent
+      // kept "answering" into suppression while the room heard nothing
+      // (user transcript full of unheard replies; direct /canvas say test WAS
+      // heard). A participant who's been spoken to stays in the conversation;
+      // observer restraint comes from the skill not generating chatter, not
+      // from muting the audio path. Reset by endMeeting.
+      meetingAddressedUntil = Date.now() + 6 * 60 * 60 * 1000
     }
     // PROMPT PARITY (user directive 2026-08-01): addressed turns carry ONLY a
     // minimal tag — no behavioral re-instruction. The agent replies exactly as
@@ -1765,6 +1772,7 @@ async function main() {
     if (meetingMaxTimer) { clearTimeout(meetingMaxTimer); meetingMaxTimer = null }
     if (meetingLeaveGraceTimer) { clearTimeout(meetingLeaveGraceTimer); meetingLeaveGraceTimer = null }
     activeMeetingBotId = null
+    meetingAddressedUntil = 0
     // leaveBot=false when Recall itself reported the meeting over (bot already gone).
     if (opts.leaveBot !== false) {
       const recall = getRecallClient()
