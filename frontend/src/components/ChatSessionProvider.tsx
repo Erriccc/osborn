@@ -234,6 +234,16 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         typeof window !== 'undefined'
           ? localStorage.getItem('osborn-connection-mode') || 'cloud'
           : 'cloud'
+      // GUEST-CONNECT REGRESSION FIX (2026-08-01): cloud-by-default sent GUESTS
+      // through /api/sandbox for room-code + connect-room — those 401 without a
+      // session, so /connect-room never reached the agent named in ?agentUrl=
+      // and the page hung on "Connecting...". When the sandbox is unavailable
+      // for this caller but an explicit agentUrl exists (guest/test lane),
+      // downgrade the REST of the flow to the direct lane.
+      const urlAgentParam = typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('agentUrl')
+        : null
+      let effectiveMode: string = connectionMode
 
       // Check/start the cloud sandbox unless the user explicitly chose local
       if (connectionMode === 'cloud') {
@@ -241,6 +251,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           const sandboxRes = await fetch('/api/sandbox')
           const sandboxData = await sandboxRes.json()
 
+          if (!(sandboxData.available && sandboxData.sandbox) && urlAgentParam) {
+            console.log('[chat] No sandbox for this caller + explicit agentUrl — using direct lane')
+            effectiveMode = 'local'
+          }
           if (sandboxData.available && sandboxData.sandbox) {
             const sb = sandboxData.sandbox
             setActiveSandboxId(sb.id)
@@ -277,9 +291,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           }
         } catch {
           // No sandbox API or not configured — fall back to local URL
+          if (urlAgentParam) effectiveMode = 'local'
         }
       }
-      // If connectionMode === 'local', use the agentUrl from query param / localStorage as-is
+      // If effectiveMode === 'local', use the agentUrl from query param / localStorage as-is
 
       setStatusMsg('Connecting to agent...')
 
@@ -288,7 +303,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // Local mode: direct fetch with mixed-content guard (skip if HTTPS frontend → HTTP agent).
       let code: string | null = null
       try {
-        if (connectionMode === 'cloud') {
+        if (effectiveMode === 'cloud') {
           const r = await fetch('/api/sandbox', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -330,7 +345,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // "Connecting". connect-room's returned roomName is the authoritative one.
       // (Older agents don't return roomName → we keep the room-code value.)
       try {
-        if (connectionMode === 'cloud') {
+        if (effectiveMode === 'cloud') {
           const cr = await fetch('/api/sandbox', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
