@@ -750,7 +750,12 @@ async function main() {
     if (process.env.OSBORN_RESTORE_TABS !== '0' && existsSync(TAB_STATE)) {
       try {
         const st = JSON.parse(readFileSync(TAB_STATE, 'utf8'))
-        const extra = (st.tabs ?? []).slice(1)
+        // Never restore chat/session tabs — the boot flow rebuilds the
+        // session tab itself; restoring a saved one creates a SECOND room
+        // participant (2026-08-02: double-join churn broke the session gate).
+        const extra = (st.tabs ?? []).slice(1).filter((t: { url: string }) => {
+          try { return new URL(t.url).pathname !== '/chat' } catch { return true }
+        })
         for (const t of extra) {
           active = await openTab(context, t.url); watchPage(active)
           if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
