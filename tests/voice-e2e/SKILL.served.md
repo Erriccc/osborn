@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 14
+Version: 15
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -143,6 +143,11 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v15
+- **No chat-tab restore** — tab restore skips /chat tabs (the boot flow owns
+  the session tab); restoring one created a second room participant and broke
+  the session gate (2026-08-02 live-test churn).
 
 ## What's new in v14
 - **Meeting-aware self-protection** — the engine detects an active meeting on
