@@ -1,5 +1,9 @@
 # Osborn Changelog
 
+## 2026-08 — Agent-machine idle-exit 10→15 min (0.9.120)
+
+- **Idle-exit grace 10 → 15 min (0.9.120)** — `IDLE_EXIT_GRACE_MS` in `index.ts` raised to 15 min (user directive). The 10-min self-stop was cold-stopping the machine between sessions (user steps away to open the Meet / admit the bot / return), forcing a reboot on every reconnect. 15 min rides out realistic setup gaps before the machine self-stops for billing.
+
 ## 2026-08 — Meeting brain survives voice-session drops (0.9.119)
 
 - **Decouple the meeting bot's brain from the browser voice session (0.9.119)** — a Recall meeting bot was going permanently DEAF mid-call on any LiveKit participant blip (double-tab, reconnect, engine idle-stop): `handleParticipantDisconnected` called `killCurrentLLM()` → `currentLLM = null`, so `flushMeetingBuffer` no-op'd (`Addressed` fired but never `Flushed`) while the bot stayed in the call. Proven deterministically via synthetic `/webhook/recall` transcript inject. Three fixes in `agent/src/index.ts`: (1) while `activeMeetingBotId` is set, KEEP `currentLLM` alive on participant-disconnect — the 75s leave-grace owns teardown (`endMeeting()` releases the LLM only when the room is truly empty, which was always the design intent per its `!userPresent` branch); don't arm the 20s fast-leave during a meeting (it would destroy the room before the grace). (2) The `tts_say`→meeting redirect now runs BEFORE the `!currentSession` guard, since `speakIntoMeeting` uses Recall `output_audio` and needs no LiveKit session — meeting replies survive a voice-session drop. (3) Arm the meeting leave-grace on abrupt `AgentSession` close (`user_initiated`, no clean ParticipantDisconnected) so a driver tab dying can't orphan the Recall bot draining credits.

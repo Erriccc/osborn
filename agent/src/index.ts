@@ -1655,7 +1655,7 @@ async function main() {
   // the zombie watchdog below. Cancelled implicitly: before exiting we re-check
   // that we're still idle/disconnected — any /connect-room in the window aborts.
   // Local dev (no FLY_APP_NAME) never exits. Override with OSBORN_IDLE_EXIT=0.
-  const IDLE_EXIT_GRACE_MS = 10 * 60 * 1000  // 10 min: rides out a page refresh + re-auth
+  const IDLE_EXIT_GRACE_MS = 15 * 60 * 1000  // 15 min (0.9.120, user directive): rides out setup gaps — user returning, opening the Meet, admitting the bot — before the machine self-stops. Was 10 min, which cold-stopped the test machine between sessions.
   let idleExitTimer: ReturnType<typeof setTimeout> | null = null
   const armIdleExitTimer = (reason: string) => {
     if (!process.env.FLY_APP_NAME || process.env.OSBORN_IDLE_EXIT === '0') return
