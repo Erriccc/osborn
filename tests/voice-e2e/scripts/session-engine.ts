@@ -775,7 +775,8 @@ async function main() {
   // gracefully — on Fly the machine stops (restart policy 'never') and
   // auto_start_machines boots it again on the next request. Default 10 min in
   // containers, disabled locally (set OSBORN_IDLE_STOP_MS to override; 0 = off).
-  const IDLE_STOP_MS = Number(process.env.OSBORN_IDLE_STOP_MS ?? (IN_CONTAINER ? 600000 : 0))
+  // 15min default (user request 2026-08-02 — was 10min; meetings/gates need breathing room)
+  const IDLE_STOP_MS = Number(process.env.OSBORN_IDLE_STOP_MS ?? (IN_CONTAINER ? 900000 : 0))
   const MISSION_MAX_MS = 2 * 60 * 60 * 1000
   setInterval(async () => {
     if (ending || !IDLE_STOP_MS) return

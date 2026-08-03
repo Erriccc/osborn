@@ -30,7 +30,7 @@
 - `GOOGLE_API_KEY` — REQUIRED (Stagehand brain). `OPENAI_API_KEY` (TTS mouth), `DEEPGRAM_API_KEY` (transcription ears) recommended.
 - `OSBORN_APP_URL` — the target site. `OSBORN_ENTRY=none` — just load the page, skip the voice-native room flow (ANY website).
 - `OSBORN_ENGINE_TOKEN` — control-API auth (REQUIRED on public deployments).
-- `OSBORN_IDLE_STOP_MS` (default 10min container) — self-sleep. `OSBORN_TAB_STALE_MS` (default 30min) — stale-tab sweep.
+- `OSBORN_IDLE_STOP_MS` (default 15min container) — self-sleep. `OSBORN_TAB_STALE_MS` (default 30min) — stale-tab sweep.
 - `OSBORN_WEBHOOK_URL`/`OSBORN_WEBHOOK_TOKEN` — push events to any receiver.
 - `OSBORN_TEST_EMAIL/PASSWORD` + `OSBORN_SUPABASE_URL/ANON` — mint an auth profile at boot from secrets (cloud auth without baking cookies into images).
 - `OSBORN_DEVTOOLS=1` — DevTools panel on camera. `OSBORN_DISPLAY_SIZE` — virtual display size.
