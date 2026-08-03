@@ -1,5 +1,12 @@
 # Osborn Changelog
 
+## 2026-08 — Meeting speech: turn-taking, no overlap, interruption (0.9.121)
+
+- **Serialized meeting speech queue** — `speakIntoMeeting` now chains utterances on the Recall `output_audio` sink (the equivalent of `session.say`'s SpeechHandle queue). Recall's `output_audio` POST returns on *accept*, not *finish*, so two replies (from two flushes, or a streamed multi-chunk reply) played ON TOP of each other — the "another voice over it" the user heard live. Each utterance now waits ~`estimatedSpeechMs` for the prior one's playback; a generation counter drops anything queued/mid-synth when a newer turn or an interrupt supersedes it.
+- **Turn-debounced replies** — the bot flushed a reply on *every* Recall transcript segment (Recall closes a segment at every pause), so it answered fragments mid-thought and multiple times per utterance. `scheduleAddressedFlush` debounces (~1.4s; ~0.45s after a `speech_off` hard boundary) so one continuous thought = one reply, and back-to-back speakers coalesce into one turn.
+- **Real interruption (barge-in)** — human `speech_on` while the bot is speaking now STOPS the actual voice: `recall.stopOutputAudio()` (new `DELETE /bot/{id}/output_audio/`) + queue-generation bump + canvas stop. Before, only the canvas was stopped while `output_audio` kept playing. Reuses the existing `meetingInterruptContext` ledger so the agent knows it was cut off + what the human likely missed (same as the website path).
+- **Tighter meeting replies** — addressed header instructs 1–2 spoken sentences (the 286–310-char monologues took 8s+ to synth and piled up in the overlap).
+
 ## 2026-08 — Agent-machine idle-exit 10→15 min (0.9.120)
 
 - **Idle-exit grace 10 → 15 min (0.9.120)** — `IDLE_EXIT_GRACE_MS` in `index.ts` raised to 15 min (user directive). The 10-min self-stop was cold-stopping the machine between sessions (user steps away to open the Meet / admit the bot / return), forcing a reboot on every reconnect. 15 min rides out realistic setup gaps before the machine self-stops for billing.

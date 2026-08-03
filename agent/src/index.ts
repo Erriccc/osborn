@@ -269,6 +269,34 @@ let meetingAgentSpeakingText = ''
 // Prepended to the next flush: what the bot was cut off saying + who interrupted
 // (same pattern as voice-native interruptions).
 let meetingInterruptContext = ''
+// Meeting speech QUEUE (0.9.121): serialize output_audio so replies never
+// overlap — the Recall-sink equivalent of session.say's SpeechHandle queue.
+// Recall's output_audio POST returns on ACCEPT, not on finish, so without this
+// two replies (from two flushes, or a streamed multi-chunk reply) play ON TOP
+// of each other — the "another voice over it" the user heard. Each utterance
+// waits for the prior one's estimated playback before it plays; a generation
+// counter (bumped on human interruption / a superseding turn) discards anything
+// still queued so the bot never talks over itself or a human.
+let meetingSpeakChain: Promise<void> = Promise.resolve()
+let meetingSpeakGen = 0
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+// Estimated playback duration of a spoken line: ~2.5 words/sec + ~0.8s Recall
+// buffer. Used to hold the speech queue so the next utterance doesn't overlap.
+function estimatedSpeechMs(text: string): number {
+  const words = text.split(/\s+/).filter(Boolean).length
+  return Math.min(30_000, 800 + (words / 2.5) * 1000)
+}
+// Interrupt all meeting speech: bump the generation (drops queued + in-synth
+// utterances) and stop any output_audio Recall is currently playing.
+function interruptMeetingSpeech(reason: string): void {
+  meetingSpeakGen++
+  meetingAgentSpeaking = false
+  if (meetingSpeakClearTimer) { clearTimeout(meetingSpeakClearTimer); meetingSpeakClearTimer = null }
+  const recall = getRecallClient()
+  const botId = recall?.getActiveBotIds?.()[0]
+  if (recall && botId) void recall.stopOutputAudio(botId)
+  console.log(`✋ meeting speech interrupted (${reason}) — queue cleared + output_audio stopped`)
+}
 // Synthesize speech as MP3 (Deepgram fast path, OpenAI fallback) — for
 // Recall native output_audio, which requires mp3.
 async function synthMp3(text: string): Promise<Buffer | null> {
@@ -312,21 +340,39 @@ async function synthMp3(text: string): Promise<Buffer | null> {
 // bot's camera shows what it's saying — no double-audio. output_audio +
 // canvas camera coexist (confirmed: user heard output_audio while the canvas
 // was showing). Falls back to canvas 'say' (audio) only if output_audio fails.
-async function speakIntoMeeting(text: string): Promise<void> {
-  const recall = getRecallClient()
-  const botId = recall?.getActiveBotIds?.()[0]
-  if (recall && botId) {
-    const mp3 = await synthMp3(text)
-    if (mp3 && await recall.outputAudio(botId, mp3)) {
-      console.log(`📢 spoke via Recall output_audio (${mp3.length}b): "${text.slice(0, 60)}"`)
-      pushCanvas({ kind: 'caption', text }) // visual only, no audio
-      markMeetingSpeaking(text)
+function speakIntoMeeting(text: string): Promise<void> {
+  if (!text?.trim()) return Promise.resolve()
+  // Capture the generation at ENQUEUE time. If an interrupt (or a superseding
+  // turn) bumps the gen before this item runs — or mid-synth — we drop it, so
+  // the bot never plays a reply the conversation has already moved past.
+  const gen = meetingSpeakGen
+  const run = meetingSpeakChain.then(async () => {
+    if (gen !== meetingSpeakGen) {
+      console.log(`🔇 meeting speech superseded — dropping: "${text.slice(0, 40)}"`)
       return
     }
-  }
-  console.log(`📽️ falling back to canvas say (audio): "${text.slice(0, 50)}"`)
-  pushCanvas({ kind: 'say', text })
-  markMeetingSpeaking(text)
+    const recall = getRecallClient()
+    const botId = recall?.getActiveBotIds?.()[0]
+    if (recall && botId) {
+      const mp3 = await synthMp3(text)
+      if (gen !== meetingSpeakGen) { console.log(`🔇 meeting speech interrupted mid-synth — dropping: "${text.slice(0, 40)}"`); return }
+      if (mp3 && await recall.outputAudio(botId, mp3)) {
+        console.log(`📢 spoke via Recall output_audio (${mp3.length}b): "${text.slice(0, 60)}"`)
+        pushCanvas({ kind: 'caption', text }) // visual only, no audio
+        markMeetingSpeaking(text)
+        // Hold the queue for the estimated playback so the NEXT utterance
+        // doesn't start on top of this one (POST returns on accept, not finish).
+        await sleep(estimatedSpeechMs(text))
+        return
+      }
+    }
+    console.log(`📽️ falling back to canvas say (audio): "${text.slice(0, 50)}"`)
+    pushCanvas({ kind: 'say', text })
+    markMeetingSpeaking(text)
+    await sleep(estimatedSpeechMs(text))
+  }).catch((e) => { console.warn(`⚠️ meeting speak failed: ${(e as Error).message}`) })
+  meetingSpeakChain = run
+  return run
 }
 
 function markMeetingSpeaking(text: string): void {
@@ -1810,12 +1856,12 @@ async function main() {
       // from muting the audio path. Reset by endMeeting.
       meetingAddressedUntil = Date.now() + 6 * 60 * 60 * 1000
     }
-    // PROMPT PARITY (user directive 2026-08-01): addressed turns carry ONLY a
-    // minimal tag — no behavioral re-instruction. The agent replies exactly as
-    // it would to a regular voice turn; the tts_say→canvas redirect handles
-    // where the words go. Same agent, same behavior, both fronts.
+    // Addressed turns get a MINIMAL tag + a hard brevity rule (0.9.121): the
+    // reply is SPOKEN into a live meeting, so long answers (a) take 8s+ to
+    // synthesize and (b) pile up / talk over the next turn. 1–2 sentences keeps
+    // it conversational and fast; the agent can offer to go deeper if asked.
     const header = addressed
-      ? `[MEETING — ${botId}] (addressed — reply is spoken into the meeting):`
+      ? `[MEETING — ${botId}] (addressed — your reply is SPOKEN OUT LOUD into the meeting: keep it to 1–2 short sentences, conversational, no lists/markdown; offer to elaborate only if they want more):`
       : `[MEETING — ${botId}]:`
     // Prepend + consume any interruption context (bot was cut off mid-sentence).
     const interrupt = meetingInterruptContext ? `${meetingInterruptContext}\n` : ''
@@ -1836,7 +1882,27 @@ async function main() {
   }
   const stopMeetingFlush = () => {
     if (meetingFlushTimer) { clearInterval(meetingFlushTimer); meetingFlushTimer = null; console.log('📓 Meeting flush timer stopped') }
+    if (addressedFlushTimer) { clearTimeout(addressedFlushTimer); addressedFlushTimer = null }
     meetingTranscriptBuffer.length = 0
+  }
+  // TURN-DEBOUNCED addressed flush (0.9.121): Recall closes a transcript
+  // segment on every pause, so flushing on each final made the bot reply to
+  // FRAGMENTS mid-thought (and multiple times per utterance). Instead we
+  // debounce: each new transcript final resets a short timer; we only flush
+  // (= reply) after the speaker has actually paused, so one turn = one reply.
+  // speech_off (a hard silence boundary) can flush sooner via a smaller delay.
+  let addressedFlushTimer: ReturnType<typeof setTimeout> | null = null
+  const ADDRESSED_DEBOUNCE_MS = 1400
+  const scheduleAddressedFlush = (botId: string, delayMs: number = ADDRESSED_DEBOUNCE_MS) => {
+    if (addressedFlushTimer) clearTimeout(addressedFlushTimer)
+    addressedFlushTimer = setTimeout(() => {
+      addressedFlushTimer = null
+      if (!meetingTranscriptBuffer.length) return
+      // A fresh human turn supersedes anything the bot was still saying about
+      // the previous one — interrupt stale queued/playing speech before we reply.
+      interruptMeetingSpeech('new addressed turn')
+      flushMeetingBuffer(botId, true)
+    }, delayMs)
   }
 
   // ── Meeting lifecycle (centralized teardown, 0.9.95) ──
@@ -2004,8 +2070,12 @@ async function main() {
         }
         const oneOnOne = meetingSpeakers.size <= 1
         if (oneOnOne || /\b(osborne?|oz\s?born|os\s?born|was born|is born|ozborn|osbourne?|austin\b.{0,8}(hear|there|can you))/i.test(text)) {
-          console.log(`📓 Addressed (${oneOnOne ? '1:1 meeting' : 'by name'}) — immediate flush for a response`)
-          flushMeetingBuffer(botId, true)
+          // DEBOUNCED (0.9.121): don't reply to this fragment — wait for the
+          // speaker to actually pause. Each new final resets the timer, so one
+          // continuous thought (even across Recall's mid-sentence segment splits)
+          // becomes ONE reply instead of several talking over each other.
+          console.log(`📓 Addressed (${oneOnOne ? '1:1 meeting' : 'by name'}) — turn debounced (~${ADDRESSED_DEBOUNCE_MS}ms)`)
+          scheduleAddressedFlush(botId)
         }
       }
     })
@@ -2018,11 +2088,16 @@ async function main() {
         // bot's audio and record what it was cut off saying so the next flush can
         // tell it what it missed (same pattern as voice-native interruptions).
         if (meetingAgentSpeaking && !isBot) {
-          console.log(`✋ Interruption — ${participant} spoke while bot was talking. Stopping bot audio.`)
-          pushCanvas({ kind: 'stop' })
+          console.log(`✋ Interruption — ${participant} spoke while bot was talking.`)
+          // Capture what got cut off BEFORE interrupting (same interruption-
+          // context ledger as the website path — the next flush tells the agent
+          // it was cut off + what the human likely didn't hear).
           meetingInterruptContext = `[MEETING — interrupted] You were speaking ("${meetingAgentSpeakingText.slice(0, 140)}") when ${participant} started talking and cut you off. They likely didn't hear the rest. When you respond, briefly acknowledge and adapt — don't just repeat.`
-          meetingAgentSpeaking = false
-          if (meetingSpeakClearTimer) clearTimeout(meetingSpeakClearTimer)
+          // Actually STOP the voice: canvas stop + Recall output_audio stop +
+          // queue-generation bump (drops anything still queued). Before 0.9.121
+          // only the canvas was stopped — the real output_audio kept playing.
+          pushCanvas({ kind: 'stop' })
+          interruptMeetingSpeech(`human ${participant} barged in`)
         }
       } else {
         // speech_off — a natural silence boundary = the speaker finished their
@@ -2032,7 +2107,14 @@ async function main() {
         // (user directive 2026-08-01).
         if (!isBot && meetingTranscriptBuffer.length) {
           const latchOpen = Date.now() < meetingAddressedUntil || meetingSpeakers.size <= 1
-          flushMeetingBuffer(botId, latchOpen)
+          if (latchOpen) {
+            // Hard silence boundary → the speaker really finished. Flush sooner
+            // than the transcript debounce (still debounced so back-to-back
+            // speakers coalesce into one turn).
+            scheduleAddressedFlush(botId, 450)
+          } else {
+            flushMeetingBuffer(botId, false) // silent observer note-taking batch
+          }
         }
       }
     })

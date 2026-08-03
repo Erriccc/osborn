@@ -237,6 +237,31 @@ export class RecallClient extends EventEmitter {
     return true
   }
 
+  /**
+   * Stop the bot's currently-playing output_audio (barge-in / interruption).
+   * Recall exposes DELETE on the same endpoint to clear in-progress playback.
+   * Best-effort: returns true on 2xx, false otherwise (older bots / no active
+   * audio may 404 — harmless, the speech queue's generation bump still halts
+   * anything queued). Mirrors the website path's TTS interrupt on barge-in.
+   */
+  async stopOutputAudio(botId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${RECALL_BASE_URL}/bot/${botId}/output_audio/`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Token ${this.#apiKey}` },
+      })
+      if (!res.ok) {
+        const e = await res.text().catch(() => '')
+        console.warn(`⚠️ Recall stop output_audio ${res.status}: ${e.slice(0, 120)}`)
+        return false
+      }
+      return true
+    } catch (err) {
+      console.warn(`⚠️ Recall stop output_audio failed: ${(err as Error).message}`)
+      return false
+    }
+  }
+
   async getBotStatus(botId: string): Promise<string> {
     const res = await fetch(`${RECALL_BASE_URL}/bot/${botId}`, {
       headers: { 'Authorization': `Token ${this.#apiKey}` },
