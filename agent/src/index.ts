@@ -301,34 +301,30 @@ function interruptMeetingSpeech(reason: string): void {
 // Recall native output_audio, which requires mp3.
 async function synthMp3(text: string): Promise<Buffer | null> {
   const t0 = Date.now()
-  const dgKey = process.env.DEEPGRAM_API_KEY
-  if (dgKey) {
-    try {
-      const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-asteria-en&encoding=mp3&bit_rate=48000', {
-        method: 'POST',
-        headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.slice(0, 4000) }),
-        signal: AbortSignal.timeout(12000),
-      })
-      if (dg.ok) {
-        const buf = Buffer.from(await dg.arrayBuffer())
-        console.log(`🗣️ synthMp3 deepgram ${buf.length}b in ${Date.now() - t0}ms`)
-        return buf
-      }
-    } catch (e) { console.warn(`⚠️ synthMp3 deepgram: ${(e as Error).message}`) }
-  }
   const oa = process.env.OPENAI_API_KEY
-  if (oa) {
-    try {
-      const r = await fetch('https://api.openai.com/v1/audio/speech', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${oa}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: 'alloy', input: text.slice(0, 4000), response_format: 'mp3' }),
-        signal: AbortSignal.timeout(15000),
-      })
-      if (r.ok) return Buffer.from(await r.arrayBuffer())
-    } catch { /* fall through */ }
-  }
+  if (!oa) { console.warn('⚠️ synthMp3: no OPENAI_API_KEY — meeting has no voice'); return null }
+  // Meeting voice = the SAME OpenAI model/voice as the website's regular TTS
+  // (DIRECT_MODE_TTS), so the bot sounds IDENTICAL on both fronts (user directive
+  // 2026-08-04: Deepgram aura sounded "cheap and inconsistent"). Deepgram removed
+  // from the meeting path entirely. Pulls model/voice from DIRECT_MODE_TTS when
+  // it's an OpenAI config so the two never drift.
+  const model = DIRECT_MODE_TTS.provider === 'openai' ? (DIRECT_MODE_TTS.model || 'tts-1-hd') : 'tts-1-hd'
+  const voice = DIRECT_MODE_TTS.provider === 'openai' ? (DIRECT_MODE_TTS.voice || 'fable') : 'fable'
+  try {
+    const r = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${oa}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, voice, input: text.slice(0, 4000), response_format: 'mp3' }),
+      signal: AbortSignal.timeout(20000),
+    })
+    if (r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer())
+      console.log(`🗣️ synthMp3 openai ${model}/${voice} ${buf.length}b in ${Date.now() - t0}ms`)
+      return buf
+    }
+    const e = await r.text().catch(() => '')
+    console.warn(`⚠️ synthMp3 openai ${r.status}: ${e.slice(0, 120)}`)
+  } catch (e) { console.warn(`⚠️ synthMp3 openai: ${(e as Error).message}`) }
   return null
 }
 
@@ -731,45 +727,23 @@ function startApiServer(workingDir: string, port: number): void {
       const text = (url.searchParams.get('text') || '').slice(0, 4000)
       if (!text) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no text' })); return }
       const t0 = Date.now()
-      // Deepgram FIRST (2026-08-01 latency fix): same TTS family the regular
-      // voice pipeline uses — ~3-6x faster than the OpenAI full-file synth this
-      // endpoint used before (measured 2-4s of the meeting reply lag). OpenAI
-      // stays as fallback.
-      const dgKey = process.env.DEEPGRAM_API_KEY
-      if (dgKey) {
-        try {
-          // WAV/linear16, not mp3: mp3 files carry encoder padding (leading/
-          // trailing silence + boundary click) — back-to-back sentence clips
-          // were heard as "cracking". WAV is gapless-safe and cheaper to decode.
-          const dg = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-asteria-en&encoding=linear16&sample_rate=48000&container=wav', {
-            method: 'POST',
-            headers: { 'Authorization': `Token ${dgKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
-          })
-          if (dg.ok) {
-            const buf = Buffer.from(await dg.arrayBuffer())
-            console.log(`🗣️ /tts deepgram wav ${buf.length}b in ${Date.now() - t0}ms (${text.length} chars) t=${new Date().toISOString()}`)
-            res.writeHead(200, { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store', 'Content-Length': buf.length })
-            res.end(buf)
-            return
-          }
-          console.warn(`⚠️ /tts deepgram ${dg.status} — falling back to OpenAI`)
-        } catch (e) {
-          console.warn(`⚠️ /tts deepgram error: ${(e as Error).message} — falling back to OpenAI`)
-        }
-      }
-      const voice = url.searchParams.get('voice') || 'alloy'
+      // Meeting voice = the SAME OpenAI model/voice as the website's regular TTS
+      // (DIRECT_MODE_TTS) — user directive 2026-08-04: Deepgram aura removed, it
+      // sounded cheap/inconsistent. Consistency over the ~2-4s latency Deepgram
+      // saved. mp3 out (the canvas <audio> element plays it into the meeting).
       const key = process.env.OPENAI_API_KEY
-      if (!key) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no TTS provider keys' })); return }
+      if (!key) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no OPENAI_API_KEY' })); return }
+      const model = DIRECT_MODE_TTS.provider === 'openai' ? (DIRECT_MODE_TTS.model || 'tts-1-hd') : 'tts-1-hd'
+      const voice = url.searchParams.get('voice') || (DIRECT_MODE_TTS.provider === 'openai' ? (DIRECT_MODE_TTS.voice || 'fable') : 'fable')
       try {
         const tts = await fetch('https://api.openai.com/v1/audio/speech', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice, input: text, response_format: 'mp3' }),
+          body: JSON.stringify({ model, voice, input: text, response_format: 'mp3' }),
         })
         if (!tts.ok) { const e = await tts.text().catch(() => ''); res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: `tts ${tts.status}`, detail: e.slice(0, 200) })); return }
         const buf = Buffer.from(await tts.arrayBuffer())
-        console.log(`🗣️ /tts openai ${buf.length}b in ${Date.now() - t0}ms t=${new Date().toISOString()}`)
+        console.log(`🗣️ /tts openai ${model}/${voice} ${buf.length}b in ${Date.now() - t0}ms t=${new Date().toISOString()}`)
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store', 'Content-Length': buf.length })
         res.end(buf)
       } catch (e) {
@@ -1856,13 +1830,14 @@ async function main() {
       // from muting the audio path. Reset by endMeeting.
       meetingAddressedUntil = Date.now() + 6 * 60 * 60 * 1000
     }
-    // Addressed turns get a MINIMAL tag + a hard brevity rule (0.9.121): the
-    // reply is SPOKEN into a live meeting, so long answers (a) take 8s+ to
-    // synthesize and (b) pile up / talk over the next turn. 1–2 sentences keeps
-    // it conversational and fast; the agent can offer to go deeper if asked.
-    const header = addressed
-      ? `[MEETING — ${botId}] (addressed — your reply is SPOKEN OUT LOUD into the meeting: keep it to 1–2 short sentences, conversational, no lists/markdown; offer to elaborate only if they want more):`
-      : `[MEETING — ${botId}]:`
+    // NO meeting-specific reply coaching (user directive 2026-08-04): the reply
+    // must be exactly what the main Claude Code agent would say — no brevity
+    // rules, no "spoken out loud" framing. Just a bare [MEETING — id] routing
+    // tag, which is all the plumbing needs: PipelineDirectLLM keys
+    // suppressMeetingTTS off the `[MEETING` prefix, and whether the reply is
+    // SPOKEN is decided in CODE (activeMeetingBotId + meetingAddressedUntil),
+    // not by any prompt instruction. Addressed vs observer is the code boolean.
+    const header = `[MEETING — ${botId}]:`
     // Prepend + consume any interruption context (bot was cut off mid-sentence).
     const interrupt = meetingInterruptContext ? `${meetingInterruptContext}\n` : ''
     meetingInterruptContext = ''
@@ -5431,19 +5406,22 @@ async function main() {
               activeMeetingBotId = botId
               await sendToFrontend({ type: 'meeting_joined', botId, message: 'Osborn has joined the meeting' })
 
-              // System injection so the LLM knows it's in a meeting and which
-              // skill to apply. The meetings skill (agent/.claude/skills/meetings/SKILL.md)
-              // teaches the agent: don't speak in response to [MEETING — *]:
-              // messages, keep meeting-todos.md updated in the workspace, etc.
+              // Minimal awareness injection (user directive 2026-08-04): tell the
+              // LLM it's in a meeting and how transcripts are tagged — nothing
+              // more. NO "do NOT speak / silent observer" coaching (that fought
+              // the goal of the reply being exactly the main agent's response).
+              // The agent responds to meeting turns the same way it responds on
+              // the website; note-taking is an optional background task, not a
+              // replacement for responding.
               if (currentLLM) {
                 try {
                   const sysCtx = new llm.ChatContext()
                   sysCtx.addMessage({
                     role: 'user',
-                    content: `[SYSTEM] You are now in a meeting (Recall bot ID: ${botId}, URL: ${meetingUrl}). Transcript chunks will arrive every ~30 seconds tagged \`[MEETING — ${botId}]:\`. Follow the meetings skill: do NOT speak in response (no TTS output), instead maintain meeting-todos.md in the session workspace, optionally trigger background research silently. The voice-native user can still interact normally — only the meeting-tagged messages are the silent-observer path. Acknowledge by writing the initial meeting-todos.md skeleton.`,
+                    content: `[SYSTEM] You are now in a meeting (Recall bot ID: ${botId}, URL: ${meetingUrl}). Live transcript arrives tagged \`[MEETING — ${botId}]:\`. Respond to what's said exactly as you naturally would — same as on the website, no special meeting phrasing. You may keep meeting-todos.md updated in the workspace in the background, but responding comes first.`,
                   })
                   currentLLM.chat({ chatCtx: sysCtx })
-                  console.log('📓 Meeting system injection sent to LLM')
+                  console.log('📓 Meeting awareness injection sent to LLM')
                 } catch (sysErr) {
                   console.warn('⚠️ Meeting system injection failed:', (sysErr as Error).message)
                 }

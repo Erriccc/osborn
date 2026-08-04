@@ -1,5 +1,10 @@
 # Osborn Changelog
 
+## 2026-08 — Meeting = main agent's own reply + website voice (0.9.122)
+
+- **No meeting-specific reply prompts** — the addressed header's brevity coaching (0.9.121) is gone; meeting turns now carry only a bare `[MEETING — id]:` routing tag. Whether a reply is spoken is decided in code (`activeMeetingBotId` + `meetingAddressedUntil`), not by prompt. The meeting **awareness injection** was also stripped of its "do NOT speak / silent observer" coaching — the agent now responds to meeting turns exactly as the main Claude Code agent does on the website (note-taking is an optional background task, not a replacement for responding). User directive: "responses should just be the main claude code agent's response."
+- **Meeting voice = website voice (OpenAI, not Deepgram)** — `synthMp3` and the `/tts` endpoint now use the SAME OpenAI model/voice as `DIRECT_MODE_TTS` (currently `tts-1-hd` / `fable`), pulled from that config so they never drift. Deepgram `aura` removed from the meeting path entirely — it "sounded cheap and inconsistent." Trades ~2-4s of Deepgram's speed for consistent, high-quality voice.
+
 ## 2026-08 — Meeting speech: turn-taking, no overlap, interruption (0.9.121)
 
 - **Serialized meeting speech queue** — `speakIntoMeeting` now chains utterances on the Recall `output_audio` sink (the equivalent of `session.say`'s SpeechHandle queue). Recall's `output_audio` POST returns on *accept*, not *finish*, so two replies (from two flushes, or a streamed multi-chunk reply) played ON TOP of each other — the "another voice over it" the user heard live. Each utterance now waits ~`estimatedSpeechMs` for the prior one's playback; a generation counter drops anything queued/mid-synth when a newer turn or an interrupt supersedes it.
