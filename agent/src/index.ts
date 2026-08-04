@@ -821,6 +821,45 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    // GET /sessions/export-one?sessionId=X — tar.gz of a SINGLE session's files
+    // (the .jsonl, its sidecar dir, and its osb/ workspace), for SESSION SHARING
+    // (0.9.123): the frontend fetches this from the owner's machine, uploads it
+    // to Supabase Storage, and the recipient's machine imports it via the
+    // existing POST /sessions/import (slug-remapped into the recipient's
+    // workspace). Note: gated only by knowing the machine URL + the session UUID
+    // for the MVP — a per-share access token is a follow-up (tracked in
+    // shared_sessions). sessionId is regex-validated to block path traversal.
+    if (req.method === 'GET' && url.pathname === '/sessions/export-one') {
+      const sessionId = (url.searchParams.get('sessionId') || '').trim()
+      if (!sessionId || !/^[a-zA-Z0-9._-]+$/.test(sessionId)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'bad or missing sessionId' })); return
+      }
+      const claudeDir = join(homedir(), '.claude')
+      const projectsDir = join(claudeDir, 'projects')
+      if (!existsSync(projectsDir)) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no projects dir' })); return }
+      // Find the project slug whose folder contains {sessionId}.jsonl.
+      let foundSlug: string | null = null
+      for (const slug of readdirSync(projectsDir)) {
+        if (existsSync(join(projectsDir, slug, `${sessionId}.jsonl`))) { foundSlug = slug; break }
+      }
+      if (!foundSlug) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'session not found' })); return }
+      // Only tar the paths that exist (tar errors on a missing member).
+      const members: string[] = [join('projects', foundSlug, `${sessionId}.jsonl`)]
+      if (existsSync(join(projectsDir, foundSlug, sessionId))) members.push(join('projects', foundSlug, sessionId))
+      if (existsSync(join(projectsDir, foundSlug, 'osb', sessionId))) members.push(join('projects', foundSlug, 'osb', sessionId))
+      console.log(`📤 export-one session ${sessionId} (slug ${foundSlug}, ${members.length} member(s))`)
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="session-${sessionId}.tar.gz"`,
+        'Access-Control-Allow-Origin': '*',
+      })
+      const tar = spawn('tar', ['-czf', '-', '-C', claudeDir, ...members])
+      tar.stdout.pipe(res)
+      tar.stderr.on('data', (d: Buffer) => console.error('[export-one]', d.toString()))
+      tar.on('close', (code: number | null) => { if (code !== 0) res.destroy() })
+      return
+    }
+
     // GET /sessions/manifest — return mtime+size for all .jsonl files per slug (public, no auth)
     // Helper: merge an extracted tar directory into ~/.claude/{projects,skills}/.
     //

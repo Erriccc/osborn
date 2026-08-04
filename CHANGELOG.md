@@ -1,5 +1,9 @@
 # Osborn Changelog
 
+## 2026-08 — Session sharing across users (0.9.123)
+
+- **Share a session with another user (copy model)** — new end-to-end feature. Owner A clicks Share on any session → enters recipient B's email. A's machine exports just that session (new `GET /sessions/export-one?sessionId=X` → tar.gz of the `.jsonl` + sidecar dir + `osb/` workspace); the frontend uploads it to the private `session-shares` Supabase Storage bucket, pre-signs a 30-day URL, and records a `shared_sessions` row addressed to B's email. B sees it under "Shared with me" in the session browser → "Add to my sessions" downloads the snapshot and POSTs it to B's OWN machine `/sessions/import` (slug-remapped into B's workspace). The two copies then diverge independently. Additive — no existing session flow is touched. New migration `005_shared_sessions.sql` (table + RLS: owner writes, recipient reads by JWT email; private bucket + owner-prefix storage policies). Recipient matched by email, so a share created before B ever logs in appears the moment they sign in. **NOTE: `005_shared_sessions.sql` must be applied to the prod Supabase before the UI works.**
+
 ## 2026-08 — Meeting = main agent's own reply + website voice (0.9.122)
 
 - **No meeting-specific reply prompts** — the addressed header's brevity coaching (0.9.121) is gone; meeting turns now carry only a bare `[MEETING — id]:` routing tag. Whether a reply is spoken is decided in code (`activeMeetingBotId` + `meetingAddressedUntil`), not by prompt. The meeting **awareness injection** was also stripped of its "do NOT speak / silent observer" coaching — the agent now responds to meeting turns exactly as the main Claude Code agent does on the website (note-taking is an optional background task, not a replacement for responding). User directive: "responses should just be the main claude code agent's response."
