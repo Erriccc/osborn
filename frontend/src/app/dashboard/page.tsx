@@ -127,6 +127,25 @@ function groupByProject(sessions: SessionInfo[], baseCwd: string | null): Projec
     })
 }
 
+// Turn a raw session preview into something presentable. The JSONL first line
+// is frequently a `[MEETING — <botId>]:` transcript dump or a
+// `<task-notification>` blob — both read as gibberish in a list. Classify it
+// and return a clean label + text so the card can show a badge instead.
+type SessionKind = 'meeting' | 'task' | 'chat'
+function prettySessionPreview(raw?: string): { kind: SessionKind; label: string; text: string } {
+  const s = (raw || '').trim()
+  if (!s) return { kind: 'chat', label: 'Chat', text: 'New conversation' }
+  const mt = s.match(/^\[MEETING[^\]]*\]:?\s*([\s\S]*)$/i)
+  if (mt) {
+    const body = mt[1].replace(/^\s*[\w .'-]+:\s*/, '').replace(/\s+/g, ' ').trim()
+    return { kind: 'meeting', label: 'Meeting', text: body || 'Meeting notes' }
+  }
+  if (/^<task-notification>/i.test(s) || /<task-id>/i.test(s)) {
+    return { kind: 'task', label: 'Task', text: 'Background task run' }
+  }
+  return { kind: 'chat', label: 'Chat', text: s.replace(/\s+/g, ' ').trim() }
+}
+
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'pipeline' | 'direct' | 'realtime'
 
@@ -1602,24 +1621,26 @@ export default function Dashboard() {
               ) : (
                 <div className="space-y-2">
                   {groupByProject(sessions, baseCwd).map(project => (
-                    <div key={project.cwd} className="rounded-2xl bg-[var(--surface)]">{/* no overflow-hidden — it clipped the mobile ⋯ dropdown */}
+                    <div key={project.cwd} className={`rounded-2xl border transition-colors ${expandedProjects.has(project.cwd) ? 'bg-[var(--surface)] border-[var(--accent-dim)]/30' : 'bg-[var(--surface)] border-[var(--border-subtle)]/50 hover:border-[var(--accent-dim)]/25'}`}>{/* no overflow-hidden — it clipped the mobile ⋯ dropdown */}
                       {/* Project header row */}
                       <div className="flex items-center gap-3 px-4 py-3.5">
                         <button
-                          className="flex-1 flex items-center gap-3 text-left min-w-0"
+                          className="flex-1 flex items-center gap-3 text-left min-w-0 group/proj"
                           onClick={() => toggleProject(project.cwd)}
                         >
-                          <div className="w-9 h-9 rounded-xl bg-[var(--surface-2)] flex items-center justify-center flex-shrink-0 text-base">
+                          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--accent-dim)]/25 to-[var(--surface-2)] ring-1 ring-[var(--border-subtle)]/50 group-hover/proj:ring-[var(--accent-dim)]/40 flex items-center justify-center flex-shrink-0 text-base transition-all">
                             {project.name === 'General' ? '📁' : '🗂️'}
                           </div>
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium capitalize truncate">{project.name}</div>
-                            <div className="text-xs text-[var(--muted)]">
-                              {project.sessions.length} session{project.sessions.length !== 1 ? 's' : ''} · {formatDate(project.lastActive)}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-semibold capitalize truncate text-[var(--text-primary)]">{project.name}</div>
+                            <div className="text-xs text-[var(--muted)] mt-0.5 flex items-center gap-1.5">
+                              <span className="px-1.5 py-px rounded-full bg-[var(--surface-2)] text-[var(--text-secondary)] font-medium text-[10px]">{project.sessions.length} session{project.sessions.length !== 1 ? 's' : ''}</span>
+                              <span className="opacity-40">·</span>
+                              <span>{formatDate(project.lastActive)}</span>
                             </div>
                           </div>
                           <svg
-                            className={`w-4 h-4 text-[var(--muted)] flex-shrink-0 transition-transform ${expandedProjects.has(project.cwd) ? 'rotate-90' : ''}`}
+                            className={`w-4 h-4 flex-shrink-0 transition-transform ${expandedProjects.has(project.cwd) ? 'rotate-90 text-[var(--accent)]' : 'text-[var(--muted)]'}`}
                             fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
                           >
                             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -1747,22 +1768,34 @@ export default function Dashboard() {
                           {(expandedSessionLists.has(project.cwd)
                             ? project.sessions
                             : project.sessions.slice(0, 15)
-                          ).map((s, si) => (
+                          ).map((s, si) => { const pv = prettySessionPreview(s.lastMessage); return (
                             <div
                               key={s.sessionId}
                               style={{ animation: 'fadeSlideIn .28s ease both', animationDelay: `${Math.min(si, 8) * 35}ms` }}
-                              className="relative rounded-xl bg-[var(--surface-2)]/50 border border-transparent hover:border-[var(--accent-dim)]/30 hover:bg-[var(--surface-2)] transition-all group/sess"
+                              className="relative rounded-xl bg-[var(--surface-2)]/40 border border-[var(--border-subtle)]/40 hover:border-[var(--accent-dim)]/40 hover:bg-[var(--surface-2)] hover:-translate-y-px hover:shadow-[0_4px_16px_-8px_rgba(0,0,0,0.5)] transition-all group/sess"
                             >
                               <button
                                 onClick={() => startChat(s.sessionId, s.cwd)}
                                 className="w-full px-3 py-2.5 text-left active:scale-[0.99] transition-transform"
                               >
-                                <div className="flex items-center gap-2 pr-9">
+                                <div className="flex items-start gap-2.5 pr-9">
+                                  <div className={`mt-0.5 w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : pv.kind === 'task' ? 'bg-[var(--surface)] text-[var(--text-muted)]' : 'bg-[var(--surface)] text-[var(--text-secondary)] group-hover/sess:text-[var(--accent)]'}`}>
+                                    {pv.kind === 'meeting' ? (
+                                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                                    ) : pv.kind === 'task' ? (
+                                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                    ) : (
+                                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.84L3 20l1.16-3.48A7.9 7.9 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                                    )}
+                                  </div>
                                   <div className="flex-1 min-w-0">
                                     <div className="text-[13px] font-medium text-[var(--text-primary)] line-clamp-1">
-                                      {s.lastMessage || 'New conversation'}
+                                      {pv.text}
                                     </div>
-                                    <div className="text-[11px] text-[var(--text-muted)] mt-0.5 flex items-center gap-1.5">
+                                    <div className="text-[11px] text-[var(--text-muted)] mt-1 flex items-center gap-1.5">
+                                      {pv.kind !== 'chat' && (
+                                        <span className={`px-1.5 py-px rounded-full text-[10px] font-medium ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : 'bg-[var(--surface)] text-[var(--text-muted)]'}`}>{pv.label}</span>
+                                      )}
                                       <span>{formatDate(s.timestamp)}</span>
                                       {s.messageCount ? (
                                         <>
@@ -1782,7 +1815,7 @@ export default function Dashboard() {
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
                               </button>
                             </div>
-                          ))}
+                          )})}
                           {project.sessions.length > 15 && !expandedSessionLists.has(project.cwd) && (
                             <button
                               onClick={() => setExpandedSessionLists(s => { const n = new Set(s); n.add(project.cwd); return n })}
