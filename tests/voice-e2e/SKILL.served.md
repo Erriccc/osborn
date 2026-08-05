@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 18
+Version: 19
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -160,6 +160,17 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v19
+- **Process-depth signal (action vs process)** — `/status.depth` = `{pages,
+  actions, kind:"action"|"process", thin:bool}`. A single navigation shows
+  `thin:true` LIVE so robotic one-link runs are visible; a real exploration
+  climbs (pages:5, actions:12, kind:process). journey_end reports depth and
+  flags "THIN: single navigation, not exploration". The infra now distinguishes
+  and MEASURES the two, per site, so directors (and you) can see when a
+  "process" was actually just an action.
+- **Auto-update** — the version check now auto-pulls the new skill (first-party
+  tooling; no prompt), matching the always-current cloud engine.
 
 ## What's new in v18
 - **Atomic driver `scripts/drive.sh`** — one command = action + media

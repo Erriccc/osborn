@@ -415,6 +415,17 @@ async function main() {
   // Fetch-nag (v13): clips that were returned but never downloaded — the
   // act-verify gate's teeth. GET /clip marks a task reviewed-able.
   const fetchedClips = new Set<number>()
+
+  // PROCESS DEPTH (v19) — the infra signal for "action vs process". An
+  // ACTION is one /act; a PROCESS is exploration that STACKS steps across
+  // pages. We track distinct pages visited + action count so a thin,
+  // robotic single-navigation is VISIBLE (depth:{pages:1,actions:1}) next to
+  // a real exploration (pages:5,actions:12). Surfaced in /status live and
+  // saved into each journey so the recipes self-classify action|process.
+  const visitedPages = new Set<string>()
+  let actionCount = 0
+  const noteVisit = () => { try { visitedPages.add(new URL(active.url()).pathname) } catch { /* ignore */ } }
+  const depthNow = () => ({ pages: visitedPages.size, actions: actionCount, kind: actionCount <= 1 ? 'action' : 'process', thin: visitedPages.size <= 1 && actionCount <= 1 })
   // GRACEFUL SHUTDOWN — used by POST /end AND the idle watchdog. Every step
   // bounded + a hard watchdog: a hung Stagehand/CDP close must never wedge
   // the engine (the manifest's predecessor tasks.json was lost to exactly
@@ -481,6 +492,7 @@ async function main() {
           brain: brainAlive ? 'ready' : 'dead', useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
+          depth: depthNow(),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: context.pages().indexOf(active), url: active.url() },
           tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
@@ -563,6 +575,7 @@ async function main() {
         // Act-verify gate teeth (v13): surface the un-reviewed previous clip.
         const prevTask = tasks[tasks.length - 1]
         const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
+        actionCount++; noteVisit()
         const n = ++reqN
         const { clip, clipError } = await reqClip(n, 'act', body.clipSeconds ?? 20)
         const shot = await reqShot(n, 'act')
@@ -696,9 +709,10 @@ async function main() {
             try { await active.setViewportSize({ width: 1280, height: 720 }) } catch { /* ignore */ }
             saveTabState()
           }
-          mark(`journey end: ${journey.name} (${steps.length} step(s)${saved ? ', saved to knowledge' : ''})`)
-          const done = { ok: true, name: journey.name, steps: steps.length, saved, tasks: [journey.startTaskN + 1, reqN] }
-          notify('journey_end', { name: journey.name, goal: journey.goal ?? null, steps: steps.length, saved: !!saved })
+          const depth = depthNow()
+          mark(`journey end: ${journey.name} (${steps.length} step(s), ${depth.kind}, ${depth.pages} page(s)${saved ? ', saved' : ''}${depth.thin ? ' — THIN: single navigation, not exploration' : ''})`)
+          const done = { ok: true, name: journey.name, steps: steps.length, depth, saved, tasks: [journey.startTaskN + 1, reqN] }
+          notify('journey_end', { name: journey.name, goal: journey.goal ?? null, steps: steps.length, depth, saved: !!saved })
           journey = null
           return json(res, done)
         }
