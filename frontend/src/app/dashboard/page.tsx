@@ -1648,7 +1648,7 @@ export default function Dashboard() {
                   {groupByProject(sessions, baseCwd).map(project => (
                     <div key={project.cwd} className={`relative rounded-2xl border transition-colors ${openProjectMenu === project.cwd ? 'z-30' : 'z-0'} ${expandedProjects.has(project.cwd) ? 'bg-[var(--surface)] border-[var(--accent-dim)]/30' : 'bg-[var(--surface)] border-[var(--border-subtle)]/50 hover:border-[var(--accent-dim)]/25'}`}>{/* relative + z-30 when its ⋯ menu is open so the dropdown floats ABOVE sibling cards (was ghosting through them). no overflow-hidden — it clipped the dropdown */}
                       {/* Project header row */}
-                      <div className="flex items-center gap-3 px-4 py-3.5">
+                      <div className={`relative flex items-center gap-3 px-4 py-3.5 ${openProjectMenu === project.cwd ? 'z-40' : ''}`}>
                         <button
                           className="flex-1 flex items-center gap-3 text-left min-w-0 group/proj"
                           onClick={() => toggleProject(project.cwd)}
