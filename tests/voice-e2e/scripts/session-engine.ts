@@ -310,9 +310,40 @@ async function main() {
   // travels in /status and persists across sleep with the tab state.
   const tabOwners = new Map<Page, { owner: string; claimedAt: number }>()
   const ownerOf = (p: Page) => tabOwners.get(p)?.owner ?? null
-  const guardOwnership = (body: any): string | null => {
-    const o = ownerOf(active)
-    if (o && body.owner !== o) return `tab ${context.pages().indexOf(active)} is claimed by "${o}" — pass matching owner or switch tabs`
+
+  // ── MULTI-AGENT RESILIENCE (v22) — one engine, many drivers, SAFE ──────────
+  // Isolation-by-duplication (a 2nd engine) was a crutch; this makes ONE engine
+  // safe for concurrent directors. Each driver is identified by the x-driver-id
+  // header (default 'default'). Ownership is DEFAULT-ON, not opt-in: a tab is
+  // owned by whoever opened it. An ACTION LOCK serializes bring-to-front + act
+  // + capture so two drivers can't interleave in the single Chromium. Each
+  // driver acts on ITS OWN tab, never a shared global one — so a foreign
+  // /dashboard tab can never bleed into your run again.
+  const driverId = (req: import('http').IncomingMessage): string => String(req.headers['x-driver-id'] || 'default')
+  const driverActive = new Map<string, Page>()  // driver → its current tab
+  let actionChain: Promise<unknown> = Promise.resolve()
+  const withLock = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = actionChain.then(fn, fn)
+    actionChain = run.then(() => {}, () => {})
+    return run as Promise<T>
+  }
+  // Point the module-level `active` at the driver's tab + bring it to front.
+  // Called ONLY under withLock, so mutating shared `active` is safe.
+  const focusDriverTab = async (driver: string): Promise<void> => {
+    let tab = driverActive.get(driver)
+    if (!tab || tab.isClosed()) {
+      tab = [...context.pages()].reverse().find((p) => tabOwners.get(p)?.owner === driver) || context.pages()[0]
+      driverActive.set(driver, tab)
+    }
+    active = tab
+    await tab.bringToFront().catch(() => {})
+    await live?.retarget(tab).catch(() => {})
+  }
+  // Enforced (not warned): a driver may not act on a tab OWNED BY ANOTHER.
+  const guardOwnership = (driver: string): string | null => {
+    const t = driverActive.get(driver) ?? active
+    const o = tabOwners.get(t)?.owner
+    if (o && o !== driver) return `that tab is owned by "${o}" — you are "${driver}"; open your own tab (pass x-driver-id and /tab open)`
     return null
   }
 
@@ -493,6 +524,7 @@ async function main() {
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
           depth: depthNow(),
+          drivers: [...driverActive.keys()], tabsByOwner: context.pages().map((p,i)=>({i, owner: ownerOf(p)})),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: context.pages().indexOf(active), url: active.url() },
           tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
@@ -562,52 +594,43 @@ async function main() {
         return
       }
       if (path === '/act') {
-        const owned = guardOwnership(body)
-        if (owned) return json(res, { error: owned }, 409)
-        // MULTI-DRIVER GUARD (v21): the mission lock only works if agents
-        // CLAIM it (journey start + owner), and one track drives with raw
-        // curl that never does. So the engine ALSO auto-detects contention —
-        // >1 tab with no active mission = probably two directors sharing one
-        // instance (confirmed live: a foreign /dashboard tab appeared mid-run).
-        // Surface it loudly so a director knows its browser isn't private.
-        const contention = (!journey && context.pages().length > 1)
-          ? `⚠ ${context.pages().length} tabs open with NO mission claimed — another director may be sharing this engine. Run one mission per instance: journey start {owner} to lock, or use a separate engine.`
-          : null
-        const t0 = Date.now()
-        await updateTabHud()
-        const r = await brain(body.instruction)
-        mark(`act: ${String(body.instruction).slice(0, 60)}`)
-        // POST-ACTION SETTLE: let the click's EFFECT (popover opening, page
-        // reacting) paint and get captured before the clip is cut — clips cut
-        // at brain-return ended right before the effect and proved nothing.
-        await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
-        // Act-verify gate teeth (v13): surface the un-reviewed previous clip.
-        const prevTask = tasks[tasks.length - 1]
-        const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
-        actionCount++; noteVisit()
-        const n = ++reqN
-        const { clip, clipError } = await reqClip(n, 'act', body.clipSeconds ?? 20)
-        const shot = await reqShot(n, 'act')
-        const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
-        scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
-        // keyframe: latest frame inline — review-and-relay without a download.
-        // No inline keyframe (diag 2026-08-05: the 66KB base64 blob made
-        // responses 71KB and broke strict JSON parsers twice). The atomic
-        // driver fetches artifact+clip to local files instead.
-        return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, contention, window })
+        const driver = driverId(req)
+        return withLock(async () => {
+          await focusDriverTab(driver)  // this driver acts on ITS tab, front + focused
+          const owned = guardOwnership(driver)
+          if (owned) return json(res, { error: owned }, 409)
+          const t0 = Date.now()
+          await updateTabHud()
+          const r = await brain(body.instruction)
+          mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
+          // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
+          await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
+          const prevTask = tasks[tasks.length - 1]
+          const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
+          actionCount++; noteVisit()
+          const n = ++reqN
+          const { clip, clipError } = await reqClip(n, 'act', body.clipSeconds ?? 20)
+          const shot = await reqShot(n, 'act')
+          const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
+          scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
+          return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, driver, window })
+        })
       }
       if (path === '/say') {
-        const ownedSay = guardOwnership(body)
-        if (ownedSay) return json(res, { error: ownedSay }, 409)
-        const t0 = Date.now(); await updateTabHud(); await speakText(active, body.text); mark(`say: ${String(body.text).slice(0, 60)}`); await active.waitForTimeout(6000)
-        // Join the audio to the task: what did the agent say back?
-        const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
-        const n = ++reqN
-        const { clip, clipError } = await reqClip(n, 'say', body.clipSeconds ?? 14)
-        const shot = await reqShot(n, 'say')
-        const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
-        scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
-        return json(res, { ok: true, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, heard, window })
+        const driver = driverId(req)
+        return withLock(async () => {
+          await focusDriverTab(driver)
+          const ownedSay = guardOwnership(driver)
+          if (ownedSay) return json(res, { error: ownedSay }, 409)
+          const t0 = Date.now(); await updateTabHud(); await speakText(active, body.text); mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
+          const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
+          const n = ++reqN
+          const { clip, clipError } = await reqClip(n, 'say', body.clipSeconds ?? 14)
+          const shot = await reqShot(n, 'say')
+          const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
+          scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
+          return json(res, { ok: true, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, heard, driver, window })
+        })
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
@@ -615,30 +638,35 @@ async function main() {
         try { return json(res, { heard: await hearSince(active, Math.max(0, since)) }) }
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
-      if (path === '/shot') { const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64') }) }
+      if (path === '/shot') { const driver = driverId(req); return withLock(async () => { await focusDriverTab(driver); const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64'), driver }) }) }
       if (path === '/eval') {
-        // Director's console: evaluate JS in the active tab's page context —
-        // the programmatic version of typing into the website console. The
-        // result AND any console output it triggers land in /logs + devtools.
-        const owned = guardOwnership(body)
+        const driver = driverId(req)
+        return withLock(async () => {
+        await focusDriverTab(driver)
+        const owned = guardOwnership(driver)
         if (owned) return json(res, { error: owned }, 409)
         try {
           const value = await Promise.race([
             active.evaluate((expr: string) => { const r = (0, eval)(expr); return typeof r === 'object' ? JSON.stringify(r)?.slice(0, 4000) : String(r) }, String(body.expression)),
             new Promise((_, rej) => setTimeout(() => rej(new Error('eval timeout (10s)')), 10000)),
           ])
-          mark(`eval: ${String(body.expression).slice(0, 50)}`)
+          mark(`eval[${driver}]: ${String(body.expression).slice(0, 45)}`)
           touchTab(active)
           // Evals are journey steps too — the cloud meeting run saved a
           // 0-step recipe because it was driven entirely via /eval.
           scenarioSteps.push({ kind: 'eval', value: String(body.expression).slice(0, 140) }); writeScenario()
-          return json(res, { ok: true, value })
+          return json(res, { ok: true, value, driver })
         } catch (e) { return json(res, { ok: false, error: (e as Error).message }) }
+        })
       }
       if (path === '/tab') {
-        // open | switch | close | claim | release | list. Optional per-op:
-        //   owner: "<agent name>"      claims the opened tab / authorizes ops
-        //   viewport: 'mobile' | {width,height}   (open) — e.g. mobile view
+        // open | switch | close | claim | release | list. RESILIENCE (v22):
+        // the OWNER defaults to the calling driver (x-driver-id) — opening a
+        // tab auto-owns it for you and makes it your active tab, so drivers
+        // don't fight over one global active. `owner` in the body still works
+        // as an explicit override.
+        const driver = driverId(req)
+        if (body.owner == null) body.owner = driver
         // After ANY change of active tab the screencast is retargeted so the
         // live stream + clips show the tab work actually happens on.
         if (body.op === 'open') {
@@ -658,6 +686,7 @@ async function main() {
           if (body.viewport === 'mobile') await active.setViewportSize({ width: 390, height: 844 })
           else if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
           if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
+          driverActive.set(driver, active)  // this becomes the driver's active tab
           touchTab(active)
           await live?.retarget(active).catch(() => {}); mark(`tab ${reused ? 'reuse' : 'open'}: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${body.viewport ? ' (mobile)' : ''}`)
         }
@@ -671,7 +700,7 @@ async function main() {
           active = target; touchTab(active)
           await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
         }
-        else if (body.op === 'switch') { active = await switchTab(context, body.i); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`) }
+        else if (body.op === 'switch') { active = await switchTab(context, body.i); driverActive.set(driver, active); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`) }
         else if (body.op === 'close') {
           const target = context.pages()[body.i]
           const o = target ? ownerOf(target) : null

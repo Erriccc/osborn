@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 21
+Version: 22
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -179,12 +179,13 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v21
-- **Multi-driver guard** — two agents sharing ONE engine collide (confirmed
-  live: a foreign tab appeared mid-run; the mission lock doesn't help if the
-  other driver never claims it). Every act now returns a `contention` warning
-  when >1 tab is open with no mission claimed. DOCTRINE: one mission per
-  engine INSTANCE — claim it (`journey start {owner}`) or use a separate
-  engine. Don't share a browser between directors.
+- **Multi-agent RESILIENT (one engine, many drivers, safe)** — pass an
+  `x-driver-id` header (any string identifying you). Your tabs are auto-owned;
+  you act on YOUR OWN tab (brought to front under an action lock so drivers
+  can't interleave in the one browser); acting on another driver's tab is
+  REFUSED (409). No more spinning up a second engine or claiming a mission by
+  hand — isolation is the default. `drive.sh` sets it from `BSR_DRIVER`
+  (default your username). `/status` shows `drivers` + `tabsByOwner`.
 - **drive.sh JSON-body bug fixed** — `${ARG:-{}}` appended a stray brace,
   making every journey/tab/eval call fail with "op must be…". This is why
   the mission lock never engaged.

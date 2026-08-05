@@ -32,7 +32,8 @@ CMD="${1:-}"; ARG="${2:-}"
 # Force the Fly IP so DNS/edge quirks can't break it; drop --resolve for localhost.
 RESOLVE=(--resolve "$HOST:$PORT:$IP")
 [[ "$HOST" == "127.0.0.1" || "$HOST" == "localhost" ]] && RESOLVE=()
-cc() { curl -s "${RESOLVE[@]}" -H "x-engine-token: $TOKEN" "$@"; }
+DRIVER="${BSR_DRIVER:-$(whoami 2>/dev/null || echo default)}"
+cc() { curl -s "${RESOLVE[@]}" -H "x-engine-token: $TOKEN" -H "x-driver-id: $DRIVER" "$@"; }
 
 case "$CMD" in
   act|say)
