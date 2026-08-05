@@ -5554,6 +5554,23 @@ async function main() {
             })
           }
 
+          // RESUME meeting-context fix (2026-08-05): a resumed session that
+          // previously ran a meeting has NO live meeting — the in-memory bot +
+          // poller reset on process/session start. But the LLM would infer
+          // "still in a meeting" from the replayed [MEETING —] lines + notes and
+          // refuse to leave (user hit exactly this: "why does it think we're in
+          // the meeting?"). Detect meeting history in THIS session and tell the
+          // LLM the meeting has ended so it behaves as a normal voice assistant.
+          const hadMeeting = conversationHistory.some(e => /\[MEETING\b|now in a meeting|Recall bot ID/i.test(e.content || ''))
+          if (hadMeeting && currentLLM) {
+            try {
+              const endedCtx = new llm.ChatContext()
+              endedCtx.addMessage({ role: 'user', content: `[SYSTEM] Context note — do NOT respond out loud to this note: this conversation earlier included a LIVE meeting, but that meeting has ENDED. The Recall bot has left, you are NOT currently in a meeting, and you are NOT receiving any transcripts. Treat every earlier "[MEETING — …]" line and the meeting notes as PAST history. Respond to the user normally as a voice assistant. If they ask to "leave the meeting," tell them the meeting already ended and there is nothing active to leave.` })
+              currentLLM.chat({ chatCtx: endedCtx })
+              console.log('📓 Resume: injected meeting-ENDED clarification (session had meeting history)')
+            } catch (e) { console.warn('⚠️ meeting-ended injection failed:', (e as Error).message) }
+          }
+
           // Load full session history and greet with context via fast brain
           if (currentSession && summary) {
             loadSessionHistoryIntoChatCtx(currentAgent, conversationHistory, currentProvider)

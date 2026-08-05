@@ -1,5 +1,9 @@
 # Osborn Changelog
 
+## 2026-08 — Resumed meeting sessions no longer think they're live (0.9.124)
+
+- **Fix: resuming an old meeting session made the agent believe it was still in a live meeting.** The in-memory meeting state (`activeMeetingBotId`, transcript poller, bot) resets on every process/session start, so a resumed session has NO live meeting — but the LLM inferred "still in a meeting" from the replayed `[MEETING — …]` history + `meeting-notes.md` and refused to "leave" (offering to kick a bot that had left days ago). On resume (`session_selected`), if this session's history contains meeting markers, the agent now injects a one-time `[SYSTEM]` note that the meeting has ENDED — no live bot, no transcripts, treat the meeting lines as past history — so it responds normally.
+
 ## 2026-08 — Session sharing across users (0.9.123)
 
 - **Share a session with another user (copy model)** — new end-to-end feature. Owner A clicks Share on any session → enters recipient B's email. A's machine exports just that session (new `GET /sessions/export-one?sessionId=X` → tar.gz of the `.jsonl` + sidecar dir + `osb/` workspace); the frontend uploads it to the private `session-shares` Supabase Storage bucket, pre-signs a 30-day URL, and records a `shared_sessions` row addressed to B's email. B sees it under "Shared with me" in the session browser → "Add to my sessions" downloads the snapshot and POSTs it to B's OWN machine `/sessions/import` (slug-remapped into B's workspace). The two copies then diverge independently. Additive — no existing session flow is touched. New migration `005_shared_sessions.sql` (table + RLS: owner writes, recipient reads by JWT email; private bucket + owner-prefix storage policies). Recipient matched by email, so a share created before B ever logs in appears the moment they sign in. **NOTE: `005_shared_sessions.sql` must be applied to the prod Supabase before the UI works.**
