@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 20
+Version: 21
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -177,6 +177,17 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v21
+- **Multi-driver guard** — two agents sharing ONE engine collide (confirmed
+  live: a foreign tab appeared mid-run; the mission lock doesn't help if the
+  other driver never claims it). Every act now returns a `contention` warning
+  when >1 tab is open with no mission claimed. DOCTRINE: one mission per
+  engine INSTANCE — claim it (`journey start {owner}`) or use a separate
+  engine. Don't share a browser between directors.
+- **drive.sh JSON-body bug fixed** — `${ARG:-{}}` appended a stray brace,
+  making every journey/tab/eval call fail with "op must be…". This is why
+  the mission lock never engaged.
 
 ## What's new in v20
 - **CAPABILITY MENU in the main skill** — the full data menu (logs, DevTools,

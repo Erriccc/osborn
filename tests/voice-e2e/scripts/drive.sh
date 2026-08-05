@@ -57,6 +57,8 @@ case "$CMD" in
     echo "task $n [$CMD]: ok"
     [ -n "$heard" ] && echo "  heard: $heard"
     [ -n "$nag" ] && echo "  ⚠ NAG: $nag"
+    cont=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('contention') or '')" 2>/dev/null || true)
+    [ -n "$cont" ] && echo "  $cont"
     echo "REVIEW+SEND these to the user (both exist — this command guarantees it):"
     echo "  VIDEO: $clip"
     [ -f "$shot" ] && echo "  FRAME: $shot"
@@ -64,10 +66,12 @@ case "$CMD" in
   status|tasks|runs|logs)  cc --max-time 20 "$ENGINE/$CMD" ;;
   clip|artifact)           cc --max-time 60 "$ENGINE/$CMD?n=$ARG" -o "$OUT/pull-$ARG.${CMD/clip/mp4}"; echo "$OUT/pull-$ARG" ;;
   journey|tab|eval|brain|recover|hear|shot|end)
-    # POST endpoints taking a JSON body. Default {} when no arg. (journey/tab
-    # etc. all read body.op / body fields; an empty -d "" made the engine see
-    # no op — the "op must be start|end|list" bug in the 10-step test.)
-    cc --max-time 60 -X POST -H 'Content-Type: application/json' "$ENGINE/$CMD" --data "${ARG:-{}}" ;;
+    # POST endpoints taking a JSON body. NOTE: `${ARG:-{}}` is a bash TRAP —
+    # it parses as (ARG or "{") then a literal "}", appending an extra brace
+    # → `{"op":"list"}}` → invalid JSON → engine sees no op (the real cause of
+    # the "op must be start|end|list" bug). Use an explicit default instead.
+    BODY="$ARG"; [ -z "$BODY" ] && BODY='{}'
+    cc --max-time 60 -X POST -H 'Content-Type: application/json' "$ENGINE/$CMD" --data "$BODY" ;;
   *)
     echo "usage: drive.sh {act|say|tab|eval|journey|status|tasks|logs|runs|hear|recover|end} <arg>" >&2
     echo "  act/say download clip+frame to \$BSR_OUT and print what to send — atomically." >&2

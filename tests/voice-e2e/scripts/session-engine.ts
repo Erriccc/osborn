@@ -564,6 +564,15 @@ async function main() {
       if (path === '/act') {
         const owned = guardOwnership(body)
         if (owned) return json(res, { error: owned }, 409)
+        // MULTI-DRIVER GUARD (v21): the mission lock only works if agents
+        // CLAIM it (journey start + owner), and one track drives with raw
+        // curl that never does. So the engine ALSO auto-detects contention —
+        // >1 tab with no active mission = probably two directors sharing one
+        // instance (confirmed live: a foreign /dashboard tab appeared mid-run).
+        // Surface it loudly so a director knows its browser isn't private.
+        const contention = (!journey && context.pages().length > 1)
+          ? `⚠ ${context.pages().length} tabs open with NO mission claimed — another director may be sharing this engine. Run one mission per instance: journey start {owner} to lock, or use a separate engine.`
+          : null
         const t0 = Date.now()
         await updateTabHud()
         const r = await brain(body.instruction)
@@ -585,7 +594,7 @@ async function main() {
         // No inline keyframe (diag 2026-08-05: the 66KB base64 blob made
         // responses 71KB and broke strict JSON parsers twice). The atomic
         // driver fetches artifact+clip to local files instead.
-        return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, window })
+        return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, contention, window })
       }
       if (path === '/say') {
         const ownedSay = guardOwnership(body)
