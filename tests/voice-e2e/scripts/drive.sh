@@ -44,10 +44,15 @@ case "$CMD" in
     nag=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nag') or '')" 2>/dev/null || true)
     if [ -z "$n" ]; then echo "DRIVE FAILED — no task number in response:" >&2; echo "$resp" | head -c 400 >&2; exit 3; fi
     clip="$OUT/task-$n.mp4"; shot="$OUT/task-$n.jpg"
-    cc --max-time 90 "$ENGINE/clip?n=$n"     -o "$clip" 2>/dev/null || true
+    # Media is not optional — retry the clip fetch (a single transient 1/10
+    # miss in the 10-step test was just a flaky download, the clip existed).
+    for attempt in 1 2 3; do
+      cc --max-time 90 "$ENGINE/clip?n=$n" -o "$clip" 2>/dev/null || true
+      file "$clip" 2>/dev/null | grep -q "MP4\|ISO Media" && break
+      sleep 2
+    done
     cc --max-time 30 "$ENGINE/artifact?n=$n" -o "$shot" 2>/dev/null || true
-    # Media is not optional. A clip that's actually a JSON 404 body doesn't count.
-    file "$clip" 2>/dev/null | grep -q "MP4\|ISO Media" || { echo "DRIVE FAILED — no video for task $n (engine returned: $(head -c 200 "$clip" 2>/dev/null))" >&2; exit 4; }
+    file "$clip" 2>/dev/null | grep -q "MP4\|ISO Media" || { echo "DRIVE FAILED — no video for task $n after 3 tries (engine: $(head -c 160 "$clip" 2>/dev/null))" >&2; exit 4; }
     file "$shot" 2>/dev/null | grep -qi "jpeg\|jpg" || rm -f "$shot"
     echo "task $n [$CMD]: ok"
     [ -n "$heard" ] && echo "  heard: $heard"
@@ -58,8 +63,11 @@ case "$CMD" in
     ;;
   status|tasks|runs|logs)  cc --max-time 20 "$ENGINE/$CMD" ;;
   clip|artifact)           cc --max-time 60 "$ENGINE/$CMD?n=$ARG" -o "$OUT/pull-$ARG.${CMD/clip/mp4}"; echo "$OUT/pull-$ARG" ;;
-  eval|tab|journey|brain|recover|end|hear|shot)
-    cc --max-time 60 -X POST -H 'Content-Type: application/json' "$ENGINE/$CMD" -d "${ARG:-{}}" ;;
+  journey|tab|eval|brain|recover|hear|shot|end)
+    # POST endpoints taking a JSON body. Default {} when no arg. (journey/tab
+    # etc. all read body.op / body fields; an empty -d "" made the engine see
+    # no op — the "op must be start|end|list" bug in the 10-step test.)
+    cc --max-time 60 -X POST -H 'Content-Type: application/json' "$ENGINE/$CMD" --data "${ARG:-{}}" ;;
   *)
     echo "usage: drive.sh {act|say|tab|eval|journey|status|tasks|logs|runs|hear|recover|end} <arg>" >&2
     echo "  act/say download clip+frame to \$BSR_OUT and print what to send — atomically." >&2

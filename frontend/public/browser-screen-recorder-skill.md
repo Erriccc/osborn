@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 19
+Version: 20
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -56,7 +56,24 @@ delivered to the user. No silent runs.
   FIRST action is capturing media of both ends (engine frames + the user's
   view + relevant logs), never a code hypothesis. Diagnose from evidence.
 
-All commands and endpoints: references/harness-api.md.
+## CAPABILITY MENU — everything the engine can hand you (don't drive blind)
+You are NOT limited to clicking. Every one of these is on the running engine:
+
+| Want | Get it via | Returns |
+|---|---|---|
+| Do an action + its proof | `drive.sh act "<nl>"` | video + frame (local files) |
+| Speak / hear the app | `drive.sh say "<nl>"` | clip + `heard:` transcript |
+| **Console + network + websocket logs** | `drive.sh logs` (`GET /logs`) | per-tab console errors, failed requests, ws events |
+| **DevTools panel ON the video** | boot with `OSBORN_DEVTOOLS=1` | Elements/Console visible in every clip |
+| **Run JS in the page (site console)** | `drive.sh eval "<expr>"` | the value; also lands in /logs |
+| Live event stream (navigation/task/transcript/agent_output) | `GET /events` (SSE) | push updates as they happen |
+| Mobile / any viewport | `drive.sh tab '{"op":"open","url":…,"viewport":"mobile"}'` | real 390×844 render |
+| Past-run media (after a restart) | `GET /clip?run=<stamp>&n=N`, `GET /runs` | old clips/frames |
+| **Action-vs-process depth** | `drive.sh status` → `.depth` | `{pages, actions, kind, thin}` |
+| Learned recipes for this site | `drive.sh journey '{"op":"list"}'` | saved processes + step counts |
+
+FULL schemas/params/fields: **references/harness-api.md** — open it for exact
+shapes; the menu above is so you KNOW the data exists and never drive blind.
 
 ## RUN CHECKLIST — copy this into your response and check items off
 ```
@@ -160,6 +177,14 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v20
+- **CAPABILITY MENU in the main skill** — the full data menu (logs, DevTools,
+  /eval, /events SSE, mobile viewport, cross-run media, depth, journeys) is
+  now front-and-center, not buried in references/. Agents were driving blind,
+  knowing only click+screenshot because the rest sat one file too deep.
+- **drive.sh hardened** — clip fetch retries 3× (kills transient media misses,
+  1/10 in the depth test) and journey/tab/eval POST bodies fixed.
 
 ## What's new in v19
 - **Process-depth signal (action vs process)** — `/status.depth` = `{pages,
