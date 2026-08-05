@@ -140,6 +140,13 @@ function prettySessionPreview(raw?: string): { kind: SessionKind; label: string;
     const body = mt[1].replace(/^\s*[\w .'-]+:\s*/, '').replace(/\s+/g, ' ').trim()
     return { kind: 'meeting', label: 'Meeting', text: body || 'Meeting notes' }
   }
+  // [SYSTEM] "You are now in a meeting (Recall bot ID: …)" is a meeting session;
+  // other [SYSTEM] lines are plumbing — strip the tag rather than show it raw.
+  const sys = s.match(/^\[SYSTEM\]\s*([\s\S]*)$/i)
+  if (sys) {
+    if (/in a meeting/i.test(sys[1])) return { kind: 'meeting', label: 'Meeting', text: 'Meeting started' }
+    return { kind: 'chat', label: 'Chat', text: sys[1].replace(/\(Recall bot ID:[^)]*\)/i, '').replace(/\s+/g, ' ').trim() || 'Session' }
+  }
   if (/^<task-notification>/i.test(s) || /<task-id>/i.test(s)) {
     return { kind: 'task', label: 'Task', text: 'Background task run' }
   }
@@ -1117,9 +1124,10 @@ export default function Dashboard() {
             onClick={() => setShowSettings(false)} />
         )}
         <div className={[
-          // Desktop: the original max-height collapse
-          'sm:overflow-hidden sm:transition-all sm:duration-300 sm:ease-out',
-          showSettings ? 'sm:max-h-[560px] sm:opacity-100' : 'sm:max-h-0 sm:opacity-0',
+          // Desktop: max-height collapse — scrollable WHEN OPEN so the panel's
+          // bottom (Account / Sign out) is never clipped by the max-height.
+          'sm:transition-all sm:duration-300 sm:ease-out',
+          showSettings ? 'sm:max-h-[70vh] sm:opacity-100 sm:overflow-y-auto' : 'sm:max-h-0 sm:opacity-0 sm:overflow-hidden',
           // Mobile: bottom sheet
           'max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:z-50',
           'max-sm:rounded-t-3xl max-sm:border-t max-sm:border-[var(--border-subtle)]',
@@ -1438,11 +1446,16 @@ export default function Dashboard() {
 
               {/* ── Account ── */}
               {user && (
-                <div className="flex items-center justify-between pt-1 border-t border-[var(--border-subtle)]">
-                  <span className="text-[var(--text-muted)] text-[11px]">
-                    {user.email}
-                  </span>
-                  <button onClick={signOut} className="text-[11px] text-[var(--text-muted)] hover:text-red-400 transition-colors">
+                <div className="flex items-center justify-between gap-3 pt-3 mt-1 border-t border-[var(--border-subtle)]">
+                  <div className="min-w-0">
+                    <div className="text-[11px] uppercase tracking-widest text-[var(--text-muted)]">Account</div>
+                    <div className="text-xs text-[var(--text-secondary)] truncate">{user.email}</div>
+                  </div>
+                  <button
+                    onClick={signOut}
+                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border-subtle)] hover:text-red-400 hover:border-red-400/40 transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
                     Sign out
                   </button>
                 </div>
@@ -1659,7 +1672,7 @@ export default function Dashboard() {
                               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                             </svg>
                           </button>
-                          <div className="hidden sm:flex items-center gap-1">
+                          <div className="hidden">
                             <button
                               onClick={() => handleDownload(project.cwd)}
                               title="Export project"
@@ -1722,8 +1735,11 @@ export default function Dashboard() {
                               )}
                             </button>
                           </div>
-                          {/* Mobile ⋯ overflow menu */}
-                          <div className="relative sm:hidden">
+                          {/* ⋯ overflow menu — labeled actions (Export / Import /
+                              Copy sync / Delete), on all widths so the header row
+                              stays clean (just + and expand) instead of a crowded
+                              strip of unlabeled icons. */}
+                          <div className="relative">
                             <button
                               onClick={() => setOpenProjectMenu(openProjectMenu === project.cwd ? null : project.cwd)}
                               title="Project actions"
@@ -1810,7 +1826,7 @@ export default function Dashboard() {
                               <button
                                 onClick={(e) => { e.stopPropagation(); setShareTarget({ sessionId: s.sessionId, title: s.lastMessage || 'Shared session' }); setShareEmail(''); setShareMsg(null) }}
                                 title="Share this session with another user"
-                                className="absolute top-1/2 -translate-y-1/2 right-2 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--surface-2)] opacity-60 sm:opacity-0 group-hover/sess:opacity-100 transition-all"
+                                className="absolute top-1/2 -translate-y-1/2 right-2 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--surface)] transition-all"
                               >
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
                               </button>
