@@ -207,7 +207,9 @@ export default function Dashboard() {
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null)
   // Machine's physical location (Fly region from agent /health) — the user
   // wants to see WHERE the machine runs (city), not just their own clock.
-  const [machineRegion, setMachineRegion] = useState<string | null>(null)
+  const [machineRegion, setMachineRegion] = useState<string | null>(() => {
+    try { return typeof window !== 'undefined' ? localStorage.getItem('osborn-machine-region') : null } catch { return null }
+  })
   const [installedVersion, setInstalledVersion] = useState<string | null>(null)
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
@@ -319,12 +321,22 @@ export default function Dashboard() {
   // Machine location (agent /health region, 0.9.100+) — fetched whenever the
   // agent URL resolves, shown in the Cloud badge + machine card.
   useEffect(() => {
-    if (!agentUrl || agentUrl.startsWith('http://localhost')) { setMachineRegion(null); return }
+    // Only clear the region in genuine LOCAL mode. During cloud resolution the
+    // agentUrl is transiently 'localhost' before the sandbox URL lands — don't
+    // wipe the last-known city then (that flashed "Cloud" on mobile).
+    if (connectionMode === 'local') { setMachineRegion(null); return }
+    if (!agentUrl || agentUrl.startsWith('http://localhost')) return
     fetch(`${agentUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(8000) })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.region) setMachineRegion(FLY_REGION_CITIES[d.region] || String(d.region).toUpperCase()) })
+      .then((d) => {
+        if (d?.region) {
+          const city = FLY_REGION_CITIES[d.region] || String(d.region).toUpperCase()
+          setMachineRegion(city)
+          try { localStorage.setItem('osborn-machine-region', city) } catch {}
+        }
+      })
       .catch(() => {})
-  }, [agentUrl])
+  }, [agentUrl, connectionMode])
 
   // Persist prefs
   useEffect(() => {
@@ -1634,7 +1646,7 @@ export default function Dashboard() {
               ) : (
                 <div className="space-y-2">
                   {groupByProject(sessions, baseCwd).map(project => (
-                    <div key={project.cwd} className={`rounded-2xl border transition-colors ${expandedProjects.has(project.cwd) ? 'bg-[var(--surface)] border-[var(--accent-dim)]/30' : 'bg-[var(--surface)] border-[var(--border-subtle)]/50 hover:border-[var(--accent-dim)]/25'}`}>{/* no overflow-hidden — it clipped the mobile ⋯ dropdown */}
+                    <div key={project.cwd} className={`relative rounded-2xl border transition-colors ${openProjectMenu === project.cwd ? 'z-30' : 'z-0'} ${expandedProjects.has(project.cwd) ? 'bg-[var(--surface)] border-[var(--accent-dim)]/30' : 'bg-[var(--surface)] border-[var(--border-subtle)]/50 hover:border-[var(--accent-dim)]/25'}`}>{/* relative + z-30 when its ⋯ menu is open so the dropdown floats ABOVE sibling cards (was ghosting through them). no overflow-hidden — it clipped the dropdown */}
                       {/* Project header row */}
                       <div className="flex items-center gap-3 px-4 py-3.5">
                         <button
