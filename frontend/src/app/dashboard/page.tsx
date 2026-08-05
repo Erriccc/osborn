@@ -15,6 +15,7 @@ const FLY_REGION_CITIES: Record<string, string> = {
 }
 import LiveClock from '@/components/LiveClock'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
+import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 
@@ -144,6 +145,34 @@ export default function Dashboard() {
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+
+  // Session sharing (0.9.123) — Share modal + "Shared with me".
+  const [shareTarget, setShareTarget] = useState<{ sessionId: string; title: string } | null>(null)
+  const [shareEmail, setShareEmail] = useState('')
+  const [shareBusy, setShareBusy] = useState(false)
+  const [shareMsg, setShareMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [sharedWithMe, setSharedWithMe] = useState<SharedSession[]>([])
+  const [importingId, setImportingId] = useState<string | null>(null)
+  const [importMsg, setImportMsg] = useState<string | null>(null)
+  const doShare = async () => {
+    if (!shareTarget) return
+    setShareBusy(true); setShareMsg(null)
+    const res = await shareSession({ agentUrl, sessionId: shareTarget.sessionId, title: shareTarget.title, recipientEmail: shareEmail })
+    setShareBusy(false)
+    if (res.ok) { setShareMsg({ ok: true, text: `Shared with ${shareEmail.trim()} — it's in their "Shared with me".` }); setShareEmail('') }
+    else setShareMsg({ ok: false, text: res.error })
+  }
+  const refreshSharedWithMe = useCallback(() => { listSharedWithMe().then(setSharedWithMe).catch(() => {}) }, [])
+  useEffect(() => { refreshSharedWithMe() }, [refreshSharedWithMe])
+  const doImport = async (share: SharedSession) => {
+    setImportingId(share.id); setImportMsg(null)
+    const res = await importSharedSession({ share, agentUrl })
+    setImportingId(null)
+    if (res.ok) {
+      setSharedWithMe(prev => prev.filter(s => s.id !== share.id))
+      setImportMsg(`Added "${share.session_title.slice(0, 40)}" — it's now in your sessions below.`)
+    } else setImportMsg(res.error)
+  }
   // Skills + named agents from the agent's HTTP API (GET /skills, GET /agents)
   // — the dashboard has no LiveKit data channel, so these come over HTTP.
   const [dashSkills, setDashSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
@@ -1508,6 +1537,61 @@ export default function Dashboard() {
                 )}
               </div>
 
+              {/* Shared with me (0.9.123) */}
+              {(sharedWithMe.length > 0 || importMsg) && (
+                <div className="mb-3 rounded-2xl border border-[var(--accent-dim)]/30 bg-[var(--accent-dim)]/[0.06] p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <svg className="w-4 h-4 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
+                    <span className="text-sm font-semibold text-[var(--text-primary)]">Shared with me</span>
+                  </div>
+                  {importMsg && <p className="text-xs text-[var(--text-muted)] mb-2">{importMsg}</p>}
+                  <div className="space-y-1.5">
+                    {sharedWithMe.map((share) => (
+                      <div key={share.id} className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-[var(--surface-2)]/60">
+                        <div className="min-w-0">
+                          <p className="text-sm text-[var(--text-primary)] truncate">{share.session_title}</p>
+                          <p className="text-[11px] text-[var(--text-muted)]">from {share.owner_email}</p>
+                        </div>
+                        <button
+                          onClick={() => doImport(share)}
+                          disabled={importingId === share.id || !agentOnline}
+                          title={!agentOnline ? 'Connect your machine first' : 'Add to my sessions'}
+                          className="shrink-0 px-3 py-1.5 text-xs bg-[var(--accent-dim)]/25 text-[var(--accent)] rounded-lg hover:bg-[var(--accent-dim)]/40 disabled:opacity-50 transition-colors"
+                        >
+                          {importingId === share.id ? 'Adding…' : 'Add to my sessions'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Share modal (0.9.123) */}
+              {shareTarget && (
+                <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4" onClick={() => !shareBusy && setShareTarget(null)}>
+                  <div className="w-full max-w-sm bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-2xl p-5" onClick={(e) => e.stopPropagation()}>
+                    <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-1">Share session</h3>
+                    <p className="text-sm text-[var(--text-muted)] mb-4 line-clamp-2">{shareTarget.title}</p>
+                    <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Recipient email</label>
+                    <input
+                      type="email"
+                      autoFocus
+                      value={shareEmail}
+                      onChange={(e) => setShareEmail(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !shareBusy && shareEmail.trim()) doShare() }}
+                      placeholder="person@example.com"
+                      className="w-full px-3 py-2 text-sm bg-[var(--surface-2)] border border-[var(--border-subtle)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+                    />
+                    {shareMsg && <p className={`mt-2 text-sm ${shareMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{shareMsg.text}</p>}
+                    <div className="flex items-center justify-end gap-2 mt-4">
+                      <button onClick={() => setShareTarget(null)} disabled={shareBusy} className="px-3 py-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50">Close</button>
+                      <button onClick={doShare} disabled={shareBusy || !shareEmail.trim()} className="px-4 py-1.5 text-sm bg-[var(--accent)] text-[var(--background)] font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity">{shareBusy ? 'Sharing…' : 'Share'}</button>
+                    </div>
+                    <p className="mt-3 text-[11px] text-[var(--text-muted)] leading-relaxed">They get their own copy under &ldquo;Shared with me&rdquo; — it becomes an independent session on their account.</p>
+                  </div>
+                </div>
+              )}
+
               {/* Project list */}
               {sessionsLoading ? (
                 <div className="flex justify-center py-8">
@@ -1664,33 +1748,40 @@ export default function Dashboard() {
                             ? project.sessions
                             : project.sessions.slice(0, 15)
                           ).map((s, si) => (
-                            <button
+                            <div
                               key={s.sessionId}
-                              onClick={() => startChat(s.sessionId, s.cwd)}
                               style={{ animation: 'fadeSlideIn .28s ease both', animationDelay: `${Math.min(si, 8) * 35}ms` }}
-                              className="w-full px-3 py-2.5 text-left rounded-xl bg-[var(--surface-2)]/50 border border-transparent hover:border-[var(--accent-dim)]/30 hover:bg-[var(--surface-2)] active:scale-[0.99] transition-all group/sess"
+                              className="relative rounded-xl bg-[var(--surface-2)]/50 border border-transparent hover:border-[var(--accent-dim)]/30 hover:bg-[var(--surface-2)] transition-all group/sess"
                             >
-                              <div className="flex items-center gap-2">
-                                <div className="flex-1 min-w-0">
-                                  <div className="text-[13px] font-medium text-[var(--text-primary)] line-clamp-1">
-                                    {s.lastMessage || 'New conversation'}
-                                  </div>
-                                  <div className="text-[11px] text-[var(--text-muted)] mt-0.5 flex items-center gap-1.5">
-                                    <span>{formatDate(s.timestamp)}</span>
-                                    {s.messageCount ? (
-                                      <>
-                                        <span className="opacity-40">·</span>
-                                        <span className="font-mono">{s.messageCount} msgs</span>
-                                      </>
-                                    ) : null}
+                              <button
+                                onClick={() => startChat(s.sessionId, s.cwd)}
+                                className="w-full px-3 py-2.5 text-left active:scale-[0.99] transition-transform"
+                              >
+                                <div className="flex items-center gap-2 pr-9">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-[13px] font-medium text-[var(--text-primary)] line-clamp-1">
+                                      {s.lastMessage || 'New conversation'}
+                                    </div>
+                                    <div className="text-[11px] text-[var(--text-muted)] mt-0.5 flex items-center gap-1.5">
+                                      <span>{formatDate(s.timestamp)}</span>
+                                      {s.messageCount ? (
+                                        <>
+                                          <span className="opacity-40">·</span>
+                                          <span className="font-mono">{s.messageCount} msgs</span>
+                                        </>
+                                      ) : null}
+                                    </div>
                                   </div>
                                 </div>
-                                <svg className="w-3.5 h-3.5 text-[var(--text-muted)] opacity-0 group-hover/sess:opacity-100 transition-opacity flex-shrink-0"
-                                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                                </svg>
-                              </div>
-                            </button>
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setShareTarget({ sessionId: s.sessionId, title: s.lastMessage || 'Shared session' }); setShareEmail(''); setShareMsg(null) }}
+                                title="Share this session with another user"
+                                className="absolute top-1/2 -translate-y-1/2 right-2 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--surface-2)] opacity-60 sm:opacity-0 group-hover/sess:opacity-100 transition-all"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
+                              </button>
+                            </div>
                           ))}
                           {project.sessions.length > 15 && !expandedSessionLists.has(project.cwd) && (
                             <button
