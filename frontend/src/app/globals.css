@@ -7,6 +7,11 @@
   --background: #0c0b09;
   --surface: #141310;
   --surface-raised: #1a1914;
+  /* Elevated surface — used by cards + dropdown menus. Was referenced as
+     `var(--surface-2)` in ~16 places but NEVER defined, so those backgrounds
+     rendered fully TRANSPARENT (the project ⋯ menu ghosting through cards, and
+     card fills that never showed). Defining it here is the real fix. */
+  --surface-2: #201d16;
   --border: #2a2720;
   --border-subtle: #1f1d18;
   --accent: #d4a853;
@@ -15,6 +20,10 @@
   --text-primary: #e8e4de;
   --text-secondary: #8a857a;
   --text-muted: #4a4740;
+  /* Aliases for shorthand names used around the app but never defined
+     (they were resolving to inherited/invalid colors). */
+  --muted: var(--text-muted);
+  --text: var(--text-primary);
   --font-sans: var(--font-sans-loaded), 'Instrument Sans', system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-mono-loaded), 'JetBrains Mono', 'SF Mono', Menlo, monospace;
   --font-display: var(--font-display-loaded), 'Fraunces', Georgia, serif;
