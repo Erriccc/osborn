@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 17
+Version: 18
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -77,15 +77,32 @@ Run Checklist [browser-screen-recorder]:
 frames contradict the assertion, the run FAILED — return to the steps, don't
 soften the report.
 
+## DRIVE THE ENGINE WITH scripts/drive.sh — NOT raw curl
+Raw curl makes media "sometimes": the response only carries a Fly-VOLUME PATH
+for the clip, so relaying it is 4 separate skippable steps — and under
+pressure the agent skips them (proven in a live diagnostic: the engine's own
+`nag` fired on the first action because the media was never fetched). USE THE
+ATOMIC DRIVER instead — it does action + media download + review-prompt as ONE
+inseparable operation and EXITS NONZERO if no media came back:
+```bash
+cd ~/browser-screen-recorder-harness
+scripts/drive.sh act "click the Logs label"      # → task N: ok; prints VIDEO+FRAME local paths
+scripts/drive.sh say "what color is the sky?"    # → also prints `heard:`
+scripts/drive.sh tab '{"op":"open","url":"…","viewport":"mobile"}'
+```
+Every `act`/`say` writes the clip + screenshot to `$BSR_OUT` (default /tmp/bsr)
+and prints `REVIEW+SEND these to the user`. Because the command fails without
+media, "action succeeded but media missing" is impossible — the reproducibility
+problem is solved mechanically, not by remembering.
+
 ## LIVE RELAY — review and forward media DURING the run, not after
-The default loop is **act → review → relay**, interleaved: every act/say
-response carries `keyframeB64` (the current frame, inline) — read it, say
-what it shows, forward media to the user, THEN take the next step. A `nag`
-field appears when the previous task's clip was never fetched — treat it as
-a stop sign, not a suggestion. Post-hoc media dumps hide mid-run failures
-(a modal false-ok was once caught ONLY because a frame was read between
-steps). After any act on a modal/state-changing control, the NEXT step is
-artifact review — no exceptions.
+The loop is **drive → review → relay**, interleaved: run `drive.sh act …`, it
+hands you a VIDEO and FRAME path, READ the frame, say what it shows, send both
+to the user, THEN take the next step. A `nag` line means the previous clip was
+never reviewed — a stop sign, not a suggestion. Post-hoc media dumps hide
+mid-run failures (a modal false-ok was once caught ONLY because a frame was
+read between steps). After any act on a modal/state-changing control, the NEXT
+step is reviewing that frame — no exceptions.
 
 ## AUDIO CLAIMS NEED AUDIO PROOF
 After any audio-path change (TTS route, meeting speech), do not declare
@@ -143,6 +160,17 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v18
+- **Atomic driver `scripts/drive.sh`** — one command = action + media
+  download + review-prompt, and it EXITS NONZERO without media. Fixes the
+  "actions don't reliably return media" problem mechanically (a live
+  diagnostic proved raw-curl driving skips the 4-step media retrieval).
+- Removed the inline `keyframeB64` from act/say responses (66KB base64 made
+  responses 71KB and broke strict JSON parsers); `clipUrl`/`artifactUrl`
+  point at the retrieval endpoints instead.
+- Screenshot fallback: `artifact` falls back to the live stream frame when
+  page.screenshot fails in headful mode (was returning null → /artifact 404).
 
 ## What's new in v17
 - **Idle window 10 → 15 minutes** (container default) — more breathing room

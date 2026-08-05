@@ -274,8 +274,13 @@ async function main() {
     } catch (e) { return { clip: null, clipError: (e as Error).message } }
   }
   const reqShot = async (n: number, label: string): Promise<string | null> => {
-    try { const p = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-${label}.jpg`)
-      await active.screenshot({ path: p, type: 'jpeg', quality: 60 }); return p } catch { return null }
+    const p = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-${label}.jpg`)
+    try { await active.screenshot({ path: p, type: 'jpeg', quality: 60 }); return p } catch { /* fall back */ }
+    // FALLBACK (diag 2026-08-05: page.screenshot fails in headful display mode
+    // → artifact:null → /artifact 404s). Use the live x11grab frame so the
+    // screenshot field is NEVER null when a stream exists.
+    try { const b64 = live?.latestFrame(); if (b64) { writeFileSync(p, Buffer.from(b64, 'base64')); return p } } catch { /* ignore */ }
+    return null
   }
   // TAB HUD — ONLY for headless/CDP capture, where the screencast has no
   // browser chrome and tabs would be invisible. In full-window (display) mode
@@ -564,7 +569,10 @@ async function main() {
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
         scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
         // keyframe: latest frame inline — review-and-relay without a download.
-        return json(res, { ok: true, result: r, clip, clipError, artifact: shot, keyframeB64: live?.latestFrame() ?? null, nag, window })
+        // No inline keyframe (diag 2026-08-05: the 66KB base64 blob made
+        // responses 71KB and broke strict JSON parsers twice). The atomic
+        // driver fetches artifact+clip to local files instead.
+        return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, window })
       }
       if (path === '/say') {
         const ownedSay = guardOwnership(body)
@@ -577,7 +585,7 @@ async function main() {
         const shot = await reqShot(n, 'say')
         const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
         scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
-        return json(res, { ok: true, clip, clipError, artifact: shot, keyframeB64: live?.latestFrame() ?? null, heard, window })
+        return json(res, { ok: true, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, heard, window })
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
