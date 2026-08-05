@@ -89,13 +89,21 @@ export async function shareSession(opts: {
   return { ok: true }
 }
 
-/** B: sessions shared with me that I haven't imported yet. RLS filters to my email. */
+/** B: sessions shared with me that I haven't imported yet.
+ *  Must filter to recipient-only: RLS also grants owners SELECT on their own
+ *  rows (owner_all policy), so without the explicit recipient_email filter +
+ *  excluding my own shares, "Shared with me" would wrongly list the shares I
+ *  SENT. (Caught in visual QA 2026-08-05.) */
 export async function listSharedWithMe(): Promise<SharedSession[]> {
   const supabase = createSupabaseBrowser()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.email) return []
   const { data, error } = await supabase
     .from('shared_sessions')
     .select('*')
     .eq('status', 'ready')
+    .eq('recipient_email', user.email.toLowerCase())
+    .neq('owner_user_id', user.id)
     .order('created_at', { ascending: false })
   if (error) { console.error('[session-sharing] listSharedWithMe:', error.message); return [] }
   return (data ?? []) as SharedSession[]
