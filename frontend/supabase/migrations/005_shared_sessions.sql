@@ -42,37 +42,41 @@ create trigger shared_sessions_normalize
   for each row execute function public.lc_recipient_email();
 
 -- Owner: full control over shares they created.
+drop policy if exists "shared_sessions_owner_all" on public.shared_sessions;
 create policy "shared_sessions_owner_all" on public.shared_sessions
   for all using (auth.uid() = owner_user_id) with check (auth.uid() = owner_user_id);
 
 -- Recipient: can SEE shares addressed to their email, and UPDATE them (to flip
 -- status → 'imported'). Matched on the JWT email, lowercased both sides.
+drop policy if exists "shared_sessions_recipient_select" on public.shared_sessions;
 create policy "shared_sessions_recipient_select" on public.shared_sessions
   for select using (recipient_email = lower(auth.jwt() ->> 'email'));
+drop policy if exists "shared_sessions_recipient_update" on public.shared_sessions;
 create policy "shared_sessions_recipient_update" on public.shared_sessions
   for update using (recipient_email = lower(auth.jwt() ->> 'email'));
 
 create index if not exists shared_sessions_recipient_idx on public.shared_sessions (recipient_email);
 create index if not exists shared_sessions_owner_idx on public.shared_sessions (owner_user_id);
 
--- Private bucket for the session snapshots (tar.gz). Not public — downloads go
--- through a service-role-signed URL after the recipient is verified in the app.
+-- Private bucket for the session snapshots (tar.gz). Not public — the recipient
+-- downloads via the owner-pre-signed URL stored on the shared_sessions row.
 insert into storage.buckets (id, name, public)
   values ('session-shares', 'session-shares', false)
   on conflict (id) do nothing;
 
 -- Owner can upload snapshots under their own uid prefix: `session-shares/<uid>/...`.
+drop policy if exists "session_shares_owner_upload" on storage.objects;
 create policy "session_shares_owner_upload" on storage.objects
   for insert to authenticated
   with check (
     bucket_id = 'session-shares'
     and (storage.foldername(name))[1] = auth.uid()::text
   );
+drop policy if exists "session_shares_owner_manage" on storage.objects;
 create policy "session_shares_owner_manage" on storage.objects
   for all to authenticated
   using (
     bucket_id = 'session-shares'
     and (storage.foldername(name))[1] = auth.uid()::text
   );
--- Recipients never read the bucket directly — the app signs a URL for them via
--- the service role (which bypasses these policies).
+-- Recipients never read the bucket directly — they use the owner-pre-signed URL.
