@@ -60,3 +60,8 @@ resume-tailored.html
 career-ops-backup/
 .playwright-cli/
 scratch/
+
+# --- local machine / scratch (Aug-2026 recovery cleanup) ---
+**/.claude/settings.local.json
+/tests/voice-e2e/scripts/
+/tests/voice-e2e/specs/
