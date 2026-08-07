@@ -2,7 +2,53 @@
 
 ## SKILL IDENTITY
 Name: voice-native-sync
+Version: 4
 Install path: ~/.claude/skills/voice-native-sync/SKILL.md
+
+## MANDATORY VERSION CHECK — run this FIRST, before ANY upload or download
+Stale local copies of this skill have caused real data corruption (sessions
+uploaded without slug remapping → silently unresumable on the cloud machine,
+confirmed 2026-07-27). Every sync MUST start with this check. It self-updates
+the local copy and aborts so you re-read the fresh instructions.
+
+```bash
+SERVED_V=$(curl -sf --max-time 10 https://www.voice-native.com/api/sync-skill | grep -m1 '^Version:' | awk '{print $2}')
+LOCAL_V=$(grep -m1 '^Version:' ~/.claude/skills/voice-native-sync/SKILL.md 2>/dev/null | awk '{print $2}')
+if [ -n "$SERVED_V" ] && [ "$SERVED_V" != "$LOCAL_V" ]; then
+  curl -sS https://www.voice-native.com/api/sync-skill -o ~/.claude/skills/voice-native-sync/SKILL.md
+  echo "SKILL WAS OUTDATED (local=${LOCAL_V:-none}, served=$SERVED_V) — local copy updated."
+  echo "STOP: re-read ~/.claude/skills/voice-native-sync/SKILL.md and follow the NEW instructions from the top."
+  exit 1
+fi
+echo "skill version ${LOCAL_V:-unknown} is current"
+```
+
+Rules for the agent executing this skill:
+- If this check exits non-zero, do NOT continue with the sync. Re-read the
+  updated SKILL.md and restart from its instructions.
+- If the version endpoint is unreachable (SERVED_V empty), proceed with the
+  local copy — offline use is allowed; staleness is only checked when online.
+
+## INSTALLATION (one-time, any Claude Code session)
+This skill must be installed GLOBALLY so it's available in every project
+and every Claude Code session — Mac app, CLI, or Codespaces.
+
+Global skills live at ~/.claude/skills/ (your home directory, not a project folder).
+Claude Code auto-loads all skills from this path on every startup.
+
+To install:
+```bash
+mkdir -p ~/.claude/skills/voice-native-sync
+curl -sS https://www.voice-native.com/api/sync-skill -o ~/.claude/skills/voice-native-sync/SKILL.md
+cat > ~/.claude/skills/voice-native-sync/config <<'EOF'
+CLOUD_URL=https://osborn-XXXX.fly.dev
+TOKEN=your-token-here
+EOF
+```
+
+You can run these commands in any Claude Code session (Mac app or CLI) —
+both have filesystem access and write to the same ~/.claude/skills/ directory.
+After installing, the skill is active in ALL future Claude Code sessions globally.
 
 ## TRIGGER PHRASES
 This skill activates when the user says any of:
@@ -99,19 +145,11 @@ for chunk in "${CHUNKS[@]}"; do
   idx=$((idx+1))
 done
 
-# Finalize — merges chunks and extracts WITHOUT slug remapping.
-# IMPORTANT: do NOT pass `targetWorkDir`. The server-side remap collapses every
-# source slug into the target work dir's slug, which causes session-resume to
-# silently break when sessions are uploaded from different hosts (Mac, Codespace,
-# Sprite) — they all end up in -workspace, the JSONLs internally still reference
-# their original cwd, the slug↔cwd no longer match, and Claude Code's resume
-# can't find the file. Confirmed 2026-05-27: a codespace upload remapped
-# -workspaces-codespaces-blank → -workspace and every codespace session went
-# silent on resume. The fix is to preserve each upload's original slug structure.
+# Finalize — merges chunks and extracts with slug remapping
 echo "finalizing..."
 RESULT=$(curl -s -X POST \
   -H "Authorization: Bearer $TOKEN" \
-  "${CLOUD_URL}/sessions/import-finalize?uploadId=${UPLOAD_ID}&total=${TOTAL}")
+  "${CLOUD_URL}/sessions/import-finalize?uploadId=${UPLOAD_ID}&total=${TOTAL}&targetWorkDir=${TARGET_PATH}")
 echo "finalize result: $RESULT"
 
 # Cleanup
@@ -163,12 +201,11 @@ echo "downloaded: $(du -sh /tmp/vn-download.tar.gz | cut -f1)"
 
 # Import with slug remapping to local cwd
 echo "importing..."
-# Same fix as upload: no targetWorkDir, preserve original slug structure.
 RESULT=$(curl -s -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@/tmp/vn-download.tar.gz" \
-  "${CLOUD_URL}/sessions/import")
+  "${CLOUD_URL}/sessions/import?targetWorkDir=${LOCAL_CWD}")
 echo "import result: $RESULT"
 
 rm -f /tmp/vn-download.tar.gz
