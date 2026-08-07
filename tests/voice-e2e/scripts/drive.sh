@@ -33,7 +33,8 @@ CMD="${1:-}"; ARG="${2:-}"
 RESOLVE=(--resolve "$HOST:$PORT:$IP")
 [[ "$HOST" == "127.0.0.1" || "$HOST" == "localhost" ]] && RESOLVE=()
 DRIVER="${BSR_DRIVER:-$(whoami 2>/dev/null || echo default)}"
-cc() { curl -s "${RESOLVE[@]}" -H "x-engine-token: $TOKEN" -H "x-driver-id: $DRIVER" "$@"; }
+# nounset-safe empty-array expansion (bash 3.2 on macOS errors on "${RESOLVE[@]}" when empty)
+cc() { curl -s ${RESOLVE[@]+"${RESOLVE[@]}"} -H "x-engine-token: $TOKEN" -H "x-driver-id: $DRIVER" "$@"; }
 
 case "$CMD" in
   act|say)
