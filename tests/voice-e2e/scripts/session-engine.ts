@@ -55,13 +55,15 @@
 import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { createServer } from 'http'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
-import { saveCapture } from '../lib/audio-capture'
+import { saveCapture, peekCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince } from '../lib/converse'
 import { actWithCache } from '../lib/step-cache'
@@ -72,6 +74,7 @@ import { mintProfileFromEnv } from '../lib/mint-profile'
 import { envKey } from '../lib/env'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const execFileP = promisify(execFile)
 // Default agent = the TEST account's own machine (osborn-tester is routed to
 // osborn-1b9d70e5-v2 in the instances table since 2026-07-31), so engine runs
 // never collide with the owner's machine (osborn-d4f24f46-v2).
@@ -281,6 +284,41 @@ async function main() {
     // screenshot field is NEVER null when a stream exists.
     try { const b64 = live?.latestFrame(); if (b64) { writeFileSync(p, Buffer.from(b64, 'base64')); return p } } catch { /* ignore */ }
     return null
+  }
+  // ── AUDIO MUX (v23) ─────────────────────────────────────────────────────
+  // The MJPEG stream + all clips are VIDEO-ONLY; the agent's voice is captured
+  // separately (element-tap → MediaRecorder). Peek that recording and (a) serve
+  // it as mp3 (GET /audio) and (b) mux a task's ALIGNED audio slice into its
+  // video clip (GET /clip?n=N&audio=1). Alignment maps wall-clock → recording
+  // time via the recording's OWN start (startedAt = now - sinceStartMs), NOT
+  // tCapture — raw manifest rel0/rel1 are on tCapture's timeline and misalign by
+  // the anchor gap (proven: rel-based slicing returned silence).
+  const peekAudioToWav = async (): Promise<{ wav: string; startedAt: number } | null> => {
+    try {
+      const { base64, sinceStartMs } = await peekCapture(active)
+      if (!base64) return null
+      const webm = join(RUN_DIR, '_peek.webm')
+      writeFileSync(webm, Buffer.from(base64, 'base64'))
+      const wav = join(RUN_DIR, '_peek.wav')
+      // Full decode → wav: MediaRecorder opus can't be seeked directly (bad
+      // packet headers — proven), so decode once and trim the wav reliably.
+      await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav])
+      return { wav, startedAt: Date.now() - sinceStartMs }
+    } catch { return null }
+  }
+  const muxClipAudio = async (videoPath: string, endMs: number, n: number): Promise<string | null> => {
+    const a = await peekAudioToWav()
+    if (!a) return null
+    try {
+      const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', videoPath])
+      const dur = Math.max(1, Number(String(probe.stdout).trim()) || 14)
+      // Clip video spans ~[endMs - dur, endMs] in wall-clock; map to recording time.
+      const startSec = Math.max(0, (endMs - a.startedAt) / 1000 - dur)
+      const out = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-withaudio.mp4`)
+      await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', videoPath, '-ss', String(startSec), '-i', a.wav,
+        '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
+      return existsSync(out) ? out : null
+    } catch { return null }
   }
   // TAB HUD — ONLY for headless/CDP capture, where the screencast has no
   // browser chrome and tabs would be invisible. In full-window (display) mode
@@ -561,6 +599,13 @@ async function main() {
           file = path === '/clip' ? t?.clip : t?.artifact
           if (path === '/clip' && file) fetchedClips.add(n)
         }
+        // audio=1: mux the task's ALIGNED audio slice into the (silent) video
+        // clip so a remote/cloud director can HEAR the agent, not just see it.
+        // Current run only (past runs' recording is gone).
+        if (path === '/clip' && q.get('audio') === '1' && !runParam && file) {
+          const t3 = tasks.find((t) => t.n === n) as any
+          if (t3?.endMs) { const m = await muxClipAudio(file, t3.endMs, n); if (m) file = m }
+        }
         if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs` }, 404)
         res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })
         createReadStream(file).pipe(res)
@@ -574,6 +619,19 @@ async function main() {
             return { i, url: p.url(), console: b?.console.slice(-80) ?? [], network: b?.network.slice(-80) ?? [] }
           }),
         })
+      }
+      if (req.method === 'GET' && path === '/audio') {
+        // The whole run's captured audio as mp3 (the agent's voice — which is
+        // ABSENT from the video-only clips/stream). Room-mode/ears only; on a
+        // headless cloud engine this is the only way to hear the agent.
+        const a = await peekAudioToWav()
+        if (!a) return json(res, { error: 'no audio captured — room-mode ears required (ENTRY=none has none)' }, 404)
+        const mp3 = join(RUN_DIR, '_run-audio.mp3')
+        try { await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', a.wav, '-c:a', 'libmp3lame', '-q:a', '4', mp3]) }
+        catch (e) { return json(res, { error: 'transcode failed: ' + (e as Error).message }, 500) }
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': statSync(mp3).size })
+        createReadStream(mp3).pipe(res)
+        return
       }
       if (req.method === 'GET' && path === '/tasks') {
         // This run's task index — same data as manifest.json on disk.
@@ -613,7 +671,7 @@ async function main() {
           const shot = await reqShot(n, 'act')
           const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
           scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
-          return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, driver, window })
+          return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, audioClipUrl: `/clip?n=${n}&audio=1`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, driver, window })
         })
       }
       if (path === '/say') {
@@ -629,7 +687,7 @@ async function main() {
           const shot = await reqShot(n, 'say')
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
           scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
-          return json(res, { ok: true, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, artifactUrl: shot ? `/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, audioClipUrl: `/clip?n=${n}&audio=1`, artifactUrl: shot ? `/artifact?n=${n}` : null, heard, driver, window })
         })
       }
       if (path === '/hear') {
@@ -777,7 +835,7 @@ async function main() {
         void gracefulEnd('end requested')
         return
       }
-      json(res, { error: 'unknown', paths: ['/status', '/tasks', '/clip?n=N', '/artifact?n=N', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
+      json(res, { error: 'unknown', paths: ['/status', '/tasks', '/clip?n=N', '/clip?n=N&audio=1', '/artifact?n=N', '/audio', '/logs', '/runs', '/events', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
     } catch (e) { json(res, { error: (e as Error).message, brain: brainAlive ? 'ready' : 'dead' }, 500) }
   })
   server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))
