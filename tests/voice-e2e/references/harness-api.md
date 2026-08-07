@@ -10,6 +10,8 @@
 | `GET /status` | ground truth: roomReady, pageUrl, pageState, idlePaused, brain ready/dead, activeTab, tabs+owners, lastFrameAgeMs, journey |
 | `GET /tasks` | this run's task index (same as manifest.json) |
 | `GET /clip?n=N` / `GET /artifact?n=N` | download task N's mp4 / screenshot |
+| `GET /clip?n=N&audio=1` | task N's clip WITH the agent's aligned audio muxed in (mp4 video+audio). Current run only; decodes+aligns via the recording's own start, not rel0/rel1 |
+| `GET /audio` | the whole run's captured audio as mp3 (the agent's voice — absent from the video-only clips/stream). Room-mode/ears only |
 | `GET /logs` | full console+network+websocket buffers, all tabs |
 | `GET /events` | SSE: live navigation/task/tab/journey/transcript/agent_output/lifecycle events (25-event replay on connect; `engine_stopping` announces sleep) |
 | `POST /act {instruction, owner?, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab |

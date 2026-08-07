@@ -17,7 +17,13 @@ export const dynamic = 'force-dynamic'
  * filename is browser-screen-recorder-bundle.json, with a fallback to the
  * legacy voice-e2e-bundle.json name.
  */
-const HARNESS_VERSION = 5
+// Derived from the served skill's `Version:` line — the single source of truth
+// (same as build-harness-bundle.mjs), so the live-repo fallback can never drift
+// from the snapshot. It used to be hardcoded and stuck at 5 while the skill was
+// at 22, silently serving the wrong version whenever tests/ was present.
+function deriveHarnessVersion(root: string): number {
+  try { return Number(readFileSync(join(root, 'SKILL.served.md'), 'utf8').match(/^Version: (\d+)$/m)?.[1] ?? 0) } catch { return 0 }
+}
 
 const INCLUDE_DIRS = ['lib', 'specs', 'scenarios', 'scripts']
 const INCLUDE_ROOT = ['package.json', 'playwright.config.ts', 'Dockerfile', 'fly.toml', '.gitignore', '.dockerignore']
@@ -53,5 +59,5 @@ export async function GET() {
       }
     }
   }
-  return NextResponse.json({ version: HARNESS_VERSION, generatedAt: new Date().toISOString(), files })
+  return NextResponse.json({ version: deriveHarnessVersion(root), generatedAt: new Date().toISOString(), files })
 }

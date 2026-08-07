@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 22
+Version: 23
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -63,6 +63,7 @@ You are NOT limited to clicking. Every one of these is on the running engine:
 |---|---|---|
 | Do an action + its proof | `drive.sh act "<nl>"` | video + frame (local files) |
 | Speak / hear the app | `drive.sh say "<nl>"` | clip + `heard:` transcript |
+| **Hear the agent (audio)** | `GET /audio` · `GET /clip?n=N&audio=1` | whole-run mp3 / a clip WITH the agent's voice muxed in (stream + clips are otherwise video-only) |
 | **Console + network + websocket logs** | `drive.sh logs` (`GET /logs`) | per-tab console errors, failed requests, ws events |
 | **DevTools panel ON the video** | boot with `OSBORN_DEVTOOLS=1` | Elements/Console visible in every clip |
 | **Run JS in the page (site console)** | `drive.sh eval "<expr>"` | the value; also lands in /logs |
@@ -177,6 +178,20 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v23
+- **Hear the agent — audio, not just video.** Clips + the MJPEG stream are
+  VIDEO-ONLY; the agent's voice is captured separately. New `GET /audio` (the
+  whole run as mp3) and `GET /clip?n=N&audio=1` (a clip with the aligned agent
+  audio muxed in). `/say` + `/act` responses now carry `audioClipUrl`. On the
+  cloud engine (no speakers) this is the ONLY way to hear the agent — the live
+  stream never carries audio. Alignment maps wall-clock → recording time via the
+  recording's own start, NOT the manifest's rel0/rel1 (skewed timeline — raw
+  slicing returned silence).
+- **Local audibility fix** — the ears' WebAudio tap was starving the `<audio>`
+  element's speaker output, so the agent went silent on headed/local runs even
+  though the element read muted=false/volume=1. The tap now also routes to the
+  speakers (no-op on headless cloud).
 
 ## What's new in v21
 - **Multi-agent RESILIENT (one engine, many drivers, safe)** — pass an
