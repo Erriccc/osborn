@@ -93,6 +93,17 @@ export async function startElementCapture(page: Page): Promise<void> {
         const src = ctx.createMediaStreamSource(ms)
         src.connect(dest)
         src.connect(analyser)
+        // SPEAKER PASSTHROUGH (fix 2026-08-07): pulling a remote WebRTC track
+        // (LiveKit srcObject — the agent's TTS) into WebAudio via
+        // createMediaStreamSource STARVES the <audio> element's own output —
+        // Chrome routes the track exclusively into the graph, so the agent goes
+        // SILENT on the speakers even though el.muted=false/volume=1 (regression
+        // the ears introduced: "used to hear the agent, now don't"). Reconnect
+        // to the speakers so headed/local runs stay audible (no-op on headless
+        // cloud — no output device). Only srcObject taps: captureStream taps
+        // (regular <audio>/<video>) still drive the element, so routing them
+        // here would double the audio.
+        if (el.srcObject instanceof MediaStream) src.connect(ctx.destination)
         tapped.add(el)
         // TIMELINE ANCHOR — the recording's audio timeline effectively starts
         // when the FIRST source connects (verified 2026-07-31: words landed
