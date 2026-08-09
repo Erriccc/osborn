@@ -493,7 +493,7 @@ async function main() {
   // saved into each journey so the recipes self-classify action|process.
   const visitedPages = new Set<string>()
   let actionCount = 0
-  const noteVisit = () => { try { visitedPages.add(new URL(active.url()).pathname) } catch { /* ignore */ } }
+  const noteVisit = (page: Page) => { try { visitedPages.add(new URL(page.url()).pathname) } catch { /* ignore */ } }
   const depthNow = () => ({ pages: visitedPages.size, actions: actionCount, kind: actionCount <= 1 ? 'action' : 'process', thin: visitedPages.size <= 1 && actionCount <= 1 })
   // GRACEFUL SHUTDOWN — used by POST /end AND the idle watchdog. Every step
   // bounded + a hard watchdog: a hung Stagehand/CDP close must never wedge
@@ -515,7 +515,7 @@ async function main() {
       mark('shutdown WITHOUT disconnect — meeting active; drop rides the agent leave-grace')
       notify('engine_stopping_meeting_active', { reason })
     } else {
-      await bounded(brain('Click the Disconnect or Leave button to end the voice session').catch(() => null), 12000)
+      await bounded(brain(context.pages()[0] ?? active, 'Click the Disconnect or Leave button to end the voice session').catch(() => null), 12000)
       await active.waitForTimeout(2000).catch(() => {})
       await bounded(fetch(`${AGENT_URL}/leave-room`, { method: 'POST' }), 5000)
     }
@@ -653,63 +653,67 @@ async function main() {
       }
       if (path === '/act') {
         const driver = driverId(req)
-        return withLock(async () => {
-          await focusDriverTab(driver)  // this driver acts on ITS tab, front + focused
-          const owned = guardOwnership(driver)
-          if (owned) return json(res, { error: owned }, 409)
+        const page = resolveDriverTab(driver)                 // this driver's OWN tab
+        const owned = guardOwnership(driver, page)
+        if (owned) return json(res, { error: owned }, 409)
+        return withTabLock(page, async () => {                // serialize on THIS tab only
+          live?.spotlight(page)                                // viewer follows (non-blocking)
           const t0 = Date.now()
-          await updateTabHud()
-          const r = await brain(body.instruction)
+          const r = await withBrainLock(() => brain(page, body.instruction))  // brain is the one shared resource
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
-          await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
+          await page.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
           const prevTask = tasks[tasks.length - 1]
           const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
-          actionCount++; noteVisit()
+          actionCount++; noteVisit(page)
           const n = ++reqN
-          const { clip, clipError } = await reqClip(n, 'act', body.clipSeconds ?? 20)
-          const shot = await reqShot(n, 'act')
-          const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
+          const { clip, clipError } = await reqClip(page, n, 'act', body.clipSeconds ?? 20)
+          const shot = await reqShot(page, n, 'act')
+          const window = stampTask(page, n, 'act', t0, clip, shot, body.instruction)
           scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
           return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, audioClipUrl: `/clip?n=${n}&audio=1`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, driver, window })
         })
       }
       if (path === '/say') {
         const driver = driverId(req)
-        return withLock(async () => {
-          await focusDriverTab(driver)
-          const ownedSay = guardOwnership(driver)
-          if (ownedSay) return json(res, { error: ownedSay }, 409)
-          const t0 = Date.now(); await updateTabHud(); await speakText(active, body.text); mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
-          const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
+        const page = resolveDriverTab(driver)
+        const ownedSay = guardOwnership(driver, page)
+        if (ownedSay) return json(res, { error: ownedSay }, 409)
+        return withTabLock(page, async () => {
+          live?.spotlight(page)
+          const t0 = Date.now(); await speakText(page, body.text); mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await page.waitForTimeout(6000)
+          const heard = await hearSince(page, Math.max(0, t0 - tCapture)).catch(() => '')
           const n = ++reqN
-          const { clip, clipError } = await reqClip(n, 'say', body.clipSeconds ?? 14)
-          const shot = await reqShot(n, 'say')
-          const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
+          const { clip, clipError } = await reqClip(page, n, 'say', body.clipSeconds ?? 14)
+          const shot = await reqShot(page, n, 'say')
+          const window = stampTask(page, n, 'say', t0, clip, shot, body.text, heard)
           scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
           return json(res, { ok: true, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, audioClipUrl: `/clip?n=${n}&audio=1`, artifactUrl: shot ? `/artifact?n=${n}` : null, heard, driver, window })
         })
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
+        // The agent audio is captured on the room tab (index 0), so hear from there.
+        const roomTab = context.pages()[0] ?? active
         const since = Date.now() - tCapture - (body.lastMs ?? 20000)
-        try { return json(res, { heard: await hearSince(active, Math.max(0, since)) }) }
+        try { return json(res, { heard: await hearSince(roomTab, Math.max(0, since)) }) }
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
-      if (path === '/shot') { const driver = driverId(req); return withLock(async () => { await focusDriverTab(driver); const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64'), driver }) }) }
+      if (path === '/shot') { const driver = driverId(req); const page = resolveDriverTab(driver); return withTabLock(page, async () => { live?.spotlight(page); const b = await page.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64'), driver }) }) }
       if (path === '/eval') {
         const driver = driverId(req)
-        return withLock(async () => {
-        await focusDriverTab(driver)
-        const owned = guardOwnership(driver)
+        const page = resolveDriverTab(driver)
+        const owned = guardOwnership(driver, page)
         if (owned) return json(res, { error: owned }, 409)
+        return withTabLock(page, async () => {
+        live?.spotlight(page)
         try {
           const value = await Promise.race([
-            active.evaluate((expr: string) => { const r = (0, eval)(expr); return typeof r === 'object' ? JSON.stringify(r)?.slice(0, 4000) : String(r) }, String(body.expression)),
+            page.evaluate((expr: string) => { const r = (0, eval)(expr); return typeof r === 'object' ? JSON.stringify(r)?.slice(0, 4000) : String(r) }, String(body.expression)),
             new Promise((_, rej) => setTimeout(() => rej(new Error('eval timeout (10s)')), 10000)),
           ])
           mark(`eval[${driver}]: ${String(body.expression).slice(0, 45)}`)
-          touchTab(active)
+          touchTab(page)
           // Evals are journey steps too — the cloud meeting run saved a
           // 0-step recipe because it was driven entirely via /eval.
           scenarioSteps.push({ kind: 'eval', value: String(body.expression).slice(0, 140) }); writeScenario()
@@ -746,7 +750,7 @@ async function main() {
           if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
           driverActive.set(driver, active)  // this becomes the driver's active tab
           touchTab(active)
-          await live?.retarget(active).catch(() => {}); mark(`tab ${reused ? 'reuse' : 'open'}: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${body.viewport ? ' (mobile)' : ''}`)
+          live?.spotlight(active); mark(`tab ${reused ? 'reuse' : 'open'}: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${body.viewport ? ' (mobile)' : ''}`)
         }
         else if (body.op === 'navigate') {
           // Point an EXISTING tab at a new URL (the reuse primitive).
@@ -756,15 +760,15 @@ async function main() {
           if (o && body.owner !== o) return json(res, { error: `tab is claimed by "${o}"` }, 409)
           await target.goto(String(body.url), { timeout: 45000 })
           active = target; touchTab(active)
-          await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
+          live?.spotlight(active); mark(`tab navigate: ${body.url}`)
         }
-        else if (body.op === 'switch') { active = await switchTab(context, body.i); driverActive.set(driver, active); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`) }
+        else if (body.op === 'switch') { active = await switchTab(context, body.i); driverActive.set(driver, active); touchTab(active); live?.spotlight(active); mark(`tab switch: ${body.i}`) }
         else if (body.op === 'close') {
           const target = context.pages()[body.i]
           const o = target ? ownerOf(target) : null
           if (o && body.owner !== o) return json(res, { error: `tab ${body.i} is claimed by "${o}" — pass matching owner to close` }, 409)
           if (target) tabOwners.delete(target)
-          active = await closeTab(context, body.i); await live?.retarget(active).catch(() => {}); mark(`tab close: ${body.i}`)
+          active = await closeTab(context, body.i); live?.spotlight(active); mark(`tab close: ${body.i}`)
         }
         else if (body.op === 'claim') {
           const target = context.pages()[body.i]
@@ -801,7 +805,7 @@ async function main() {
           }
           if (body.cleanup !== false) {
             while (context.pages().length > 1) { try { active = await closeTab(context, context.pages().length - 1) } catch { break } }
-            await live?.retarget(active).catch(() => {})
+            live?.spotlight(active)
             try { await active.setViewportSize({ width: 1280, height: 720 }) } catch { /* ignore */ }
             saveTabState()
           }
@@ -881,7 +885,7 @@ async function main() {
         if (extra.length) {
           const pages = context.pages()
           active = await switchTab(context, Math.min(st.activeIndex ?? 0, pages.length - 1))
-          await live?.retarget(active).catch(() => {})
+          live?.spotlight(active)
           mark(`restored ${extra.length} tab(s) from pre-sleep state`)
         }
       } catch (e) { mark(`tab restore failed: ${(e as Error).message.slice(0, 100)}`) }
