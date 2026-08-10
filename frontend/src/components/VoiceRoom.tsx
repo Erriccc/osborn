@@ -368,6 +368,11 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
                 }
                 // Ensure we have content to render
                 if (part.content && part.content.trim()) {
+                  // [Image: name](url) / [File: name](url) from the agent get the
+                  // same inline media rendering as user uploads (send-media skill)
+                  if (/\[(?:Image|File):\s*[^\]]+\]\(https?:\/\/[^\s)]+\)/.test(part.content)) {
+                    return <MessageContent key={idx} content={part.content} />
+                  }
                   // Check if content has markdown formatting (including tables with |)
                   const hasMarkdown = /[*#`\[\]|]/.test(part.content) || /^-{3,}$/m.test(part.content)
                   if (hasMarkdown) {
