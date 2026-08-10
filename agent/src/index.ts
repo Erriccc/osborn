@@ -65,6 +65,57 @@ import { z } from 'zod'
 //   - Routes tasks to Claude agents for execution
 // ============================================================
 
+// Build an enriched tool-use event for the frontend Logs drawer so it can
+// render Claude-style review cards (Read/Edited/Ran with file names, +/- line
+// counts, and an expandable diff) instead of a bare tool name. Best-effort:
+// any field that can't be derived is simply omitted and the card degrades to
+// the tool name. `input` is the raw tool arguments already carried on the
+// tool_use/tool_result events emitted by claude-llm.
+function buildToolLogEvent(
+  name: string,
+  input: any,
+  status: 'running' | 'completed',
+  agentRole: string,
+): Record<string, any> {
+  const ev: Record<string, any> = { type: 'tool_use', tool: name, status, agentRole }
+  const inp = input || {}
+  const basename = (p: string) => String(p).split('/').pop() || String(p)
+
+  const fp = inp.file_path || inp.path || inp.notebook_path
+  if (fp) { ev.filePath = fp; ev.fileName = basename(fp) }
+  if (typeof inp.command === 'string') ev.command = inp.command
+  if (typeof inp.pattern === 'string') ev.pattern = inp.pattern
+  if (typeof inp.url === 'string') ev.url = inp.url
+  if (typeof inp.description === 'string') ev.description = inp.description
+
+  try {
+    if (name === 'Edit' && typeof inp.old_string === 'string' && typeof inp.new_string === 'string') {
+      ev.linesRemoved = inp.old_string ? inp.old_string.split('\n').length : 0
+      ev.linesAdded = inp.new_string ? inp.new_string.split('\n').length : 0
+      ev.diff = createPatch(ev.fileName || 'edit', inp.old_string, inp.new_string, '', '', { context: 2 })
+    } else if (name === 'MultiEdit' && Array.isArray(inp.edits)) {
+      let a = 0, r = 0
+      const chunks: string[] = []
+      for (const e of inp.edits) {
+        const o = String(e?.old_string ?? ''), n = String(e?.new_string ?? '')
+        r += o ? o.split('\n').length : 0
+        a += n ? n.split('\n').length : 0
+        chunks.push(createPatch(ev.fileName || 'edit', o, n, '', '', { context: 2 }))
+      }
+      ev.editCount = inp.edits.length
+      ev.linesRemoved = r
+      ev.linesAdded = a
+      ev.diff = chunks.join('\n')
+    } else if (name === 'Write' && typeof inp.content === 'string') {
+      ev.linesAdded = inp.content.split('\n').length
+      ev.linesRemoved = 0
+      ev.diff = inp.content.split('\n').slice(0, 60).map((l: string) => '+' + l).join('\n')
+    }
+  } catch { /* diff is best-effort — omit on any failure */ }
+
+  return ev
+}
+
 // Load skills list with name + description for frontend display
 function loadSkillsList(agentDir: string): { name: string; description: string; folder: string }[] {
   const skillsDir = join(agentDir, '.claude', 'skills')
@@ -2658,12 +2709,12 @@ async function main() {
     // Wire up events from the Claude SDK wrapper to frontend
     directLLM.events.on('tool_use', (data) => {
       console.log(`🔧 Claude: ${data.name}`)
-      sendToFrontend({ type: 'tool_use', tool: data.name, agentRole: 'direct' })
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', 'direct'))
     })
 
     directLLM.events.on('tool_result', (data) => {
       console.log(`✅ Done: ${data.name}`)
-      sendToFrontend({ type: 'tool_use', tool: data.name, status: 'completed', agentRole: 'direct' })
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', 'direct'))
 
       // Detect research artifact writes (session workspace or legacy research dir)
       if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {
@@ -3114,12 +3165,12 @@ async function main() {
     // Wire up Claude events to frontend
     realtimeClaudeHandler.events.on('tool_use', (data) => {
       console.log(`🔧 Claude: ${data.name}`)
-      sendToFrontend({ type: 'tool_use', tool: data.name, agentRole: 'realtime' })
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', 'realtime'))
     })
 
     realtimeClaudeHandler.events.on('tool_result', (data) => {
       console.log(`✅ Done: ${data.name}`)
-      sendToFrontend({ type: 'tool_use', tool: data.name, status: 'completed', agentRole: 'realtime' })
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', 'realtime'))
 
       // Detect research artifact writes (session workspace or legacy research dir)
       if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {

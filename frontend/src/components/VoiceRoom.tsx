@@ -37,6 +37,24 @@ interface MessagePart {
   language?: string
 }
 
+// Structured detail for a tool call — powers the Claude-style Logs cards
+// (Read/Edited/Ran with file name, +/- line counts, and an expandable diff).
+// Every field is best-effort; a card with only `tool` degrades gracefully.
+interface ToolMeta {
+  tool: string
+  status?: 'running' | 'completed'
+  filePath?: string
+  fileName?: string
+  command?: string
+  pattern?: string
+  url?: string
+  description?: string
+  linesAdded?: number
+  linesRemoved?: number
+  editCount?: number
+  diff?: string
+}
+
 interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -46,6 +64,7 @@ interface ChatMessage {
   parts?: MessagePart[]
   isStreaming?: boolean
   category?: 'chat' | 'log'
+  toolMeta?: ToolMeta
 }
 
 interface PermissionRequest {
@@ -2150,10 +2169,10 @@ function VoiceRoomInner({
   const showResumePromptRef = useRef(showResumePrompt)
   showResumePromptRef.current = showResumePrompt
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log') => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta) => void>()
 
   // addMessage function with duplicate detection
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log') => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -2165,17 +2184,21 @@ function VoiceRoomInner({
     // Normalize content for comparison (trim, normalize whitespace)
     const normalizedContent = content.trim().replace(/\s+/g, ' ')
 
-    // Check if this exact content was sent recently (within last 5 messages of this role)
-    const recentOfRole = recentMessagesRef.current[role]
-    if (recentOfRole.includes(normalizedContent)) {
-      console.log(`⏭️ Skipping duplicate ${role} message: "${normalizedContent.substring(0, 50)}..."`)
-      return
-    }
+    // Tool-call log cards are distinct events (10 reads of the same file are 10
+    // real actions) — skip dedup for them so the review log stays complete.
+    if (!toolMeta) {
+      // Check if this exact content was sent recently (within last 5 messages of this role)
+      const recentOfRole = recentMessagesRef.current[role]
+      if (recentOfRole.includes(normalizedContent)) {
+        console.log(`⏭️ Skipping duplicate ${role} message: "${normalizedContent.substring(0, 50)}..."`)
+        return
+      }
 
-    // Add to recent messages and trim to last 5
-    recentOfRole.push(normalizedContent)
-    if (recentOfRole.length > 5) {
-      recentOfRole.shift()
+      // Add to recent messages and trim to last 5
+      recentOfRole.push(normalizedContent)
+      if (recentOfRole.length > 5) {
+        recentOfRole.shift()
+      }
     }
 
     const newMessage = {
@@ -2185,6 +2208,7 @@ function VoiceRoomInner({
       timestamp: new Date(),
       toolName,
       category: category || 'chat',
+      toolMeta,
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     setMessages((prev) => [...prev, newMessage])
@@ -2286,12 +2310,28 @@ function VoiceRoomInner({
           addMessageRef.current?.('system', data.summary, undefined, 'log')
         }
       } else if (data.type === 'tool_use') {
-        // Show tool usage with status
-        const status = data.status === 'completed' ? '✓' : '⏳'
-        const msg = data.status === 'completed'
-          ? `${status} ${data.tool} completed`
-          : `${status} Using ${data.tool}...`
-        addMessageRef.current?.('system', msg, data.tool, 'log')
+        // Rich tool log card. The agent enriches this event (buildToolLogEvent)
+        // with file name, +/- line counts, command, and a diff — carried in
+        // toolMeta so the Logs drawer renders Claude-style review cards.
+        const toolMeta: ToolMeta = {
+          tool: data.tool,
+          status: data.status === 'completed' ? 'completed' : 'running',
+          filePath: data.filePath,
+          fileName: data.fileName,
+          command: data.command,
+          pattern: data.pattern,
+          url: data.url,
+          description: data.description,
+          linesAdded: data.linesAdded,
+          linesRemoved: data.linesRemoved,
+          editCount: data.editCount,
+          diff: data.diff,
+        }
+        // Human summary line (also used as the message content / fallback).
+        const verb = data.status === 'completed' ? '' : 'Using '
+        const target = data.fileName || data.command || data.pattern || data.url || ''
+        const msg = target ? `${verb}${data.tool}: ${target}`.trim() : `${verb}${data.tool}`.trim()
+        addMessageRef.current?.('system', msg || data.tool, data.tool, 'log', toolMeta)
         // Increment research tool counter
         setActiveResearch(prev => prev ? { ...prev, toolCount: prev.toolCount + 1 } : null)
       } else if (data.type === 'claude_output') {
