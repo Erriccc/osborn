@@ -537,7 +537,7 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   get model(): string {
-    return this.#opts.model || 'claude-fable-5' // Fable orchestrator with named sub-agents
+    return this.#opts.model || 'claude-opus-4-8' // Opus 4.8 orchestrator with named sub-agents
   }
 
   get sessionId(): string | null {
@@ -1150,7 +1150,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         permissionMode: this.#opts.permissionMode,
         allowedTools,
         // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
-        model: this.#opts.model || 'claude-fable-5', // Fable orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
+        model: this.#opts.model || 'claude-opus-4-8', // Opus 4.8 orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
         enableFileCheckpointing: true,
         settingSources: ['project', 'user'],
         extraArgs: { 'replay-user-messages': null },
