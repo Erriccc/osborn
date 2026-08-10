@@ -1712,6 +1712,12 @@ function VoiceRoomInner({
       }
       const next = exists ? prev.filter((f) => f.filePath !== file.filePath) : [...prev, slim]
       try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
+      // Sync to the server so favorites follow the user ACROSS DEVICES (fire-and-
+      // forget; localStorage is just the offline/per-device cache).
+      fetch('/api/favorites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorites: next }),
+      }).catch(() => {})
       return next
     })
     // Make sure a freshly-favorited file is present in the visible list.
@@ -1728,6 +1734,31 @@ function VoiceRoomInner({
       const missing = favoriteFiles.filter((f) => !have.has(f.filePath))
       return missing.length ? [...missing, ...prev] : prev
     })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Load CROSS-DEVICE favorites from the server on mount (localStorage is only a
+  // per-device cache — favoriting on your phone should show on your laptop).
+  // Union-merge server + local by filePath so nothing is lost, then cache the
+  // union to localStorage.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/favorites')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (cancelled || !json || !Array.isArray(json.favorites) || json.favorites.length === 0) return
+        const server = (json.favorites as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
+        setFavoriteFiles((prev) => {
+          const byPath = new Map(prev.map((f) => [f.filePath, f]))
+          for (const f of server) if (!byPath.has(f.filePath)) byPath.set(f.filePath, f)
+          const merged = Array.from(byPath.values())
+          if (merged.length === prev.length) return prev
+          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(merged)) } catch { /* ignore */ }
+          return merged
+        })
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
