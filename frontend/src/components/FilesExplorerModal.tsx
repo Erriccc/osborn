@@ -228,7 +228,7 @@ export function FilesExplorerModal({
                 <>
                   {favoriteFilesList.length > 0 && (
                     <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider bg-amber-500/[0.06] sticky top-0 flex items-center gap-1.5">
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider bg-gray-900 sticky top-0 z-10 flex items-center gap-1.5">
                         <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" /></svg>
                         Favorites · stays saved
                       </div>
@@ -246,7 +246,7 @@ export function FilesExplorerModal({
                   )}
                   {planFiles.length > 0 && (
                     <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30 sticky top-0">
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-900 sticky top-0 z-10">
                         Plans
                       </div>
                       {planFiles.map((file) => (
@@ -263,7 +263,7 @@ export function FilesExplorerModal({
                   )}
                   {researchFiles.length > 0 && (
                     <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30 sticky top-0">
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-900 sticky top-0 z-10">
                         Research
                       </div>
                       {researchFiles.map((file) => (
