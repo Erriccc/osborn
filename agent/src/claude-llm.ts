@@ -12,7 +12,7 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -150,6 +150,31 @@ function loadAllSkills(_workingDir: string): string {
   console.log(`📚 Loaded ${skillMap.size} skill(s) from ${homeSkillsDir}`)
   return `<available-skills>\n${[...skillMap.values()].join('\n\n---\n\n')}\n</available-skills>`
 }
+
+// Compaction threshold: Fable 5 runs a 1M context window, so let sessions use
+// all of it before auto-compacting. autoCompactWindow max is 1_000_000; the SDK
+// reads it from settings.json (settingSources includes 'user'), so merge it into
+// ~/.claude/settings.json at startup. Idempotent; never clobbers other keys.
+function ensureCompactionSettings(): void {
+  try {
+    const claudeDir = join(homedir(), '.claude')
+    const settingsPath = join(claudeDir, 'settings.json')
+    let settings: Record<string, unknown> = {}
+    if (existsSync(settingsPath)) {
+      try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* rewrite corrupt file */ }
+    } else {
+      mkdirSync(claudeDir, { recursive: true })
+    }
+    if (settings.autoCompactWindow !== 1_000_000) {
+      settings.autoCompactWindow = 1_000_000
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')
+      console.log('🪟 autoCompactWindow set to 1,000,000 in', settingsPath)
+    }
+  } catch (err) {
+    console.warn('⚠️ Failed to ensure compaction settings:', err)
+  }
+}
+ensureCompactionSettings()
 
 // Research mode tools — full research capabilities
 // Named sub-agents — the orchestrator delegates to these specialists. Each has
@@ -512,7 +537,7 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   get model(): string {
-    return this.#opts.model || 'claude-sonnet-4-6' // Sonnet orchestrator with named sub-agents
+    return this.#opts.model || 'claude-fable-5' // Fable orchestrator with named sub-agents
   }
 
   get sessionId(): string | null {
@@ -1125,7 +1150,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         permissionMode: this.#opts.permissionMode,
         allowedTools,
         // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
-        model: this.#opts.model || 'claude-sonnet-4-6', // Sonnet orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
+        model: this.#opts.model || 'claude-fable-5', // Fable orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
         enableFileCheckpointing: true,
         settingSources: ['project', 'user'],
         extraArgs: { 'replay-user-messages': null },
