@@ -849,9 +849,11 @@ export class ClaudeLLM extends llm.LLM {
   ): void {
     // Auto-compact threshold — fires PreCompact when context fills to this %.
     // Higher = uses more of the window before compacting (more context retained
-    // per turn, but less headroom for the next reply). 85% is the sweet spot
-    // before Claude starts hard-capping replies near the limit.
-    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '85'
+    // per turn, but less headroom for the next reply). Raised 85→92 because
+    // users reported compaction firing too often; 92% pushes it as late as is
+    // safe before Claude starts hard-capping replies near the 1M limit. Pairs
+    // with autoCompactWindow=1_000_000 (settings.json, read via settingSources).
+    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '92'
 
     const userMessage: SDKUserMessage = {
       type: 'user',
