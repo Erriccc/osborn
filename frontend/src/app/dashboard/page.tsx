@@ -1145,13 +1145,18 @@ export default function Dashboard() {
           'max-sm:rounded-t-3xl max-sm:border-t max-sm:border-[var(--border-subtle)]',
           'max-sm:bg-[var(--background)] max-sm:shadow-[0_-12px_48px_rgba(0,0,0,0.6)]',
           'max-sm:max-h-[85dvh] max-sm:overflow-y-auto',
-          'max-sm:transition-transform max-sm:duration-300 max-sm:ease-out',
+          'max-sm:transition-transform max-sm:duration-[420ms] max-sm:[transition-timing-function:cubic-bezier(0.22,1,0.36,1)] max-sm:will-change-transform',
           showSettings ? 'max-sm:translate-y-0' : 'max-sm:translate-y-full max-sm:pointer-events-none',
         ].join(' ')}>
-          {/* Drag-handle affordance (mobile sheet only) */}
-          <div className="sm:hidden sticky top-0 pt-2.5 pb-1 bg-[var(--background)] rounded-t-3xl">
-            <div className="mx-auto h-1 w-10 rounded-full bg-[var(--border)]" />
-          </div>
+          {/* Drag-handle — tappable to close, bolder pill (mobile sheet only) */}
+          <button
+            type="button"
+            onClick={() => setShowSettings(false)}
+            aria-label="Close settings"
+            className="sm:hidden sticky top-0 z-10 w-full flex justify-center pt-2.5 pb-2 bg-[var(--background)] rounded-t-3xl active:bg-[var(--surface)]/60 transition-colors group"
+          >
+            <span className="h-1.5 w-12 rounded-full bg-[var(--muted)]/70 ring-1 ring-[var(--border-subtle)] shadow-sm group-active:w-14 group-active:bg-[var(--accent)]/60 transition-all duration-200" />
+          </button>
           <div className="sm:border-b border-[var(--border-subtle)]">
             <div className="max-w-2xl mx-auto px-4 py-5 max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-5">
 
