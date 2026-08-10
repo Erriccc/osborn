@@ -1714,6 +1714,28 @@ function VoiceRoomInner({
     return generatedFiles.find(f => f.filePath === selectedFilePath) || generatedFiles[0] || null
   }, [generatedFiles, selectedFilePath])
 
+  // Hydrate content for a URL-backed file the user opens (Supabase-listed files
+  // arrive with a `url` but no inline content). Text/markdown/html are fetched
+  // and rendered inline; images render straight from the URL; binaries (PDFs)
+  // fall through to an "Open" link in the viewer. Without this, a bucket file
+  // would spin on "Loading content…" forever.
+  useEffect(() => {
+    const f = selectedFile
+    if (!f || !f.url || f.content || f.isImage) return
+    const ext = f.fileName.split('.').pop()?.toLowerCase() || ''
+    const textLike = ['md', 'markdown', 'txt', 'html', 'htm', 'svg', 'json', 'csv', 'log', 'yaml', 'yml', 'ts', 'tsx', 'js', 'jsx', 'py', 'sh', 'css'].includes(ext)
+    if (!textLike) return // binary — viewer shows an open link, no fetch
+    let cancelled = false
+    fetch(f.url)
+      .then((r) => (r.ok ? r.text() : null))
+      .then((text) => {
+        if (cancelled || text == null) return
+        setGeneratedFiles((prev) => prev.map((x) => (x.filePath === f.filePath ? { ...x, content: text } : x)))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [selectedFile])
+
   const { localParticipant } = useLocalParticipant()
 
   const toggleMute = useCallback(async () => {
@@ -2736,6 +2758,58 @@ function VoiceRoomInner({
     sendToAgent(payload, { reliable: true })
     addMessageRef.current?.('system', '🔄 Continuing previous session...')
   }, [sendToAgent])
+
+  // Rehydrate the Files explorer from Supabase Storage (the DURABLE copy) for a
+  // given session. The agent's `session_artifacts` message only reflects its
+  // local disk, which is empty/partial on a fresh cloud machine after resume —
+  // so historic files (uploaded to the bucket) vanished from the explorer. This
+  // fetch makes the bucket authoritative: every file the user has for this
+  // session reappears with a working URL, and any file the agent also listed
+  // locally gets the bucket URL grafted on (no duplicates).
+  const loadSessionFiles = useCallback(async (sessionId: string) => {
+    if (!sessionId) return
+    try {
+      const res = await fetch(`/api/session-files?sessionId=${encodeURIComponent(sessionId)}`)
+      if (!res.ok) return
+      const json = await res.json()
+      const bucketFiles = Array.isArray(json?.files) ? json.files : []
+      if (bucketFiles.length === 0) return
+      console.log(`📁 Supabase session files for ${sessionId.substring(0, 8)}:`, bucketFiles.length)
+
+      setGeneratedFiles((prev) => {
+        const next = [...prev]
+        for (const bf of bucketFiles) {
+          const idx = next.findIndex((f) => f.fileName === bf.fileName)
+          if (idx >= 0) {
+            // Bucket is authoritative for location — graft the durable URL on.
+            next[idx] = { ...next[idx], url: next[idx].url || bf.url }
+          } else {
+            next.push({
+              filePath: bf.storagePath,
+              fileName: bf.fileName,
+              url: bf.url,
+              type: (bf.type as GeneratedFile['type']) || 'other',
+              source: 'research',
+              updatedAt: bf.updatedAt ? new Date(bf.updatedAt) : new Date(),
+              isImage: !!bf.isImage,
+              mimeType: bf.isImage ? `image/${bf.fileName.split('.').pop()?.toLowerCase()}` : undefined,
+            })
+          }
+        }
+        return next
+      })
+
+      setSelectedFilePath((cur) => cur ?? bucketFiles[0]?.storagePath ?? null)
+    } catch (err) {
+      console.warn('[session-files] load failed:', err)
+    }
+  }, [])
+
+  // Whenever we settle on a concrete session id (resume, switch, or a freshly
+  // started session), pull that session's durable file list from Supabase.
+  useEffect(() => {
+    if (currentSessionId) loadSessionFiles(currentSessionId)
+  }, [currentSessionId, loadSessionFiles])
 
   // Compress image to fit within data channel limits
   const compressImage = async (file: File, maxSize: number = 40000): Promise<string> => {
@@ -4040,10 +4114,10 @@ function VoiceRoomInner({
                   )}
                 </div>
                 <div className="p-4">
-                  {selectedFile.content ? (
+                  {(selectedFile.content || (selectedFile.isImage && selectedFile.url)) ? (
                     selectedFile.isImage ? (
                       <img
-                        src={`data:${selectedFile.mimeType || 'image/png'};base64,${selectedFile.content}`}
+                        src={selectedFile.url || `data:${selectedFile.mimeType || 'image/png'};base64,${selectedFile.content}`}
                         alt={selectedFile.fileName}
                         className="max-w-full rounded-lg border border-gray-700"
                       />
@@ -4061,6 +4135,18 @@ function VoiceRoomInner({
                         <MarkdownMessage content={selectedFile.content} />
                       </div>
                     )
+                  ) : selectedFile.url ? (
+                    <a
+                      href={selectedFile.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 text-xs font-medium"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                      Open {selectedFile.fileName}
+                    </a>
                   ) : (
                     <div className="flex items-center justify-center py-8 text-gray-500 text-xs">
                       <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
