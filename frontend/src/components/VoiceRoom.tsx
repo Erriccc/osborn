@@ -3904,76 +3904,32 @@ function VoiceRoomInner({
             Visible for the full duration (typically 1–3 min), rolling stages keep the user
             informed something is happening. Replaces the older 3-second flash pill which
             users routinely missed. */}
+        {/* Compaction indicator — SLIM single line. The header already carries a
+            "Teaching Osborn…" pill; this is just a quiet one-liner so a frequent
+            compaction doesn't dominate the screen. No subtitle, no stage list. */}
         {compactionStatus !== 'idle' && (
-          <div className={`relative overflow-hidden px-3 sm:px-4 py-3 border-b transition-all duration-500 ${
+          <div className={`flex items-center gap-2 px-3 py-1 border-b text-[11px] transition-all ${
             compactionStatus === 'compacting'
-              ? 'bg-gradient-to-r from-amber-500/[0.08] via-amber-500/[0.14] to-amber-500/[0.08] border-amber-500/30'
-              : 'bg-gradient-to-r from-emerald-500/[0.08] via-emerald-500/[0.14] to-emerald-500/[0.08] border-emerald-500/30'
+              ? 'bg-amber-500/[0.06] border-amber-500/20 text-amber-200/90'
+              : 'bg-emerald-500/[0.06] border-emerald-500/20 text-emerald-200/90'
           }`}>
-            {/* Indeterminate progress sweep along the top edge — signals live
-                work (like Claude's working states) without a fake percentage. */}
-            {compactionStatus === 'compacting' && (
-              <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-amber-500/10 overflow-hidden">
-                <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-amber-300 to-transparent animate-teach-sweep" />
-              </div>
+            {compactionStatus === 'compacting' ? (
+              <svg className="w-3 h-3 shrink-0 animate-teach-sheen" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4L12 2z" /></svg>
+            ) : (
+              <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
             )}
-            <div className="flex items-start gap-2.5 max-w-3xl mx-auto">
-              <div className={`shrink-0 mt-0.5 ${compactionStatus === 'compacting' ? 'text-amber-300' : 'text-emerald-300'}`}>
-                {compactionStatus === 'compacting' ? (
-                  // Sparkle that softly pulses — "thinking/learning", not a spinner
-                  <svg className="w-4 h-4 animate-teach-sheen" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4L12 2zM19 14l.9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9L19 14z" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className={`text-sm font-semibold ${compactionStatus === 'compacting' ? 'text-amber-200' : 'text-emerald-200'}`}>
-                  {compactionStatus === 'compacting'
-                    ? 'Teaching Osborn your preferences…'
-                    : `Osborn learned from this session — ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated`}
-                </div>
-                <div className="text-[11px] text-gray-400 mt-0.5">
-                  {compactionStatus === 'compacting'
-                    ? 'Saving your decisions and style so it carries them forward — keep talking, this runs in the background.'
-                    : "Saved to memory — it'll apply these automatically next time."}
-                </div>
-                {compactionStages.length > 0 && (
-                  <div className="mt-1.5 text-xs text-gray-400 space-y-0.5 max-h-24 overflow-y-auto">
-                    {compactionStages.slice(-6).map((s, i) => (
-                      <div key={`${s.ts}-${i}`} className="flex items-center gap-1.5">
-                        <span className={compactionStatus === 'compacting' ? 'text-amber-400/60' : 'text-emerald-400/60'}>›</span>
-                        <span className="text-gray-300">{s.stage}</span>
-                        {s.detail && <span className="text-gray-500">— {s.detail}</span>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {compactionStatus === 'complete' && compactionSkills.length > 0 && (
-                  <div className="mt-1.5 flex flex-wrap gap-1">
-                    {compactionSkills.map(name => (
-                      <span key={name} className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono">
-                        {name}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {/* Dismiss — the banner auto-clears, but let the user close it now. */}
-              <button
-                onClick={() => { setCompactionStatus('idle'); setCompactionStages([]); setCompactionSkills([]); setCompactionStartedAt(null) }}
-                className="shrink-0 -mt-0.5 -mr-1 p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-white/5 transition-colors"
-                title="Dismiss"
-                aria-label="Dismiss"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
+            <span className="truncate font-medium">
+              {compactionStatus === 'compacting'
+                ? 'Teaching Osborn…'
+                : `Osborn learned · ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'}`}
+            </span>
+            <button
+              onClick={() => { setCompactionStatus('idle'); setCompactionStages([]); setCompactionSkills([]); setCompactionStartedAt(null) }}
+              className="ml-auto shrink-0 p-0.5 rounded text-gray-500 hover:text-gray-200"
+              title="Dismiss" aria-label="Dismiss"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
           </div>
         )}
 

@@ -176,6 +176,17 @@ function ensureCompactionSettings(): void {
 }
 ensureCompactionSettings()
 
+// Enable Opus 4.8's native 1M context window + set the auto-compact threshold
+// at MODULE LOAD — BEFORE any query() spawns — so they actually apply to the
+// persistent session. Setting these per-message in pushMessage() is too late:
+// the SDK subprocess reads env once at cold-start, so later writes never reach
+// the running query — the reason auto-compaction kept firing at ~150k every
+// turn. ENABLE_1M_CONTEXT is Claude Code's documented switch for the context-1m
+// (1M) window; without it opus runs at its 200K default. NOTE: 1M activation
+// also depends on account entitlement (auto on Team seats; else usage credits).
+process.env.ENABLE_1M_CONTEXT = '1'
+process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '92'
+
 // Research mode tools — full research capabilities
 // Named sub-agents — the orchestrator delegates to these specialists. Each has
 // a specific role, model, and tool set. Module-level + exported so the HTTP
@@ -852,16 +863,9 @@ export class ClaudeLLM extends llm.LLM {
       eventEmitter: EventEmitter
     },
   ): void {
-    // Auto-compact threshold — fires PreCompact when context fills to this %.
-    // Higher = uses more of the window before compacting (more context retained
-    // per turn, but less headroom for the next reply). 92% pushes it as late as
-    // is safe before Claude starts hard-capping replies near the 1M limit.
-    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '92'
-    // Compaction WINDOW in thousands of tokens (min(actual_context, this)). Now
-    // that the model runs with [1m] (1M context), set this to 1000 (=1,000,000)
-    // so the compaction budget matches the real window instead of being clamped
-    // to opus' 200k base — the actual cause of the ~153k early compaction.
-    process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '1000'
+    // (Compaction/1M env is set once at module load — see ENABLE_1M_CONTEXT /
+    // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE near ensureCompactionSettings(). Setting it
+    // here per-message was too late for the persistent query.)
 
     const userMessage: SDKUserMessage = {
       type: 'user',
