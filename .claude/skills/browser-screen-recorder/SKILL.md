@@ -75,6 +75,20 @@ Every run's closing sequence MUST be:
   5. Deliver the media to the user (video + key frames + LIVE URL if streaming).
 If frames contradict the assertions, the TEST is wrong — tighten and rerun.
 
+**DELIVER MEDIA INLINE (use the `send-media` skill) — MANDATORY.** Files written to
+the machine's disk are INVISIBLE to the user (mobile especially). To actually show
+them, upload each artifact and drop its public URL in your reply:
+```bash
+URL=$(curl -s -X POST "https://www.voice-native.com/api/upload" -F "file=@/path/to/clip.mp4" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['url'])")
+```
+Then render it in your NEXT message as `[Image: step-3-nav.png](URL)` (images show
+inline, tap-to-open) or `[File: run.mp4](URL)` (video/file card). Upload the key
+frames AND the mp4; list all links in one message. The LIVE URL is the during-run
+window; these uploaded artifacts are the after-the-fact proof the user can see.
+Never upload artifacts containing secrets — the URL is public. See the `send-media`
+skill for the full contract.
+
 ## Live stream — return the URL so the user watches in real time
 
 When `startLiveStream()` is active (session-tour, or any spec that starts it),
