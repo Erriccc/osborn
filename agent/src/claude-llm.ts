@@ -537,7 +537,12 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   get model(): string {
-    return this.#opts.model || 'claude-opus-4-8' // Opus 4.8 orchestrator with named sub-agents
+    // The [1m] suffix opts into Opus 4.8's 1M context window (Claude Code's
+    // context-1m-2025-08-07 beta). WITHOUT it the SDK runs opus at its 200k
+    // base, so auto-compaction fired at ~153k every ~10 min (confirmed in the
+    // live agent log: compact_boundary pre_tokens≈153k). With [1m] the window
+    // is 1M and compaction happens far later. Overridable via opts.model.
+    return this.#opts.model || 'claude-opus-4-8[1m]'
   }
 
   get sessionId(): string | null {
@@ -849,11 +854,14 @@ export class ClaudeLLM extends llm.LLM {
   ): void {
     // Auto-compact threshold — fires PreCompact when context fills to this %.
     // Higher = uses more of the window before compacting (more context retained
-    // per turn, but less headroom for the next reply). Raised 85→92 because
-    // users reported compaction firing too often; 92% pushes it as late as is
-    // safe before Claude starts hard-capping replies near the 1M limit. Pairs
-    // with autoCompactWindow=1_000_000 (settings.json, read via settingSources).
+    // per turn, but less headroom for the next reply). 92% pushes it as late as
+    // is safe before Claude starts hard-capping replies near the 1M limit.
     process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '92'
+    // Compaction WINDOW in thousands of tokens (min(actual_context, this)). Now
+    // that the model runs with [1m] (1M context), set this to 1000 (=1,000,000)
+    // so the compaction budget matches the real window instead of being clamped
+    // to opus' 200k base — the actual cause of the ~153k early compaction.
+    process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '1000'
 
     const userMessage: SDKUserMessage = {
       type: 'user',
@@ -1152,7 +1160,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         permissionMode: this.#opts.permissionMode,
         allowedTools,
         // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
-        model: this.#opts.model || 'claude-opus-4-8', // Opus 4.8 orchestrator with named sub-agents (Haiku tested but ignored delegation rules)
+        model: this.#opts.model || 'claude-opus-4-8[1m]', // Opus 4.8 + [1m] → 1M context (see get model() note); prevents ~153k early compaction
         enableFileCheckpointing: true,
         settingSources: ['project', 'user'],
         extraArgs: { 'replay-user-messages': null },
