@@ -22,7 +22,7 @@ export async function GET() {
   try {
     supabase = await createSupabaseServer()
   } catch {
-    return NextResponse.json({ favorites: [] })
+    return NextResponse.json({ favorites: [], exists: false })
   }
   const { data: u } = await supabase.auth.getUser()
   if (!u.user) return NextResponse.json({ favorites: [] })
@@ -31,9 +31,9 @@ export async function GET() {
   if (error || !data) return NextResponse.json({ favorites: [] })
   try {
     const parsed = JSON.parse(await data.text())
-    return NextResponse.json({ favorites: Array.isArray(parsed) ? parsed : [] })
+    return NextResponse.json({ favorites: Array.isArray(parsed) ? parsed : [], exists: true })
   } catch {
-    return NextResponse.json({ favorites: [] })
+    return NextResponse.json({ favorites: [], exists: false })
   }
 }
 

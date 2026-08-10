@@ -1724,9 +1724,9 @@ function VoiceRoomInner({
     setGeneratedFiles((prev) => (prev.some((f) => f.filePath === file.filePath) ? prev : [file, ...prev]))
   }, [])
 
-  // On mount, surface any persisted favorites in the explorer immediately, even
-  // before the agent/Supabase reports this session's files — so a returning user
-  // always sees their pinned files.
+  // Surface favorites in the explorer whenever the set changes (initial load,
+  // server sync, or a toggle) — so a returning user always sees their pinned
+  // files even before the agent/Supabase reports this session's files.
   useEffect(() => {
     if (favoriteFiles.length === 0) return
     setGeneratedFiles((prev) => {
@@ -1734,28 +1734,35 @@ function VoiceRoomInner({
       const missing = favoriteFiles.filter((f) => !have.has(f.filePath))
       return missing.length ? [...missing, ...prev] : prev
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [favoriteFiles])
 
-  // Load CROSS-DEVICE favorites from the server on mount (localStorage is only a
-  // per-device cache — favoriting on your phone should show on your laptop).
-  // Union-merge server + local by filePath so nothing is lost, then cache the
-  // union to localStorage.
+  // Cross-device favorites — SERVER IS AUTHORITATIVE. On mount:
+  //  - if the server has a favorites record → replace local with it (this is how
+  //    an un-favorite on another device propagates here, not just adds).
+  //  - if the server has NO record yet (pre-migration device) → seed it from this
+  //    device's local favorites so the first sync doesn't lose anything.
   useEffect(() => {
     let cancelled = false
     fetch('/api/favorites')
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
-        if (cancelled || !json || !Array.isArray(json.favorites) || json.favorites.length === 0) return
-        const server = (json.favorites as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
-        setFavoriteFiles((prev) => {
-          const byPath = new Map(prev.map((f) => [f.filePath, f]))
-          for (const f of server) if (!byPath.has(f.filePath)) byPath.set(f.filePath, f)
-          const merged = Array.from(byPath.values())
-          if (merged.length === prev.length) return prev
-          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(merged)) } catch { /* ignore */ }
-          return merged
-        })
+        if (cancelled || !json) return
+        if (json.exists && Array.isArray(json.favorites)) {
+          const server = (json.favorites as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
+          setFavoriteFiles(server)
+          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(server)) } catch { /* ignore */ }
+        } else {
+          // No server record — seed it once from local so nothing is lost.
+          setFavoriteFiles((prev) => {
+            if (prev.length > 0) {
+              fetch('/api/favorites', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ favorites: prev }),
+              }).catch(() => {})
+            }
+            return prev
+          })
+        }
       })
       .catch(() => {})
     return () => { cancelled = true }
