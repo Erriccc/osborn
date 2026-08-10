@@ -307,10 +307,32 @@ function MessageContent({ content }: { content: string }) {
   )
 }
 
+// Harness-internal interruption wrappers (the "[INTERRUPTED] / CONTEXT PRESERVATION"
+// blocks injected around user speech for the model) must never render in chat.
+// Extract the user's actual words when present; otherwise hide the bubble.
+const HARNESS_MARKERS = [
+  'CONTEXT PRESERVATION (READ THIS):',
+  'What the user heard before cutoff',
+  'WHAT THE USER DID NOT HEAR',
+  'Text you produced that the user did NOT hear',
+  'Text you generated while the user was speaking',
+  'RESPOND with speech first',
+]
+function sanitizeUserTranscript(text: string): string | null {
+  const wrapped =
+    HARNESS_MARKERS.some((m) => text.includes(m)) ||
+    /^\[(INTERRUPTED|CONTEXT)\]/.test(text.trim())
+  if (!wrapped) return text
+  const m = text.match(/(?:User's message|What the user is saying now):\s*"([\s\S]*?)"\s*(?:\n|$)/)
+  return m ? m[1].trim() : null
+}
+
 // Modern chat message bubble with parts support
 const MessageBubble = React.memo(function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
+  const userText = isUser ? sanitizeUserTranscript(message.content) : message.content
+  if (isUser && userText === null) return null
 
   // Parse content into parts for assistant messages
   const parts = useMemo(() => {
@@ -337,15 +359,15 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
       )}
 
       <div
-        className={`max-w-[92%] sm:max-w-[80%] rounded-2xl px-3 sm:px-4 py-2 sm:py-2.5 shadow-md transition-all ${
+        className={`max-w-[92%] sm:max-w-[80%] transition-all ${
           isUser
-            ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-br-md'
+            ? 'bg-gray-700/50 text-gray-100 rounded-2xl rounded-br-md px-3.5 sm:px-4 py-2 sm:py-2.5'
             : isSystem
-            ? 'bg-amber-500/10 text-amber-200 border border-amber-500/30 rounded-bl-md'
+            ? 'bg-amber-500/10 text-amber-200/90 border border-amber-500/20 rounded-xl px-3.5 py-2'
             : message.toolName === 'fast-brain'
-            ? 'bg-amber-900/30 text-amber-100 border border-amber-500/30 rounded-bl-md backdrop-blur-sm'
-            : 'bg-gray-800/80 text-gray-100 border border-gray-700/50 rounded-bl-md backdrop-blur-sm'
-        } ${message.isStreaming ? 'ring-2 ring-amber-500/30' : ''}`}
+            ? 'text-gray-300/90 border-l-2 border-amber-500/40 pl-3 pr-1 py-1'
+            : 'text-gray-100 px-0.5 py-1'
+        } ${message.isStreaming ? 'opacity-95' : ''}`}
       >
         {/* Tool name badge — skip for fast-brain (has its own label in content) */}
         {message.toolName && message.toolName !== 'fast-brain' && (
@@ -398,7 +420,7 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
             {message.isStreaming && <StreamingDots />}
           </div>
         ) : (
-          <MessageContent content={message.content} />
+          <MessageContent content={isUser ? (userText as string) : message.content} />
         )}
 
         {/* Timestamp */}
