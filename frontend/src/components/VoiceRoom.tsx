@@ -1681,6 +1681,55 @@ function VoiceRoomInner({
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([])
   const [showFilesPanel, setShowFilesPanel] = useState(false)
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
+
+  // Favorited session files — a durable, user-pinned subset. Everything else in
+  // the explorer can churn (session switch clears it, artifacts get pruned), but
+  // favorites are persisted to localStorage WITH their metadata + Supabase URL,
+  // so they survive reloads and are re-injected into the list on mount. This is
+  // the "favorited files stay up even if everything else gets lost" behavior.
+  const FAVORITES_KEY = 'osborn-favorite-files'
+  const [favoriteFiles, setFavoriteFiles] = useState<GeneratedFile[]>(() => {
+    if (typeof window === 'undefined') return []
+    try {
+      const raw = localStorage.getItem(FAVORITES_KEY)
+      if (!raw) return []
+      const arr = JSON.parse(raw) as GeneratedFile[]
+      return arr.map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
+    } catch { return [] }
+  })
+  // Fast membership check keyed by filePath (stable per file).
+  const favoritePaths = useMemo(() => new Set(favoriteFiles.map((f) => f.filePath)), [favoriteFiles])
+
+  const toggleFavorite = useCallback((file: GeneratedFile) => {
+    setFavoriteFiles((prev) => {
+      const exists = prev.some((f) => f.filePath === file.filePath)
+      // Strip inline content before persisting — favorites keep the durable URL
+      // and metadata, not multi-MB base64 blobs that would blow the quota.
+      const slim: GeneratedFile = {
+        filePath: file.filePath, fileName: file.fileName, url: file.url,
+        type: file.type, source: file.source, updatedAt: file.updatedAt,
+        isImage: file.isImage, mimeType: file.mimeType,
+      }
+      const next = exists ? prev.filter((f) => f.filePath !== file.filePath) : [...prev, slim]
+      try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
+      return next
+    })
+    // Make sure a freshly-favorited file is present in the visible list.
+    setGeneratedFiles((prev) => (prev.some((f) => f.filePath === file.filePath) ? prev : [file, ...prev]))
+  }, [])
+
+  // On mount, surface any persisted favorites in the explorer immediately, even
+  // before the agent/Supabase reports this session's files — so a returning user
+  // always sees their pinned files.
+  useEffect(() => {
+    if (favoriteFiles.length === 0) return
+    setGeneratedFiles((prev) => {
+      const have = new Set(prev.map((f) => f.filePath))
+      const missing = favoriteFiles.filter((f) => !have.has(f.filePath))
+      return missing.length ? [...missing, ...prev] : prev
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false) // Default closed — opens via button (desktop only)
   // MCP server state
@@ -2428,8 +2477,9 @@ function VoiceRoomInner({
         if (data.success) {
           setCurrentSessionId(data.sessionId)
 
-          // Clear previous session's files
-          setGeneratedFiles([])
+          // Clear previous session's files — but keep favorites pinned so the
+          // user's starred files survive the switch (they're cross-session).
+          setGeneratedFiles(favoriteFiles)
           setSelectedFilePath(null)
 
           // Clear current chat messages before showing new context
@@ -4359,6 +4409,8 @@ function VoiceRoomInner({
         onCopyFile={handleCopyFile}
         onCopyAll={handleCopyAllFiles}
         fileCopyFeedback={fileCopyFeedback}
+        favoritePaths={favoritePaths}
+        onToggleFavorite={toggleFavorite}
       />
     </>
   )

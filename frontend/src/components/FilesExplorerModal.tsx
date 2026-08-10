@@ -30,6 +30,11 @@ interface FilesExplorerModalProps {
   onCopyFile: (filePath: string) => void
   onCopyAll: () => void
   fileCopyFeedback: string | null
+  // Favorites — a durable, user-pinned subset. favoritePaths holds the filePath
+  // of each starred file; onToggleFavorite flips one. Optional so the modal
+  // still works if a caller doesn't wire favorites.
+  favoritePaths?: Set<string>
+  onToggleFavorite?: (file: GeneratedFile) => void
 }
 
 const typeBadge: Record<string, { label: string; color: string }> = {
@@ -51,6 +56,8 @@ export function FilesExplorerModal({
   onCopyFile,
   onCopyAll,
   fileCopyFeedback,
+  favoritePaths,
+  onToggleFavorite,
 }: FilesExplorerModalProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [isMaximized, setIsMaximized] = useState(false)
@@ -80,9 +87,13 @@ export function FilesExplorerModal({
     )
   }, [files, searchQuery])
 
-  // Group filtered files by source
-  const planFiles = useMemo(() => filteredFiles.filter(f => f.source === 'plan'), [filteredFiles])
-  const researchFiles = useMemo(() => filteredFiles.filter(f => f.source === 'research'), [filteredFiles])
+  const isFav = useCallback((fp: string) => !!favoritePaths?.has(fp), [favoritePaths])
+
+  // Favorites pin to the top in their own section; the source groups below then
+  // exclude them so a starred file isn't listed twice.
+  const favoriteFilesList = useMemo(() => filteredFiles.filter(f => isFav(f.filePath)), [filteredFiles, isFav])
+  const planFiles = useMemo(() => filteredFiles.filter(f => f.source === 'plan' && !isFav(f.filePath)), [filteredFiles, isFav])
+  const researchFiles = useMemo(() => filteredFiles.filter(f => f.source === 'research' && !isFav(f.filePath)), [filteredFiles, isFav])
 
   // Currently selected file
   const selectedFile = useMemo(
@@ -215,6 +226,24 @@ export function FilesExplorerModal({
                 </div>
               ) : (
                 <>
+                  {favoriteFilesList.length > 0 && (
+                    <div>
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider bg-amber-500/[0.06] sticky top-0 flex items-center gap-1.5">
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" /></svg>
+                        Favorites · stays saved
+                      </div>
+                      {favoriteFilesList.map((file) => (
+                        <FileListItem
+                          key={file.filePath}
+                          file={file}
+                          isSelected={selectedFile?.filePath === file.filePath}
+                          onSelect={handleSelectFile}
+                          isFavorite={isFav(file.filePath)}
+                          onToggleFavorite={onToggleFavorite}
+                        />
+                      ))}
+                    </div>
+                  )}
                   {planFiles.length > 0 && (
                     <div>
                       <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30 sticky top-0">
@@ -226,6 +255,8 @@ export function FilesExplorerModal({
                           file={file}
                           isSelected={selectedFile?.filePath === file.filePath}
                           onSelect={handleSelectFile}
+                          isFavorite={isFav(file.filePath)}
+                          onToggleFavorite={onToggleFavorite}
                         />
                       ))}
                     </div>
@@ -241,6 +272,8 @@ export function FilesExplorerModal({
                           file={file}
                           isSelected={selectedFile?.filePath === file.filePath}
                           onSelect={handleSelectFile}
+                          isFavorite={isFav(file.filePath)}
+                          onToggleFavorite={onToggleFavorite}
                         />
                       ))}
                     </div>
@@ -415,34 +448,56 @@ function FileListItem({
   file,
   isSelected,
   onSelect,
+  isFavorite,
+  onToggleFavorite,
 }: {
   file: GeneratedFile
   isSelected: boolean
   onSelect: (filePath: string) => void
+  isFavorite?: boolean
+  onToggleFavorite?: (file: GeneratedFile) => void
 }) {
   const badge = typeBadge[file.type] || typeBadge.other
 
+  // Row is a div (not a button) so the star can be its own button without
+  // nesting interactive elements. The name area stays keyboard-activatable.
   return (
-    <button
-      onClick={() => onSelect(file.filePath)}
-      className={`w-full text-left px-3 py-2.5 flex items-center gap-2 transition-colors ${
+    <div
+      className={`w-full px-3 py-2.5 flex items-center gap-2 transition-colors ${
         isSelected
           ? 'bg-violet-500/15 border-l-2 border-violet-400'
           : 'hover:bg-gray-800/50 border-l-2 border-transparent'
       }`}
     >
-      <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${badge.color}`}>{badge.label}</span>
-      <span className="text-xs font-mono text-gray-300 truncate flex-1">{file.fileName}</span>
-      {/* Spinner only while we have neither content nor URL — once either
-          lands the file is "ready" (URL may still need a fetch to render
-          text, but the list item shouldn't spin forever). */}
+      <button
+        onClick={() => onSelect(file.filePath)}
+        className="flex items-center gap-2 min-w-0 flex-1 text-left"
+      >
+        <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${badge.color}`}>{badge.label}</span>
+        <span className="text-xs font-mono text-gray-300 truncate">{file.fileName}</span>
+      </button>
+      {/* Spinner only while we have neither content nor URL. */}
       {!file.content && !file.url && (
         <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
       )}
-    </button>
+      {onToggleFavorite && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleFavorite(file) }}
+          className={`shrink-0 p-1 rounded transition-colors ${
+            isFavorite ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-300'
+          }`}
+          title={isFavorite ? 'Unfavorite — remove from pinned' : 'Favorite — keep this file pinned'}
+          aria-label={isFavorite ? 'Unfavorite' : 'Favorite'}
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={isFavorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" />
+          </svg>
+        </button>
+      )}
+    </div>
   )
 }
 
