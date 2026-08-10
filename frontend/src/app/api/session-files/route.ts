@@ -65,7 +65,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: false, error: 'Missing sessionId' }, { status: 400 })
   }
 
-  let supabase
+  let supabase: Awaited<ReturnType<typeof createSupabaseServer>>
   try {
     supabase = await createSupabaseServer()
   } catch {

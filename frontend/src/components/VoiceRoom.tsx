@@ -4214,7 +4214,7 @@ function VoiceRoomInner({
                       />
                     ) : (
                       <div className="text-sm">
-                        <MarkdownMessage content={selectedFile.content} />
+                        <MarkdownMessage content={selectedFile.content || ''} />
                       </div>
                     )
                   ) : selectedFile.url ? (
