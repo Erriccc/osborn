@@ -361,7 +361,7 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
       <div
         className={`max-w-[92%] sm:max-w-[80%] transition-all ${
           isUser
-            ? 'bg-gray-700/50 text-gray-100 rounded-2xl rounded-br-md px-3.5 sm:px-4 py-2 sm:py-2.5'
+            ? 'bg-gray-700/80 text-gray-100 rounded-2xl rounded-br-md px-3.5 sm:px-4 py-2 sm:py-2.5 border border-white/5 shadow-sm'
             : isSystem
             ? 'bg-amber-500/10 text-amber-200/90 border border-amber-500/20 rounded-xl px-3.5 py-2'
             : message.toolName === 'fast-brain'
@@ -2706,7 +2706,7 @@ function VoiceRoomInner({
         setCompactionStatus('complete')
         setCompactionSkills(Array.isArray(data.skillNames) ? data.skillNames : [])
         setCompactionStages(prev => [...prev, {
-          stage: 'Learning saved',
+          stage: 'Saved to memory',
           detail: `${data.skillsWritten ?? 0} skill${data.skillsWritten === 1 ? '' : 's'} updated`,
           ts: Date.now(),
         }])
@@ -3506,6 +3506,10 @@ function VoiceRoomInner({
             {/* Status */}
             <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} />
 
+            {/* Live clock — sits right beside the status so the time + date read
+                at a glance and every screenshot carries a timestamp. */}
+            <LiveClock showDate />
+
             {/* Compaction status pill — header-level summary (always visible during compact) */}
             {compactionStatus !== 'idle' && (
               <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
@@ -3518,14 +3522,14 @@ function VoiceRoomInner({
                     <svg className="w-3.5 h-3.5 animate-pulse" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4L12 2zM19 14l.9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9L19 14z" />
                     </svg>
-                    <span>Learning your preferences&hellip;</span>
+                    <span>Teaching Osborn&hellip;</span>
                   </>
                 ) : (
                   <>
                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
-                    <span>{compactionSkills.length > 0 ? `Learned · ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated` : 'Learning saved'}</span>
+                    <span>{compactionSkills.length > 0 ? `Osborn learned · ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'}` : 'Memory saved'}</span>
                   </>
                 )}
               </div>
@@ -3571,19 +3575,9 @@ function VoiceRoomInner({
               </div>
             )}
 
-            {/* Mobile menu button */}
-            <button onClick={() => setShowMobileMenu(true)}
-              className="sm:hidden p-2 rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-
-            {/* Spacer */}
+            {/* Spacer — pushes the burger (mobile) / control cluster (desktop)
+                to the far right. */}
             <div className="flex-1" />
-
-            {/* Live clock — always visible so screenshots carry the time */}
-            <LiveClock />
 
             {/* Named agents + Skills — desktop header only. On mobile these
                 live in the composer control strip next to the input (Claude-
@@ -3787,14 +3781,14 @@ function VoiceRoomInner({
                 )}
               </button>
 
-              {/* Disconnect button — ALWAYS visible on every viewport (ending
-                  the session stops billing; it must never clip off-screen —
-                  user screenshot 2026-08-01). shrink-0 guarantees it wins the
-                  header's width fight. */}
+              {/* Disconnect button — DESKTOP header only. On mobile the hangup
+                  lives in the composer control strip beside the input (next to
+                  Mute), so the top bar carries only status/clock + the burger.
+                  shrink-0 keeps it from clipping in the desktop width fight. */}
               {onDisconnect && (
                 <button
                   onClick={onDisconnect}
-                  className="shrink-0 p-2 rounded-lg transition-all bg-red-500/20 text-red-400 hover:bg-red-500/40 hover:text-red-300 border border-red-500/30"
+                  className="hidden sm:block shrink-0 p-2 rounded-lg transition-all bg-red-500/20 text-red-400 hover:bg-red-500/40 hover:text-red-300 border border-red-500/30"
                   title="Disconnect (saves LiveKit minutes)"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -3803,6 +3797,16 @@ function VoiceRoomInner({
                 </button>
               )}
             </div>
+
+            {/* Mobile menu button — far right, by itself. Overflow (history,
+                sessions, MCP, meeting, files) lives behind it so the top bar
+                stays clean: status + clock on the left, burger on the right. */}
+            <button onClick={() => setShowMobileMenu(true)}
+              className="sm:hidden shrink-0 p-2 rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -3811,17 +3815,24 @@ function VoiceRoomInner({
             informed something is happening. Replaces the older 3-second flash pill which
             users routinely missed. */}
         {compactionStatus !== 'idle' && (
-          <div className={`px-3 sm:px-4 py-2.5 border-b transition-all duration-500 ${
+          <div className={`relative overflow-hidden px-3 sm:px-4 py-3 border-b transition-all duration-500 ${
             compactionStatus === 'compacting'
-              ? 'bg-gradient-to-r from-amber-500/10 via-amber-500/15 to-amber-500/10 border-amber-500/30'
-              : 'bg-gradient-to-r from-emerald-500/10 via-emerald-500/15 to-emerald-500/10 border-emerald-500/30'
+              ? 'bg-gradient-to-r from-amber-500/[0.08] via-amber-500/[0.14] to-amber-500/[0.08] border-amber-500/30'
+              : 'bg-gradient-to-r from-emerald-500/[0.08] via-emerald-500/[0.14] to-emerald-500/[0.08] border-emerald-500/30'
           }`}>
+            {/* Indeterminate progress sweep along the top edge — signals live
+                work (like Claude's working states) without a fake percentage. */}
+            {compactionStatus === 'compacting' && (
+              <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-amber-500/10 overflow-hidden">
+                <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-amber-300 to-transparent animate-teach-sweep" />
+              </div>
+            )}
             <div className="flex items-start gap-2.5 max-w-3xl mx-auto">
-              <div className={`shrink-0 mt-0.5 ${compactionStatus === 'compacting' ? 'text-amber-400' : 'text-emerald-400'}`}>
+              <div className={`shrink-0 mt-0.5 ${compactionStatus === 'compacting' ? 'text-amber-300' : 'text-emerald-300'}`}>
                 {compactionStatus === 'compacting' ? (
-                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  // Sparkle that softly pulses — "thinking/learning", not a spinner
+                  <svg className="w-4 h-4 animate-teach-sheen" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4L12 2zM19 14l.9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9L19 14z" />
                   </svg>
                 ) : (
                   <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -3830,16 +3841,21 @@ function VoiceRoomInner({
                 )}
               </div>
               <div className="flex-1 min-w-0">
-                <div className={`text-sm font-semibold ${compactionStatus === 'compacting' ? 'text-amber-300' : 'text-emerald-300'}`}>
+                <div className={`text-sm font-semibold ${compactionStatus === 'compacting' ? 'text-amber-200' : 'text-emerald-200'}`}>
                   {compactionStatus === 'compacting'
-                    ? `Learning from this session${compactionStartedAt ? ` · ${Math.floor((Date.now() - compactionStartedAt) / 1000)}s` : ''}`
-                    : `Learned from this session — ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated`}
+                    ? 'Teaching Osborn your preferences…'
+                    : `Osborn learned from this session — ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated`}
+                </div>
+                <div className="text-[11px] text-gray-400 mt-0.5">
+                  {compactionStatus === 'compacting'
+                    ? 'Saving your decisions and style so it carries them forward — keep talking, this runs in the background.'
+                    : "Saved to memory — it'll apply these automatically next time."}
                 </div>
                 {compactionStages.length > 0 && (
-                  <div className="mt-1 text-xs text-gray-400 space-y-0.5 max-h-24 overflow-y-auto">
+                  <div className="mt-1.5 text-xs text-gray-400 space-y-0.5 max-h-24 overflow-y-auto">
                     {compactionStages.slice(-6).map((s, i) => (
                       <div key={`${s.ts}-${i}`} className="flex items-center gap-1.5">
-                        <span className="text-gray-600">›</span>
+                        <span className={compactionStatus === 'compacting' ? 'text-amber-400/60' : 'text-emerald-400/60'}>›</span>
                         <span className="text-gray-300">{s.stage}</span>
                         {s.detail && <span className="text-gray-500">— {s.detail}</span>}
                       </div>
@@ -3856,6 +3872,17 @@ function VoiceRoomInner({
                   </div>
                 )}
               </div>
+              {/* Dismiss — the banner auto-clears, but let the user close it now. */}
+              <button
+                onClick={() => { setCompactionStatus('idle'); setCompactionStages([]); setCompactionSkills([]); setCompactionStartedAt(null) }}
+                className="shrink-0 -mt-0.5 -mr-1 p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-white/5 transition-colors"
+                title="Dismiss"
+                aria-label="Dismiss"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
           </div>
         )}
@@ -3903,24 +3930,26 @@ function VoiceRoomInner({
         <LogsDrawer messages={messages.filter(m => m.category === 'log')} />
 
         {/* Mobile composer control strip — Claude-style controls next to the
-            input instead of crammed in the header where they clip. */}
+            input instead of crammed in the header where they clip.
+            Layout: Auto on the LEFT, then agents/skills; Mute + Hangup pinned
+            to the RIGHT (thumb-reachable, and hangup off the top bar). */}
         <div className="sm:hidden flex items-center gap-1.5 px-3 pt-1.5">
-          {/* Mic / mute */}
+          {/* Auto-approve (automation accept) — left edge */}
           <button
-            onClick={toggleMute}
+            onClick={() => setAutoApprovePermissions(v => !v)}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
-              isMuted
-                ? 'bg-red-500/20 text-red-400'
-                : 'bg-gray-800/60 text-gray-300 hover:bg-gray-700/60'
+              autoApprovePermissions
+                ? 'bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/40'
+                : 'bg-gray-800/60 text-gray-400 hover:bg-gray-700/60'
             }`}
-            title={isMuted ? 'Unmute mic' : 'Mute mic'}
+            title={autoApprovePermissions ? 'Auto-approve ON' : 'Auto-approve OFF'}
           >
-            {isMuted ? (
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" d="M17 14l4-4m0 4l-4-4" /></svg>
-            ) : (
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-            )}
-            <span>{isMuted ? 'Muted' : 'Mic'}</span>
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              {autoApprovePermissions
+                ? <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                : <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />}
+            </svg>
+            <span>{autoApprovePermissions ? 'Auto' : 'Ask'}</span>
           </button>
 
           {/* Agents + Skills — reuse the header popovers (mobile-anchored panels) */}
@@ -3944,23 +3973,36 @@ function VoiceRoomInner({
             setNewSkillContent={setNewSkillContent}
           />
 
-          {/* Auto-approve — same control the desktop toolbar exposes */}
+          {/* Mic / mute — pinned right (ml-auto opens the gap) */}
           <button
-            onClick={() => setAutoApprovePermissions(v => !v)}
+            onClick={toggleMute}
             className={`ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
-              autoApprovePermissions
-                ? 'bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/40'
-                : 'bg-gray-800/60 text-gray-400 hover:bg-gray-700/60'
+              isMuted
+                ? 'bg-red-500/20 text-red-400'
+                : 'bg-gray-800/60 text-gray-300 hover:bg-gray-700/60'
             }`}
-            title={autoApprovePermissions ? 'Auto-approve ON' : 'Auto-approve OFF'}
+            title={isMuted ? 'Unmute mic' : 'Mute mic'}
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              {autoApprovePermissions
-                ? <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                : <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />}
-            </svg>
-            <span>{autoApprovePermissions ? 'Auto' : 'Ask'}</span>
+            {isMuted ? (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" d="M17 14l4-4m0 4l-4-4" /></svg>
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+            )}
+            <span>{isMuted ? 'Muted' : 'Mic'}</span>
           </button>
+
+          {/* Hangup — rightmost, next to Mute (moved off the top bar) */}
+          {onDisconnect && (
+            <button
+              onClick={onDisconnect}
+              className="flex items-center justify-center p-2 rounded-full bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-all"
+              title="Hang up — end session (saves minutes)"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
+              </svg>
+            </button>
+          )}
         </div>
 
         {/* Input */}

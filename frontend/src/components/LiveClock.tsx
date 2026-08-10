@@ -40,7 +40,7 @@ export default function LiveClock({ showDate = false }: { showDate?: boolean }) 
       </span>
       {/* Responsive: narrow screens keep "6:17 PM"; date/seconds/tz appear ≥sm
           (they were overflowing the 390px header and hiding the whole clock) */}
-      {showDate && <span className="hidden sm:inline text-[10px] font-medium text-gray-400">{date}</span>}
+      {showDate && <span className="text-[10px] font-medium text-gray-400">{date}</span>}
       <span className="font-mono text-[11px] tabular-nums text-gray-300 tracking-tight">
         {hh}:{mm}<span className="hidden sm:inline text-gray-500">:{ss}</span>
       </span>

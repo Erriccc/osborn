@@ -90,3 +90,21 @@ body {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--voice-speaking) 45%, transparent); }
   100% { box-shadow: 0 0 0 26px transparent; }
 }
+
+/* ── Compaction / "teaching" banner motion ──
+   An indeterminate progress sweep + a slow sheen so the banner feels alive
+   while the agent is saving what it learned (like Claude's working states). */
+@keyframes teachSweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.animate-teach-sweep {
+  animation: teachSweep 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes teachSheen {
+  0%, 100% { opacity: .45; }
+  50%      { opacity: 1; }
+}
+.animate-teach-sheen {
+  animation: teachSheen 2.4s ease-in-out infinite;
+}
