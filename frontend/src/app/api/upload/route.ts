@@ -45,13 +45,16 @@ export async function POST(req: Request) {
   try {
     const form = await req.formData()
     const fileField = form.get('file')
-    if (!(fileField instanceof File)) {
+    // Duck-type instead of `instanceof File`: Node runtimes without the global
+    // File class throw ReferenceError there, which broke every non-browser
+    // client (curl/agents) with "File is not defined".
+    if (!fileField || typeof fileField === 'string' || typeof (fileField as Blob).arrayBuffer !== 'function') {
       return NextResponse.json(
         { success: false, error: 'Missing `file` field in multipart form' },
         { status: 400 },
       )
     }
-    file = fileField
+    file = fileField as File
     folder = (form.get('folder') as string) || 'artifacts'
     userId = (form.get('userId') as string) || ''
     sessionId = (form.get('sessionId') as string) || ''
