@@ -2684,7 +2684,7 @@ function VoiceRoomInner({
         setCompactionStatus('complete')
         setCompactionSkills(Array.isArray(data.skillNames) ? data.skillNames : [])
         setCompactionStages(prev => [...prev, {
-          stage: 'Memory crystallized',
+          stage: 'Learning saved',
           detail: `${data.skillsWritten ?? 0} skill${data.skillsWritten === 1 ? '' : 's'} updated`,
           ts: Date.now(),
         }])
@@ -3441,18 +3441,17 @@ function VoiceRoomInner({
               }`}>
                 {compactionStatus === 'compacting' ? (
                   <>
-                    <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    <svg className="w-3.5 h-3.5 animate-pulse" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4L12 2zM19 14l.9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9L19 14z" />
                     </svg>
-                    <span>Crystallizing memory&hellip;</span>
+                    <span>Learning your preferences&hellip;</span>
                   </>
                 ) : (
                   <>
                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
-                    <span>{compactionSkills.length > 0 ? `${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated` : 'Memory crystallized'}</span>
+                    <span>{compactionSkills.length > 0 ? `Learned · ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated` : 'Learning saved'}</span>
                   </>
                 )}
               </div>
@@ -3755,8 +3754,8 @@ function VoiceRoomInner({
               <div className="flex-1 min-w-0">
                 <div className={`text-sm font-semibold ${compactionStatus === 'compacting' ? 'text-amber-300' : 'text-emerald-300'}`}>
                   {compactionStatus === 'compacting'
-                    ? `Crystallizing session memory${compactionStartedAt ? ` · ${Math.floor((Date.now() - compactionStartedAt) / 1000)}s` : ''}`
-                    : `Memory crystallized — ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated`}
+                    ? `Learning from this session${compactionStartedAt ? ` · ${Math.floor((Date.now() - compactionStartedAt) / 1000)}s` : ''}`
+                    : `Learned from this session — ${compactionSkills.length} skill${compactionSkills.length === 1 ? '' : 's'} updated`}
                 </div>
                 {compactionStages.length > 0 && (
                   <div className="mt-1 text-xs text-gray-400 space-y-0.5 max-h-24 overflow-y-auto">

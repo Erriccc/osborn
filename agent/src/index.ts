@@ -2565,7 +2565,7 @@ async function main() {
       // Inline chat bubble — reuses the existing claude_output path that's already working.
       if (event.type === 'compaction_started') {
         const triggerLabel = event.trigger ? ` (${event.trigger})` : ''
-        const text = `🧠 _Crystallizing session memory…_${triggerLabel}`
+        const text = `✨ _Learning from this session — saving your preferences and decisions…_${triggerLabel}`
         sendToFrontend({
           type: 'claude_output',
           text,
@@ -2577,7 +2577,7 @@ async function main() {
         const names = Array.isArray(event.skillNames) && event.skillNames.length > 0
           ? ` — ${event.skillNames.join(', ')}`
           : ''
-        const text = `🧠 Memory crystallized — ${n} skill${n === 1 ? '' : 's'} updated${names}.`
+        const text = `✨ Done learning — ${n} skill${n === 1 ? '' : 's'} updated${names}. I'll carry this forward.`
         sendToFrontend({
           type: 'claude_output',
           text,
