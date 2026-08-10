@@ -3511,28 +3511,31 @@ function VoiceRoomInner({
             {/* Live clock — always visible so screenshots carry the time */}
             <LiveClock />
 
-            {/* Named agents — first-class manager (built-ins + DB-backed custom) */}
-            <AgentsPopover agents={namedAgents} disabled={!agentConnected}
-              onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
-              removed={removedAgentNames} onRestoreAgent={handleRestoreAgent} />
+            {/* Named agents + Skills — desktop header only. On mobile these
+                live in the composer control strip next to the input (Claude-
+                style), so the top bar carries only status/stats + hangup. */}
+            <div className="hidden sm:flex items-center gap-1.5">
+              <AgentsPopover agents={namedAgents} disabled={!agentConnected}
+                onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
+                removed={removedAgentNames} onRestoreAgent={handleRestoreAgent} />
 
-            {/* Skills — first-class button with count badge (all viewports) */}
-            <SkillsPopover
-              disabled={!agentConnected}
-              skills={skills}
-              onAddSkill={handleAddSkill}
-              onViewSkill={handleViewSkill}
-              onRemoveSkill={handleRemoveSkill}
-              onInstallFromCatalog={handleInstallFromCatalog}
-              skillRemoveArm={skillRemoveArm}
-              setSkillRemoveArm={setSkillRemoveArm}
-              showAddSkill={showAddSkill}
-              setShowAddSkill={setShowAddSkill}
-              newSkillName={newSkillName}
-              setNewSkillName={setNewSkillName}
-              newSkillContent={newSkillContent}
-              setNewSkillContent={setNewSkillContent}
-            />
+              <SkillsPopover
+                disabled={!agentConnected}
+                skills={skills}
+                onAddSkill={handleAddSkill}
+                onViewSkill={handleViewSkill}
+                onRemoveSkill={handleRemoveSkill}
+                onInstallFromCatalog={handleInstallFromCatalog}
+                skillRemoveArm={skillRemoveArm}
+                setSkillRemoveArm={setSkillRemoveArm}
+                showAddSkill={showAddSkill}
+                setShowAddSkill={setShowAddSkill}
+                newSkillName={newSkillName}
+                setNewSkillName={setNewSkillName}
+                newSkillContent={newSkillContent}
+                setNewSkillContent={setNewSkillContent}
+              />
+            </div>
 
             {/* Compact Controls — meeting/files/copy hidden on mobile */}
             <div className="flex items-center gap-1.5">
@@ -3687,10 +3690,11 @@ function VoiceRoomInner({
                 )}
               </button>
 
-              {/* Mute button */}
+              {/* Mute button — desktop header only; mobile mute lives in the
+                  composer control strip next to the input. */}
               <button
                 onClick={toggleMute}
-                className={`p-2 rounded-lg transition-all ${
+                className={`hidden sm:block p-2 rounded-lg transition-all ${
                   isMuted
                     ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
                     : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
@@ -3823,6 +3827,67 @@ function VoiceRoomInner({
 
         {/* Logs drawer */}
         <LogsDrawer messages={messages.filter(m => m.category === 'log')} />
+
+        {/* Mobile composer control strip — Claude-style controls next to the
+            input instead of crammed in the header where they clip. */}
+        <div className="sm:hidden flex items-center gap-1.5 px-3 pt-1.5">
+          {/* Mic / mute */}
+          <button
+            onClick={toggleMute}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
+              isMuted
+                ? 'bg-red-500/20 text-red-400'
+                : 'bg-gray-800/60 text-gray-300 hover:bg-gray-700/60'
+            }`}
+            title={isMuted ? 'Unmute mic' : 'Mute mic'}
+          >
+            {isMuted ? (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" d="M17 14l4-4m0 4l-4-4" /></svg>
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+            )}
+            <span>{isMuted ? 'Muted' : 'Mic'}</span>
+          </button>
+
+          {/* Agents + Skills — reuse the header popovers (mobile-anchored panels) */}
+          <AgentsPopover agents={namedAgents} disabled={!agentConnected}
+            onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
+            removed={removedAgentNames} onRestoreAgent={handleRestoreAgent} />
+          <SkillsPopover
+            disabled={!agentConnected}
+            skills={skills}
+            onAddSkill={handleAddSkill}
+            onViewSkill={handleViewSkill}
+            onRemoveSkill={handleRemoveSkill}
+            onInstallFromCatalog={handleInstallFromCatalog}
+            skillRemoveArm={skillRemoveArm}
+            setSkillRemoveArm={setSkillRemoveArm}
+            showAddSkill={showAddSkill}
+            setShowAddSkill={setShowAddSkill}
+            newSkillName={newSkillName}
+            setNewSkillName={setNewSkillName}
+            newSkillContent={newSkillContent}
+            setNewSkillContent={setNewSkillContent}
+          />
+
+          {/* Auto-approve — same control the desktop toolbar exposes */}
+          <button
+            onClick={() => setAutoApprovePermissions(v => !v)}
+            className={`ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
+              autoApprovePermissions
+                ? 'bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/40'
+                : 'bg-gray-800/60 text-gray-400 hover:bg-gray-700/60'
+            }`}
+            title={autoApprovePermissions ? 'Auto-approve ON' : 'Auto-approve OFF'}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              {autoApprovePermissions
+                ? <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                : <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />}
+            </svg>
+            <span>{autoApprovePermissions ? 'Auto' : 'Ask'}</span>
+          </button>
+        </div>
 
         {/* Input */}
         <TextInput
