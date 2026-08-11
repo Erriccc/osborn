@@ -415,14 +415,16 @@ export function FilesExplorerModal({
                         </div>
                       )
                     }
-                    // Still loading
+                    // No URL and no content — nothing to fetch (e.g. an older
+                    // favorite saved before a durable copy existed). Don't spin
+                    // forever; say so clearly.
                     return (
-                      <div className="flex items-center justify-center py-12 text-gray-500 text-xs">
-                        <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      <div className="flex flex-col items-center justify-center py-12 text-center text-gray-500 text-xs gap-2 px-6">
+                        <svg className="w-6 h-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
                         </svg>
-                        Loading content...
+                        <div className="font-medium text-gray-400">No saved copy for this file</div>
+                        <div className="max-w-xs leading-relaxed">This was favorited before a durable copy was stored, so its content isn&apos;t available here. Re-favorite it from the session that has it, and it&apos;ll sync everywhere.</div>
                       </div>
                     )
                   })()}

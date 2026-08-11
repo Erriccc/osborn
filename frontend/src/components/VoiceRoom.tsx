@@ -1699,30 +1699,56 @@ function VoiceRoomInner({
   })
   // Fast membership check keyed by filePath (stable per file).
   const favoritePaths = useMemo(() => new Set(favoriteFiles.map((f) => f.filePath)), [favoriteFiles])
+  // Ref mirror so the async toggle can check membership without stale closures.
+  const favoriteFilesRef = useRef(favoriteFiles)
+  useEffect(() => { favoriteFilesRef.current = favoriteFiles }, [favoriteFiles])
 
-  const toggleFavorite = useCallback((file: GeneratedFile) => {
-    setFavoriteFiles((prev) => {
-      const exists = prev.some((f) => f.filePath === file.filePath)
-      // Strip inline content before persisting — favorites keep the durable URL
-      // and metadata, not multi-MB base64 blobs that would blow the quota.
-      const slim: GeneratedFile = {
-        filePath: file.filePath, fileName: file.fileName, url: file.url,
-        type: file.type, source: file.source, updatedAt: file.updatedAt,
-        isImage: file.isImage, mimeType: file.mimeType,
-      }
-      const next = exists ? prev.filter((f) => f.filePath !== file.filePath) : [...prev, slim]
-      try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
-      // Sync to the server so favorites follow the user ACROSS DEVICES (fire-and-
-      // forget; localStorage is just the offline/per-device cache).
-      fetch('/api/favorites', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ favorites: next }),
-      }).catch(() => {})
-      return next
-    })
-    // Make sure a freshly-favorited file is present in the visible list.
-    setGeneratedFiles((prev) => (prev.some((f) => f.filePath === file.filePath) ? prev : [file, ...prev]))
+  // Persist favorites to localStorage (per-device cache) AND the server (source
+  // of truth, cross-device). Slim: metadata + durable URL only, never base64.
+  const persistFavorites = useCallback((next: GeneratedFile[]) => {
+    try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
+    fetch('/api/favorites', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ favorites: next }),
+    }).catch(() => {})
   }, [])
+
+  const toggleFavorite = useCallback(async (file: GeneratedFile) => {
+    const currentlyFav = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
+    if (currentlyFav) {
+      setFavoriteFiles((prev) => { const next = prev.filter((f) => f.filePath !== file.filePath); persistFavorites(next); return next })
+      return
+    }
+    // Adding — ensure a DURABLE copy so the favorite opens on ANY device/session.
+    // If the file has inline text content but no Supabase URL yet, upload it so
+    // there's a permanent URL (otherwise the content lived only in this session's
+    // memory and the star would spin on "Loading content…" elsewhere).
+    let url = file.url
+    if (!url && file.content && !file.isImage) {
+      try {
+        const blob = new Blob([file.content], { type: 'text/plain' })
+        const fd = new FormData()
+        fd.append('file', blob, file.fileName)
+        fd.append('folder', 'favorites')
+        const res = await fetch('/api/upload', { method: 'POST', body: fd })
+        const j = await res.json().catch(() => null)
+        if (j?.url) url = j.url
+      } catch { /* best effort — favorite still saves, just without a durable copy */ }
+    }
+    const slim: GeneratedFile = {
+      filePath: file.filePath, fileName: file.fileName, url,
+      type: file.type, source: file.source, updatedAt: file.updatedAt,
+      isImage: file.isImage, mimeType: file.mimeType,
+    }
+    setFavoriteFiles((prev) => {
+      if (prev.some((f) => f.filePath === file.filePath)) return prev
+      const next = [...prev, slim]; persistFavorites(next); return next
+    })
+    // Reflect the (possibly newly-uploaded) URL on the visible file too.
+    setGeneratedFiles((prev) => prev.some((f) => f.filePath === file.filePath)
+      ? (url ? prev.map((f) => (f.filePath === file.filePath ? { ...f, url: f.url || url } : f)) : prev)
+      : [{ ...file, url: url || file.url }, ...prev])
+  }, [persistFavorites])
 
   // Surface favorites in the explorer whenever the set changes (initial load,
   // server sync, or a toggle) — so a returning user always sees their pinned
