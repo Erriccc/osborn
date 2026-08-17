@@ -344,8 +344,11 @@ export function FilesExplorerModal({
                           />
                         )
                       }
-                      // Text-like: use the fetched content from the cache (fetched by the useEffect above)
-                      const fetched = urlContentCache[selectedFile.url]
+                      // Text-like: use cache if available, inline content as fallback.
+                      // When a file is favorited mid-session, the URL is set but the
+                      // useEffect skips fetching (sees content, returns early), so the
+                      // cache stays empty and the spinner would loop forever without this.
+                      const fetched = urlContentCache[selectedFile.url] ?? selectedFile.content
                       if (!fetched) {
                         return (
                           <div className="flex items-center justify-center py-12 text-gray-500 text-xs">
