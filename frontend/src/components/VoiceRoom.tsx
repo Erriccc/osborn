@@ -2460,9 +2460,16 @@ function VoiceRoomInner({
           addMessageRef.current?.('system', data.summary, undefined, 'log')
         }
       } else if (data.type === 'tool_use') {
-        // Rich tool log card. The agent enriches this event (buildToolLogEvent)
-        // with file name, +/- line counts, command, and a diff — carried in
-        // toolMeta so the Logs drawer renders Claude-style review cards.
+        // Rich tool log card. The agent sends TWO events per tool call:
+        //   1. status=running  — tool has started (show spinner)
+        //   2. status=completed — tool finished (resolve spinner)
+        //
+        // Bug fix: the completed event must UPDATE the existing running row
+        // in place rather than appending a new message. We find the most recent
+        // message whose toolMeta.tool matches AND whose status is still 'running'
+        // and flip it to 'completed' (merging in any extra fields the agent
+        // sends on completion, e.g. diff, linesAdded). Only if no such pending
+        // row exists do we append a new entry (defensive fallback).
         const toolMeta: ToolMeta = {
           tool: data.tool,
           status: data.status === 'completed' ? 'completed' : 'running',
@@ -2478,10 +2485,38 @@ function VoiceRoomInner({
           diff: data.diff,
         }
         // Human summary line (also used as the message content / fallback).
-        const verb = data.status === 'completed' ? '' : 'Using '
         const target = data.fileName || data.command || data.pattern || data.url || ''
-        const msg = target ? `${verb}${data.tool}: ${target}`.trim() : `${verb}${data.tool}`.trim()
-        addMessageRef.current?.('system', msg || data.tool, data.tool, 'log', toolMeta)
+        if (data.status === 'completed') {
+          // Find and update the most recent running row for this tool.
+          setMessages((prev) => {
+            // Walk backwards to find the last 'running' entry for this tool.
+            for (let i = prev.length - 1; i >= 0; i--) {
+              const m = prev[i]
+              if (m.toolMeta?.tool === data.tool && m.toolMeta?.status === 'running') {
+                const updated: ChatMessage = {
+                  ...m,
+                  toolMeta: { ...m.toolMeta, ...toolMeta, status: 'completed' },
+                }
+                return [...prev.slice(0, i), updated, ...prev.slice(i + 1)]
+              }
+            }
+            // No pending row found — append a completed entry as fallback.
+            const msg = target ? `${data.tool}: ${target}` : data.tool
+            return [...prev, {
+              id: `${Date.now()}-${Math.random()}`,
+              role: 'system' as const,
+              content: msg,
+              timestamp: new Date(),
+              toolName: data.tool,
+              category: 'log' as const,
+              toolMeta,
+            }]
+          })
+        } else {
+          // Running: always append a new row with the spinner.
+          const msg = target ? `Using ${data.tool}: ${target}` : `Using ${data.tool}`
+          addMessageRef.current?.('system', msg || data.tool, data.tool, 'log', toolMeta)
+        }
         // Increment research tool counter
         setActiveResearch(prev => prev ? { ...prev, toolCount: prev.toolCount + 1 } : null)
       } else if (data.type === 'claude_output') {
