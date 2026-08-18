@@ -19,6 +19,34 @@ import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { formatTime, groupSessionsByDate } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 
+// ---------------------------------------------------------------------------
+// Time-awareness helpers (no imports needed — pure Date math)
+// ---------------------------------------------------------------------------
+
+/** Returns a compact local-time tag to prepend to outgoing agent messages.
+ *  e.g. "[time: 2026-08-18 14:32 local] "
+ *  Visible to the agent only — never shown in the user's chat bubble.
+ */
+function addTimeTag(): string {
+  const now = new Date()
+  const yyyy = now.getFullYear()
+  const mm = String(now.getMonth() + 1).padStart(2, '0')
+  const dd = String(now.getDate()).padStart(2, '0')
+  const hh = String(now.getHours()).padStart(2, '0')
+  const min = String(now.getMinutes()).padStart(2, '0')
+  return `[time: ${yyyy}-${mm}-${dd} ${hh}:${min} local] `
+}
+
+/** Formats an elapsed millisecond count into a human-readable string.
+ *  e.g. 4.5h → "~4.5 hours", 30m → "~30 minutes"
+ */
+function formatElapsed(ms: number): string {
+  const mins = Math.round(ms / 60000)
+  if (mins < 60) return `~${mins} minute${mins !== 1 ? 's' : ''}`
+  const hours = Math.round((ms / 3600000) * 10) / 10
+  return `~${hours} hour${hours !== 1 ? 's' : ''}`
+}
+
 // Public props for VoiceRoom. All session-level state (token, disconnect
 // handler, agent-ready callback, auth callback, preSelectedSessionId,
 // provider) now lives in ChatSessionProvider and is read via
@@ -3193,10 +3221,12 @@ function VoiceRoomInner({
 
     addMessageRef.current?.('user', content)
 
-    // Build payload
+    // Build payload — prepend a compact local-time tag so the agent is always
+    // clock-aware. The tag is NOT added to the local chat bubble (addMessageRef
+    // above uses `content`, which is the raw user text + any file descriptions).
     const payloadObj = {
       type: 'user_text',
-      content: text,
+      content: addTimeTag() + text,
       files: fileData.length > 0 ? fileData : undefined,
     }
     const payloadStr = JSON.stringify(payloadObj)
@@ -3235,6 +3265,28 @@ function VoiceRoomInner({
       const encoder = new TextEncoder()
       sendToAgent(encoder.encode(payloadStr), { reliable: true })
     }
+  }, [sendToAgent])
+
+  // Welcome-back injection: if the user returns after a gap of more than 15
+  // minutes since their last message, inject a one-time context note over the
+  // proven user_text channel so the agent greets them with gap awareness.
+  // Only fires when resuming a real prior session (skip fresh starts).
+  const WELCOME_BACK_THRESHOLD_MS = 15 * 60 * 1000
+  const injectWelcomeBack = useCallback((sessionTimestamp: string | undefined) => {
+    if (!sessionTimestamp) return
+    const lastTime = new Date(sessionTimestamp)
+    if (isNaN(lastTime.getTime())) return
+    const now = new Date()
+    const elapsedMs = now.getTime() - lastTime.getTime()
+    if (elapsedMs < WELCOME_BACK_THRESHOLD_MS) return
+
+    const elapsed = formatElapsed(elapsedMs)
+    const lastStr = lastTime.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    const nowStr = now.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    const note = `[welcome-back] The user just returned after ${elapsed} away (last message ${lastStr}). Current time is ${nowStr}. Greet them naturally with awareness of the gap.`
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({ type: 'user_text', content: note }))
+    sendToAgent(payload, { reliable: true })
   }, [sendToAgent])
 
   const handleCircleBack = useCallback((noteText: string) => {
@@ -3470,9 +3522,12 @@ function VoiceRoomInner({
   const handleResumePromptContinue = useCallback(() => {
     if (recentSessionId) {
       handleResumeSession(recentSessionId)
+      // Inject welcome-back note if user was away long enough
+      const sessionInfo = sessions.find((s) => s.sessionId === recentSessionId)
+      injectWelcomeBack(sessionInfo?.timestamp)
     }
     completeSessionGate(recentSessionId)
-  }, [recentSessionId, handleResumeSession, completeSessionGate])
+  }, [recentSessionId, sessions, handleResumeSession, injectWelcomeBack, completeSessionGate])
 
   const handleResumePromptStartFresh = useCallback(() => {
     completeSessionGate(null)
@@ -3780,6 +3835,7 @@ function VoiceRoomInner({
                           key={session.sessionId}
                           onClick={() => {
                             handleResumeSession(session.sessionId)
+                            injectWelcomeBack(session.timestamp)
                             completeSessionGate(session.sessionId)
                           }}
                           className={`w-full text-left p-3 rounded-lg border transition-colors ${
