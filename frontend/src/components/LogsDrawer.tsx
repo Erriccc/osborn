@@ -27,43 +27,27 @@ interface LogMessage {
   toolMeta?: ToolMeta
 }
 
-// Map an agentRole to a { icon, className } for the color-coded pill.
-// The icon inherits currentColor so each role's text-* class colors it automatically.
-function agentPillStyle(role: string | undefined): { icon: React.ReactNode; className: string } | null {
+// Generic person-silhouette avatar used by every role pill.
+// Sits inside a small circle; inherits currentColor from the pill's text-* class.
+const ProfileAvatar = () => (
+  <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-current/20 shrink-0">
+    <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" />
+    </svg>
+  </span>
+)
+
+// Map an agentRole to a className for the color-coded avatar+name chip.
+function agentPillStyle(role: string | undefined): { className: string } | null {
   if (!role) return null
-  const s = { fill: 'none' as const, viewBox: '0 0 24 24', stroke: 'currentColor', strokeWidth: 2 }
-  // researcher → magnifying glass
-  const researcherIcon = (
-    <svg className="w-3 h-3" {...s}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-    </svg>
-  )
-  // writer → pencil
-  const writerIcon = (
-    <svg className="w-3 h-3" {...s}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-    </svg>
-  )
-  // reasoner → lightbulb
-  const reasonerIcon = (
-    <svg className="w-3 h-3" {...s}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m1.343-5.657l-.707-.707M12 21v-1m0-16a7 7 0 00-4.95 11.95A5 5 0 0012 19a5 5 0 004.95-4.05A7 7 0 0012 5z" />
-    </svg>
-  )
-  // main / orchestrator → small filled circle dot
-  const dotIcon = (
-    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
-      <circle cx="12" cy="12" r="5" />
-    </svg>
-  )
-  const map: Record<string, { icon: React.ReactNode; className: string }> = {
-    main:         { icon: dotIcon,        className: 'bg-gray-500/20 text-gray-300 border border-gray-500/30' },
-    researcher:   { icon: researcherIcon, className: 'bg-blue-500/20 text-blue-300 border border-blue-500/30' },
-    writer:       { icon: writerIcon,     className: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' },
-    reasoner:     { icon: reasonerIcon,   className: 'bg-violet-500/20 text-violet-300 border border-violet-500/30' },
-    orchestrator: { icon: dotIcon,        className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30' },
+  const map: Record<string, { className: string }> = {
+    main:         { className: 'bg-gray-500/20 text-gray-300 border border-gray-500/30' },
+    researcher:   { className: 'bg-blue-500/20 text-blue-300 border border-blue-500/30' },
+    writer:       { className: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' },
+    reasoner:     { className: 'bg-violet-500/20 text-violet-300 border border-violet-500/30' },
+    orchestrator: { className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30' },
   }
-  return map[role] ?? { icon: dotIcon, className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30' }
+  return map[role] ?? { className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30' }
 }
 
 interface LogsDrawerProps {
@@ -245,10 +229,11 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
 
         {/* Right-side controls */}
         <span className="shrink-0 flex items-center gap-1">
-          {/* Agent role pill — icon only; hover tooltip shows the role name */}
+          {/* Agent role chip — profile avatar + role name on colored background */}
           {pill && (
-            <span title={meta.agentRole} className={`flex items-center justify-center p-0.5 rounded ${pill.className}`}>
-              {pill.icon}
+            <span title={meta.agentRole} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap ${pill.className}`}>
+              <ProfileAvatar />
+              {meta.agentRole}
             </span>
           )}
 
