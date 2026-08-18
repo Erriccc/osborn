@@ -1705,13 +1705,17 @@ function VoiceRoomInner({
 
   // Persist favorites to localStorage (per-device cache) AND the server (source
   // of truth, cross-device). Slim: metadata + durable URL only, never base64.
+  // sessionId scopes the server-side blob so different sessions never leak into
+  // each other; when sessionId is not yet known the POST is skipped (the caller
+  // will retry once the agent reports the session).
   const persistFavorites = useCallback((next: GeneratedFile[]) => {
     try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
+    if (!currentSessionId) return
     fetch('/api/favorites', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ favorites: next }),
+      body: JSON.stringify({ favorites: next, sessionId: currentSessionId }),
     }).catch(() => {})
-  }, [])
+  }, [currentSessionId])
 
   const toggleFavorite = useCallback(async (file: GeneratedFile) => {
     const currentlyFav = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
@@ -1762,14 +1766,23 @@ function VoiceRoomInner({
     })
   }, [favoriteFiles])
 
-  // Cross-device favorites — SERVER IS AUTHORITATIVE. On mount:
+  // Cross-device favorites — SERVER IS AUTHORITATIVE. Runs once per session
+  // (when currentSessionId becomes known). Favorites are scoped per session so
+  // different sessions never bleed into each other.
   //  - if the server has a favorites record → replace local with it (this is how
   //    an un-favorite on another device propagates here, not just adds).
-  //  - if the server has NO record yet (pre-migration device) → seed it from this
-  //    device's local favorites so the first sync doesn't lose anything.
+  //  - if the server has NO record yet → seed it from this device's local
+  //    favorites so the first sync on a new device doesn't lose anything.
+  const syncedSessionRef = useRef<string | null>(null)
   useEffect(() => {
+    // Wait until we know which session we're in; also guard against running
+    // twice for the same session if currentSessionId identity changes.
+    if (!currentSessionId) return
+    if (syncedSessionRef.current === currentSessionId) return
+    syncedSessionRef.current = currentSessionId
+
     let cancelled = false
-    fetch('/api/favorites')
+    fetch(`/api/favorites?sessionId=${encodeURIComponent(currentSessionId)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
         if (cancelled || !json) return
@@ -1778,12 +1791,13 @@ function VoiceRoomInner({
           setFavoriteFiles(server)
           try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(server)) } catch { /* ignore */ }
         } else {
-          // No server record — seed it once from local so nothing is lost.
+          // No server record for this session — seed it once from local so
+          // nothing is lost on first use of a new device.
           setFavoriteFiles((prev) => {
             if (prev.length > 0) {
               fetch('/api/favorites', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ favorites: prev }),
+                body: JSON.stringify({ favorites: prev, sessionId: currentSessionId }),
               }).catch(() => {})
             }
             return prev
@@ -1792,8 +1806,7 @@ function VoiceRoomInner({
       })
       .catch(() => {})
     return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [currentSessionId])
   const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false) // Default closed — opens via button (desktop only)
   // MCP server state
