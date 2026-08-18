@@ -3249,6 +3249,20 @@ function VoiceRoomInner({
     handleSendText(noteText)
   }, [handleSendText])
 
+  const handleFavoriteNote = useCallback((fileName: string) => {
+    handleSendText(`[favorited] The user favorited the file ${fileName}. Treat this file as priority context — keep it front of mind for the current work.`)
+  }, [handleSendText])
+
+  // Wraps toggleFavorite so that starring a file (toggling ON) also sends a
+  // note to the agent over the user-input data channel. Un-favoriting is silent.
+  const handleToggleFavoriteWithNote = useCallback(async (file: GeneratedFile) => {
+    const currentlyFav = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
+    await toggleFavorite(file)
+    if (!currentlyFav) {
+      handleFavoriteNote(file.fileName)
+    }
+  }, [toggleFavorite, handleFavoriteNote])
+
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
     const toolName = pendingPermission?.toolName || 'tool'
     const filePath = pendingPermission?.input?.file_path
@@ -4621,7 +4635,7 @@ function VoiceRoomInner({
         onCopyAll={handleCopyAllFiles}
         fileCopyFeedback={fileCopyFeedback}
         favoritePaths={favoritePaths}
-        onToggleFavorite={toggleFavorite}
+        onToggleFavorite={handleToggleFavoriteWithNote}
       />
     </>
   )
