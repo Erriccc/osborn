@@ -2094,7 +2094,14 @@ function VoiceRoomInner({
     log('mount', { sid: room.name, connectionState: room.state, canPlayback: room.canPlaybackAudio })
 
     const onConnected = () => log('RoomConnected', { sid: room.name })
-    const onDisconnected = (reason: unknown) => log('RoomDisconnected', { reason: String(reason) })
+    const onDisconnected = (reason: unknown) => {
+      log('RoomDisconnected', { reason: String(reason) })
+      // Reset agent visual state so the UI never freezes on "speaking" / "listening"
+      // after a hard disconnect (machine crash, SSE drop, network loss). Only fires
+      // on a genuine terminal disconnect — RoomEvent.Reconnecting handles transient
+      // blips and does NOT reset state, so reconnect flows are unaffected.
+      setAgentState('idle')
+    }
     const onReconnecting = () => log('RoomReconnecting')
     const onReconnected = () => log('RoomReconnected')
     const onConnState = (s: ConnectionState) => log('ConnectionStateChanged', { state: s })
