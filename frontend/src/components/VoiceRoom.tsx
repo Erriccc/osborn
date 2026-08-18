@@ -1899,6 +1899,28 @@ function VoiceRoomInner({
     const t = setInterval(() => onVoiceActivity?.(), 60_000)
     return () => clearInterval(t)
   }, [meetingStatus, onVoiceActivity])
+  // Poll agent /health every 15s for machine memory stats.
+  // Defensive: silently no-ops if agentUrl is absent, network fails, or the
+  // agent is an older build that doesn't include the `memory` field yet.
+  useEffect(() => {
+    if (!agentUrl) return
+    const base = agentUrl.replace(/\/$/, '')
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) })
+        if (!cancelled && r.ok) {
+          const d = await r.json()
+          if (!cancelled && d?.memory && typeof d.memory.usedPct === 'number') {
+            setAgentMemory(d.memory)
+          }
+        }
+      } catch { /* network error / timeout — keep previous reading */ }
+    }
+    poll()
+    const id = setInterval(poll, 15_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [agentUrl])
   const [meetingError, setMeetingError] = useState<string | null>(null)
   // Meeting TODOs panel — fed by the agent writing meeting-todos.md in the
   // workspace. `research_artifact_updated` already fires automatically when
@@ -1915,6 +1937,10 @@ function VoiceRoomInner({
   const [compactionStages, setCompactionStages] = useState<Array<{ stage: string; detail?: string; ts: number }>>([])
   const [compactionSkills, setCompactionSkills] = useState<string[]>([])
   const [compactionStartedAt, setCompactionStartedAt] = useState<number | null>(null)
+  // Machine memory — polled from agent /health every 15s.
+  // Shape: { totalMb, usedMb, availableMb, usedPct, processRssMb } (all integers).
+  // May be undefined when the agent hasn't published the field yet — render nothing.
+  const [agentMemory, setAgentMemory] = useState<{ totalMb: number; usedMb: number; availableMb: number; usedPct: number; processRssMb: number } | undefined>(undefined)
 
   // Derived: currently selected file for preview
   const selectedFile = useMemo(() => {
@@ -3780,6 +3806,40 @@ function VoiceRoomInner({
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
             <LiveClock showDate />
+
+            {/* Machine memory meter — only rendered when the agent /health response
+                includes the `memory` field (agent 0.9.131+). Shows a thin bar +
+                usedPct%. Amber above 75%, red above 85%. Defensive: if the field
+                is absent (older build or network error) this renders nothing. */}
+            {agentMemory !== undefined && (
+              <div
+                title={`RAM: ${agentMemory.usedMb} / ${agentMemory.totalMb} MB used (process RSS ${agentMemory.processRssMb} MB)`}
+                className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800/60 border border-gray-700/40 select-none"
+              >
+                {/* Thin bar */}
+                <div className="w-14 h-1.5 rounded-full bg-gray-700/70 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${
+                      agentMemory.usedPct >= 85
+                        ? 'bg-red-500'
+                        : agentMemory.usedPct >= 75
+                          ? 'bg-amber-400'
+                          : 'bg-emerald-400'
+                    }`}
+                    style={{ width: `${Math.min(agentMemory.usedPct, 100)}%` }}
+                  />
+                </div>
+                <span className={`text-[10px] font-medium tabular-nums ${
+                  agentMemory.usedPct >= 85
+                    ? 'text-red-400'
+                    : agentMemory.usedPct >= 75
+                      ? 'text-amber-400'
+                      : 'text-gray-400'
+                }`}>
+                  {agentMemory.usedPct}%
+                </span>
+              </div>
+            )}
 
             {/* Compaction status pill — header-level summary (always visible during compact) */}
             {compactionStatus !== 'idle' && (

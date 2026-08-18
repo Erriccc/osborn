@@ -27,7 +27,7 @@ import { createRequire } from 'node:module'
 
 // 0.9.71: createRequire for resolving package.json versions inside ESM
 const __sdkVersionRequire = createRequire(import.meta.url)
-import { homedir, tmpdir } from 'node:os'
+import { homedir, tmpdir, totalmem, freemem } from 'node:os'
 import { PassThrough } from 'node:stream'
 import { createGunzip } from 'node:zlib'
 
@@ -547,6 +547,16 @@ function startApiServer(workingDir: string, port: number): void {
         }
       } catch { /* version optional */ }
 
+      // System memory snapshot — use os.totalmem/freemem for WHOLE-MACHINE
+      // stats (the OOM killer watches these, not per-process RSS). processRssMb
+      // is additive: useful for spotting leaks but never the headline number.
+      const totalMb = Math.round(totalmem() / 1024 / 1024)
+      const freeMb  = Math.round(freemem()  / 1024 / 1024)
+      const usedMb  = totalMb - freeMb
+      const availableMb = freeMb
+      const usedPct = Math.round((usedMb / totalMb) * 100)
+      const processRssMb = Math.round(process.memoryUsage().rss / 1024 / 1024)
+
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
         status: 'ok',
@@ -567,6 +577,8 @@ function startApiServer(workingDir: string, port: number): void {
           attemptCount: livekitState.attemptCount,
           lastAttemptAt: livekitState.lastAttemptAt,
         },
+        // Whole-machine memory — what the OOM killer watches. All values in MB.
+        memory: { totalMb, usedMb, availableMb, usedPct, processRssMb },
       }))
       return
     }
