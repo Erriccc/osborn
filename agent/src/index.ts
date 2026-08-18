@@ -2721,12 +2721,12 @@ async function main() {
     // Wire up events from the Claude SDK wrapper to frontend
     directLLM.events.on('tool_use', (data) => {
       console.log(`🔧 Claude: ${data.name}`)
-      sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', 'direct'))
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', data.agentRole || 'main'))
     })
 
     directLLM.events.on('tool_result', (data) => {
       console.log(`✅ Done: ${data.name}`)
-      sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', 'direct'))
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', data.agentRole || 'main'))
 
       // Detect research artifact writes (session workspace or legacy research dir)
       if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {
@@ -3177,12 +3177,12 @@ async function main() {
     // Wire up Claude events to frontend
     realtimeClaudeHandler.events.on('tool_use', (data) => {
       console.log(`🔧 Claude: ${data.name}`)
-      sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', 'realtime'))
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', data.agentRole || 'main'))
     })
 
     realtimeClaudeHandler.events.on('tool_result', (data) => {
       console.log(`✅ Done: ${data.name}`)
-      sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', 'realtime'))
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', data.agentRole || 'main'))
 
       // Detect research artifact writes (session workspace or legacy research dir)
       if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {

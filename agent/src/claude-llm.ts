@@ -1284,7 +1284,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // Writer agent: no longer auto-approved — falls through to canUseTool for permission dialog
                 if (agentType === 'writer') {
                   console.log(`✍️ Writer agent: deferring to canUseTool for permission`)
-                  this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput })
+                  this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
                 }
 
@@ -1298,7 +1298,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               }
 
               console.log(`🔧 Claude: ${toolName}`)
-              this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput })
+              this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
               return {}
             }]
           }],
@@ -1308,8 +1308,9 @@ class ClaudeLLMStream extends llm.LLMStream {
               const toolName = input?.tool_name || 'unknown'
               const toolInput = input?.tool_input || {}
               const toolResponse = input?.tool_response  // Capture actual tool output for fast brain processing
+              const agentTypePost = input?.agent_type || null
               console.log(`✅ Done: ${toolName}`)
-              this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse })
+              this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: agentTypePost || 'main' })
               return {}
             }]
           }],

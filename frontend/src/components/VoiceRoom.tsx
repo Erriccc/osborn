@@ -53,6 +53,7 @@ interface ToolMeta {
   linesRemoved?: number
   editCount?: number
   diff?: string
+  agentRole?: string
 }
 
 interface ChatMessage {
@@ -2554,6 +2555,7 @@ function VoiceRoomInner({
           linesRemoved: data.linesRemoved,
           editCount: data.editCount,
           diff: data.diff,
+          agentRole: data.agentRole,
         }
         // Human summary line (also used as the message content / fallback).
         const target = data.fileName || data.command || data.pattern || data.url || ''
