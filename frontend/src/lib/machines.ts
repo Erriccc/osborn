@@ -400,18 +400,18 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
       image: getSandboxImage(),
       init: { exec: ['/entrypoint.sh'] },
       env: envVars,
-      // performance-2x: 2 dedicated vCPUs + 4GB RAM. Bumped from 1vCPU/2GB on
+      // performance-2x: 2 dedicated vCPUs + 6GB RAM. Bumped from 1vCPU/2GB on
       // 2026-06-02 after a real production session thrashed the smaller machine:
       // Grafana showed RAM climbing to ~1.9GB (Available→41MiB, no swap), CPU
       // pegged ~100% with load avg 800-1000%, and disk I/O 100% saturated +
       // ~12,500 throttled events — all from osborn spawning concurrent Claude
       // Code sub-agents (a real build) on top of the voice loop. Under that
       // thrash, Deepgram STT failed to parse and the machine went unresponsive.
-      // 2vCPU absorbs the sub-agent fan-out; 4GB gives heap headroom for long
+      // 2vCPU absorbs the sub-agent fan-out; 6GB gives heap headroom for long
       // sessions (the prior 2GB also hit a V8 heap OOM at ~980MB on an 88-min
       // session). Existing machines were bumped to match. (shared-cpu caused
       // event-loop pauses degrading STT+TTS; never go below dedicated CPU.)
-      guest: { cpu_kind: 'performance', cpus: 2, memory_mb: 4096 },
+      guest: { cpu_kind: 'performance', cpus: 2, memory_mb: 6144 },
       services: [{
         protocol: 'tcp',
         internal_port: OSBORN_HTTP_PORT,
