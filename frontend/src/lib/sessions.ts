@@ -17,6 +17,41 @@ export interface SessionInfo {
   cwd?: string
 }
 
+// Filler words that are uninformative at the start of a session title
+const TITLE_FILLER_RE = /^(i\s+(want|need|would like|can|could)|please|can you|could you|help me|how (do|can|to)|what (is|are|does)|let'?s|okay|ok|so\s+|um\s+|uh\s+|well\s+|just\s+)/i
+
+/**
+ * Derive a short 4-6 word title from a raw session message.
+ * Strips leading filler phrases, capitalizes the first word, appends
+ * ellipsis only when the original text had more content.
+ */
+export function deriveSessionTitle(text: string | undefined): string {
+  if (!text || !text.trim()) return 'Untitled session'
+  // Normalize whitespace
+  let t = text.trim().replace(/\s+/g, ' ')
+  // Strip leading filler (up to 2 passes to handle chained phrases)
+  for (let i = 0; i < 2; i++) {
+    const stripped = t.replace(TITLE_FILLER_RE, '').trim()
+    if (stripped.length > 0) t = stripped
+    else break
+  }
+  // Take up to 6 words
+  const words = t.split(' ')
+  const MAX_WORDS = 6
+  const truncated = words.length > MAX_WORDS
+  const titleWords = words.slice(0, MAX_WORDS)
+  // Capitalize first word
+  if (titleWords.length > 0) {
+    titleWords[0] = titleWords[0].charAt(0).toUpperCase() + titleWords[0].slice(1)
+  }
+  // Remove trailing punctuation from last word before adding ellipsis
+  if (truncated) {
+    titleWords[titleWords.length - 1] = titleWords[titleWords.length - 1].replace(/[,;:]$/, '')
+    return titleWords.join(' ') + '…'
+  }
+  return titleWords.join(' ')
+}
+
 /**
  * Format timestamp for display (relative time)
  */

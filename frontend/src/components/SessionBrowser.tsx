@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { formatTime, groupSessionsByDate, type SessionInfo } from '@/lib/sessions'
+import { formatTime, groupSessionsByDate, deriveSessionTitle, type SessionInfo } from '@/lib/sessions'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 
 type Provider = 'gemini' | 'openai'
@@ -512,15 +512,21 @@ export default function SessionBrowser({
                   >
                     <button
                       onClick={() => handleJoin(session.sessionId, session.cwd)}
+                      title={session.lastMessage || undefined}
                       className="w-full text-left p-4"
                     >
                       <div className="flex items-start justify-between gap-3 pr-8">
-                        <p className="text-base text-gray-200 group-hover:text-white transition-colors line-clamp-2 flex-1">
-                          {session.lastMessage || 'No preview available'}
+                        <p className="text-sm font-semibold text-gray-100 group-hover:text-white transition-colors truncate flex-1">
+                          {deriveSessionTitle(session.lastMessage)}
                         </p>
-                        <span className="text-sm text-gray-400 shrink-0">{session.messageCount} msgs</span>
+                        <span className="text-xs text-gray-500 shrink-0 mt-0.5">{session.messageCount} msgs</span>
                       </div>
-                      <p className="text-sm text-gray-400 mt-1.5">{formatTime(session.timestamp)}</p>
+                      {session.lastMessage && (
+                        <p className="text-xs text-gray-500 mt-0.5 truncate pr-1">
+                          {session.lastMessage}
+                        </p>
+                      )}
+                      <p className="text-xs text-gray-500 mt-1.5">{formatTime(session.timestamp)}</p>
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); setShareTarget({ sessionId: session.sessionId, title: session.lastMessage || 'Shared session' }); setShareEmail(''); setShareMsg(null) }}
