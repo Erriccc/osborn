@@ -597,6 +597,29 @@ function TextInput({
     e.target.value = ''
   }
 
+  // Paste an image straight from the clipboard (e.g. a screenshot) into the
+  // composer -- routes through the same onAttachFile path the file picker uses,
+  // so upload + preview behave identically. Only intercepts when the clipboard
+  // carries image files; plain-text paste is untouched.
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const imageFiles: File[] = []
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const f = item.getAsFile()
+        if (f) imageFiles.push(f)
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault()
+      const dt = new DataTransfer()
+      imageFiles.forEach((f) => dt.items.add(f))
+      onAttachFile(dt.files)
+    }
+  }
+
   return (
     <div className="border-t border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
       {/* Attached files preview */}
@@ -689,6 +712,7 @@ function TextInput({
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onPaste={handlePaste}
             placeholder="Message Osborn…"
             className="flex-1 min-w-0 bg-transparent text-[15px] text-white px-1 py-2 focus:outline-none placeholder:text-gray-500"
           />
