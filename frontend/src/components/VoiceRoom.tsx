@@ -483,18 +483,55 @@ function ChatPanel({
   activeResearch?: { taskId: string; task: string; toolCount: number } | null
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const isAtBottomRef = useRef(true)
+  const [showJumpPill, setShowJumpPill] = useState(false)
+
+  // Track whether the user is near the bottom of the scroll container.
+  // We update this synchronously on every scroll event so the auto-scroll
+  // effect below can decide whether to snap without an extra render cycle.
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    isAtBottomRef.current = isAtBottom
+    if (isAtBottom) setShowJumpPill(false)
+  }, [])
 
   useEffect(() => {
-    if (scrollRef.current) {
+    // Only auto-scroll when the user is already at (or very near) the bottom.
+    // If they have scrolled up to read history, leave them there.
+    if (scrollRef.current && isAtBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    } else if (!isAtBottomRef.current) {
+      // New content arrived while scrolled up — show the jump pill.
+      setShowJumpPill(true)
     }
   }, [messages, activeResearch])
 
   return (
-    <div
-      ref={scrollRef}
-      className="flex-1 overflow-y-auto px-2 sm:px-4 py-3 sm:py-4 space-y-3 sm:space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
-    >
+    <div className="flex-1 relative min-h-0">
+      {showJumpPill && (
+        <button
+          onClick={() => {
+            if (scrollRef.current) {
+              scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+            }
+            isAtBottomRef.current = true
+            setShowJumpPill(false)
+          }}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
+        >
+          Jump to latest
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="h-full overflow-y-auto px-2 sm:px-4 py-3 sm:py-4 space-y-3 sm:space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+      >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
           {/* Logo / Icon */}
@@ -554,6 +591,7 @@ function ChatPanel({
           </div>
         </div>
       )}
+    </div>
     </div>
   )
 }

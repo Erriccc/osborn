@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 
 interface ToolMeta {
   tool: string
@@ -156,13 +156,32 @@ function ToolLogCard({ msg }: { msg: LogMessage }) {
 export function LogsDrawer({ messages }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [lastSeenCount, setLastSeenCount] = useState(0)
+  const [showJumpPill, setShowJumpPill] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const isAtBottomRef = useRef(true)
 
   const unreadCount = messages.length - lastSeenCount
 
+  // Track whether the user is near the bottom so auto-scroll doesn't yank them
+  // back while they are reading earlier entries.
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    isAtBottomRef.current = isAtBottom
+    if (isAtBottom) setShowJumpPill(false)
+  }, [])
+
   useEffect(() => {
     if (isOpen && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      // Only auto-scroll to the newest entry when the user is already at/near
+      // the bottom. If they have scrolled up to read history, leave them there.
+      if (isAtBottomRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      } else {
+        // New entry arrived while scrolled up — show the jump pill.
+        setShowJumpPill(true)
+      }
       setLastSeenCount(messages.length)
     }
   }, [messages, isOpen])
@@ -192,29 +211,49 @@ export function LogsDrawer({ messages }: LogsDrawerProps) {
 
       {/* Collapsible log panel */}
       {isOpen && (
-        <div
-          ref={scrollRef}
-          className="max-h-64 overflow-y-auto px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
-        >
-          {messages.length === 0 ? (
-            <p className="text-xs text-gray-500 text-center py-2">No activity yet</p>
-          ) : (
-            messages.map((msg) =>
-              msg.toolMeta ? (
-                <ToolLogCard key={msg.id} msg={msg} />
-              ) : (
-                <div key={msg.id} className="flex items-start gap-2 text-xs px-1">
-                  <span className="text-gray-500 shrink-0 font-mono">
-                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </span>
-                  {msg.toolName && <span className="text-amber-400/70 shrink-0">[{msg.toolName}]</span>}
-                  <span className={`${msg.role === 'system' ? 'text-gray-400' : 'text-gray-300'} break-all`}>
-                    {msg.content.length > 200 ? msg.content.substring(0, 200) + '...' : msg.content}
-                  </span>
-                </div>
-              )
-            )
+        <div className="relative">
+          {showJumpPill && (
+            <button
+              onClick={() => {
+                if (scrollRef.current) {
+                  scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+                }
+                isAtBottomRef.current = true
+                setShowJumpPill(false)
+              }}
+              className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
+            >
+              Jump to latest
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
           )}
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="max-h-64 overflow-y-auto px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
+          >
+            {messages.length === 0 ? (
+              <p className="text-xs text-gray-500 text-center py-2">No activity yet</p>
+            ) : (
+              messages.map((msg) =>
+                msg.toolMeta ? (
+                  <ToolLogCard key={msg.id} msg={msg} />
+                ) : (
+                  <div key={msg.id} className="flex items-start gap-2 text-xs px-1">
+                    <span className="text-gray-500 shrink-0 font-mono">
+                      {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                    {msg.toolName && <span className="text-amber-400/70 shrink-0">[{msg.toolName}]</span>}
+                    <span className={`${msg.role === 'system' ? 'text-gray-400' : 'text-gray-300'} break-all`}>
+                      {msg.content.length > 200 ? msg.content.substring(0, 200) + '...' : msg.content}
+                    </span>
+                  </div>
+                )
+              )
+            )}
+          </div>
         </div>
       )}
     </div>
