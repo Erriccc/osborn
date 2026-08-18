@@ -3237,6 +3237,10 @@ function VoiceRoomInner({
     }
   }, [sendToAgent])
 
+  const handleCircleBack = useCallback((noteText: string) => {
+    handleSendText(noteText)
+  }, [handleSendText])
+
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
     const toolName = pendingPermission?.toolName || 'tool'
     const filePath = pendingPermission?.input?.file_path
@@ -4216,7 +4220,7 @@ function VoiceRoomInner({
         />
 
         {/* Logs drawer */}
-        <LogsDrawer messages={messages.filter(m => m.category === 'log')} />
+        <LogsDrawer messages={messages.filter(m => m.category === 'log')} onCircleBack={handleCircleBack} />
 
         {/* Mobile composer control strip — Claude-style controls next to the
             input instead of crammed in the header where they clip.

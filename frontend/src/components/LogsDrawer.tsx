@@ -42,6 +42,7 @@ function agentPillStyle(role: string | undefined): { label: string; className: s
 
 interface LogsDrawerProps {
   messages: LogMessage[]
+  onCircleBack?: (noteText: string) => void
 }
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
@@ -109,7 +110,7 @@ function DiffView({ diff }: { diff: string }) {
   )
 }
 
-function ToolLogCard({ msg }: { msg: LogMessage }) {
+function ToolLogCard({ msg, onCircleBack }: { msg: LogMessage; onCircleBack?: (noteText: string) => void }) {
   const [open, setOpen] = useState(false)
   const [liked, setLiked] = useState(false)
   const [disliked, setDisliked] = useState(false)
@@ -131,6 +132,22 @@ function ToolLogCard({ msg }: { msg: LogMessage }) {
   function toggleDislike() {
     setDisliked((v) => !v)
     if (!disliked) setLiked(false)
+  }
+
+  function toggleBookmark() {
+    const next = !bookmarked
+    setBookmarked(next)
+    if (next && onCircleBack) {
+      const detail: string[] = []
+      if (meta.filePath) detail.push(meta.filePath)
+      if (meta.command) detail.push(meta.command)
+      if (meta.description) detail.push(meta.description)
+      if (meta.pattern) detail.push(`Pattern: ${meta.pattern}`)
+      if (meta.url) detail.push(`URL: ${meta.url}`)
+      const detailStr = detail.length > 0 ? detail.join(' | ') : '(no further detail)'
+      const noteText = `[circle-back] The user flagged this step to revisit after the current main objectives are done: ${verb} ${target ?? '(unknown)'}. Details: ${detailStr}. Please bring it back up when the main work is complete.`
+      onCircleBack(noteText)
+    }
   }
 
   function copyRow() {
@@ -227,10 +244,10 @@ function ToolLogCard({ msg }: { msg: LogMessage }) {
               </svg>
             </button>
 
-            {/* Bookmark button */}
+            {/* Bookmark / circle-back button */}
             <button
-              onClick={() => setBookmarked((v) => !v)}
-              title={bookmarked ? 'Remove bookmark' : 'Bookmark'}
+              onClick={toggleBookmark}
+              title={bookmarked ? 'Remove circle-back' : 'Circle back to this'}
               className={`flex items-center justify-center w-8 h-8 rounded transition-colors hover:bg-gray-700/50 ${bookmarked ? 'text-amber-400' : 'text-gray-500 hover:text-amber-400'}`}
             >
               <svg className="w-4 h-4" fill={bookmarked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -272,7 +289,7 @@ function ToolLogCard({ msg }: { msg: LogMessage }) {
   )
 }
 
-export function LogsDrawer({ messages }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [lastSeenCount, setLastSeenCount] = useState(0)
   const [showJumpPill, setShowJumpPill] = useState(false)
@@ -358,7 +375,7 @@ export function LogsDrawer({ messages }: LogsDrawerProps) {
             ) : (
               messages.map((msg) =>
                 msg.toolMeta ? (
-                  <ToolLogCard key={msg.id} msg={msg} />
+                  <ToolLogCard key={msg.id} msg={msg} onCircleBack={onCircleBack} />
                 ) : (
                   <div key={msg.id} className="flex items-start gap-2 text-xs px-1">
                     <span className="text-gray-500 shrink-0 font-mono">
