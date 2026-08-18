@@ -43,6 +43,8 @@ function agentPillStyle(role: string | undefined): { label: string; className: s
 interface LogsDrawerProps {
   messages: LogMessage[]
   onCircleBack?: (noteText: string) => void
+  onLike?: (noteText: string) => void
+  onDislike?: (noteText: string) => void
 }
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
@@ -110,7 +112,7 @@ function DiffView({ diff }: { diff: string }) {
   )
 }
 
-function ToolLogCard({ msg, onCircleBack }: { msg: LogMessage; onCircleBack?: (noteText: string) => void }) {
+function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage; onCircleBack?: (noteText: string) => void; onLike?: (noteText: string) => void; onDislike?: (noteText: string) => void }) {
   const [open, setOpen] = useState(false)
   const [liked, setLiked] = useState(false)
   const [disliked, setDisliked] = useState(false)
@@ -125,13 +127,34 @@ function ToolLogCard({ msg, onCircleBack }: { msg: LogMessage; onCircleBack?: (n
   const pill = agentPillStyle(meta.agentRole)
 
   function toggleLike() {
-    setLiked((v) => !v)
-    if (!liked) setDisliked(false)
+    const next = !liked
+    setLiked(next)
+    if (next) {
+      setDisliked(false)
+      if (onLike) {
+        const detail = meta.command || meta.filePath || meta.description || meta.pattern || meta.url || '(no further detail)'
+        const noteText = `[liked] The user liked this step: ${verb} ${target ?? '(unknown)'}. Details: ${detail}. Positive signal — keep doing this kind of thing.`
+        onLike(noteText)
+      }
+    }
   }
 
   function toggleDislike() {
-    setDisliked((v) => !v)
-    if (!disliked) setLiked(false)
+    const next = !disliked
+    setDisliked(next)
+    if (next) {
+      setLiked(false)
+      if (onDislike) {
+        const detail: string[] = []
+        if (meta.command) detail.push(meta.command)
+        if (meta.filePath) detail.push(meta.filePath)
+        if (meta.description) detail.push(meta.description)
+        if (meta.diff) detail.push(meta.diff.substring(0, 500))
+        const detailStr = detail.length > 0 ? detail.join(' | ') : '(no further detail)'
+        const noteText = `[disliked] The user flagged this step as not what they wanted: ${verb} ${target ?? '(unknown)'}. Details: ${detailStr}. Acknowledge this naturally, and if it was an edit, OFFER to undo/revert it and ask before doing so — do NOT auto-revert.`
+        onDislike(noteText)
+      }
+    }
   }
 
   function toggleBookmark() {
@@ -145,7 +168,7 @@ function ToolLogCard({ msg, onCircleBack }: { msg: LogMessage; onCircleBack?: (n
       if (meta.pattern) detail.push(`Pattern: ${meta.pattern}`)
       if (meta.url) detail.push(`URL: ${meta.url}`)
       const detailStr = detail.length > 0 ? detail.join(' | ') : '(no further detail)'
-      const noteText = `[circle-back] The user flagged this step to revisit after the current main objectives are done: ${verb} ${target ?? '(unknown)'}. Details: ${detailStr}. Please bring it back up when the main work is complete.`
+      const noteText = `[circle-back] The user flagged this step to revisit after the current main objectives: ${verb} ${target ?? '(unknown)'}. Details: ${detailStr}. Acknowledge this naturally in conversation and try to reflect on WHY they might want to revisit it — don't just log it.`
       onCircleBack(noteText)
     }
   }
@@ -289,7 +312,7 @@ function ToolLogCard({ msg, onCircleBack }: { msg: LogMessage; onCircleBack?: (n
   )
 }
 
-export function LogsDrawer({ messages, onCircleBack }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [lastSeenCount, setLastSeenCount] = useState(0)
   const [showJumpPill, setShowJumpPill] = useState(false)
@@ -375,7 +398,7 @@ export function LogsDrawer({ messages, onCircleBack }: LogsDrawerProps) {
             ) : (
               messages.map((msg) =>
                 msg.toolMeta ? (
-                  <ToolLogCard key={msg.id} msg={msg} onCircleBack={onCircleBack} />
+                  <ToolLogCard key={msg.id} msg={msg} onCircleBack={onCircleBack} onLike={onLike} onDislike={onDislike} />
                 ) : (
                   <div key={msg.id} className="flex items-start gap-2 text-xs px-1">
                     <span className="text-gray-500 shrink-0 font-mono">

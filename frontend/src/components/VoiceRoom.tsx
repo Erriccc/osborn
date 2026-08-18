@@ -3241,6 +3241,14 @@ function VoiceRoomInner({
     handleSendText(noteText)
   }, [handleSendText])
 
+  const handleLike = useCallback((noteText: string) => {
+    handleSendText(noteText)
+  }, [handleSendText])
+
+  const handleDislike = useCallback((noteText: string) => {
+    handleSendText(noteText)
+  }, [handleSendText])
+
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
     const toolName = pendingPermission?.toolName || 'tool'
     const filePath = pendingPermission?.input?.file_path
@@ -4220,7 +4228,7 @@ function VoiceRoomInner({
         />
 
         {/* Logs drawer */}
-        <LogsDrawer messages={messages.filter(m => m.category === 'log')} onCircleBack={handleCircleBack} />
+        <LogsDrawer messages={messages.filter(m => m.category === 'log')} onCircleBack={handleCircleBack} onLike={handleLike} onDislike={handleDislike} />
 
         {/* Mobile composer control strip — Claude-style controls next to the
             input instead of crammed in the header where they clip.
