@@ -134,12 +134,21 @@ function ToolLogCard({ msg }: { msg: LogMessage }) {
   }
 
   function copyRow() {
-    const parts: string[] = [`[${verb}]`]
-    if (target) parts.push(target)
-    if (meta.filePath && meta.filePath !== target) parts.push(meta.filePath)
-    if (meta.command) parts.push(meta.command)
-    if (meta.diff) parts.push(meta.diff)
-    navigator.clipboard.writeText(parts.join('\n')).then(() => {
+    // Header: "[Verb] <target>" — mirrors what the card shows visually
+    const header = target ? `[${verb}] ${target}` : `[${verb}]`
+
+    // Detail body — only include sections that have data
+    const body: string[] = []
+    if (meta.filePath && meta.filePath !== target) body.push(meta.filePath)
+    if (meta.command) body.push(meta.command)
+    if (meta.description && meta.description !== target) body.push(meta.description)
+    if (meta.pattern && meta.pattern !== target) body.push(`Pattern: ${meta.pattern}`)
+    if (meta.url && meta.url !== target) body.push(`URL: ${meta.url}`)
+    if (meta.diff) body.push(meta.diff)
+
+    const text = body.length > 0 ? `${header}\n\n${body.join('\n\n')}` : header
+
+    navigator.clipboard.writeText(text).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     }).catch(() => {})
