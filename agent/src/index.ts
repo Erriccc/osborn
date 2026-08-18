@@ -1708,6 +1708,21 @@ async function main() {
   let currentAgent: voice.Agent | null = null  // For updateChatCtx() context injection
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
 
+  // ============================================================
+  // SLICE 1: HEADLESS BACKGROUND SESSION REGISTRY
+  // Purely additive — zero changes to the focused voice path above.
+  // The focused session (currentLLM / currentSession / currentAgent /
+  // activeRoom) is untouched by everything below.
+  // ============================================================
+  interface SessionSlot {
+    id: string
+    llm: ReturnType<typeof createClaudeLLM>
+    isFocused: boolean
+    workingDir: string
+  }
+  const slots = new Map<string, SessionSlot>()
+  let focusedSlotId: string | null = null  // reserved for future focused-slot wiring; not used yet
+
   // Agent-side "alone in room" leave timer (see Room-presence lifecycle note up
   // top). Armed in ParticipantDisconnected once a user has left; if no one
   // rejoins within the grace window the agent leaves LiveKit on its own.
@@ -1866,6 +1881,111 @@ async function main() {
     } catch (err) {
       console.error(`❌ killCurrentLLM(${reason}) failed:`, err instanceof Error ? err.message : err)
     }
+  }
+
+  // ============================================================
+  // SLICE 1: spawnBackgroundSession
+  // Creates a fully headless ClaudeLLM subprocess that resumes an
+  // existing session.  No AgentSession, no room, no TTS/voice.
+  // Output events are forwarded to the frontend data channel only,
+  // tagged with the slot id so the frontend can distinguish them.
+  // ============================================================
+  async function spawnBackgroundSession(sessionId: string, bgWorkingDir?: string): Promise<void> {
+    // Hard cap: focused session + background slots must not exceed 3 total.
+    // slots Map holds ONLY background slots; focused session is separate.
+    if (slots.size >= 2) {
+      const msg = `Background session cap reached (${slots.size}/2 slots in use). Kill an existing background slot before spawning a new one.`
+      console.warn(`⚠️ spawnBackgroundSession: ${msg}`)
+      await sendToFrontend({ type: 'background_session_error', slotId: sessionId, error: msg })
+      return
+    }
+
+    const slotWorkingDir = bgWorkingDir || workingDir
+    const slotId = sessionId  // use sessionId as the slot id for traceability
+
+    console.log(`🔲 Spawning background slot: sessionId=${slotId.substring(0, 8)} cwd=${slotWorkingDir}`)
+
+    // Create a headless LLM instance — reuse the same factory, no voice options.
+    // permissionMode bypassPermissions: no dialogs (headless — nobody to click Allow).
+    // No AgentSession, no room involvement.
+    const bgLLM = createClaudeLLM({
+      workingDirectory: slotWorkingDir,
+      sessionBaseDir: slotWorkingDir,
+      resumeSessionId: sessionId,
+      voiceMode: 'direct',           // picks up the research system prompt
+      skipTTSQueue: false,           // not going through TTS at all
+      permissionMode: 'bypassPermissions',
+    })
+
+    // Register slot BEFORE cold-starting so list_slots is accurate from the
+    // first moment even if the subprocess takes a few seconds to init.
+    const slot: SessionSlot = { id: slotId, llm: bgLLM, isFocused: false, workingDir: slotWorkingDir }
+    slots.set(slotId, slot)
+
+    // Dedicated EventEmitter for this background slot's SDK events.
+    // Forwards every event to the frontend data channel tagged with slotId.
+    // NEVER touches session.say() / TTS / voice.
+    const { EventEmitter: SlotEventEmitter } = await import('node:events')
+    const bgEmitter = new SlotEventEmitter()
+
+    bgEmitter.on('assistant_text', ({ text }: { text: string }) => {
+      sendToFrontend({ type: 'claude_output', slotId, text }).catch(() => {})
+    })
+    bgEmitter.on('tool_use', ({ name, input, agentRole }: any) => {
+      sendToFrontend({ type: 'tool_use', slotId, name, input, agentRole }).catch(() => {})
+    })
+    bgEmitter.on('tool_result', ({ name, response, agentRole }: any) => {
+      sendToFrontend({ type: 'tool_result', slotId, name, response, agentRole }).catch(() => {})
+    })
+    bgEmitter.on('tool_blocked', ({ name, reason }: any) => {
+      sendToFrontend({ type: 'tool_blocked', slotId, name, reason }).catch(() => {})
+    })
+    bgEmitter.on('session_id', ({ sessionId: sid }: { sessionId: string }) => {
+      sendToFrontend({ type: 'background_session_ready', slotId, sessionId: sid }).catch(() => {})
+    })
+    bgEmitter.on('session_resume_failed', ({ requestedSessionId, actualSessionId }: any) => {
+      console.error(`❌ Background slot ${slotId.substring(0, 8)}: resume failed — requested ${requestedSessionId?.substring(0, 8)} got ${actualSessionId?.substring(0, 8)}`)
+      sendToFrontend({ type: 'background_session_error', slotId, error: 'Session resume failed' }).catch(() => {})
+    })
+    // Wire up the LLM's internal EventEmitter so hook-emitted events also flow.
+    bgLLM.events.on('session_id', (data: any) => bgEmitter.emit('session_id', data))
+    bgLLM.events.on('tool_blocked', (data: any) => bgEmitter.emit('tool_blocked', data))
+
+    // Build minimal sdkOptions for the headless cold start.
+    // resume: sessionId brings up real prior context from JSONL.
+    // env: CLAUDE_CODE_DISABLE_AUTO_MEMORY prevents concurrent subprocesses
+    // from racing the shared ~/.claude/CLAUDE.md memory file.
+    // CLAUDE_CONFIG_DIR is intentionally NOT overridden — shared config is fine.
+    const bgEnv: Record<string, string> = {}
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined) bgEnv[k] = v
+    }
+    bgEnv['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
+
+    const bgSdkOptions = {
+      cwd: slotWorkingDir,
+      resume: sessionId,
+      permissionMode: 'bypassPermissions' as const,
+      enableFileCheckpointing: false,
+      settingSources: ['project', 'user'] as any,
+      env: bgEnv,
+    }
+
+    // Cold-start: deliver an init message so the subprocess actually spawns
+    // and begins consuming the session JSONL.
+    const KICKOFF_TEXT = '[BACKGROUND_INIT] You have been resumed in headless background mode. No voice session is active. Acknowledge receipt with a single brief line.'
+
+    bgLLM.pushMessage(KICKOFF_TEXT, bgSdkOptions as any, {
+      onSessionId: (sid: string) => {
+        console.log(`✅ Background slot ${slotId.substring(0, 8)}: session confirmed ${sid.substring(0, 8)}`)
+        bgEmitter.emit('session_id', { sessionId: sid })
+      },
+      onCheckpoint: (_ckpt: string) => { /* not needed for headless */ },
+      eventEmitter: bgEmitter,
+    })
+
+    console.log(`✅ Background slot registered: id=${slotId.substring(0, 8)} workingDir=${slotWorkingDir}`)
+    await sendToFrontend({ type: 'background_session_spawned', slotId, workingDir: slotWorkingDir })
   }
 
   let localParticipant: LocalParticipant | null = null
@@ -5665,6 +5785,71 @@ async function main() {
             }
           }
         }
+      }
+      // ============================================================
+      // SLICE 1: HEADLESS BACKGROUND SESSION COMMANDS
+      // spawn_background_session — boot a second Claude subprocess that
+      //   resumes an existing session with NO voice involvement.
+      // list_slots — return all live slots (focused + background) so the
+      //   frontend can verify both are alive.
+      // ============================================================
+      else if (data.type === 'spawn_background_session') {
+        const targetSessionId: string | undefined = data.sessionId as string | undefined
+        const bgDir: string | undefined = data.workingDir as string | undefined
+
+        let resolvedSessionId = targetSessionId
+        if (!resolvedSessionId) {
+          // Pick the most recently modified session, excluding the focused one.
+          const allSess = await listAllClaudeSessions(50)
+          const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
+          const candidate = allSess.find(s => s.sessionId !== focusedId)
+          resolvedSessionId = candidate?.sessionId ?? undefined
+        }
+
+        if (!resolvedSessionId) {
+          await sendToFrontend({
+            type: 'background_session_error',
+            slotId: null,
+            error: 'No eligible session found to spawn as background slot',
+          })
+        } else if (slots.has(resolvedSessionId)) {
+          await sendToFrontend({
+            type: 'background_session_error',
+            slotId: resolvedSessionId,
+            error: `Session ${resolvedSessionId.substring(0, 8)} is already running as a background slot`,
+          })
+        } else {
+          spawnBackgroundSession(resolvedSessionId, bgDir).catch((err) => {
+            console.error('❌ spawnBackgroundSession failed:', err instanceof Error ? err.message : err)
+            sendToFrontend({
+              type: 'background_session_error',
+              slotId: resolvedSessionId,
+              error: err instanceof Error ? err.message : String(err),
+            }).catch(() => {})
+          })
+        }
+      }
+      else if (data.type === 'list_slots') {
+        // Return all live slots: the focused session + every background slot.
+        const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
+        const focusedEntry = currentLLM
+          ? [{
+              id: focusedId || '(pending)',
+              isFocused: true,
+              workingDir,
+              hasSession: currentLLM.hasSession?.() ?? false,
+            }]
+          : []
+        const bgEntries = [...slots.values()].map(s => ({
+          id: s.id,
+          isFocused: s.isFocused,
+          workingDir: s.workingDir,
+          hasSession: s.llm.hasSession?.() ?? false,
+        }))
+        await sendToFrontend({
+          type: 'slots_list',
+          slots: [...focusedEntry, ...bgEntries],
+        })
       }
     } catch {}
   }
