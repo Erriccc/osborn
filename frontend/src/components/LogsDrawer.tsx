@@ -27,27 +27,25 @@ interface LogMessage {
   toolMeta?: ToolMeta
 }
 
-// Generic person-silhouette avatar used by every role pill.
+// Role initial(s) avatar used by every role pill.
 // Sits inside a small circle; inherits currentColor from the pill's text-* class.
-const ProfileAvatar = () => (
+const ProfileAvatar = ({ initials }: { initials: string }) => (
   <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-current/20 shrink-0">
-    <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" />
-    </svg>
+    <span className="text-[9px] font-bold leading-none" aria-hidden="true">{initials}</span>
   </span>
 )
 
-// Map an agentRole to a className for the color-coded avatar+name chip.
-function agentPillStyle(role: string | undefined): { className: string } | null {
+// Map an agentRole to a className and initials for the color-coded avatar+name chip.
+function agentPillStyle(role: string | undefined): { className: string; initials: string } | null {
   if (!role) return null
-  const map: Record<string, { className: string }> = {
-    main:         { className: 'bg-gray-500/20 text-gray-300 border border-gray-500/30' },
-    researcher:   { className: 'bg-blue-500/20 text-blue-300 border border-blue-500/30' },
-    writer:       { className: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' },
-    reasoner:     { className: 'bg-violet-500/20 text-violet-300 border border-violet-500/30' },
-    orchestrator: { className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30' },
+  const map: Record<string, { className: string; initials: string }> = {
+    main:         { className: 'bg-gray-500/20 text-gray-300 border border-gray-500/30', initials: 'M' },
+    researcher:   { className: 'bg-blue-500/20 text-blue-300 border border-blue-500/30', initials: 'Rs' },
+    writer:       { className: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30', initials: 'W' },
+    reasoner:     { className: 'bg-violet-500/20 text-violet-300 border border-violet-500/30', initials: 'Rn' },
+    orchestrator: { className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30', initials: 'M' },
   }
-  return map[role] ?? { className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30' }
+  return map[role] ?? { className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30', initials: role.charAt(0).toUpperCase() }
 }
 
 interface LogsDrawerProps {
@@ -232,7 +230,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
           {/* Agent role chip — profile avatar + role name on colored background */}
           {pill && (
             <span title={meta.agentRole} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap ${pill.className}`}>
-              <ProfileAvatar />
+              <ProfileAvatar initials={pill.initials} />
               {meta.agentRole}
             </span>
           )}
