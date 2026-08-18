@@ -4376,71 +4376,97 @@ function VoiceRoomInner({
 
           {/* File browser - compact list */}
           <div className="border-b border-gray-700/50 max-h-52 overflow-y-auto">
-            {generatedFiles.filter(f => f.source === 'plan').length > 0 && (
-              <div>
-                <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
-                  Plans
-                </div>
-                {generatedFiles.filter(f => f.source === 'plan').map((file) => (
-                  <button
+            {(() => {
+              const sidebarTypeBadge: Record<string, { label: string; color: string }> = {
+                plan: { label: 'Plan', color: 'bg-violet-500/20 text-violet-400' },
+                diagram: { label: 'Diagram', color: 'bg-blue-500/20 text-blue-400' },
+                notes: { label: 'Notes', color: 'bg-emerald-500/20 text-emerald-400' },
+                image: { label: 'Image', color: 'bg-amber-500/20 text-amber-400' },
+                summary: { label: 'Summary', color: 'bg-cyan-500/20 text-cyan-400' },
+                html: { label: 'HTML', color: 'bg-orange-500/20 text-orange-400' },
+                other: { label: 'File', color: 'bg-gray-500/20 text-gray-400' },
+              }
+              const renderFileRow = (file: GeneratedFile) => {
+                const badge = sidebarTypeBadge[file.type] || sidebarTypeBadge.other
+                const isFav = favoritePaths.has(file.filePath)
+                return (
+                  <div
                     key={file.filePath}
-                    onClick={() => setSelectedFilePath(file.filePath)}
-                    className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
+                    className={`w-full px-3 py-2 flex items-center gap-2 transition-colors ${
                       selectedFile?.filePath === file.filePath
                         ? 'bg-amber-500/15 border-l-2 border-amber-400'
                         : 'hover:bg-gray-800/50 border-l-2 border-transparent'
                     }`}
                   >
-                    <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-amber-500/20 text-amber-400">Plan</span>
-                    <span className="text-xs font-mono text-gray-300 truncate flex-1">{file.fileName}</span>
-                    {!file.content && (
+                    <button
+                      onClick={() => setSelectedFilePath(file.filePath)}
+                      className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                    >
+                      <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${badge.color}`}>{badge.label}</span>
+                      <span className="text-xs font-mono text-gray-300 truncate">{file.fileName}</span>
+                    </button>
+                    {!file.content && !file.url && (
                       <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                       </svg>
                     )}
-                  </button>
-                ))}
-              </div>
-            )}
-            {generatedFiles.filter(f => f.source === 'research').length > 0 && (
-              <div>
-                <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
-                  Research
-                </div>
-                {generatedFiles.filter(f => f.source === 'research').map((file) => {
-                  const typeBadge: Record<string, { label: string; color: string }> = {
-                    diagram: { label: 'Diagram', color: 'bg-blue-500/20 text-blue-400' },
-                    notes: { label: 'Notes', color: 'bg-emerald-500/20 text-emerald-400' },
-                    image: { label: 'Image', color: 'bg-amber-500/20 text-amber-400' },
-                    summary: { label: 'Summary', color: 'bg-cyan-500/20 text-cyan-400' },
-                    plan: { label: 'Plan', color: 'bg-amber-500/20 text-amber-400' },
-                    other: { label: 'File', color: 'bg-gray-500/20 text-gray-400' },
-                  }
-                  const badge = typeBadge[file.type] || typeBadge.other
-                  return (
                     <button
-                      key={file.filePath}
-                      onClick={() => setSelectedFilePath(file.filePath)}
-                      className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
-                        selectedFile?.filePath === file.filePath
-                          ? 'bg-amber-500/15 border-l-2 border-amber-400'
-                          : 'hover:bg-gray-800/50 border-l-2 border-transparent'
+                      onClick={(e) => { e.stopPropagation(); handleToggleFavoriteWithNote(file) }}
+                      className={`shrink-0 p-1 rounded transition-colors ${
+                        isFav ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-300'
                       }`}
+                      title={isFav ? 'Unfavorite' : 'Favorite'}
                     >
-                      <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded ${badge.color}`}>{badge.label}</span>
-                      <span className="text-xs font-mono text-gray-300 truncate flex-1">{file.fileName}</span>
-                      {!file.content && (
-                        <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                      )}
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" />
+                      </svg>
                     </button>
-                  )
-                })}
-              </div>
-            )}
+                  </div>
+                )
+              }
+              const favFiles = generatedFiles.filter(f => favoritePaths.has(f.filePath))
+              const planFiles = generatedFiles.filter(f => f.source === 'plan' && !favoritePaths.has(f.filePath))
+              const researchFiles = generatedFiles.filter(f => f.source === 'research' && !favoritePaths.has(f.filePath))
+              const otherFiles = generatedFiles.filter(f => f.source !== 'plan' && f.source !== 'research' && !favoritePaths.has(f.filePath))
+              return (
+                <>
+                  {favFiles.length > 0 && (
+                    <div>
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider bg-gray-800/30 flex items-center gap-1.5">
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" /></svg>
+                        Favorites
+                      </div>
+                      {favFiles.map(renderFileRow)}
+                    </div>
+                  )}
+                  {planFiles.length > 0 && (
+                    <div>
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
+                        Plans
+                      </div>
+                      {planFiles.map(renderFileRow)}
+                    </div>
+                  )}
+                  {researchFiles.length > 0 && (
+                    <div>
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
+                        Research
+                      </div>
+                      {researchFiles.map(renderFileRow)}
+                    </div>
+                  )}
+                  {otherFiles.length > 0 && (
+                    <div>
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
+                        Other
+                      </div>
+                      {otherFiles.map(renderFileRow)}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           </div>
 
           {/* Preview area */}

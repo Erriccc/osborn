@@ -94,6 +94,7 @@ export function FilesExplorerModal({
   const favoriteFilesList = useMemo(() => filteredFiles.filter(f => isFav(f.filePath)), [filteredFiles, isFav])
   const planFiles = useMemo(() => filteredFiles.filter(f => f.source === 'plan' && !isFav(f.filePath)), [filteredFiles, isFav])
   const researchFiles = useMemo(() => filteredFiles.filter(f => f.source === 'research' && !isFav(f.filePath)), [filteredFiles, isFav])
+  const otherFiles = useMemo(() => filteredFiles.filter(f => f.source !== 'plan' && f.source !== 'research' && !isFav(f.filePath)), [filteredFiles, isFav])
 
   // Currently selected file
   const selectedFile = useMemo(
@@ -267,6 +268,23 @@ export function FilesExplorerModal({
                         Research
                       </div>
                       {researchFiles.map((file) => (
+                        <FileListItem
+                          key={file.filePath}
+                          file={file}
+                          isSelected={selectedFile?.filePath === file.filePath}
+                          onSelect={handleSelectFile}
+                          isFavorite={isFav(file.filePath)}
+                          onToggleFavorite={onToggleFavorite}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {otherFiles.length > 0 && (
+                    <div>
+                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-900 sticky top-0 z-10">
+                        Other
+                      </div>
+                      {otherFiles.map((file) => (
                         <FileListItem
                           key={file.filePath}
                           file={file}
