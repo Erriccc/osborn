@@ -35,17 +35,38 @@ const ProfileAvatar = ({ initials }: { initials: string }) => (
   </span>
 )
 
+// Derive display initials from any role/name string.
+// Known built-ins that would otherwise collide are overridden explicitly;
+// everything else gets the first two letters (uppercased) of the name, or
+// just the first letter when the name is a single character.
+function deriveInitials(role: string): string {
+  const overrides: Record<string, string> = {
+    main:         'M',
+    orchestrator: 'M',
+    writer:       'W',
+    researcher:   'Rs',
+    reasoner:     'Rn',
+  }
+  if (overrides[role]) return overrides[role]
+  const clean = role.trim()
+  if (clean.length <= 1) return clean.toUpperCase()
+  return (clean[0] + clean[1]).toUpperCase()
+}
+
 // Map an agentRole to a className and initials for the color-coded avatar+name chip.
+// Known roles get their own brand color; any unknown/custom role falls back to a
+// neutral slate chip so it still renders correctly instead of breaking or going blank.
 function agentPillStyle(role: string | undefined): { className: string; initials: string } | null {
   if (!role) return null
-  const map: Record<string, { className: string; initials: string }> = {
-    main:         { className: 'bg-gray-500/20 text-gray-300 border border-gray-500/30', initials: 'M' },
-    researcher:   { className: 'bg-blue-500/20 text-blue-300 border border-blue-500/30', initials: 'Rs' },
-    writer:       { className: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30', initials: 'W' },
-    reasoner:     { className: 'bg-violet-500/20 text-violet-300 border border-violet-500/30', initials: 'Rn' },
-    orchestrator: { className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30', initials: 'M' },
+  const colorMap: Record<string, string> = {
+    main:         'bg-gray-500/20 text-gray-300 border border-gray-500/30',
+    orchestrator: 'bg-gray-500/20 text-gray-400 border border-gray-500/30',
+    researcher:   'bg-blue-500/20 text-blue-300 border border-blue-500/30',
+    writer:       'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+    reasoner:     'bg-violet-500/20 text-violet-300 border border-violet-500/30',
   }
-  return map[role] ?? { className: 'bg-gray-500/20 text-gray-400 border border-gray-500/30', initials: role.charAt(0).toUpperCase() }
+  const className = colorMap[role] ?? 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
+  return { className, initials: deriveInitials(role) }
 }
 
 interface LogsDrawerProps {
