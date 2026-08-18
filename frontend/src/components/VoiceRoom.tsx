@@ -3250,7 +3250,7 @@ function VoiceRoomInner({
   }, [handleSendText])
 
   const handleFavoriteNote = useCallback((fileName: string) => {
-    handleSendText(`[favorited] The user favorited the file ${fileName}. Treat this file as priority context — keep it front of mind for the current work.`)
+    handleSendText(`[favorited] The user favorited the file ${fileName}.`)
   }, [handleSendText])
 
   // Wraps toggleFavorite so that starring a file (toggling ON) also sends a
