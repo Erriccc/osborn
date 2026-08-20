@@ -2027,8 +2027,23 @@ function VoiceRoomInner({
         if (cancelled || !json) return
         if (json.exists && Array.isArray(json.favorites)) {
           const server = (json.favorites as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
-          setFavoriteFiles(server)
-          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(server)) } catch { /* ignore */ }
+          // Self-heal: drop any entries that belong to a different session.
+          // A legitimate favorite in this session has a filePath containing
+          // the current session id (osb/{currentSessionId}/…). Entries from
+          // another session snuck in via the pre-4bd44d1 seeding bug.
+          const clean = server.filter((f) => f.filePath && f.filePath.includes(currentSessionId))
+          const wasPoluted = clean.length !== server.length
+          setFavoriteFiles(clean)
+          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(clean)) } catch { /* ignore */ }
+          if (wasPoluted) {
+            // Persist the cleaned list back to the server so future loads are
+            // also clean. Only fires when something was actually removed.
+            fetch('/api/favorites', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ favorites: clean, sessionId: currentSessionId }),
+            }).catch(() => {})
+          }
         } else {
           // No server record for this session yet — start with an empty set.
           // We deliberately do NOT seed from localStorage here: those entries
