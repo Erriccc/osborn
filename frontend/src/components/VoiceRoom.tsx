@@ -2030,17 +2030,12 @@ function VoiceRoomInner({
           setFavoriteFiles(server)
           try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(server)) } catch { /* ignore */ }
         } else {
-          // No server record for this session — seed it once from local so
-          // nothing is lost on first use of a new device.
-          setFavoriteFiles((prev) => {
-            if (prev.length > 0) {
-              fetch('/api/favorites', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ favorites: prev, sessionId: currentSessionId }),
-              }).catch(() => {})
-            }
-            return prev
-          })
+          // No server record for this session yet — start with an empty set.
+          // We deliberately do NOT seed from localStorage here: those entries
+          // carry filePaths from whatever previous session wrote them, so
+          // seeding would cause cross-session leaks (the original bug).
+          setFavoriteFiles([])
+          try { localStorage.removeItem(FAVORITES_KEY) } catch { /* ignore */ }
         }
       })
       .catch(() => {})
@@ -3278,7 +3273,11 @@ function VoiceRoomInner({
       const res = await fetch(`/api/session-files?sessionId=${encodeURIComponent(sessionId)}`)
       if (!res.ok) return
       const json = await res.json()
-      const bucketFiles = Array.isArray(json?.files) ? json.files : []
+      // Exclude internal _-prefixed files (e.g. _favorites.json) — these are
+      // implementation artifacts, not user-visible documents.
+      const bucketFiles = (Array.isArray(json?.files) ? json.files : []).filter(
+        (f: { fileName: string }) => !f.fileName.startsWith('_')
+      )
       if (bucketFiles.length === 0) return
       console.log(`📁 Supabase session files for ${sessionId.substring(0, 8)}:`, bucketFiles.length)
 
