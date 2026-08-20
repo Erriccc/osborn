@@ -118,7 +118,7 @@ function DiffView({ diff }: { diff: string }) {
     return !(l.startsWith('Index:') || l.startsWith('===') || l.startsWith('--- ') || l.startsWith('+++ '))
   })
   return (
-    <pre className="mt-1.5 max-h-56 overflow-auto rounded-md bg-gray-950/70 border border-gray-800 p-2 text-[10.5px] leading-relaxed font-mono">
+    <pre className="mt-1.5 max-h-56 max-w-full overflow-x-auto overflow-y-auto rounded-md bg-gray-950/70 border border-gray-800 p-2 text-[10.5px] leading-relaxed font-mono">
       {lines.map((l, i) => {
         const isAdd = l.startsWith('+')
         const isDel = l.startsWith('-')
@@ -224,7 +224,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   }
 
   return (
-    <div className="rounded-lg border border-gray-700/60 bg-gray-800/50 overflow-hidden shadow-sm">
+    <div className="rounded-lg border border-gray-700/60 bg-gray-800/50 overflow-hidden shadow-sm max-w-full">
       <div className="flex items-center gap-2 px-3 py-2">
         <button
           onClick={() => hasDetail && setOpen((v) => !v)}
@@ -421,7 +421,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike }: LogsDr
           <div
             ref={scrollRef}
             onScroll={handleScroll}
-            className="max-h-64 overflow-y-auto px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
+            className="max-h-64 overflow-y-auto overflow-x-hidden px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
           >
             {messages.length === 0 ? (
               <p className="text-xs text-gray-500 text-center py-2">No activity yet</p>
