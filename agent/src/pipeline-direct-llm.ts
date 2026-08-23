@@ -28,7 +28,7 @@ function buildSessionTail(sessionId: string | null, workingDir: string): string 
   if (process.env.OSBORN_SESSION_TAIL === '0') return ''
   if (!sessionId) return ''
 
-  const maxLines = parseInt(process.env.OSBORN_SESSION_TAIL_COUNT || '500', 10)
+  const maxLines = parseInt(process.env.OSBORN_SESSION_TAIL_COUNT || '1000', 10)
 
   try {
     const indexPath = getIndexPath(sessionId, workingDir)
