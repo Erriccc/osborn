@@ -1460,6 +1460,10 @@ class ClaudeLLMStream extends llm.LLMStream {
               const toolResponse = input?.tool_response  // Capture actual tool output for fast brain processing
               const agentTypePost = input?.agent_type || null
               console.log(`✅ Done: ${toolName}`)
+              if (toolName === 'Task' || toolName === 'Agent') {
+                const agentId = input?.tool_input?.agent_id ?? input?.tool_input?.id ?? undefined
+                console.log('[LIFECYCLE-PROBE] PostToolUse on', toolName, 'agent_id=', agentId, 'ts=', Date.now())
+              }
               this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: agentTypePost || 'main' })
               return {}
             }]
@@ -1669,6 +1673,34 @@ class ClaudeLLMStream extends llm.LLMStream {
               } catch (err) {
                 console.error('⚠️ PostCompact hook error:', err instanceof Error ? err.message : err)
               }
+              return {}
+            }]
+          }],
+          SubagentStart: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              console.log('[LIFECYCLE-PROBE] SubagentStart', JSON.stringify(input))
+              return {}
+            }]
+          }],
+          SubagentStop: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              console.log('[LIFECYCLE-PROBE] SubagentStop', JSON.stringify(input))
+              return {}
+            }]
+          }],
+          TaskCreated: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              console.log('[LIFECYCLE-PROBE] TaskCreated', JSON.stringify(input))
+              return {}
+            }]
+          }],
+          TaskCompleted: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              console.log('[LIFECYCLE-PROBE] TaskCompleted', JSON.stringify(input))
               return {}
             }]
           }]
