@@ -28,7 +28,7 @@ function buildSessionTail(sessionId: string | null, workingDir: string): string 
   if (process.env.OSBORN_SESSION_TAIL === '0') return ''
   if (!sessionId) return ''
 
-  const maxLines = parseInt(process.env.OSBORN_SESSION_TAIL_COUNT || '1000', 10)
+  const maxLines = parseInt(process.env.OSBORN_SESSION_TAIL_COUNT || '1500', 10)
 
   try {
     const indexPath = getIndexPath(sessionId, workingDir)
@@ -97,6 +97,9 @@ export class PipelineDirectLLM extends llm.LLM {
   #turnAbort: AbortController | null = null
   #indexWatcher: IndexWatcher | null = null
   #indexBuilding = false
+  // Set to true when PostCompact fires — cleared after injecting the tail once
+  // on the next real user turn (seam-only injection, never per-turn).
+  #postCompactionTailPending = false
   // True while the in-flight turn is a [MEETING —] chunk — the tts_say gate in
   // index.ts reads this to skip browser session.say() (meeting audio goes via
   // /canvas, not the laptop speakers → no same-room feedback). Set per chat().
@@ -104,8 +107,21 @@ export class PipelineDirectLLM extends llm.LLM {
 
   constructor(opts: PipelineDirectOptions) {
     super()
-    this.#claudeLLM = new ClaudeLLM(opts)
-    this.#opts = opts
+    // Chain the onCompactionEvent callback so we can set #postCompactionTailPending
+    // when compaction completes, without breaking the existing UI-notification path.
+    const upstreamCompactionEvent = opts.onCompactionEvent
+    const chainedOpts: PipelineDirectOptions = {
+      ...opts,
+      onCompactionEvent: (event) => {
+        if (event.type === 'compaction_complete') {
+          this.#postCompactionTailPending = true
+          console.log('[SEAM] compaction complete → will inject session_tail on next turn')
+        }
+        upstreamCompactionEvent?.(event)
+      },
+    }
+    this.#claudeLLM = new ClaudeLLM(chainedOpts)
+    this.#opts = chainedOpts
   }
 
   /** Stop the index watcher (call on disconnect/session switch) */
@@ -185,20 +201,27 @@ export class PipelineDirectLLM extends llm.LLM {
 
     console.log(`📥 [pipeline] chat() call #${callN} (${userText.length} chars): "${userText}"`)
 
-    // ── SESSION TAIL injection ────────────────────────────────────────────────
-    // Prepend a compact recent-conversation block so the orchestrator never
-    // loses thread across compaction. Runs synchronously (readFileSync) but the
-    // index file is ≤1MB and kept hot in the OS page cache — negligible latency.
-    // Skipped for meeting chunks (they are not real user turns).
-    const sessionTailBlock = (!userText.startsWith('[MEETING'))
-      ? buildSessionTail(
-          this.#claudeLLM.sessionId,
-          this.#opts.workingDirectory || process.cwd(),
-        )
-      : ''
-
-    if (sessionTailBlock) {
-      console.log(`🧵 [pipeline] Session tail: ${sessionTailBlock.split('\n').length - 2} lines ready`)
+    // ── SESSION TAIL injection (seam-only) ───────────────────────────────────
+    // Inject the tail ONCE on the first real user turn after a compaction
+    // completes. Never injected on every turn (avoids catastrophic accumulation
+    // in the SDK persistent subprocess history). Meeting chunks are not real
+    // user turns and never get the tail.
+    let sessionTailBlock = ''
+    if (this.#postCompactionTailPending && !userText.startsWith('[MEETING') && userText.trim()) {
+      sessionTailBlock = buildSessionTail(
+        this.#claudeLLM.sessionId,
+        this.#opts.workingDirectory || process.cwd(),
+      )
+      if (sessionTailBlock) {
+        const tailLines = sessionTailBlock.split('\n').length - 2
+        const tailChars = sessionTailBlock.length
+        console.log(`[SEAM] injecting post-compaction session_tail: ${tailLines} lines, ~${tailChars} chars`)
+      } else {
+        console.log('[SEAM] post-compaction turn but session_tail empty/disabled')
+      }
+      // Always clear the flag after the first real turn, whether or not the
+      // index file had content (avoids re-trying on an empty index).
+      this.#postCompactionTailPending = false
     }
 
     // Always check the pending playback context — it can carry two independent
@@ -284,7 +307,7 @@ export class PipelineDirectLLM extends llm.LLM {
         enrichedMessage = userText
       }
 
-      // Modify the last user message in chatCtx — prepend session tail if available
+      // Modify the last user message in chatCtx
       const finalMessage = sessionTailBlock
         ? sessionTailBlock + '\n\n' + enrichedMessage
         : enrichedMessage
@@ -296,7 +319,7 @@ export class PipelineDirectLLM extends llm.LLM {
         }
       }
     } else if (sessionTailBlock && userText.trim()) {
-      // No interrupt context — inject session tail directly into the user message
+      // No interrupt context — inject post-compaction session tail into the user message
       for (let i = chatCtx.items.length - 1; i >= 0; i--) {
         const item = chatCtx.items[i] as any
         if (item.type === 'message' && item.role === 'user') {
