@@ -11,6 +11,7 @@ import { llm, shortuuid, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } f
 import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUserMessage, type Query as SDKQuery } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
+import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -546,6 +547,10 @@ export class ClaudeLLM extends llm.LLM {
   // Active queries — multiple can be running (SDK queues them internally).
   // We keep ALL references so interrupt() can stop whatever is currently executing.
   #activeQueries: Set<any> = new Set()
+
+  // Dispatcher v1 — maps tool_use_id → subagent_type for Task tool_use blocks
+  // so that when task_summary fires we know which agent type just finished.
+  #dispatchAgentTypes: Map<string, string> = new Map()
 
   constructor(opts: ClaudeLLMOptions = {}) {
     super()
@@ -1136,7 +1141,29 @@ export class ClaudeLLM extends llm.LLM {
                 callbacks.eventEmitter.emit('tts_say', { text: ttsChunk })
               }
             }
+            // Dispatcher v1 — record Task tool_use blocks so we can correlate
+            // the matching task_summary message to the subagent type.
+            if (block.type === 'tool_use' && block.name === 'Task') {
+              console.log('[DISPATCH-PROBE] task tool_use', JSON.stringify({ id: block.id, subagent_type: block.input?.subagent_type }))
+              this.#dispatchAgentTypes.set(block.id, block.input?.subagent_type)
+              statusManager.upsertDispatch(block.id, {
+                owner: 'orchestrator',
+                subagentType: block.input?.subagent_type,
+                dispatchState: 'running',
+              })
+            }
           }
+        }
+
+        // Dispatcher v1 — catch sub-agent completion signals
+        if (msg.type === 'system' && msg.subtype === 'task_summary') {
+          console.log('[DISPATCH-PROBE] task_summary raw:', JSON.stringify(msg).slice(0, 500))
+          const tuid = msg.tool_use_id ?? msg.toolUseId
+          const output = msg.summary ?? msg.result ?? msg.output ?? ''
+          const subType = tuid ? this.#dispatchAgentTypes.get(tuid) : undefined
+          statusManager.upsertDispatch(tuid ?? `ts-${Date.now()}`, { subagentType: subType, dispatchState: 'completed', artifact: String(output) })
+          console.log(`[DISPATCH] completed type=${subType ?? '?'} tuid=${(tuid ?? '?').slice(0, 8)} len=${String(output).length}`)
+          if (subType === 'writer' && output) { this.#spawnReviewer(tuid, String(output), callbacks.eventEmitter) }
         }
 
         // Result — marks end of a turn (but we keep consuming for next turn)
@@ -1160,6 +1187,59 @@ export class ClaudeLLM extends llm.LLM {
       this.#persistentQuery = null
       this.#messageChannel = null
       console.log('🔒 Persistent session background consumer exited')
+    }
+  }
+
+  /**
+   * Dispatcher v1 — auto-spawn a reviewer after a writer sub-agent completes.
+   * Runs a one-shot query() with the reviewer agent and emits dispatch_rejected
+   * if the verdict is REJECT. A reviewer failure must never crash the consumer.
+   */
+  async #spawnReviewer(tuid: string, writerOutput: string, emitter: EventEmitter): Promise<void> {
+    try {
+      const prompt = [
+        'Use the reviewer sub-agent to review this writer output for correctness/spec-adherence/obvious bugs.',
+        'End your reply with exactly `VERDICT: ACCEPT` or `VERDICT: REJECT`.',
+        '',
+        '<writer_output>',
+        writerOutput.slice(0, 8000),
+        '</writer_output>',
+      ].join('\n')
+
+      const reviewerOptions: Options = {
+        cwd: this.#opts.workingDirectory,
+        permissionMode: 'default',
+        agents: NAMED_AGENTS,
+      }
+
+      console.log(`[DISPATCH] spawning reviewer for tuid=${tuid.slice(0, 8)}`)
+      const reviewerQuery = query({ prompt, options: reviewerOptions })
+      this.#activeQueries.add(reviewerQuery)
+
+      let reviewerText = ''
+      try {
+        for await (const msg of reviewerQuery) {
+          const m = msg as any
+          if (m.type === 'result' && m.result) {
+            reviewerText = String(m.result)
+          }
+        }
+      } finally {
+        this.#activeQueries.delete(reviewerQuery)
+      }
+
+      const verdictMatch = reviewerText.match(/VERDICT:\s*(ACCEPT|REJECT)/i)
+      const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : null
+
+      if (verdict === 'REJECT') {
+        console.log(`[DISPATCH] review REJECT for tuid=${tuid.slice(0, 8)}`)
+        statusManager.upsertDispatch(tuid, { dispatchState: 'rejected', artifact: reviewerText })
+        emitter.emit('dispatch_rejected', { tuid, verdict: 'REJECT', review: reviewerText })
+      } else {
+        console.log(`[DISPATCH] review ACCEPT for tuid=${tuid.slice(0, 8)}`)
+      }
+    } catch (err) {
+      console.error('[DISPATCH] reviewer spawn failed (non-fatal):', err)
     }
   }
 

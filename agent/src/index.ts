@@ -3145,6 +3145,17 @@ async function main() {
       })
     })
 
+    // Dispatcher v1 — writer reviewer rejected verdict → frontend
+    directLLM.events.on('dispatch_rejected', (data: { tuid: string; verdict: string; review: string }) => {
+      console.log(`[DISPATCH] dispatch_rejected tuid=${(data.tuid ?? '').slice(0, 8)} sending to frontend`)
+      sendToFrontend({
+        type: 'task_review',
+        tuid: data.tuid,
+        verdict: data.verdict,
+        review: data.review,
+      })
+    })
+
     // Create the Agent with instructions, STT, LLM, TTS
     // VAD (Silero ONNX) removed — caused 2-5s inference lag on CPU, making interruption detection worse
     // Turn detection is server-side (Deepgram endpointing), interruptions handled by STT

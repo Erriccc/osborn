@@ -19,6 +19,11 @@ export interface TaskStatus {
   progress?: number // 0-100
   progressUpdates: string[] // Interim updates during execution
   lastUpdate?: string // Most recent update for voice
+  // Dispatcher v1 fields — optional so existing voice code is untouched
+  owner?: string
+  subagentType?: string
+  dispatchState?: 'pending' | 'running' | 'completed' | 'rejected' | 'failed'
+  artifact?: string
 }
 
 export interface StatusUpdate {
@@ -223,6 +228,42 @@ export class StatusManager {
    */
   getContextSummary(): string {
     return this.conversationContext.slice(-5).join(' | ')
+  }
+
+  /**
+   * Dispatcher v1 — create or update a dispatch entry keyed by tool_use_id.
+   * Creates a minimal TaskStatus shell if the id doesn't yet exist so callers
+   * can upsert without a prior registerTask() call.
+   */
+  upsertDispatch(id: string, fields: { owner?: string; subagentType?: string; dispatchState?: TaskStatus['dispatchState']; artifact?: string }): void {
+    if (!this.tasks.has(id)) {
+      this.tasks.set(id, {
+        id,
+        type: 'execute',
+        // Use an empty query so narration never speaks a bogus "dispatch:<id>" string.
+        // Dispatch progress is tracked exclusively via dispatchState; status starts as
+        // 'pending' (not 'running') so getStatusUpdate() runningTasks narration is skipped.
+        query: '',
+        status: 'pending',
+        startedAt: Date.now(),
+        progressUpdates: [],
+      })
+    }
+    const task = this.tasks.get(id)!
+    if (fields.owner !== undefined) task.owner = fields.owner
+    if (fields.subagentType !== undefined) task.subagentType = fields.subagentType
+    if (fields.dispatchState !== undefined) task.dispatchState = fields.dispatchState
+    if (fields.artifact !== undefined) task.artifact = fields.artifact
+    // Mirror dispatchState into the base status field so existing getStatusUpdate() callers see it.
+    // 'rejected' is also terminal — map it to 'failed' so the GC and readers treat it as finished.
+    if (fields.dispatchState === 'completed') task.status = 'completed'
+    if (fields.dispatchState === 'failed' || fields.dispatchState === 'rejected') task.status = 'failed'
+    // Fix: set completedAt when entering any terminal state so the task is GC-eligible via
+    // clearReportedTasks() and correctly surfaces in hasCompletedTasks() / getStatusUpdate().
+    // Without this the tasks Map grows unbounded (memory leak).
+    const isTerminal = task.status === 'completed' || task.status === 'failed'
+    if (isTerminal && !task.completedAt) task.completedAt = Date.now()
+    console.log(`[Dispatch] upsertDispatch id=${id.slice(0, 8)} state=${fields.dispatchState ?? '-'} type=${fields.subagentType ?? '-'}`)
   }
 }
 
