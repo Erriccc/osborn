@@ -13,6 +13,7 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
+import { getIndexPath } from './summary-index.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1230,9 +1231,14 @@ export class ClaudeLLM extends llm.LLM {
     this.#dispatchedFor.add(agentId)
 
     try {
+      const idxPathReviewer = (this.#sessionId && this.#opts.workingDirectory)
+        ? getIndexPath(this.#sessionId, this.#opts.workingDirectory)
+        : null
+
       const prompt = [
         'Use the reviewer sub-agent to review this writer output for correctness/spec-adherence/obvious bugs.',
         'End your reply with exactly `VERDICT: ACCEPT` or `VERDICT: REJECT`.',
+        ...(idxPathReviewer ? [`The session index is at ${idxPathReviewer} — you MUST read it before reviewing.`] : []),
         '',
         '<writer_output>',
         writerOutput.slice(0, 8000),
@@ -1246,16 +1252,40 @@ export class ClaudeLLM extends llm.LLM {
       const reviewerOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: 'default',
+        systemPrompt: NAMED_AGENTS.reviewer.prompt,
+        allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
         hooks: {
-          PreToolUse: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              const toolName = input?.tool_name || 'unknown'
-              const toolInput = input?.tool_input || {}
-              emitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: 'reviewer' })
-              return {}
-            }],
-          }],
+          PreToolUse: [
+            {
+              matcher: '.*',
+              hooks: [async (input: any) => {
+                const toolName = input?.tool_name || 'unknown'
+                const toolInput = input?.tool_input || {}
+                emitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: 'reviewer' })
+                return {}
+              }],
+            },
+            {
+              matcher: '.*',
+              hooks: [async (input: any) => {
+                const toolName = input?.tool_name || ''
+                const toolInput = input?.tool_input
+                if (
+                  (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') &&
+                  !/\.(md|markdown|mdx|txt|rst|adoc)$/i.test(String(toolInput?.file_path))
+                ) {
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse',
+                      permissionDecision: 'deny',
+                    },
+                    reason: 'reviewer may only write documentation files (.md/.markdown/.mdx/.txt/.rst/.adoc)',
+                  }
+                }
+                return {}
+              }],
+            },
+          ],
           PostToolUse: [{
             matcher: '.*',
             hooks: [async (input: any) => {
@@ -1311,10 +1341,15 @@ export class ClaudeLLM extends llm.LLM {
     this.#dispatchedFor.add(agentId)
 
     try {
+      const idxPathGate = (this.#sessionId && this.#opts.workingDirectory)
+        ? getIndexPath(this.#sessionId, this.#opts.workingDirectory)
+        : null
+
       const prompt = [
         'Use the reasoner sub-agent to vet this research output.',
         'Determine whether the research is sufficient to answer the original question.',
         'End your reply with exactly `GATE: PASS` or `GATE: NEEDS-MORE`.',
+        ...(idxPathGate ? [`The session index is at ${idxPathGate} — you MUST read it before reviewing.`] : []),
         '',
         '<research_output>',
         researchOutput.slice(0, 8000),
@@ -1328,6 +1363,7 @@ export class ClaudeLLM extends llm.LLM {
       const gateOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: 'default',
+        systemPrompt: NAMED_AGENTS.reasoner.prompt,
         hooks: {
           PreToolUse: [{
             matcher: '.*',
