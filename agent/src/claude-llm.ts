@@ -597,9 +597,9 @@ export class ClaudeLLM extends llm.LLM {
   // We keep ALL references so interrupt() can stop whatever is currently executing.
   #activeQueries: Set<any> = new Set()
 
-  // Dispatcher v1 — maps tool_use_id → subagent_type for Task tool_use blocks
-  // so that when task_summary fires we know which agent type just finished.
-  #dispatchAgentTypes: Map<string, string> = new Map()
+  // Dedup guard — prevents double-firing reviewer/gate if SubagentStop fires
+  // more than once for the same agent_id (e.g. retry edge cases).
+  #dispatchedFor: Set<string> = new Set()
 
   constructor(opts: ClaudeLLMOptions = {}) {
     super()
@@ -1046,6 +1046,7 @@ export class ClaudeLLM extends llm.LLM {
     this.#persistentQuery = null
     this.#messageChannel = null
     this.#backgroundConsumerRunning = false
+    this.#dispatchedFor.clear()
     console.log('🔒 Persistent session closed')
   }
 
@@ -1190,29 +1191,7 @@ export class ClaudeLLM extends llm.LLM {
                 callbacks.eventEmitter.emit('tts_say', { text: ttsChunk })
               }
             }
-            // Dispatcher v1 — record Task tool_use blocks so we can correlate
-            // the matching task_summary message to the subagent type.
-            if (block.type === 'tool_use' && block.name === 'Task') {
-              console.log('[DISPATCH-PROBE] task tool_use', JSON.stringify({ id: block.id, subagent_type: block.input?.subagent_type }))
-              this.#dispatchAgentTypes.set(block.id, block.input?.subagent_type)
-              statusManager.upsertDispatch(block.id, {
-                owner: 'orchestrator',
-                subagentType: block.input?.subagent_type,
-                dispatchState: 'running',
-              })
-            }
           }
-        }
-
-        // Dispatcher v1 — catch sub-agent completion signals
-        if (msg.type === 'system' && msg.subtype === 'task_summary') {
-          console.log('[DISPATCH-PROBE] task_summary raw:', JSON.stringify(msg).slice(0, 500))
-          const tuid = msg.tool_use_id ?? msg.toolUseId
-          const output = msg.summary ?? msg.result ?? msg.output ?? ''
-          const subType = tuid ? this.#dispatchAgentTypes.get(tuid) : undefined
-          statusManager.upsertDispatch(tuid ?? `ts-${Date.now()}`, { subagentType: subType, dispatchState: 'completed', artifact: String(output) })
-          console.log(`[DISPATCH] completed type=${subType ?? '?'} tuid=${(tuid ?? '?').slice(0, 8)} len=${String(output).length}`)
-          if (subType === 'writer' && output) { this.#spawnReviewer(tuid, String(output), callbacks.eventEmitter) }
         }
 
         // Result — marks end of a turn (but we keep consuming for next turn)
@@ -1243,8 +1222,13 @@ export class ClaudeLLM extends llm.LLM {
    * Dispatcher v1 — auto-spawn a reviewer after a writer sub-agent completes.
    * Runs a one-shot query() with the reviewer agent and emits dispatch_rejected
    * if the verdict is REJECT. A reviewer failure must never crash the consumer.
+   * Public so ClaudeLLMStream can call it via this.#llmRef.spawnReviewer().
    */
-  async #spawnReviewer(tuid: string, writerOutput: string, emitter: EventEmitter): Promise<void> {
+  async spawnReviewer(agentId: string, writerOutput: string, emitter: EventEmitter): Promise<void> {
+    // Dedup guard — SubagentStop may fire more than once for the same agent_id.
+    if (this.#dispatchedFor.has(agentId)) return
+    this.#dispatchedFor.add(agentId)
+
     try {
       const prompt = [
         'Use the reviewer sub-agent to review this writer output for correctness/spec-adherence/obvious bugs.',
@@ -1255,13 +1239,16 @@ export class ClaudeLLM extends llm.LLM {
         '</writer_output>',
       ].join('\n')
 
+      // Do NOT pass agents here — the reviewer must be review-only and must not
+      // be able to spawn writer/researcher/reasoner sub-agents. Passing an empty
+      // agents roster prevents any SubagentStop(agent_type==='writer') from
+      // firing inside this one-shot query and re-arming the backstop loop.
       const reviewerOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: 'default',
-        agents: NAMED_AGENTS,
       }
 
-      console.log(`[DISPATCH] spawning reviewer for tuid=${tuid.slice(0, 8)}`)
+      console.log(`[DISPATCH] spawning reviewer for agentId=${agentId.slice(0, 8)}`)
       const reviewerQuery = query({ prompt, options: reviewerOptions })
       this.#activeQueries.add(reviewerQuery)
 
@@ -1281,14 +1268,75 @@ export class ClaudeLLM extends llm.LLM {
       const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : null
 
       if (verdict === 'REJECT') {
-        console.log(`[DISPATCH] review REJECT for tuid=${tuid.slice(0, 8)}`)
-        statusManager.upsertDispatch(tuid, { dispatchState: 'rejected', artifact: reviewerText })
-        emitter.emit('dispatch_rejected', { tuid, verdict: 'REJECT', review: reviewerText })
+        console.log(`[DISPATCH] review REJECT for agentId=${agentId.slice(0, 8)}`)
+        statusManager.upsertDispatch(agentId, { dispatchState: 'rejected', artifact: reviewerText })
+        emitter.emit('dispatch_rejected', { tuid: agentId, verdict: 'REJECT', review: reviewerText })
       } else {
-        console.log(`[DISPATCH] review ACCEPT for tuid=${tuid.slice(0, 8)}`)
+        console.log(`[DISPATCH] review ACCEPT for agentId=${agentId.slice(0, 8)}`)
       }
     } catch (err) {
       console.error('[DISPATCH] reviewer spawn failed (non-fatal):', err)
+    }
+  }
+
+  /**
+   * Dispatcher v1 — research gate: vet a researcher sub-agent's output before
+   * it reaches the main agent. Emits dispatch_rejected with verdict 'NEEDS-MORE'
+   * (distinct from reviewer's 'REJECT') so the frontend can tell them apart.
+   */
+  async spawnResearchGate(agentId: string, researchOutput: string, emitter: EventEmitter): Promise<void> {
+    // Dedup guard — SubagentStop may fire more than once for the same agent_id.
+    if (this.#dispatchedFor.has(agentId)) return
+    this.#dispatchedFor.add(agentId)
+
+    try {
+      const prompt = [
+        'Use the reasoner sub-agent to vet this research output.',
+        'Determine whether the research is sufficient to answer the original question.',
+        'End your reply with exactly `GATE: PASS` or `GATE: NEEDS-MORE`.',
+        '',
+        '<research_output>',
+        researchOutput.slice(0, 8000),
+        '</research_output>',
+      ].join('\n')
+
+      // Do NOT pass agents here — the research-gate reasoner must be review-only
+      // and must not be able to spawn sub-agents. Same rationale as spawnReviewer:
+      // an agents roster would allow delegation back to the writer, which would
+      // fire SubagentStop(agent_type==='writer') and re-arm the backstop.
+      const gateOptions: Options = {
+        cwd: this.#opts.workingDirectory,
+        permissionMode: 'default',
+      }
+
+      console.log(`[DISPATCH] spawning research-gate for agentId=${agentId.slice(0, 8)}`)
+      const gateQuery = query({ prompt, options: gateOptions })
+      this.#activeQueries.add(gateQuery)
+
+      let review = ''
+      try {
+        for await (const msg of gateQuery) {
+          const m = msg as any
+          if (m.type === 'result' && m.result) {
+            review = String(m.result)
+          }
+        }
+      } finally {
+        this.#activeQueries.delete(gateQuery)
+      }
+
+      const gateMatch = review.match(/GATE:\s*(PASS|NEEDS-MORE)/i)
+      const gateVerdict = gateMatch ? gateMatch[1].toUpperCase() : null
+
+      if (gateVerdict === 'NEEDS-MORE') {
+        console.log(`[DISPATCH] research-gate NEEDS-MORE for agentId=${agentId.slice(0, 8)}`)
+        statusManager.upsertDispatch(agentId, { dispatchState: 'rejected', artifact: review })
+        emitter.emit('dispatch_rejected', { tuid: agentId, verdict: 'NEEDS-MORE', review })
+      } else {
+        console.log(`[DISPATCH] research-gate PASS for agentId=${agentId.slice(0, 8)}`)
+      }
+    } catch (err) {
+      console.error('[DISPATCH] research-gate spawn failed (non-fatal):', err)
     }
   }
 
@@ -1832,6 +1880,17 @@ class ClaudeLLMStream extends llm.LLMStream {
             matcher: '.*',
             hooks: [async (input: any) => {
               console.log('[LIFECYCLE-PROBE] SubagentStop', JSON.stringify(input))
+              const at = input?.agent_type
+              const msg = String(input?.last_assistant_message ?? '')
+              const aid = input?.agent_id ?? ('sa-' + Date.now())
+              statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
+              // Infinite-loop guard — never re-dispatch the reviewer or reasoner.
+              if (at === 'reviewer' || at === 'reasoner') return {}
+              if (at === 'writer' && msg) {
+                void this.#llmRef.spawnReviewer(aid, msg, this.#eventEmitter)
+              } else if (at === 'researcher' && msg) {
+                void this.#llmRef.spawnResearchGate(aid, msg, this.#eventEmitter)
+              }
               return {}
             }]
           }],
