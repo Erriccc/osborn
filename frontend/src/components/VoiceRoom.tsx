@@ -2783,6 +2783,23 @@ function VoiceRoomInner({
         }
         // Increment research tool counter
         setActiveResearch(prev => prev ? { ...prev, toolCount: prev.toolCount + 1 } : null)
+      } else if (data.type === 'task_review') {
+        // Dispatcher verdict from the auto-review gate.
+        // verdict: 'REJECT' (reviewer) | 'NEEDS-MORE' (reasoner research-gate)
+        const reviewRole = data.verdict === 'NEEDS-MORE' ? 'reasoner' : 'reviewer'
+        const reviewMeta: ToolMeta = {
+          tool: 'Review',
+          status: 'completed',
+          agentRole: reviewRole,
+          description: `${data.verdict}: ${data.review ?? ''}`,
+        }
+        addMessageRef.current?.(
+          'system',
+          `${data.verdict}: ${data.review ?? ''}`,
+          'Review',
+          'log',
+          reviewMeta,
+        )
       } else if (data.type === 'claude_output') {
         // Raw Claude output for chat bubbles (full formatting preserved)
         console.log('🤖 Claude output:', {
