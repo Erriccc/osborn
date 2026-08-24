@@ -17,7 +17,7 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
   }
 
   return (
-    <div className="markdown-content prose prose-invert prose-sm max-w-none text-gray-100">
+    <div className="markdown-content prose prose-invert prose-sm max-w-none text-gray-100 break-words">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}

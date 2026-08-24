@@ -354,12 +354,38 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   )
 }
 
+const DRAWER_MIN_HEIGHT = 120
+const DRAWER_DEFAULT_HEIGHT = 256
+
 export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [lastSeenCount, setLastSeenCount] = useState(0)
   const [showJumpPill, setShowJumpPill] = useState(false)
+  const [drawerHeight, setDrawerHeight] = useState(DRAWER_DEFAULT_HEIGHT)
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
+  const dragStartRef = useRef<{ y: number; height: number } | null>(null)
+
+  const handleDragHandlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    dragStartRef.current = { y: e.clientY, height: drawerHeight }
+    const handle = e.currentTarget
+    handle.setPointerCapture(e.pointerId)
+  }
+
+  const handleDragHandlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragStartRef.current) return
+    // Dragging UP (negative delta) grows the drawer; dragging DOWN shrinks it
+    const delta = dragStartRef.current.y - e.clientY
+    const newHeight = dragStartRef.current.height + delta
+    const maxHeight = window.innerHeight * 0.8
+    setDrawerHeight(Math.max(DRAWER_MIN_HEIGHT, Math.min(maxHeight, newHeight)))
+  }
+
+  const handleDragHandlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragStartRef.current = null
+    e.currentTarget.releasePointerCapture(e.pointerId)
+  }
 
   const unreadCount = messages.length - lastSeenCount
 
@@ -410,9 +436,75 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
         )}
       </button>
 
+      {/* Background Flows strip — always visible when flows exist, regardless of drawer state */}
+      {backgroundFlows && backgroundFlows.length > 0 && (
+        <div className="px-3 py-2 space-y-1 border-b border-gray-700/50">
+          <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-1 pb-0.5">Background Flows</div>
+          {backgroundFlows.map((flow) => {
+            const pill = agentPillStyle(flow.agentType)
+            const initials = pill?.initials ?? deriveInitials(flow.agentType)
+            const pillClass = pill?.className ?? 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
+            const isRunning = flow.status === 'running'
+            return (
+              <div
+                key={flow.agentId}
+                className="flex items-center gap-2 rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-1.5"
+              >
+                {/* Agent chip */}
+                <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap shrink-0 ${pillClass}`}>
+                  <ProfileAvatar initials={initials} />
+                  {flow.agentType}
+                </span>
+
+                {/* Status */}
+                <span className={`text-[11px] shrink-0 ${isRunning ? 'text-amber-400' : 'text-emerald-400'}`}>
+                  {isRunning ? 'running' : 'done'}
+                </span>
+
+                {/* Truncated artifact */}
+                {flow.artifact && (
+                  <span className="min-w-0 truncate text-[11px] text-gray-400 flex-1">
+                    {flow.artifact}
+                  </span>
+                )}
+
+                {/* Spacer when no artifact */}
+                {!flow.artifact && <span className="flex-1" />}
+
+                {/* Stop button — only when running */}
+                {isRunning && (
+                  <button
+                    onClick={() => onStopDispatch?.(flow.agentId)}
+                    title="Stop this flow"
+                    className="shrink-0 flex items-center justify-center w-6 h-6 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                      <rect x="6" y="6" width="12" height="12" rx="1" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       {/* Collapsible log panel */}
       {isOpen && (
         <div className="relative">
+          {/* Drag handle — grab this to resize the drawer height */}
+          <div
+            onPointerDown={handleDragHandlePointerDown}
+            onPointerMove={handleDragHandlePointerMove}
+            onPointerUp={handleDragHandlePointerUp}
+            onPointerCancel={handleDragHandlePointerUp}
+            className="flex items-center justify-center w-full h-3 cursor-ns-resize select-none touch-none bg-transparent hover:bg-gray-700/30 transition-colors"
+            title="Drag to resize"
+            aria-label="Resize activity log"
+          >
+            <div className="w-8 h-1 rounded-full bg-gray-600/60" />
+          </div>
+
           {showJumpPill && (
             <button
               onClick={() => {
@@ -433,61 +525,9 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           <div
             ref={scrollRef}
             onScroll={handleScroll}
-            className="max-h-64 overflow-y-auto overflow-x-hidden px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
+            className="overflow-y-auto overflow-x-hidden px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
+            style={{ height: drawerHeight }}
           >
-            {/* Background Flows strip — shown only when flows exist */}
-            {backgroundFlows && backgroundFlows.length > 0 && (
-              <div className="mb-2 space-y-1">
-                <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-1 pb-0.5">Background Flows</div>
-                {backgroundFlows.map((flow) => {
-                  const pill = agentPillStyle(flow.agentType)
-                  const initials = pill?.initials ?? deriveInitials(flow.agentType)
-                  const pillClass = pill?.className ?? 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
-                  const isRunning = flow.status === 'running'
-                  return (
-                    <div
-                      key={flow.agentId}
-                      className="flex items-center gap-2 rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-1.5"
-                    >
-                      {/* Agent chip */}
-                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap shrink-0 ${pillClass}`}>
-                        <ProfileAvatar initials={initials} />
-                        {flow.agentType}
-                      </span>
-
-                      {/* Status */}
-                      <span className={`text-[11px] shrink-0 ${isRunning ? 'text-amber-400' : 'text-emerald-400'}`}>
-                        {isRunning ? 'running' : 'done'}
-                      </span>
-
-                      {/* Truncated artifact */}
-                      {flow.artifact && (
-                        <span className="min-w-0 truncate text-[11px] text-gray-400 flex-1">
-                          {flow.artifact}
-                        </span>
-                      )}
-
-                      {/* Spacer when no artifact */}
-                      {!flow.artifact && <span className="flex-1" />}
-
-                      {/* Stop button — only when running */}
-                      {isRunning && (
-                        <button
-                          onClick={() => onStopDispatch?.(flow.agentId)}
-                          title="Stop this flow"
-                          className="shrink-0 flex items-center justify-center w-6 h-6 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                            <rect x="6" y="6" width="12" height="12" rx="1" />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-
             {messages.length === 0 ? (
               <p className="text-xs text-gray-500 text-center py-2">No activity yet</p>
             ) : (

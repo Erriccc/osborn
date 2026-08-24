@@ -402,7 +402,7 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
   }, [message])
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} group`}>
+    <div className={`flex min-w-0 w-full ${isUser ? 'justify-end' : 'justify-start'} group`}>
       {/* Avatar for assistant — hidden on mobile to save space */}
       {!isUser && !isSystem && (
         <div className="hidden sm:flex w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-amber-600 items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
@@ -569,7 +569,7 @@ function ChatPanel({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto px-2 sm:px-4 py-3 sm:py-4 space-y-3 sm:space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+        className="h-full overflow-y-auto overflow-x-hidden px-2 sm:px-4 py-3 sm:py-4 space-y-3 sm:space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
       >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
