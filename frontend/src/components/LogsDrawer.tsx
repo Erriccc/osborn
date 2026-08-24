@@ -72,11 +72,20 @@ function agentPillStyle(role: string | undefined): { className: string; initials
   return { className, initials: deriveInitials(role) }
 }
 
+interface BackgroundFlow {
+  agentId: string
+  agentType: string
+  status: string
+  artifact?: string
+}
+
 interface LogsDrawerProps {
   messages: LogMessage[]
   onCircleBack?: (noteText: string) => void
   onLike?: (noteText: string) => void
   onDislike?: (noteText: string) => void
+  backgroundFlows?: BackgroundFlow[]
+  onStopDispatch?: (agentId: string) => void
 }
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
@@ -345,7 +354,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   )
 }
 
-export function LogsDrawer({ messages, onCircleBack, onLike, onDislike }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [lastSeenCount, setLastSeenCount] = useState(0)
   const [showJumpPill, setShowJumpPill] = useState(false)
@@ -426,6 +435,59 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike }: LogsDr
             onScroll={handleScroll}
             className="max-h-64 overflow-y-auto overflow-x-hidden px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
           >
+            {/* Background Flows strip — shown only when flows exist */}
+            {backgroundFlows && backgroundFlows.length > 0 && (
+              <div className="mb-2 space-y-1">
+                <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-1 pb-0.5">Background Flows</div>
+                {backgroundFlows.map((flow) => {
+                  const pill = agentPillStyle(flow.agentType)
+                  const initials = pill?.initials ?? deriveInitials(flow.agentType)
+                  const pillClass = pill?.className ?? 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
+                  const isRunning = flow.status === 'running'
+                  return (
+                    <div
+                      key={flow.agentId}
+                      className="flex items-center gap-2 rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-1.5"
+                    >
+                      {/* Agent chip */}
+                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap shrink-0 ${pillClass}`}>
+                        <ProfileAvatar initials={initials} />
+                        {flow.agentType}
+                      </span>
+
+                      {/* Status */}
+                      <span className={`text-[11px] shrink-0 ${isRunning ? 'text-amber-400' : 'text-emerald-400'}`}>
+                        {isRunning ? 'running' : 'done'}
+                      </span>
+
+                      {/* Truncated artifact */}
+                      {flow.artifact && (
+                        <span className="min-w-0 truncate text-[11px] text-gray-400 flex-1">
+                          {flow.artifact}
+                        </span>
+                      )}
+
+                      {/* Spacer when no artifact */}
+                      {!flow.artifact && <span className="flex-1" />}
+
+                      {/* Stop button — only when running */}
+                      {isRunning && (
+                        <button
+                          onClick={() => onStopDispatch?.(flow.agentId)}
+                          title="Stop this flow"
+                          className="shrink-0 flex items-center justify-center w-6 h-6 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                            <rect x="6" y="6" width="12" height="12" rx="1" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
             {messages.length === 0 ? (
               <p className="text-xs text-gray-500 text-center py-2">No activity yet</p>
             ) : (

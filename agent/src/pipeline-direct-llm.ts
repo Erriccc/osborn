@@ -159,6 +159,7 @@ export class PipelineDirectLLM extends llm.LLM {
   abortAgent() { this.#claudeLLM.abortQuery() }
   async rewindAgent(checkpointId?: string) { return this.#claudeLLM.rewindToCheckpoint(checkpointId) }
   hasActiveAgent() { return this.#claudeLLM.hasActiveQuery() }
+  stopAgent(agentId: string): boolean { return this.#claudeLLM.stopAgent(agentId) }
 
   /** Send a new prompt to Claude via direct chat() — event listeners stay attached */
   sendPrompt(prompt: string) {

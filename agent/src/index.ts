@@ -3156,6 +3156,21 @@ async function main() {
       })
     })
 
+    // Dispatcher v1 — sub-agent completed → frontend (Feature A)
+    directLLM.events.on('task_completed', (d: any) => sendToFrontend({
+      type: 'task_completed',
+      agent_type: d.agent_type,
+      agent_id: d.agent_id,
+      last_assistant_message: d.last_assistant_message,
+    }))
+
+    // Dispatcher v1 — sub-agent started → frontend stop-key signal (Feature A2)
+    directLLM.events.on('agent_started', (d: any) => sendToFrontend({
+      type: 'agent_started',
+      agent_type: d.agent_type,
+      agent_id: d.agent_id,
+    }))
+
     // Create the Agent with instructions, STT, LLM, TTS
     // VAD (Silero ONNX) removed — caused 2-5s inference lag on CPU, making interruption detection worse
     // Turn detection is server-side (Deepgram endpointing), interruptions handled by STT
@@ -5603,6 +5618,10 @@ async function main() {
             await sendToFrontend({ type: 'skill_remove_result', success: false, error: String(err) })
           }
         }
+      }
+      // Feature B — per-flow stop (does NOT affect other running flows)
+      else if (data.type === 'stop_dispatch' && currentLLM) {
+        currentLLM.stopAgent?.(String(data.agentId))
       }
       else if (data.type === 'join_meeting') {
         const meetingUrl = data.url as string

@@ -2071,6 +2071,13 @@ function VoiceRoomInner({
   const [newSkillContent, setNewSkillContent] = useState('')
   // Research tracking state
   const [activeResearch, setActiveResearch] = useState<{ taskId: string; task: string; toolCount: number } | null>(null)
+  // Background flows dispatched by the orchestrator (agent_started / task_completed)
+  const [backgroundFlows, setBackgroundFlows] = useState<Array<{
+    agentId: string
+    agentType: string
+    status: string
+    artifact?: string
+  }>>([])
   // Meeting state (Recall.ai)
   const [showMeetingInput, setShowMeetingInput] = useState(false)
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
@@ -2722,6 +2729,26 @@ function VoiceRoomInner({
         if (data.summary) {
           addMessageRef.current?.('system', data.summary, undefined, 'log')
         }
+      } else if (data.type === 'agent_started') {
+        // Background flow began
+        if (data.agent_id) {
+          console.log('🚀 Background flow started:', data.agent_type, data.agent_id)
+          setBackgroundFlows(prev => {
+            // Avoid duplicates if event fires twice
+            if (prev.some(f => f.agentId === data.agent_id)) return prev
+            return [...prev, { agentId: data.agent_id, agentType: data.agent_type ?? 'agent', status: 'running' }]
+          })
+        }
+      } else if (data.type === 'task_completed' && data.agent_id) {
+        // Background flow finished (the shape with agent_id)
+        console.log('✅ Background flow completed:', data.agent_id)
+        setBackgroundFlows(prev =>
+          prev.map(f =>
+            f.agentId === data.agent_id
+              ? { ...f, status: 'completed', artifact: data.last_assistant_message?.substring(0, 120) ?? f.artifact }
+              : f
+          )
+        )
       } else if (data.type === 'tool_use') {
         // Rich tool log card. The agent sends TWO events per tool call:
         //   1. status=running  — tool has started (show spinner)
@@ -4567,7 +4594,17 @@ function VoiceRoomInner({
         />
 
         {/* Logs drawer */}
-        <LogsDrawer messages={messages.filter(m => m.category === 'log')} onCircleBack={handleCircleBack} onLike={handleLike} onDislike={handleDislike} />
+        <LogsDrawer
+          messages={messages.filter(m => m.category === 'log')}
+          onCircleBack={handleCircleBack}
+          onLike={handleLike}
+          onDislike={handleDislike}
+          backgroundFlows={backgroundFlows}
+          onStopDispatch={(agentId) => {
+            const enc = new TextEncoder()
+            sendToAgent(enc.encode(JSON.stringify({ type: 'stop_dispatch', agentId })), { reliable: true })
+          }}
+        />
 
         {/* Mobile composer control strip — Claude-style controls next to the
             input instead of crammed in the header where they clip.

@@ -597,6 +597,9 @@ export class ClaudeLLM extends llm.LLM {
   // Active queries — multiple can be running (SDK queues them internally).
   // We keep ALL references so interrupt() can stop whatever is currently executing.
   #activeQueries: Set<any> = new Set()
+  // Per-agent-id query map — allows targeted stop of a single dispatch flow.
+  // Strictly additive; abortQuery/interruptQuery still iterate #activeQueries (kill-all).
+  #activeQueriesById: Map<string, any> = new Map()
 
   // Dedup guard — prevents double-firing reviewer/gate if SubagentStop fires
   // more than once for the same agent_id (e.g. retry edge cases).
@@ -963,6 +966,7 @@ export class ClaudeLLM extends llm.LLM {
       try { q.return?.() } catch {}
     }
     this.#activeQueries.clear()
+    this.#activeQueriesById.clear()
     console.log('🛑 All queries aborted (Ctrl+C equivalent)')
   }
 
@@ -1018,6 +1022,20 @@ export class ClaudeLLM extends llm.LLM {
   /** Remove an active query (called from ClaudeLLMStream when query completes) */
   removeActiveQuery(q: any): void {
     this.#activeQueries.delete(q)
+  }
+
+  /**
+   * Stop a single dispatch flow by agent_id.
+   * Returns true if the agent was found and stopped; false if not found.
+   * Does NOT affect other active queries (use abortQuery() to kill all).
+   */
+  stopAgent(agentId: string): boolean {
+    const q = this.#activeQueriesById.get(agentId)
+    if (!q) return false
+    try { q.return?.() } catch {}
+    this.#activeQueriesById.delete(agentId)
+    this.#activeQueries.delete(q)
+    return true
   }
 
   // ============================================================
@@ -1302,6 +1320,7 @@ export class ClaudeLLM extends llm.LLM {
       console.log(`[DISPATCH] spawning reviewer for agentId=${agentId.slice(0, 8)}`)
       const reviewerQuery = query({ prompt, options: reviewerOptions })
       this.#activeQueries.add(reviewerQuery)
+      this.#activeQueriesById.set(agentId, reviewerQuery)
 
       let reviewerText = ''
       try {
@@ -1313,6 +1332,7 @@ export class ClaudeLLM extends llm.LLM {
         }
       } finally {
         this.#activeQueries.delete(reviewerQuery)
+        this.#activeQueriesById.delete(agentId)
       }
 
       const verdictMatch = reviewerText.match(/VERDICT:\s*(ACCEPT|REJECT)/i)
@@ -1390,6 +1410,7 @@ export class ClaudeLLM extends llm.LLM {
       console.log(`[DISPATCH] spawning research-gate for agentId=${agentId.slice(0, 8)}`)
       const gateQuery = query({ prompt, options: gateOptions })
       this.#activeQueries.add(gateQuery)
+      this.#activeQueriesById.set(agentId, gateQuery)
 
       let review = ''
       try {
@@ -1401,6 +1422,7 @@ export class ClaudeLLM extends llm.LLM {
         }
       } finally {
         this.#activeQueries.delete(gateQuery)
+        this.#activeQueriesById.delete(agentId)
       }
 
       const gateMatch = review.match(/GATE:\s*(PASS|NEEDS-MORE)/i)
@@ -1951,6 +1973,7 @@ class ClaudeLLMStream extends llm.LLMStream {
             matcher: '.*',
             hooks: [async (input: any) => {
               console.log('[LIFECYCLE-PROBE] SubagentStart', JSON.stringify(input))
+              this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id })
               return {}
             }]
           }],
@@ -1962,6 +1985,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               const msg = String(input?.last_assistant_message ?? '')
               const aid = input?.agent_id ?? ('sa-' + Date.now())
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
+              this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
               // Infinite-loop guard — never re-dispatch the reviewer or reasoner.
               if (at === 'reviewer' || at === 'reasoner') return {}
               if (at === 'writer' && msg) {
