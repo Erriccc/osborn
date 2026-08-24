@@ -592,6 +592,11 @@ export class ClaudeLLM extends llm.LLM {
   // No JSONL replay after the first cold start.
   #persistentQuery: SDKQuery | null = null
   #messageChannel: MessageChannel<SDKUserMessage> | null = null
+
+  // Read-along tracking — per-turn message ID and chunk counter for TTS highlighting
+  #currentTurnMessageId: string | null = null
+  #currentTurnChunkIndex = 0
+  #currentTurnChunks: string[] = []
   #backgroundConsumerRunning = false
 
   // Active queries — multiple can be running (SDK queues them internally).
@@ -1201,13 +1206,23 @@ export class ClaudeLLM extends llm.LLM {
 
         // Stream assistant text → tts_say events
         if (msg.type === 'assistant' && msg.message?.content) {
+          // Assign a stable messageId for this turn (first block sets it, rest reuse)
+          if (!this.#currentTurnMessageId) {
+            this.#currentTurnMessageId = crypto.randomUUID()
+            this.#currentTurnChunkIndex = 0
+            this.#currentTurnChunks = []
+          }
+          const turnMessageId = this.#currentTurnMessageId
           for (const block of msg.message.content) {
             if (block.type === 'text' && block.text) {
-              callbacks.eventEmitter.emit('assistant_text', { text: block.text })
+              const chunkIndex = this.#currentTurnChunkIndex
+              callbacks.eventEmitter.emit('assistant_text', { text: block.text, messageId: turnMessageId, chunkIndex })
               const ttsChunk = stripMarkdownForTTS(block.text)
               if (ttsChunk.trim()) {
+                this.#currentTurnChunks.push(ttsChunk)
+                this.#currentTurnChunkIndex++
                 console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
-                callbacks.eventEmitter.emit('tts_say', { text: ttsChunk })
+                callbacks.eventEmitter.emit('tts_say', { text: ttsChunk, messageId: turnMessageId, chunkIndex })
               }
             }
           }
@@ -1215,9 +1230,18 @@ export class ClaudeLLM extends llm.LLM {
 
         // Result — marks end of a turn (but we keep consuming for next turn)
         if (msg.type === 'result') {
+          const turnMessageId = this.#currentTurnMessageId
+          const turnChunks = [...this.#currentTurnChunks]
           if (msg.result) {
-            callbacks.eventEmitter.emit('assistant_result', { text: msg.result })
+            callbacks.eventEmitter.emit('assistant_result', { text: msg.result, messageId: turnMessageId })
           }
+          if (turnMessageId && turnChunks.length > 0) {
+            callbacks.eventEmitter.emit('tts_chunks', { messageId: turnMessageId, chunks: turnChunks })
+          }
+          // Reset per-turn state for next turn
+          this.#currentTurnMessageId = null
+          this.#currentTurnChunkIndex = 0
+          this.#currentTurnChunks = []
           console.log('✅ Claude turn complete (persistent session stays alive)')
         }
       }
@@ -2020,6 +2044,10 @@ class ClaudeLLMStream extends llm.LLMStream {
       // Run Claude Agent SDK query() and stream results
       let hasOutput = false
       let fullResponse = '' // Collect full response for frontend
+      // Per-turn read-along tracking (non-skipTTSQueue path)
+      let streamTurnMessageId: string | null = null
+      let streamTurnChunkIndex = 0
+      let streamTurnChunks: string[] = []
 
       // DIRECT MODE OPTIMIZATION: When skipTTSQueue is true, we run the Claude query
       // in the background and return from run() immediately. This is critical because:
@@ -2114,22 +2142,32 @@ class ClaudeLLMStream extends llm.LLMStream {
             this.#eventEmitter.emit('query_request_id', { requestId: sdkRequestId })
           }
 
+          // Assign a stable messageId for this turn (first block sets it, rest reuse)
+          if (!streamTurnMessageId) {
+            streamTurnMessageId = crypto.randomUUID()
+            streamTurnChunkIndex = 0
+            streamTurnChunks = []
+          }
+
           for (const block of (message as any).message.content) {
             if (block.type === 'text' && block.text) {
               hasOutput = true
               const rawText = block.text
+              const chunkIndex = streamTurnChunkIndex
 
               // Emit RAW text to frontend (for chat bubbles with full formatting)
-              this.#eventEmitter.emit('assistant_text', { text: rawText })
+              this.#eventEmitter.emit('assistant_text', { text: rawText, messageId: streamTurnMessageId, chunkIndex })
 
               // Strip markdown for clean speech
               const ttsChunk = stripMarkdownForTTS(rawText)
               if (ttsChunk.trim()) {
+                streamTurnChunks.push(ttsChunk)
+                streamTurnChunkIndex++
                 if (this.#opts.skipTTSQueue) {
                   // Direct mode: emit event for session.say() — bypasses LiveKit's
                   // BufferedTokenStream which causes stuck/delayed/out-of-order audio
                   console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
-                  this.#eventEmitter.emit('tts_say', { text: ttsChunk })
+                  this.#eventEmitter.emit('tts_say', { text: ttsChunk, messageId: streamTurnMessageId, chunkIndex })
                 } else {
                   // Realtime mode: use LLM stream queue (framework handles TTS)
                   console.log(`🔊 TTS stream (${ttsChunk.length} chars): "${ttsChunk}"`)
@@ -2148,7 +2186,16 @@ class ClaudeLLMStream extends llm.LLMStream {
           const rawResult = (message as any).result
 
           // Emit RAW result to frontend
-          this.#eventEmitter.emit('assistant_result', { text: rawResult })
+          this.#eventEmitter.emit('assistant_result', { text: rawResult, messageId: streamTurnMessageId })
+
+          // Emit ordered chunk list for frontend read-along
+          if (streamTurnMessageId && streamTurnChunks.length > 0) {
+            this.#eventEmitter.emit('tts_chunks', { messageId: streamTurnMessageId, chunks: streamTurnChunks })
+          }
+          // Reset per-turn state
+          streamTurnMessageId = null
+          streamTurnChunkIndex = 0
+          streamTurnChunks = []
 
           if (!hasOutput) {
             hasOutput = true

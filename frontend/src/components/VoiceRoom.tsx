@@ -94,6 +94,14 @@ interface ChatMessage {
   isStreaming?: boolean
   category?: 'chat' | 'log'
   toolMeta?: ToolMeta
+  messageId?: string
+  chunks?: string[]
+  chunkIndex?: number
+}
+
+interface SpeakingChunk {
+  messageId: string
+  chunkIndex: number
 }
 
 interface PermissionRequest {
@@ -386,7 +394,7 @@ function sanitizeUserTranscript(text: string): string | null {
 }
 
 // Modern chat message bubble with parts support
-const MessageBubble = React.memo(function MessageBubble({ message }: { message: ChatMessage }) {
+const MessageBubble = React.memo(function MessageBubble({ message, speakingChunk }: { message: ChatMessage; speakingChunk?: SpeakingChunk | null }) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
   const userText = isUser ? sanitizeUserTranscript(message.content) : message.content
@@ -402,7 +410,7 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
   }, [message])
 
   return (
-    <div className={`flex min-w-0 w-full ${isUser ? 'justify-end' : 'justify-start'} group`}>
+    <div className={`flex min-w-0 w-full ${isUser ? 'justify-end' : 'justify-start'} group`} data-message-id={message.messageId ?? undefined}>
       {/* Avatar for assistant — hidden on mobile to save space */}
       {!isUser && !isSystem && (
         <div className="hidden sm:flex w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-amber-600 items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
@@ -459,9 +467,21 @@ const MessageBubble = React.memo(function MessageBubble({ message }: { message: 
                     return <MarkdownMessage key={idx} content={part.content} />
                   }
                   // Simple text - render directly without Markdown processing
+                  // Each bubble is exactly one TTS chunk; highlight the whole bubble
+                  // when its stored chunkIndex matches the currently-speaking chunk.
+                  const isHighlighted =
+                    message.messageId != null &&
+                    message.chunkIndex != null &&
+                    speakingChunk != null &&
+                    speakingChunk.messageId === message.messageId &&
+                    message.chunkIndex === speakingChunk.chunkIndex
                   return (
                     <p key={idx} className="text-sm leading-relaxed whitespace-pre-wrap text-gray-100">
-                      {part.content}
+                      <span
+                        className={isHighlighted ? 'bg-amber-500/20 rounded transition-colors' : undefined}
+                      >
+                        {part.content}
+                      </span>
                     </p>
                   )
                 }
@@ -516,14 +536,18 @@ function ChatPanel({
   messages,
   onSuggestionClick,
   activeResearch,
+  speakingChunk,
 }: {
   messages: ChatMessage[]
   onSuggestionClick?: (text: string) => void
   activeResearch?: { taskId: string; task: string; toolCount: number } | null
+  speakingChunk?: SpeakingChunk | null
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
   const [showJumpPill, setShowJumpPill] = useState(false)
+  const [showSpeakingPill, setShowSpeakingPill] = useState(false)
+  const speakingElRef = useRef<HTMLElement | null>(null)
 
   // Track whether the user is near the bottom of the scroll container.
   // We update this synchronously on every scroll event so the auto-scroll
@@ -547,6 +571,28 @@ function ChatPanel({
     }
   }, [messages, activeResearch])
 
+  // Show "scroll to speaking" pill when the highlighted span is off-screen
+  useEffect(() => {
+    if (!speakingChunk) {
+      setShowSpeakingPill(false)
+      speakingElRef.current = null
+      return
+    }
+    const container = scrollRef.current
+    if (!container) return
+    // Find the bubble by messageId (scoped to avoid grabbing the wrong bubble)
+    const msgEl = container.querySelector(`[data-message-id="${speakingChunk.messageId}"]`) as HTMLElement | null
+    speakingElRef.current = msgEl
+    if (!msgEl) {
+      setShowSpeakingPill(false)
+      return
+    }
+    const containerRect = container.getBoundingClientRect()
+    const elRect = msgEl.getBoundingClientRect()
+    const isVisible = elRect.top >= containerRect.top && elRect.bottom <= containerRect.bottom
+    setShowSpeakingPill(!isVisible)
+  }, [speakingChunk])
+
   return (
     <div className="flex-1 relative min-h-0">
       {showJumpPill && (
@@ -563,6 +609,20 @@ function ChatPanel({
           Jump to latest
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
+      {showSpeakingPill && (
+        <button
+          onClick={() => {
+            // Nudge only — does NOT force-scroll, does NOT set isAtBottomRef
+            speakingElRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+          }}
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/80 hover:bg-amber-400/80 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
+        >
+          Now speaking
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
           </svg>
         </button>
       )}
@@ -609,7 +669,7 @@ function ChatPanel({
         </div>
       )}
       {messages.filter(m => m.category !== 'log').map((msg) => (
-        <MessageBubble key={msg.id} message={msg} />
+        <MessageBubble key={msg.id} message={msg} speakingChunk={speakingChunk} />
       ))}
       {/* Inline research tracking spinner */}
       {activeResearch && (
@@ -1904,6 +1964,7 @@ function VoiceRoomInner({
   const [showInstancesPanel, setShowInstancesPanel] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [agentState, setAgentState] = useState<string>('idle')
+  const [speakingChunk, setSpeakingChunk] = useState<SpeakingChunk | null>(null)
   const [isMuted, setIsMuted] = useState(false)
   // Session management state
   const [sessions, setSessions] = useState<SessionInfo[]>([])
@@ -2584,10 +2645,10 @@ function VoiceRoomInner({
   const showResumePromptRef = useRef(showResumePrompt)
   showResumePromptRef.current = showResumePrompt
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta) => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunks?: string[]; chunkIndex?: number }) => void>()
 
   // addMessage function with duplicate detection
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta) => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunks?: string[]; chunkIndex?: number }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -2616,7 +2677,7 @@ function VoiceRoomInner({
       }
     }
 
-    const newMessage = {
+    const newMessage: ChatMessage = {
       id: `${Date.now()}-${Math.random()}`,
       role,
       content,
@@ -2624,6 +2685,9 @@ function VoiceRoomInner({
       toolName,
       category: category || 'chat',
       toolMeta,
+      messageId: extra?.messageId,
+      chunks: extra?.chunks,
+      chunkIndex: extra?.chunkIndex,
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     setMessages((prev) => [...prev, newMessage])
@@ -2688,14 +2752,24 @@ function VoiceRoomInner({
         }
       } else if (data.type === 'agent_state') {
         setAgentState(data.state)
+        // Clear speaking highlight when agent is no longer speaking
+        if (data.state !== 'speaking') {
+          setSpeakingChunk(null)
+        }
         // Any voice state change (thinking/speaking/listening) = active session
         onVoiceActivity?.()
       } else if (data.type === 'user_transcript') {
         if (data.text && data.text.trim()) {
           console.log('👤 Adding user message:', data.text.substring(0, 50))
           addMessageRef.current?.('user', data.text)
+          // New user turn — clear any lingering chunk highlight
+          setSpeakingChunk(null)
           // User spoke — strongest activity signal, always reset idle timer
           onVoiceActivity?.()
+        }
+      } else if (data.type === 'tts_chunk_playing') {
+        if (data.messageId != null && data.chunkIndex != null) {
+          setSpeakingChunk({ messageId: data.messageId, chunkIndex: data.chunkIndex })
         }
       } else if (data.type === 'assistant_response') {
         console.log('🤖 RAW assistant_response:', {
@@ -2708,7 +2782,7 @@ function VoiceRoomInner({
         })
         if (data.text && data.text.trim()) {
           console.log('🤖 Adding assistant message:', data.text.substring(0, 50), `[source: ${data.source || 'unknown'}]`)
-          addMessageRef.current?.('assistant', data.text)
+          addMessageRef.current?.('assistant', data.text, undefined, undefined, undefined, data.messageId ? { messageId: data.messageId } : undefined)
         } else {
           console.warn('⚠️ assistant_response had empty or invalid text:', data)
         }
@@ -2847,7 +2921,14 @@ function VoiceRoomInner({
           if (data.text.startsWith('🧠')) {
             console.log('[COMPACT-FRONTEND-BUBBLE] adding compaction chat bubble, category=', category, 'preview=', data.text.substring(0, 80))
           }
-          addMessageRef.current?.('assistant', data.text, undefined, category)
+          addMessageRef.current?.('assistant', data.text, undefined, category, undefined, data.messageId != null ? { messageId: data.messageId, chunkIndex: data.chunkIndex } : undefined)
+        }
+      } else if (data.type === 'tts_chunks') {
+        // Ordered TTS chunk list — merge onto existing message by messageId
+        if (data.messageId && Array.isArray(data.chunks)) {
+          setMessages(prev => prev.map(m =>
+            m.messageId === data.messageId ? { ...m, chunks: data.chunks } : m
+          ))
         }
       } else if (data.type === 'permission_request') {
         // YOLO intercept: if the user has turned on auto-approve, respond
@@ -4591,6 +4672,7 @@ function VoiceRoomInner({
           messages={messages}
           onSuggestionClick={(text) => handleSendText(text)}
           activeResearch={activeResearch}
+          speakingChunk={speakingChunk}
         />
 
         {/* Logs drawer */}

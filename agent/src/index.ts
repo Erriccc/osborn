@@ -2869,6 +2869,8 @@ async function main() {
         text: data.text,
         isStreaming: true,
         agentRole: 'direct',
+        messageId: data.messageId,
+        chunkIndex: data.chunkIndex,
       })
     })
 
@@ -2881,6 +2883,16 @@ async function main() {
         isStreaming: false,
         isFinal: true,
         agentRole: 'direct',
+        messageId: data.messageId,
+      })
+    })
+
+    // Wire up ordered TTS chunk list — emitted once per turn for read-along
+    directLLM.events.on('tts_chunks', (data) => {
+      sendToFrontend({
+        type: 'tts_chunks',
+        messageId: data.messageId,
+        chunks: data.chunks,
       })
     })
 
@@ -3061,6 +3073,15 @@ async function main() {
               playbackStartedAt = Date.now()
               console.log(`🔊 [${sayId}] audio first frame out (playbackStarted)`)
               audioOutputRef.off('playbackStarted', onPlaybackStarted)
+              // Notify frontend that this TTS chunk is now audibly playing
+              if (data.messageId != null && data.chunkIndex != null) {
+                sendToFrontend({
+                  type: 'tts_chunk_playing',
+                  messageId: data.messageId,
+                  chunkIndex: data.chunkIndex,
+                  text: data.text,
+                })
+              }
             }
             audioOutputRef.on('playbackStarted', onPlaybackStarted)
           }
