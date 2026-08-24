@@ -360,9 +360,13 @@ export const NAMED_AGENTS = {
       'Flag any change that could break existing callers, even if no test currently covers it.',
       '',
       '## How to work',
+      '0. **Get the diff first (MANDATORY):** Run `git diff HEAD~1 HEAD --name-only` to get the list of',
+      '   changed files, then `git diff HEAD~1 HEAD` for the full diff. Build your entire test plan around',
+      '   the SPECIFIC files and functions that changed — not a generic sweep.',
       '1. Identify the correct test / build command from package.json, Makefile, or the task brief.',
       '2. Run the FULL existing test suite first to establish the regression baseline.',
-      '3. Generate and run tests targeted at the SPECIFIC diff/change provided — at both unit and integration levels where relevant.',
+      '3. Generate and run tests targeted at the SPECIFIC diff/change — at both unit and integration levels.',
+      '   Focus on: the changed functions/components, their callers, and any behavior the diff modifies.',
       '4. Exercise edge cases: boundary values, empty inputs, error/exception paths, null/undefined.',
       '5. Execution loop: write test → run it → read failure output → fix the test OR flag as a real bug in the code. Do NOT silently paper over a real defect.',
       '6. If a command fails, read the relevant source files to locate the root cause.',
@@ -468,7 +472,19 @@ export const NAMED_AGENTS = {
       'You must NEVER write code, config, or source files (.ts, .js, .json, .env, etc.) — the write gate',
       'enforces this at the system level and will deny any such attempt.',
       '',
+      '## Backward-compatibility mandate',
+      'For every change, explicitly verify:',
+      '- No existing exported function signature changed (parameter count/order/type, return type)',
+      '- No existing data-channel message schema changed (field names, types, required fields)',
+      '- No existing API endpoint behavior changed silently',
+      '- No existing UI prop interface changed in a breaking way',
+      '- Existing callers and consumers of the changed code still work',
+      'Tag any violation BLOCKER — silent compat breaks are the hardest bugs to catch after the fact.',
+      '',
       '## How to work',
+      '0. **Get the diff first (MANDATORY):** Run `git diff HEAD~1 HEAD --stat` then `git diff HEAD~1 HEAD`.',
+      '   Build your entire review around what ACTUALLY changed — not the writer\'s narrative alone.',
+      '   If the task provides a diff, still verify it matches git history.',
       '1. Run `git diff` (or read the files listed in the task) to see exactly what changed.',
       '2. Read any file that needs context to evaluate the diff (interfaces, callers, tests).',
       '3. Run the build or test suite if available to catch compile/runtime regressions.',
@@ -1277,13 +1293,26 @@ export class ClaudeLLM extends llm.LLM {
         ? getIndexPath(this.#sessionId, this.#opts.workingDirectory)
         : null
 
+      // Get the actual diff to give reviewer concrete evidence instead of just the narrative
+      let gitDiff = ''
+      try {
+        const { execSync } = await import('child_process')
+        const diffStat = execSync('git diff HEAD~1 HEAD --stat 2>/dev/null', { cwd: this.#opts.workingDirectory, timeout: 5000 }).toString().trim()
+        const diff = execSync('git diff HEAD~1 HEAD 2>/dev/null', { cwd: this.#opts.workingDirectory, timeout: 5000 }).toString().trim()
+        gitDiff = diffStat ? `\n\n<git_diff_stat>\n${diffStat}\n</git_diff_stat>\n\n<git_diff>\n${diff.slice(0, 6000)}\n</git_diff>` : ''
+      } catch {
+        // non-fatal: if git fails, proceed without diff
+      }
+
       const prompt = [
         'Use the reviewer sub-agent to review this writer output for correctness/spec-adherence/obvious bugs.',
+        'The git diff is provided below — use it as the authoritative source of what changed.',
         'End your reply with exactly `VERDICT: ACCEPT` or `VERDICT: REJECT`.',
         ...(idxPathReviewer ? [`The session index is at ${idxPathReviewer} — you MUST read it before reviewing.`] : []),
+        gitDiff,
         '',
         '<writer_output>',
-        writerOutput.slice(0, 8000),
+        writerOutput.slice(0, 6000),
         '</writer_output>',
       ].join('\n')
 

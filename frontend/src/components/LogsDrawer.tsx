@@ -401,16 +401,18 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
   }, [])
 
   useEffect(() => {
-    if (isOpen && scrollRef.current) {
-      // Only auto-scroll to the newest entry when the user is already at/near
-      // the bottom. If they have scrolled up to read history, leave them there.
-      if (isAtBottomRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-      } else {
-        // New entry arrived while scrolled up — show the jump pill.
-        setShowJumpPill(true)
-      }
+    if (isOpen) {
       setLastSeenCount(messages.length)
+      if (scrollRef.current) {
+        // Only auto-scroll to the newest entry when the user is already at/near
+        // the bottom. If they have scrolled up to read history, leave them there.
+        if (isAtBottomRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+        } else {
+          // New entry arrived while scrolled up — show the jump pill.
+          setShowJumpPill(true)
+        }
+      }
     }
   }, [messages, isOpen])
 
@@ -579,7 +581,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                       {/* Truncated artifact — first ~60 chars */}
                       {flow.artifact && (
                         <span className="min-w-0 truncate text-[11px] text-gray-400 flex-1" title={flow.artifact}>
-                          {flow.artifact.length > 60 ? flow.artifact.substring(0, 60) + '…' : flow.artifact}
+                          {flow.artifact}
                         </span>
                       )}
 

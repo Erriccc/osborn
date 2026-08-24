@@ -95,7 +95,6 @@ interface ChatMessage {
   category?: 'chat' | 'log'
   toolMeta?: ToolMeta
   messageId?: string
-  chunks?: string[]
   chunkIndex?: number
 }
 
@@ -547,6 +546,7 @@ function ChatPanel({
   const isAtBottomRef = useRef(true)
   const [showJumpPill, setShowJumpPill] = useState(false)
   const [showSpeakingPill, setShowSpeakingPill] = useState(false)
+  const showSpeakingPillRef = useRef(false)
   const speakingElRef = useRef<HTMLElement | null>(null)
 
   // Track whether the user is near the bottom of the scroll container.
@@ -558,6 +558,14 @@ function ChatPanel({
     const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
     isAtBottomRef.current = isAtBottom
     if (isAtBottom) setShowJumpPill(false)
+    // Dismiss speaking pill if the user has scrolled the highlighted bubble into view
+    if (speakingElRef.current && showSpeakingPillRef.current) {
+      const containerRect = el.getBoundingClientRect()
+      const elRect = speakingElRef.current.getBoundingClientRect()
+      if (elRect.top >= containerRect.top && elRect.bottom <= containerRect.bottom) {
+        setShowSpeakingPill(false)
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -574,6 +582,7 @@ function ChatPanel({
   // Show "scroll to speaking" pill when the highlighted span is off-screen
   useEffect(() => {
     if (!speakingChunk) {
+      showSpeakingPillRef.current = false
       setShowSpeakingPill(false)
       speakingElRef.current = null
       return
@@ -584,12 +593,14 @@ function ChatPanel({
     const msgEl = container.querySelector(`[data-message-id="${speakingChunk.messageId}"]`) as HTMLElement | null
     speakingElRef.current = msgEl
     if (!msgEl) {
+      showSpeakingPillRef.current = false
       setShowSpeakingPill(false)
       return
     }
     const containerRect = container.getBoundingClientRect()
     const elRect = msgEl.getBoundingClientRect()
     const isVisible = elRect.top >= containerRect.top && elRect.bottom <= containerRect.bottom
+    showSpeakingPillRef.current = !isVisible
     setShowSpeakingPill(!isVisible)
   }, [speakingChunk])
 
@@ -2645,10 +2656,10 @@ function VoiceRoomInner({
   const showResumePromptRef = useRef(showResumePrompt)
   showResumePromptRef.current = showResumePrompt
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunks?: string[]; chunkIndex?: number }) => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number }) => void>()
 
   // addMessage function with duplicate detection
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunks?: string[]; chunkIndex?: number }) => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -2686,7 +2697,6 @@ function VoiceRoomInner({
       category: category || 'chat',
       toolMeta,
       messageId: extra?.messageId,
-      chunks: extra?.chunks,
       chunkIndex: extra?.chunkIndex,
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
@@ -2922,13 +2932,6 @@ function VoiceRoomInner({
             console.log('[COMPACT-FRONTEND-BUBBLE] adding compaction chat bubble, category=', category, 'preview=', data.text.substring(0, 80))
           }
           addMessageRef.current?.('assistant', data.text, undefined, category, undefined, data.messageId != null ? { messageId: data.messageId, chunkIndex: data.chunkIndex } : undefined)
-        }
-      } else if (data.type === 'tts_chunks') {
-        // Ordered TTS chunk list — merge onto existing message by messageId
-        if (data.messageId && Array.isArray(data.chunks)) {
-          setMessages(prev => prev.map(m =>
-            m.messageId === data.messageId ? { ...m, chunks: data.chunks } : m
-          ))
         }
       } else if (data.type === 'permission_request') {
         // YOLO intercept: if the user has turned on auto-approve, respond
