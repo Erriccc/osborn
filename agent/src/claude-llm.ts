@@ -1246,6 +1246,27 @@ export class ClaudeLLM extends llm.LLM {
       const reviewerOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: 'default',
+        hooks: {
+          PreToolUse: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              const toolName = input?.tool_name || 'unknown'
+              const toolInput = input?.tool_input || {}
+              emitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: 'reviewer' })
+              return {}
+            }],
+          }],
+          PostToolUse: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              const toolName = input?.tool_name || 'unknown'
+              const toolInput = input?.tool_input || {}
+              const toolResponse = input?.tool_response
+              emitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: 'reviewer' })
+              return {}
+            }],
+          }],
+        },
       }
 
       console.log(`[DISPATCH] spawning reviewer for agentId=${agentId.slice(0, 8)}`)
@@ -1307,6 +1328,27 @@ export class ClaudeLLM extends llm.LLM {
       const gateOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: 'default',
+        hooks: {
+          PreToolUse: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              const toolName = input?.tool_name || 'unknown'
+              const toolInput = input?.tool_input || {}
+              emitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: 'reasoner' })
+              return {}
+            }],
+          }],
+          PostToolUse: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              const toolName = input?.tool_name || 'unknown'
+              const toolInput = input?.tool_input || {}
+              const toolResponse = input?.tool_response
+              emitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: 'reasoner' })
+              return {}
+            }],
+          }],
+        },
       }
 
       console.log(`[DISPATCH] spawning research-gate for agentId=${agentId.slice(0, 8)}`)
