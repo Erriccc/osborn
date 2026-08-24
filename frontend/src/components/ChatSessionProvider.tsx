@@ -556,7 +556,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // LiveKit config is stable per session
   const livekitUrl =
     process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-project.livekit.cloud'
-  const enableVideo = provider === 'gemini'
+  // Audio-only by default (no camera permission prompt). Flip ALLOW_VIDEO to true to re-enable the camera.
+  const ALLOW_VIDEO = false
+  const enableVideo = ALLOW_VIDEO && provider === 'gemini'
 
   // Conditional LiveKitRoom: only mount once we have a token. Before token is
   // available, render `children` bare so the page can show its "Connecting..."
