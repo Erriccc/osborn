@@ -188,8 +188,14 @@ function DiffView({ diff }: { diff: string }) {
   )
 }
 
+// Body content thresholds for the expand/collapse affordance.
+// A preview is shown when content exceeds either limit; tapping reveals the full text.
+const BODY_PREVIEW_LINES = 6    // lines — wrap-aware approximate
+const BODY_PREVIEW_CHARS = 300  // characters
+
 function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage; onCircleBack?: (noteText: string) => void; onLike?: (noteText: string) => void; onDislike?: (noteText: string) => void }) {
-  const [open, setOpen] = useState(false)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [bodyExpanded, setBodyExpanded] = useState(false)
   const [liked, setLiked] = useState(false)
   const [disliked, setDisliked] = useState(false)
   const [bookmarked, setBookmarked] = useState(false)
@@ -197,10 +203,31 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   const meta = msg.toolMeta!
   const { verb, icon } = toolVisual(meta.tool)
   const running = meta.status === 'running'
-  const target = meta.fileName || meta.command || meta.pattern || meta.url || meta.description
-  const hasDetail = !!(meta.diff || meta.command || meta.filePath)
+
+  // The primary display target: prefer the human-readable name/description,
+  // fall back to command/pattern/url. Used in the card body and copy payload.
+  const displayName = meta.fileName || meta.description || meta.pattern || meta.url || meta.command
+  const hasDetail = !!(meta.diff || meta.filePath)
   const showStats = (meta.linesAdded ?? 0) > 0 || (meta.linesRemoved ?? 0) > 0
   const pill = agentPillStyle(meta.agentRole)
+
+  // Build the readable body text that goes into the card body.
+  // Priority: command (for bash/grep/etc.) > filePath > displayName fallback.
+  // The body is what the user actually cares about reading.
+  const bodyLines: string[] = []
+  if (meta.filePath) bodyLines.push(meta.filePath)
+  if (meta.command && meta.command !== meta.filePath) bodyLines.push(meta.command)
+  else if (!meta.command && displayName && displayName !== meta.filePath) bodyLines.push(displayName)
+  const bodyText = bodyLines.join('\n')
+
+  // Decide if we need a "show more" affordance for the body text.
+  // We use a simple heuristic: line count or character count exceeds thresholds.
+  const bodyLineCount = bodyText.split('\n').length
+  const bodyNeedsExpand = bodyText.length > BODY_PREVIEW_CHARS || bodyLineCount > BODY_PREVIEW_LINES
+  const bodyPreview = bodyNeedsExpand
+    ? bodyText.split('\n').slice(0, BODY_PREVIEW_LINES).join('\n').substring(0, BODY_PREVIEW_CHARS)
+    : bodyText
+  const shownBody = bodyExpanded ? bodyText : bodyPreview
 
   function toggleLike() {
     const next = !liked
@@ -209,7 +236,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
       setDisliked(false)
       if (onLike) {
         const detail = meta.command || meta.filePath || meta.description || meta.pattern || meta.url || '(no further detail)'
-        const noteText = `[liked] The user liked this step: ${verb} ${target ?? '(unknown)'}. Details: ${detail}. Positive signal — keep doing this kind of thing.`
+        const noteText = `[liked] The user liked this step: ${verb} ${displayName ?? '(unknown)'}. Details: ${detail}. Positive signal — keep doing this kind of thing.`
         onLike(noteText)
       }
     }
@@ -227,7 +254,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         if (meta.description) detail.push(meta.description)
         if (meta.diff) detail.push(meta.diff.substring(0, 500))
         const detailStr = detail.length > 0 ? detail.join(' | ') : '(no further detail)'
-        const noteText = `[disliked] The user flagged this step as not what they wanted: ${verb} ${target ?? '(unknown)'}. Details: ${detailStr}. Acknowledge this naturally, and if it was an edit, OFFER to undo/revert it and ask before doing so — do NOT auto-revert.`
+        const noteText = `[disliked] The user flagged this step as not what they wanted: ${verb} ${displayName ?? '(unknown)'}. Details: ${detailStr}. Acknowledge this naturally, and if it was an edit, OFFER to undo/revert it and ask before doing so — do NOT auto-revert.`
         onDislike(noteText)
       }
     }
@@ -244,26 +271,21 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
       if (meta.pattern) detail.push(`Pattern: ${meta.pattern}`)
       if (meta.url) detail.push(`URL: ${meta.url}`)
       const detailStr = detail.length > 0 ? detail.join(' | ') : '(no further detail)'
-      const noteText = `[circle-back] The user flagged this step to revisit after the current main objectives: ${verb} ${target ?? '(unknown)'}. Details: ${detailStr}. Acknowledge this naturally in conversation and try to reflect on WHY they might want to revisit it — don't just log it.`
+      const noteText = `[circle-back] The user flagged this step to revisit after the current main objectives: ${verb} ${displayName ?? '(unknown)'}. Details: ${detailStr}. Acknowledge this naturally in conversation and try to reflect on WHY they might want to revisit it — don't just log it.`
       onCircleBack(noteText)
     }
   }
 
   function copyRow() {
-    // Header: "[Verb] <target>" — mirrors what the card shows visually
-    const header = target ? `[${verb}] ${target}` : `[${verb}]`
-
-    // Detail body — only include sections that have data
+    const header = displayName ? `[${verb}] ${displayName}` : `[${verb}]`
     const body: string[] = []
-    if (meta.filePath && meta.filePath !== target) body.push(meta.filePath)
+    if (meta.filePath && meta.filePath !== displayName) body.push(meta.filePath)
     if (meta.command) body.push(meta.command)
-    if (meta.description && meta.description !== target) body.push(meta.description)
-    if (meta.pattern && meta.pattern !== target) body.push(`Pattern: ${meta.pattern}`)
-    if (meta.url && meta.url !== target) body.push(`URL: ${meta.url}`)
+    if (meta.description && meta.description !== displayName) body.push(meta.description)
+    if (meta.pattern && meta.pattern !== displayName) body.push(`Pattern: ${meta.pattern}`)
+    if (meta.url && meta.url !== displayName) body.push(`URL: ${meta.url}`)
     if (meta.diff) body.push(meta.diff)
-
     const text = body.length > 0 ? `${header}\n\n${body.join('\n\n')}` : header
-
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
@@ -271,120 +293,154 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   }
 
   return (
-    <div className="rounded-lg border border-gray-700/60 bg-gray-800/50 overflow-hidden shadow-sm max-w-full">
-      <div className="flex items-center gap-2 px-3 py-2">
-        <button
-          onClick={() => hasDetail && setOpen((v) => !v)}
-          className={`flex-1 flex items-center gap-2 text-left min-w-0 ${hasDetail ? 'hover:opacity-80' : ''} transition-opacity`}
-        >
-          <span className={`shrink-0 ${running ? 'text-amber-400' : 'text-gray-400'}`}>{icon}</span>
-          <span className="shrink-0 text-[11px] font-semibold text-gray-200">{verb}</span>
-          {target && (
-            <span className="min-w-0 truncate font-mono text-[11px] text-amber-300/90">{target}</span>
-          )}
-          {meta.editCount && meta.editCount > 1 && (
-            <span className="shrink-0 text-[10px] text-gray-500">·{meta.editCount} edits</span>
-          )}
-          {showStats && (
-            <span className="shrink-0 flex items-center gap-1 text-[10px] font-mono">
-              {(meta.linesAdded ?? 0) > 0 && <span className="text-emerald-400">+{meta.linesAdded}</span>}
-              {(meta.linesRemoved ?? 0) > 0 && <span className="text-red-400">-{meta.linesRemoved}</span>}
-            </span>
-          )}
-        </button>
+    <div className="rounded-xl border border-gray-700/50 bg-gray-800/60 shadow-sm overflow-hidden max-w-full">
 
-        {/* Right-side controls */}
-        <span className="shrink-0 flex items-center gap-1">
-          {/* Agent role chip — profile avatar + role name on colored background */}
-          {pill && (
-            <span title={meta.agentRole} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap ${pill.className}`}>
-              <ProfileAvatar initials={pill.initials} />
-              {meta.agentRole}
-            </span>
-          )}
+      {/* ── CARD HEADER: who did this + when ───────────────────────────── */}
+      <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
+        {/* Tool icon + verb — left side; amber tint when running */}
+        <span className={`shrink-0 ${running ? 'text-amber-400' : 'text-gray-400'}`}>{icon}</span>
+        <span className="text-[11px] font-semibold text-gray-300 shrink-0">{verb}</span>
+        {running && (
+          <svg className="w-3 h-3 animate-spin text-amber-400/70 shrink-0" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        )}
 
-          {/* Action buttons — always visible */}
-          <span className="flex items-center gap-0.5">
-            {/* Copy button */}
-            <button
-              onClick={copyRow}
-              title="Copy"
-              className="flex items-center justify-center w-8 h-8 rounded transition-colors text-gray-500 hover:text-gray-300 hover:bg-gray-700/50"
-            >
-              {copied ? (
-                <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              ) : (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-              )}
-            </button>
+        {/* Spacer */}
+        <span className="flex-1" />
 
-            {/* Like/heart button */}
-            <button
-              onClick={toggleLike}
-              title={liked ? 'Unlike' : 'Like'}
-              className={`flex items-center justify-center w-8 h-8 rounded transition-colors hover:bg-gray-700/50 ${liked ? 'text-pink-400' : 'text-gray-500 hover:text-pink-400'}`}
-            >
-              <svg className="w-4 h-4" fill={liked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-              </svg>
-            </button>
-
-            {/* Dislike/thumbs-down button */}
-            <button
-              onClick={toggleDislike}
-              title={disliked ? 'Remove dislike' : 'Dislike'}
-              className={`flex items-center justify-center w-8 h-8 rounded transition-colors hover:bg-gray-700/50 ${disliked ? 'text-red-400' : 'text-gray-500 hover:text-red-400'}`}
-            >
-              <svg className="w-4 h-4" fill={disliked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018a2 2 0 01.485.06l3.76.94m-7 10v5a2 2 0 002 2h.096c.5 0 .905-.405.905-.904 0-.715.211-1.413.608-2.008L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
-              </svg>
-            </button>
-
-            {/* Bookmark / circle-back button */}
-            <button
-              onClick={toggleBookmark}
-              title={bookmarked ? 'Remove circle-back' : 'Circle back to this'}
-              className={`flex items-center justify-center w-8 h-8 rounded transition-colors hover:bg-gray-700/50 ${bookmarked ? 'text-amber-400' : 'text-gray-500 hover:text-amber-400'}`}
-            >
-              <svg className="w-4 h-4" fill={bookmarked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-              </svg>
-            </button>
+        {/* Agent role chip — right side */}
+        {pill && (
+          <span title={meta.agentRole} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap shrink-0 ${pill.className}`}>
+            <ProfileAvatar initials={pill.initials} />
+            {meta.agentRole}
           </span>
+        )}
 
-          {running && (
-            <svg className="w-3.5 h-3.5 animate-spin text-amber-400/70 ml-0.5" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          )}
-          {hasDetail && (
-            <button
-              onClick={() => setOpen((v) => !v)}
-              className="flex items-center justify-center w-6 h-6 rounded hover:bg-gray-700/50 transition-colors"
-            >
-              <svg className={`w-3.5 h-3.5 text-gray-500 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          )}
+        {/* Timestamp — right-most */}
+        <span className="text-[10px] text-gray-500 tabular-nums shrink-0">
+          {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
       </div>
-      {open && hasDetail && (
-        <div className="px-3 pb-2.5">
-          {meta.filePath && (
-            <div className="text-[10px] font-mono text-gray-500 break-all">{meta.filePath}</div>
-          )}
-          {meta.command && !meta.diff && (
-            <pre className="mt-1.5 max-h-40 overflow-auto rounded-md bg-gray-950/70 border border-gray-800 p-2 text-[10.5px] leading-relaxed font-mono text-gray-300 whitespace-pre-wrap">{meta.command}</pre>
+
+      {/* ── CARD BODY: readable content — the main event ───────────────── */}
+      <div className="px-3 pb-2">
+        {/* Primary display name (filename, URL, description) shown as a label if it differs from the body */}
+        {displayName && displayName !== meta.command && displayName !== meta.filePath && (
+          <div className="text-[11px] text-amber-300/90 font-medium mb-1 break-all leading-snug">
+            {displayName}
+          </div>
+        )}
+
+        {/* Body: command / filePath — the substantive content */}
+        {bodyText ? (
+          <div>
+            <pre className={`font-mono text-[11px] leading-relaxed text-gray-200 whitespace-pre-wrap break-all ${!bodyExpanded && bodyNeedsExpand ? 'line-clamp-6' : ''}`}>
+              {shownBody}
+            </pre>
+            {bodyNeedsExpand && (
+              <button
+                onClick={() => setBodyExpanded((v) => !v)}
+                className="mt-0.5 text-[10px] text-violet-400 hover:text-violet-300 transition-colors"
+              >
+                {bodyExpanded ? 'Show less' : 'Show more'}
+              </button>
+            )}
+          </div>
+        ) : null}
+
+        {/* Diff stats inline with body */}
+        {showStats && (
+          <div className="flex items-center gap-1.5 mt-1 text-[10px] font-mono">
+            {(meta.linesAdded ?? 0) > 0 && <span className="text-emerald-400">+{meta.linesAdded}</span>}
+            {(meta.linesRemoved ?? 0) > 0 && <span className="text-red-400">-{meta.linesRemoved}</span>}
+            {meta.editCount && meta.editCount > 1 && (
+              <span className="text-gray-500">{meta.editCount} edits</span>
+            )}
+          </div>
+        )}
+        {/* Edit count alone (no stat lines) */}
+        {!showStats && meta.editCount && meta.editCount > 1 && (
+          <div className="mt-0.5 text-[10px] text-gray-500">{meta.editCount} edits</div>
+        )}
+      </div>
+
+      {/* ── DIFF / DETAIL BLOCK: collapsible, shown below body ─────────── */}
+      {detailOpen && hasDetail && (
+        <div className="px-3 pb-2.5 border-t border-gray-700/30 pt-2">
+          {meta.filePath && !bodyText.includes(meta.filePath) && (
+            <div className="text-[10px] font-mono text-gray-500 break-all mb-1">{meta.filePath}</div>
           )}
           {meta.diff && <DiffView diff={meta.diff} />}
         </div>
       )}
+
+      {/* ── ACTIONS ROW: secondary, tucked bottom-right ─────────────────── */}
+      <div className="flex items-center justify-end gap-0 px-2 pb-1.5 pt-0">
+        {/* Expand diff/detail chevron — only when there is a diff or filePath detail beyond what body already shows */}
+        {hasDetail && (
+          <button
+            onClick={() => setDetailOpen((v) => !v)}
+            title={detailOpen ? 'Collapse detail' : 'Expand diff / detail'}
+            className="flex items-center justify-center w-7 h-7 rounded transition-colors text-gray-600 hover:text-gray-400 hover:bg-gray-700/40"
+          >
+            <svg className={`w-3 h-3 transition-transform ${detailOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
+
+        {/* Copy */}
+        <button
+          onClick={copyRow}
+          title="Copy"
+          className="flex items-center justify-center w-7 h-7 rounded transition-colors text-gray-600 hover:text-gray-300 hover:bg-gray-700/40"
+        >
+          {copied ? (
+            <svg className="w-3 h-3 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          ) : (
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+          )}
+        </button>
+
+        {/* Like */}
+        <button
+          onClick={toggleLike}
+          title={liked ? 'Unlike' : 'Like'}
+          className={`flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-gray-700/40 ${liked ? 'text-pink-400' : 'text-gray-600 hover:text-pink-400'}`}
+        >
+          <svg className="w-3 h-3" fill={liked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+          </svg>
+        </button>
+
+        {/* Dislike */}
+        <button
+          onClick={toggleDislike}
+          title={disliked ? 'Remove dislike' : 'Dislike'}
+          className={`flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-gray-700/40 ${disliked ? 'text-red-400' : 'text-gray-600 hover:text-red-400'}`}
+        >
+          <svg className="w-3 h-3" fill={disliked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018a2 2 0 01.485.06l3.76.94m-7 10v5a2 2 0 002 2h.096c.5 0 .905-.405.905-.904 0-.715.211-1.413.608-2.008L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
+          </svg>
+        </button>
+
+        {/* Bookmark / circle-back */}
+        <button
+          onClick={toggleBookmark}
+          title={bookmarked ? 'Remove circle-back' : 'Circle back to this'}
+          className={`flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-gray-700/40 ${bookmarked ? 'text-amber-400' : 'text-gray-600 hover:text-amber-400'}`}
+        >
+          <svg className="w-3 h-3" fill={bookmarked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+          </svg>
+        </button>
+      </div>
     </div>
   )
 }
@@ -616,7 +672,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
               <div
                 ref={scrollRef}
                 onScroll={handleScroll}
-                className="overflow-y-auto overflow-x-hidden px-3 py-2 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
+                className="overflow-y-auto overflow-x-hidden px-3 py-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
                 style={{ height: drawerHeight }}
               >
                 {messages.length === 0 ? (
