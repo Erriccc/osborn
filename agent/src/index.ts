@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { randomUUID, randomBytes } from 'node:crypto'
-import { createConnection as netConnect } from 'node:net'
+import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
 
 // 0.9.71: createRequire for resolving package.json versions inside ESM
@@ -312,6 +312,15 @@ let ideProxyEnabled = false
 // Bumped on every proxied HTTP request and WS upgrade so the idle watcher sees
 // real editor activity rather than code-server log noise.
 let ideLastProxiedActivity = 0
+
+// WebSocket proxy for code-server upgrades. Using http-proxy instead of a raw
+// net.createConnection splice: the raw byte-splice causes an immediate 1006
+// disconnect because it doesn't properly handle the HTTP/1.1 101 framing that
+// code-server expects (confirmed: cloudflared works, raw splice does not).
+const wsProxy = httpProxy.createProxyServer({ target: IDE_TARGET, ws: true, changeOrigin: true })
+wsProxy.on('error', (err, _req, socket) => {
+  try { (socket as import('net').Socket)?.destroy() } catch {}
+})
 
 // Per-session cookie token minted when code-server becomes ready. The proxy
 // gate checks this token via the osborn_ide cookie — only requests carrying a
@@ -1603,29 +1612,7 @@ function startApiServer(workingDir: string, port: number): void {
     const isAgentRoute = AGENT_ROUTE_PREFIXES.some(p => upgradePath === p || upgradePath.startsWith(p + '/'))
     if (ideProxyEnabled && hasValidIdeCookie(req) && !isAgentRoute) {
       ideLastProxiedActivity = Date.now()
-      // Raw TCP tunnel: connect to code-server and splice the socket.
-      // Pause the client socket before initiating the connect so that any
-      // bytes the browser sends before the connect callback fires are buffered
-      // by Node rather than silently dropped — the classic silent-hang shape
-      // for a websocket terminal on a slow connect.
-      socket.pause()
-      const conn = netConnect(8300, '127.0.0.1', () => {
-        // Forward the original HTTP upgrade request headers.
-        const headerLines = [`${req.method} ${req.url} HTTP/1.1`]
-        for (const [k, v] of Object.entries(req.headers)) {
-          if (k.toLowerCase() === 'host') continue
-          if (Array.isArray(v)) { for (const vv of v) headerLines.push(`${k}: ${vv}`) }
-          else if (v != null) headerLines.push(`${k}: ${v}`)
-        }
-        headerLines.push('host: 127.0.0.1:8300')
-        conn.write(headerLines.join('\r\n') + '\r\n\r\n')
-        if (head && head.length) conn.write(head)
-        conn.pipe(socket)
-        socket.pipe(conn)
-        socket.resume()
-      })
-      conn.on('error', () => { try { socket.destroy() } catch {} })
-      socket.on('error', () => { try { conn.destroy() } catch {} })
+      wsProxy.ws(req, socket, head, { target: IDE_TARGET })
       return
     }
     socket.destroy()

@@ -1,6 +1,6 @@
 {
   "name": "osborn",
-  "version": "0.9.151",
+  "version": "0.9.152",
   "description": "Voice AI coding assistant - local agent that connects to Osborn frontend",
   "type": "module",
   "bin": {
@@ -48,6 +48,7 @@
     "@vscode/ripgrep": "^1.17.1",
     "diff": "^8.0.4",
     "dotenv": "^16.4.0",
+    "http-proxy": "^1.18.1",
     "livekit-server-sdk": "^2.15.0",
     "minisearch": "^7.2.0",
     "node-pty": "^1.1.0",
@@ -57,6 +58,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/http-proxy": "^1.17.17",
     "@types/node": "^20.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "typescript": "^5.0.0",
