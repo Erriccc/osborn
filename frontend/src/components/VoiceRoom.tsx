@@ -3419,6 +3419,24 @@ function VoiceRoomInner({
     return () => clearInterval(id)
   }, [machineTabActive, sendToAgent])
 
+  // Always-on lightweight process poll — feeds the Machine chip badge on the tab
+  // switcher even when the Machine tab is not active. 12s interval so we don't
+  // spam; the existing process_list handler already routes replies into machineData.
+  // Only runs when the Machine tab is NOT active (that poll covers it at 4s already).
+  useEffect(() => {
+    if (machineTabActive) return  // let the faster tab-active poll handle it
+    const enc = new TextEncoder()
+    const request = () => {
+      try {
+        sendToAgent(enc.encode(JSON.stringify({ type: 'list_processes' })), { reliable: true })
+      } catch { /* room may not be connected yet — ignore */ }
+    }
+    // Fire once immediately so the chip populates right away on connect
+    request()
+    const id = setInterval(request, 12_000)
+    return () => clearInterval(id)
+  }, [machineTabActive, sendToAgent])
+
   // Session management handlers
   const handleLoadSessions = useCallback(() => {
     setIsLoadingSessions(true)
@@ -4394,33 +4412,6 @@ function VoiceRoomInner({
 
             {/* Compact Controls — meeting/files/copy hidden on mobile */}
             <div className="flex items-center gap-1.5">
-              {/* Open Editor button — hidden on mobile */}
-              {ideStatus === 'starting' || ideStatus === 'ready' ? (
-                <span className="hidden sm:flex px-2.5 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium items-center gap-1.5 border border-violet-500/30">
-                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                  </svg>
-                  Starting editor…
-                </span>
-              ) : (
-                <button
-                  onClick={handleOpenEditor}
-                  disabled={!agentConnected}
-                  className={`hidden sm:flex p-2 rounded-lg transition-all ${
-                    !agentConnected
-                      ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
-                      : ideStatus === 'error'
-                        ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                        : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
-                  }`}
-                  title={ideError || 'Open in-browser VS Code editor'}
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                  </svg>
-                </button>
-              )}
               {/* Meeting button — hidden on mobile */}
               {meetingStatus === 'joined' ? (
                 <button
@@ -4763,6 +4754,14 @@ function VoiceRoomInner({
           onEditorOpen={handleOpenEditor}
           onEditorStop={handleEditorStop}
           onEditorRestart={handleEditorRestart}
+          ideError={ideError}
+          machineChipRamPct={
+            agentMemory?.usedPct ??
+            (machineData?.memory
+              ? Math.round((machineData.memory.usedMb / Math.max(machineData.memory.totalMb, 1)) * 100)
+              : undefined)
+          }
+          machineChipProcCount={machineData?.processes.length}
         />
 
         {/* Mobile composer control strip — Claude-style controls next to the

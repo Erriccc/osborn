@@ -2,6 +2,18 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 
+// ---------------------------------------------------------------------------
+// Machine-chip health thresholds — edit these to calibrate live
+// ---------------------------------------------------------------------------
+// RAM usage tiers (percent of total)
+const RAM_AMBER = 70   // >= this → amber
+const RAM_RED   = 85   // >= this → red
+
+// Process-count tiers (total processes from list_processes)
+// These are first-guess values: resting Fly sprite is ~4-6 processes; sub-agents add more.
+const PROC_AMBER = 12  // >= this → amber
+const PROC_RED   = 18  // >= this → red
+
 interface ToolMeta {
   tool: string
   status?: 'running' | 'completed'
@@ -105,6 +117,10 @@ interface LogsDrawerProps {
   onEditorOpen?: () => void
   onEditorStop?: () => void
   onEditorRestart?: () => void
+  // Live chip data — fed by VoiceRoom's always-on polls (independent of which tab is active)
+  machineChipRamPct?: number   // 0-100 integer
+  machineChipProcCount?: number // total process count
+  ideError?: string | null
 }
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
@@ -376,7 +392,56 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
 const DRAWER_MIN_HEIGHT = 120
 const DRAWER_DEFAULT_HEIGHT = 256
 
-export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart }: LogsDrawerProps) {
+// ---------------------------------------------------------------------------
+// MachineChipBadge — compact RAM% + process-count badge for the Machine tab chip.
+// Color tier = worst of RAM and process signals.
+// Pulses in red state only, static in amber, calm in green/absent.
+// ---------------------------------------------------------------------------
+type HealthTier = 'green' | 'amber' | 'red'
+
+function ramTier(pct: number): HealthTier {
+  if (pct >= RAM_RED) return 'red'
+  if (pct >= RAM_AMBER) return 'amber'
+  return 'green'
+}
+
+function procTier(count: number): HealthTier {
+  if (count >= PROC_RED) return 'red'
+  if (count >= PROC_AMBER) return 'amber'
+  return 'green'
+}
+
+function worstTier(a: HealthTier, b: HealthTier): HealthTier {
+  if (a === 'red' || b === 'red') return 'red'
+  if (a === 'amber' || b === 'amber') return 'amber'
+  return 'green'
+}
+
+const TIER_DOT_CLASS: Record<HealthTier, string> = {
+  green: 'bg-emerald-400',
+  amber: 'bg-amber-400',
+  red:   'bg-red-500 animate-pulse',
+}
+
+const TIER_TEXT_CLASS: Record<HealthTier, string> = {
+  green: 'text-emerald-400',
+  amber: 'text-amber-400',
+  red:   'text-red-400',
+}
+
+function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: number }) {
+  const tier = worstTier(ramTier(ramPct), procTier(procCount))
+  return (
+    <span className={`inline-flex items-center gap-1 ml-1 px-1.5 py-0.5 rounded-full bg-gray-800 border border-gray-700/70 text-[9px] font-semibold leading-none tabular-nums ${TIER_TEXT_CLASS[tier]}`}>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${TIER_DOT_CLASS[tier]}`} />
+      {ramPct}%
+      <span className="text-gray-500 font-normal">·</span>
+      {procCount}p
+    </span>
+  )
+}
+
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
   const [lastSeenCount, setLastSeenCount] = useState(0)
@@ -513,13 +578,16 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                 </button>
                 <button
                   onClick={() => setActiveTab('machine')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-t transition-colors ${
+                  className={`flex items-center px-3 py-1.5 text-xs font-medium rounded-t transition-colors ${
                     activeTab === 'machine'
                       ? 'text-gray-200 border-b-2 border-violet-400 bg-transparent'
                       : 'text-gray-500 hover:text-gray-300 border-b-2 border-transparent'
                   }`}
                 >
                   Machine
+                  {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
+                    <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
+                  )}
                 </button>
               </div>
             )
@@ -707,6 +775,11 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                   </div>
                 )
               })()}
+
+              {/* Editor error — shown when ideError is a non-empty string */}
+              {ideError && (
+                <div className="text-xs text-red-400 px-1 -mt-1">{ideError}</div>
+              )}
 
               {/* Memory bar — prefers the richer agentMemory from /health poll;
                   falls back to memory object carried in the process_list event. */}
