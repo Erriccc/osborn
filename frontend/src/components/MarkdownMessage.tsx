@@ -51,16 +51,7 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
 
           // Links
           a({ href, children }) {
-            return (
-              <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-400 hover:text-blue-300 underline underline-offset-2"
-              >
-                {children}
-              </a>
-            )
+            return <LinkWithCopy href={href}>{children}</LinkWithCopy>
           },
 
           // Lists
@@ -367,6 +358,49 @@ export function MermaidBlock({ code }: { code: string }) {
   )
 }
 
+// Link with an inline copy-URL button (needed for touch where drag-select is unreliable)
+function LinkWithCopy({ href, children }: { href?: string; children: React.ReactNode }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(href || '')
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }, [href])
+
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-400 hover:text-blue-300 underline underline-offset-2"
+      >
+        {children}
+      </a>
+      <button
+        onClick={handleCopy}
+        title={copied ? 'Copied!' : 'Copy URL'}
+        className="inline-flex items-center justify-center w-5 h-5 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-700 opacity-100 sm:opacity-0 sm:hover:opacity-100 transition-opacity flex-shrink-0"
+        aria-label={copied ? 'Copied!' : 'Copy URL'}
+      >
+        {copied ? (
+          // Checkmark icon
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 text-green-400">
+            <path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" />
+          </svg>
+        ) : (
+          // Copy/link icon
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+            <path d="M6.22 8.72a.75.75 0 0 0 1.06 1.06l5.22-5.22v1.69a.75.75 0 0 0 1.5 0v-3.5a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 0 0 1.5h1.69L6.22 8.72Z" />
+            <path d="M3.5 6.75c0-.69.56-1.25 1.25-1.25H7A.75.75 0 0 0 7 4H4.75A2.75 2.75 0 0 0 2 6.75v4.5A2.75 2.75 0 0 0 4.75 14h4.5A2.75 2.75 0 0 0 12 11.25V9a.75.75 0 0 0-1.5 0v2.25c0 .69-.56 1.25-1.25 1.25h-4.5c-.69 0-1.25-.56-1.25-1.25v-4.5Z" />
+          </svg>
+        )}
+      </button>
+    </span>
+  )
+}
+
 // Separate CodeBlock component with copy functionality
 function CodeBlock({ children, language }: { children: React.ReactNode; language: string }) {
   const [copied, setCopied] = useState(false)
@@ -387,10 +421,10 @@ function CodeBlock({ children, language }: { children: React.ReactNode; language
         </div>
       )}
 
-      {/* Copy button */}
+      {/* Copy button — always visible on touch/mobile, hover-reveal on desktop */}
       <button
         onClick={handleCopy}
-        className="absolute top-2 right-2 px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity"
+        className="absolute top-2 right-2 px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-300 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
       >
         {copied ? 'Copied!' : 'Copy'}
       </button>
