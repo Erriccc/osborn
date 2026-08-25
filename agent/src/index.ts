@@ -328,6 +328,13 @@ wsProxy.on('error', (err, _req, socket) => {
 // swallowed by the IDE proxy. Cleared in stopIde().
 let ideSessionToken: string | null = null
 
+// Cancellation-generation guard for startCodeServer(). Incremented by stopIde()
+// every time the IDE is torn down. startCodeServer() captures myGen at entry;
+// if ideStartGeneration !== myGen when the poll resolves, the start has been
+// superseded (stopIde ran mid-flight) and the result is discarded instead of
+// re-enabling the proxy with no participant present.
+let ideStartGeneration = 0
+
 // Helper: parse the osborn_ide cookie from a request and return true iff it
 // matches the current ideSessionToken (and a token exists).
 function hasValidIdeCookie(req: IncomingMessage): boolean {
@@ -1549,7 +1556,7 @@ function startApiServer(workingDir: string, port: number): void {
         port: 8300,
         path: targetUrl.pathname + (targetUrl.search || ''),
         method: req.method,
-        headers: { ...req.headers, host: '127.0.0.1:8300' },
+        headers: { ...req.headers, host: '127.0.0.1:8300', 'x-forwarded-host': req.headers.host },
       }
       const proxyReq = httpRequest(options, (proxyRes) => {
         res.writeHead(proxyRes.statusCode || 502, proxyRes.headers as any)
@@ -1612,6 +1619,13 @@ function startApiServer(workingDir: string, port: number): void {
     const isAgentRoute = AGENT_ROUTE_PREFIXES.some(p => upgradePath === p || upgradePath.startsWith(p + '/'))
     if (ideProxyEnabled && hasValidIdeCookie(req) && !isAgentRoute) {
       ideLastProxiedActivity = Date.now()
+      // code-server's authenticateOrigin() compares Origin against the effective host
+      // (X-Forwarded-Host first). changeOrigin:true rewrites Host→127.0.0.1:8300 while the
+      // browser's Origin stays the public hostname, causing a 403 → WS 1006. Preserve the
+      // real public host so the origin check matches.
+      if (!req.headers['x-forwarded-host'] && req.headers.host) {
+        req.headers['x-forwarded-host'] = req.headers.host
+      }
       wsProxy.ws(req, socket, head, { target: IDE_TARGET })
       return
     }
@@ -2361,6 +2375,9 @@ async function main() {
 
   // Kill code-server, disable proxy, clear interval, reset IDE state.
   const stopIde = (reason?: string) => {
+    // Bump the generation counter so any in-flight startCodeServer() knows it
+    // has been cancelled and must not re-enable the proxy or mint a new token.
+    ideStartGeneration++
     ideProxyEnabled = false
     ideSessionToken = null
     ideStartInProgress = null
@@ -2423,6 +2440,12 @@ async function main() {
     // Fresh start: kill any stale proc (shouldn't normally exist here, but be safe).
     if (ideCodeServerProc) stopIde()
 
+    // Capture the current generation AFTER any preceding stopIde() call so that
+    // if stopIde() already ran (above), myGen reflects the incremented counter.
+    // A concurrent stopIde() after this point will increment ideStartGeneration
+    // beyond myGen, signalling cancellation to the poll loop and success branch.
+    const myGen = ideStartGeneration
+
     let resolveFn!: () => void
     let rejectFn!: (err: unknown) => void
     ideStartInProgress = new Promise<void>((res, rej) => { resolveFn = res; rejectFn = rej })
@@ -2477,11 +2500,13 @@ async function main() {
     await new Promise<void>((res, rej) => {
       let attempts = 0
       const poll = setInterval(() => {
-        // Early-exit: the proc we spawned is no longer the active one (stopIde
-        // was called, or a concurrent path replaced it).
-        if (ideCodeServerProc !== codeServerProc) {
+        // Early-exit: stopIde() was called while we were waiting (generation bumped),
+        // OR the proc we spawned is no longer the active one for another reason.
+        // Either way, cancel the poll immediately so we don't keep hitting 8300
+        // for a boot that has already been invalidated.
+        if (ideStartGeneration !== myGen || ideCodeServerProc !== codeServerProc) {
           clearInterval(poll)
-          rej(new Error('code-server process was replaced or stopped mid-poll'))
+          rej(new Error('code-server start cancelled (stopIde ran mid-poll)'))
           return
         }
         attempts++
@@ -2501,6 +2526,22 @@ async function main() {
       }, 500)
     })
     console.log('✅ code-server ready on 8300')
+
+    // Generation guard: check again right before enabling the proxy. The poll
+    // already checks this on each tick, but there is a narrow window between the
+    // last tick resolving and reaching here. If stopIde() ran in that window,
+    // ideStartGeneration will have been incremented beyond myGen — we must NOT
+    // enable the proxy or mint a token, and we must kill the orphan process so
+    // no zombie code-server is left running with no participant present.
+    if (ideStartGeneration !== myGen) {
+      console.log('🖥️ IDE start cancelled (stopIde ran while code-server was booting) — killing orphan proc')
+      try { codeServerProc.kill() } catch {}
+      // ideCodeServerProc may already be null (stopIde cleared it); only null it
+      // if it still points to our proc to avoid clobbering a newer start.
+      if (ideCodeServerProc === codeServerProc) ideCodeServerProc = null
+      resolveFn()   // resolve (not reject) so the promise chain exits cleanly
+      return
+    }
 
     // Mint the session cookie token and enable the proxy. From this point the
     // /editor route will 302+Set-Cookie and the fall-through proxy will only
