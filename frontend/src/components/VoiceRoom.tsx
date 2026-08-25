@@ -2191,6 +2191,7 @@ function VoiceRoomInner({
   // IDE (code-server) state
   const [ideStatus, setIdeStatus] = useState<'idle' | 'starting' | 'ready' | 'error'>('idle')
   const [ideError, setIdeError] = useState<string | null>(null)
+  const [ideUrl, setIdeUrl] = useState<string | null>(null)
   // Meeting TODOs panel — fed by the agent writing meeting-todos.md in the
   // workspace. `research_artifact_updated` already fires automatically when
   // any file under /osb/ is written, and `get_research_artifact` returns the
@@ -3299,17 +3300,18 @@ function VoiceRoomInner({
       } else if (data.type === 'ide_ready') {
         console.log('[IDE] ready, url:', data.url)
         setIdeStatus('ready')
-        if (data.url) window.open(data.url, '_blank')
-        setTimeout(() => setIdeStatus('idle'), 2000)
+        if (data.url) setIdeUrl(data.url)
       } else if (data.type === 'ide_error') {
         console.log('[IDE] error:', data.error)
         setIdeError(data.error ?? 'Unknown IDE error')
         setIdeStatus('error')
+        setIdeUrl(null)
         setTimeout(() => { setIdeStatus('idle'); setIdeError(null) }, 5000)
       } else if (data.type === 'ide_stopped') {
         console.log('[IDE] stopped:', data.reason)
         setIdeStatus('idle')
         setIdeError(null)
+        setIdeUrl(null)
       } else if (data.type === 'compaction_started') {
         // Detailed logging: if this fires but the banner doesn't update, look at
         // the state setter calls below. If banner DOES update but inline chat
@@ -3762,13 +3764,32 @@ function VoiceRoomInner({
   }, [sendToAgent, meetingBotId])
 
   const handleOpenEditor = useCallback(() => {
+    if (ideStatus === 'ready' && ideUrl) {
+      window.open(ideUrl, '_blank')
+      return
+    }
     if (ideStatus === 'starting') return
     setIdeStatus('starting')
     setIdeError(null)
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({ type: 'start_ide' }))
     sendToAgent(payload, { reliable: true })
-  }, [sendToAgent, ideStatus])
+  }, [sendToAgent, ideStatus, ideUrl])
+
+  const handleEditorStop = useCallback(() => {
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'stop_ide' })), { reliable: true })
+  }, [sendToAgent])
+
+  const handleEditorRestart = useCallback(() => {
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'stop_ide' })), { reliable: true })
+    setTimeout(() => {
+      setIdeStatus('starting')
+      setIdeError(null)
+      sendToAgent(encoder.encode(JSON.stringify({ type: 'start_ide' })), { reliable: true })
+    }, 500)
+  }, [sendToAgent])
 
   // Add a new skill
   // ── Per-user named agents (DB-backed) ──
@@ -4276,40 +4297,6 @@ function VoiceRoomInner({
                 at a glance and every screenshot carries a timestamp. */}
             <LiveClock showDate />
 
-            {/* Machine memory meter — only rendered when the agent /health response
-                includes the `memory` field (agent 0.9.131+). Shows a thin bar +
-                usedPct%. Amber above 75%, red above 85%. Defensive: if the field
-                is absent (older build or network error) this renders nothing. */}
-            {agentMemory !== undefined && (
-              <div
-                title={`RAM: ${agentMemory.usedMb} / ${agentMemory.totalMb} MB used (process RSS ${agentMemory.processRssMb} MB)`}
-                className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800/60 border border-gray-700/40 select-none"
-              >
-                {/* Thin bar */}
-                <div className="w-14 h-1.5 rounded-full bg-gray-700/70 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-700 ${
-                      agentMemory.usedPct >= 85
-                        ? 'bg-red-500'
-                        : agentMemory.usedPct >= 75
-                          ? 'bg-amber-400'
-                          : 'bg-emerald-400'
-                    }`}
-                    style={{ width: `${Math.min(agentMemory.usedPct, 100)}%` }}
-                  />
-                </div>
-                <span className={`text-[10px] font-medium tabular-nums ${
-                  agentMemory.usedPct >= 85
-                    ? 'text-red-400'
-                    : agentMemory.usedPct >= 75
-                      ? 'text-amber-400'
-                      : 'text-gray-400'
-                }`}>
-                  {agentMemory.usedPct}%
-                </span>
-              </div>
-            )}
-
             {/* Compaction status pill — header-level summary (always visible during compact) */}
             {compactionStatus !== 'idle' && (
               <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
@@ -4771,6 +4758,11 @@ function VoiceRoomInner({
           machineData={machineData}
           agentMemory={agentMemory}
           onMachineTabActive={setMachineTabActive}
+          ideState={ideStatus === 'ready' ? 'running' : ideStatus === 'starting' ? 'starting' : 'stopped'}
+          ideUrl={ideUrl ?? undefined}
+          onEditorOpen={handleOpenEditor}
+          onEditorStop={handleEditorStop}
+          onEditorRestart={handleEditorRestart}
         />
 
         {/* Mobile composer control strip — Claude-style controls next to the

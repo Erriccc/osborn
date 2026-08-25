@@ -100,6 +100,11 @@ interface LogsDrawerProps {
   machineData?: MachineData
   agentMemory?: { totalMb: number; usedMb: number; availableMb: number; usedPct: number; processRssMb: number }
   onMachineTabActive?: (active: boolean) => void
+  ideState?: 'stopped' | 'starting' | 'running'
+  ideUrl?: string
+  onEditorOpen?: () => void
+  onEditorStop?: () => void
+  onEditorRestart?: () => void
 }
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
@@ -371,7 +376,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
 const DRAWER_MIN_HEIGHT = 120
 const DRAWER_DEFAULT_HEIGHT = 256
 
-export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
   const [lastSeenCount, setLastSeenCount] = useState(0)
@@ -642,6 +647,67 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
               className="overflow-y-auto overflow-x-hidden px-3 py-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
               style={{ height: drawerHeight }}
             >
+              {/* Editor row — Codespaces-style status row with lifecycle controls */}
+              {(() => {
+                const isRunning = ideState === 'running'
+                const isStarting = ideState === 'starting'
+                const dotColor = isRunning ? 'bg-emerald-400' : isStarting ? 'bg-amber-400 animate-pulse' : 'bg-gray-600'
+                const stateLabel = isRunning ? 'Running' : isStarting ? 'Starting…' : 'Stopped'
+                const stateLabelColor = isRunning ? 'text-emerald-400' : isStarting ? 'text-amber-400' : 'text-gray-500'
+                return (
+                  <div className="flex items-center gap-2 rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-2">
+                    {/* Status dot */}
+                    <span className={`shrink-0 w-2 h-2 rounded-full ${dotColor}`} />
+                    {/* Code icon */}
+                    <svg className="shrink-0 w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                    </svg>
+                    {/* Label */}
+                    <span className="text-[11px] text-gray-300 font-medium flex-1">Code editor</span>
+                    {/* State text */}
+                    <span className={`text-[11px] tabular-nums shrink-0 ${stateLabelColor}`}>{stateLabel}</span>
+                    {/* Controls */}
+                    <span className="flex items-center gap-0.5 shrink-0">
+                      {/* Open — starts if stopped, opens URL if running */}
+                      <button
+                        onClick={onEditorOpen}
+                        title={isRunning ? 'Open editor in new tab' : 'Start editor'}
+                        disabled={isStarting}
+                        className="flex items-center justify-center w-6 h-6 rounded transition-colors text-gray-500 hover:text-gray-200 hover:bg-gray-700/50 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </button>
+                      {/* Stop — only when running or starting */}
+                      {(isRunning || isStarting) && (
+                        <button
+                          onClick={onEditorStop}
+                          title="Stop editor"
+                          className="flex items-center justify-center w-6 h-6 rounded transition-colors text-gray-500 hover:text-red-400 hover:bg-red-500/10"
+                        >
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                            <rect x="6" y="6" width="12" height="12" rx="1" />
+                          </svg>
+                        </button>
+                      )}
+                      {/* Restart — only when running */}
+                      {isRunning && (
+                        <button
+                          onClick={onEditorRestart}
+                          title="Restart editor"
+                          className="flex items-center justify-center w-6 h-6 rounded transition-colors text-gray-500 hover:text-amber-400 hover:bg-amber-500/10"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                )
+              })()}
+
               {/* Memory bar — prefers the richer agentMemory from /health poll;
                   falls back to memory object carried in the process_list event. */}
               {(() => {

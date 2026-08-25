@@ -1505,7 +1505,11 @@ function startApiServer(workingDir: string, port: number): void {
             console.error('❌ startCodeServer() from /editor failed:', err)
           })
         }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store, must-revalidate',
+          'Pragma': 'no-cache',
+        })
         res.end(`<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="3;url=/editor">

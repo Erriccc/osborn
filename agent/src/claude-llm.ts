@@ -15,7 +15,7 @@ import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
 import { getIndexPath } from './summary-index.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 
@@ -211,6 +211,11 @@ export const NAMED_AGENTS = {
       'Gather information the main agent needs to answer the user\'s question or make a decision.',
       'You are a scout — go find things, read them carefully, and report back.',
       '',
+      '## Grounding — check the session index first',
+      'Before researching, locate the session index (search-index.txt — a compact line-per-message log of this mission, under .claude/projects/<slug>/osb/<session>/; if several exist pick the most recently modified) and Grep it for the topic you are about to investigate. Read ONLY the matching slice, never the whole file.',
+      'Purpose: find what has ALREADY been decided, answered, or ruled out so you do not re-research a settled question. If the index already establishes the answer, report that (with the index reference) instead of redoing the work.',
+      'If you cannot find the index, proceed normally — this is an optimization, not a hard dependency.',
+      '',
       '## How to work',
       '1. Understand what information is needed and why.',
       '2. Search broadly first (Glob, Grep, WebSearch), then read deeply (Read specific files).',
@@ -306,6 +311,10 @@ export const NAMED_AGENTS = {
       'Handle ALL file operations — code, config, documentation, scripts, data files.',
       'You are the only agent that writes. The main agent and reasoner produce plans; you execute them.',
       '',
+      '## Grounding — consult the session index (light touch)',
+      'Before editing, locate the session index (search-index.txt under .claude/projects/<slug>/osb/<session>/; newest if several) and Grep it ONLY for: (a) the files/symbols you are about to change, and (b) any recorded DECISIONS or known GOTCHAS relevant to this change. Read only the matching lines — do NOT read the whole index (thousands of lines). This is a lighter dose than the reviewer: a targeted lookup.',
+      'If a decision or gotcha contradicts your task, STOP and report to the main agent before editing. If you find nothing or no index exists, proceed normally.',
+      '',
       '## VERIFY-FIRST workflow (mandatory)',
       '',
       '### Step 1: Verify assumptions',
@@ -345,7 +354,7 @@ export const NAMED_AGENTS = {
       'CI failures, checking compilation errors, verifying that a change did not break anything.',
       'Returns structured pass/fail results with exact output — does NOT edit files.',
     ].join(' '),
-    tools: ['Bash', 'Read', 'Glob', 'Grep'],
+    tools: ['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'],
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s tester agent. Your job is running tests and builds, then reporting results.',
@@ -353,6 +362,11 @@ export const NAMED_AGENTS = {
       '## Your role',
       'Execute test suites, build commands, and linters. Interpret failures clearly.',
       'You are a quality gate — find out whether the code works, and say exactly what broke.',
+      '',
+      '## Grounding — consult shared context before writing or running tests',
+      'Before deciding what to test, locate the session index (search-index.txt under .claude/projects/<slug>/osb/<session>/; newest if several) and Grep it for the changes/work under test. Also check any project docs and known-issues files (e.g. CONVENTIONS.md, docs/, a known-issues or gotchas doc if present) for: (a) KNOWN ISSUES and gotchas already recorded, and (b) what behavior is ALREADY covered by existing tests.',
+      'Purpose: target regression coverage at real GAPS and known-risk areas rather than testing blind or duplicating coverage — and stay IN SYNC with the reviewer, which reads the same sources.',
+      'Read only the relevant slice of the index, never the whole file. If you find nothing or no index/docs exist, proceed normally — this is an optimization, not a hard dependency.',
       '',
       '## Backward-compatibility / regression mandate (CRITICAL)',
       'Existing test suites MUST still pass — any pre-existing test that breaks is a BLOCKER; report it as such.',
@@ -382,6 +396,16 @@ export const NAMED_AGENTS = {
       '- REGRESSIONS / COMPAT BREAKS: explicit list of any pre-existing tests that now fail or API changes that could break existing callers — tag each as BLOCKER',
       '- What you checked but found to be unrelated',
       '',
+      '## Backward-compatibility testing & building the test library',
+      'GROW THE LIBRARY OVER TIME: where coverage is missing for the behavior being verified,',
+      'CREATE a targeted regression test so the suite accumulates over time. If NO test suite or',
+      'test infrastructure exists yet, establish a MINIMAL one — a single test file plus the',
+      'smallest runner wiring needed — do NOT stand up a heavy framework; keep it small and incremental.',
+      '',
+      'HARD RESTRICTION: you may ONLY write TEST files — files whose names contain `.test.` or `.spec.`,',
+      'or files located under a `__tests__/` or `tests/` directory.',
+      'NEVER write source, config, or other files. The write-gate enforces this and will deny any non-test path.',
+      '',
       '## What NOT to do',
       '- Do NOT edit or write production files — report failures so the writer agent can fix them',
       '- Do NOT run destructive commands (no rm, no git push, no npm publish)',
@@ -409,6 +433,18 @@ export const NAMED_AGENTS = {
       '## Your role',
       'Turn a vague or large request into a precise, ordered implementation plan the writer can execute',
       'step by step without guessing. You are the bridge between "what" and "how".',
+      '',
+      '## Grounding — plan against what already exists',
+      'Before drafting a plan, locate the session index (search-index.txt under .claude/projects/<slug>/osb/<session>/; newest if several) and Grep it for prior DECISIONS, constraints, and known GOTCHAS relevant to the task. Read only the matching slice, never the whole file.',
+      'Purpose: make the plan fit what has already been decided or tried — do not propose an approach the mission already ruled out. If a prior decision conflicts with the obvious plan, surface it in the plan rather than silently contradicting it.',
+      'If you cannot find the index, proceed normally.',
+      '',
+      '## Documentation at delivery milestones',
+      'Plans should account for documentation reconciliation at the point work is DELIVERED — when it ships,',
+      'goes live, or reaches a release milestone. Include a step (or an explicit note in VERIFY) to check',
+      'whether existing documentation still reflects what is changing, and flag it as a task if updates are',
+      'needed. Do NOT schedule doc updates for every incremental step; anchor them to the delivery boundary',
+      'so documentation stays stable between releases and does not silently drift out of sync when the work ships.',
       '',
       '## How to work',
       '1. Read enough of the codebase to understand the current structure (Glob, Grep, Read).',
@@ -467,10 +503,18 @@ export const NAMED_AGENTS = {
       '## Maintain documentation',
       'You MAY create and maintain project standards and conventions files. Specifically: adopt an existing',
       'standards doc if one is found, or create one (e.g. CONVENTIONS.md, docs/standards.md) when none exists',
-      'and the review reveals patterns worth recording. Keep documentation current as you review.',
+      'and the review reveals patterns worth recording.',
+      '',
+      'WHEN to reconcile docs: at the moment work is being DELIVERED — when a unit of work ships, goes live,',
+      'or reaches a release milestone. That is the checkpoint to verify whether existing documentation still',
+      'reflects what actually changed and update it if it has drifted. Do NOT update docs on every small',
+      'incremental change; wait for the natural delivery boundary so docs stay stable between releases.',
+      'Between delivery milestones, note discrepancies as findings in your verdict (MINOR or NIT) rather',
+      'than immediately rewriting documentation.',
+      '',
       'RESTRICTION: you may ONLY write files with documentation extensions: .md, .markdown, .mdx, .txt, .rst, .adoc.',
-      'You must NEVER write code, config, or source files (.ts, .js, .json, .env, etc.) — the write gate',
-      'enforces this at the system level and will deny any such attempt.',
+      'You must NEVER write source, config, or executable files — the write gate enforces this at the system',
+      'level and will deny any such attempt.',
       '',
       '## Backward-compatibility mandate',
       'For every change, explicitly verify:',
@@ -480,6 +524,15 @@ export const NAMED_AGENTS = {
       '- No existing UI prop interface changed in a breaking way',
       '- Existing callers and consumers of the changed code still work',
       'Tag any violation BLOCKER — silent compat breaks are the hardest bugs to catch after the fact.',
+      '',
+      '## Regression test suite — run and correlate',
+      'If a backward-compatibility/regression test suite exists in the project (any test/ or __tests__/',
+      'directory, *.test.* or *.spec.* files, or a test script in package.json), RUN IT as part of your',
+      'review using Bash. Correlate the results into your verdict:',
+      '- A passing suite with no regressions: note it in WHAT IT CHECKED-AND-CLEARED.',
+      '- Any pre-existing test that now fails is a BLOCKER — include it as an ISSUES entry tagged BLOCKER.',
+      'Do not skip this step when a suite exists; a failing regression test is a hard blocker regardless',
+      'of whether the diff looks clean.',
       '',
       '## How to work',
       '0. **Get the diff first (MANDATORY):** Run `git diff HEAD~1 HEAD --stat` then `git diff HEAD~1 HEAD`.',
@@ -1781,6 +1834,23 @@ class ClaudeLLMStream extends llm.LLMStream {
                     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason }
                   }
                   console.log(`📝 Reviewer doc write allowed: ${reviewerPath}`)
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
+                }
+
+                // Tester agent: ONLY test files allowed — fail closed
+                if (agentType === 'tester') {
+                  const testerPath = String(toolInput.file_path || '')
+                  const STRICT_TEST_FILE = /\.(test|spec)\.[jt]sx?$/
+                  const resolvedBase = testerPath ? basename(resolve(testerPath)) : ''
+                  if (!testerPath || !STRICT_TEST_FILE.test(resolvedBase)) {
+                    const reason = testerPath
+                      ? `Tester write denied: ${testerPath} is not a test file (basename must match .test.ts/tsx/js/jsx or .spec.ts/tsx/js/jsx). Tester may only write test files.`
+                      : 'Tester write denied: could not determine target file path. Failing closed.'
+                    console.log(`🚫 Tester write blocked: ${testerPath || '(no path)'} — not a test file`)
+                    this.#eventEmitter.emit('tool_blocked', { name: toolName, reason })
+                    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason }
+                  }
+                  console.log(`🧪 Tester test-file write allowed: ${testerPath}`)
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
                 }
 
