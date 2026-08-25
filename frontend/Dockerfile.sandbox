@@ -164,7 +164,14 @@ PKG_SKILLS_DIR="/usr/local/lib/node_modules/osborn/.claude/skills"
 SEED_VERSION_FILE="${HOME_SKILLS_DIR}/.seed-version"
 mkdir -p "$HOME_SKILLS_DIR"
 CURRENT_SEED_VERSION=$(cat "$SEED_VERSION_FILE" 2>/dev/null | tr -d '[:space:]' || echo "")
-IMAGE_SEED_VERSION="${OSBORN_IMAGE_VERSION:-latest}"
+# Seed version = the INSTALLED package's own version (reliable on every boot),
+# NOT the OSBORN_IMAGE_VERSION env — that env isn't threaded through
+# `fly machine update`, so it went stale and left the marker permanently pinned
+# at 0.9.48, meaning the refresh below never fired and new-version skills never
+# reached the load path. Reading package.json makes CURRENT != IMAGE trip on a
+# real version bump. Falls back to the env / "latest" if the package is unreadable.
+IMAGE_SEED_VERSION=$(grep -m1 '"version"' /usr/local/lib/node_modules/osborn/package.json 2>/dev/null | sed 's/.*"version"[^"]*"\([^"]*\)".*/\1/')
+[ -z "$IMAGE_SEED_VERSION" ] && IMAGE_SEED_VERSION="${OSBORN_IMAGE_VERSION:-latest}"
 if [ -d "$PKG_SKILLS_DIR" ]; then
   REFRESHED=0
   SEEDED=0
@@ -198,6 +205,20 @@ if [ -d "$HOME/.claude/projects" ]; then
   done
 fi
 
+
+# === Sync volume npm-global with image osborn version ===
+# PATH prefers /workspace/.npm-global/bin over /usr/local/bin — so after an
+# image-swap the volume copy is stale. Detect mismatch and sync on boot so
+# the dashboard update button (image-swap + restart) actually takes effect.
+VOL_OSBORN_VER=$(grep -m1 '"version"' /workspace/.npm-global/lib/node_modules/osborn/package.json 2>/dev/null | sed 's/.*"version"[^"]*"\([^"]*\)".*/\1/' || echo "none")
+if [ -n "$IMAGE_SEED_VERSION" ] && [ "$IMAGE_SEED_VERSION" != "$VOL_OSBORN_VER" ]; then
+  echo "[sandbox-d] volume osborn@${VOL_OSBORN_VER} != image@${IMAGE_SEED_VERSION} -- syncing"
+  rm -rf /workspace/.npm-global/lib/node_modules/.osborn-* 2>/dev/null
+  npm install -g "osborn@${IMAGE_SEED_VERSION}" --no-audit --no-fund 2>&1 | tail -3
+  echo "[sandbox-d] sync done: osborn@${IMAGE_SEED_VERSION} on volume"
+else
+  echo "[sandbox-d] volume osborn@${VOL_OSBORN_VER} matches image -- no sync needed"
+fi
 echo "[sandbox-d] exec'ing osborn (no chroot, HOME=$HOME)"
 exec osborn
 ENTRYPOINT

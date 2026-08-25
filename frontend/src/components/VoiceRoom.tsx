@@ -12,7 +12,7 @@ import { RoomEvent, ConnectionState, Track } from 'livekit-client'
 import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
 import LiveClock from './LiveClock'
-import { LogsDrawer } from './LogsDrawer'
+import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
@@ -2188,6 +2188,9 @@ function VoiceRoomInner({
     return () => { cancelled = true; clearInterval(id) }
   }, [agentUrl])
   const [meetingError, setMeetingError] = useState<string | null>(null)
+  // IDE (code-server) state
+  const [ideStatus, setIdeStatus] = useState<'idle' | 'starting' | 'ready' | 'error'>('idle')
+  const [ideError, setIdeError] = useState<string | null>(null)
   // Meeting TODOs panel — fed by the agent writing meeting-todos.md in the
   // workspace. `research_artifact_updated` already fires automatically when
   // any file under /osb/ is written, and `get_research_artifact` returns the
@@ -2207,6 +2210,10 @@ function VoiceRoomInner({
   // Shape: { totalMb, usedMb, availableMb, usedPct, processRssMb } (all integers).
   // May be undefined when the agent hasn't published the field yet — render nothing.
   const [agentMemory, setAgentMemory] = useState<{ totalMb: number; usedMb: number; availableMb: number; usedPct: number; processRssMb: number } | undefined>(undefined)
+  // Machine tab: process list data received via data channel (list_processes / process_list).
+  const [machineData, setMachineData] = useState<MachineData | undefined>(undefined)
+  // Whether the Machine tab is currently active in the drawer — drives polling.
+  const [machineTabActive, setMachineTabActive] = useState(false)
 
   // Derived: currently selected file for preview
   const selectedFile = useMemo(() => {
@@ -3286,6 +3293,23 @@ function VoiceRoomInner({
         setMeetingError(data.message)
         setMeetingStatus('error')
         setTimeout(() => { setMeetingStatus('idle'); setMeetingError(null) }, 5000)
+      } else if (data.type === 'ide_status') {
+        console.log('[IDE] status:', data.status)
+        setIdeStatus('starting')
+      } else if (data.type === 'ide_ready') {
+        console.log('[IDE] ready, url:', data.url)
+        setIdeStatus('ready')
+        if (data.url) window.open(data.url, '_blank')
+        setTimeout(() => setIdeStatus('idle'), 2000)
+      } else if (data.type === 'ide_error') {
+        console.log('[IDE] error:', data.error)
+        setIdeError(data.error ?? 'Unknown IDE error')
+        setIdeStatus('error')
+        setTimeout(() => { setIdeStatus('idle'); setIdeError(null) }, 5000)
+      } else if (data.type === 'ide_stopped') {
+        console.log('[IDE] stopped:', data.reason)
+        setIdeStatus('idle')
+        setIdeError(null)
       } else if (data.type === 'compaction_started') {
         // Detailed logging: if this fires but the banner doesn't update, look at
         // the state setter calls below. If banner DOES update but inline chat
@@ -3363,6 +3387,11 @@ function VoiceRoomInner({
           const enc = new TextEncoder()
           sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
         }
+      } else if (data.type === 'process_list') {
+        // Agent replied to list_processes — update Machine tab state
+        if (Array.isArray(data.processes) && data.memory) {
+          setMachineData({ processes: data.processes, memory: data.memory })
+        }
       } else {
         console.log('❓ Unknown message type:', data.type)
       }
@@ -3373,6 +3402,20 @@ function VoiceRoomInner({
 
   // Subscribe to data channel with callback - this fires for EVERY message
   useDataChannel('osborn-updates', handleDataMessage)
+
+  // Poll process list via data channel every 4s when the Machine tab is active.
+  // Sends list_processes; agent replies with process_list on osborn-updates.
+  // Stops automatically when machineTabActive is false (tab not open).
+  useEffect(() => {
+    if (!machineTabActive) return
+    const enc = new TextEncoder()
+    const request = () => {
+      sendToAgent(enc.encode(JSON.stringify({ type: 'list_processes' })), { reliable: true })
+    }
+    request()
+    const id = setInterval(request, 4_000)
+    return () => clearInterval(id)
+  }, [machineTabActive, sendToAgent])
 
   // Session management handlers
   const handleLoadSessions = useCallback(() => {
@@ -3717,6 +3760,15 @@ function VoiceRoomInner({
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, meetingBotId])
+
+  const handleOpenEditor = useCallback(() => {
+    if (ideStatus === 'starting') return
+    setIdeStatus('starting')
+    setIdeError(null)
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({ type: 'start_ide' }))
+    sendToAgent(payload, { reliable: true })
+  }, [sendToAgent, ideStatus])
 
   // Add a new skill
   // ── Per-user named agents (DB-backed) ──
@@ -4355,6 +4407,33 @@ function VoiceRoomInner({
 
             {/* Compact Controls — meeting/files/copy hidden on mobile */}
             <div className="flex items-center gap-1.5">
+              {/* Open Editor button — hidden on mobile */}
+              {ideStatus === 'starting' || ideStatus === 'ready' ? (
+                <span className="hidden sm:flex px-2.5 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 text-xs font-medium items-center gap-1.5 border border-violet-500/30">
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                  </svg>
+                  Starting editor…
+                </span>
+              ) : (
+                <button
+                  onClick={handleOpenEditor}
+                  disabled={!agentConnected}
+                  className={`hidden sm:flex p-2 rounded-lg transition-all ${
+                    !agentConnected
+                      ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
+                      : ideStatus === 'error'
+                        ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                        : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                  }`}
+                  title={ideError || 'Open in-browser VS Code editor'}
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                  </svg>
+                </button>
+              )}
               {/* Meeting button — hidden on mobile */}
               {meetingStatus === 'joined' ? (
                 <button
@@ -4689,6 +4768,9 @@ function VoiceRoomInner({
             const enc = new TextEncoder()
             sendToAgent(enc.encode(JSON.stringify({ type: 'stop_dispatch', agentId })), { reliable: true })
           }}
+          machineData={machineData}
+          agentMemory={agentMemory}
+          onMachineTabActive={setMachineTabActive}
         />
 
         {/* Mobile composer control strip — Claude-style controls next to the

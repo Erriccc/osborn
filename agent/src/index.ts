@@ -16,13 +16,14 @@ initializeLogger({ pretty: true, level: 'info' })
 import { setMaxListeners } from 'node:events'
 setMaxListeners(50)
 
-import { createServer, type IncomingMessage, type ServerResponse } from 'http'
+import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, utimesSync, createWriteStream, openSync, readSync, closeSync, fstatSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, randomBytes } from 'node:crypto'
+import { createConnection as netConnect } from 'node:net'
 import { createRequire } from 'node:module'
 
 // 0.9.71: createRequire for resolving package.json versions inside ESM
@@ -283,6 +284,54 @@ let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
 // as the existing fetch-log/save-log flow so we don't ship Supabase credentials
 // to the Fly machine.
 let bugReportHook: ((reportId: string, payload: BugReportPayload) => void) | null = null
+
+// Module-scope hook wired by main() once startCodeServer() is defined in its
+// closure. The /editor route in startApiServer() calls this to start the IDE
+// in the background without depending on main()'s closure directly.
+let codeServerStartHook: (() => Promise<void>) | null = null
+
+// ── IDE reverse-proxy (module scope — shared between startApiServer + main) ──
+// code-server runs on 127.0.0.1:8300; the agent proxies it through its own
+// public HTTP server so no Cloudflare tunnel is needed.
+const IDE_TARGET = 'http://127.0.0.1:8300'
+
+// Route prefixes that belong to the agent itself. The proxy fall-through checks
+// this list FIRST so it never intercepts an agent API path.
+const AGENT_ROUTE_PREFIXES = [
+  '/health', '/sessions', '/skills', '/agents', '/canvas', '/canvas-token',
+  '/canvas-stream', '/events', '/room-code', '/connect-room', '/leave-room',
+  '/report-bug', '/restart', '/tts', '/webhook', '/sessions/export',
+  '/sessions/import', '/sessions/manifest',
+  '/editor',
+]
+
+// Set true when code-server is confirmed ready; false when stopped/not running.
+// Proxy returns 404 while this is false.
+let ideProxyEnabled = false
+
+// Bumped on every proxied HTTP request and WS upgrade so the idle watcher sees
+// real editor activity rather than code-server log noise.
+let ideLastProxiedActivity = 0
+
+// Per-session cookie token minted when code-server becomes ready. The proxy
+// gate checks this token via the osborn_ide cookie — only requests carrying a
+// valid cookie are forwarded, so a forgotten agent route can never be silently
+// swallowed by the IDE proxy. Cleared in stopIde().
+let ideSessionToken: string | null = null
+
+// Helper: parse the osborn_ide cookie from a request and return true iff it
+// matches the current ideSessionToken (and a token exists).
+function hasValidIdeCookie(req: IncomingMessage): boolean {
+  if (!ideSessionToken) return false
+  const cookieHeader = req.headers.cookie || ''
+  for (const part of cookieHeader.split(';')) {
+    const [name, ...rest] = part.trim().split('=')
+    if (name.trim() === 'osborn_ide' && rest.join('=').trim() === ideSessionToken) {
+      return true
+    }
+  }
+  return false
+}
 
 // ── Meeting canvas broadcaster ───────────────────────────────────────────────
 // The "meeting canvas" is a single webpage Recall renders as the bot's camera +
@@ -1434,6 +1483,73 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    // ── /editor entry point ──────────────────────────────────────────────────
+    // Explicit door into the IDE. When code-server is ready this route mints the
+    // osborn_ide session cookie and 302s to / (where the proxy then forwards). If
+    // code-server is not yet running, it starts it in the background and returns a
+    // self-refreshing "Starting…" page so the user naturally re-hits /editor every
+    // 3 s until ready.
+    if (url.pathname === '/editor' && req.method === 'GET') {
+      // AUTH GATE (future): validate key / signed session before minting the cookie
+      if (ideProxyEnabled && ideSessionToken) {
+        // code-server is up — set cookie and redirect to root (code-server's asset base)
+        res.writeHead(302, {
+          'Set-Cookie': `osborn_ide=${ideSessionToken}; Path=/; HttpOnly; SameSite=Lax`,
+          'Location': '/',
+        })
+        res.end()
+      } else {
+        // Not yet running — kick off start in the background, show "Starting…" page
+        if (codeServerStartHook) {
+          codeServerStartHook().catch((err) => {
+            console.error('❌ startCodeServer() from /editor failed:', err)
+          })
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(`<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="3;url=/editor">
+<title>Starting editor…</title>
+<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1e1e1e;color:#ccc}</style>
+</head><body><p>Starting your editor…</p></body></html>`)
+      }
+      return
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
+    // ── IDE reverse proxy (cookie-gated fall-through) ────────────────────────
+    // Forwards to code-server ONLY when:
+    //   1. ideProxyEnabled is true (code-server is confirmed ready), AND
+    //   2. the request carries a valid osborn_ide session cookie (primary gate), AND
+    //   3. the path is not an agent route (secondary backstop).
+    // A missing/invalid cookie means the request came from somewhere other than
+    // the /editor door — refuse it so a forgotten agent route is never swallowed.
+    if (
+      ideProxyEnabled &&
+      hasValidIdeCookie(req) &&
+      !AGENT_ROUTE_PREFIXES.some(p => url.pathname === p || url.pathname.startsWith(p + '/'))
+    ) {
+      ideLastProxiedActivity = Date.now()
+      const targetUrl = new URL(req.url || '/', IDE_TARGET)
+      const options = {
+        hostname: '127.0.0.1',
+        port: 8300,
+        path: targetUrl.pathname + (targetUrl.search || ''),
+        method: req.method,
+        headers: { ...req.headers, host: '127.0.0.1:8300' },
+      }
+      const proxyReq = httpRequest(options, (proxyRes) => {
+        res.writeHead(proxyRes.statusCode || 502, proxyRes.headers as any)
+        proxyRes.pipe(res)
+      })
+      proxyReq.on('error', () => {
+        if (!res.headersSent) { res.writeHead(502); res.end('IDE proxy error') }
+      })
+      req.pipe(proxyReq)
+      return
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: 'Not found' }))
   })
@@ -1473,11 +1589,41 @@ function startApiServer(workingDir: string, port: number): void {
 
 
 
-  // No WebSocket upgrade routes — meeting audio in/out moved off LiveKit to
-  // a polling architecture (see MeetingTranscriptPoller). The /meeting-audio
-  // and /meeting-audio-in routes were the old WebSocket-audio pipeline; both
-  // are gone. Reject all upgrade attempts.
-  server.on('upgrade', (_req, socket) => {
+  // WebSocket upgrade handler: forward to code-server when the IDE proxy is
+  // active, the request carries a valid osborn_ide session cookie, and the path
+  // is not an agent route. code-server's terminal and editor are websocket-heavy
+  // — this must work for the integrated terminal to connect.
+  // Reject all other upgrades (meeting audio moved to polling in 0.9.xx).
+  server.on('upgrade', (req: IncomingMessage, socket, head: Buffer) => {
+    const upgradePath = new URL(req.url || '/', `http://localhost`).pathname
+    const isAgentRoute = AGENT_ROUTE_PREFIXES.some(p => upgradePath === p || upgradePath.startsWith(p + '/'))
+    if (ideProxyEnabled && hasValidIdeCookie(req) && !isAgentRoute) {
+      ideLastProxiedActivity = Date.now()
+      // Raw TCP tunnel: connect to code-server and splice the socket.
+      // Pause the client socket before initiating the connect so that any
+      // bytes the browser sends before the connect callback fires are buffered
+      // by Node rather than silently dropped — the classic silent-hang shape
+      // for a websocket terminal on a slow connect.
+      socket.pause()
+      const conn = netConnect(8300, '127.0.0.1', () => {
+        // Forward the original HTTP upgrade request headers.
+        const headerLines = [`${req.method} ${req.url} HTTP/1.1`]
+        for (const [k, v] of Object.entries(req.headers)) {
+          if (k.toLowerCase() === 'host') continue
+          if (Array.isArray(v)) { for (const vv of v) headerLines.push(`${k}: ${vv}`) }
+          else if (v != null) headerLines.push(`${k}: ${v}`)
+        }
+        headerLines.push('host: 127.0.0.1:8300')
+        conn.write(headerLines.join('\r\n') + '\r\n\r\n')
+        if (head && head.length) conn.write(head)
+        conn.pipe(socket)
+        socket.pipe(conn)
+        socket.resume()
+      })
+      conn.on('error', () => { try { socket.destroy() } catch {} })
+      socket.on('error', () => { try { conn.destroy() } catch {} })
+      return
+    }
     socket.destroy()
   })
 
@@ -2027,6 +2173,20 @@ async function main() {
   const meetingSpeakers = new Set<string>()
   let activeMeetingPoller: MeetingTranscriptPoller | null = null  // Transcript poller bound to that bot
 
+  // ── IDE (code-server) state ──────────────────────────────────────────────
+  // All fields reset together in stopIde(). Never auto-started; only spawned
+  // by an explicit start_ide data-channel command from the frontend.
+  // Cloudflared is gone — exposure is via the agent's own HTTP server proxy
+  // (ideProxyEnabled at module scope, set/cleared by start_ide/stopIde).
+  let ideCodeServerProc: ReturnType<typeof spawn> | null = null
+  let ideLastActivity: number = 0  // bumped on code-server stdout/stderr
+  let ideIdleWatcher: ReturnType<typeof setInterval> | null = null
+  // In-flight start promise: set for the duration of startCodeServer()'s async
+  // body, cleared in its finally. Concurrent callers (e.g. /editor page refreshes
+  // every 3s) return early instead of killing the process that is still booting.
+  let ideStartInProgress: Promise<void> | null = null
+  // ────────────────────────────────────────────────────────────────────────
+
   // LIVE meeting transcript → LLM (buffered webhook finals). See recall.on('transcript').
   const meetingTranscriptBuffer: string[] = []
   let meetingFlushTimer: ReturnType<typeof setInterval> | null = null
@@ -2178,6 +2338,204 @@ async function main() {
       }
     }, MEETING_MAX_MS)
   }
+
+  // ── IDE helpers ─────────────────────────────────────────────────────────
+
+  // ensureCodeServer() — idempotent: installs code-server if missing.
+  // Cloudflared is no longer downloaded here (exposure via agent's own HTTP proxy).
+  // Emits ide_status:'installing' before any long download so the frontend can
+  // show a spinner. (~36s + ~740MB first run, once per machine lifetime).
+  const ensureCodeServer = async (): Promise<void> => {
+    // Resolve code-server binary
+    const which = await new Promise<string>((res) => {
+      const p = spawn('which', ['code-server'])
+      let out = ''
+      p.stdout?.on('data', (d: Buffer) => { out += d.toString() })
+      p.on('close', () => res(out.trim()))
+    })
+    if (!which) {
+      await sendToFrontend({ type: 'ide_status', status: 'installing' })
+      console.log('⬇️ Installing code-server via official script...')
+      await new Promise<void>((res, rej) => {
+        const install = spawn('sh', ['-c', 'curl -fsSL https://code-server.dev/install.sh | sh'], {
+          env: { ...process.env },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        install.stdout?.on('data', (d: Buffer) => process.stdout.write(d))
+        install.stderr?.on('data', (d: Buffer) => process.stderr.write(d))
+        install.on('close', (code) => code === 0 ? res() : rej(new Error(`code-server install exited ${code}`)))
+      })
+    }
+  }
+
+  // Kill code-server, disable proxy, clear interval, reset IDE state.
+  const stopIde = (reason?: string) => {
+    ideProxyEnabled = false
+    ideSessionToken = null
+    ideStartInProgress = null
+    if (ideIdleWatcher) { clearInterval(ideIdleWatcher); ideIdleWatcher = null }
+    if (ideCodeServerProc) {
+      try { ideCodeServerProc.kill() } catch {}
+      ideCodeServerProc = null
+    }
+    ideLastActivity = 0
+    ideLastProxiedActivity = 0
+    const msg: Record<string, string> = { type: 'ide_stopped' }
+    if (reason) msg.reason = reason
+    sendToFrontend(msg).catch(() => {})
+    console.log(`🛑 IDE stopped${reason ? ` (${reason})` : ''}`)
+  }
+
+  // Idle watcher: poll every 60s; stop IDE if no proxied HTTP/WS activity
+  // within the threshold. Uses ideLastProxiedActivity (real editor traffic seen
+  // by the agent's proxy) as the primary signal — more reliable than log noise
+  // on code-server's stdout/stderr. Falls back to ideLastActivity (process output)
+  // if no proxied activity has ever been recorded (pre-first-browser-open).
+  const startIdeIdleWatcher = () => {
+    if (ideIdleWatcher) { clearInterval(ideIdleWatcher); ideIdleWatcher = null }
+    const idleMinutes = Math.max(1, parseInt(process.env.OSBORN_IDE_IDLE_MIN || '10', 10))
+    const idleMs = idleMinutes * 60 * 1000
+    ideIdleWatcher = setInterval(() => {
+      if (!ideCodeServerProc) { clearInterval(ideIdleWatcher!); ideIdleWatcher = null; return }
+      // Prefer proxied-activity timestamp; fall back to process output timestamp.
+      const lastSeen = ideLastProxiedActivity > 0 ? ideLastProxiedActivity : ideLastActivity
+      const elapsed = Date.now() - lastSeen
+      if (elapsed > idleMs) {
+        console.log(`⏱️ IDE idle for ${Math.round(elapsed / 60000)} min — stopping`)
+        stopIde('idle')
+      }
+    }, 60_000)
+  }
+
+  // ── startCodeServer() ───────────────────────────────────────────────────────
+  // Shared helper called by both the start_ide data-channel handler and the
+  // GET /editor HTTP route. Idempotent: no-op if code-server is already running
+  // and the proxy is enabled. On fresh start it:
+  //   1. ensureCodeServer() — installs if missing
+  //   2. probes --idle-timeout-seconds flag support
+  //   3. spawns code-server on 127.0.0.1:8300 with --auth none, cwd /workspace
+  //   4. polls until ready (up to 20 s)
+  //   5. mints ideSessionToken (the cookie marker) and sets ideProxyEnabled = true
+  const startCodeServer = async (): Promise<void> => {
+    // Fast path 1: already fully up — nothing to do.
+    if (ideCodeServerProc && ideProxyEnabled) {
+      console.log('🖥️ IDE already running — reusing existing instance')
+      return
+    }
+    // Fast path 2: a start is already in progress — join it instead of killing
+    // the process that is still booting (prevents the /editor 3s-refresh self-DoS).
+    if (ideStartInProgress) {
+      console.log('🖥️ IDE start already in progress — awaiting in-flight promise')
+      return ideStartInProgress
+    }
+
+    // Fresh start: kill any stale proc (shouldn't normally exist here, but be safe).
+    if (ideCodeServerProc) stopIde()
+
+    let resolveFn!: () => void
+    let rejectFn!: (err: unknown) => void
+    ideStartInProgress = new Promise<void>((res, rej) => { resolveFn = res; rejectFn = rej })
+
+    try {
+    await ensureCodeServer()
+
+    // Probe whether this code-server version supports --idle-timeout-seconds
+    // (landed ~Oct 2025; older installs predate it). Only pass the flag if
+    // the binary reports it — an unknown flag prevents code-server from starting.
+    const idleMinutes = Math.max(1, parseInt(process.env.OSBORN_IDE_IDLE_MIN || '10', 10))
+    const idleSeconds = idleMinutes * 60
+    const supportsIdleFlag = await new Promise<boolean>((res) => {
+      const h = spawn('sh', ['-c', 'code-server --help 2>&1 | grep -q idle-timeout-seconds && echo yes || echo no'], {
+        env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let out = ''
+      h.stdout?.on('data', (d: Buffer) => { out += d.toString() })
+      h.on('close', () => res(out.trim() === 'yes'))
+    })
+    console.log(`🖥️ code-server idle-timeout-seconds flag: ${supportsIdleFlag ? 'supported' : 'absent (using watcher)'}`)
+
+    // Spawn code-server bound to 127.0.0.1:8300 (never 8741).
+    console.log('🖥️ Spawning code-server on 127.0.0.1:8300...')
+    const csArgs: string[] = [
+      '--bind-addr', '127.0.0.1:8300',
+      '--auth', 'none',
+      '/workspace',
+    ]
+    if (supportsIdleFlag) {
+      csArgs.push('--idle-timeout-seconds', String(Math.max(60, idleSeconds)))
+    }
+    const codeServerProc = spawn('code-server', csArgs, {
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    ideCodeServerProc = codeServerProc
+    ideLastActivity = Date.now()
+    ideLastProxiedActivity = 0
+
+    // Bump lastActivity on any output from code-server (fallback idle signal).
+    codeServerProc.stdout?.on('data', () => { ideLastActivity = Date.now() })
+    codeServerProc.stderr?.on('data', () => { ideLastActivity = Date.now() })
+    codeServerProc.on('exit', (code) => {
+      console.log(`🖥️ code-server exited (${code})`)
+      if (ideCodeServerProc === codeServerProc) stopIde()
+    })
+
+    // Poll until code-server is ready (302 or 200 on the root, up to 20s).
+    // Minor fix: if the process we spawned has been replaced or killed mid-poll,
+    // reject immediately rather than burning the rest of the 20s timeout.
+    await new Promise<void>((res, rej) => {
+      let attempts = 0
+      const poll = setInterval(() => {
+        // Early-exit: the proc we spawned is no longer the active one (stopIde
+        // was called, or a concurrent path replaced it).
+        if (ideCodeServerProc !== codeServerProc) {
+          clearInterval(poll)
+          rej(new Error('code-server process was replaced or stopped mid-poll'))
+          return
+        }
+        attempts++
+        const check = spawn('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', 'http://127.0.0.1:8300'])
+        let out = ''
+        check.stdout?.on('data', (d: Buffer) => { out += d.toString() })
+        check.on('close', () => {
+          const httpCode = parseInt(out.trim(), 10)
+          if (httpCode === 200 || httpCode === 302 || httpCode === 301) {
+            clearInterval(poll)
+            res()
+          } else if (attempts >= 40) { // 40 * 500ms = 20s
+            clearInterval(poll)
+            rej(new Error('code-server did not become ready within 20s'))
+          }
+        })
+      }, 500)
+    })
+    console.log('✅ code-server ready on 8300')
+
+    // Mint the session cookie token and enable the proxy. From this point the
+    // /editor route will 302+Set-Cookie and the fall-through proxy will only
+    // forward requests that carry the valid osborn_ide cookie.
+    ideSessionToken = randomBytes(24).toString('hex')
+    ideProxyEnabled = true
+
+    // Start idle watcher only when the native idle flag is absent.
+    if (!supportsIdleFlag) {
+      startIdeIdleWatcher()
+    }
+
+    resolveFn()
+    } catch (err) {
+      rejectFn(err)
+      throw err
+    } finally {
+      ideStartInProgress = null
+    }
+  }
+
+  // Wire the module-scope hook so startApiServer()'s /editor route can call
+  // startCodeServer() without reaching into main()'s closure directly.
+  codeServerStartHook = startCodeServer
+
+  // ────────────────────────────────────────────────────────────────────────
 
   // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
@@ -5008,6 +5366,12 @@ async function main() {
       armFastLeaveTimer()
     }
 
+    // Tear down IDE if one is running — user has disconnected, no point keeping
+    // code-server alive for a departed session.
+    if (ideCodeServerProc) {
+      stopIde()
+    }
+
     console.log('⏳ Waiting for new user...\n')
   }
 
@@ -5752,6 +6116,30 @@ async function main() {
           await sendToFrontend({ type: 'meeting_error', message: err.message })
         }
       }
+      // ── IDE (code-server) handlers ──────────────────────────────────────
+      else if (data.type === 'start_ide') {
+        try {
+          await startCodeServer()
+          // Build the /editor entry-point URL for the frontend to open.
+          const flyAppHost = process.env.FLY_APP_NAME
+            ? `${process.env.FLY_APP_NAME}.fly.dev`
+            : (process.env.OSBORN_PUBLIC_HOST || `localhost:${apiPort}`)
+          const ideUrl = process.env.FLY_APP_NAME
+            ? `https://${flyAppHost}/editor`
+            : `http://${flyAppHost}/editor`
+          console.log(`✅ IDE proxy ready: ${ideUrl}`)
+          await sendToFrontend({ type: 'ide_ready', url: ideUrl })
+        } catch (err: any) {
+          console.error('❌ start_ide error:', err)
+          // Clean up any partial state.
+          if (ideCodeServerProc) stopIde()
+          await sendToFrontend({ type: 'ide_error', error: err.message || String(err) })
+        }
+      }
+      else if (data.type === 'stop_ide') {
+        stopIde()
+      }
+      // ───────────────────────────────────────────────────────────────────
       else if (data.type === 'session_selected') {
         const sessionId = data.sessionId as string | null
         console.log(`🚪 Session gate completed: ${sessionId ? `resume ${sessionId}` : 'fresh start'}`)
@@ -5901,6 +6289,44 @@ async function main() {
           type: 'slots_list',
           slots: [...focusedEntry, ...bgEntries],
         })
+      }
+      else if (data.type === 'list_processes') {
+        // Read process list from /proc. Each numeric subdir is a PID.
+        // We read /proc/<pid>/comm (process name) and VmRSS from /proc/<pid>/status.
+        // Skips any PID that errors mid-scan (race: process may have exited).
+        try {
+          const procEntries = readdirSync('/proc')
+          const processes: Array<{ pid: number; name: string; rssMb: number }> = []
+          for (const entry of procEntries) {
+            if (!/^\d+$/.test(entry)) continue
+            const pid = parseInt(entry, 10)
+            try {
+              const comm = readFileSync(`/proc/${entry}/comm`, 'utf8').trim()
+              const status = readFileSync(`/proc/${entry}/status`, 'utf8')
+              const vmRssMatch = status.match(/^VmRSS:\s*(\d+)\s*kB/m)
+              const rssMb = vmRssMatch ? Math.round(parseInt(vmRssMatch[1], 10) / 1024) : 0
+              processes.push({ pid, name: comm, rssMb })
+            } catch {
+              // Process exited between readdir and read — skip it
+            }
+          }
+          // Sort by resident memory descending, cap at 40 entries
+          processes.sort((a, b) => b.rssMb - a.rssMb)
+          const topProcesses = processes.slice(0, 40)
+
+          // Reuse the existing os module memory totals (same source as /health endpoint)
+          const totalMb = Math.round(totalmem() / 1024 / 1024)
+          const freeMb  = Math.round(freemem()  / 1024 / 1024)
+          const usedMb  = totalMb - freeMb
+
+          await sendToFrontend({
+            type: 'process_list',
+            processes: topProcesses,
+            memory: { usedMb, totalMb, freeMb },
+          })
+        } catch (err) {
+          console.error('❌ list_processes: failed to read /proc:', err)
+        }
       }
     } catch {}
   }

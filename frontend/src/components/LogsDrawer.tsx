@@ -79,6 +79,17 @@ interface BackgroundFlow {
   artifact?: string
 }
 
+export interface ProcessInfo {
+  pid: number
+  name: string
+  rssMb: number
+}
+
+export interface MachineData {
+  processes: ProcessInfo[]
+  memory: { usedMb: number; totalMb: number; freeMb: number }
+}
+
 interface LogsDrawerProps {
   messages: LogMessage[]
   onCircleBack?: (noteText: string) => void
@@ -86,6 +97,9 @@ interface LogsDrawerProps {
   onDislike?: (noteText: string) => void
   backgroundFlows?: BackgroundFlow[]
   onStopDispatch?: (agentId: string) => void
+  machineData?: MachineData
+  agentMemory?: { totalMb: number; usedMb: number; availableMb: number; usedPct: number; processRssMb: number }
+  onMachineTabActive?: (active: boolean) => void
 }
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
@@ -357,9 +371,9 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
 const DRAWER_MIN_HEIGHT = 120
 const DRAWER_DEFAULT_HEIGHT = 256
 
-export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<'log' | 'running'>('log')
+  const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
   const [lastSeenCount, setLastSeenCount] = useState(0)
   const [showJumpPill, setShowJumpPill] = useState(false)
   const [drawerHeight, setDrawerHeight] = useState(DRAWER_DEFAULT_HEIGHT)
@@ -387,6 +401,11 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
     dragStartRef.current = null
     e.currentTarget.releasePointerCapture(e.pointerId)
   }
+
+  // Notify parent when Machine tab becomes active so it can start/stop polling
+  useEffect(() => {
+    onMachineTabActive?.(isOpen && activeTab === 'machine')
+  }, [isOpen, activeTab, onMachineTabActive])
 
   const unreadCount = messages.length - lastSeenCount
 
@@ -486,6 +505,16 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                   ) : (backgroundFlows ?? []).length > 0 ? (
                     <span className="inline-flex items-center justify-center w-1.5 h-1.5 rounded-full bg-gray-600" />
                   ) : null}
+                </button>
+                <button
+                  onClick={() => setActiveTab('machine')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-t transition-colors ${
+                    activeTab === 'machine'
+                      ? 'text-gray-200 border-b-2 border-violet-400 bg-transparent'
+                      : 'text-gray-500 hover:text-gray-300 border-b-2 border-transparent'
+                  }`}
+                >
+                  Machine
                 </button>
               </div>
             )
@@ -603,6 +632,98 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                     </div>
                   )
                 })
+              })()}
+            </div>
+          )}
+
+          {/* Machine tab content — memory bar + process list (view-only) */}
+          {activeTab === 'machine' && (
+            <div
+              className="overflow-y-auto overflow-x-hidden px-3 py-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
+              style={{ height: drawerHeight }}
+            >
+              {/* Memory bar — prefers the richer agentMemory from /health poll;
+                  falls back to memory object carried in the process_list event. */}
+              {(() => {
+                const mem = agentMemory ?? (machineData?.memory
+                  ? { usedMb: machineData.memory.usedMb, totalMb: machineData.memory.totalMb, availableMb: machineData.memory.freeMb, usedPct: Math.round((machineData.memory.usedMb / Math.max(machineData.memory.totalMb, 1)) * 100), processRssMb: 0 }
+                  : undefined)
+                if (!mem) {
+                  return <p className="text-xs text-gray-500 text-center py-2">Waiting for data…</p>
+                }
+                const barColor = mem.usedPct >= 85 ? 'bg-red-500' : mem.usedPct >= 75 ? 'bg-amber-400' : 'bg-emerald-400'
+                const textColor = mem.usedPct >= 85 ? 'text-red-400' : mem.usedPct >= 75 ? 'text-amber-400' : 'text-emerald-400'
+                return (
+                  <div className="rounded-md border border-gray-700/50 bg-gray-800/40 px-3 py-2 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-gray-400 font-medium">RAM</span>
+                      <span className={`text-[11px] font-semibold tabular-nums ${textColor}`}>
+                        {mem.usedMb} / {mem.totalMb} MB ({mem.usedPct}%)
+                      </span>
+                    </div>
+                    <div className="w-full h-2 rounded-full bg-gray-700/70 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-700 ${barColor}`}
+                        style={{ width: `${Math.min(mem.usedPct, 100)}%` }}
+                      />
+                    </div>
+                    <div className="text-[10px] text-gray-500">
+                      Free: {mem.availableMb} MB
+                      {mem.processRssMb > 0 && <span className="ml-2">Agent RSS: {mem.processRssMb} MB</span>}
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* Process list */}
+              {!machineData && (
+                <p className="text-xs text-gray-500 text-center py-1">Loading processes…</p>
+              )}
+              {machineData && machineData.processes.length === 0 && (
+                <p className="text-xs text-gray-500 text-center py-1">No processes found</p>
+              )}
+              {machineData && machineData.processes.length > 0 && (() => {
+                const maxRss = machineData.processes[0].rssMb || 1
+                return (
+                  <div className="space-y-0.5">
+                    {/* Header row */}
+                    <div className="flex items-center gap-2 px-2 py-0.5 text-[10px] text-gray-500 font-medium uppercase tracking-wide">
+                      <span className="flex-1">Process</span>
+                      <span className="w-10 text-right tabular-nums">PID</span>
+                      <span className="w-12 text-right tabular-nums">RSS MB</span>
+                      {/* TODO: add kill button per row here once deferred kill feature lands */}
+                    </div>
+                    {machineData.processes.map((proc) => (
+                      <div
+                        key={proc.pid}
+                        className="flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-800/60 transition-colors"
+                      >
+                        {/* Proportional bar behind the row — thin stripe on the left */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            {/* Mini proportion bar */}
+                            <div className="w-16 h-1 rounded-full bg-gray-700/50 overflow-hidden shrink-0">
+                              <div
+                                className="h-full rounded-full bg-violet-500/60"
+                                style={{ width: `${Math.min((proc.rssMb / maxRss) * 100, 100)}%` }}
+                              />
+                            </div>
+                            <span className="truncate text-[11px] text-gray-300 font-mono" title={proc.name}>
+                              {proc.name}
+                            </span>
+                          </div>
+                        </div>
+                        <span className="w-10 text-right text-[10px] text-gray-500 tabular-nums shrink-0">
+                          {proc.pid}
+                        </span>
+                        <span className="w-12 text-right text-[11px] text-gray-400 tabular-nums shrink-0">
+                          {proc.rssMb}
+                        </span>
+                        {/* TODO: kill button goes here (deferred fast-follow) */}
+                      </div>
+                    ))}
+                  </div>
+                )
               })()}
             </div>
           )}
