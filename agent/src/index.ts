@@ -1537,6 +1537,35 @@ function startApiServer(workingDir: string, port: number): void {
     }
     // ────────────────────────────────────────────────────────────────────────
 
+    // ── Port proxy: /proxy/PORT/* → localhost:PORT/proxy/PORT/* ─────────────
+    // Forwards to a local dev server while PRESERVING the full path so that
+    // basePath-aware apps (e.g. Next.js with basePath: '/proxy/3000') receive
+    // the complete URL and can strip the prefix themselves. No cookie required —
+    // the machine is per-user and Fly's HTTPS is the outer auth boundary.
+    const portProxyMatch = url.pathname.match(/^\/proxy\/(\d+)(\/.*)?$/)
+    if (portProxyMatch) {
+      const targetPort = parseInt(portProxyMatch[1])
+      if (targetPort > 1024 && targetPort < 65536 && targetPort !== 8300 && targetPort !== OSBORN_API_PORT) {
+        const portProxyOptions = {
+          hostname: '127.0.0.1',
+          port: targetPort,
+          path: url.pathname + (url.search || ''),
+          method: req.method,
+          headers: { ...req.headers, host: `127.0.0.1:${targetPort}` },
+        }
+        const portProxyReq = httpRequest(portProxyOptions, (portProxyRes) => {
+          res.writeHead(portProxyRes.statusCode || 502, portProxyRes.headers as any)
+          portProxyRes.pipe(res)
+        })
+        portProxyReq.on('error', () => {
+          if (!res.headersSent) { res.writeHead(502); res.end('Port proxy error') }
+        })
+        req.pipe(portProxyReq)
+        return
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // ── IDE reverse proxy (cookie-gated fall-through) ────────────────────────
     // Forwards to code-server ONLY when:
     //   1. ideProxyEnabled is true (code-server is confirmed ready), AND
