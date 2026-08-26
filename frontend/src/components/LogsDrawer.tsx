@@ -293,7 +293,15 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
 
       {/* ── CARD HEADER: who did this + when ───────────────────────────── */}
       <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
-        {/* Tool icon + verb — left side; amber tint when running */}
+        {/* Agent role chip — left side, grouped with the action */}
+        {pill && (
+          <span title={meta.agentRole} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap shrink-0 ${pill.className}`}>
+            <ProfileAvatar initials={pill.initials} />
+            <span className="font-semibold">{meta.agentRole}</span>
+          </span>
+        )}
+
+        {/* Tool icon + verb — immediately after agent chip; amber tint when running */}
         <span className={`shrink-0 ${running ? 'text-amber-400' : 'text-gray-400'}`}>{icon}</span>
         <span className="text-[11px] font-semibold text-gray-300 shrink-0">{verb}</span>
         {running && (
@@ -305,14 +313,6 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
 
         {/* Spacer */}
         <span className="flex-1" />
-
-        {/* Agent role chip — right side */}
-        {pill && (
-          <span title={meta.agentRole} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap shrink-0 ${pill.className}`}>
-            <ProfileAvatar initials={pill.initials} />
-            {meta.agentRole}
-          </span>
-        )}
 
         {/* Timestamp — right-most */}
         <span className="text-[10px] text-gray-500 tabular-nums shrink-0">
@@ -379,9 +379,9 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
           <button
             onClick={() => setDetailOpen((v) => !v)}
             title={detailOpen ? 'Collapse detail' : 'Expand diff / detail'}
-            className="flex items-center justify-center w-7 h-7 rounded transition-colors text-gray-600 hover:text-gray-400 hover:bg-gray-700/40"
+            className="flex items-center justify-center w-8 h-8 rounded transition-colors text-gray-400 hover:text-gray-300 hover:bg-gray-700/40"
           >
-            <svg className={`w-3 h-3 transition-transform ${detailOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className={`w-4 h-4 transition-transform ${detailOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
           </button>
@@ -391,14 +391,14 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         <button
           onClick={copyRow}
           title="Copy"
-          className="flex items-center justify-center w-7 h-7 rounded transition-colors text-gray-600 hover:text-gray-300 hover:bg-gray-700/40"
+          className="flex items-center justify-center w-8 h-8 rounded transition-colors text-gray-400 hover:text-gray-300 hover:bg-gray-700/40"
         >
           {copied ? (
-            <svg className="w-3 h-3 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
           ) : (
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
             </svg>
           )}
@@ -408,9 +408,9 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         <button
           onClick={toggleLike}
           title={liked ? 'Unlike' : 'Like'}
-          className={`flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-gray-700/40 ${liked ? 'text-pink-400' : 'text-gray-600 hover:text-pink-400'}`}
+          className={`flex items-center justify-center w-8 h-8 rounded transition-colors hover:bg-gray-700/40 ${liked ? 'text-pink-400' : 'text-gray-400 hover:text-pink-400'}`}
         >
-          <svg className="w-3 h-3" fill={liked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="w-4 h-4" fill={liked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
           </svg>
         </button>
@@ -419,9 +419,9 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         <button
           onClick={toggleDislike}
           title={disliked ? 'Remove dislike' : 'Dislike'}
-          className={`flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-gray-700/40 ${disliked ? 'text-red-400' : 'text-gray-600 hover:text-red-400'}`}
+          className={`flex items-center justify-center w-8 h-8 rounded transition-colors hover:bg-gray-700/40 ${disliked ? 'text-red-400' : 'text-gray-400 hover:text-red-400'}`}
         >
-          <svg className="w-3 h-3" fill={disliked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="w-4 h-4" fill={disliked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018a2 2 0 01.485.06l3.76.94m-7 10v5a2 2 0 002 2h.096c.5 0 .905-.405.905-.904 0-.715.211-1.413.608-2.008L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
           </svg>
         </button>
@@ -430,9 +430,9 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         <button
           onClick={toggleBookmark}
           title={bookmarked ? 'Remove circle-back' : 'Circle back to this'}
-          className={`flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-gray-700/40 ${bookmarked ? 'text-amber-400' : 'text-gray-600 hover:text-amber-400'}`}
+          className={`flex items-center justify-center w-8 h-8 rounded transition-colors hover:bg-gray-700/40 ${bookmarked ? 'text-amber-400' : 'text-gray-400 hover:text-amber-400'}`}
         >
-          <svg className="w-3 h-3" fill={bookmarked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="w-4 h-4" fill={bookmarked ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
           </svg>
         </button>
@@ -545,6 +545,16 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
       }
     }
   }, [messages, isOpen])
+
+  // When the Log tab becomes active (tab switch or drawer open on Log tab),
+  // jump to the bottom so the user lands on the most recent entries.
+  useEffect(() => {
+    if (isOpen && activeTab === 'log' && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      isAtBottomRef.current = true
+      setShowJumpPill(false)
+    }
+  }, [isOpen, activeTab])
 
   return (
     <div className="border-t border-gray-700/50">
