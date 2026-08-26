@@ -9,10 +9,6 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 const RAM_AMBER = 70   // >= this → amber
 const RAM_RED   = 85   // >= this → red
 
-// Process-count tiers (total processes from list_processes)
-// These are first-guess values: resting Fly sprite is ~4-6 processes; sub-agents add more.
-const PROC_AMBER = 12  // >= this → amber
-const PROC_RED   = 18  // >= this → red
 
 interface ToolMeta {
   tool: string
@@ -461,17 +457,6 @@ function ramTier(pct: number): HealthTier {
   return 'green'
 }
 
-function procTier(count: number): HealthTier {
-  if (count >= PROC_RED) return 'red'
-  if (count >= PROC_AMBER) return 'amber'
-  return 'green'
-}
-
-function worstTier(a: HealthTier, b: HealthTier): HealthTier {
-  if (a === 'red' || b === 'red') return 'red'
-  if (a === 'amber' || b === 'amber') return 'amber'
-  return 'green'
-}
 
 const TIER_DOT_CLASS: Record<HealthTier, string> = {
   green: 'bg-emerald-400',
@@ -486,7 +471,7 @@ const TIER_TEXT_CLASS: Record<HealthTier, string> = {
 }
 
 function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: number }) {
-  const tier = worstTier(ramTier(ramPct), procTier(procCount))
+  const tier = ramTier(ramPct)
   return (
     <span className={`inline-flex items-center gap-1 ml-1 px-1.5 py-0.5 rounded-full bg-gray-800 border border-gray-700/70 text-[9px] font-semibold leading-none tabular-nums ${TIER_TEXT_CLASS[tier]}`}>
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${TIER_DOT_CLASS[tier]}`} />
