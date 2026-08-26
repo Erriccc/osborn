@@ -72,6 +72,8 @@ export interface InterruptionContext {
    * and can re-articulate the relevant bits in its next response.
    */
   suppressedText: string
+  /** Full text of the interrupted TTS block — fallback when JSONL read returns empty */
+  fullBlockText?: string
 }
 
 export interface PipelineDirectOptions extends ClaudeLLMOptions {
@@ -260,7 +262,10 @@ export class PipelineDirectLLM extends llm.LLM {
           `Anything in "Your recent messages" below that appears AFTER the quoted heard text is content the user did not hear. The user has no memory of it.`,
           ``,
           `Your recent messages (full untruncated — you wrote these):`,
-          interruptCtx.recentMessages || '(no recent messages found)',
+          interruptCtx.recentMessages
+            || (interruptCtx.fullBlockText
+              ? `(JSONL unavailable — full TTS block text follows)\n"${interruptCtx.fullBlockText}"`
+              : '(no recent messages found)'),
           suppressedBlock,
           ``,
           `User's message: "${userText}"`,

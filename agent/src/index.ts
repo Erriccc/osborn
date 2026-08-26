@@ -2724,6 +2724,7 @@ async function main() {
     spokenText: string       // synchronizedTranscript — what user heard (word-accurate)
     recentMessages: string   // last 10 assistant messages from JSONL (full untruncated)
     suppressedText: string   // agent text we did NOT play because the user was speaking (see tts_say gate below)
+    fullBlockText?: string   // full intended TTS block text — fallback when JSONL is empty
     timestamp: number
   } | null = null
 
@@ -2752,7 +2753,7 @@ async function main() {
         const { readSessionHistory } = await import('./session-access.js')
         const history = readSessionHistory(sessionId, workingDir, {
           lastN: 10,
-          types: ['assistant'],
+          types: ['assistant', 'tool_use'],  // tool_use entries also carry Claude's spoken text
         })
         recentMessages = history
           .filter((m: any) => m.text)
@@ -2768,8 +2769,14 @@ async function main() {
     // BEFORE the previous TTS completed, and we may have already suppressed in-flight
     // tts_say events that arrived during that overlap).
     const carriedSuppressed = lastInterruption?.suppressedText ?? ''
-    lastInterruption = { spokenText: fullText, recentMessages, suppressedText: carriedSuppressed, timestamp: Date.now() }
-    console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars, suppressed carried: ${carriedSuppressed.length} chars)`)
+    lastInterruption = {
+      spokenText: fullText,
+      recentMessages,
+      suppressedText: carriedSuppressed,
+      fullBlockText: fullBlockText && fullBlockText !== fullText ? fullBlockText : undefined,
+      timestamp: Date.now(),
+    }
+    console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars, block: ${fullBlockText?.length ?? 0} chars, suppressed carried: ${carriedSuppressed.length} chars)`)
   }
 
   /**
@@ -2808,6 +2815,7 @@ async function main() {
       spokenText: lastInterruption.spokenText,
       recentMessages: lastInterruption.recentMessages,
       suppressedText: lastInterruption.suppressedText,
+      fullBlockText: lastInterruption.fullBlockText,
     }
     lastInterruption = null
     return ctx

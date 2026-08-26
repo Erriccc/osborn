@@ -45,7 +45,8 @@ RUN apt-get update -qq && \
     git \
     make \
     g++ \
-    python-is-python3 && \
+    python-is-python3 \
+    util-linux && \
     rm -rf /var/lib/apt/lists/*
 
 ARG OSBORN_VERSION=latest
@@ -121,6 +122,25 @@ if [ -f "$LOGFILE" ] && [ "$(stat -c%s "$LOGFILE" 2>/dev/null || echo 0)" -gt 10
 fi
 echo "[sandbox-d] === boot at $(date -Iseconds) ===" >> "$LOGFILE"
 exec > >(tee -a "$LOGFILE") 2>&1
+
+# === Swap on volume ===
+# 8GB swapfile on /workspace (persistent volume). Created once on first boot,
+# reactivated on every subsequent boot (swapon state is lost across cold starts).
+# Gives 8GB RAM + 8GB swap = 16GB addressable — pressure relief when the dev
+# server or concurrent sub-agents spike memory without killing the voice loop.
+SWAPFILE=/workspace/swapfile
+if [ ! -f "$SWAPFILE" ]; then
+  echo "[sandbox-d] Creating 8GB swapfile at $SWAPFILE..."
+  fallocate -l 8G "$SWAPFILE" 2>/dev/null || dd if=/dev/zero of="$SWAPFILE" bs=1M count=8192 status=none
+  chmod 600 "$SWAPFILE"
+  mkswap "$SWAPFILE"
+  echo "[sandbox-d] Swapfile created"
+fi
+if swapon "$SWAPFILE" 2>/dev/null; then
+  echo "[sandbox-d] Swap active: $(free -h | grep Swap)"
+else
+  echo "[sandbox-d] swapon skipped (already active or kernel restriction)"
+fi
 
 # Onboarding-suppression JSON
 ONBOARDING_JSON='{"numStartups":10,"installMethod":"npm","autoUpdates":false,"hasCompletedOnboarding":true,"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true,"hasAcknowledgedCostThreshold":true,"effortCalloutV2Dismissed":true,"theme":"dark","projects":{"/workspace":{"hasTrustDialogAccepted":true,"hasTrustDialogHooksAccepted":true,"hasCompletedProjectOnboarding":true}}}'
