@@ -101,6 +101,7 @@ ENV OSBORN_CWD=/workspace
 # Caveat: native user modules are tied to the image's Node ABI (currently 22) —
 # a future Node-major image bump would need an `npm rebuild` of volume globals.
 ENV NPM_CONFIG_PREFIX=/workspace/.npm-global
+ENV NPM_CONFIG_CACHE=/tmp/npm-cache
 ENV PATH=/workspace/.npm-global/bin:$PATH
 
 WORKDIR /workspace
@@ -234,7 +235,7 @@ VOL_OSBORN_VER=$(grep -m1 '"version"' /workspace/.npm-global/lib/node_modules/os
 if [ -n "$IMAGE_SEED_VERSION" ] && [ "$IMAGE_SEED_VERSION" != "$VOL_OSBORN_VER" ]; then
   echo "[sandbox-d] volume osborn@${VOL_OSBORN_VER} != image@${IMAGE_SEED_VERSION} -- syncing"
   rm -rf /workspace/.npm-global/lib/node_modules/.osborn-* 2>/dev/null
-  npm install -g "osborn@${IMAGE_SEED_VERSION}" --no-audit --no-fund --cache /tmp/npm-cache 2>&1 | tail -3
+  npm install -g "osborn@${IMAGE_SEED_VERSION}" --no-audit --no-fund 2>&1 | tail -3
   echo "[sandbox-d] sync done: osborn@${IMAGE_SEED_VERSION} on volume"
 else
   echo "[sandbox-d] volume osborn@${VOL_OSBORN_VER} matches image -- no sync needed"
