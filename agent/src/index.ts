@@ -296,6 +296,45 @@ let codeServerStartHook: (() => Promise<void>) | null = null
 const IDE_TARGET = 'http://127.0.0.1:8300'
 const OSBORN_API_PORT = parseInt(process.env.OSBORN_API_PORT || '8741', 10)
 
+// Dev-domain wildcard subdomain routing.
+// When DEV_DOMAIN is set (e.g. "dev.voice-native.com"), requests arriving with
+// Host: PORT-APPNAME.dev.voice-native.com are proxied to localhost:PORT at root.
+// The fleet router (apps/dev-router) handles TLS + fly-replay to reach this machine;
+// the agent only needs to detect the pattern and forward.
+const DEV_DOMAIN = process.env.DEV_DOMAIN || ''
+
+function parseDevSubdomainPort(req: { headers: { host?: string; 'fly-replay-src'?: string } }): number | null {
+  if (!DEV_DOMAIN) return null
+
+  // Primary: Host header — preserved through fly-replay by Fly
+  const hostname = (req.headers.host || '').split(':')[0].toLowerCase()
+  const suffix = '.' + DEV_DOMAIN
+  if (hostname.endsWith(suffix)) {
+    const label = hostname.slice(0, -suffix.length) // e.g. "3000-osborn-abc"
+    const dashIdx = label.indexOf('-')
+    if (dashIdx > 0) {
+      const port = parseInt(label.slice(0, dashIdx), 10)
+      if (!isNaN(port) && port > 1024 && port < 65536 && port !== 8300 && port !== OSBORN_API_PORT) {
+        return port
+      }
+    }
+  }
+
+  // Fallback: fly-replay-src state field — fleet router encodes "state=port:PORT"
+  const replaySrc = req.headers['fly-replay-src'] as string | undefined
+  if (replaySrc) {
+    const m = replaySrc.match(/state=port:(\d+)/)
+    if (m) {
+      const port = parseInt(m[1], 10)
+      if (!isNaN(port) && port > 1024 && port < 65536 && port !== 8300 && port !== OSBORN_API_PORT) {
+        return port
+      }
+    }
+  }
+
+  return null
+}
+
 // Route prefixes that belong to the agent itself. The proxy fall-through checks
 // this list FIRST so it never intercepts an agent API path.
 const AGENT_ROUTE_PREFIXES = [
@@ -1562,6 +1601,30 @@ function startApiServer(workingDir: string, port: number): void {
     }
     // ────────────────────────────────────────────────────────────────────────
 
+    // ── Dev-domain subdomain proxy: PORT-slug.dev.voice-native.com → localhost:PORT/* ──
+    // Fly replay routes the request here from the fleet router; the app lives at root
+    // so the full path is forwarded unchanged (no basePath prefix needed).
+    const devPort = parseDevSubdomainPort(req)
+    if (devPort !== null) {
+      ideLastProxiedActivity = Date.now()
+      const devProxyOptions = {
+        hostname: '127.0.0.1',
+        port: devPort,
+        path: url.pathname + (url.search || ''),
+        method: req.method,
+        headers: { ...req.headers, host: `127.0.0.1:${devPort}` },
+      }
+      const devProxyReq = httpRequest(devProxyOptions, (devProxyRes) => {
+        res.writeHead(devProxyRes.statusCode || 502, devProxyRes.headers as any)
+        devProxyRes.pipe(res)
+      })
+      devProxyReq.on('error', () => {
+        if (!res.headersSent) { res.writeHead(502); res.end('Dev port proxy error') }
+      })
+      req.pipe(devProxyReq)
+      return
+    }
+
     // ── Port proxy: /proxy/PORT/* → localhost:PORT/proxy/PORT/* ─────────────
     // Forwards to a local dev server while PRESERVING the full path so that
     // basePath-aware apps (e.g. Next.js with basePath: '/proxy/3000') receive
@@ -1669,6 +1732,14 @@ function startApiServer(workingDir: string, port: number): void {
   // — this must work for the integrated terminal to connect.
   // Reject all other upgrades (meeting audio moved to polling in 0.9.xx).
   server.on('upgrade', (req: IncomingMessage, socket, head: Buffer) => {
+    // Dev-domain subdomain WebSocket proxy (same pattern as HTTP handler above)
+    const wsDevPort = parseDevSubdomainPort(req)
+    if (wsDevPort !== null) {
+      ideLastProxiedActivity = Date.now()
+      wsProxy.ws(req, socket, head, { target: `http://127.0.0.1:${wsDevPort}` })
+      return
+    }
+
     const upgradePath = new URL(req.url || '/', `http://localhost`).pathname
     const isAgentRoute = AGENT_ROUTE_PREFIXES.some(p => upgradePath === p || upgradePath.startsWith(p + '/'))
     if (ideProxyEnabled && hasValidIdeCookie(req) && !isAgentRoute) {

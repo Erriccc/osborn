@@ -292,9 +292,14 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
   // HOME unset in machine config and let the image default take effect.
   // updateOsbornImpl additionally STRIPS HOME from existing machine configs on
   // image-swap, so machines provisioned before this change get corrected too.
+  const appName = appNameFromUserId(userId)
   const envVars: Record<string, string> = {
     OSBORN_API_PORT: String(OSBORN_HTTP_PORT),
     LIVEKIT_ROOM: `osborn-${userId.substring(0, 8)}`,
+    // Wildcard subdomain dev routing: PORT-APPNAME.dev.voice-native.com → localhost:PORT
+    // Empty string disables the feature on machines that predate this env var.
+    DEV_DOMAIN: process.env.DEV_DOMAIN || 'dev.voice-native.com',
+    DEV_APP_NAME: appName,
   }
   const forwardKeys = [
     'LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET',
