@@ -167,11 +167,10 @@ function ensureCompactionSettings(): void {
     } else {
       mkdirSync(claudeDir, { recursive: true })
     }
-    if (settings.autoCompactWindow !== 1_000_000) {
-      settings.autoCompactWindow = 1_000_000
-      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')
-      console.log('🪟 autoCompactWindow set to 1,000,000 in', settingsPath)
-    }
+    let dirty = false
+    if (settings.autoCompactWindow !== 1_000_000) { settings.autoCompactWindow = 1_000_000; dirty = true }
+    if (settings.cleanupPeriodDays !== 3650) { settings.cleanupPeriodDays = 3650; dirty = true }
+    if (dirty) { writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n') }
   } catch (err) {
     console.warn('⚠️ Failed to ensure compaction settings:', err)
   }

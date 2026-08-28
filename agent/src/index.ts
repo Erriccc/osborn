@@ -294,6 +294,7 @@ let codeServerStartHook: (() => Promise<void>) | null = null
 // code-server runs on 127.0.0.1:8300; the agent proxies it through its own
 // public HTTP server so no Cloudflare tunnel is needed.
 const IDE_TARGET = 'http://127.0.0.1:8300'
+const OSBORN_API_PORT = parseInt(process.env.OSBORN_API_PORT || '8741', 10)
 
 // Route prefixes that belong to the agent itself. The proxy fall-through checks
 // this list FIRST so it never intercepts an agent API path.
@@ -1507,20 +1508,44 @@ function startApiServer(workingDir: string, port: number): void {
     // 3 s until ready.
     if (url.pathname === '/editor' && req.method === 'GET') {
       // AUTH GATE (future): validate key / signed session before minting the cookie
+
+      // Optional ?folder= param: must be an absolute path under /workspace with no
+      // directory-traversal sequences. If absent or invalid, fall back to bare '/'.
+      const rawFolder = url.searchParams.get('folder') ?? ''
+      const folderParam = ((): string => {
+        if (!rawFolder) return ''
+        // Must be absolute, start with /workspace, no traversal sequences
+        if (
+          !rawFolder.startsWith('/workspace') ||
+          rawFolder.includes('..') ||
+          rawFolder.includes('\0')
+        ) return ''
+        // Normalise and re-check (catches encoded or doubled slashes resolving outside /workspace)
+        const normalised = rawFolder.replace(/\/+/g, '/')
+        if (!normalised.startsWith('/workspace')) return ''
+        return normalised
+      })()
+
       if (ideProxyEnabled && ideSessionToken) {
-        // code-server is up — set cookie and redirect to root (code-server's asset base)
+        // code-server is up — set cookie and redirect into the requested folder (if valid)
+        // or to root if no valid folder was supplied.
+        const location = folderParam ? `/?folder=${encodeURIComponent(folderParam)}` : '/'
         res.writeHead(302, {
           'Set-Cookie': `osborn_ide=${ideSessionToken}; Path=/; HttpOnly; SameSite=Lax`,
-          'Location': '/',
+          'Location': location,
         })
         res.end()
       } else {
-        // Not yet running — kick off start in the background, show "Starting…" page
+        // Not yet running — kick off start in the background, show "Starting…" page.
+        // Preserve ?folder= in the refresh URL so it survives the polling loop.
         if (codeServerStartHook) {
           codeServerStartHook().catch((err) => {
             console.error('❌ startCodeServer() from /editor failed:', err)
           })
         }
+        const refreshTarget = folderParam
+          ? `/editor?folder=${encodeURIComponent(folderParam)}`
+          : '/editor'
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': 'no-store, must-revalidate',
@@ -1528,7 +1553,7 @@ function startApiServer(workingDir: string, port: number): void {
         })
         res.end(`<!DOCTYPE html><html><head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="3;url=/editor">
+<meta http-equiv="refresh" content="3;url=${refreshTarget}">
 <title>Starting editor…</title>
 <style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1e1e1e;color:#ccc}</style>
 </head><body><p>Starting your editor…</p></body></html>`)
