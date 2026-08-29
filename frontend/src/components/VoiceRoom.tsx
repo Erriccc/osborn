@@ -3392,7 +3392,7 @@ function VoiceRoomInner({
       } else if (data.type === 'process_list') {
         // Agent replied to list_processes — update Machine tab state
         if (Array.isArray(data.processes) && data.memory) {
-          setMachineData({ processes: data.processes, memory: data.memory })
+          setMachineData({ processes: data.processes, totalCount: typeof data.totalCount === 'number' ? data.totalCount : data.processes.length, memory: data.memory })
         }
       } else {
         console.log('❓ Unknown message type:', data.type)
@@ -4761,7 +4761,7 @@ function VoiceRoomInner({
               ? Math.round((machineData.memory.usedMb / Math.max(machineData.memory.totalMb, 1)) * 100)
               : undefined)
           }
-          machineChipProcCount={machineData?.processes.length}
+          machineChipProcCount={machineData?.totalCount ?? machineData?.processes.length}
         />
 
         {/* Mobile composer control strip — Claude-style controls next to the

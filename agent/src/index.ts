@@ -6475,8 +6475,9 @@ async function main() {
               // Process exited between readdir and read — skip it
             }
           }
-          // Sort by resident memory descending, cap at 40 entries
+          // Sort by resident memory descending, cap table at 40 but keep real total
           processes.sort((a, b) => b.rssMb - a.rssMb)
+          const totalCount = processes.length
           const topProcesses = processes.slice(0, 40)
 
           // Reuse the existing os module memory totals (same source as /health endpoint)
@@ -6487,6 +6488,7 @@ async function main() {
           await sendToFrontend({
             type: 'process_list',
             processes: topProcesses,
+            totalCount,
             memory: { usedMb, totalMb, freeMb },
           })
         } catch (err) {

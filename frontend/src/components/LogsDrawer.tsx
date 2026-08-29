@@ -95,6 +95,7 @@ export interface ProcessInfo {
 
 export interface MachineData {
   processes: ProcessInfo[]
+  totalCount?: number
   memory: { usedMb: number; totalMb: number; freeMb: number }
 }
 
