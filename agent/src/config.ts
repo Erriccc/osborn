@@ -809,7 +809,7 @@ async function extractCwd(filePath: string): Promise<string> {
  *
  * @param limit - Max sessions to return (default 100, sorted by recency)
  */
-export async function listAllClaudeSessions(limit = 100): Promise<ClaudeSessionEntry[]> {
+export async function listAllClaudeSessions(limit = 2000): Promise<ClaudeSessionEntry[]> {
   const projectsDir = getClaudeProjectsDir()
   if (!existsSync(projectsDir)) return []
 

@@ -5343,7 +5343,7 @@ async function main() {
       const provider = sessionVoiceMode === 'realtime' ? realtimeConfig.provider : 'claude'
 
       // Fetch full session list for startup session browser (all Claude projects)
-      const allSessions = await listAllClaudeSessions(50)
+      const allSessions = await listAllClaudeSessions()
       const recentSessionId = allSessions.length > 0 ? allSessions[0].sessionId : null
       const hasRecentSession = allSessions.length > 0
 
@@ -5594,7 +5594,7 @@ async function main() {
         // List available sessions across all Claude projects
         console.log('📋 Listing available sessions (all projects)...')
         try {
-          const sessions = await listAllClaudeSessions(100)
+          const sessions = await listAllClaudeSessions()
           await sendToFrontend({
             type: 'sessions_list',
             // See `/sessions` HTTP handler — baseCwd is the agent's
@@ -6404,7 +6404,7 @@ async function main() {
         let resolvedSessionId = targetSessionId
         if (!resolvedSessionId) {
           // Pick the most recently modified session, excluding the focused one.
-          const allSess = await listAllClaudeSessions(50)
+          const allSess = await listAllClaudeSessions()
           const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
           const candidate = allSess.find(s => s.sessionId !== focusedId)
           resolvedSessionId = candidate?.sessionId ?? undefined
