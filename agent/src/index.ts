@@ -563,7 +563,7 @@ function startApiServer(workingDir: string, port: number): void {
 
     if (req.method === 'GET' && url.pathname === '/sessions') {
       try {
-        const limit = parseInt(url.searchParams.get('limit') || '100', 10)
+        const limit = parseInt(url.searchParams.get('limit') || '2000', 10)
         const sessions = await listAllClaudeSessions(limit)
         const payload = {
           // The agent's working directory at launch — the BASE LAYER of all
