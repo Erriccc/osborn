@@ -161,12 +161,19 @@ export default function Dashboard() {
   const supabase = createSupabaseBrowser()
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
-  const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [sessions, setSessions] = useState<SessionInfo[]>(() => {
+    try {
+      const cached = typeof window !== 'undefined' ? localStorage.getItem('osborn-sessions-cache') : null
+      return cached ? JSON.parse(cached) : []
+    } catch { return [] }
+  })
   // The agent's working directory (BASE LAYER) as reported by `/sessions`.
   // Null until we've successfully fetched the session list once. Used by
   // groupByProject to know which sessions are "Workspace" sessions vs
   // project-card sessions. See the comment block above groupByProject.
-  const [baseCwd, setBaseCwd] = useState<string | null>(null)
+  const [baseCwd, setBaseCwd] = useState<string | null>(() => {
+    try { return typeof window !== 'undefined' ? localStorage.getItem('osborn-sessions-basecwd') : null } catch { return null }
+  })
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
@@ -365,21 +372,25 @@ export default function Dashboard() {
 
   // Fetch sessions
   const fetchSessions = useCallback(async () => {
-    if (!canFetchAgent()) { setAgentOnline(false); setSessions([]); setBaseCwd(null); return }
+    if (!canFetchAgent()) { setAgentOnline(false); return } // keep cached sessions visible
     setSessionsLoading(true)
     try {
       const r = await fetch(`${agentUrl}/sessions`)
       const data = await r.json()
-      setSessions(data.sessions || [])
+      const fetched = data.sessions || []
+      setSessions(fetched)
+      const cwd = typeof data.baseCwd === 'string' && data.baseCwd ? data.baseCwd : null
       // baseCwd is included by 0.9.25+. Older agents omit it; null fallback
       // makes groupByProject behave like the pre-base-aware version (each
       // cwd is its own card) — no rendering crash, just less prettily.
-      setBaseCwd(typeof data.baseCwd === 'string' && data.baseCwd ? data.baseCwd : null)
+      setBaseCwd(cwd)
+      // Persist so sessions show while machine is stopped
+      try { localStorage.setItem('osborn-sessions-cache', JSON.stringify(fetched)) } catch {}
+      try { if (cwd) localStorage.setItem('osborn-sessions-basecwd', cwd) } catch {}
       setAgentOnline(true)
     } catch {
       setAgentOnline(false)
-      setSessions([])
-      setBaseCwd(null)
+      // Don't clear sessions — show stale cache instead of blank screen
     } finally {
       setSessionsLoading(false)
     }

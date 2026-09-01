@@ -849,17 +849,22 @@ export async function listAllClaudeSessions(limit = 2000): Promise<ClaudeSession
   candidates.sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
   const topCandidates = candidates.slice(0, limit)
 
-  // 4. Read metadata using existing getSessionPreview + cwd extraction
+  // 4. Read metadata in parallel (sequential was ~10ms × N files = seconds at scale)
   const sessions: ClaudeSessionEntry[] = []
 
-  for (const c of topCandidates) {
-    try {
-      const [preview, cwd] = await Promise.all([
-        getSessionPreview(c.filePath),
-        extractCwd(c.filePath),
-      ])
+  const results = await Promise.all(
+    topCandidates.map(async (c) => {
+      try {
+        const [preview, cwd] = await Promise.all([getSessionPreview(c.filePath), extractCwd(c.filePath)])
+        return { c, preview, cwd }
+      } catch { return null }
+    })
+  )
 
-      if (preview.messageCount < 2) continue
+  for (const r of results) {
+    if (!r) continue
+    const { c, preview, cwd } = r
+    if (preview.messageCount < 2) continue
 
       // TWO FIELDS — two distinct purposes. The dashboard uses each for
       // exactly one thing:
@@ -906,7 +911,6 @@ export async function listAllClaudeSessions(limit = 2000): Promise<ClaudeSession
         filePath: c.filePath,
         fileSize: c.size,
       })
-    } catch {}
   }
 
   return sessions
