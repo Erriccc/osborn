@@ -86,7 +86,6 @@ if (args.includes('start')) {
 }
 
 // Use src/index.ts (dev) if available, otherwise dist/index.js (npm install)
-import { existsSync } from 'fs'
 const srcPath = join(__dirname, '..', 'src', 'index.ts')
 const distPath = join(__dirname, '..', 'dist', 'index.js')
 
