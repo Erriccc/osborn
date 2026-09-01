@@ -3,7 +3,24 @@
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { readFileSync } from 'fs'
+import { readFileSync, existsSync, lstatSync, symlinkSync } from 'fs'
+import os from 'os'
+
+// On Fly machines, home is /root (ephemeral) but sessions live on /workspace/.claude.
+// Recreate the symlink on every startup so sessions survive image updates.
+try {
+  const home = os.homedir()
+  const target = '/workspace/.claude'
+  const link = join(home, '.claude')
+  if (existsSync(target) && home !== '/workspace') {
+    let needsLink = true
+    try {
+      const stat = lstatSync(link)
+      needsLink = !stat.isSymbolicLink()
+    } catch {}
+    if (needsLink) symlinkSync(target, link)
+  }
+} catch {}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
