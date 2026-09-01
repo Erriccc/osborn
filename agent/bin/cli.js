@@ -3,8 +3,7 @@
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { readFileSync, existsSync, symlinkSync, rmSync } from 'fs'
-import { homedir } from 'os'
+import { readFileSync } from 'fs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -60,21 +59,6 @@ Example:
   process.exit(0)
 }
 
-// Ensure ~/.claude → /workspace/.claude symlink exists (Fly cloud machines run
-// this binary directly, bypassing entrypoint.sh which normally creates it).
-import { symlinkSync, rmSync } from 'fs'
-import { homedir } from 'os'
-{
-  const claudeLink = join(homedir(), '.claude')
-  const claudeTarget = '/workspace/.claude'
-  if (existsSync(claudeTarget)) {
-    try {
-      rmSync(claudeLink, { recursive: true, force: true })
-      symlinkSync(claudeTarget, claudeLink)
-    } catch {}
-  }
-}
-
 // Determine mode (default to 'dev' if no mode specified)
 let mode = 'dev'
 if (args.includes('start')) {
@@ -85,6 +69,7 @@ if (args.includes('start')) {
 }
 
 // Use src/index.ts (dev) if available, otherwise dist/index.js (npm install)
+import { existsSync } from 'fs'
 const srcPath = join(__dirname, '..', 'src', 'index.ts')
 const distPath = join(__dirname, '..', 'dist', 'index.js')
 
