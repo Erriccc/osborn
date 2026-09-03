@@ -155,6 +155,7 @@ export class PipelineDirectLLM extends llm.LLM {
   getMcpServers() { return this.#claudeLLM.getMcpServers() }
   setMcpServers(s: any) { this.#claudeLLM.setMcpServers(s) }
   setAgents(a: any) { this.#claudeLLM.setAgents(a) }
+  setTurbo(on: boolean) { this.#claudeLLM.setTurbo(on) }
 
   // Agent control — proxied to ClaudeLLM for fast brain access
   async interruptAgent() { return this.#claudeLLM.interruptQuery() }
