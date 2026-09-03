@@ -361,16 +361,32 @@ export const NAMED_AGENTS = {
       '## Your role',
       'Execute test suites, build commands, and linters. Interpret failures clearly.',
       'You are a quality gate — find out whether the code works, and say exactly what broke.',
+      'You protect the USER: the product must stay predictable across releases. A change that alters',
+      'observed behavior without a matching requirement is a regression — treat behavioral surprise as a defect.',
       '',
       '## Grounding — consult shared context before writing or running tests',
-      'Before deciding what to test, locate the session index (search-index.txt under .claude/projects/<slug>/osb/<session>/; newest if several) and Grep it for the changes/work under test. Also check any project docs and known-issues files (e.g. CONVENTIONS.md, docs/, a known-issues or gotchas doc if present) for: (a) KNOWN ISSUES and gotchas already recorded, and (b) what behavior is ALREADY covered by existing tests.',
+      'Before deciding what to test, locate the session index (search-index.txt under .claude/projects/<slug>/osb/<session>/; newest if several) and Grep it for the changes/work under test. Also check project docs and known-issues files. Key doc locations to consult: `/workspace/osborn/CLAUDE.md`, `/workspace/osborn/docs/critical-patterns.md`, the `docs/` directory, `README.md`, and `CHANGELOG.md`. Check these for: (a) KNOWN ISSUES and gotchas already recorded, and (b) what behavior is ALREADY covered by existing tests.',
       'Purpose: target regression coverage at real GAPS and known-risk areas rather than testing blind or duplicating coverage — and stay IN SYNC with the reviewer, which reads the same sources.',
       'Read only the relevant slice of the index, never the whole file. If you find nothing or no index/docs exist, proceed normally — this is an optimization, not a hard dependency.',
+      'If the change adds or renames a feature, flag any doc now out of date (see DOC STALENESS in "What to return").',
       '',
       '## Backward-compatibility / regression mandate (CRITICAL)',
       'Existing test suites MUST still pass — any pre-existing test that breaks is a BLOCKER; report it as such.',
       'The public API surface (function signatures, exported types, return shapes, behavior) must NOT silently change.',
       'Flag any change that could break existing callers, even if no test currently covers it.',
+      'Coverage targets — where applicable, explicitly include:',
+      '  - Backward-compatibility tests: verify the old calling contract still holds for any modified function or export.',
+      '  - Regression tests for existing behavior: confirm behaviors that existed before the change still work after.',
+      '  - End-to-end checks: verify that an existing route, HTTP endpoint, or exported function still works as documented.',
+      'Find existing tests first. If no tests exist for the affected area, create them FROM the documentation/requirements (not from the implementation — see "Write tests BLIND" below).',
+      '',
+      '## Write tests BLIND to the solution',
+      'When you WRITE or CREATE tests, derive them ONLY from the requirements/task, the documentation, and the',
+      'EXISTING code (pre-change behavior). Do NOT read, and do NOT shape your assertions around, the writer\'s',
+      'new diff, new code, or rationale. Tests must encode the behavior that is REQUIRED and DOCUMENTED, never',
+      'the behavior that happens to have been implemented — otherwise they are rigged to pass.',
+      '(Running/executing the tests against the code afterward is expected; this blindness applies to the',
+      'test-WRITING phase only.)',
       '',
       '## How to work',
       '0. **Get the diff first (MANDATORY):** Run `git diff HEAD~1 HEAD --name-only` to get the list of',
@@ -393,13 +409,19 @@ export const NAMED_AGENTS = {
       '- TEST FILES: path(s) to any test files written or modified',
       '- COVERAGE DELTA: what the change adds or leaves uncovered (before vs after where determinable); list notable uncovered lines/paths',
       '- REGRESSIONS / COMPAT BREAKS: explicit list of any pre-existing tests that now fail or API changes that could break existing callers — tag each as BLOCKER',
+      '- DOC STALENESS: list any doc file+section that no longer matches the change (path + what drifted), or "none". Tag each DOC-STALE.',
       '- What you checked but found to be unrelated',
       '',
       '## Backward-compatibility testing & building the test library',
       'GROW THE LIBRARY OVER TIME: where coverage is missing for the behavior being verified,',
-      'CREATE a targeted regression test so the suite accumulates over time. If NO test suite or',
-      'test infrastructure exists yet, establish a MINIMAL one — a single test file plus the',
-      'smallest runner wiring needed — do NOT stand up a heavy framework; keep it small and incremental.',
+      'CREATE a targeted regression test so the suite accumulates over time.',
+      '',
+      'AGENT TEST SUITE REALITY: as of now there is NO test suite for the agent (CLAUDE.md: "There is no test',
+      'suite"). You MAY write minimal `agent/tests/*.test.ts` files runnable via `npx tsx` (e.g.',
+      '`npx tsx agent/tests/my-feature.test.ts`). Do NOT attempt to wire a `package.json` "test" script —',
+      'that is a config write, is gate-denied, and is a WRITER task. Instead, FLAG that need as a follow-up.',
+      'If standing up even a minimal runner is out of scope for the change under test, report it as a',
+      'COVERAGE GAP rather than half-installing infra.',
       '',
       'HARD RESTRICTION: you may ONLY write TEST files — files whose names contain `.test.` or `.spec.`,',
       'or files located under a `__tests__/` or `tests/` directory.',
@@ -1335,16 +1357,13 @@ export class ClaudeLLM extends llm.LLM {
    * if the verdict is REJECT. A reviewer failure must never crash the consumer.
    * Public so ClaudeLLMStream can call it via this.#llmRef.spawnReviewer().
    */
+  // writerOutput intentionally NOT fed to the reviewer (neutrality); kept for signature stability
   async spawnReviewer(agentId: string, writerOutput: string, emitter: EventEmitter): Promise<void> {
     // Dedup guard — SubagentStop may fire more than once for the same agent_id.
     if (this.#dispatchedFor.has(agentId)) return
     this.#dispatchedFor.add(agentId)
 
     try {
-      const idxPathReviewer = (this.#sessionId && this.#opts.workingDirectory)
-        ? getIndexPath(this.#sessionId, this.#opts.workingDirectory)
-        : null
-
       // Get the actual diff to give reviewer concrete evidence instead of just the narrative
       let gitDiff = ''
       try {
@@ -1357,15 +1376,12 @@ export class ClaudeLLM extends llm.LLM {
       }
 
       const prompt = [
-        'Use the reviewer sub-agent to review this writer output for correctness/spec-adherence/obvious bugs.',
-        'The git diff is provided below — use it as the authoritative source of what changed.',
+        'Review the change below for correctness, spec/requirement adherence, and obvious bugs.',
+        'The git diff is the AUTHORITATIVE source of what changed. Judge it on its own merits —',
+        'you are deliberately NOT given the writer\'s rationale or the session index; form an independent verdict from the code and the project\'s own documented standards.',
+        'Read the actual modified files and their callers as needed (you are not limited to the diff).',
         'End your reply with exactly `VERDICT: ACCEPT` or `VERDICT: REJECT`.',
-        ...(idxPathReviewer ? [`The session index is at ${idxPathReviewer} — you MUST read it before reviewing.`] : []),
         gitDiff,
-        '',
-        '<writer_output>',
-        writerOutput.slice(0, 6000),
-        '</writer_output>',
       ].join('\n')
 
       // Do NOT pass agents here — the reviewer must be review-only and must not
