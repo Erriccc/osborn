@@ -40,7 +40,7 @@ const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getRealtimeConfig, getDirectConfig, listSessions, listAllClaudeSessions, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary, type ConversationExchange } from './config.js'
 import { createSTT, createTTS, createRealtimeModelFromConfig, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
-import { createClaudeLLM, NAMED_AGENTS } from './claude-llm.js'
+import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth } from './claude-auth.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -2281,6 +2281,9 @@ async function main() {
   // switch/resume) reuse them without waiting for a frontend resend. Merged
   // OVER the built-in NAMED_AGENTS (same-name user rows shadow built-ins).
   let userNamedAgents: Record<string, { description: string; prompt: string; tools?: string[]; model?: string }> | null = null
+  // Turbo mode — read from set_agents handshake (data.turbo). When true every
+  // agent (main + sub-agents) runs on FAST_MODEL. Default false = perfect no-op.
+  let turboMode = false
   // Built-ins the user has removed (tombstoned in user_agents with enabled=false).
   // A removed built-in disappears from the effective set but stays re-addable
   // from the frontend's "Available to add" list — default agents are never
@@ -3318,13 +3321,20 @@ async function main() {
       voiceMode: 'direct',
       skipTTSQueue: true,
       onCompactionEvent: buildOnCompactionEvent(),
-      // Per-user named agents survive LLM recreations (session switch/resume)
+      // Per-user named agents survive LLM recreations (session switch/resume).
+      // applyTurbo runs post-merge so custom models are also overridden when turbo is on.
+      // When neither custom agents nor turbo are active, pass undefined so the
+      // ClaudeLLM cold-start uses NAMED_AGENTS directly (the ?? NAMED_AGENTS path).
+      // When turbo IS on with no custom agents, undefined would skip the override —
+      // ClaudeLLM handles that internally via the turbo bypass in ClaudeLLMStream.
       agents: (userNamedAgents || userRemovedAgents.length) ? (() => {
         const base: Record<string, any> = { ...NAMED_AGENTS }
         for (const r of userRemovedAgents) delete base[r]
-        return { ...base, ...(userNamedAgents || {}) }
+        return applyTurbo({ ...base, ...(userNamedAgents || {}) }, turboMode)
       })() : undefined,
     })
+    // Apply turbo to the freshly created LLM so the main model also picks it up.
+    directLLM.setTurbo(turboMode)
     currentLLM = directLLM
 
     // Reset the session always-allow list for each new direct session
@@ -6112,10 +6122,14 @@ async function main() {
         userNamedAgents = Object.keys(validated).length ? validated : null
         // Removed built-ins (tombstones) — excluded from the effective set.
         userRemovedAgents = Array.isArray(data.removed) ? data.removed.map(String) : []
+        // Turbo preference from the frontend (sourced from user_settings DB row).
+        turboMode = !!data.turbo
         const base: Record<string, any> = { ...NAMED_AGENTS }
         for (const r of userRemovedAgents) delete base[r]
-        const merged = { ...base, ...(userNamedAgents || {}) }
-        const customized = !!userNamedAgents || userRemovedAgents.length > 0
+        // applyTurbo wraps AFTER the base+custom merge so custom models also get overridden.
+        const merged = applyTurbo({ ...base, ...(userNamedAgents || {}) }, turboMode)
+        const customized = !!userNamedAgents || userRemovedAgents.length > 0 || turboMode
+        ;(currentLLM as any)?.setTurbo?.(turboMode)
         ;(currentLLM as any)?.setAgents?.(customized ? merged : undefined)
         console.log(`🤖 set_agents: ${Object.keys(validated).length} user agent(s), ${userRemovedAgents.length} removed → effective [${Object.keys(merged).join(', ')}]`)
         await sendToFrontend({

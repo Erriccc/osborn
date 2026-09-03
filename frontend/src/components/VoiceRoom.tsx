@@ -3820,25 +3820,36 @@ function VoiceRoomInner({
   // Tombstoned built-ins (user_agents rows with enabled=false): removed from
   // the effective set but always re-addable — defaults are never gone forever.
   const [removedAgentNames, setRemovedAgentNames] = useState<string[]>([])
+  // Turbo mode: read from instances.turbo on mount; included in set_agents.
+  // Guests / no row → false (agent defaults to real models).
+  const [turboMode, setTurboMode] = useState(false)
   useEffect(() => {
     if (!isSupabaseConfigured()) return
     const sb = createSupabaseBrowser()
     sb.auth.getUser().then(({ data }) => {
       if (!data?.user) return
-      sb.from('user_agents').select('name,description,prompt,model,tools,enabled')
-        .then(({ data: rows }) => {
-          if (!Array.isArray(rows)) return
+      // Fetch user_agents and instances.turbo in parallel.
+      Promise.all([
+        sb.from('user_agents').select('name,description,prompt,model,tools,enabled'),
+        sb.from('instances').select('turbo').eq('user_id', data.user.id).single(),
+      ]).then(([agentsResult, instanceResult]) => {
+        const rows = agentsResult.data
+        if (Array.isArray(rows)) {
           setUserAgentRows(rows.filter((r: any) => r.enabled) as UserAgentDraft[])
           setRemovedAgentNames(rows.filter((r: any) => !r.enabled).map((r: any) => r.name))
-        })
+        }
+        if (typeof instanceResult.data?.turbo === 'boolean') {
+          setTurboMode(instanceResult.data.turbo)
+        }
+      })
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   useEffect(() => {
     if (!agentConnected || userAgentRows === null) return
     const encoder = new TextEncoder()
-    sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents: userAgentRows, removed: removedAgentNames })), { reliable: true })
-  }, [agentConnected, userAgentRows, removedAgentNames, sendToAgent])
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents: userAgentRows, removed: removedAgentNames, turbo: turboMode })), { reliable: true })
+  }, [agentConnected, userAgentRows, removedAgentNames, turboMode, sendToAgent])
 
   const handleSaveAgent = useCallback((a: UserAgentDraft) => {
     if (!isSupabaseConfigured()) return

@@ -602,6 +602,28 @@ export const NAMED_AGENTS = {
   },
 }
 
+// Turbo mode — single fast model override. ONE place to update for future
+// Gemini/OpenAI fast model swap. Keep this immediately after NAMED_AGENTS.
+export const FAST_MODEL = 'haiku'
+
+/**
+ * Apply turbo override to an agents roster.
+ * When turbo is true returns a DEEP COPY with every agent's model set to
+ * FAST_MODEL. When false returns the input object unchanged (zero allocation).
+ * NEVER mutates the input — NAMED_AGENTS and DB-sourced rows are untouched.
+ */
+export function applyTurbo(
+  agents: Record<string, any>,
+  turbo: boolean,
+): Record<string, any> {
+  if (!turbo) return agents
+  const out: Record<string, any> = {}
+  for (const [name, agent] of Object.entries(agents)) {
+    out[name] = { ...agent, model: FAST_MODEL }
+  }
+  return out
+}
+
 const RESEARCH_TOOLS = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep',
   'Bash', 'WebSearch', 'WebFetch',
@@ -699,6 +721,10 @@ export class ClaudeLLM extends llm.LLM {
   // Dedup guard — prevents double-firing reviewer/gate if SubagentStop fires
   // more than once for the same agent_id (e.g. retry edge cases).
   #dispatchedFor: Set<string> = new Set()
+
+  // Turbo mode — when true, every spawned agent (main + sub-agents) runs on
+  // FAST_MODEL regardless of individual model config. Default off = no-op.
+  #turbo: boolean = false
 
   constructor(opts: ClaudeLLMOptions = {}) {
     super()
@@ -874,6 +900,18 @@ export class ClaudeLLM extends llm.LLM {
     this.#opts.agents = agents
     console.log(`🤖 Named agents ${agents ? `set (${Object.keys(agents).join(', ')})` : 'reset to built-ins'} — applies at next query cold start`)
   }
+
+  /**
+   * Enable/disable Turbo mode. When on, the main model and every sub-agent
+   * spawn on FAST_MODEL. Takes effect at the next query cold start.
+   */
+  setTurbo(on: boolean): void {
+    this.#turbo = on
+    console.log(`⚡ Turbo mode ${on ? 'ON' : 'OFF'} — main model → ${on ? FAST_MODEL : (this.#opts.model || 'claude-opus-4-8[1m]')}; applies at next query cold start`)
+  }
+
+  /** Read-only accessor used by ClaudeLLMStream (private fields are class-scoped). */
+  get turbo(): boolean { return this.#turbo }
 
   /**
    * Set session ID to resume a specific conversation
@@ -1712,7 +1750,8 @@ class ClaudeLLMStream extends llm.LLMStream {
         permissionMode: this.#opts.permissionMode,
         allowedTools,
         // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
-        model: this.#opts.model || 'claude-opus-4-8[1m]', // Opus 4.8 + [1m] → 1M context (see get model() note); prevents ~153k early compaction
+        // Turbo: when on, override main model to FAST_MODEL regardless of config.
+        model: this.#llmRef.turbo ? FAST_MODEL : (this.#opts.model || 'claude-opus-4-8[1m]'), // Opus 4.8 + [1m] → 1M context (see get model() note); prevents ~153k early compaction
         enableFileCheckpointing: true,
         settingSources: ['project', 'user'],
         extraArgs: { 'replay-user-messages': null },
@@ -2152,7 +2191,13 @@ class ClaudeLLMStream extends llm.LLMStream {
         // Named sub-agents — the orchestrator delegates to these specialists.
         // Built-in definitions live at module level (NAMED_AGENTS); per-user
         // DB-backed definitions (opts.agents, via set_agents) take precedence.
-        agents: this.#opts.agents ?? NAMED_AGENTS,
+        // TURBO BYPASS: when turbo is on and no custom agents were provided,
+        // opts.agents is undefined — the ?? NAMED_AGENTS fallback would skip
+        // the override entirely. Explicitly apply applyTurbo(NAMED_AGENTS)
+        // so built-in agents always get FAST_MODEL when turbo is on.
+        agents: this.#llmRef.turbo
+          ? applyTurbo(this.#opts.agents ?? NAMED_AGENTS, true)
+          : (this.#opts.agents ?? NAMED_AGENTS),
       }
 
       // Run Claude Agent SDK query() and stream results

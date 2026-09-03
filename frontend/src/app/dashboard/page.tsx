@@ -278,6 +278,10 @@ export default function Dashboard() {
   // Prefs
   const [provider, setProvider] = useState<Provider>('gemini')
   const [voiceArch, setVoiceArch] = useState<VoiceArch>('pipeline')
+  // Turbo mode: per-user preference stored on instances.turbo. Only shown to
+  // authenticated users. Reads on mount from /api/instance; writes via upsert.
+  const [turbo, setTurbo] = useState(false)
+  const [turboSaving, setTurboSaving] = useState(false)
 
   // Auth check
   useEffect(() => {
@@ -475,7 +479,10 @@ export default function Dashboard() {
       .catch(() => setSandboxAvailable(false))
     fetch('/api/instance')
       .then(r => r.json())
-      .then(d => { if (d.instance?.sync_token) setSyncToken(d.instance.sync_token) })
+      .then(d => {
+        if (d.instance?.sync_token) setSyncToken(d.instance.sync_token)
+        if (typeof d.instance?.turbo === 'boolean') setTurbo(d.instance.turbo)
+      })
       .catch(() => {})
   }, [user, loading])
 
@@ -576,6 +583,23 @@ export default function Dashboard() {
   const [globalSyncCopied, setGlobalSyncCopied] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const deleteArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Toggle turbo mode: upsert instances.turbo for the current user.
+  // Mirrors the user_agents upsert pattern (Supabase browser client + getUser).
+  const handleTurboToggle = async () => {
+    if (!user) return
+    const next = !turbo
+    setTurbo(next)
+    setTurboSaving(true)
+    try {
+      await supabase.from('instances').update({ turbo: next }).eq('user_id', user.id)
+    } catch {
+      // revert on error
+      setTurbo(!next)
+    } finally {
+      setTurboSaving(false)
+    }
+  }
 
   const handleDeleteSandbox = async () => {
     if (!sandboxId) return
@@ -1458,6 +1482,24 @@ export default function Dashboard() {
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* ── Turbo mode (signed-in only; guests never see this) ── */}
+              {user && (
+                <div className="flex items-center justify-between gap-3 pt-3 mt-1 border-t border-[var(--border-subtle)]">
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-medium text-[var(--text-primary)]">Turbo</div>
+                    <div className="text-[11px] text-[var(--text-muted)] leading-snug">Run all agents on a faster, lighter model</div>
+                  </div>
+                  <button
+                    onClick={handleTurboToggle}
+                    disabled={turboSaving}
+                    aria-pressed={turbo}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border-2 transition-colors duration-200 focus-visible:outline-none disabled:opacity-50 ${turbo ? 'bg-[var(--accent)] border-[var(--accent)]' : 'bg-[var(--surface)] border-[var(--border-subtle)]'}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${turbo ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                  </button>
                 </div>
               )}
 
