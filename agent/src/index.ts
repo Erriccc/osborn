@@ -3334,7 +3334,8 @@ async function main() {
       })() : undefined,
     })
     // Apply turbo to the freshly created LLM so the main model also picks it up.
-    directLLM.setTurbo(turboMode)
+    // PipelineDirectLLM (llmOverride path) wraps its own ClaudeLLM and may not expose setTurbo.
+    directLLM?.setTurbo?.(turboMode)
     currentLLM = directLLM
 
     // Reset the session always-allow list for each new direct session
