@@ -6186,7 +6186,10 @@ async function main() {
       }
       // Feature B — per-flow stop (does NOT affect other running flows)
       else if (data.type === 'stop_dispatch' && currentLLM) {
-        currentLLM.stopAgent?.(String(data.agentId))
+        const agentId = String(data.agentId)
+        currentLLM.stopAgent?.(agentId)
+        // Always confirm so frontend clears the card (covers ghost/stale flows too)
+        await sendToFrontend({ type: 'agent_stopped', agent_id: agentId })
       }
       else if (data.type === 'join_meeting') {
         const meetingUrl = data.url as string

@@ -2831,6 +2831,9 @@ function VoiceRoomInner({
             return [...prev, { agentId: data.agent_id, agentType: data.agent_type ?? 'agent', status: 'running' }]
           })
         }
+      } else if (data.type === 'agent_stopped' && data.agent_id) {
+        console.log('🛑 Background flow stopped:', data.agent_id)
+        setBackgroundFlows(prev => prev.filter(f => f.agentId !== data.agent_id))
       } else if (data.type === 'task_completed' && data.agent_id) {
         // Background flow finished (the shape with agent_id)
         console.log('✅ Background flow completed:', data.agent_id)
