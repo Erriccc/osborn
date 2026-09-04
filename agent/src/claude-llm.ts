@@ -1510,6 +1510,98 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   /**
+   * Dispatcher v1 — auto-spawn a tester after a writer sub-agent completes,
+   * in parallel with spawnReviewer. Runs tests against the diff and emits
+   * dispatch_rejected with verdict 'TEST-FAIL' if they fail.
+   */
+  async spawnTester(agentId: string, _writerOutput: string, emitter: EventEmitter): Promise<void> {
+    // Use a scoped key so reviewer's dedup guard (keyed on raw agentId) doesn't block us.
+    const testerKey = `${agentId}:tester`
+    if (this.#dispatchedFor.has(testerKey)) return
+    this.#dispatchedFor.add(testerKey)
+
+    try {
+      let gitDiff = ''
+      try {
+        const { execSync } = await import('child_process')
+        const diffStat = execSync('git diff HEAD~1 HEAD --stat 2>/dev/null', { cwd: this.#opts.workingDirectory, timeout: 5000 }).toString().trim()
+        const diff = execSync('git diff HEAD~1 HEAD 2>/dev/null', { cwd: this.#opts.workingDirectory, timeout: 5000 }).toString().trim()
+        gitDiff = diffStat ? `\n\n<git_diff_stat>\n${diffStat}\n</git_diff_stat>\n\n<git_diff>\n${diff.slice(0, 6000)}\n</git_diff>` : ''
+      } catch {
+        // non-fatal
+      }
+
+      const prompt = [
+        'Run tests and verify that the change below did not introduce regressions.',
+        'Use the git diff as your scope — run the full existing test suite to establish a baseline,',
+        'then target tests at the specific changed files/functions.',
+        'If no test suite exists, run the build or execute the changed code directly to confirm it works.',
+        'End your reply with exactly `RESULT: PASS` or `RESULT: FAIL` followed by a brief summary.',
+        gitDiff,
+      ].join('\n')
+
+      const testerOptions: Options = {
+        cwd: this.#opts.workingDirectory,
+        permissionMode: 'default',
+        systemPrompt: NAMED_AGENTS.tester.prompt,
+        allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
+        hooks: {
+          PreToolUse: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              const toolName = input?.tool_name || 'unknown'
+              const toolInput = input?.tool_input || {}
+              emitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: 'tester' })
+              return {}
+            }],
+          }],
+          PostToolUse: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              const toolName = input?.tool_name || 'unknown'
+              const toolInput = input?.tool_input || {}
+              const toolResponse = input?.tool_response
+              emitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: 'tester' })
+              return {}
+            }],
+          }],
+        },
+      }
+
+      console.log(`[DISPATCH] spawning tester for agentId=${agentId.slice(0, 8)}`)
+      const testerQuery = query({ prompt, options: testerOptions })
+      this.#activeQueries.add(testerQuery)
+      this.#activeQueriesById.set(testerKey, testerQuery)
+
+      let testerText = ''
+      try {
+        for await (const msg of testerQuery) {
+          const m = msg as any
+          if (m.type === 'result' && m.result) {
+            testerText = String(m.result)
+          }
+        }
+      } finally {
+        this.#activeQueries.delete(testerQuery)
+        this.#activeQueriesById.delete(testerKey)
+      }
+
+      const resultMatch = testerText.match(/RESULT:\s*(PASS|FAIL)/i)
+      const result = resultMatch ? resultMatch[1].toUpperCase() : null
+
+      if (result === 'FAIL') {
+        console.log(`[DISPATCH] tester FAIL for agentId=${agentId.slice(0, 8)}`)
+        statusManager.upsertDispatch(agentId, { dispatchState: 'rejected', artifact: testerText })
+        emitter.emit('dispatch_rejected', { tuid: agentId, verdict: 'TEST-FAIL', review: testerText })
+      } else {
+        console.log(`[DISPATCH] tester PASS for agentId=${agentId.slice(0, 8)}`)
+      }
+    } catch (err) {
+      console.error('[DISPATCH] tester spawn failed (non-fatal):', err)
+    }
+  }
+
+  /**
    * Dispatcher v1 — research gate: vet a researcher sub-agent's output before
    * it reaches the main agent. Emits dispatch_rejected with verdict 'NEEDS-MORE'
    * (distinct from reviewer's 'REJECT') so the frontend can tell them apart.
@@ -2163,10 +2255,11 @@ class ClaudeLLMStream extends llm.LLMStream {
               const aid = input?.agent_id ?? ('sa-' + Date.now())
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
-              // Infinite-loop guard — never re-dispatch the reviewer or reasoner.
-              if (at === 'reviewer' || at === 'reasoner') return {}
+              // Infinite-loop guard — never re-dispatch the reviewer, tester, or reasoner.
+              if (at === 'reviewer' || at === 'tester' || at === 'reasoner') return {}
               if (at === 'writer' && msg) {
                 void this.#llmRef.spawnReviewer(aid, msg, this.#eventEmitter)
+                void this.#llmRef.spawnTester(aid, msg, this.#eventEmitter)
               } else if (at === 'researcher' && msg) {
                 void this.#llmRef.spawnResearchGate(aid, msg, this.#eventEmitter)
               }
