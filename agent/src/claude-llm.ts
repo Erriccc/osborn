@@ -186,7 +186,7 @@ ensureCompactionSettings()
 // (1M) window; without it opus runs at its 200K default. NOTE: 1M activation
 // also depends on account entitlement (auto on Team seats; else usage credits).
 process.env.ENABLE_1M_CONTEXT = '1'
-process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '60'
+process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '75'  // auto-compact at 75% of 1M context (750k tokens) — prevents compaction at extreme tail
 
 // Research mode tools — full research capabilities
 // Named sub-agents — the orchestrator delegates to these specialists. Each has
@@ -296,13 +296,13 @@ export const NAMED_AGENTS = {
   },
   writer: {
     description: [
-      'Execution agent with file write/edit permissions (Sonnet).',
+      'Execution agent with file write/edit permissions (Opus).',
       'Handles ALL file operations: code, config, docs, scripts, data files.',
       'VERIFY-FIRST workflow: checks assumptions before making changes, runs tests after.',
       'If anything is unclear, asks the main agent for clarification before touching files.',
     ].join(' '),
     tools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Glob', 'Grep', 'NotebookRead', 'NotebookEdit'],
-    model: 'sonnet',
+    model: 'opus',
     prompt: [
       'You are Osborn\'s writer agent. You execute file changes with a verify-first approach.',
       '',
@@ -349,12 +349,12 @@ export const NAMED_AGENTS = {
   },
   tester: {
     description: [
-      'Test-runner agent (Sonnet). Use for: running test suites, executing builds, interpreting',
+      'Test-runner agent (Opus). Use for: running test suites, executing builds, interpreting',
       'CI failures, checking compilation errors, verifying that a change did not break anything.',
       'Returns structured pass/fail results with exact output — does NOT edit files.',
     ].join(' '),
     tools: ['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'],
-    model: 'sonnet',
+    model: 'opus',
     prompt: [
       'You are Osborn\'s tester agent. Your job is running tests and builds, then reporting results.',
       '',
