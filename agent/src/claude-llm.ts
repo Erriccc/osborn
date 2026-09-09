@@ -186,7 +186,7 @@ ensureCompactionSettings()
 // (1M) window; without it opus runs at its 200K default. NOTE: 1M activation
 // also depends on account entitlement (auto on Team seats; else usage credits).
 process.env.ENABLE_1M_CONTEXT = '1'
-process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '92'
+process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '60'
 
 // Research mode tools — full research capabilities
 // Named sub-agents — the orchestrator delegates to these specialists. Each has
