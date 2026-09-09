@@ -349,12 +349,12 @@ export const NAMED_AGENTS = {
   },
   tester: {
     description: [
-      'Test-runner agent (Opus). Use for: running test suites, executing builds, interpreting',
+      'Test-runner agent (Sonnet). Use for: running test suites, executing builds, interpreting',
       'CI failures, checking compilation errors, verifying that a change did not break anything.',
       'Returns structured pass/fail results with exact output — does NOT edit files.',
     ].join(' '),
     tools: ['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'],
-    model: 'opus',
+    model: 'sonnet',
     prompt: [
       'You are Osborn\'s tester agent. Your job is running tests and builds, then reporting results.',
       '',
@@ -441,13 +441,13 @@ export const NAMED_AGENTS = {
   },
   planner: {
     description: [
-      'Planning agent (Opus). Use for: decomposing a large or ambiguous request into a concrete,',
+      'Planning agent (Sonnet). Use for: decomposing a large or ambiguous request into a concrete,',
       'ordered sequence of atomic writer-safe steps. Returns a self-contained brief the writer',
       'can execute without further clarification. Slow but thorough — only use for genuinely',
       'complex multi-file changes or when the approach is uncertain.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'WebSearch'],
-    model: 'opus',
+    model: 'sonnet',
     prompt: [
       'You are Osborn\'s planning agent. Your job is to decompose complex tasks into clear, atomic steps.',
       '',
@@ -494,13 +494,13 @@ export const NAMED_AGENTS = {
   },
   reviewer: {
     description: [
-      'Code-review agent (Opus). Use for: the VERIFY step in a generator-verifier loop — after the',
+      'Code-review agent (Sonnet). Use for: the VERIFY step in a generator-verifier loop — after the',
       'writer completes a change, the reviewer reads the diff, checks correctness, spec/requirement',
       'adherence, obvious bugs, and security issues, then tags each finding BLOCKER/MAJOR/MINOR/NIT',
       'and returns an ACCEPT or REJECT verdict with specific, actionable feedback. May write documentation files (.md etc.) only.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
-    model: 'opus',
+    model: 'sonnet',
     prompt: [
       'You are Osborn\'s reviewer agent. You are the VERIFY step in a generator-verifier loop.',
       '',
