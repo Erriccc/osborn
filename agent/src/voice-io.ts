@@ -1,17 +1,13 @@
 /**
  * Voice I/O Module
- * Handles STT (Speech-to-Text), TTS (Text-to-Speech), and Realtime model creation
- *
- * Supports two modes:
- * - Direct mode: STT (Deepgram) → Claude Agent SDK → TTS (Deepgram)
- * - Realtime mode: OpenAI/Gemini native speech-to-speech models
+ * Handles STT (Speech-to-Text) and TTS (Text-to-Speech) for pipeline mode.
  */
 
 import * as deepgram from '@livekit/agents-plugin-deepgram'
-import * as google from '@livekit/agents-plugin-google'
+import * as fishaudio from '@livekit/agents-plugin-fishaudio'
 import * as openai from '@livekit/agents-plugin-openai'
+import * as rime from '@livekit/agents-plugin-rime'
 import * as silero from '@livekit/agents-plugin-silero'
-import type { RealtimeConfig } from './config.js'
 
 export interface STTConfig {
   provider: 'deepgram' | 'deepgram-flux' | 'groq-whisper' | 'openai-whisper'
@@ -24,7 +20,7 @@ export interface STTConfig {
 }
 
 export interface TTSConfig {
-  provider: 'gemini' | 'openai' | 'elevenlabs' | 'deepgram' | 'groq-orpheus'
+  provider: 'openai' | 'deepgram' | 'groq-orpheus' | 'fishaudio' | 'rime'
   voice?: string
   model?: string
 }
@@ -77,20 +73,11 @@ export function createSTT(config: STTConfig) {
 
 /**
  * Create TTS (Text-to-Speech) instance based on config
- * Using Gemini TTS as default (cheaper, good quality)
  */
 export function createTTS(config: TTSConfig) {
   let tts: any
 
   switch (config.provider) {
-    case 'gemini':
-      // Gemini TTS via google plugin
-      tts = new (google.beta as any).TTS({
-        model: config.model || 'gemini-2.5-flash-preview-tts',
-        voice: config.voice || 'apollo',
-      })
-      break
-
     case 'openai':
       tts = new openai.TTS({
         voice: (config.voice as any) || 'alloy',
@@ -113,6 +100,29 @@ export function createTTS(config: TTSConfig) {
         apiKey: process.env.GROQ_API_KEY,
         baseURL: 'https://api.groq.com/openai/v1',
       } as any)
+      break
+
+    case 'fishaudio':
+      // Fish Audio s2-pro ($15/M chars) — blind test winner, half price of OpenAI tts-1-hd
+      // voiceId: pick from Fish Audio voice library (leave undefined for system default)
+      // Requires FISH_AUDIO_API_KEY env var
+      tts = new fishaudio.TTS({
+        model: (config.model || 's2-pro') as any,
+        voiceId: config.voice,
+        latencyMode: 'low',
+      })
+      break
+
+    case 'rime':
+      // Rime Mist v3 ($30/M chars, 37ms TTFB) — fastest commercial TTS, conversation-trained
+      // useWebsocket: true → WebSocket streaming = clean abort on interruption (like Deepgram)
+      // speaker: pick from Rime voice library, e.g. 'aurora', 'ember', 'cove'
+      // Requires RIME_API_KEY env var
+      tts = new rime.TTS({
+        modelId: (config.model || 'mistv3') as any,
+        speaker: config.voice || 'cove',
+        useWebsocket: true,
+      })
       break
 
     default:
@@ -148,23 +158,7 @@ export async function createVAD() {
 }
 
 /**
- * Default voice I/O configuration (used by realtime mode fallback)
- * Uses Deepgram STT (fast, accurate) + Deepgram TTS (fast, good)
- */
-export const DEFAULT_VOICE_IO_CONFIG: VoiceIOConfig = {
-  stt: {
-    provider: 'deepgram',
-    model: 'nova-3',
-    language: 'en',
-  },
-  tts: {
-    provider: 'deepgram',
-    voice: 'aura-2-asteria-en',
-  },
-}
-
-/**
- * Direct mode voice config — centralized here for easy provider swapping.
+ * Pipeline mode voice config — centralized here for easy provider swapping.
  * To switch providers: comment out the active line, uncomment the alternative.
  */
 export const DIRECT_MODE_STT: STTConfig = {
@@ -175,68 +169,10 @@ export const DIRECT_MODE_STT: STTConfig = {
 }
 
 export const DIRECT_MODE_TTS: TTSConfig = {
-  // provider: 'deepgram', model: 'aura-2-asteria-en',  // WebSocket-based: handles TTS abort cleanly (no unrecoverable crash on interruption)
-  // provider: 'gemini', model: 'gemini-2.5-flash-preview-tts', voice: 'apollo',
+  // provider: 'deepgram', model: 'aura-2-asteria-en',  // WebSocket-based: handles TTS abort cleanly — but quality rejected (run-on sentences)
   // provider: 'openai', model: 'tts-1', voice: 'fable',  // HTTP streaming: throws APIUserAbortError on interrupt → unrecoverable session crash
   provider: 'openai', model: 'tts-1-hd', voice: 'fable',  // 0.9.70: test tts-1-hd — tts-1 had chronic per-sentence HTTP hangs (40s SDK watchdog → APIUserAbortError mid-message)
   // provider: 'groq-orpheus', model: 'canopylabs/orpheus-v1-english', voice: 'autumn',  // $22/M chars — voices: autumn, diana, hannah, austin, daniel, troy
-}
-
-// ============================================================
-// REALTIME MODE - OpenAI/Gemini native speech-to-speech
-// ============================================================
-
-export interface RealtimeModelConfig {
-  provider: 'openai' | 'gemini'
-  // OpenAI options
-  openaiVoice?: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer'
-  openaiModel?: string
-  // Gemini options
-  geminiVoice?: 'Charon' | 'Puck' | 'Kore' | 'Fenrir' | 'Aoede'
-  geminiModel?: string
-  // Shared options
-  instructions?: string
-}
-
-/**
- * Create Realtime Model for native speech-to-speech
- * Supports OpenAI Realtime API and Gemini Live API
- *
- * Note: Instructions are passed to voice.Agent, not to the RealtimeModel
- */
-export function createRealtimeModel(config: RealtimeModelConfig) {
-  if (config.provider === 'gemini') {
-    console.log('📱 Using Gemini Live API (realtime)')
-    // Using 'latest' alias — 12-2025 had a known 1008 crash bug during interruptions + tool calls
-    return new google.beta.realtime.RealtimeModel({
-      model: config.geminiModel || 'gemini-2.5-flash-native-audio-latest',
-      voice: config.geminiVoice || 'Charon',
-      // Gemini supports instructions at model level
-      instructions: config.instructions,
-      // Enable transcription so we get text of what the agent says
-      inputAudioTranscription: {},
-      outputAudioTranscription: {},
-    })
-  } else {
-    console.log('📱 Using OpenAI Realtime API')
-    // OpenAI RealtimeModel - instructions go to voice.Agent instead
-    return new openai.realtime.RealtimeModel({
-      model: config.openaiModel || 'gpt-4o-realtime-preview',
-      voice: config.openaiVoice || 'alloy',
-    })
-  }
-}
-
-/**
- * Create realtime model from config
- */
-export function createRealtimeModelFromConfig(realtimeConfig: RealtimeConfig, instructions?: string) {
-  return createRealtimeModel({
-    provider: realtimeConfig.provider || 'openai',
-    openaiVoice: realtimeConfig.openaiVoice,
-    openaiModel: realtimeConfig.openaiModel,
-    geminiVoice: realtimeConfig.geminiVoice,
-    geminiModel: realtimeConfig.geminiModel,
-    instructions,
-  })
+  // provider: 'fishaudio', model: 's2-pro', voice: '<voice-id>',  // $15/M chars — blind test winner, HTTP streaming (test abort behavior)
+  // provider: 'rime', model: 'mistv3', voice: 'cove',  // $30/M chars, 37ms TTFB — WebSocket (safe on interruption); voices: aurora, ember, cove
 }

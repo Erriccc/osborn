@@ -8,67 +8,25 @@ import type { McpServerConfig } from './claude-handler.js'
 const CONFIG_DIR = join(homedir(), '.osborn')
 const CONFIG_FILE = join(CONFIG_DIR, 'config.yaml')
 
-// Voice mode options
-// - 'direct': STT → Claude Agent SDK → TTS (current default, uses Claude for everything)
-// - 'realtime': OpenAI/Gemini native speech-to-speech models (faster, no coding tools)
-export type VoiceMode = 'direct' | 'realtime' | 'pipeline'
+// Voice mode — pipeline only
+export type VoiceMode = 'pipeline'
 
 // Legacy type aliases — kept for backward compatibility with session metadata
 export type EditMode = 'read-only' | 'edit'
 export type AgentMode = 'plan' | 'execute' | 'research'
 
-// Realtime provider options (only for 'realtime' mode)
-export type RealtimeProvider = 'openai' | 'gemini'
-
 // STT provider options
 export type STTProvider = 'deepgram' | 'groq-whisper' | 'openai-whisper'
 
 // TTS provider options
-export type TTSProvider = 'gemini' | 'openai' | 'elevenlabs' | 'deepgram'
+export type TTSProvider = 'openai' | 'deepgram'
 
-// Bridge LLM provider options
-export type BridgeLLMProvider = 'gemini-pro' | 'gpt-4o'
-
-// Realtime mode configuration (OpenAI/Gemini native speech-to-speech)
-export interface RealtimeConfig {
-  provider?: RealtimeProvider
-  // OpenAI options
-  openaiVoice?: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer'
-  openaiModel?: string
-  // Gemini options
-  geminiVoice?: 'Aoede' | 'Charon' | 'Kore' | 'Fenrir' | 'Puck'
-  geminiModel?: string
-}
-
-// Direct mode configuration (STT → Claude Agent SDK → TTS)
+// Pipeline mode configuration (STT → Claude + parallel fast brain → TTS)
 export interface DirectConfig {
   stt?: {
     provider?: STTProvider
     model?: string
     language?: string
-  }
-  tts?: {
-    provider?: TTSProvider
-    model?: string
-    voice?: string
-  }
-}
-
-// Pipeline-direct mode configuration (STT → Claude + parallel fast brain)
-export interface PipelineDirectConfig extends DirectConfig {
-  enableCollisionGuard?: boolean  // default false = monitoring only
-}
-
-// Legacy pipelined mode configuration (kept for backwards compatibility)
-export interface PipelinedConfig {
-  stt?: {
-    provider?: STTProvider
-    model?: string
-    language?: string
-  }
-  llm?: {
-    provider?: BridgeLLMProvider
-    model?: string
   }
   tts?: {
     provider?: TTSProvider
@@ -84,26 +42,11 @@ export interface OsbornConfig {
   // MCP servers configuration
   mcpServers?: Record<string, McpServerConfigYaml>
 
-  // Default voice provider (for realtime mode)
-  defaultProvider?: 'gemini' | 'openai'
-
-  // Default coding agent
-  defaultCodingAgent?: 'claude' | 'codex'
-
-  // Voice mode: 'direct' (STT+Claude+TTS) or 'realtime' (OpenAI/Gemini native)
+  // Voice mode (pipeline only)
   voiceMode?: VoiceMode
 
-  // Realtime mode configuration (used when voiceMode='realtime')
-  realtime?: RealtimeConfig
-
-  // Direct mode configuration (used when voiceMode='direct')
+  // Pipeline mode configuration (STT/TTS providers)
   direct?: DirectConfig
-
-  // Pipeline-direct mode configuration (used when voiceMode='pipeline-direct')
-  'pipeline-direct'?: PipelineDirectConfig
-
-  // Legacy pipelined mode configuration (deprecated, use 'direct' instead)
-  pipelined?: PipelinedConfig
 }
 
 interface McpServerConfigYaml {
@@ -188,18 +131,7 @@ export interface McpServerStatus {
 // Leaving it undefined lets the runtime self-heal in index.ts resolve it on every boot
 // from OSBORN_CWD → process.cwd() at the actual time the agent starts.
 const DEFAULT_CONFIG: OsbornConfig = {
-  defaultProvider: 'gemini',
-  defaultCodingAgent: 'claude',
-  // Voice mode: 'direct' (Claude Agent SDK) or 'realtime' (OpenAI/Gemini native)
-  voiceMode: 'direct',
-  // Realtime mode config (used when voiceMode='realtime')
-  realtime: {
-    provider: 'openai',
-    openaiVoice: 'alloy',
-    geminiVoice: 'Aoede',
-    geminiModel: 'gemini-2.5-flash-native-audio-preview-12-2025',
-  },
-  // Direct mode config (used when voiceMode='direct')
+  voiceMode: 'pipeline',
   direct: {
     stt: {
       provider: 'deepgram',
@@ -348,56 +280,16 @@ export function getEnabledMcpServerNames(config: OsbornConfig): string[] {
     .map(([name, _]) => name)
 }
 
-/**
- * Get pipelined config with defaults merged
- */
-export function getPipelinedConfig(config: OsbornConfig): Required<PipelinedConfig> {
-  const defaults = DEFAULT_CONFIG.pipelined!
-  const userConfig = config.pipelined || {}
 
-  return {
-    stt: {
-      provider: userConfig.stt?.provider || defaults.stt!.provider!,
-      model: userConfig.stt?.model,
-      language: userConfig.stt?.language || 'en',
-    },
-    llm: {
-      provider: userConfig.llm?.provider || defaults.llm!.provider!,
-      model: userConfig.llm?.model,
-    },
-    tts: {
-      provider: userConfig.tts?.provider || defaults.tts!.provider!,
-      model: userConfig.tts?.model,
-      voice: userConfig.tts?.voice || defaults.tts!.voice,
-    },
-  }
+/**
+ * Get voice mode from config (always pipeline)
+ */
+export function getVoiceMode(_config: OsbornConfig): VoiceMode {
+  return 'pipeline'
 }
 
 /**
- * Get voice mode from config
- */
-export function getVoiceMode(config: OsbornConfig): VoiceMode {
-  return config.voiceMode || 'direct'
-}
-
-/**
- * Get realtime config with defaults merged
- */
-export function getRealtimeConfig(config: OsbornConfig): Required<RealtimeConfig> {
-  const defaults = DEFAULT_CONFIG.realtime!
-  const userConfig = config.realtime || {}
-
-  return {
-    provider: userConfig.provider || defaults.provider!,
-    openaiVoice: userConfig.openaiVoice || defaults.openaiVoice!,
-    openaiModel: userConfig.openaiModel || 'gpt-4o-realtime-preview',
-    geminiVoice: userConfig.geminiVoice || defaults.geminiVoice!,
-    geminiModel: userConfig.geminiModel || defaults.geminiModel!,
-  }
-}
-
-/**
- * Get direct mode config with defaults merged
+ * Get pipeline mode config with defaults merged
  */
 export function getDirectConfig(config: OsbornConfig): Required<DirectConfig> {
   const defaults = DEFAULT_CONFIG.direct!
@@ -802,6 +694,15 @@ async function extractCwd(filePath: string): Promise<string> {
   })
 }
 
+// In-memory cache for the session list — invalidated on new session creation or import.
+// Avoids re-crawling all JSONL files on every agent connect / dashboard load.
+let _sessionListCache: { data: ClaudeSessionEntry[]; expiresAt: number } | null = null
+const SESSION_LIST_TTL_MS = 300_000
+
+export function invalidateSessionListCache(): void {
+  _sessionListCache = null
+}
+
 /**
  * Scan ALL Claude Code projects for sessions.
  * Returns lightweight metadata for every main session JSONL across all projects.
@@ -810,6 +711,9 @@ async function extractCwd(filePath: string): Promise<string> {
  * @param limit - Max sessions to return (default 100, sorted by recency)
  */
 export async function listAllClaudeSessions(limit = 1000): Promise<ClaudeSessionEntry[]> {
+  if (_sessionListCache && Date.now() < _sessionListCache.expiresAt) {
+    return _sessionListCache.data.slice(0, limit)
+  }
   const projectsDir = getClaudeProjectsDir()
   if (!existsSync(projectsDir)) return []
 
@@ -913,7 +817,8 @@ export async function listAllClaudeSessions(limit = 1000): Promise<ClaudeSession
       })
   }
 
-  return sessions
+  _sessionListCache = { data: sessions, expiresAt: Date.now() + SESSION_LIST_TTL_MS }
+  return sessions.slice(0, limit)
 }
 
 /**

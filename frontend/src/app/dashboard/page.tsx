@@ -154,7 +154,7 @@ function prettySessionPreview(raw?: string): { kind: SessionKind; label: string;
 }
 
 type Provider = 'gemini' | 'openai'
-type VoiceArch = 'pipeline' | 'direct' | 'realtime'
+type VoiceArch = 'pipeline'
 
 export default function Dashboard() {
   const router = useRouter()
@@ -301,7 +301,7 @@ export default function Dashboard() {
     const m = localStorage.getItem('osborn-connection-mode') as 'local' | 'cloud' | null
     if (u) setAgentUrl(u)
     if (p) setProvider(p)
-    if (v) setVoiceArch(v)
+    if (v === 'pipeline') setVoiceArch(v)  // ignore legacy 'direct'/'realtime' values
     // Saved explicit preference wins; otherwise the useState default ('cloud')
     // stands. (Historical: default used to be 'local' with a sandbox-probe
     // auto-detect to rescue signed-in cloud users from a logged-out-looking
@@ -367,9 +367,31 @@ export default function Dashboard() {
     return true
   }, [agentUrl, connectionMode])
 
-  // Fetch sessions
-  const fetchSessions = useCallback(async () => {
+  const SESSIONS_CACHE_KEY = `osborn-sessions-cache-${agentUrl}`
+  const SESSIONS_CACHE_TTL = 45_000  // 45s — fresh enough, avoids crawl on every tab open
+
+  // Fetch sessions, with a localStorage TTL cache to skip the JSONL crawl on repeat loads.
+  // Pass force=true to bypass the cache (after import/delete operations).
+  const fetchSessions = useCallback(async (force = false) => {
     if (!canFetchAgent()) { setAgentOnline(false); setSessions([]); setBaseCwd(null); return }
+
+    // Serve from cache if fresh and not forced
+    if (!force) {
+      try {
+        const raw = localStorage.getItem(SESSIONS_CACHE_KEY)
+        if (raw) {
+          const { data, ts } = JSON.parse(raw)
+          if (Date.now() - ts < SESSIONS_CACHE_TTL) {
+            setSessions(data.sessions || [])
+            setBaseCwd(typeof data.baseCwd === 'string' && data.baseCwd ? data.baseCwd : null)
+            setAgentOnline(true)
+            setSessionsLoading(false)
+            return
+          }
+        }
+      } catch {}
+    }
+
     setSessionsLoading(true)
     try {
       const r = await fetch(`${agentUrl}/sessions`)
@@ -380,6 +402,7 @@ export default function Dashboard() {
       // cwd is its own card) — no rendering crash, just less prettily.
       setBaseCwd(typeof data.baseCwd === 'string' && data.baseCwd ? data.baseCwd : null)
       setAgentOnline(true)
+      try { localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify({ data, ts: Date.now() })) } catch {}
     } catch {
       setAgentOnline(false)
       setSessions([])
@@ -387,7 +410,7 @@ export default function Dashboard() {
     } finally {
       setSessionsLoading(false)
     }
-  }, [agentUrl, canFetchAgent])
+  }, [agentUrl, canFetchAgent, SESSIONS_CACHE_KEY, SESSIONS_CACHE_TTL])
 
   useEffect(() => { if (!loading) fetchSessions() }, [loading, fetchSessions])
 
@@ -976,7 +999,7 @@ export default function Dashboard() {
       })
       const data = await r.json()
       if (data.ok) {
-        await fetchSessions()  // refresh session list
+        await fetchSessions(true)  // force-refresh after import — bypass cache
       }
     } finally {
       setImportingProject(null)
@@ -1004,7 +1027,7 @@ export default function Dashboard() {
       )
       const data = await r.json()
       if (r.ok && data.success) {
-        await fetchSessions()  // refresh list — project disappears
+        await fetchSessions(true)  // force-refresh after delete — bypass cache
       } else {
         console.error('Delete project failed:', data.error)
       }
@@ -1431,12 +1454,10 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* ── Voice & Provider ── */}
+              {/* ── Voice Mode (pipeline only) ── */}
               <div className="flex gap-6">
-                <ToggleCompact label="Voice" options={[['pipeline','Pipeline'],['direct','Direct'],['realtime','Realtime']]}
+                <ToggleCompact label="Voice" options={[['pipeline','Pipeline']]}
                   value={voiceArch} onChange={v => setVoiceArch(v as VoiceArch)} />
-                <ToggleCompact label="Provider" options={[['gemini','Gemini'],['openai','OpenAI']]}
-                  value={provider} onChange={v => setProvider(v as Provider)} />
               </div>
 
               {/* ── Skills & Named Agents (from the agent's HTTP API) ── */}

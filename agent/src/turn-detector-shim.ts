@@ -27,9 +27,13 @@ export class CloudTurnDetector {
   readonly provider = 'livekit'
 
   constructor() {
-    this.#remoteUrl = process.env.LIVEKIT_REMOTE_EOT_URL
+    const raw = process.env.LIVEKIT_REMOTE_EOT_URL
+    // EOT endpoint is HTTP — convert wss:// → https:// if the env var uses WebSocket scheme
+    this.#remoteUrl = raw
+      ? raw.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://')
+      : undefined
     if (this.#remoteUrl) {
-      console.log(`🧠 Turn detector: LiveKit Cloud remote inference`)
+      console.log(`🧠 Turn detector: LiveKit Cloud remote inference (${this.#remoteUrl})`)
     } else {
       console.log('🧠 Turn detector: No LIVEKIT_REMOTE_EOT_URL — STT endpointing fallback')
     }
