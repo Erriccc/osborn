@@ -2747,23 +2747,24 @@ function VoiceRoomInner({
         if (data.namedAgents && Array.isArray(data.namedAgents)) {
           setNamedAgents(data.namedAgents)
         }
-        // Only process session gate logic on the FIRST agent_ready (skip retries)
-        if (!sessionGateCompletedRef.current && !showResumePromptRef.current) {
-          // If a session was pre-selected from the session browser, skip the gate entirely
-          if (preSelectedSessionId || data.preSelectedSessionId) {
-            console.log('📂 Pre-selected session — skipping session gate')
-            setSessionGateCompleted(true)
-            setCurrentSessionId(preSelectedSessionId || data.preSelectedSessionId)
-          }
-          // Show session gate if sessions available — mic muted until user chooses
-          else if (data.sessions?.length > 0 || (data.hasRecentSession && data.recentSessionId)) {
+        // Pre-selected session: complete gate immediately (don't need to wait for session list)
+        if (!sessionGateCompletedRef.current && !showResumePromptRef.current &&
+            (preSelectedSessionId || data.preSelectedSessionId)) {
+          console.log('📂 Pre-selected session — skipping session gate')
+          setSessionGateCompleted(true)
+          setCurrentSessionId(preSelectedSessionId || data.preSelectedSessionId)
+        }
+        // Session gate: wait until sessions are confirmed loaded before deciding
+        // (sessionsLoaded:false on the first fast agent_ready, true on the background-load re-send)
+        else if (data.sessionsLoaded && !sessionGateCompletedRef.current && !showResumePromptRef.current) {
+          if (data.sessions?.length > 0 || (data.hasRecentSession && data.recentSessionId)) {
             setRecentSessionId(data.recentSessionId)
             setShowResumePrompt(true)
             // Mute mic while session gate is shown (prevents premature speech)
             setIsMuted(true)
             localParticipant?.setMicrophoneEnabled(false)
           } else {
-            // No sessions — gate is automatically completed
+            // Sessions loaded, genuinely none — complete gate
             setSessionGateCompleted(true)
           }
         }

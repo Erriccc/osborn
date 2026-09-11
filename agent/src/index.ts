@@ -4616,6 +4616,7 @@ async function main() {
       let recentSessionId: string | null = null
       let hasRecentSession = false
 
+      let sessionsLoaded = false
       const sendReady = async () => {
         if (readySent) return
         await sendToFrontend({
@@ -4625,6 +4626,7 @@ async function main() {
           hasRecentSession,
           recentSessionId,
           sessions: sessionsForFrontend,
+          sessionsLoaded,
           preSelectedSessionId,
           mcpServers: getMcpServerStatusList(config),
           enabledMcpServers: enabledMcpNames,
@@ -4636,7 +4638,7 @@ async function main() {
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
-      // Fire immediately (empty session list) so the frontend unblocks right away
+      // Fire immediately (sessionsLoaded:false) so the frontend unblocks right away
       await sendReady()
       setTimeout(() => {
         clearInterval(readyInterval)
@@ -4657,8 +4659,13 @@ async function main() {
           messageCount: s.messageCount,
           fileSize: s.fileSize,
         }))
+        sessionsLoaded = true
         sendReady()
-      }).catch(err => console.warn('listAllClaudeSessions background load failed:', err))
+      }).catch(err => {
+        console.warn('listAllClaudeSessions background load failed:', err)
+        sessionsLoaded = true  // unblock frontend even on error
+        sendReady()
+      })
 
       // Stop agent_ready retries on user speech
       session.on('input_speech_started' as any, () => {
