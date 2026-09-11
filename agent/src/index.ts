@@ -3707,6 +3707,11 @@ async function main() {
           minDelay: 500,    // Wait 500ms after STT commits before generating reply
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
         },
+        // If the cloud turn detector never fires (continuous speech, no natural pause),
+        // force a turn commit after 25s to prevent indefinite accumulation.
+        userTurnLimit: {
+          maxDuration: 25000,
+        },
         // Tightened gates: only commit to the pause path when the STT layer is
         // confident this is real speech, not echo. Once paused, give the user
         // a full 3s window to keep talking before deciding it was false and
