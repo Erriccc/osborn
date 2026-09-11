@@ -305,7 +305,7 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
     'LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET',
     'NEXT_PUBLIC_LIVEKIT_URL',
     'DEEPGRAM_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'ANTHROPIC_API_KEY',
-    'RECALL_API_KEY', 'SMITHERY_API_KEY', 'GROQ_API_KEY',
+    'RECALL_API_KEY', 'SMITHERY_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY',
   ]
   for (const key of forwardKeys) {
     if (process.env[key]) envVars[key] = process.env[key]!

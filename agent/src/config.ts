@@ -138,8 +138,9 @@ const DEFAULT_CONFIG: OsbornConfig = {
       model: 'nova-3',
     },
     tts: {
-      provider: 'deepgram',
-      voice: 'aura-2-asteria-en',
+      provider: 'openai',
+      model: 'tts-1-hd',
+      voice: 'fable',
     },
   },
   mcpServers: {

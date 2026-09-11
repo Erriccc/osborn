@@ -214,7 +214,7 @@ function getPlatformEnvVars(userId: string, syncToken?: string): Record<string, 
   const forwardKeys = [
     'LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET',
     'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
-    'SMITHERY_API_KEY',
+    'SMITHERY_API_KEY', 'OPENROUTER_API_KEY',
     // Recall.ai bot integration. RECALL_API_KEY is the auth token; RECALL_REGION
     // selects the regional API endpoint (default 'us-west-2' if unset). If the
     // user's Recall.ai account is in another region, this MUST be forwarded

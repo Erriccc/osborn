@@ -2663,6 +2663,10 @@ function VoiceRoomInner({
   sessionGateCompletedRef.current = sessionGateCompleted
   const showResumePromptRef = useRef(showResumePrompt)
   showResumePromptRef.current = showResumePrompt
+  const isMutedRef = useRef(isMuted)
+  isMutedRef.current = isMuted
+  const localParticipantRef = useRef(localParticipant)
+  localParticipantRef.current = localParticipant
 
   const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number }) => void>()
 
@@ -2773,6 +2777,12 @@ function VoiceRoomInner({
         // Clear speaking highlight when agent is no longer speaking
         if (data.state !== 'speaking') {
           setSpeakingChunk(null)
+        }
+        // iOS AEC mutes the mic track during TTS playback. Re-enable it when
+        // agent transitions to listening (TTS done) — only if user hasn't
+        // intentionally muted themselves via the mute button.
+        if (data.state === 'listening' && !isMutedRef.current && sessionGateCompletedRef.current) {
+          localParticipantRef.current?.setMicrophoneEnabled(true)
         }
         // Any voice state change (thinking/speaking/listening) = active session
         onVoiceActivity?.()

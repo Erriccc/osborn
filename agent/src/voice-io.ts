@@ -164,8 +164,8 @@ export async function createVAD() {
 export const DIRECT_MODE_STT: STTConfig = {
   // provider: 'groq-whisper', model: 'whisper-large-v3-turbo',          // Batch — needs VAD
   // provider: 'openai-whisper', model: 'whisper-1',                     // Batch — needs VAD
-  // provider: 'deepgram', model: 'nova-3', language: 'en',             // Streaming, silence-based endpointing
-  provider: 'deepgram-flux', model: 'flux-general-en', language: 'en',  // Streaming, ML-based turn detection (requires Deepgram V2 access)
+  // provider: 'deepgram-flux', model: 'flux-general-en', language: 'en',  // Streaming, ML-based turn detection — Flux V2 has silent keepalive timeout bug (~30s silence kills connection)
+  provider: 'deepgram', model: 'nova-3', language: 'en',               // Streaming, silence-based endpointing (550ms)
 }
 
 export const DIRECT_MODE_TTS: TTSConfig = {
