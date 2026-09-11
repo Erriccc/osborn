@@ -4268,6 +4268,32 @@ async function main() {
         if (ev.newState === 'listening' && voiceQueue.length > 0) {
           setTimeout(() => processVoiceQueue(), 500)
         }
+
+        // Suppressed-text replay: if TTS was suppressed while user was speaking
+        // and no new user turn arrives within 1.2s, replay the suppressed text directly.
+        // Without this, both sides go silent: agent has no transcript to react to,
+        // user has no audio — deadlock.
+        if (ev.newState === 'listening' && lastInterruption?.suppressedText) {
+          const capturedInterruption = lastInterruption
+          const capturedText = lastInterruption.suppressedText
+          setTimeout(() => {
+            if (
+              lastInterruption === capturedInterruption &&
+              lastInterruption.suppressedText === capturedText &&
+              agentState === 'listening' &&
+              userState === 'listening' &&
+              currentSession
+            ) {
+              console.log(`🔁 Replaying suppressed text (${capturedText.length} chars) — user returned to listening, no new turn arrived`)
+              lastInterruption.suppressedText = ''
+              try {
+                ;(currentSession as any).say(capturedText)
+              } catch (err) {
+                console.warn('⚠️ Suppressed text replay failed:', err instanceof Error ? err.message : err)
+              }
+            }
+          }, 1200)
+        }
       })
 
       // ============================================================
