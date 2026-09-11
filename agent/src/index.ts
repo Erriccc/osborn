@@ -4611,22 +4611,10 @@ async function main() {
       let readySent = false
     // (realtime provider removed)
 
-      // Fetch full session list for startup session browser (all Claude projects)
-      const allSessions = await listAllClaudeSessions()
-      const recentSessionId = allSessions.length > 0 ? allSessions[0].sessionId : null
-      const hasRecentSession = allSessions.length > 0
-
-      // Prepare sessions for frontend (up to 50)
-      const sessionsForFrontend = allSessions.slice(0, 50).map(s => ({
-        sessionId: s.sessionId,
-        projectSlug: s.projectSlug,
-        projectPath: s.projectPath,
-        cwd: s.cwd,
-        timestamp: s.timestamp.toISOString(),
-        lastMessage: s.lastMessage,
-        messageCount: s.messageCount,
-        fileSize: s.fileSize,
-      }))
+      // Session list state — populated async so it doesn't block the first sendReady
+      let sessionsForFrontend: any[] = []
+      let recentSessionId: string | null = null
+      let hasRecentSession = false
 
       const sendReady = async () => {
         if (readySent) return
@@ -4648,11 +4636,29 @@ async function main() {
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
+      // Fire immediately (empty session list) so the frontend unblocks right away
       await sendReady()
       setTimeout(() => {
         clearInterval(readyInterval)
         console.log('✅ agent_ready retries complete')
       }, 20000)
+
+      // Load session list in background — re-send agent_ready once populated
+      listAllClaudeSessions().then(allSessions => {
+        recentSessionId = allSessions.length > 0 ? allSessions[0].sessionId : null
+        hasRecentSession = allSessions.length > 0
+        sessionsForFrontend = allSessions.slice(0, 50).map(s => ({
+          sessionId: s.sessionId,
+          projectSlug: s.projectSlug,
+          projectPath: s.projectPath,
+          cwd: s.cwd,
+          timestamp: s.timestamp.toISOString(),
+          lastMessage: s.lastMessage,
+          messageCount: s.messageCount,
+          fileSize: s.fileSize,
+        }))
+        sendReady()
+      }).catch(err => console.warn('listAllClaudeSessions background load failed:', err))
 
       // Stop agent_ready retries on user speech
       session.on('input_speech_started' as any, () => {
