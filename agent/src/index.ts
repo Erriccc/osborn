@@ -4637,12 +4637,33 @@ async function main() {
       let readySent = false
     // (realtime provider removed)
 
-      // Session list state — populated async so it doesn't block the first sendReady
+      // Session list state — populated in two tiers (fast then full)
       let sessionsForFrontend: any[] = []
       let recentSessionId: string | null = null
       let hasRecentSession = false
-
       let sessionsLoaded = false
+
+      // Tier 1: fast scan — current project only, ~5ms
+      // Gives the frontend enough to show "Resume last session?" immediately.
+      try {
+        const recentSessions = await listSessions(workingDir)
+        if (recentSessions.length > 0) {
+          const top = recentSessions[0]
+          recentSessionId = top.sessionId
+          hasRecentSession = true
+          sessionsForFrontend = [{
+            sessionId: top.sessionId,
+            projectSlug: top.projectPath,
+            projectPath: top.projectPath,
+            cwd: top.projectPath,
+            timestamp: top.timestamp.toISOString(),
+            lastMessage: top.lastMessage,
+            messageCount: top.messageCount,
+            fileSize: 0,
+          }]
+        }
+      } catch {}
+
       const sendReady = async () => {
         if (readySent) return
         await sendToFrontend({
@@ -4664,14 +4685,14 @@ async function main() {
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
-      // Fire immediately (sessionsLoaded:false) so the frontend unblocks right away
+      // Fire immediately with the fast-scanned recent session (sessionsLoaded still false)
       await sendReady()
       setTimeout(() => {
         clearInterval(readyInterval)
         console.log('✅ agent_ready retries complete')
       }, 20000)
 
-      // Load session list in background — re-send agent_ready once populated
+      // Tier 2: full cross-project scan in background — no blocking
       listAllClaudeSessions().then(allSessions => {
         recentSessionId = allSessions.length > 0 ? allSessions[0].sessionId : null
         hasRecentSession = allSessions.length > 0
