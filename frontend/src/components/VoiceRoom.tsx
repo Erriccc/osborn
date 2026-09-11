@@ -2754,18 +2754,39 @@ function VoiceRoomInner({
           setSessionGateCompleted(true)
           setCurrentSessionId(preSelectedSessionId || data.preSelectedSessionId)
         }
-        // Session gate: wait until sessions are confirmed loaded before deciding
-        // (sessionsLoaded:false on the first fast agent_ready, true on the background-load re-send)
-        else if (data.sessionsLoaded && !sessionGateCompletedRef.current && !showResumePromptRef.current) {
-          if (data.sessions?.length > 0 || (data.hasRecentSession && data.recentSessionId)) {
+        // Session gate — show immediately on first agent_ready, don't wait for sessionsLoaded.
+        // isLoadingSessions drives the spinner inside the prompt while the scan runs.
+        else if (!sessionGateCompletedRef.current && !showResumePromptRef.current) {
+          if (!data.sessionsLoaded) {
+            // Scan still running — show gate immediately with loading spinner so the
+            // user isn't stuck at "Connecting to agent..." for the full scan duration.
+            setIsLoadingSessions(true)
+            setShowResumePrompt(true)
+            setIsMuted(true)
+            localParticipant?.setMicrophoneEnabled(false)
+          } else if (data.sessions?.length > 0 || (data.hasRecentSession && data.recentSessionId)) {
+            // Scan done, sessions found — show browser
+            setIsLoadingSessions(false)
             setRecentSessionId(data.recentSessionId)
             setShowResumePrompt(true)
-            // Mute mic while session gate is shown (prevents premature speech)
             setIsMuted(true)
             localParticipant?.setMicrophoneEnabled(false)
           } else {
-            // Sessions loaded, genuinely none — complete gate
+            // Scan done, genuinely no sessions — complete gate
+            setIsLoadingSessions(false)
             setSessionGateCompleted(true)
+          }
+        } else if (data.sessionsLoaded && showResumePromptRef.current) {
+          // Gate already showing (loading state) — scan just finished, update sessions and spinner
+          setIsLoadingSessions(false)
+          if (data.recentSessionId) setRecentSessionId(data.recentSessionId)
+          if (data.sessions && Array.isArray(data.sessions)) setSessions(data.sessions)
+          // If scan finished with no sessions at all, auto-complete the gate
+          if (!data.sessions?.length && !data.hasRecentSession) {
+            setShowResumePrompt(false)
+            setSessionGateCompleted(true)
+            setIsMuted(false)
+            localParticipant?.setMicrophoneEnabled(true)
           }
         }
         // Request slot list so the instances panel populates on connect
@@ -4271,7 +4292,15 @@ function VoiceRoomInner({
             </div>
 
             {/* Session list with date grouping */}
-            {sessions.length > 0 ? (
+            {isLoadingSessions ? (
+              <div className="flex items-center justify-center py-8 text-gray-500 text-sm gap-2">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Loading sessions...
+              </div>
+            ) : sessions.length > 0 ? (
               <div className="flex-1 overflow-y-auto space-y-1 mb-4 max-h-96">
                 {groupSessionsByDate(sessions).map((group) => (
                   <div key={group.label}>
