@@ -42,7 +42,7 @@ export interface AgentControlCallbacks {
 // CONSTANTS
 // ============================================================
 
-const OPENROUTER_MODEL = 'deepseek/deepseek-chat-v3-5'
+const OPENROUTER_MODEL = 'deepseek/deepseek-chat'
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
 const MAX_TOOL_ROUNDS = 4
