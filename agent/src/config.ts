@@ -16,10 +16,10 @@ export type EditMode = 'read-only' | 'edit'
 export type AgentMode = 'plan' | 'execute' | 'research'
 
 // STT provider options
-export type STTProvider = 'soniox' | 'deepgram' | 'groq-whisper' | 'openai-whisper'
+export type STTProvider = 'soniox' | 'deepgram' | 'deepgram-flux' | 'groq-whisper' | 'openai-whisper'
 
 // TTS provider options
-export type TTSProvider = 'soniox' | 'openai' | 'deepgram'
+export type TTSProvider = 'soniox' | 'openai' | 'deepgram' | 'groq-orpheus' | 'fishaudio' | 'rime'
 
 // Pipeline mode configuration (STT → Claude + parallel fast brain → TTS)
 export interface DirectConfig {
@@ -35,6 +35,12 @@ export interface DirectConfig {
   }
 }
 
+// Inference model configuration (fast brain + future: main model override)
+export interface InferenceConfig {
+  fastBrainModel?: string   // OpenRouter model ID
+  fastBrainProvider?: 'openrouter'
+}
+
 export interface OsbornConfig {
   // Working directory for the coding agent
   workingDirectory?: string
@@ -45,8 +51,11 @@ export interface OsbornConfig {
   // Voice mode (pipeline only)
   voiceMode?: VoiceMode
 
-  // Pipeline mode configuration (STT/TTS providers)
+  // STT/TTS provider config — admin-owned, not written to config.yaml
   direct?: DirectConfig
+
+  // Inference model config — admin-owned, not written to config.yaml
+  inference?: InferenceConfig
 }
 
 interface McpServerConfigYaml {
@@ -130,34 +139,73 @@ export interface McpServerStatus {
 // (`/usr/local/nvm/.../osborn`) and gets persisted to ~/.osborn/config.yaml forever.
 // Leaving it undefined lets the runtime self-heal in index.ts resolve it on every boot
 // from OSBORN_CWD → process.cwd() at the actual time the agent starts.
+// ============================================================
+// PROVIDER DEFAULTS — Single source of truth for STT, TTS, and inference.
+// To switch provider: change `provider` (and model/voice) here.
+// All alternatives are listed as comments. Env vars override without redeploy:
+//   STT:       OSBORN_STT_PROVIDER, OSBORN_STT_MODEL, OSBORN_STT_LANGUAGE
+//   TTS:       OSBORN_TTS_PROVIDER, OSBORN_TTS_MODEL, OSBORN_TTS_VOICE
+//   Inference: OSBORN_FAST_BRAIN_MODEL
+// These are admin-owned defaults — NOT written to config.yaml on disk.
+// ============================================================
 const DEFAULT_CONFIG: OsbornConfig = {
   voiceMode: 'pipeline',
   direct: {
     stt: {
-      // Soniox stt-rt-v4 — semantic endpointing (ML, not silence), word timestamps,
-      // custom vocabulary via context.terms. ~60% cheaper than nova-3 ($0.0017 vs $0.0043/min).
-      // Needs SONIOX_API_KEY.
+      // ── Active ─────────────────────────────────────────────────────────────
       provider: 'soniox',
       model: 'stt-rt-v4',
-      // Previous: Deepgram nova-3, silence-based endpointing (550ms configured in voice-io.ts).
-      // Switch back: provider: 'deepgram', model: 'nova-3'
+      // Semantic endpointing — ML model holds on incomplete thoughts, commits on
+      // natural sentence ends. ~60% cheaper than nova-3 ($0.0017 vs $0.0043/min).
+      // Needs SONIOX_API_KEY. See voice-io.ts createSTT for tuning params.
+      //
+      // ── Alternatives ───────────────────────────────────────────────────────
+      // provider: 'deepgram', model: 'nova-3'
+      //   Silence-based endpointing (550ms). Fast, reliable. $0.0043/min.
+      // provider: 'deepgram-flux', model: 'flux-general-en'
+      //   ML turn detection (server-side). Flux V2 has 30s silent keepalive bug.
+      // provider: 'groq-whisper', model: 'whisper-large-v3-turbo'
+      //   Batch STT via Groq (very fast). Requires VAD for turn detection.
+      // provider: 'openai-whisper', model: 'whisper-1'
+      //   Batch STT via OpenAI. Requires VAD. $0.006/min.
     },
     tts: {
-      // Soniox tts-rt-v1 — real-time WebSocket streaming, speed control (0.7–1.3x),
-      // clean abort on interruption. Estimated ~$4–16/M chars vs OpenAI tts-1-hd $30/M.
-      // Pricing: $0.70/hr of generated speech (preview). Needs SONIOX_API_KEY.
+      // ── Active ─────────────────────────────────────────────────────────────
       provider: 'soniox',
       model: 'tts-rt-v1',
       voice: 'Victoria',
-      // Previous: OpenAI tts-1-hd, voice fable — high quality, $30/M chars, ~500ms TTFB.
-      // Switch back: provider: 'openai', model: 'tts-1-hd', voice: 'fable'
-      // Other options already wired in voice-io.ts:
-      //   Rime Mist v3:     provider: 'rime',      voice: 'cove'  — 37ms TTFB, $30/M, WebSocket
-      //   Fish Audio s2-pro: provider: 'fishaudio', voice: '<id>'  — $15/M, voice cloning
-      //   Groq Orpheus:     provider: 'groq-orpheus', voice: 'autumn' — fast Groq chips, $22/M
-      //   Deepgram Aura-2:  provider: 'deepgram',  model: 'aura-2-asteria-en' — $15/M, ~100ms TTFB
-      //   OpenAI tts-1:     provider: 'openai',    model: 'tts-1', voice: 'fable' — $15/M
+      // WebSocket streaming — clean abort on interruption. Speed control 0.7–1.3x.
+      // Est. ~$4–16/M chars vs OpenAI $30/M. Victoria = en-GB female, refined.
+      // Also: Isla (en-GB, lively), Maya (en-US female). Needs SONIOX_API_KEY.
+      //
+      // ── Alternatives ───────────────────────────────────────────────────────
+      // provider: 'openai', model: 'tts-1-hd', voice: 'fable'
+      //   $30/M chars, ~500ms TTFB, HTTP streaming. 6 voices: alloy echo fable onyx nova shimmer.
+      // provider: 'openai', model: 'tts-1', voice: 'fable'
+      //   $15/M chars, slightly lower quality, same voices.
+      // provider: 'deepgram', model: 'aura-2-asteria-en'
+      //   $15/M chars, ~100ms TTFB, WebSocket. Voices: asteria luna stella hera orion arcas perseus angus orpheus.
+      // provider: 'rime', model: 'mistv3', voice: 'cove'
+      //   $30/M chars, 37ms TTFB, WebSocket (clean abort). Voices: aurora ember cove. Needs RIME_API_KEY.
+      // provider: 'fishaudio', model: 's2-pro', voice: '<voice-id>'
+      //   $15/M chars, voice cloning, HTTP streaming. Needs FISH_AUDIO_API_KEY.
+      // provider: 'groq-orpheus', model: 'canopylabs/orpheus-v1-english', voice: 'autumn'
+      //   $22/M chars, fast (Groq chips). Voices: autumn diana hannah austin daniel troy.
     },
+  },
+  inference: {
+    // ── Active ───────────────────────────────────────────────────────────────
+    fastBrainModel: 'deepseek/deepseek-chat',
+    fastBrainProvider: 'openrouter',
+    // Parallel fast brain: answers greetings/follow-ups instantly while main agent
+    // processes. Uses OpenRouter (OPENROUTER_API_KEY). ~20ms TTFB on deepseek-chat.
+    //
+    // ── Alternatives ─────────────────────────────────────────────────────────
+    // fastBrainModel: 'deepseek/deepseek-reasoner'            — slower, deeper CoT
+    // fastBrainModel: 'google/gemini-flash-1.5'               — Google via OpenRouter
+    // fastBrainModel: 'openai/gpt-4o-mini'                    — OpenAI via OpenRouter
+    // fastBrainModel: 'meta-llama/llama-3.1-8b-instruct:free' — free tier via OpenRouter
+    // fastBrainModel: 'anthropic/claude-haiku-4-5-20251001'   — Haiku via OpenRouter
   },
   mcpServers: {
     // ─────────────────────────────────────────────────────────────────────────
@@ -232,10 +280,12 @@ export function loadConfig(): OsbornConfig {
     console.log(`📁 Created config directory: ${CONFIG_DIR}`)
   }
 
-  // Create default config if it doesn't exist
+  // Create default config if it doesn't exist.
+  // Exclude `direct` (STT/TTS) and `inference` — admin-owned, not user config on disk.
+  // Writing them to disk causes the file to permanently override npm package updates.
   if (!existsSync(CONFIG_FILE)) {
-    const defaultYaml = stringify(DEFAULT_CONFIG)
-    writeFileSync(CONFIG_FILE, defaultYaml, 'utf-8')
+    const { direct: _d, inference: _i, ...persistable } = DEFAULT_CONFIG
+    writeFileSync(CONFIG_FILE, stringify(persistable), 'utf-8')
     console.log(`📝 Created default config: ${CONFIG_FILE}`)
     return DEFAULT_CONFIG
   }
@@ -308,24 +358,33 @@ export function getVoiceMode(_config: OsbornConfig): VoiceMode {
 /**
  * Get pipeline mode config with defaults merged
  */
-export function getDirectConfig(config: OsbornConfig): Required<DirectConfig> {
+export function getDirectConfig(_config: OsbornConfig): Required<DirectConfig> {
   const defaults = DEFAULT_CONFIG.direct!
-  const userConfig = config.direct || {}
 
-  // Env vars take priority over config.yaml — escape hatch for stale volume configs.
-  // Set OSBORN_STT_PROVIDER / OSBORN_TTS_PROVIDER / OSBORN_TTS_VOICE on the machine
-  // to override whatever is baked into /workspace/.osborn/config.yaml.
+  // STT/TTS settings are admin-owned defaults — they live in DEFAULT_CONFIG only.
+  // config.yaml is intentionally NOT consulted here: writing provider settings
+  // to the volume creates a stale file that permanently overrides npm updates.
+  // To override without a redeploy, set OSBORN_STT_PROVIDER / OSBORN_TTS_PROVIDER
+  // / OSBORN_TTS_VOICE / OSBORN_STT_MODEL / OSBORN_TTS_MODEL on the machine.
   return {
     stt: {
-      provider: (process.env.OSBORN_STT_PROVIDER || userConfig.stt?.provider || defaults.stt!.provider!) as STTProvider,
-      model: process.env.OSBORN_STT_MODEL || userConfig.stt?.model || defaults.stt!.model,
-      language: userConfig.stt?.language || 'en',
+      provider: (process.env.OSBORN_STT_PROVIDER || defaults.stt!.provider!) as STTProvider,
+      model: process.env.OSBORN_STT_MODEL || defaults.stt!.model,
+      language: process.env.OSBORN_STT_LANGUAGE || 'en',
     },
     tts: {
-      provider: (process.env.OSBORN_TTS_PROVIDER || userConfig.tts?.provider || defaults.tts!.provider!) as TTSProvider,
-      model: process.env.OSBORN_TTS_MODEL || userConfig.tts?.model || defaults.tts!.model,
-      voice: process.env.OSBORN_TTS_VOICE || userConfig.tts?.voice || defaults.tts!.voice,
+      provider: (process.env.OSBORN_TTS_PROVIDER || defaults.tts!.provider!) as TTSProvider,
+      model: process.env.OSBORN_TTS_MODEL || defaults.tts!.model,
+      voice: process.env.OSBORN_TTS_VOICE || defaults.tts!.voice,
     },
+  }
+}
+
+export function getInferenceConfig(_config: OsbornConfig): Required<InferenceConfig> {
+  const defaults = DEFAULT_CONFIG.inference!
+  return {
+    fastBrainModel: process.env.OSBORN_FAST_BRAIN_MODEL || defaults.fastBrainModel!,
+    fastBrainProvider: 'openrouter',
   }
 }
 

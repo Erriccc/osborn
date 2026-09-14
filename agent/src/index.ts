@@ -39,7 +39,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
-import { createSTT, createTTS, DIRECT_MODE_STT, DIRECT_MODE_TTS } from './voice-io.js'
+import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { getIndexPath, buildSummaryIndex } from './summary-index.js'
@@ -452,13 +452,11 @@ async function synthMp3(text: string): Promise<Buffer | null> {
   const t0 = Date.now()
   const oa = process.env.OPENAI_API_KEY
   if (!oa) { console.warn('⚠️ synthMp3: no OPENAI_API_KEY — meeting has no voice'); return null }
-  // Meeting voice = the SAME OpenAI model/voice as the website's regular TTS
-  // (DIRECT_MODE_TTS), so the bot sounds IDENTICAL on both fronts (user directive
-  // 2026-08-04: Deepgram aura sounded "cheap and inconsistent"). Deepgram removed
-  // from the meeting path entirely. Pulls model/voice from DIRECT_MODE_TTS when
-  // it's an OpenAI config so the two never drift.
-  const model = DIRECT_MODE_TTS.provider === 'openai' ? (DIRECT_MODE_TTS.model || 'tts-1-hd') : 'tts-1-hd'
-  const voice = DIRECT_MODE_TTS.provider === 'openai' ? (DIRECT_MODE_TTS.voice || 'fable') : 'fable'
+  // Meeting audio is always OpenAI TTS (HTTP MP3 required for Recall output_audio).
+  // Reads OSBORN_TTS_* env vars — same source as getDirectConfig — so voice is
+  // consistent between the pipeline and meeting canvas when TTS provider is openai.
+  const model = process.env.OSBORN_TTS_PROVIDER === 'openai' ? (process.env.OSBORN_TTS_MODEL || 'tts-1-hd') : 'tts-1-hd'
+  const voice = process.env.OSBORN_TTS_PROVIDER === 'openai' ? (process.env.OSBORN_TTS_VOICE || 'fable') : 'fable'
   try {
     const r = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
@@ -888,14 +886,12 @@ function startApiServer(workingDir: string, port: number): void {
       const text = (url.searchParams.get('text') || '').slice(0, 4000)
       if (!text) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no text' })); return }
       const t0 = Date.now()
-      // Meeting voice = the SAME OpenAI model/voice as the website's regular TTS
-      // (DIRECT_MODE_TTS) — user directive 2026-08-04: Deepgram aura removed, it
-      // sounded cheap/inconsistent. Consistency over the ~2-4s latency Deepgram
-      // saved. mp3 out (the canvas <audio> element plays it into the meeting).
+      // Meeting canvas TTS — always OpenAI HTTP (mp3 for <audio> element).
+      // Reads OSBORN_TTS_* env vars so voice stays in sync with pipeline when provider is openai.
       const key = process.env.OPENAI_API_KEY
       if (!key) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no OPENAI_API_KEY' })); return }
-      const model = DIRECT_MODE_TTS.provider === 'openai' ? (DIRECT_MODE_TTS.model || 'tts-1-hd') : 'tts-1-hd'
-      const voice = url.searchParams.get('voice') || (DIRECT_MODE_TTS.provider === 'openai' ? (DIRECT_MODE_TTS.voice || 'fable') : 'fable')
+      const model = process.env.OSBORN_TTS_PROVIDER === 'openai' ? (process.env.OSBORN_TTS_MODEL || 'tts-1-hd') : 'tts-1-hd'
+      const voice = url.searchParams.get('voice') || (process.env.OSBORN_TTS_PROVIDER === 'openai' ? (process.env.OSBORN_TTS_VOICE || 'fable') : 'fable')
       try {
         const tts = await fetch('https://api.openai.com/v1/audio/speech', {
           method: 'POST',

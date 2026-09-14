@@ -42,7 +42,9 @@ export interface AgentControlCallbacks {
 // CONSTANTS
 // ============================================================
 
-const OPENROUTER_MODEL = 'deepseek/deepseek-chat'
+// Model reads from env var (set by main process from getInferenceConfig) or DEFAULT_CONFIG default.
+// To switch model: update DEFAULT_CONFIG.inference.fastBrainModel in config.ts, or set OSBORN_FAST_BRAIN_MODEL env var.
+const OPENROUTER_MODEL = process.env.OSBORN_FAST_BRAIN_MODEL || 'deepseek/deepseek-chat'
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const TIMEOUT_MS = 20_000
 const MAX_TOOL_ROUNDS = 4
