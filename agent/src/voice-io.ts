@@ -46,7 +46,7 @@ export function createSTT(config: STTConfig) {
         model: (config.model || 'stt-rt-v4') as any,
         languageHints: config.language ? [config.language] : ['en'],
         maxEndpointDelayMs: 1200,         // give model room to decide on mid-thought pauses
-        endpointLatencyAdjustmentLevel: 2, // aggressive but not max — good for voice assistant
+        endpointLatencyAdjustmentLevel: 3, // max aggression — semantic model handles accuracy
         context: {
           terms: ['Claude', 'TypeScript', 'LiveKit', 'Deepgram', 'npm', 'Railway', 'Fly.io'],
         },
@@ -106,7 +106,7 @@ export function createTTS(config: TTSConfig) {
       tts = new soniox.TTS({
         model: (config.model || 'tts-rt-v1') as any,
         voice: config.voice || 'Maya',
-        speed: 1.0,
+        speed: 0.9,
       })
       break
 

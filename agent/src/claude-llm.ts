@@ -59,6 +59,12 @@ export interface ClaudeLLMOptions {
  * Strip markdown formatting for TTS (text-to-speech)
  * Removes **bold**, ##headers, ```code```, etc. so TTS doesn't read them literally
  */
+function extractSpeedMarker(text: string): { text: string; speed?: number } {
+  const m = text.match(/^\[SPEED:(0\.[5-9]\d*|1\.[0-3]\d*)\]/)
+  if (!m) return { text }
+  return { text: text.slice(m[0].length), speed: parseFloat(m[1]) }
+}
+
 function stripMarkdownForTTS(text: string): string {
   return text
     // Remove code blocks (``` ... ```)
@@ -715,6 +721,7 @@ export class ClaudeLLM extends llm.LLM {
   #currentTurnMessageId: string | null = null
   #currentTurnChunkIndex = 0
   #currentTurnChunks: string[] = []
+  #currentTurnSpeed: number | undefined
   #backgroundConsumerRunning = false
 
   // Active queries — multiple can be running (SDK queues them internally).
@@ -1345,18 +1352,21 @@ export class ClaudeLLM extends llm.LLM {
             this.#currentTurnMessageId = crypto.randomUUID()
             this.#currentTurnChunkIndex = 0
             this.#currentTurnChunks = []
+            this.#currentTurnSpeed = undefined
           }
           const turnMessageId = this.#currentTurnMessageId
           for (const block of msg.message.content) {
             if (block.type === 'text' && block.text) {
               const chunkIndex = this.#currentTurnChunkIndex
-              callbacks.eventEmitter.emit('assistant_text', { text: block.text, messageId: turnMessageId, chunkIndex })
-              const ttsChunk = stripMarkdownForTTS(block.text)
+              const { text: cleanText, speed } = extractSpeedMarker(block.text)
+              if (speed !== undefined) this.#currentTurnSpeed = speed
+              callbacks.eventEmitter.emit('assistant_text', { text: cleanText, messageId: turnMessageId, chunkIndex })
+              const ttsChunk = stripMarkdownForTTS(cleanText)
               if (ttsChunk.trim()) {
                 this.#currentTurnChunks.push(ttsChunk)
                 this.#currentTurnChunkIndex++
                 console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
-                callbacks.eventEmitter.emit('tts_say', { text: ttsChunk, messageId: turnMessageId, chunkIndex })
+                callbacks.eventEmitter.emit('tts_say', { text: ttsChunk, messageId: turnMessageId, chunkIndex, speed: this.#currentTurnSpeed })
               }
             }
           }
@@ -1376,6 +1386,7 @@ export class ClaudeLLM extends llm.LLM {
           this.#currentTurnMessageId = null
           this.#currentTurnChunkIndex = 0
           this.#currentTurnChunks = []
+          this.#currentTurnSpeed = undefined
           console.log('✅ Claude turn complete (persistent session stays alive)')
         }
       }
@@ -2306,6 +2317,7 @@ class ClaudeLLMStream extends llm.LLMStream {
       let streamTurnMessageId: string | null = null
       let streamTurnChunkIndex = 0
       let streamTurnChunks: string[] = []
+      let streamTurnSpeed: number | undefined
 
       // DIRECT MODE OPTIMIZATION: When skipTTSQueue is true, we run the Claude query
       // in the background and return from run() immediately. This is critical because:
@@ -2405,12 +2417,16 @@ class ClaudeLLMStream extends llm.LLMStream {
             streamTurnMessageId = crypto.randomUUID()
             streamTurnChunkIndex = 0
             streamTurnChunks = []
+            streamTurnSpeed = undefined
           }
 
           for (const block of (message as any).message.content) {
             if (block.type === 'text' && block.text) {
               hasOutput = true
-              const rawText = block.text
+              // Strip [SPEED:X.X] marker before emitting to frontend or TTS
+              const { text: cleanText, speed } = extractSpeedMarker(block.text)
+              if (speed !== undefined) streamTurnSpeed = speed
+              const rawText = cleanText
               const chunkIndex = streamTurnChunkIndex
 
               // Emit RAW text to frontend (for chat bubbles with full formatting)
@@ -2425,7 +2441,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                   // Direct mode: emit event for session.say() — bypasses LiveKit's
                   // BufferedTokenStream which causes stuck/delayed/out-of-order audio
                   console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
-                  this.#eventEmitter.emit('tts_say', { text: ttsChunk, messageId: streamTurnMessageId, chunkIndex })
+                  this.#eventEmitter.emit('tts_say', { text: ttsChunk, messageId: streamTurnMessageId, chunkIndex, speed: streamTurnSpeed })
                 } else {
                   // Realtime mode: use LLM stream queue (framework handles TTS)
                   console.log(`🔊 TTS stream (${ttsChunk.length} chars): "${ttsChunk}"`)

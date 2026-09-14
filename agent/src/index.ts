@@ -3508,6 +3508,11 @@ async function main() {
       const sayId = Date.now() // simple ID to correlate start/end logs
       console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
 
+      // Apply agent-requested speed (e.g. [SPEED:0.85] stripped from response text)
+      if ((data as any).speed !== undefined) {
+        try { (tts as any).updateOptions?.({ speed: (data as any).speed }) } catch {}
+      }
+
       try {
         const handle = (currentSession as any).say(data.text)
 
@@ -3717,9 +3722,9 @@ async function main() {
         // a full 3s window to keep talking before deciding it was false and
         // resuming. Other two knobs left at SDK defaults.
         interruption: {
-          minDuration: 1500,                  // default 500  — require 1.5s sustained speech (faster barge-in than 2500)
-          minWords: 2,                        // default 0    — require ≥2 transcript words
-          falseInterruptionTimeout: 3500,     // default 2000 — 3.5s false-interrupt window (belt-and-suspenders since minDuration was loosened)
+          minDuration: 800,                   // default 500  — require 800ms sustained speech (tightened from 1500; Soniox semantic STT reduces false positives)
+          minWords: 1,                        // default 0    — require ≥1 word ("stop", "wait", "no" now count)
+          falseInterruptionTimeout: 3500,     // default 2000 — 3.5s false-interrupt window
           // resumeFalseInterruption: true,      // default true  (unchanged)
           // discardAudioIfUninterruptible: true,// default true  (unchanged)
         },
