@@ -8,9 +8,10 @@ import * as fishaudio from '@livekit/agents-plugin-fishaudio'
 import * as openai from '@livekit/agents-plugin-openai'
 import * as rime from '@livekit/agents-plugin-rime'
 import * as silero from '@livekit/agents-plugin-silero'
+import * as soniox from '@livekit/agents-plugin-soniox'
 
 export interface STTConfig {
-  provider: 'deepgram' | 'deepgram-flux' | 'groq-whisper' | 'openai-whisper'
+  provider: 'soniox' | 'deepgram' | 'deepgram-flux' | 'groq-whisper' | 'openai-whisper'
   model?: string
   language?: string
   /** Deepgram Flux: end-of-turn confidence threshold (0.0-1.0, default 0.7) */
@@ -20,7 +21,7 @@ export interface STTConfig {
 }
 
 export interface TTSConfig {
-  provider: 'openai' | 'deepgram' | 'groq-orpheus' | 'fishaudio' | 'rime'
+  provider: 'soniox' | 'openai' | 'deepgram' | 'groq-orpheus' | 'fishaudio' | 'rime'
   voice?: string
   model?: string
 }
@@ -36,7 +37,25 @@ export interface VoiceIOConfig {
  */
 export function createSTT(config: STTConfig) {
   switch (config.provider) {
+    case 'soniox':
+      // Soniox stt-rt-v4 — semantic endpointing: ML model holds on incomplete thoughts,
+      // commits on natural sentence ends. maxEndpointDelayMs 500–3000ms (minimum = fastest).
+      // endpointLatencyAdjustmentLevel 0–3: higher = more aggressive latency reduction
+      // while keeping semantic smarts. context.terms biases recognition toward code vocab.
+      return new soniox.STT({
+        model: (config.model || 'stt-rt-v4') as any,
+        languageHints: config.language ? [config.language] : ['en'],
+        maxEndpointDelayMs: 1200,         // give model room to decide on mid-thought pauses
+        endpointLatencyAdjustmentLevel: 2, // aggressive but not max — good for voice assistant
+        context: {
+          terms: ['Claude', 'TypeScript', 'LiveKit', 'Deepgram', 'npm', 'Railway', 'Fly.io'],
+        },
+      })
+
     case 'deepgram':
+      // Previous default. Silence-based endpointing (550ms configured = wait for 550ms quiet).
+      // Fast and reliable, but commits on any pause — doesn't understand mid-thought hesitations.
+      // Switch back: provider: 'deepgram', model: 'nova-3'
       return new deepgram.STT({
         model: (config.model || 'nova-3') as any,
         language: config.language || 'en',
@@ -78,7 +97,22 @@ export function createTTS(config: TTSConfig) {
   let tts: any
 
   switch (config.provider) {
+    case 'soniox':
+      // Soniox tts-rt-v1 — real-time WebSocket streaming, clean abort on interruption.
+      // Estimated ~$4–16/M chars ($0.70/hr of generated speech, preview pricing).
+      // speed: 0.7–1.3x. voices: Maya (female), others at soniox.com/docs/tts/voices.
+      // Previous TTS: OpenAI tts-1-hd (fable) — $30/M chars, ~500ms TTFB, HTTP chunked.
+      // Switch back: provider: 'openai', model: 'tts-1-hd', voice: 'fable'
+      tts = new soniox.TTS({
+        model: (config.model || 'tts-rt-v1') as any,
+        voice: config.voice || 'Maya',
+        speed: 1.0,
+      })
+      break
+
     case 'openai':
+      // tts-1-hd: $30/M chars, ~500ms TTFB, 6 voices: alloy echo fable onyx nova shimmer.
+      // tts-1 (cheaper): $15/M chars, slightly lower quality, same voices.
       tts = new openai.TTS({
         voice: (config.voice as any) || 'alloy',
         model: config.model || 'tts-1',
@@ -86,6 +120,9 @@ export function createTTS(config: TTSConfig) {
       break
 
     case 'deepgram':
+      // Aura-2 voices: aura-2-asteria-en, aura-2-luna-en, aura-2-stella-en, aura-2-hera-en
+      // aura-2-orion-en, aura-2-arcas-en, aura-2-perseus-en, aura-2-angus-en, aura-2-orpheus-en
+      // ~$15/M chars, ~100ms TTFB.
       tts = new deepgram.TTS({
         model: (config.model || 'aura-2-asteria-en') as any,
       })

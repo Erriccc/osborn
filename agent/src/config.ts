@@ -16,10 +16,10 @@ export type EditMode = 'read-only' | 'edit'
 export type AgentMode = 'plan' | 'execute' | 'research'
 
 // STT provider options
-export type STTProvider = 'deepgram' | 'groq-whisper' | 'openai-whisper'
+export type STTProvider = 'soniox' | 'deepgram' | 'groq-whisper' | 'openai-whisper'
 
 // TTS provider options
-export type TTSProvider = 'openai' | 'deepgram'
+export type TTSProvider = 'soniox' | 'openai' | 'deepgram'
 
 // Pipeline mode configuration (STT → Claude + parallel fast brain → TTS)
 export interface DirectConfig {
@@ -134,13 +134,29 @@ const DEFAULT_CONFIG: OsbornConfig = {
   voiceMode: 'pipeline',
   direct: {
     stt: {
-      provider: 'deepgram',
-      model: 'nova-3',
+      // Soniox stt-rt-v4 — semantic endpointing (ML, not silence), word timestamps,
+      // custom vocabulary via context.terms. ~60% cheaper than nova-3 ($0.0017 vs $0.0043/min).
+      // Needs SONIOX_API_KEY.
+      provider: 'soniox',
+      model: 'stt-rt-v4',
+      // Previous: Deepgram nova-3, silence-based endpointing (550ms configured in voice-io.ts).
+      // Switch back: provider: 'deepgram', model: 'nova-3'
     },
     tts: {
-      provider: 'openai',
-      model: 'tts-1-hd',
-      voice: 'fable',
+      // Soniox tts-rt-v1 — real-time WebSocket streaming, speed control (0.7–1.3x),
+      // clean abort on interruption. Estimated ~$4–16/M chars vs OpenAI tts-1-hd $30/M.
+      // Pricing: $0.70/hr of generated speech (preview). Needs SONIOX_API_KEY.
+      provider: 'soniox',
+      model: 'tts-rt-v1',
+      voice: 'Maya',
+      // Previous: OpenAI tts-1-hd, voice fable — high quality, $30/M chars, ~500ms TTFB.
+      // Switch back: provider: 'openai', model: 'tts-1-hd', voice: 'fable'
+      // Other options already wired in voice-io.ts:
+      //   Rime Mist v3:     provider: 'rime',      voice: 'cove'  — 37ms TTFB, $30/M, WebSocket
+      //   Fish Audio s2-pro: provider: 'fishaudio', voice: '<id>'  — $15/M, voice cloning
+      //   Groq Orpheus:     provider: 'groq-orpheus', voice: 'autumn' — fast Groq chips, $22/M
+      //   Deepgram Aura-2:  provider: 'deepgram',  model: 'aura-2-asteria-en' — $15/M, ~100ms TTFB
+      //   OpenAI tts-1:     provider: 'openai',    model: 'tts-1', voice: 'fable' — $15/M
     },
   },
   mcpServers: {
