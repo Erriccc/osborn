@@ -3674,9 +3674,18 @@ async function main() {
     // discardAudioIfUninterruptible: true, ttsReadIdleTimeout: 10000,
     // maxUnrecoverableErrors: 3) are what was silently running via caret-resolved
     // 1.4.5 throughout the user's working month. Restoring them.
-    const turnDetector = process.env.LIVEKIT_REMOTE_EOT_URL ? new CloudTurnDetector() : undefined
+    // STT endpointing is the default (nova-3, 25ms silence-based VAD — reliable, fast).
+    // CloudTurnDetector (ML semantic EOT) is used ONLY if LIVEKIT_REMOTE_EOT_URL is set
+    // AND the endpoint passes a startup probe (returns valid JSON probability).
+    // If the probe fails (wrong URL, no auth, non-JSON response), STT is kept.
+    let turnDetection: any = 'stt'
+    if (process.env.LIVEKIT_REMOTE_EOT_URL) {
+      const detector = new CloudTurnDetector()
+      const eotLive = await detector.probe()
+      if (eotLive) turnDetection = detector
+    }
     const session = new voice.AgentSession({
-      turnDetection: (turnDetector ?? 'stt') as any,
+      turnDetection,
       preemptiveGeneration: false,  // Only fire LLM on final committed transcript, not partial preemptives
       // Commented out — kept for reference. These were added across 0.9.60/0.9.61
       // to try to harden interrupt + TTS handling, but evidence (osbornojure

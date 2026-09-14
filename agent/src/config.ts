@@ -711,15 +711,22 @@ export function invalidateSessionListCache(): void {
  *
  * @param limit - Max sessions to return (default 100, sorted by recency)
  */
-export async function listAllClaudeSessions(limit = 1000): Promise<ClaudeSessionEntry[]> {
+export async function listAllClaudeSessions(limit = 1000, includeSubagents = false): Promise<ClaudeSessionEntry[]> {
   if (_sessionListCache && Date.now() < _sessionListCache.expiresAt) {
-    return _sessionListCache.data.slice(0, limit)
+    const cached = includeSubagents
+      ? _sessionListCache.data
+      : _sessionListCache.data.filter(s => !s.projectSlug.endsWith('-subagents'))
+    return cached.slice(0, limit)
   }
   const projectsDir = getClaudeProjectsDir()
   if (!existsSync(projectsDir)) return []
 
-  // 1. Discover all project folders
+  // 1. Discover all project folders — skip subagent slugs unless explicitly requested.
+  //    Subagent sessions live in {workingDir}/subagents, which slugifies to a folder
+  //    ending in "-subagents". Filtering here keeps the session limit budget for
+  //    real user sessions and prevents subagent noise from crowding out other projects.
   const projectFolders = readdirSync(projectsDir).filter(name => {
+    if (!includeSubagents && name.endsWith('-subagents')) return false
     const fullPath = join(projectsDir, name)
     try { return statSync(fullPath).isDirectory() } catch { return false }
   })

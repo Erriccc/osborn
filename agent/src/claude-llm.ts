@@ -92,6 +92,12 @@ function stripMarkdownForTTS(text: string): string {
 }
 
 
+function getSubagentsDir(workingDir: string): string {
+  const dir = join(workingDir, 'subagents')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
 /**
  * Load skill files from agent/.claude/skills/{name}/SKILL.md
  * Injects into system prompt so Claude sees them as available capabilities.
@@ -1427,7 +1433,7 @@ export class ClaudeLLM extends llm.LLM {
       // agents roster prevents any SubagentStop(agent_type==='writer') from
       // firing inside this one-shot query and re-arming the backstop loop.
       const reviewerOptions: Options = {
-        cwd: this.#opts.workingDirectory,
+        cwd: getSubagentsDir(this.#opts.workingDirectory),
         permissionMode: 'default',
         systemPrompt: NAMED_AGENTS.reviewer.prompt,
         allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
@@ -1541,7 +1547,7 @@ export class ClaudeLLM extends llm.LLM {
       ].join('\n')
 
       const testerOptions: Options = {
-        cwd: this.#opts.workingDirectory,
+        cwd: getSubagentsDir(this.#opts.workingDirectory),
         permissionMode: 'default',
         systemPrompt: NAMED_AGENTS.tester.prompt,
         allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
@@ -1632,7 +1638,7 @@ export class ClaudeLLM extends llm.LLM {
       // an agents roster would allow delegation back to the writer, which would
       // fire SubagentStop(agent_type==='writer') and re-arm the backstop.
       const gateOptions: Options = {
-        cwd: this.#opts.workingDirectory,
+        cwd: getSubagentsDir(this.#opts.workingDirectory),
         permissionMode: 'default',
         systemPrompt: NAMED_AGENTS.reasoner.prompt,
         hooks: {
