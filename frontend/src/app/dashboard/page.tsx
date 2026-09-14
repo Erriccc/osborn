@@ -88,6 +88,16 @@ function projectKeyFromCwd(projectPath: string, baseCwd: string | null): string 
     return `${cleanBase}/${firstSegment}`
   }
 
+  // Legacy sub-project: sessions from `/home/sprite/workspace/X` are the
+  // same logical project as `/workspace/X` — merge them into one card.
+  for (const legacyBase of LEGACY_BASE_CWDS) {
+    if (clean.startsWith(legacyBase + '/')) {
+      const rest = clean.slice(legacyBase.length + 1)
+      const firstSegment = rest.split('/')[0]
+      return `${cleanBase}/${firstSegment}`
+    }
+  }
+
   // Off-base. This is the imported-from-elsewhere case: a session whose
   // original cwd was a Codespace, a Mac local dir, etc. We treat each
   // distinct off-base cwd as its own project card, named after the
@@ -1071,7 +1081,8 @@ export default function Dashboard() {
   const handleCreateProject = () => {
     const name = newProjectName.trim().toLowerCase().replace(/\s+/g, '-')
     if (!name) return
-    const projectPath = `/home/sprite/workspace/${name}`
+    const base = (baseCwd || '/workspace').replace(/\/+$/, '')
+    const projectPath = `${base}/${name}`
     setShowNewProject(false)
     setNewProjectName('')
     startChat(undefined, projectPath)
