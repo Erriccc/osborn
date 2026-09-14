@@ -202,14 +202,16 @@ export const DIRECT_MODE_STT: STTConfig = {
   // provider: 'groq-whisper', model: 'whisper-large-v3-turbo',          // Batch — needs VAD
   // provider: 'openai-whisper', model: 'whisper-1',                     // Batch — needs VAD
   // provider: 'deepgram-flux', model: 'flux-general-en', language: 'en',  // Streaming, ML-based turn detection — Flux V2 has silent keepalive timeout bug (~30s silence kills connection)
-  provider: 'deepgram', model: 'nova-3', language: 'en',               // Streaming, silence-based endpointing (550ms)
+  // provider: 'deepgram', model: 'nova-3', language: 'en',  // Silence-based endpointing (550ms) — $0.0043/min
+  provider: 'soniox', model: 'stt-rt-v4', language: 'en',  // Semantic endpointing, ~60% cheaper ($0.0017/min) — needs SONIOX_API_KEY
 }
 
 export const DIRECT_MODE_TTS: TTSConfig = {
   // provider: 'deepgram', model: 'aura-2-asteria-en',  // WebSocket-based: handles TTS abort cleanly — but quality rejected (run-on sentences)
   // provider: 'openai', model: 'tts-1', voice: 'fable',  // HTTP streaming: throws APIUserAbortError on interrupt → unrecoverable session crash
-  provider: 'openai', model: 'tts-1-hd', voice: 'fable',  // 0.9.70: test tts-1-hd — tts-1 had chronic per-sentence HTTP hangs (40s SDK watchdog → APIUserAbortError mid-message)
+  // provider: 'openai', model: 'tts-1-hd', voice: 'fable',  // $30/M chars, ~500ms TTFB — fallback if Soniox has issues
   // provider: 'groq-orpheus', model: 'canopylabs/orpheus-v1-english', voice: 'autumn',  // $22/M chars — voices: autumn, diana, hannah, austin, daniel, troy
   // provider: 'fishaudio', model: 's2-pro', voice: '<voice-id>',  // $15/M chars — blind test winner, HTTP streaming (test abort behavior)
   // provider: 'rime', model: 'mistv3', voice: 'cove',  // $30/M chars, 37ms TTFB — WebSocket (safe on interruption); voices: aurora, ember, cove
+  provider: 'soniox', model: 'tts-rt-v1', voice: 'Victoria',  // WebSocket streaming, ~$4–16/M chars, British female — needs SONIOX_API_KEY
 }

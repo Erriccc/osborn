@@ -3226,8 +3226,8 @@ async function main() {
   async function createDirectSession(resumeSessionId?: string, llmOverride?: any): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
     console.log('🎯 Creating direct session...')
 
-    const stt = createSTT(DIRECT_MODE_STT)
-    const tts = createTTS(DIRECT_MODE_TTS)
+    const stt = createSTT(directConfig.stt as import('./voice-io.js').STTConfig)
+    const tts = createTTS(directConfig.tts as import('./voice-io.js').TTSConfig)
 
     // Create Claude LLM wrapper — direct mode uses speech-optimized system prompt
     // skipTTSQueue: bypass LiveKit's BufferedTokenStream, use session.say() instead

@@ -312,16 +312,19 @@ export function getDirectConfig(config: OsbornConfig): Required<DirectConfig> {
   const defaults = DEFAULT_CONFIG.direct!
   const userConfig = config.direct || {}
 
+  // Env vars take priority over config.yaml — escape hatch for stale volume configs.
+  // Set OSBORN_STT_PROVIDER / OSBORN_TTS_PROVIDER / OSBORN_TTS_VOICE on the machine
+  // to override whatever is baked into /workspace/.osborn/config.yaml.
   return {
     stt: {
-      provider: userConfig.stt?.provider || defaults.stt!.provider!,
-      model: userConfig.stt?.model || defaults.stt!.model,
+      provider: (process.env.OSBORN_STT_PROVIDER || userConfig.stt?.provider || defaults.stt!.provider!) as STTProvider,
+      model: process.env.OSBORN_STT_MODEL || userConfig.stt?.model || defaults.stt!.model,
       language: userConfig.stt?.language || 'en',
     },
     tts: {
-      provider: userConfig.tts?.provider || defaults.tts!.provider!,
-      model: userConfig.tts?.model || defaults.tts!.model,
-      voice: userConfig.tts?.voice || defaults.tts!.voice,
+      provider: (process.env.OSBORN_TTS_PROVIDER || userConfig.tts?.provider || defaults.tts!.provider!) as TTSProvider,
+      model: process.env.OSBORN_TTS_MODEL || userConfig.tts?.model || defaults.tts!.model,
+      voice: process.env.OSBORN_TTS_VOICE || userConfig.tts?.voice || defaults.tts!.voice,
     },
   }
 }
