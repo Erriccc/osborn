@@ -148,7 +148,7 @@ const DEFAULT_CONFIG: OsbornConfig = {
       // Pricing: $0.70/hr of generated speech (preview). Needs SONIOX_API_KEY.
       provider: 'soniox',
       model: 'tts-rt-v1',
-      voice: 'Maya',
+      voice: 'Victoria',
       // Previous: OpenAI tts-1-hd, voice fable — high quality, $30/M chars, ~500ms TTFB.
       // Switch back: provider: 'openai', model: 'tts-1-hd', voice: 'fable'
       // Other options already wired in voice-io.ts:
