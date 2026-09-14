@@ -3741,8 +3741,8 @@ async function main() {
         // a full 3s window to keep talking before deciding it was false and
         // resuming. Other two knobs left at SDK defaults.
         interruption: {
-          minDuration: 800,                   // default 500  — require 800ms sustained speech (tightened from 1500; Soniox semantic STT reduces false positives)
-          minWords: 1,                        // default 0    — require ≥1 word ("stop", "wait", "no" now count)
+          minDuration: 1100,                  // default 500  — 1.1s sustained speech; 800 was triggering on mid-sentence continuations
+          minWords: 2,                        // default 0    — require ≥2 words; single "um"/"uh" resumptions no longer gate as interruption
           falseInterruptionTimeout: 3500,     // default 2000 — 3.5s false-interrupt window
           // resumeFalseInterruption: true,      // default true  (unchanged)
           // discardAudioIfUninterruptible: true,// default true  (unchanged)

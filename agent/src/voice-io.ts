@@ -45,8 +45,8 @@ export function createSTT(config: STTConfig) {
       return new soniox.STT({
         model: (config.model || 'stt-rt-v4') as any,
         languageHints: config.language ? [config.language] : ['en'],
-        maxEndpointDelayMs: 1200,         // give model room to decide on mid-thought pauses
-        endpointLatencyAdjustmentLevel: 3, // max aggression — semantic model handles accuracy
+        maxEndpointDelayMs: 2500,         // 2.5s runway — long enough for thinking pauses ("um", mid-clause hesitations)
+        endpointLatencyAdjustmentLevel: 2, // balanced — semantic model distinguishes pause vs end; 3 was cutting off long turns
         context: {
           terms: ['Claude', 'TypeScript', 'LiveKit', 'Deepgram', 'npm', 'Railway', 'Fly.io'],
         },
