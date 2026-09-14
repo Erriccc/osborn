@@ -7,7 +7,7 @@
  * Flow: User speaks → STT → ClaudeLLM (Agent SDK) → TTS → User hears
  */
 
-import { llm, shortuuid, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
+import { llm, shortuuid, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions, type ToolContextLike } from '@livekit/agents'
 import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUserMessage, type Query as SDKQuery } from '@anthropic-ai/claude-agent-sdk'
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
@@ -1775,7 +1775,7 @@ class ClaudeLLMStream extends llm.LLMStream {
       abortController,
     }: {
       chatCtx: llm.ChatContext
-      toolCtx?: llm.ToolContext
+      toolCtx?: ToolContextLike
       connOptions: APIConnectOptions
       opts: ClaudeLLMOptions
       sessionId: string | null

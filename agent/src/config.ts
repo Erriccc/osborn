@@ -171,17 +171,16 @@ const DEFAULT_CONFIG: OsbornConfig = {
     },
     tts: {
       // ── Active ─────────────────────────────────────────────────────────────
-      provider: 'openai',
-      model: 'tts-1-hd',
-      voice: 'fable',
-      // Soniox TTS requires @livekit/agents-plugin-soniox@1.8.1 which needs agents@1.8.1.
-      // Pending full LiveKit 1.4→1.8 upgrade. Swap back once agents are upgraded.
-      // provider: 'soniox', model: 'tts-rt-v1', voice: 'Victoria'
-      //   WebSocket streaming, clean abort, speed control, ~$4–16/M. Needs agents@1.8.1.
+      provider: 'soniox',
+      model: 'tts-rt-v1',
+      voice: 'Victoria',
+      // WebSocket streaming, clean abort, speed control 0.7–1.3x, ~$4–16/M chars.
+      // Victoria = en-GB female, refined. Also: Isla (en-GB, lively), Maya (en-US female).
       //
       // ── Alternatives ───────────────────────────────────────────────────────
+      // provider: 'openai', model: 'tts-1-hd', voice: 'fable'
+      //   $30/M chars, ~500ms TTFB, HTTP streaming. 6 voices.
       // provider: 'openai', model: 'tts-1', voice: 'fable'
-      //   $15/M chars, slightly lower quality, same voices.
       //   $15/M chars, slightly lower quality, same voices.
       // provider: 'deepgram', model: 'aura-2-asteria-en'
       //   $15/M chars, ~100ms TTFB, WebSocket. Voices: asteria luna stella hera orion arcas perseus angus orpheus.

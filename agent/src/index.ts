@@ -4192,12 +4192,6 @@ async function main() {
         }
       })
 
-      // FALLBACK: user_speech_committed
-      sess.on('user_speech_committed' as any, (ev: any) => {
-        const transcript = ev.transcript || ev.text || ''
-        sendUserTranscript(transcript, 'committed')
-      })
-
       // Agent state tracking
       sess.on('agent_state_changed' as any, (ev: any) => {
         agentState = ev.newState
