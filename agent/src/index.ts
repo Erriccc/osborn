@@ -2836,6 +2836,12 @@ async function main() {
   // Current SpeechHandle from session.say() — only the latest one matters
   let currentSpeechHandle: any = null
 
+  // All active SpeechHandles (current + queued). When a barge-in is confirmed,
+  // we cancel the entire queue so the agent stops mid-queue rather than finishing
+  // all pre-queued chunks before going to listen. Safe on 1.8.1 + Soniox WebSocket
+  // (the 1.4.x crash path was OpenAI HTTP fetch abort → recoverable:false — gone now).
+  const activeSpeechHandles = new Set<any>()
+
   // Last interruption context — gathered at interrupt time, consumed when user's message arrives
   let lastInterruption: {
     spokenText: string       // synchronizedTranscript — what user heard (word-accurate)
@@ -3519,6 +3525,7 @@ async function main() {
         if (handle && typeof handle.addDoneCallback === 'function') {
           // SpeechHandle — track it and register interruption callback
           currentSpeechHandle = handle
+          activeSpeechHandles.add(handle)
           // Wall-clock timer: capture when audio actually starts playing (first frame)
           // Used as fallback if LiveKit's playbackPosition is 0 (race condition)
           let playbackStartedAt: number | null = null
@@ -3541,8 +3548,20 @@ async function main() {
             audioOutputRef.on('playbackStarted', onPlaybackStarted)
           }
           handle.addDoneCallback((sh: any) => {
+            activeSpeechHandles.delete(sh)
             if (sh.interrupted) {
               console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
+              // Cancel all other queued handles so the queue flushes on barge-in.
+              // Without this, LiveKit auto-starts the next queued handle even after
+              // the current one is interrupted — user has to wait for the whole queue
+              // to drain before the agent goes to listen.
+              if (activeSpeechHandles.size > 0) {
+                console.log(`🔇 Flushing ${activeSpeechHandles.size} queued speech handle(s) after barge-in`)
+                for (const h of activeSpeechHandles) {
+                  try { h.interrupt?.() } catch {}
+                }
+                activeSpeechHandles.clear()
+              }
               const audioOutput = (currentSession as any)?.output?.audio
               const sdkTranscript = audioOutput?.lastPlaybackEvent?.synchronizedTranscript
               const sdkPlaybackSec = audioOutput?.lastPlaybackEvent?.playbackPosition ?? 0
@@ -3845,6 +3864,7 @@ async function main() {
     voiceQueue.length = 0
     isProcessingQueue = false
     currentSpeechHandle = null
+    activeSpeechHandles.clear()
     lastInterruption = null
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
@@ -3985,6 +4005,7 @@ async function main() {
     voiceQueue.length = 0
     isProcessingQueue = false
     currentSpeechHandle = null
+    activeSpeechHandles.clear()
     lastInterruption = null
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
@@ -4801,6 +4822,7 @@ async function main() {
     voiceQueue.length = 0
     isProcessingQueue = false
     currentSpeechHandle = null
+    activeSpeechHandles.clear()
     lastInterruption = null
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
