@@ -2021,12 +2021,11 @@ function VoiceRoomInner({
   // will retry once the agent reports the session).
   const persistFavorites = useCallback((next: GeneratedFile[]) => {
     try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
-    if (!currentSessionId) return
     fetch('/api/favorites', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ favorites: next, sessionId: currentSessionId }),
+      body: JSON.stringify({ favorites: next }),
     }).catch(() => {})
-  }, [currentSessionId])
+  }, [])
 
   const toggleFavorite = useCallback(async (file: GeneratedFile) => {
     const currentlyFav = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
@@ -2077,13 +2076,10 @@ function VoiceRoomInner({
     })
   }, [favoriteFiles])
 
-  // Cross-device favorites — SERVER IS AUTHORITATIVE. Runs once per session
-  // (when currentSessionId becomes known). Favorites are scoped per session so
-  // different sessions never bleed into each other.
-  //  - if the server has a favorites record → replace local with it (this is how
-  //    an un-favorite on another device propagates here, not just adds).
-  //  - if the server has NO record yet → seed it from this device's local
-  //    favorites so the first sync on a new device doesn't lose anything.
+  // Cross-device favorites — SERVER IS AUTHORITATIVE. User-level (not session-level)
+  // so favorites persist across sessions. Runs once per session to sync.
+  //  - if the server has a record → replace local with it (cross-device propagation)
+  //  - if no server record yet → seed from localStorage so first sync preserves existing stars.
   const syncedSessionRef = useRef<string | null>(null)
   useEffect(() => {
     // Wait until we know which session we're in; also guard against running
@@ -2093,36 +2089,23 @@ function VoiceRoomInner({
     syncedSessionRef.current = currentSessionId
 
     let cancelled = false
-    fetch(`/api/favorites?sessionId=${encodeURIComponent(currentSessionId)}`)
+    fetch(`/api/favorites`)
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
         if (cancelled || !json) return
         if (json.exists && Array.isArray(json.favorites)) {
           const server = (json.favorites as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
-          // Self-heal: drop any entries that belong to a different session.
-          // A legitimate favorite in this session has a filePath containing
-          // the current session id (osb/{currentSessionId}/…). Entries from
-          // another session snuck in via the pre-4bd44d1 seeding bug.
-          const clean = server.filter((f) => f.filePath && f.filePath.includes(currentSessionId))
-          const wasPoluted = clean.length !== server.length
-          setFavoriteFiles(clean)
-          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(clean)) } catch { /* ignore */ }
-          if (wasPoluted) {
-            // Persist the cleaned list back to the server so future loads are
-            // also clean. Only fires when something was actually removed.
-            fetch('/api/favorites', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ favorites: clean, sessionId: currentSessionId }),
-            }).catch(() => {})
-          }
-        } else {
-          // No server record for this session yet — start with an empty set.
-          // We deliberately do NOT seed from localStorage here: those entries
-          // carry filePaths from whatever previous session wrote them, so
-          // seeding would cause cross-session leaks (the original bug).
-          setFavoriteFiles([])
-          try { localStorage.removeItem(FAVORITES_KEY) } catch { /* ignore */ }
+          setFavoriteFiles(server)
+          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(server)) } catch { /* ignore */ }
+        }
+        // No server record yet — keep localStorage favorites and seed the server
+        // from them so they persist on next load (handles first-time / migration).
+        else if (favoriteFiles.length > 0) {
+          fetch('/api/favorites', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favorites: favoriteFiles }),
+          }).catch(() => {})
         }
       })
       .catch(() => {})
