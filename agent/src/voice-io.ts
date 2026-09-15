@@ -48,20 +48,7 @@ export function createSTT(config: STTConfig) {
         maxEndpointDelayMs: 2500,         // 2.5s runway — long enough for thinking pauses ("um", mid-clause hesitations)
         endpointLatencyAdjustmentLevel: 2, // balanced — semantic model distinguishes pause vs end; 3 was cutting off long turns
         context: {
-          terms: [
-            // Models + providers
-            'Claude', 'Anthropic', 'Sonnet', 'Haiku', 'Opus', 'Soniox', 'Deepgram', 'OpenRouter',
-            // Infra + services
-            'LiveKit', 'Supabase', 'Railway', 'Fly.io', 'GitHub', 'Vercel',
-            // Languages + runtimes
-            'TypeScript', 'JavaScript', 'React', 'Next.js', 'Node.js', 'tsx',
-            // Package management
-            'npm', 'pnpm', 'yarn',
-            // Project-specific
-            'osborn', 'Dispatcher', 'IVDE', 'fast brain', 'WebSocket',
-            // Business / Meta context
-            'Meta', 'Instagram', 'OAuth', 'config ID', 'callback URL',
-          ],
+          terms: ['Claude', 'TypeScript', 'LiveKit', 'Deepgram', 'npm', 'Railway', 'Fly.io'],
         },
       })
 
