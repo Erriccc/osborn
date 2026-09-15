@@ -96,6 +96,7 @@ interface ChatMessage {
   toolMeta?: ToolMeta
   messageId?: string
   chunkIndex?: number
+  liked?: boolean
 }
 
 interface SpeakingChunk {
@@ -393,11 +394,37 @@ function sanitizeUserTranscript(text: string): string | null {
 }
 
 // Modern chat message bubble with parts support
-const MessageBubble = React.memo(function MessageBubble({ message, speakingChunk }: { message: ChatMessage; speakingChunk?: SpeakingChunk | null }) {
+const MessageBubble = React.memo(function MessageBubble({
+  message,
+  speakingChunk,
+  onCopy,
+  onLike,
+  onIgnore,
+  onReplay,
+  isLiked,
+}: {
+  message: ChatMessage
+  speakingChunk?: SpeakingChunk | null
+  onCopy?: () => void
+  onLike?: () => void
+  onIgnore?: () => void
+  onReplay?: () => void
+  isLiked?: boolean
+}) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
   const userText = isUser ? sanitizeUserTranscript(message.content) : message.content
   if (isUser && userText === null) return null
+
+  const [copyDone, setCopyDone] = useState(false)
+
+  const handleCopy = useCallback(() => {
+    const text = isUser ? (userText as string) : message.content
+    navigator.clipboard.writeText(text).catch(() => {})
+    setCopyDone(true)
+    setTimeout(() => setCopyDone(false), 1500)
+    onCopy?.()
+  }, [isUser, userText, message.content, onCopy])
 
   // Parse content into parts for assistant messages
   const parts = useMemo(() => {
@@ -509,6 +536,71 @@ const MessageBubble = React.memo(function MessageBubble({ message, speakingChunk
             <span className="text-[10px] text-amber-400">streaming</span>
           )}
         </div>
+
+        {/* Action buttons */}
+        {!isSystem && !message.isStreaming && (
+          <div className={`flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity ${isUser ? 'justify-end' : 'justify-start'}`}>
+            <button
+              onClick={handleCopy}
+              className="p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
+              title="Copy"
+            >
+              {copyDone ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                </svg>
+              )}
+            </button>
+            {!isUser && (
+              <button
+                onClick={onLike}
+                className={`p-0.5 rounded transition-colors active:scale-95 ${isLiked ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-gray-200'}`}
+                title="Like"
+              >
+                {isLiked ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3H14z" />
+                    <path d="M7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3H14z" />
+                    <path d="M7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3" />
+                  </svg>
+                )}
+              </button>
+            )}
+            {!isUser && (
+              <button
+                onClick={onReplay}
+                className="p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
+                title="Replay"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="1 4 1 10 7 10" />
+                  <path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
+                </svg>
+              </button>
+            )}
+            {isUser && (
+              <button
+                onClick={onIgnore}
+                className="p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
+                title="Ignore"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Avatar for user — hidden on mobile */}
@@ -536,11 +628,21 @@ function ChatPanel({
   onSuggestionClick,
   activeResearch,
   speakingChunk,
+  onCopy,
+  onLike,
+  onIgnore,
+  onReplay,
+  likedIds,
 }: {
   messages: ChatMessage[]
   onSuggestionClick?: (text: string) => void
   activeResearch?: { taskId: string; task: string; toolCount: number } | null
   speakingChunk?: SpeakingChunk | null
+  onCopy?: (msg: ChatMessage) => void
+  onLike?: (msg: ChatMessage) => void
+  onIgnore?: (msg: ChatMessage) => void
+  onReplay?: (msg: ChatMessage) => void
+  likedIds?: Set<string>
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
@@ -680,7 +782,16 @@ function ChatPanel({
         </div>
       )}
       {messages.filter(m => m.category !== 'log').map((msg) => (
-        <MessageBubble key={msg.id} message={msg} speakingChunk={speakingChunk} />
+        <MessageBubble
+          key={msg.id}
+          message={msg}
+          speakingChunk={speakingChunk}
+          onCopy={() => onCopy?.(msg)}
+          onLike={() => onLike?.(msg)}
+          onIgnore={() => onIgnore?.(msg)}
+          onReplay={() => onReplay?.(msg)}
+          isLiked={likedIds?.has(msg.id)}
+        />
       ))}
       {/* Inline research tracking spinner */}
       {activeResearch && (
@@ -3687,6 +3798,43 @@ function VoiceRoomInner({
     }
   }, [sendToAgent])
 
+  const [likedMessageIds, setLikedMessageIds] = useState<Set<string>>(new Set())
+
+  const handleCopyMessage = useCallback((msg: ChatMessage) => {
+    const text = msg.role === 'user'
+      ? (sanitizeUserTranscript(msg.content) ?? msg.content)
+      : msg.content
+    navigator.clipboard.writeText(text).catch(() => {})
+  }, [])
+
+  const handleLikeMessage = useCallback((msg: ChatMessage) => {
+    setLikedMessageIds(prev => {
+      const next = new Set(prev)
+      if (next.has(msg.id)) { next.delete(msg.id) } else { next.add(msg.id) }
+      return next
+    })
+    const preview = msg.content.replace(/\s+/g, ' ').trim().substring(0, 60)
+    handleSendText(`[liked] "${preview}${msg.content.length > 60 ? '...' : ''}"`)
+  }, [handleSendText])
+
+  const handleIgnoreMessage = useCallback((msg: ChatMessage) => {
+    setMessages(prev => prev.filter(m => m.id !== msg.id))
+    if (msg.role === 'user') {
+      const preview = msg.content.replace(/\s+/g, ' ').trim().substring(0, 60)
+      handleSendText(`[ignored: disregard my previous message "${preview}${msg.content.length > 60 ? '...' : ''}"]`)
+    }
+  }, [handleSendText])
+
+  const handleReplayMessage = useCallback((msg: ChatMessage) => {
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'replay_message',
+      messageId: msg.messageId,
+      content: msg.content,
+    }))
+    sendToAgent(payload, { reliable: true })
+  }, [sendToAgent])
+
   // Welcome-back injection: if the user returns after a gap of more than 15
   // minutes since their last message, inject a one-time context note over the
   // proven user_text channel so the agent greets them with gap awareness.
@@ -4788,6 +4936,11 @@ function VoiceRoomInner({
           onSuggestionClick={(text) => handleSendText(text)}
           activeResearch={activeResearch}
           speakingChunk={speakingChunk}
+          onCopy={handleCopyMessage}
+          onLike={handleLikeMessage}
+          onIgnore={handleIgnoreMessage}
+          onReplay={handleReplayMessage}
+          likedIds={likedMessageIds}
         />
 
         {/* Logs drawer */}
