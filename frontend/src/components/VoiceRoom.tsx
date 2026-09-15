@@ -2093,18 +2093,36 @@ function VoiceRoomInner({
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
         if (cancelled || !json) return
+
+        // Read whatever is currently in localStorage — may include items that
+        // were starred but whose POST failed in a previous session.
+        let local: GeneratedFile[] = []
+        try {
+          const raw = localStorage.getItem(FAVORITES_KEY)
+          if (raw) local = (JSON.parse(raw) as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
+        } catch { /* ignore */ }
+
         if (json.exists && Array.isArray(json.favorites)) {
           const server = (json.favorites as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
-          setFavoriteFiles(server)
-          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(server)) } catch { /* ignore */ }
-        }
-        // No server record yet — keep localStorage favorites and seed the server
-        // from them so they persist on next load (handles first-time / migration).
-        else if (favoriteFiles.length > 0) {
+          // Merge: server is authoritative, but also keep any localStorage items
+          // not yet on the server (guards against a failed POST in a prior session).
+          const serverPaths = new Set(server.map((f) => f.filePath))
+          const localOnly = local.filter((f) => f.filePath && !serverPaths.has(f.filePath))
+          const merged = localOnly.length > 0 ? [...server, ...localOnly] : server
+          setFavoriteFiles(merged)
+          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(merged)) } catch { /* ignore */ }
+          // Back-fill server if we found local-only items (they missed a POST).
+          if (localOnly.length > 0) {
+            fetch('/api/favorites', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ favorites: merged }),
+            }).catch(() => {})
+          }
+        } else if (local.length > 0) {
+          // No server record yet — seed from localStorage (first-time / migration).
           fetch('/api/favorites', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ favorites: favoriteFiles }),
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favorites: local }),
           }).catch(() => {})
         }
       })
