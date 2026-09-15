@@ -33,8 +33,8 @@ export async function GET(req: NextRequest) {
   // Identify the user via auth cookie.
   let userId: string
   try {
-    const auth = await createSupabaseServer()
-    const { data: u } = await auth.getUser()
+    const supabase = await createSupabaseServer()
+    const { data: u } = await supabase.auth.getUser()
     if (!u.user) return NextResponse.json({ favorites: [] })
     userId = u.user.id
   } catch {
@@ -56,8 +56,8 @@ export async function POST(req: NextRequest) {
   // Identify the user via auth cookie.
   let userId: string
   try {
-    const auth = await createSupabaseServer()
-    const { data: u } = await auth.getUser()
+    const supabase = await createSupabaseServer()
+    const { data: u } = await supabase.auth.getUser()
     if (!u.user) return NextResponse.json({ success: false, error: 'Not authenticated' }, { status: 401 })
     userId = u.user.id
   } catch {
