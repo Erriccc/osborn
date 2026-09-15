@@ -194,13 +194,12 @@ const DEFAULT_CONFIG: OsbornConfig = {
   },
   inference: {
     // ── Active ───────────────────────────────────────────────────────────────
-    fastBrainModel: 'openai/gpt-4o-mini',
+    fastBrainModel: 'deepseek/deepseek-chat',
     fastBrainProvider: 'openrouter',
     // Parallel fast brain: answers greetings/follow-ups instantly while main agent
-    // processes. Uses OpenRouter (OPENROUTER_API_KEY). ~20ms TTFB on gpt-4o-mini.
+    // processes. Uses OpenRouter (OPENROUTER_API_KEY). ~20ms TTFB on deepseek-chat.
     //
     // ── Alternatives ─────────────────────────────────────────────────────────
-    // fastBrainModel: 'deepseek/deepseek-chat'                — was default, credits depleted
     // fastBrainModel: 'deepseek/deepseek-reasoner'            — slower, deeper CoT
     // fastBrainModel: 'google/gemini-flash-1.5'               — Google via OpenRouter
     // fastBrainModel: 'openai/gpt-4o-mini'                    — OpenAI via OpenRouter
