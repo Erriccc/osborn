@@ -43,7 +43,7 @@ import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { getIndexPath, buildSummaryIndex } from './summary-index.js'
-import { ensureClaudeAuth } from './claude-auth.js'
+import { ensureClaudeAuth, applyAuthFallback } from './claude-auth.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -4108,6 +4108,12 @@ async function main() {
       pendingAuthSubmitCode = null
       // Continue anyway — the agent SDK will use ANTHROPIC_API_KEY if available
     }
+
+    // Additive onboarding tier resolution. Runs AFTER ensureClaudeAuth and
+    // BEFORE session creation so the OpenRouter redirect env vars (tier 3) are
+    // set before the first query() spawn inherits process.env. No-op for
+    // tier-1 (real Claude login) and tier-2 (user's own ANTHROPIC_API_KEY).
+    applyAuthFallback()
 
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession

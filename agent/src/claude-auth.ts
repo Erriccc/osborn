@@ -19,6 +19,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { join } from 'path'
+import { FALLBACK_MODEL } from './claude-llm.js'
 
 /**
  * Resolve the full path to the `claude` binary.
@@ -168,6 +169,89 @@ export function isClaudeAuthenticated(): boolean {
     console.warn('⚠️  Failed to read Claude credentials:', err)
     return false
   }
+}
+
+// ─────────────────────────────────────────
+// OpenRouter Fallback Tier (additive onboarding tier 3)
+// ─────────────────────────────────────────
+
+/**
+ * Tracks whether applyAuthFallback() itself set the OpenRouter redirect env
+ * vars. Only when true does the auth `onComplete` upgrade guard clear them —
+ * so a user-supplied ANTHROPIC_BASE_URL (their own gateway) is never touched.
+ */
+let fallbackTierActive = false
+
+/**
+ * Additive third onboarding tier. Runs AFTER ensureClaudeAuth() and BEFORE
+ * session creation. Resolves which auth backend the agent will use, in order:
+ *
+ *   Tier 1 — real Claude login active (expiry-aware): use it, no-op.
+ *   Tier 2 — user's own ANTHROPIC_API_KEY is set: use it, no-op.
+ *   Tier 3 — central OPENROUTER_API_KEY present: redirect the SDK to
+ *            OpenRouter's native Anthropic-Messages endpoint via env vars and
+ *            point every model slot at FALLBACK_MODEL. Proven end-to-end
+ *            env-var-only (no proxy) — the Claude Code tool loop completes.
+ *   Tier 3 fail — no OpenRouter key: warn and no-op (do NOT throw; the SDK
+ *            may still find creds we didn't detect).
+ *
+ * Env vars MUST be set here, before the first query() spawn — the SDK
+ * subprocess inherits process.env at spawn time and reads auth/model config
+ * once at cold start.
+ */
+export function applyAuthFallback(): void {
+  // Tier 1: real Claude login (expiry-aware — NOT hasOAuthTokenEnv, which
+  // would treat an expired token as active and let the SDK fail downstream).
+  if (isClaudeAuthenticated()) {
+    return
+  }
+
+  // Tier 2: user's own Anthropic key.
+  if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim() !== '') {
+    return
+  }
+
+  // Tier 3: central OpenRouter key.
+  const openRouterKey = process.env.OPENROUTER_API_KEY
+  if (openRouterKey && openRouterKey.trim() !== '') {
+    // Native Anthropic-Messages endpoint — no local translation proxy needed.
+    process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
+    // Injected as raw `Authorization: Bearer <token>` by the SDK.
+    process.env.ANTHROPIC_AUTH_TOKEN = openRouterKey
+    // Empty string is REQUIRED — a set ANTHROPIC_API_KEY triggers the SDK's
+    // key-validation fallback and bypasses ANTHROPIC_AUTH_TOKEN.
+    process.env.ANTHROPIC_API_KEY = ''
+    // Point EVERY model slot at the fallback model. An unmapped slot 404s —
+    // Claude Code makes separate background/small-fast + sub-agent calls.
+    process.env.ANTHROPIC_MODEL = FALLBACK_MODEL
+    process.env.ANTHROPIC_SMALL_FAST_MODEL = FALLBACK_MODEL
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = FALLBACK_MODEL
+    // Silence the unrecognized-model 200k context cap for kimi-k2.
+    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '131072'
+    fallbackTierActive = true
+    console.log(`[auth-fallback] using central OpenRouter tier, model=${FALLBACK_MODEL}`)
+    return
+  }
+
+  // Tier 3 fail: no OpenRouter key — do NOT throw.
+  console.warn('[auth-fallback] no Claude login, no ANTHROPIC_API_KEY, and no OPENROUTER_API_KEY — agent may be unauthenticated')
+}
+
+/**
+ * Clear the OpenRouter fallback redirect — but ONLY if applyAuthFallback() set
+ * it. Called from the auth onComplete path so a user who later finishes real
+ * Claude login mid-session (or on the next cold start) is not stuck routing to
+ * OpenRouter. A user-supplied ANTHROPIC_BASE_URL is left untouched.
+ */
+function clearAuthFallbackIfActive(): void {
+  if (!fallbackTierActive) return
+  delete process.env.ANTHROPIC_BASE_URL
+  delete process.env.ANTHROPIC_AUTH_TOKEN
+  // Was forced to '' for the OpenRouter redirect; unset so the real OAuth
+  // token path (CLAUDE_CODE_OAUTH_TOKEN) is used cleanly.
+  delete process.env.ANTHROPIC_API_KEY
+  fallbackTierActive = false
+  console.log('[auth-fallback] real Claude login completed — cleared OpenRouter redirect')
 }
 
 /**
@@ -565,6 +649,11 @@ export async function ensureClaudeAuth(
       })
     },
     onComplete: () => {
+      // Upgrade guard: a tier-3 user just completed REAL Claude login. Clear
+      // the OpenRouter redirect env (only if the fallback set it) so this
+      // session — and the next cold start — use the real OAuth token instead
+      // of staying pinned to OpenRouter.
+      clearAuthFallbackIfActive()
       // Include the captured token so the frontend can persist it to the
       // host-persistent layer via the Sprites API. Without this, credentials
       // written inside the service container's ephemeral overlay are lost on

@@ -618,6 +618,14 @@ export const NAMED_AGENTS = {
 // Gemini/OpenAI fast model swap. Keep this immediately after NAMED_AGENTS.
 export const FAST_MODEL = 'haiku'
 
+// OpenRouter fallback-tier baseline model. Used by applyAuthFallback() (tier 3)
+// when a user has NO Claude login and NO Anthropic key — the agent runs through
+// the central OpenRouter key against this cheap, tool-loop-capable model.
+// Proven end-to-end env-var-only (no proxy): the Claude Code tool loop completes.
+// alternatives: 'qwen/qwen3-coder' (a hair faster), 'moonshotai/kimi-k2.6',
+//   'deepseek/deepseek-chat' (needs proxy — thinking mode breaks the tool loop)
+export const FALLBACK_MODEL = 'minimax/minimax-m3'  // OpenRouter tier baseline
+
 /**
  * Apply turbo override to an agents roster.
  * When turbo is true returns a DEEP COPY with every agent's model set to
