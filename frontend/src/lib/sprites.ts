@@ -220,6 +220,7 @@ function getPlatformEnvVars(userId: string, syncToken?: string): Record<string, 
     // user's Recall.ai account is in another region, this MUST be forwarded
     // or every meeting bot call hits the wrong endpoint.
     'RECALL_API_KEY', 'RECALL_REGION',
+    'SONIOX_API_KEY',
   ]
   for (const key of forwardKeys) {
     if (process.env[key]) envVars[key] = process.env[key]!

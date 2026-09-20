@@ -226,6 +226,15 @@ export function applyAuthFallback(): void {
     process.env.ANTHROPIC_MODEL = FALLBACK_MODEL
     process.env.ANTHROPIC_SMALL_FAST_MODEL = FALLBACK_MODEL
     process.env.CLAUDE_CODE_SUBAGENT_MODEL = FALLBACK_MODEL
+    // CLAUDE_CODE_SUBAGENT_MODEL only sets the DEFAULT sub-agent slot. Our named
+    // sub-agents (researcher/reasoner/writer/tester/planner/reviewer in
+    // NAMED_AGENTS) each pin an explicit `model` field (sonnet/opus) which
+    // OVERRIDES that default — on a no-Claude machine those aliases resolve to
+    // real Anthropic model IDs and 404/fail against OpenRouter. FORCE is the only
+    // var that overrides a per-agent model field, pinning EVERY sub-agent to
+    // FALLBACK_MODEL. (Evidence: the Claude Code CLI binary logs "Workflow agent
+    // model ... ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set" when set.)
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = FALLBACK_MODEL
     // Silence the unrecognized-model 200k context cap for kimi-k2.
     process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '131072'
     fallbackTierActive = true
@@ -250,6 +259,11 @@ function clearAuthFallbackIfActive(): void {
   // Was forced to '' for the OpenRouter redirect; unset so the real OAuth
   // token path (CLAUDE_CODE_OAUTH_TOKEN) is used cleanly.
   delete process.env.ANTHROPIC_API_KEY
+  // Clear the sub-agent model pins too — otherwise a later real-Claude login
+  // leaves every named sub-agent forced onto FALLBACK_MODEL. FORCE especially
+  // must be unset so the per-agent sonnet/opus fields take effect again.
+  delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+  delete process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE
   fallbackTierActive = false
   console.log('[auth-fallback] real Claude login completed — cleared OpenRouter redirect')
 }
