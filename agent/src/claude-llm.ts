@@ -40,7 +40,7 @@ export interface ClaudeLLMOptions {
   resumeSessionId?: string
   continueSession?: boolean
   mcpServers?: Record<string, McpServerConfig>
-  model?: string  // Claude model ID (default: claude-sonnet-4-6)
+  model?: string  // Claude model ID (default: claude-opus-5-5)
   voiceMode?: 'direct' | 'realtime'  // Which voice pipeline — controls system prompt selection
   skipTTSQueue?: boolean  // When true, emit 'tts_say' events instead of queue.put() — for session.say() bypass
   onCompactionEvent?: (event:
@@ -901,9 +901,10 @@ export class ClaudeLLM extends llm.LLM {
     // The [1m] suffix opts into Opus 4.8's 1M context window (Claude Code's
     // context-1m-2025-08-07 beta). WITHOUT it the SDK runs opus at its 200k
     // base, so auto-compaction fired at ~153k every ~10 min (confirmed in the
-    // live agent log: compact_boundary pre_tokens≈153k). With [1m] the window
-    // is 1M and compaction happens far later. Overridable via opts.model.
-    return this.#opts.model || 'claude-opus-4-8[1m]'
+    // live agent log: compact_boundary pre_tokens≈153k). Opus 5.5 has 1M context
+    // by default — no [1m] beta suffix needed. Overridable via opts.model.
+    // prev: 'claude-opus-4-8[1m]' → 'claude-opus-5-5' (2026-09-24, cheaper + matches Fable 5.1)
+    return this.#opts.model || 'claude-opus-5-5'
   }
 
   get sessionId(): string | null {
@@ -928,7 +929,7 @@ export class ClaudeLLM extends llm.LLM {
    */
   setTurbo(on: boolean): void {
     this.#turbo = on
-    console.log(`⚡ Turbo mode ${on ? 'ON' : 'OFF'} — main model → ${on ? FAST_MODEL : (this.#opts.model || 'claude-opus-4-8[1m]')}; applies at next query cold start`)
+    console.log(`⚡ Turbo mode ${on ? 'ON' : 'OFF'} — main model → ${on ? FAST_MODEL : (this.#opts.model || 'claude-opus-5-5')}; applies at next query cold start`)
   }
 
   /** Read-only accessor used by ClaudeLLMStream (private fields are class-scoped). */
@@ -1868,7 +1869,8 @@ class ClaudeLLMStream extends llm.LLMStream {
         allowedTools,
         // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
         // Turbo: when on, override main model to FAST_MODEL regardless of config.
-        model: this.#llmRef.turbo ? FAST_MODEL : (this.#opts.model || 'claude-opus-4-8[1m]'), // Opus 4.8 + [1m] → 1M context (see get model() note); prevents ~153k early compaction
+        // model: this.#llmRef.turbo ? FAST_MODEL : (this.#opts.model || 'claude-opus-4-8[1m]'), // prev
+        model: this.#llmRef.turbo ? FAST_MODEL : (this.#opts.model || 'claude-opus-5-5'), // Opus 5.5 default — 1M context built-in, no beta suffix needed
         enableFileCheckpointing: true,
         settingSources: ['project', 'user'],
         extraArgs: { 'replay-user-messages': null },
