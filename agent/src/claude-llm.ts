@@ -12,8 +12,10 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
-import { getResearchSystemPrompt, getDirectModeResearchPrompt } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt, getGroundingBlock, getRecalledContextBlock } from './prompts.js'
 import { getIndexPath } from './summary-index.js'
+import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
+import { getEmbedder } from './embedder.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +24,68 @@ import { homedir } from 'node:os'
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
 const TURN_SHAPE_REMINDER_PATH = join(__claudeLlmDir, 'prompts', 'turn-shape-reminder.md')
+
+// ── Recall auto-injection (reliable "remembers to check" per Agent-SDK research) ──
+// The RELIABLE primitive the Agent SDK exposes is a UserPromptSubmit hook returning
+// additionalContext: deterministic per-turn injection the model cannot skip (vs. an
+// MCP/skill recall tool the model must elect to call). We piggyback on the existing
+// turn-shape-reminder hook and append the top-K prior messages relevant to THIS prompt.
+//
+// Scope: this hook lives on the MAIN conductor's query options only. Named adversarial
+// sub-agents (reviewer/tester) are spawned as SEPARATE query() calls with their own
+// options and NO UserPromptSubmit hook — they stay deliberately un-grounded, so this
+// injection never leaks into them. Task-delegated agents (researcher/writer/…) don't
+// fire UserPromptSubmit (that event is for real user turns), so they're unaffected too.
+//
+// COMPACT by design: paid on every turn, so top-5 with a per-hit char cap (~800) →
+// ~4KB. FULL untruncated text stays available on demand via `osborn-recall`.
+const RECALL_TOP_K = 5
+const RECALL_PER_HIT_CHARS = 800
+const RECALL_ENABLED = () => process.env.OSBORN_RECALL_INJECT !== '0'
+
+// Warm the embedder once (fire-and-forget) so hybrid recall is ready without blocking
+// the first turn; until it's warm, recall() falls back to keyword-only (~16ms).
+let __embedderWarmed = false
+function warmEmbedder(): void {
+  if (__embedderWarmed || process.env.OSBORN_EMBED === '0') return
+  __embedderWarmed = true
+  getEmbedder().catch(() => {})
+}
+
+/** Build the recalled-context block to inject alongside the turn-shape reminder. '' on any miss. */
+async function buildRecallInjection(sessionId: string | null, workingDir: string | undefined, prompt: string): Promise<string> {
+  try {
+    if (!RECALL_ENABLED() || !sessionId || !workingDir) return ''
+    const q = String(prompt || '').trim()
+    if (q.length < 3) return ''
+    if (!storeExists(sessionId, workingDir)) return ''
+
+    warmEmbedder()
+    // Only use the embedder if it's already loaded — never block the turn on a cold load.
+    const embed = (__embedderWarmed && process.env.OSBORN_EMBED !== '0') ? (await getEmbedder()) ?? undefined : undefined
+
+    const { getStorePath } = await import('./session-store.js')
+    const db = openStore(getStorePath(sessionId, workingDir))
+    let hits: RecallHit[]
+    try {
+      hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed })
+    } finally {
+      db.close()
+    }
+    if (!hits.length) return ''
+
+    const lines = hits.map((h, i) => {
+      let body = h.text.replace(/\n{3,}/g, '\n\n').trim()
+      if (body.length > RECALL_PER_HIT_CHARS) body = body.slice(0, RECALL_PER_HIT_CHARS) + ' …'
+      const src = `${h.source} L${h.lineNum} · ${h.msgType}${h.toolName ? `:${h.toolName}` : ''}`
+      return `[${i + 1}] (${src})\n${body}`
+    })
+    // Static wrapper is centralized + parameterized in ./prompts/recalled-context.md.
+    return getRecalledContextBlock(lines.join('\n\n'))
+  } catch {
+    return '' // recall is best-effort — never break the turn
+  }
+}
 
 // ≤3 direct tool call budget per turn. Reset on every UserPromptSubmit (new user message).
 // Enforced mechanically in PreToolUse — the model CANNOT exceed this regardless of JSONL history.
@@ -223,6 +287,7 @@ export const NAMED_AGENTS = {
       'GROUNDED: reads the session search-index for prior findings before researching.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebSearch', 'WebFetch', 'Task'],
+    grounded: true,  // applyGrounding() injects the osborn-recall command + ensures Bash
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s research agent. Your job is information gathering — thorough, structured, factual.',
@@ -231,8 +296,7 @@ export const NAMED_AGENTS = {
       'Gather information the main agent needs to answer the user\'s question or make a decision.',
       'You are a scout — go find things, read them carefully, and report back.',
       '',
-      '## Grounding — check the session index first',
-      'Before researching, locate the session index (search-index.txt — a compact line-per-message log of this mission, under .claude/projects/<slug>/osb/<session>/; if several exist pick the most recently modified) and Grep it for the topic you are about to investigate. Read ONLY the matching slice, never the whole file.',
+      'Before researching, GROUND yourself using the recall command in the Grounding section appended to this prompt — check prior findings, decisions, and gotchas so you do not redo settled work.',
       'Purpose: find what has ALREADY been decided, answered, or ruled out so you do not re-research a settled question. If the index already establishes the answer, report that (with the index reference) instead of redoing the work.',
       'If you cannot find the index, proceed normally — this is an optimization, not a hard dependency.',
       '',
@@ -325,6 +389,7 @@ export const NAMED_AGENTS = {
       'GROUNDED: reads the session search-index before editing to avoid contradicting prior decisions.',
     ].join(' '),
     tools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Glob', 'Grep', 'NotebookRead', 'NotebookEdit'],
+    grounded: true,  // applyGrounding() injects the osborn-recall command
     model: 'opus',
     prompt: [
       'You are Osborn\'s writer agent. You execute file changes with a verify-first approach.',
@@ -333,8 +398,7 @@ export const NAMED_AGENTS = {
       'Handle ALL file operations — code, config, documentation, scripts, data files.',
       'You are the only agent that writes. The main agent and reasoner produce plans; you execute them.',
       '',
-      '## Grounding — consult the session index (light touch)',
-      'Before editing, locate the session index (search-index.txt under .claude/projects/<slug>/osb/<session>/; newest if several) and Grep it ONLY for: (a) the files/symbols you are about to change, and (b) any recorded DECISIONS or known GOTCHAS relevant to this change. Read only the matching lines — do NOT read the whole index (thousands of lines). This is a lighter dose than the reviewer: a targeted lookup.',
+      'Before editing, GROUND yourself using the recall command in the Grounding section appended to this prompt — check for prior DECISIONS and known GOTCHAS on the files/symbols you are about to change.',
       'If a decision or gotcha contradicts your task, STOP and report to the main agent before editing. If you find nothing or no index exists, proceed normally.',
       '',
       '## VERIFY-FIRST workflow (mandatory)',
@@ -389,7 +453,7 @@ export const NAMED_AGENTS = {
       'observed behavior without a matching requirement is a regression — treat behavioral surprise as a defect.',
       '',
       '## Grounding — consult shared context before writing or running tests',
-      'Before deciding what to test, locate the session index (search-index.txt under .claude/projects/<slug>/osb/<session>/; newest if several) and Grep it for the changes/work under test. Also check project docs and known-issues files. Key doc locations to consult: `/workspace/osborn/CLAUDE.md`, `/workspace/osborn/docs/critical-patterns.md`, the `docs/` directory, `README.md`, and `CHANGELOG.md`. Check these for: (a) KNOWN ISSUES and gotchas already recorded, and (b) what behavior is ALREADY covered by existing tests.',
+      'Before deciding what to test, check project docs and known-issues files (these live under the working dir and ARE readable). Key doc locations to consult: `/workspace/osborn/CLAUDE.md`, `/workspace/osborn/docs/critical-patterns.md`, the `docs/` directory, `README.md`, and `CHANGELOG.md`. Check these for: (a) KNOWN ISSUES and gotchas already recorded, and (b) what behavior is ALREADY covered by existing tests. (You are adversarial and deliberately NOT given session recall — validate with fresh eyes.)',
       'Purpose: target regression coverage at real GAPS and known-risk areas rather than testing blind or duplicating coverage — and stay IN SYNC with the reviewer, which reads the same sources.',
       'Read only the relevant slice of the index, never the whole file. If you find nothing or no index/docs exist, proceed normally — this is an optimization, not a hard dependency.',
       'If the change adds or renames a feature, flag any doc now out of date (see DOC STALENESS in "What to return").',
@@ -472,6 +536,7 @@ export const NAMED_AGENTS = {
       'GROUNDED: reads the session search-index before planning to respect prior decisions.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'WebSearch'],
+    grounded: true,  // applyGrounding() injects the osborn-recall command + adds Bash
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s planning agent. Your job is to decompose complex tasks into clear, atomic steps.',
@@ -481,7 +546,7 @@ export const NAMED_AGENTS = {
       'step by step without guessing. You are the bridge between "what" and "how".',
       '',
       '## Grounding — plan against what already exists',
-      'Before drafting a plan, locate the session index (search-index.txt under .claude/projects/<slug>/osb/<session>/; newest if several) and Grep it for prior DECISIONS, constraints, and known GOTCHAS relevant to the task. Read only the matching slice, never the whole file.',
+      'Before drafting a plan, GROUND yourself using the recall command in the Grounding section appended to this prompt — check prior DECISIONS, constraints, and known GOTCHAS relevant to the task.',
       'Purpose: make the plan fit what has already been decided or tried — do not propose an approach the mission already ruled out. If a prior decision conflicts with the obvious plan, surface it in the plan rather than silently contradicting it.',
       'If you cannot find the index, proceed normally.',
       '',
@@ -658,6 +723,48 @@ export function applyTurbo(
   return out
 }
 
+/**
+ * Inject session-recall grounding into any agent flagged `grounded: true`.
+ *
+ * WHY: a sub-agent's file tools (Read/Grep/Glob) are sandboxed to its cwd +
+ * additionalDirectories, so it CANNOT read the session index / session.db that live
+ * under $HOME/.claude/projects/… — the old "grep search-index.txt" grounding silently
+ * failed. Bash, however, is NOT cwd-restricted, so `osborn-recall` reaches the store.
+ *
+ * So for every grounded agent we (1) hand it the EXACT, absolute-path osborn-recall
+ * command (resolved once here — the single dynamic resolver, so we never hardcode a
+ * per-agent path; works for named AND user-created custom grounded agents), and
+ * (2) guarantee Bash is in its tool set so it can run that command. The `grounded`
+ * flag is stripped before the roster reaches the SDK. NEVER mutates the input.
+ *
+ * Adversarial agents (reviewer/tester) leave `grounded` unset → untouched, stay blind.
+ */
+export function applyGrounding(
+  agents: Record<string, any>,
+  sessionId: string | null,
+  workingDir: string | undefined,
+): Record<string, any> {
+  const out: Record<string, any> = {}
+  // Resolve the store command ONCE — absolute --db path, cwd-independent.
+  const dbPath = (sessionId && sessionId !== 'pending' && workingDir)
+    ? getStorePath(sessionId, workingDir) : null
+  for (const [name, agent] of Object.entries(agents)) {
+    if (!agent?.grounded) { out[name] = agent; continue }
+    const { grounded, ...rest } = agent as Record<string, any>
+    // Ensure Bash is available so the agent can actually run osborn-recall.
+    const tools: string[] = Array.isArray(rest.tools) ? [...rest.tools] : []
+    if (!tools.includes('Bash')) tools.push('Bash')
+    // Push the grounding block into the system prompt (arrives at spawn — sandbox-proof).
+    const cmd = dbPath
+      ? `osborn-recall "<terms from your task>" --db ${dbPath} --top-k 8`
+      : `osborn-recall "<terms from your task>" --top-k 8`
+    // Body is centralized + parameterized in ./prompts/grounding-recall.md.
+    const groundingBlock = getGroundingBlock(cmd)
+    out[name] = { ...rest, tools, prompt: `${rest.prompt || ''}\n${groundingBlock}` }
+  }
+  return out
+}
+
 const RESEARCH_TOOLS = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep',
   'Bash', 'WebSearch', 'WebFetch',
@@ -756,6 +863,11 @@ export class ClaudeLLM extends llm.LLM {
   // Dedup guard — prevents double-firing reviewer/gate if SubagentStop fires
   // more than once for the same agent_id (e.g. retry edge cases).
   #dispatchedFor: Set<string> = new Set()
+  // Embedded session.db write-through guard. The store write is triggered from the
+  // UserPromptSubmit hook (once per real user submission, main-thread only) and sweeps
+  // the FULL source set — main JSONL + every sub-agent JSONL — exactly like the flat
+  // index. Incremental (byte-offset resume) + fire-and-forget, so it never blocks a turn.
+  #storeUpdating: boolean = false
 
   // Turbo mode — when true, every spawned agent (main + sub-agents) runs on
   // FAST_MODEL regardless of individual model config. Default off = no-op.
@@ -856,6 +968,30 @@ export class ClaudeLLM extends llm.LLM {
   // ============================================================
   // MCP SERVER MANAGEMENT - Runtime enable/disable MCP servers
   // ============================================================
+
+  /**
+   * Guarded, fire-and-forget write-through to the embedded session.db. Called from the
+   * main agent's UserPromptSubmit hook (once per real user submission). Sweeps the FULL
+   * source set — main JSONL + every sub-agent JSONL — incrementally (byte-offset resume).
+   * The guard lives here (on the long-lived ClaudeLLM, not the per-turn stream) so a slow
+   * write can't overlap the next turn's write. Never throws; never blocks the caller.
+   */
+  triggerStoreUpdate(sessionId: string, workingDir: string): void {
+    if (this.#storeUpdating || !sessionId || sessionId === 'pending' || !workingDir) return
+    if (process.env.OSBORN_STORE === '0') return
+    this.#storeUpdating = true
+    ;(async () => {
+      try {
+        const embed = process.env.OSBORN_EMBED === '0' ? undefined : (await getEmbedder()) ?? undefined
+        const stats = await updateSessionStore(sessionId, workingDir, { embed })
+        if (stats.newRows > 0) console.log(`🗄️  [store] +${stats.newRows} rows (${stats.totalRows} total, embedded=${stats.embeddedRows}) across main+subagents`)
+      } catch (err: any) {
+        console.error('🗄️  [store] update failed:', err?.message)
+      } finally {
+        this.#storeUpdating = false
+      }
+    })()
+  }
 
   /**
    * Get all currently enabled MCP servers
@@ -2089,11 +2225,34 @@ class ClaudeLLMStream extends llm.LLMStream {
 
                 const reminder = readFileSync(TURN_SHAPE_REMINDER_PATH, 'utf-8')
                 const promptPreview = String(input?.prompt || '').substring(0, 60).replace(/\n/g, ' ')
-                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars) for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
+
+                // Reliable recall: retrieve prior messages relevant to THIS prompt and inject
+                // them deterministically. MAIN CONDUCTOR ONLY — gate explicitly on agent_id.
+                // Per the SDK: agent_id is present ONLY when a hook fires from within a subagent,
+                // absent on the main thread. So `agent_id` set ⇒ skip (grounded sub-agents pull
+                // via osborn-recall from their own prompt; adversarial ones stay un-grounded).
+                const fromSubagent = Boolean((input as any)?.agent_id)
+                const sid = (input as any)?.session_id || this.#sessionId
+
+                // Consolidated WRITE trigger: on every real user submission (main thread only),
+                // sweep main + ALL sub-agent JSONLs into session.db. Naturally debounced to the
+                // user's speech cadence (one submission = one sweep); guarded + fire-and-forget
+                // on the long-lived ClaudeLLM so injection below never waits on it. This is the
+                // single canonical write path — mirrors the flat index's sub-agent sweep, but
+                // stores FULL untruncated text + FTS5 + sqlite-vec instead of truncated summaries.
+                if (!fromSubagent && sid && this.#opts.workingDirectory) {
+                  this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory)
+                }
+
+                const recalled = fromSubagent
+                  ? ''
+                  : await buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || ''))
+                const additionalContext = recalled ? `${reminder}\n\n${recalled}` : reminder
+                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''} for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
                 return {
                   hookSpecificOutput: {
                     hookEventName: 'UserPromptSubmit',
-                    additionalContext: reminder,
+                    additionalContext,
                   },
                 }
               } catch (err) {
@@ -2329,9 +2488,13 @@ class ClaudeLLMStream extends llm.LLMStream {
         // opts.agents is undefined — the ?? NAMED_AGENTS fallback would skip
         // the override entirely. Explicitly apply applyTurbo(NAMED_AGENTS)
         // so built-in agents always get FAST_MODEL when turbo is on.
-        agents: this.#llmRef.turbo
-          ? applyTurbo(this.#opts.agents ?? NAMED_AGENTS, true)
-          : (this.#opts.agents ?? NAMED_AGENTS),
+        agents: applyGrounding(
+          this.#llmRef.turbo
+            ? applyTurbo(this.#opts.agents ?? NAMED_AGENTS, true)
+            : (this.#opts.agents ?? NAMED_AGENTS),
+          this.#sessionId,
+          this.#opts.workingDirectory,
+        ),
       }
 
       // Run Claude Agent SDK query() and stream results

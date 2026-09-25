@@ -403,6 +403,11 @@ export class PipelineDirectLLM extends llm.LLM {
       this.#indexBuilding = false
     }
 
+    // NOTE: the embedded session.db write-through was CONSOLIDATED into the main agent's
+    // UserPromptSubmit hook (claude-llm.ts) — one canonical trigger per real user submission,
+    // main-thread only, sweeping main + all sub-agent JSONLs. Kept out of the per-turn pipeline
+    // path here to avoid a second, differently-cadenced writer.
+
     try {
       console.log(`🧠⚡ [pipeline] Fast brain: "${userText.substring(0, 60)}"`)
 

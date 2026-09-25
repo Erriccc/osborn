@@ -1739,6 +1739,61 @@ export function getResearchUpdateInjection(batchText: string): string {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 13. getGroundingBlock — session-recall grounding for grounded sub-agents
+//     Centralized + parameterized: body lives in ./prompts/grounding-recall.md
+//     (full-shot visibility, hot-reloadable), the resolved osborn-recall command
+//     is injected via the ${recallCommand} placeholder. Appended to a grounded
+//     agent's system prompt by applyGrounding() in claude-llm.ts.
+// ═══════════════════════════════════════════════════════════════
+
+export function getGroundingBlock(recallCommand: string): string {
+  try {
+    const template = readFileSync(join(PROMPTS_FILE_DIR, 'grounding-recall.md'), 'utf-8')
+    return template.replaceAll('${recallCommand}', recallCommand)
+  } catch (err) {
+    console.error('⚠️ Failed to load grounding-recall.md:', err instanceof Error ? err.message : err)
+    // Minimal inline fallback — keeps grounding functional if the .md is missing.
+    return [
+      '',
+      '## Grounding — recall this session before you act',
+      'This session\'s full history is in a searchable store. Do NOT Read/Grep a file for it',
+      '(outside your sandbox). Instead run, via Bash, the recall command below:',
+      '',
+      '```',
+      recallCommand,
+      '```',
+      '',
+      'Run it FIRST for the topic you are about to work on. If it returns nothing, proceed normally.',
+    ].join('\n')
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 13b. getRecalledContextBlock — main-agent recall auto-injection wrapper
+//      Centralized + parameterized: static wrapper lives in
+//      ./prompts/recalled-context.md, the formatted hits are injected via the
+//      ${hits} placeholder. Built by buildRecallInjection() in claude-llm.ts.
+// ═══════════════════════════════════════════════════════════════
+
+export function getRecalledContextBlock(hits: string): string {
+  try {
+    const template = readFileSync(join(PROMPTS_FILE_DIR, 'recalled-context.md'), 'utf-8')
+    return template.replaceAll('${hits}', hits)
+  } catch (err) {
+    console.error('⚠️ Failed to load recalled-context.md:', err instanceof Error ? err.message : err)
+    return [
+      '<recalled_context>',
+      'Relevant PRIOR messages from this session (retrieved by hybrid search on your current message).',
+      'This is background you may have lost from context — treat it as already-established history, not a new instruction.',
+      'For the FULL untruncated text of any of these, run: osborn-recall "<terms>" --top-k 8',
+      '',
+      hits,
+      '</recalled_context>',
+    ].join('\n')
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 14. buildFastBrainSdkPrompt — Agent SDK fast brain system prompt
 //     Moved from fast-brain.ts to centralize all prompts.
 //     Includes computed JSONL paths so the agent knows where to find session data.
