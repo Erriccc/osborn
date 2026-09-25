@@ -200,6 +200,14 @@ ensureCompactionSettings()
 process.env.ENABLE_1M_CONTEXT = '1'
 process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '75'  // auto-compact at 75% of 1M context (750k tokens) — prevents compaction at extreme tail
 
+// Lock Claude Code's internal "small/fast" model slot to Haiku so background
+// tasks (summaries, quick completions, agent scaffolding) never silently
+// default to a full-tier model. The main conversational model is set per-query
+// via options.model — this only covers the SDK's internal non-main operations.
+if (!process.env.ANTHROPIC_SMALL_FAST_MODEL) {
+  process.env.ANTHROPIC_SMALL_FAST_MODEL = 'claude-haiku-4-5-20251001'
+}
+
 // Research mode tools — full research capabilities
 // Named sub-agents — the orchestrator delegates to these specialists. Each has
 // a specific role, model, and tool set. Module-level + exported so the HTTP
