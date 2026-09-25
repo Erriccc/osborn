@@ -54,7 +54,17 @@ export async function GET() {
   // (instance.sandbox_id), since each createSandbox now generates a unique
   // timestamped name (see generateUniqueSpriteName). Fall back to deterministic
   // name only when Supabase has no record (legacy users / first-time provision lookup).
-  const sandbox = await findUserSandbox(user.id, instance?.sandbox_id ?? undefined)
+  let sandbox: Awaited<ReturnType<typeof findUserSandbox>> = null
+  let lookupFailed = false
+  try {
+    sandbox = await findUserSandbox(user.id, instance?.sandbox_id ?? undefined)
+  } catch {
+    // Non-404 error (auth failure, network blip, rate limit) — treat as
+    // "unknown", not "gone". Do NOT clear the DB record; fall through to
+    // return available:true with the DB-cached info so the frontend can still
+    // show the machine without blowing away the user's cloud config.
+    lookupFailed = true
+  }
 
   if (sandbox) {
     // Sync DB if it differs (handles label-found-but-DB-stale case)
@@ -74,9 +84,25 @@ export async function GET() {
     return NextResponse.json({ available: true, sandbox })
   }
 
-  // No sandbox in Daytona — clear stale DB record if any
+  // Fly API lookup errored (non-404): return DB-cached state so the frontend
+  // doesn't lose its cloud config on a transient auth/network hiccup.
+  if (lookupFailed && instance?.sandbox_id) {
+    console.warn(`[sandbox] findUserSandbox threw for ${user.id} — returning cached DB state`)
+    return NextResponse.json({
+      available: true,
+      sandbox: {
+        id: instance.sandbox_id,
+        status: instance.sandbox_status || 'stopped',
+        previewUrl: instance.sandbox_url,
+        userId: user.id,
+        createdAt: new Date().toISOString(),
+      },
+    })
+  }
+
+  // Lookup returned null (app confirmed gone via 404) — clear stale DB record
   if (instance?.sandbox_id) {
-    console.log(`🧹 Clearing stale sandbox reference for user ${user.id}`)
+    console.log(`🧹 Clearing stale sandbox reference for user ${user.id} (app 404)`)
     await supabase.from('instances').update({
       sandbox_id: null,
       sandbox_url: null,

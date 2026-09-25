@@ -507,8 +507,12 @@ export async function findUserSandbox(userId: string, knownSandboxId?: string): 
   } catch (err) {
     const msg = (err as Error).message
     if (msg.includes('404') || msg.includes('Could not find')) return null
+    // Non-404 errors (auth failure, network error, etc.) — rethrow so callers
+    // can distinguish "app doesn't exist" from "lookup failed". Callers that
+    // previously relied on null-for-any-error should catch this and skip
+    // destructive cleanup (e.g. clearing the DB sandbox_id).
     console.error(`[machines] findUserSandbox failed: ${msg}`)
-    return null
+    throw err
   }
 }
 
