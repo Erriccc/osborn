@@ -269,7 +269,7 @@ export const NAMED_AGENTS = {
       'Does NOT edit files — returns a clear plan for the writer agent to execute.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
-    model: 'opus',
+    model: 'sonnet',
     prompt: [
       'You are Osborn\'s reasoning agent — the "smart model" seat for hard tradeoffs, architecture decisions, and vetting research.',
       '',
@@ -322,7 +322,7 @@ export const NAMED_AGENTS = {
       'If anything is unclear, asks the main agent for clarification before touching files.',
     ].join(' '),
     tools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Glob', 'Grep', 'NotebookRead', 'NotebookEdit'],
-    model: 'opus',
+    model: 'sonnet',
     prompt: [
       'You are Osborn\'s writer agent. You execute file changes with a verify-first approach.',
       '',
