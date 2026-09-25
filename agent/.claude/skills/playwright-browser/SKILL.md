@@ -1,3 +1,8 @@
+---
+name: playwright-browser
+description: Automate web browser interactions via the @playwright/cli — navigate pages, click buttons and links, fill and submit forms, take screenshots, and extract text or structured data using token-efficient element references. Use to interact with a URL, automate a multi-step web workflow, or test a UI flow.
+---
+
 # Skill: Playwright Browser Automation
 
 Automate web browser interactions — navigate pages, click buttons, fill forms, take screenshots, and extract content.

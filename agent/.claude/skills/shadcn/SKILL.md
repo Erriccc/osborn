@@ -1,3 +1,8 @@
+---
+name: shadcn
+description: Add and configure shadcn/ui components — the copy-paste library built on Radix UI and Tailwind CSS — in a Next.js or React project via the shadcn CLI, including first-time init and adding single or multiple components. Use when the user wants to add UI components like buttons, dialogs, cards, forms, or tables.
+---
+
 # Skill: shadcn/ui Components
 
 Add and configure shadcn/ui components in a Next.js or React project.

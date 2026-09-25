@@ -1,3 +1,8 @@
+---
+name: meetings
+description: Silently take notes and track TODOs while osborn sits in a live meeting via a Recall.ai bot, and pull transcripts on demand, delegating file and transcript work to the writer sub-agent to avoid the tool-call budget. Use for auto-tagged [MEETING] transcript chunks or when the user asks to grab, summarize, or write notes/todos from a meeting.
+---
+
 # Skill: Meetings
 
 Silent note-taking and TODO-tracking when osborn is sitting in a live meeting,

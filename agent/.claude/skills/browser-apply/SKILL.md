@@ -1,3 +1,8 @@
+---
+name: browser-apply
+description: Interactively automate Workday and other multi-step JS-heavy job application forms using Playwright MCP browser tools, filling one page at a time with a screenshot and user confirmation before advancing. Use when applying to a Workday ATS or any staged online job application needing visible, confirmable progress.
+---
+
 # Skill: Browser Apply — Step-by-Step Workday Application
 
 Automate Workday job applications interactively, one step at a time. Each step takes a screenshot, confirms what's on screen, fills the current page, and waits before proceeding.

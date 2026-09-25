@@ -1,3 +1,8 @@
+---
+name: pdf-to-markdown
+description: Convert a PDF document to readable Markdown text using the built-in Read tool, pdf-parse-cli, or pdftotext, preserving headings and tables and saving the result to the session workspace. Use when the user provides a PDF file path and wants to read, search, or work with its contents.
+---
+
 # Skill: PDF to Markdown
 
 Convert PDF documents to readable Markdown text.

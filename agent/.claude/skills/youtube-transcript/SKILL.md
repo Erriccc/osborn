@@ -1,3 +1,8 @@
+---
+name: youtube-transcript
+description: Fetch a YouTube video's auto-generated English subtitles with yt-dlp, strip the SRT timing markers to clean transcript text, and save it to the session workspace. Use when the user asks to get a transcript, subtitles, captions, or summary from a YouTube video URL.
+---
+
 # Skill: YouTube Transcript
 
 Fetch and save transcripts from YouTube videos.

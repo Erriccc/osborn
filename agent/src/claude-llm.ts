@@ -229,6 +229,50 @@ function loadAllSkills(_workingDir: string): string {
   return `<available-skills>\n${[...skillMap.values()].join('\n\n---\n\n')}\n</available-skills>`
 }
 
+/**
+ * Enumerate the agent's CURRENT skills (name + one-line description) from
+ * ~/.claude/skills, for injection into the PreCompact instruction. This is the
+ * list the compaction model dedupes/merges against so it stops re-emitting
+ * duplicate skills every session. Description is taken from YAML frontmatter
+ * (`description:`) when present, else the WHEN: line, else the first non-heading
+ * line. Returns one `- name: description` per line, or '' if none.
+ */
+function enumerateSkillsForCompaction(): string {
+  const dir = join(homedir(), '.claude', 'skills')
+  if (!existsSync(dir)) return ''
+  const lines: string[] = []
+  try {
+    for (const name of readdirSync(dir).sort()) {
+      const file = join(dir, name, 'SKILL.md')
+      if (!existsSync(file)) continue
+      let desc = ''
+      try {
+        const raw = readFileSync(file, 'utf-8')
+        const fm = raw.match(/^---\n([\s\S]*?)\n---/)
+        if (fm) {
+          const m = fm[1].match(/^description:\s*(.+)$/m)
+          if (m) desc = m[1].trim()
+        }
+        if (!desc) {
+          const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
+          const when = body.match(/^\s*WHEN:\s*(.+)$/mi)
+          if (when) desc = when[1].trim()
+        }
+        if (!desc) {
+          const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
+          const first = body.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'))
+          desc = first || '(no description)'
+        }
+      } catch { desc = '(unreadable)' }
+      if (desc.length > 180) desc = desc.slice(0, 177) + '…'
+      lines.push(`- ${name}: ${desc}`)
+    }
+  } catch (err) {
+    console.warn('⚠️ enumerateSkillsForCompaction failed:', err instanceof Error ? err.message : err)
+  }
+  return lines.join('\n')
+}
+
 // Compaction threshold: Fable 5 runs a 1M context window, so let sessions use
 // all of it before auto-compacting. autoCompactWindow max is 1_000_000; the SDK
 // reads it from settings.json (settingSources includes 'user'), so merge it into
@@ -2272,9 +2316,30 @@ class ClaudeLLMStream extends llm.LLMStream {
                 this.#opts.onCompactionEvent?.({ type: 'compaction_started', trigger: input?.trigger })
 
                 const instructionPath = join(__claudeLlmDir, 'prompts', 'compact-learnings-instruction.md')
-                const instruction = existsSync(instructionPath) ? readFileSync(instructionPath, 'utf-8') : ''
+                const instructionRaw = existsSync(instructionPath) ? readFileSync(instructionPath, 'utf-8') : ''
 
-                console.log(`🧠 PreCompact: injecting instruction (${instruction.length} chars, trigger=${input?.trigger || 'unknown'})`)
+                // Populate the EXISTING SKILLS section the instruction .md already refers to
+                // (lines 42 & 55) but that nothing used to fill. Without this, the model is told
+                // to "not re-emit skills already shown" against a list it never received — so it
+                // proliferated duplicates. We hand it the current skill set + an adversarial,
+                // self-critical directive to merge/refine rather than create anew.
+                const existingSkills = enumerateSkillsForCompaction()
+                const skillCount = existingSkills ? existingSkills.split('\n').length : 0
+                const criticBlock = existingSkills
+                  ? `\n\n---\n\n=== EXISTING SKILLS (${skillCount}) ===\n`
+                    + `These skills ALREADY EXIST for this user (name: description). Before you emit `
+                    + `SKILL_CANDIDATES or BEHAVIORAL_LEARNINGS, act as an ADVERSARIAL reviewer of your own output:\n`
+                    + `1. If a candidate duplicates or substantially overlaps one below, DO NOT create a new skill — `
+                    + `re-emit it under the EXACT SAME kebab-case name, and only if it needs a substantive update; otherwise omit it.\n`
+                    + `2. Propose a brand-new skill ONLY if nothing below covers it, it was CONFIRMED working this session, `
+                    + `and it generalizes to future sessions on different tasks.\n`
+                    + `3. Prefer merging/refining over proliferating. A small set of sharp, non-overlapping skills is the goal — `
+                    + `reject your own low-signal or one-off candidates.\n\n`
+                    + `${existingSkills}\n`
+                  : ''
+                const instruction = instructionRaw + criticBlock
+
+                console.log(`🧠 PreCompact: injecting instruction (${instruction.length} chars, ${skillCount} existing skills, trigger=${input?.trigger || 'unknown'})`)
                 return { systemMessage: instruction }
 
               } catch (err) {
@@ -2337,7 +2402,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                       const decPath = join(decFolder, 'SKILL.md')
                       mkdirSync(decFolder, { recursive: true })
                       const existing = existsSyncFs(decPath) ? readSyncFs(decPath, 'utf-8') : ''
-                      const header = existing ? '' : `# Project Decisions\n\nAuto-extracted from compact summaries.\n\n`
+                      const header = existing ? '' : `---\nname: decisions\ndescription: "Project-scoped architectural and implementation decisions auto-extracted from compaction summaries; consult before revisiting settled choices."\nmetadata:\n  type: learned\n  source: postcompact\n---\n\n# Project Decisions\n\nAuto-extracted from compact summaries.\n\n`
                       const entry = `\n## ${today} (session ${sessionId.substring(0, 8)})\n${projectLines.join('\n')}\n`
                       writeSyncFs(decPath, header + existing + entry, 'utf-8')
                       console.log(`🧠 PostCompact: appended ${projectLines.length} decision(s) to ${decPath}`)
@@ -2367,8 +2432,14 @@ class ClaudeLLMStream extends llm.LLMStream {
                       const skillFolder = join(skillDir, '.claude', 'skills', name)
                       const skillPath = join(skillFolder, 'SKILL.md')
                       mkdirSync(skillFolder, { recursive: true })
-                      const header = `# ${name}\nAuto-extracted: ${today} | Session: ${sessionId.substring(0, 8)}\n\n`
-                      writeSyncFs(skillPath, header + body + '\n', 'utf-8')
+                      // Emit STANDARD skill format: YAML frontmatter (name + description) so
+                      // learned skills conform to the same shape the loader/other agents expect.
+                      // Description is derived from the candidate's WHEN: line; JSON.stringify
+                      // yields a safely-quoted YAML scalar even when it contains colons/quotes.
+                      const whenMatch = body.match(/^\s*WHEN:\s*(.+)$/mi)
+                      const desc = (whenMatch ? whenMatch[1].trim() : `Learned procedure: ${name}`).replace(/\s+/g, ' ').slice(0, 200)
+                      const frontmatter = `---\nname: ${name}\ndescription: ${JSON.stringify(desc)}\nmetadata:\n  type: learned\n  source: postcompact\n  session: ${sessionId.substring(0, 8)}\n  updated: ${today}\n---\n\n`
+                      writeSyncFs(skillPath, frontmatter + `# ${name}\n\n` + body + '\n', 'utf-8')
                       console.log(`🧠 PostCompact: wrote skill '${name}' to ${skillPath}`)
                       skillsWritten++
                       skillNames.push(name)
@@ -2387,7 +2458,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                     const skillFolder = join(skillDir, '.claude', 'skills', 'learned-behaviors')
                     const skillPath = join(skillFolder, 'SKILL.md')
                     mkdirSync(skillFolder, { recursive: true })
-                    const header = `# Learned Behaviors\n\nAuto-extracted from voice sessions via PostCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
+                    const header = `---\nname: learned-behaviors\ndescription: "User corrections, preferences, domain knowledge, effective patterns, and anti-patterns learned across sessions; apply to align with how this user works."\nmetadata:\n  type: learned\n  source: postcompact\n  updated: ${today}\n---\n\n# Learned Behaviors\n\nAuto-extracted from voice sessions via PostCompact.\nLast updated: ${today} | Session: ${sessionId.substring(0, 8)}...\n\n`
                     writeSyncFs(skillPath, header + learnings + '\n', 'utf-8')
                     console.log(`🧠 PostCompact: wrote learned behaviors to ${skillPath} (${learnings.length} chars)`)
                     skillsWritten++

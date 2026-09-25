@@ -1,3 +1,8 @@
+---
+name: browser-screen-recorder
+description: Drive any web app in a real browser and record proof — per-action screenshots, video clips, audio capture, DevTools diagnostics, and metrics, with mic synthesis and natural-language clicking. Use as the QA protocol after building or changing any frontend, for debugging web-reachable issues, verifying deployed changes, or reproducing user reports.
+---
+
 # Browser Screen Recorder — drive any web app (voice, hands + a brain) and record proof
 
 ## SKILL IDENTITY

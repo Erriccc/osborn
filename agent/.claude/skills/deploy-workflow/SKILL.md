@@ -1,3 +1,8 @@
+---
+name: deploy-workflow
+description: The end-to-end release procedure for shipping osborn agent changes — build and verify locally, bump the package.json version, push to GitHub, publish to NPM from the Mac, and update the running Sprite from the registry. Use every time code or prompt changes are ready to ship.
+---
+
 # Deploy Workflow
 
 Use this every time changes are ready to ship.

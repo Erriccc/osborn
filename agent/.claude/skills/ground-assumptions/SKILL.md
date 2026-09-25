@@ -1,3 +1,8 @@
+---
+name: ground-assumptions
+description: Treat every load-bearing assumption as a hypothesis to verify against real evidence before recommending an implementation strategy, rather than trusting training-data intuition or "it should work". Use whenever the conversation enters a planning, design, or architecture phase, or before making any performance, behavioral, or comparative claim.
+---
+
 # Ground Assumptions
 
 ## SKILL IDENTITY

@@ -1,3 +1,8 @@
+---
+name: send-media
+description: Upload a local file to the osborn public upload endpoint (Supabase storage) to get a permanent public URL, then render it inline in your next reply as a markdown image or link. Use whenever you have a local screenshot, image, PDF, clip, or log the user should see rather than have described.
+---
+
 # send-media — deliver screenshots, images, and files to the user INLINE in chat
 
 > 📅 Last updated: 2026-08-09. Use whenever you have a local file the user should SEE

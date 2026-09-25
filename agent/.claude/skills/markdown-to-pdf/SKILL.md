@@ -1,3 +1,8 @@
+---
+name: markdown-to-pdf
+description: Export a Markdown document, spec, or research findings as a formatted PDF using md-to-pdf, pandoc, or markdown-pdf, saving the result to the session workspace. Use when the user wants to create or generate a PDF from a Markdown file.
+---
+
 # Skill: Markdown to PDF
 
 Export Markdown documents as formatted PDF files.

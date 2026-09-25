@@ -1,3 +1,8 @@
+---
+name: voice-native-sync
+description: Sync osborn sessions between the local Mac and cloud machines, starting with a mandatory served-version check that self-updates and aborts on a stale local copy to prevent unresumable-session corruption. Use when uploading or downloading sessions for the voice-native osborn setup.
+---
+
 # Voice Native Sync Skill
 
 ## SKILL IDENTITY

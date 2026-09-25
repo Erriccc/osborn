@@ -1,3 +1,8 @@
+---
+name: slack-readonly
+description: Search and read Slack messages, threads, and channels from the shell via read-only GET calls to the Slack Web API using a SLACK_TOKEN, with no posting, reactions, or edits by design. Use when asked to find, read, or summarize Slack content; refuse any request to send or write.
+---
+
 # Slack (read-only) — search and read Slack from the shell
 
 > 📅 **Last updated: 2026-08-09.** Recreated from scratch after the Mac data-loss events wiped the

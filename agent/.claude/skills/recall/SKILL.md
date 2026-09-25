@@ -1,3 +1,8 @@
+---
+name: recall
+description: Query this session's full untruncated history — every message, thinking block, and tool call stored in a per-session SQLite database with keyword and semantic search via the osborn-recall command. Use when you need an earlier decision, file, error, number, or name no longer in context, or to check prior work before acting as a grounded agent.
+---
+
 # Recall
 
 ## SKILL IDENTITY
