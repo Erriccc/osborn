@@ -599,10 +599,12 @@ function startApiServer(workingDir: string, port: number): void {
     if (req.method === 'GET' && url.pathname === '/skills') {
       // Installed skills — same list the chat's get_skills data-channel message
       // returns, exposed over HTTP so the DASHBOARD (no LiveKit connection) can
-      // render the skills manager too. process.cwd() === sessionBaseDir (the
-      // osborn install dir where .claude/skills lives — see main()).
+      // render the skills manager too. Reads ~/.claude/skills (homedir) — the SINGLE
+      // location the agent ingests from (loadAllSkills) and PostCompact writes to.
+      // Previously used process.cwd()/.claude/skills, which the agent never read —
+      // so UI-created skills were invisible to the agent (the "divergence").
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ skills: loadSkillsList(process.cwd()) }))
+      res.end(JSON.stringify({ skills: loadSkillsList(homedir()) }))
       return
     }
 
@@ -4709,7 +4711,7 @@ async function main() {
           mcpServers: getMcpServerStatusList(config),
           enabledMcpServers: enabledMcpNames,
           workingDirectory: workingDir,
-          skills: loadSkillsList(sessionBaseDir),
+          skills: loadSkillsList(homedir()),
           namedAgents: Object.entries(NAMED_AGENTS).map(([name, a]: [string, any]) => ({
             name, description: a.description, model: a.model, tools: a.tools,
           })),
@@ -5405,7 +5407,7 @@ async function main() {
       else if (data.type === 'get_skills') {
         await sendToFrontend({
           type: 'skills_status',
-          skills: loadSkillsList(sessionBaseDir),
+          skills: loadSkillsList(homedir()),
         })
       }
       else if (data.type === 'get_agents') {
@@ -5472,11 +5474,11 @@ async function main() {
           await sendToFrontend({ type: 'skill_add_result', success: false, error: 'Name and content are required' })
         } else {
           try {
-            const skillDir = join(sessionBaseDir, '.claude', 'skills', skillName)
+            const skillDir = join(homedir(), '.claude', 'skills', skillName)
             mkdirSync(skillDir, { recursive: true })
             writeFileSync(join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
             console.log(`📚 Skill added: ${skillName}`)
-            const skills = loadSkillsList(sessionBaseDir)
+            const skills = loadSkillsList(homedir())
             await sendToFrontend({ type: 'skill_add_result', success: true, skills })
           } catch (err) {
             console.error('❌ Failed to add skill:', err)
@@ -5486,7 +5488,7 @@ async function main() {
       }
       else if (data.type === 'skill_get') {
         const folder = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
-        const p = join(sessionBaseDir, '.claude', 'skills', folder, 'SKILL.md')
+        const p = join(homedir(), '.claude', 'skills', folder, 'SKILL.md')
         if (folder && existsSync(p)) {
           await sendToFrontend({ type: 'skill_content', name: folder, content: readFileSync(p, 'utf-8') })
         } else {
@@ -5495,14 +5497,14 @@ async function main() {
       }
       else if (data.type === 'skill_remove') {
         const folder = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
-        const dir = join(sessionBaseDir, '.claude', 'skills', folder)
+        const dir = join(homedir(), '.claude', 'skills', folder)
         if (!folder || !existsSync(dir)) {
           await sendToFrontend({ type: 'skill_remove_result', success: false, error: 'skill not found' })
         } else {
           try {
             rmSync(dir, { recursive: true, force: true })
             console.log(`🗑️ Skill removed: ${folder}`)
-            await sendToFrontend({ type: 'skill_remove_result', success: true, skills: loadSkillsList(sessionBaseDir) })
+            await sendToFrontend({ type: 'skill_remove_result', success: true, skills: loadSkillsList(homedir()) })
           } catch (err) {
             await sendToFrontend({ type: 'skill_remove_result', success: false, error: String(err) })
           }

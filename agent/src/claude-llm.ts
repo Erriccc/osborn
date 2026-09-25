@@ -263,9 +263,20 @@ function enumerateSkillsForCompaction(): string {
           const first = body.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'))
           desc = first || '(no description)'
         }
-      } catch { desc = '(unreadable)' }
-      if (desc.length > 180) desc = desc.slice(0, 177) + '…'
-      lines.push(`- ${name}: ${desc}`)
+        // Option A: expose the skill's SECTION HEADINGS so the compaction model can
+        // target a specific section for a surgical update (via UPDATE_SECTION) rather
+        // than re-dumping a whole new skill. The summarizer has no tool access — this
+        // is the only way it can "see inside" the file.
+        const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
+        const headings = (body.match(/^#{2,3}\s+.+$/gm) || [])
+          .map(h => h.replace(/^#{2,3}\s+/, '').trim())
+          .filter(Boolean)
+        if (desc.length > 180) desc = desc.slice(0, 177) + '…'
+        lines.push(`- ${name}: ${desc}`)
+        if (headings.length) lines.push(`    sections: ${headings.join(' | ')}`)
+      } catch {
+        lines.push(`- ${name}: (unreadable)`)
+      }
     }
   } catch (err) {
     console.warn('⚠️ enumerateSkillsForCompaction failed:', err instanceof Error ? err.message : err)
@@ -2324,16 +2335,26 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // proliferated duplicates. We hand it the current skill set + an adversarial,
                 // self-critical directive to merge/refine rather than create anew.
                 const existingSkills = enumerateSkillsForCompaction()
-                const skillCount = existingSkills ? existingSkills.split('\n').length : 0
+                // Count only skill lines (`- name: …`), not the `    sections:` continuation lines.
+                const skillCount = existingSkills
+                  ? existingSkills.split('\n').filter(l => l.startsWith('- ')).length
+                  : 0
                 const criticBlock = existingSkills
                   ? `\n\n---\n\n=== EXISTING SKILLS (${skillCount}) ===\n`
-                    + `These skills ALREADY EXIST for this user (name: description). Before you emit `
-                    + `SKILL_CANDIDATES or BEHAVIORAL_LEARNINGS, act as an ADVERSARIAL reviewer of your own output:\n`
-                    + `1. If a candidate duplicates or substantially overlaps one below, DO NOT create a new skill — `
+                    + `These skills ALREADY EXIST for this user. Each is listed as \`- name: description\`, and where known, `
+                    + `an indented \`sections:\` line lists that skill's section headings (\`## \`/\`### \`). `
+                    + `Before you emit SKILL_CANDIDATES or BEHAVIORAL_LEARNINGS, act as an ADVERSARIAL reviewer of your own output:\n`
+                    + `1. If what you learned refines ONE section of an existing skill, do NOT re-emit the whole skill. Instead emit a `
+                    + `surgical section update inside SKILL_CANDIDATES using this exact block form (the heading must match a `
+                    + `\`sections:\` entry below verbatim):\n`
+                    + `   --- UPDATE_SECTION: <skill-name> > <exact section heading> ---\n`
+                    + `   <the new markdown that should REPLACE that section's body>\n`
+                    + `   --- END UPDATE_SECTION ---\n`
+                    + `2. If a candidate duplicates or substantially overlaps one below but isn't a single-section tweak, `
                     + `re-emit it under the EXACT SAME kebab-case name, and only if it needs a substantive update; otherwise omit it.\n`
-                    + `2. Propose a brand-new skill ONLY if nothing below covers it, it was CONFIRMED working this session, `
+                    + `3. Propose a brand-new skill ONLY if nothing below covers it, it was CONFIRMED working this session, `
                     + `and it generalizes to future sessions on different tasks.\n`
-                    + `3. Prefer merging/refining over proliferating. A small set of sharp, non-overlapping skills is the goal — `
+                    + `4. Prefer refining/section-updating over proliferating. A small set of sharp, non-overlapping skills is the goal — `
                     + `reject your own low-signal or one-off candidates.\n\n`
                     + `${existingSkills}\n`
                   : ''
@@ -2448,6 +2469,60 @@ class ClaudeLLMStream extends llm.LLMStream {
                   }
                 } catch (skillErr) {
                   console.error('⚠️ PostCompact: SKILL_CANDIDATES write failed:', skillErr instanceof Error ? skillErr.message : skillErr)
+                }
+
+                // ── Section 3b: UPDATE_SECTION — surgical, section-level edits to EXISTING skills ──
+                // The model (via the PreCompact preamble) emits blocks of the form:
+                //   --- UPDATE_SECTION: <skill-name> > <exact heading> ---
+                //   <replacement markdown for that section body>
+                //   --- END UPDATE_SECTION ---
+                // We splice the new body under the matching `## `/`### ` heading, replacing
+                // everything down to the next heading of the same-or-higher level. We NEVER
+                // create a file here — an unknown skill/heading is logged and skipped, so the
+                // model can't silently mint a new skill through this path.
+                try {
+                  const updateRe = /---\s*UPDATE_SECTION:\s*([a-z][a-z0-9-]{1,39})\s*>\s*([^\n]+?)\s*---\n([\s\S]*?)---\s*END UPDATE_SECTION\s*---/g
+                  let um: RegExpExecArray | null
+                  while ((um = updateRe.exec(summary)) !== null) {
+                    const targetSkill = um[1].trim()
+                    const targetHeading = um[2].trim()
+                    const newBody = um[3].trim()
+                    const skillPath = join(skillDir, '.claude', 'skills', targetSkill, 'SKILL.md')
+                    if (!existsSyncFs(skillPath)) {
+                      console.warn(`⚠️ PostCompact: UPDATE_SECTION skipped — no such skill '${targetSkill}'`)
+                      continue
+                    }
+                    const content = readSyncFs(skillPath, 'utf-8')
+                    const lines2 = content.split('\n')
+                    // Find the heading line (## or ###) whose text matches targetHeading (case-insensitive).
+                    const norm = (s: string) => s.replace(/^#{2,3}\s+/, '').trim().toLowerCase()
+                    const hIdx = lines2.findIndex(l => /^#{2,3}\s+/.test(l) && norm(l) === targetHeading.toLowerCase())
+                    if (hIdx === -1) {
+                      console.warn(`⚠️ PostCompact: UPDATE_SECTION skipped — heading '${targetHeading}' not found in '${targetSkill}'`)
+                      continue
+                    }
+                    const level = (lines2[hIdx].match(/^#+/) || ['##'])[0].length
+                    // Section ends at the next heading of the same-or-higher level (fewer/equal #s).
+                    let end = lines2.length
+                    for (let i = hIdx + 1; i < lines2.length; i++) {
+                      const m2 = lines2[i].match(/^(#{1,6})\s+/)
+                      if (m2 && m2[1].length <= level) { end = i; break }
+                    }
+                    const rebuilt = [
+                      ...lines2.slice(0, hIdx + 1),
+                      '',
+                      newBody,
+                      '',
+                      ...lines2.slice(end),
+                    ].join('\n')
+                    writeSyncFs(skillPath, rebuilt, 'utf-8')
+                    console.log(`🧠 PostCompact: UPDATE_SECTION applied — '${targetSkill}' › '${targetHeading}' (${newBody.length} chars)`)
+                    skillsWritten++
+                    if (!skillNames.includes(targetSkill)) skillNames.push(targetSkill)
+                    progress('Updated section', `${targetSkill} › ${targetHeading}`)
+                  }
+                } catch (updErr) {
+                  console.error('⚠️ PostCompact: UPDATE_SECTION apply failed:', updErr instanceof Error ? updErr.message : updErr)
                 }
 
                 // ── Section 4: BEHAVIORAL_LEARNINGS — write to learned-behaviors/SKILL.md ──
