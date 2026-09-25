@@ -424,6 +424,17 @@ export default function Dashboard() {
 
   useEffect(() => { if (!loading) fetchSessions() }, [loading, fetchSessions])
 
+  // Re-fetch sessions when machine transitions to running (auto-start from idle).
+  // Without this, sessions stay empty if the initial fetch fires while the
+  // machine is still stopped and the auto-start hasn't completed yet.
+  const prevSandboxStatusRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (sandboxStatus === 'running' && prevSandboxStatusRef.current !== 'running') {
+      fetchSessions(true)
+    }
+    prevSandboxStatusRef.current = sandboxStatus
+  }, [sandboxStatus, fetchSessions])
+
   // Status polling — branches on connection mode:
   //   local:  hit the agent's /health directly (fast, local network)
   //   cloud:  poll /api/sandbox for sandboxStatus (cold/warm/running/stopped
@@ -500,10 +511,13 @@ export default function Dashboard() {
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
           setSandboxStatus(d.sandbox.status)
-          // Cloud default: no saved preference counts as cloud; only an
-          // explicit 'local' choice opts out.
-          const savedMode = localStorage.getItem('osborn-connection-mode')
-          if (savedMode !== 'local' && d.sandbox.previewUrl) {
+          // If a cloud sandbox exists, always switch to cloud — even if the
+          // user previously clicked Local. Local mode is meaningless when a
+          // Fly machine is provisioned (no local agent runs on the user's
+          // device). Without this, a user who clicks Local to troubleshoot
+          // gets permanently stuck: sandbox discovery sees 'local' in
+          // localStorage and never overrides it.
+          if (d.sandbox.previewUrl) {
             setConnectionMode('cloud')
             setAgentUrl(d.sandbox.previewUrl)
           }
