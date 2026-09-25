@@ -168,6 +168,30 @@ function getSubagentsDir(workingDir: string): string {
   return dir
 }
 
+// DEPRECATED / DEAD (kept for reference, do NOT re-wire): read skills from an
+// arbitrary agentDir/.claude/skills. This was the cwd-based reader that caused the
+// home-vs-cwd divergence. All skill reads now go through the single source of truth
+// (~/.claude/skills) via loadAllSkills / enumerateSkillsForCompaction / loadSkillsList.
+// Commented out rather than removed so the old shape stays visible.
+// function loadSkillsFromDir(agentDir: string): string {
+//   const skillsDir = join(agentDir, '.claude', 'skills')
+//   if (!existsSync(skillsDir)) return ''
+//   const skills: string[] = []
+//   try {
+//     for (const skillName of readdirSync(skillsDir)) {
+//       const skillFile = join(skillsDir, skillName, 'SKILL.md')
+//       if (existsSync(skillFile)) {
+//         skills.push(readFileSync(skillFile, 'utf-8').trim())
+//       }
+//     }
+//   } catch (err) {
+//     console.warn('⚠️ Failed to load skills:', err)
+//   }
+//   if (skills.length === 0) return ''
+//   console.log(`📚 Loaded ${skills.length} skill(s) from ${skillsDir}`)
+//   return `<available-skills>\n${skills.join('\n\n---\n\n')}\n</available-skills>`
+// }
+
 /**
  * Loads skills from both ~/.claude/skills/ (home dir) and {workingDir}/.claude/skills/ (project dir).
  * Merges results, deduplicating by skill directory name — home dir wins on conflicts.
