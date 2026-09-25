@@ -169,32 +169,6 @@ function getSubagentsDir(workingDir: string): string {
 }
 
 /**
- * Load skill files from agent/.claude/skills/{name}/SKILL.md
- * Injects into system prompt so Claude sees them as available capabilities.
- * Skills execute via Bash — no SDK settingSources needed.
- */
-function loadSkillsFromDir(agentDir: string): string {
-  const skillsDir = join(agentDir, '.claude', 'skills')
-  if (!existsSync(skillsDir)) return ''
-
-  const skills: string[] = []
-  try {
-    for (const skillName of readdirSync(skillsDir)) {
-      const skillFile = join(skillsDir, skillName, 'SKILL.md')
-      if (existsSync(skillFile)) {
-        skills.push(readFileSync(skillFile, 'utf-8').trim())
-      }
-    }
-  } catch (err) {
-    console.warn('⚠️ Failed to load skills:', err)
-  }
-
-  if (skills.length === 0) return ''
-  console.log(`📚 Loaded ${skills.length} skill(s) from ${skillsDir}`)
-  return `<available-skills>\n${skills.join('\n\n---\n\n')}\n</available-skills>`
-}
-
-/**
  * Loads skills from both ~/.claude/skills/ (home dir) and {workingDir}/.claude/skills/ (project dir).
  * Merges results, deduplicating by skill directory name — home dir wins on conflicts.
  * Returns a combined <available-skills> XML block, or '' if no skills found.
