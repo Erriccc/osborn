@@ -16,7 +16,7 @@ import { getResearchSystemPrompt, getDirectModeResearchPrompt, getGroundingBlock
 import { getIndexPath } from './summary-index.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -230,58 +230,98 @@ function loadAllSkills(_workingDir: string): string {
 }
 
 /**
- * Enumerate the agent's CURRENT skills (name + one-line description) from
- * ~/.claude/skills, for injection into the PreCompact instruction. This is the
- * list the compaction model dedupes/merges against so it stops re-emitting
- * duplicate skills every session. Description is taken from YAML frontmatter
- * (`description:`) when present, else the WHEN: line, else the first non-heading
- * line. Returns one `- name: description` per line, or '' if none.
+ * Enumerate the agent's CURRENT skills from ~/.claude/skills for injection into
+ * the PreCompact instruction — the material the compaction model reads so it
+ * refines/merges existing skills instead of re-emitting duplicates.
+ *
+ * Containment principle (why this is cheap AND complete):
+ *  - SKILL.md is the canonical knowledge file and is small (~1–15KB each). We
+ *    inject it IN FULL so the model sees every minute implementation detail and
+ *    its UPDATE_SECTION edits are never blind. Bodies are emitted up to a total
+ *    char budget; any overflow skill degrades to headings-only (still enough to
+ *    dedup / target a section) so a pathological skill count can't blow the turn.
+ *  - Satellite files in the folder (scripts/tools/reference docs) can be huge and
+ *    unbounded, so we NEVER inject their contents — only a manifest line
+ *    (name + size). The model can flag one for update; editing it is deferred to
+ *    the user or a future tool-equipped merger that reads just that one file.
  */
+// ~50K tokens of full SKILL.md text — ~5% of the 1M-context summarizer window, so
+// completeness (the user's priority) wins over frugality. 16 defaults already use
+// ~59KB, so a real user's defaults + learned + UI skills need real headroom here.
+// NOTE: skills are walked alphabetically, so once the budget is hit the *late-alphabet*
+// skills degrade to headings-only. A future refinement is to order by session-relevance
+// (skills touched this session first) rather than name, so the overflow is the least
+// relevant skills rather than an alphabetical accident.
+const SKILL_BODY_BUDGET = 200_000
+
+function extractSkillDescription(raw: string): string {
+  let desc = ''
+  const fm = raw.match(/^---\n([\s\S]*?)\n---/)
+  if (fm) {
+    const m = fm[1].match(/^description:\s*(.+)$/m)
+    if (m) desc = m[1].trim()
+  }
+  const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
+  if (!desc) {
+    const when = body.match(/^\s*WHEN:\s*(.+)$/mi)
+    if (when) desc = when[1].trim()
+  }
+  if (!desc) {
+    const first = body.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'))
+    desc = first || '(no description)'
+  }
+  return desc.length > 200 ? desc.slice(0, 197) + '…' : desc
+}
+
 function enumerateSkillsForCompaction(): string {
   const dir = join(homedir(), '.claude', 'skills')
   if (!existsSync(dir)) return ''
-  const lines: string[] = []
+  const blocks: string[] = []
+  let budgetLeft = SKILL_BODY_BUDGET
   try {
     for (const name of readdirSync(dir).sort()) {
-      const file = join(dir, name, 'SKILL.md')
+      const folder = join(dir, name)
+      const file = join(folder, 'SKILL.md')
       if (!existsSync(file)) continue
-      let desc = ''
       try {
-        const raw = readFileSync(file, 'utf-8')
-        const fm = raw.match(/^---\n([\s\S]*?)\n---/)
-        if (fm) {
-          const m = fm[1].match(/^description:\s*(.+)$/m)
-          if (m) desc = m[1].trim()
-        }
-        if (!desc) {
+        const raw = readFileSync(file, 'utf-8').trim()
+        const desc = extractSkillDescription(raw)
+
+        // Manifest of satellite files (name + size), contents NEVER injected.
+        let manifest = ''
+        try {
+          const others = readdirSync(folder)
+            .filter(f => f !== 'SKILL.md')
+            .map(f => {
+              try {
+                const st = statSync(join(folder, f))
+                const kb = st.isDirectory() ? '(dir)' : `${Math.max(1, Math.round(st.size / 1024))}KB`
+                return `${f} ${kb}`
+              } catch { return f }
+            })
+          if (others.length) manifest = `files (contents NOT shown — flag for update if needed): ${others.join(', ')}\n`
+        } catch { /* folder read race — skip manifest */ }
+
+        const header = `########## SKILL: ${name} ##########\ndescription: ${desc}\n${manifest}`
+
+        if (raw.length <= budgetLeft) {
+          budgetLeft -= raw.length
+          blocks.push(`${header}${raw}`)
+        } else {
+          // Over budget → headings-only fallback (still enough to dedup + target a section).
           const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
-          const when = body.match(/^\s*WHEN:\s*(.+)$/mi)
-          if (when) desc = when[1].trim()
+          const headings = (body.match(/^#{2,6}\s+.+$/gm) || [])
+            .map(h => h.replace(/^#+\s+/, '').trim())
+          blocks.push(`${header}(full body omitted — over injection budget)\nsections: ${headings.join(' | ') || '(none)'}`)
         }
-        if (!desc) {
-          const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
-          const first = body.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'))
-          desc = first || '(no description)'
-        }
-        // Option A: expose the skill's SECTION HEADINGS so the compaction model can
-        // target a specific section for a surgical update (via UPDATE_SECTION) rather
-        // than re-dumping a whole new skill. The summarizer has no tool access — this
-        // is the only way it can "see inside" the file.
-        const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
-        const headings = (body.match(/^#{2,3}\s+.+$/gm) || [])
-          .map(h => h.replace(/^#{2,3}\s+/, '').trim())
-          .filter(Boolean)
-        if (desc.length > 180) desc = desc.slice(0, 177) + '…'
-        lines.push(`- ${name}: ${desc}`)
-        if (headings.length) lines.push(`    sections: ${headings.join(' | ')}`)
       } catch {
-        lines.push(`- ${name}: (unreadable)`)
+        blocks.push(`########## SKILL: ${name} ##########\n(unreadable)`)
       }
     }
   } catch (err) {
     console.warn('⚠️ enumerateSkillsForCompaction failed:', err instanceof Error ? err.message : err)
   }
-  return lines.join('\n')
+  return blocks.join('\n\n')
 }
 
 // Compaction threshold: Fable 5 runs a 1M context window, so let sessions use
@@ -2335,24 +2375,25 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // proliferated duplicates. We hand it the current skill set + an adversarial,
                 // self-critical directive to merge/refine rather than create anew.
                 const existingSkills = enumerateSkillsForCompaction()
-                // Count only skill lines (`- name: …`), not the `    sections:` continuation lines.
+                // Each skill is delimited by a `########## SKILL: <name> ##########` header.
                 const skillCount = existingSkills
-                  ? existingSkills.split('\n').filter(l => l.startsWith('- ')).length
+                  ? (existingSkills.match(/^########## SKILL: /gm) || []).length
                   : 0
                 const criticBlock = existingSkills
-                  ? `\n\n---\n\n=== EXISTING SKILLS (${skillCount}) ===\n`
-                    + `These skills ALREADY EXIST for this user. Each is listed as \`- name: description\`, and where known, `
-                    + `an indented \`sections:\` line lists that skill's section headings (\`## \`/\`### \`). `
-                    + `Before you emit SKILL_CANDIDATES or BEHAVIORAL_LEARNINGS, act as an ADVERSARIAL reviewer of your own output:\n`
-                    + `1. If what you learned refines ONE section of an existing skill, do NOT re-emit the whole skill. Instead emit a `
+                  ? `\n\n---\n\n=== EXISTING SKILLS (${skillCount}) — FULL TEXT ===\n`
+                    + `Below is the COMPLETE current text of each skill the user already has (delimited by `
+                    + `\`########## SKILL: <name> ##########\`). A \`files:\` line lists any satellite files in the `
+                    + `skill folder (scripts/tools/docs) whose CONTENTS are not shown — flag one only if it clearly needs updating.\n`
+                    + `Read these before emitting SKILL_CANDIDATES or BEHAVIORAL_LEARNINGS, and act as an ADVERSARIAL reviewer of your own output:\n`
+                    + `1. If what you learned refines ONE part of an existing skill, do NOT re-emit the whole skill. Emit a `
                     + `surgical section update inside SKILL_CANDIDATES using this exact block form (the heading must match a `
-                    + `\`sections:\` entry below verbatim):\n`
+                    + `\`## \`/\`### \` heading that appears verbatim in that skill's text above):\n`
                     + `   --- UPDATE_SECTION: <skill-name> > <exact section heading> ---\n`
-                    + `   <the new markdown that should REPLACE that section's body>\n`
+                    + `   <the new markdown that should REPLACE that section's body — preserve detail already present that is still correct>\n`
                     + `   --- END UPDATE_SECTION ---\n`
-                    + `2. If a candidate duplicates or substantially overlaps one below but isn't a single-section tweak, `
+                    + `2. If a candidate duplicates or substantially overlaps one above but isn't a single-section tweak, `
                     + `re-emit it under the EXACT SAME kebab-case name, and only if it needs a substantive update; otherwise omit it.\n`
-                    + `3. Propose a brand-new skill ONLY if nothing below covers it, it was CONFIRMED working this session, `
+                    + `3. Propose a brand-new skill ONLY if nothing above covers it, it was CONFIRMED working this session, `
                     + `and it generalizes to future sessions on different tasks.\n`
                     + `4. Prefer refining/section-updating over proliferating. A small set of sharp, non-overlapping skills is the goal — `
                     + `reject your own low-signal or one-off candidates.\n\n`
