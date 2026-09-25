@@ -483,6 +483,10 @@ export const NAMED_AGENTS = {
     ].join(' '),
     tools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Glob', 'Grep', 'NotebookRead', 'NotebookEdit'],
     grounded: true,  // applyGrounding() injects the osborn-recall command
+    policy: { write: 'anywhere' as const },  // sole writer — unrestricted; funnels through canUseTool
+    // Soft behavior via the composable `reminder` seam → SDK criticalSystemReminder_EXPERIMENTAL.
+    // Pinned into the writer's system prompt as a hard-to-ignore reminder.
+    reminder: 'BEFORE you write implementation code: make sure a test exists for the behavior you are about to change. If none exists, say so explicitly in your report so the tester can cover it — the tester is the agent that writes tests. NEVER weaken, skip, or delete a test to make your change pass.',
     model: 'opus',
     prompt: [
       'You are Osborn\'s writer agent. You execute file changes with a verify-first approach.',
@@ -535,6 +539,8 @@ export const NAMED_AGENTS = {
       'NOT GROUNDED: no session index access — runs tests with fresh eyes, adversarial validation.',
     ].join(' '),
     tools: ['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'],
+    // Fail-closed: may ONLY write test files (basename .test/.spec.[jt]sx?).
+    policy: { write: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true } },
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s tester agent. Your job is running tests and builds, then reporting results.',
@@ -684,6 +690,8 @@ export const NAMED_AGENTS = {
       'NOT GROUNDED: no session index access — reviews with fresh eyes for unbiased adversarial check.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
+    // Fail-closed: may ONLY write documentation files.
+    policy: { write: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' } },
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s reviewer agent. You are the VERIFY step in a generator-verifier loop.',
@@ -854,6 +862,95 @@ export function applyGrounding(
     // Body is centralized + parameterized in ./prompts/grounding-recall.md.
     const groundingBlock = getGroundingBlock(cmd)
     out[name] = { ...rest, tools, prompt: `${rest.prompt || ''}\n${groundingBlock}` }
+  }
+  return out
+}
+
+/**
+ * Declarative per-agent BEHAVIOR — the composable layer over NAMED_AGENTS.
+ *
+ * Two meta-fields may be attached to ANY agent def (built-in NAMED_AGENTS OR a
+ * per-user DB-backed row via set_agents), and are honored generically — no more
+ * hardcoded `if (agentType === 'reviewer')` branches in the write-gate:
+ *
+ *   policy.write — HARD write enforcement (PreToolUse gate). One of:
+ *       'workspace'  → may only write inside the session workspace. DEFAULT for
+ *                      the main orchestrator, researcher, reasoner, planner.
+ *       'anywhere'   → unrestricted writes; still funnels through canUseTool
+ *                      (skill-dir auto-approve / permission dialog). Used by writer.
+ *       { extensions, label, matchBasename? } → fail-closed extension whitelist.
+ *                      reviewer = docs only; tester = test files only.
+ *
+ *   reminder — SOFT behavior; mapped to the SDK's criticalSystemReminder_EXPERIMENTAL
+ *      so it is pinned into the agent's system prompt (e.g. a writer reminder to
+ *      ensure a test exists before writing implementation). Opt-in, empty by default.
+ *
+ * Both are STRIPPED / mapped by finalizeRoster() before the roster reaches the
+ * SDK — mirrors how applyGrounding strips `grounded`. NEVER mutates the input.
+ */
+type AgentWritePolicy =
+  | 'workspace'
+  | 'anywhere'
+  | { extensions: RegExp; label: string; matchBasename?: boolean }
+
+const DEFAULT_WRITE_POLICY: AgentWritePolicy = 'workspace'
+
+/** Path is inside the per-session sandbox workspace. */
+function isWorkspacePath(filePath: string): boolean {
+  return !!filePath && (
+    filePath.includes('/osb/') ||
+    filePath.includes('.osborn/sessions/') ||
+    filePath.includes('.osborn/research/')
+  )
+}
+
+/** Effective write policy for the acting agent (null agentType = main orchestrator). */
+function resolveWritePolicy(agentType: string | null, roster: Record<string, any>): AgentWritePolicy {
+  const def = agentType ? roster?.[agentType] : null
+  return (def?.policy?.write as AgentWritePolicy) ?? DEFAULT_WRITE_POLICY
+}
+
+/**
+ * Decide a Write/Edit/MultiEdit against a policy. Pure — no side effects.
+ *   'allow'  → let it fall through (→ canUseTool workspace auto-approve, or {}).
+ *   'defer'  → PreToolUse returns permissionDecision:'ask' (canUseTool decides).
+ *   'deny'   → hard block with reason.
+ */
+function decideWrite(
+  policy: AgentWritePolicy,
+  filePath: string,
+): { decision: 'allow' | 'defer' | 'deny'; reason?: string } {
+  if (policy === 'anywhere') return { decision: 'defer' }
+  if (policy === 'workspace') {
+    if (filePath && !isWorkspacePath(filePath)) {
+      return { decision: 'deny', reason: 'Research mode: writes restricted to session workspace.' }
+    }
+    return { decision: 'allow' }
+  }
+  // Extension whitelist — fail closed (empty/unknown path denied).
+  const target = policy.matchBasename ? (filePath ? basename(resolve(filePath)) : '') : filePath
+  if (!filePath || !policy.extensions.test(target)) {
+    const reason = filePath
+      ? `Write denied: ${filePath} is not a ${policy.label} file. This agent may only write ${policy.label} files.`
+      : 'Write denied: could not determine target file path. Failing closed.'
+    return { decision: 'deny', reason }
+  }
+  return { decision: 'defer' }
+}
+
+/**
+ * Strip/map behavior meta-fields so the roster is a clean AgentDefinition set
+ * for the SDK: drop `policy` (enforced in-process by the write-gate) and map
+ * `reminder` → criticalSystemReminder_EXPERIMENTAL. NEVER mutates the input.
+ */
+function finalizeRoster(agents: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {}
+  for (const [name, agent] of Object.entries(agents)) {
+    const { policy, reminder, ...rest } = agent as Record<string, any>
+    if (reminder && !rest.criticalSystemReminder_EXPERIMENTAL) {
+      rest.criticalSystemReminder_EXPERIMENTAL = reminder
+    }
+    out[name] = rest
   }
   return out
 }
@@ -2106,6 +2203,11 @@ class ClaudeLLMStream extends llm.LLMStream {
 
       const allowedTools = this.#opts.allowedTools || []
 
+      // Roster the PreToolUse write-gate reads policy from — the PRE-strip view
+      // (retains `policy`), so DB-backed custom agents (set_agents) get their
+      // write policy enforced too. The SDK receives the finalized copy (agents:).
+      const enforcementRoster = this.#opts.agents ?? NAMED_AGENTS
+
       const sdkOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
@@ -2226,57 +2328,30 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log(`🔧 Tool call ${turnToolCallCount}/${TOOL_CALL_BUDGET}: ${toolName}`)
               }
 
-              // Write/Edit/MultiEdit access control
+              // Write/Edit/MultiEdit access control — DATA-DRIVEN by each agent's
+              // declarative policy.write (see AgentWritePolicy). Replaces the old
+              // hardcoded per-role branches; DB-backed custom agents get enforced too.
               if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
-                // Writer sub-agent gets full write access everywhere
-                console.log('verifying agent_type', agentType)
-                // Writer agent: no longer auto-approved — falls through to canUseTool for permission dialog
-                if (agentType === 'writer') {
-                  console.log(`✍️ Writer agent: deferring to canUseTool for permission`)
-                  this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
-                }
-
-                // Reviewer agent: ONLY documentation-extension files allowed — fail closed
-                if (agentType === 'reviewer') {
-                  const reviewerPath = String(toolInput.file_path || '')
-                  const DOC_EXTENSIONS = /\.(md|markdown|mdx|txt|rst|adoc)$/i
-                  if (!reviewerPath || !DOC_EXTENSIONS.test(reviewerPath)) {
-                    const reason = reviewerPath
-                      ? `Reviewer write denied: ${reviewerPath} is not a documentation file (.md/.markdown/.mdx/.txt/.rst/.adoc). Reviewer may only write documentation.`
-                      : 'Reviewer write denied: could not determine target file path. Failing closed.'
-                    console.log(`🚫 Reviewer write blocked: ${reviewerPath || '(no path)'} — not a doc extension`)
-                    this.#eventEmitter.emit('tool_blocked', { name: toolName, reason })
-                    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason }
-                  }
-                  console.log(`📝 Reviewer doc write allowed: ${reviewerPath}`)
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
-                }
-
-                // Tester agent: ONLY test files allowed — fail closed
-                if (agentType === 'tester') {
-                  const testerPath = String(toolInput.file_path || '')
-                  const STRICT_TEST_FILE = /\.(test|spec)\.[jt]sx?$/
-                  const resolvedBase = testerPath ? basename(resolve(testerPath)) : ''
-                  if (!testerPath || !STRICT_TEST_FILE.test(resolvedBase)) {
-                    const reason = testerPath
-                      ? `Tester write denied: ${testerPath} is not a test file (basename must match .test.ts/tsx/js/jsx or .spec.ts/tsx/js/jsx). Tester may only write test files.`
-                      : 'Tester write denied: could not determine target file path. Failing closed.'
-                    console.log(`🚫 Tester write blocked: ${testerPath || '(no path)'} — not a test file`)
-                    this.#eventEmitter.emit('tool_blocked', { name: toolName, reason })
-                    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason }
-                  }
-                  console.log(`🧪 Tester test-file write allowed: ${testerPath}`)
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
-                }
-
-                // All other agents (main, researcher, reasoner, etc.): workspace only
                 const filePath = String(toolInput.file_path || '')
-                if (filePath && !filePath.includes('/osb/') && !filePath.includes('.osborn/sessions/') && !filePath.includes('.osborn/research/')) {
-                  console.log(`🚫 Research mode: blocked write to ${filePath} (agent_type: ${agentType ?? 'main'})`)
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Research mode: writes restricted to session workspace' })
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: 'Research mode: writes restricted to session workspace.' }
+                const policy = resolveWritePolicy(agentType, enforcementRoster)
+                const { decision, reason } = decideWrite(policy, filePath)
+                console.log(`🔎 Write gate: agent=${agentType ?? 'main'} policy=${JSON.stringify(policy)} path="${filePath || '(none)'}" → ${decision}`)
+
+                if (decision === 'deny') {
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason })
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason }
                 }
+                if (decision === 'defer') {
+                  // Writer (write:'anywhere') surfaces its write in the live trace
+                  // before the permission dialog; adversarial agents (reviewer/tester)
+                  // do NOT emit here — parity with the prior hardcoded branches.
+                  if (policy === 'anywhere') {
+                    this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
+                  }
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
+                }
+                // decision === 'allow' → fall through to the shared tail (emits
+                // tool_use, returns {} → canUseTool workspace auto-approve).
               }
 
               console.log(`🔧 Claude: ${toolName}`)
@@ -2673,13 +2748,13 @@ class ClaudeLLMStream extends llm.LLMStream {
         // opts.agents is undefined — the ?? NAMED_AGENTS fallback would skip
         // the override entirely. Explicitly apply applyTurbo(NAMED_AGENTS)
         // so built-in agents always get FAST_MODEL when turbo is on.
-        agents: applyGrounding(
+        agents: finalizeRoster(applyGrounding(
           this.#llmRef.turbo
             ? applyTurbo(this.#opts.agents ?? NAMED_AGENTS, true)
             : (this.#opts.agents ?? NAMED_AGENTS),
           this.#sessionId,
           this.#opts.workingDirectory,
-        ),
+        )),
       }
 
       // Run Claude Agent SDK query() and stream results
