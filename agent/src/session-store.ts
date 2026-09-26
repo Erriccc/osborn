@@ -42,6 +42,9 @@ import { getSessionPaths, getSessionSubAgents, projectPathToSlug } from './sessi
 
 export const STORE_VERSION = 1
 export const EMBED_DIM = 384
+/** Canonical embed model id — the single source of truth (embedder.ts imports this).
+ * Recorded in meta.embed_model so a model swap is detected as a stale store. */
+export const EMBED_MODEL = process.env.OSBORN_EMBED_MODEL || 'Xenova/all-MiniLM-L6-v2'
 
 /** An embedder turns text into int8[EMBED_DIM] vectors (quantized, normalized). */
 export type Embedder = (texts: string[]) => Promise<Int8Array[] | null>
@@ -107,6 +110,45 @@ export function openStore(dbPath: string): Database.Database {
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
 
+  // ── Migration gate ──────────────────────────────────────────────
+  // The derived tables (content/fts/vec/sources) are a re-derivable cache of the
+  // JSONL, which is the source of truth. If this DB was built by a different
+  // STORE_VERSION, EMBED_DIM, or embed model, the cache is stale — most fatally the
+  // vec table is fixed at its old dimension, so queries embedded at the new dim throw
+  // or return garbage. Detect that and drop the derived tables + reset offsets; the
+  // next updateSessionStore() rebuilds them fresh from the JSONL at offset 0.
+  //
+  // A store with NO recorded embed_model (i.e. predating this stamp) is treated as
+  // NOT stale — otherwise the first rollout of this code would wipe every existing DB.
+  // We only wipe on a real mismatch, never on absence.
+  const hasMeta = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'`)
+    .get()
+  if (hasMeta) {
+    const readMeta = db.prepare('SELECT value FROM meta WHERE key = ?')
+    const prevVersion = (readMeta.get('version') as { value: string } | undefined)?.value ?? null
+    const prevDim = (readMeta.get('embed_dim') as { value: string } | undefined)?.value ?? null
+    const prevModel = (readMeta.get('embed_model') as { value: string } | undefined)?.value ?? null
+    const stale =
+      (prevVersion != null && prevVersion !== String(STORE_VERSION)) ||
+      (prevDim != null && prevDim !== String(EMBED_DIM)) ||
+      (prevModel != null && prevModel !== EMBED_MODEL)
+    if (stale) {
+      console.warn(
+        `⚠️  recall store ${dbPath} is stale ` +
+          `(version ${prevVersion}→${STORE_VERSION}, dim ${prevDim}→${EMBED_DIM}, ` +
+          `model ${prevModel}→${EMBED_MODEL}) — rebuilding derived tables from JSONL`,
+      )
+      db.exec(`
+        DROP TABLE IF EXISTS content;
+        DROP TABLE IF EXISTS fts;
+        DROP TABLE IF EXISTS vec;
+        DROP TABLE IF EXISTS sources;
+        DELETE FROM meta WHERE key IN ('version', 'embed_dim', 'embed_model');
+      `)
+    }
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS content (
       id          INTEGER PRIMARY KEY,
@@ -138,9 +180,13 @@ export function openStore(dbPath: string): Database.Database {
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
   `)
 
-  const setMeta = db.prepare('INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)')
+  // INSERT OR REPLACE (not IGNORE) so a rebuilt store restamps its identity; the
+  // migration gate above cleared these rows on a stale open, so this writes the
+  // current version/dim/model that the freshly-created tables were built for.
+  const setMeta = db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
   setMeta.run('version', String(STORE_VERSION))
   setMeta.run('embed_dim', String(EMBED_DIM))
+  setMeta.run('embed_model', EMBED_MODEL)
   return db
 }
 

@@ -16,9 +16,9 @@
  * Model cache honors TRANSFORMERS_CACHE / HF_HOME so it can be baked into the image.
  */
 
-import { EMBED_DIM, type Embedder } from './session-store.js'
+import { EMBED_DIM, EMBED_MODEL, type Embedder } from './session-store.js'
 
-const MODEL_ID = process.env.OSBORN_EMBED_MODEL || 'Xenova/all-MiniLM-L6-v2'
+const MODEL_ID = EMBED_MODEL
 
 let pipelinePromise: Promise<any> | null = null
 let disabled = false
