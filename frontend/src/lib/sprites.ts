@@ -19,6 +19,8 @@
  * Token persists in sprite filesystem across sleep/wake cycles.
  */
 
+import { forwardHostEnv, livekitRoom } from './platform-env'
+
 // 'use server' — this module must only be imported from Server Components or API routes
 
 // ─────────────────────────────────────────
@@ -203,27 +205,17 @@ function mapSpriteState(status: string): SandboxInfo['status'] {
  * User is "sprite", home is /home/sprite.
  */
 function getPlatformEnvVars(userId: string, syncToken?: string): Record<string, string> {
+  // Backend-specific literals stay here (port 8080, HOME/OSBORN_CWD for the
+  // sprite user). The forwarded host-env key set now comes from platform-env.ts
+  // (single source of truth) — see forwardHostEnv(). This replaces the drifted
+  // per-backend forwardKeys array (which was missing GROQ/NEXT_PUBLIC_LIVEKIT_URL).
   const envVars: Record<string, string> = {
     OSBORN_API_PORT: '8080',
     OSBORN_CWD: '/home/sprite/workspace',
     HOME: '/home/sprite',
     // LiveKit room scoped to user for isolation
-    LIVEKIT_ROOM: `osborn-${userId.substring(0, 8)}`,
-  }
-
-  const forwardKeys = [
-    'LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET',
-    'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
-    'SMITHERY_API_KEY', 'OPENROUTER_API_KEY',
-    // Recall.ai bot integration. RECALL_API_KEY is the auth token; RECALL_REGION
-    // selects the regional API endpoint (default 'us-west-2' if unset). If the
-    // user's Recall.ai account is in another region, this MUST be forwarded
-    // or every meeting bot call hits the wrong endpoint.
-    'RECALL_API_KEY', 'RECALL_REGION',
-    'SONIOX_API_KEY',
-  ]
-  for (const key of forwardKeys) {
-    if (process.env[key]) envVars[key] = process.env[key]!
+    LIVEKIT_ROOM: livekitRoom(userId),
+    ...forwardHostEnv(),
   }
 
   // Per-user sync token — authorises the sprite's osborn agent to call the

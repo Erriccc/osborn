@@ -11,6 +11,8 @@
  * Token persists in sandbox filesystem across stop/resume cycles.
  */
 
+import { forwardHostEnv } from './platform-env'
+
 // ─────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────
@@ -67,6 +69,11 @@ function buildPreviewUrl(sandboxId: string, port: number): string {
 
 /** Collect platform infrastructure env vars to inject into sandboxes */
 function getPlatformEnvVars(): Record<string, string> {
+  // Backend-specific literals stay here (workspace path, NODE_ENV, HOST). The
+  // forwarded host-env key set now comes from platform-env.ts (single source of
+  // truth) — see forwardHostEnv(). This replaces the drifted per-backend
+  // forwardKeys array (which was the smallest, missing ANTHROPIC/OPENROUTER/
+  // GROQ/SONIOX/RECALL_REGION). Forwarding a superset is safe — absent keys skip.
   const envVars: Record<string, string> = {
     // Must match the dir we create + cd into when launching osborn (see createSandbox).
     // /root/workspace is unreadable by anyone but root and never gets created,
@@ -75,17 +82,7 @@ function getPlatformEnvVars(): Record<string, string> {
     OSBORN_CWD: '/home/daytona/workspace',
     NODE_ENV: 'production',
     HOST: '0.0.0.0',
-  }
-  // Platform infrastructure keys (NOT user auth)
-  // Each user authenticates Claude separately via OAuth flow
-  const forwardKeys = [
-    'OPENAI_API_KEY', 'GOOGLE_API_KEY',
-    'LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET',
-    'DEEPGRAM_API_KEY',  // STT for pipeline mode — required
-    'SMITHERY_API_KEY', 'RECALL_API_KEY',
-  ]
-  for (const key of forwardKeys) {
-    if (process.env[key]) envVars[key] = process.env[key]!
+    ...forwardHostEnv(),
   }
   return envVars
 }

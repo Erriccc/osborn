@@ -49,6 +49,7 @@ import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { getRecallClient } from './recall-client.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
+import { missingRequiredEnv } from './env-keys.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -1834,6 +1835,19 @@ async function main() {
     if (!apiSecret) console.error('   - LIVEKIT_API_SECRET')
     console.error('\nSet these in your .env file or environment.')
     process.exit(1)
+  }
+
+  // Non-fatal diagnostic: surface any OTHER expected-required keys that are
+  // missing (per the shared env-keys.ts manifest — mirror of the frontend's
+  // platform-env.ts injection spec). The LiveKit trio above is the only
+  // hard-fail; the rest degrade gracefully (a plugin falls back, a feature
+  // no-ops), so we log rather than exit — but a missing OPENAI/DEEPGRAM key is
+  // the usual root cause of "voice works but STT/realtime is dead", worth naming.
+  const missingEnv = missingRequiredEnv().filter(
+    (k) => !['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'].includes(k),
+  )
+  if (missingEnv.length > 0) {
+    console.warn(`⚠️   Missing expected env keys (non-fatal): ${missingEnv.join(', ')}`)
   }
 
   // Parse CLI args

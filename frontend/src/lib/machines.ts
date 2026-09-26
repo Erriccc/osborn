@@ -20,6 +20,8 @@
  *   FLY_SANDBOX_IMAGE=registry.fly.io/osborn-sandbox/agent:latest
  */
 
+import { forwardHostEnv, livekitRoom } from './platform-env'
+
 // ─────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────
@@ -293,23 +295,17 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
   // updateOsbornImpl additionally STRIPS HOME from existing machine configs on
   // image-swap, so machines provisioned before this change get corrected too.
   const appName = appNameFromUserId(userId)
+  // Backend-specific literals stay here (port, dev-routing). The forwarded
+  // host-env key set now comes from platform-env.ts (single source of truth) —
+  // see forwardHostEnv(). This replaces the drifted per-backend forwardKeys array.
   const envVars: Record<string, string> = {
     OSBORN_API_PORT: String(OSBORN_HTTP_PORT),
-    LIVEKIT_ROOM: `osborn-${userId.substring(0, 8)}`,
+    LIVEKIT_ROOM: livekitRoom(userId),
     // Wildcard subdomain dev routing: PORT-APPNAME.dev.voice-native.com → localhost:PORT
     // Empty string disables the feature on machines that predate this env var.
     DEV_DOMAIN: process.env.DEV_DOMAIN || 'dev.voice-native.com',
     DEV_APP_NAME: appName,
-  }
-  const forwardKeys = [
-    'LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET',
-    'NEXT_PUBLIC_LIVEKIT_URL',
-    'DEEPGRAM_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'ANTHROPIC_API_KEY',
-    'RECALL_API_KEY', 'SMITHERY_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY',
-    'SONIOX_API_KEY',
-  ]
-  for (const key of forwardKeys) {
-    if (process.env[key]) envVars[key] = process.env[key]!
+    ...forwardHostEnv(),
   }
   return envVars
 }
@@ -1035,10 +1031,20 @@ async function updateOsbornImpl(
   // instead of silently staying broken. (Found 2026-06-01: osbornojure ran the
   // new image but kept stale HOME=/root, persisting nothing.)
   const existingConfig = (machine.config ?? {}) as Record<string, unknown>
-  const cleanedEnv = { ...((existingConfig.env as Record<string, string>) ?? {}) }
+  // Re-forward the full platform env on every update. Previously this path only
+  // spread the EXISTING machine env (then stripped HOME/OSBORN_CWD) — so a key
+  // rotated or added on the frontend host NEVER reached an existing machine; the
+  // only way a key changed was destroy+recreate. Merging fresh getPlatformEnvVars
+  // OVER the existing env makes an image-swap update actually propagate the current
+  // key set (added/rotated keys land; keys dropped from the source are intentionally
+  // left as-is rather than deleted, to avoid clobbering anything set out-of-band).
+  const cleanedEnv = {
+    ...((existingConfig.env as Record<string, string>) ?? {}),
+    ...getPlatformEnvVars(userId),
+  }
   delete cleanedEnv.HOME
   delete cleanedEnv.OSBORN_CWD
-  console.log(`[machines] updateOsborn: patching machine config image=${newImage} (stripped stale HOME/OSBORN_CWD from env)`)
+  console.log(`[machines] updateOsborn: patching machine config image=${newImage} (re-forwarded platform env; stripped stale HOME/OSBORN_CWD)`)
   try {
     await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, {
       config: {
