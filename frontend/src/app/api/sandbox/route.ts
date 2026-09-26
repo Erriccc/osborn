@@ -182,9 +182,9 @@ export async function POST(request: Request) {
       // When unset, the volume is created empty (existing behavior).
       const provider = process.env.CLOUD_PROVIDER === 'machines' ? 'machines' : 'sprites'
       const info = provider === 'machines'
-        ? await (createSandbox as unknown as (userId: string, opts: { sourceSnapshotId?: string }) => ReturnType<typeof createSandbox>)(
+        ? await (createSandbox as unknown as (userId: string, opts: { sourceSnapshotId?: string; syncToken?: string }) => ReturnType<typeof createSandbox>)(
             user.id,
-            { sourceSnapshotId: process.env.FLY_GOLDEN_SNAPSHOT_ID || undefined },
+            { sourceSnapshotId: process.env.FLY_GOLDEN_SNAPSHOT_ID || undefined, syncToken },
           )
         : await createSandbox(user.id, syncToken)
 

@@ -57,3 +57,25 @@ export const REQUIRED_AGENT_ENV_KEYS: string[] = AGENT_ENV_KEYS
 export function missingRequiredEnv(env: NodeJS.ProcessEnv = process.env): string[] {
   return REQUIRED_AGENT_ENV_KEYS.filter((k) => !env[k])
 }
+
+/**
+ * Keys a user may add/rotate live (mid-session, no reboot) via the /secrets
+ * endpoint. These are read by osborn's OWN code (not baked into a plugin SDK at
+ * import time), so writing process.env[KEY] + persisting to the volume takes
+ * effect on the next read — see secrets-store.ts. This is the allowlist: the
+ * /secrets endpoint rejects any key not in this set, so a user can never inject
+ * platform/infra keys (FLY_*, LIVEKIT_*, SMITHERY_API_KEY, tokens, etc.).
+ *
+ * Mirrors the scope:'user' entries in frontend/src/lib/platform-env.ts.
+ */
+export const USER_SECRET_KEYS: string[] = [
+  'ANTHROPIC_API_KEY',
+  'OPENROUTER_API_KEY',
+  'RECALL_API_KEY',
+  'RECALL_REGION',
+]
+
+/** True if `key` is a user-manageable secret (allowlisted for /secrets writes). */
+export function isUserSecretKey(key: string): boolean {
+  return USER_SECRET_KEYS.includes(key)
+}

@@ -213,6 +213,14 @@ export default function Dashboard() {
   // — the dashboard has no LiveKit data channel, so these come over HTTP.
   const [dashSkills, setDashSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
   const [dashAgents, setDashAgents] = useState<{ name: string; description: string; model: string; tools: string[] }[]>([])
+  // Per-user sync token — authorises calls to the agent's authed endpoints
+  // (session import/export + /secrets). Declared here (before the settings
+  // effect that depends on it) to avoid a TDZ reference.
+  const [syncToken, setSyncToken] = useState<string | null>(null)
+  // User-manageable API keys (agent /secrets) — status only, values never fetched.
+  const [dashSecrets, setDashSecrets] = useState<{ key: string; set: boolean; secret: boolean; masked: string; source: 'store' | 'env' | 'none' }[]>([])
+  const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({})
+  const [savingSecret, setSavingSecret] = useState<string | null>(null)
   // Mobile ⋯ overflow menu — which project's action menu is open
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null)
   // Machine's physical location (Fly region from agent /health) — the user
@@ -330,7 +338,16 @@ export default function Dashboard() {
     fetch(`${base}/agents`).then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (Array.isArray(d?.agents)) setDashAgents(d.agents) })
       .catch(() => {})
-  }, [showSettings, agentUrl])
+    // Connected API keys — status only (agent never returns raw values).
+    // Requires the per-user sync token; older agents (<0.9.224) 404 and the
+    // section just stays hidden.
+    if (syncToken) {
+      fetch(`${base}/secrets`, { headers: { 'Authorization': `Bearer ${syncToken}` } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (Array.isArray(d?.secrets)) setDashSecrets(d.secrets) })
+        .catch(() => {})
+    }
+  }, [showSettings, agentUrl, syncToken])
 
   // Machine location (agent /health region, 0.9.100+) — fetched whenever the
   // agent URL resolves, shown in the Cloud badge + machine card.
@@ -624,7 +641,6 @@ export default function Dashboard() {
   // click within 4s actually deletes. Sprites does NOT soft-delete — once gone,
   // overlay + persistent disk + checkpoints are unrecoverable. We learned this
   // the hard way; the modal-equivalent friction is worth it.
-  const [syncToken, setSyncToken] = useState<string | null>(null)
   const [syncCopied, setSyncCopied] = useState(false)
   const [skillCopied, setSkillCopied] = useState(false)
   const [globalSyncCopied, setGlobalSyncCopied] = useState(false)
@@ -1027,6 +1043,61 @@ export default function Dashboard() {
       }
     } finally {
       setImportingProject(null)
+    }
+  }
+
+  // Refresh connected-key status from the agent (status only, no values).
+  const refreshSecrets = async () => {
+    if (!agentUrl || !syncToken) return
+    try {
+      const r = await fetch(`${agentUrl.replace(/\/$/, '')}/secrets`, {
+        headers: { 'Authorization': `Bearer ${syncToken}` },
+      })
+      if (r.ok) {
+        const d = await r.json()
+        if (Array.isArray(d?.secrets)) setDashSecrets(d.secrets)
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Set/rotate one user key. Writes the machine's volume store + live process.env
+  // (takes effect on the agent's next read — no reboot). Empty value deletes.
+  const handleSaveSecret = async (key: string) => {
+    if (!agentUrl || !syncToken) return
+    const value = (secretDrafts[key] ?? '').trim()
+    setSavingSecret(key)
+    try {
+      const r = await fetch(`${agentUrl.replace(/\/$/, '')}/secrets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${syncToken}` },
+        body: JSON.stringify({ [key]: value }),
+      })
+      if (r.ok) {
+        const d = await r.json()
+        if (Array.isArray(d?.secrets)) setDashSecrets(d.secrets)
+        setSecretDrafts((prev) => { const next = { ...prev }; delete next[key]; return next })
+      }
+    } finally {
+      setSavingSecret(null)
+    }
+  }
+
+  const handleDeleteSecret = async (key: string) => {
+    if (!agentUrl || !syncToken) return
+    setSavingSecret(key)
+    try {
+      const r = await fetch(`${agentUrl.replace(/\/$/, '')}/secrets?key=${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${syncToken}` },
+      })
+      if (r.ok) {
+        const d = await r.json()
+        if (Array.isArray(d?.secrets)) setDashSecrets(d.secrets)
+      } else {
+        await refreshSecrets()
+      }
+    } finally {
+      setSavingSecret(null)
     }
   }
 
@@ -1478,6 +1549,75 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
+
+              {/* ── Connected platforms / API keys (agent /secrets) ── */}
+              {syncToken && dashSecrets.length > 0 && (
+                <div className="flex flex-col gap-3 pt-1 border-t border-[var(--border-subtle)]">
+                  <div>
+                    <span className="text-[var(--text-muted)] text-[11px] font-medium uppercase tracking-widest">Connected keys</span>
+                    <p className="mt-1 text-[11px] text-[var(--text-muted)] leading-snug">
+                      Add your own keys — applied live, no restart. Stored encrypted on your machine, never shown back.
+                    </p>
+                  </div>
+                  <div className="grid gap-2">
+                    {dashSecrets.map((s) => {
+                      const meta: Record<string, { label: string; placeholder: string }> = {
+                        ANTHROPIC_API_KEY: { label: 'Anthropic', placeholder: 'sk-ant-…' },
+                        OPENROUTER_API_KEY: { label: 'OpenRouter', placeholder: 'sk-or-…' },
+                        RECALL_API_KEY: { label: 'Recall.ai', placeholder: 'API key' },
+                        RECALL_REGION: { label: 'Recall region', placeholder: 'us-west-2' },
+                      }
+                      const m = meta[s.key] ?? { label: s.key, placeholder: 'value' }
+                      const draft = secretDrafts[s.key] ?? ''
+                      const busy = savingSecret === s.key
+                      return (
+                        <div key={s.key} className="flex flex-col gap-1.5 p-3 rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)]">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[13px] text-[var(--text-primary)] font-semibold tracking-tight">{m.label}</span>
+                            {s.set ? (
+                              <span className="flex items-center gap-1.5 flex-shrink-0">
+                                <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--accent)] font-bold rounded-full bg-[var(--accent-dim)]/15 border border-[var(--accent-dim)]/25">
+                                  {s.source === 'env' ? 'platform' : 'set'}
+                                </span>
+                                <span className="text-[11px] text-[var(--text-muted)] font-mono">{s.masked}</span>
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide">not set</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type={s.secret ? 'password' : 'text'}
+                              value={draft}
+                              placeholder={m.placeholder}
+                              autoComplete="off"
+                              onChange={(e) => setSecretDrafts((prev) => ({ ...prev, [s.key]: e.target.value }))}
+                              onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) handleSaveSecret(s.key) }}
+                              className="flex-1 min-w-0 text-[12px] font-mono px-2.5 py-1.5 rounded-lg bg-[var(--surface-raised)] border border-[var(--border-subtle)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-dim)]"
+                            />
+                            <button
+                              onClick={() => handleSaveSecret(s.key)}
+                              disabled={busy || !draft.trim()}
+                              className="text-[11px] px-2.5 py-1.5 rounded-lg bg-[var(--accent-dim)]/15 border border-[var(--accent-dim)]/25 text-[var(--accent)] hover:bg-[var(--accent-dim)]/25 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              {busy ? '…' : 'Save'}
+                            </button>
+                            {s.set && s.source !== 'env' && (
+                              <button
+                                onClick={() => handleDeleteSecret(s.key)}
+                                disabled={busy}
+                                className="text-[11px] px-2.5 py-1.5 rounded-lg bg-[var(--surface-raised)] hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors shrink-0 disabled:opacity-40"
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* ── Voice Mode (pipeline only) ── */}
               <div className="flex gap-6">

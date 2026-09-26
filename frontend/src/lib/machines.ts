@@ -283,7 +283,7 @@ async function allocateIp(appName: string): Promise<boolean> {
 /**
  * Get platform env vars to inject into every machine.
  */
-function getPlatformEnvVars(userId: string): Record<string, string> {
+function getPlatformEnvVars(userId: string, syncToken?: string): Record<string, string> {
   // NOTE: HOME and OSBORN_CWD are deliberately NOT set here.
   // The image's Dockerfile ENV sets HOME=/workspace and OSBORN_CWD=/workspace
   // so the entire home dir (Claude OAuth, sessions, skills, gh/ssh/git config,
@@ -306,6 +306,13 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
     DEV_DOMAIN: process.env.DEV_DOMAIN || 'dev.voice-native.com',
     DEV_APP_NAME: appName,
     ...forwardHostEnv(),
+  }
+  // Per-user sync token — authorises the machine's osborn agent for the
+  // dashboard's authed endpoints (session export/import AND the /secrets
+  // key-management API, whose auth is REQUIRED). Baked into machine config on
+  // create and re-forwarded on every image-swap update. Mirrors sprites.ts.
+  if (syncToken) {
+    envVars.OSBORN_SYNC_TOKEN = syncToken
   }
   return envVars
 }
@@ -341,7 +348,7 @@ function getPlatformEnvVars(userId: string): Record<string, string> {
  *   When unset, the volume is created empty and the entrypoint does the full first-boot seed
  *   (existing behavior).
  */
-export async function createSandbox(userId: string, options?: { autostopMode?: 'off' | 'stop'; sourceSnapshotId?: string }): Promise<SandboxInfo> {
+export async function createSandbox(userId: string, options?: { autostopMode?: 'off' | 'stop'; sourceSnapshotId?: string; syncToken?: string }): Promise<SandboxInfo> {
   if (!isMachinesConfigured()) {
     return { id: '', status: 'error', userId, createdAt: new Date().toISOString(), error: 'FLY_API_TOKEN not configured' }
   }
@@ -397,7 +404,7 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
     }
 
     // Step 4: Create machine
-    const envVars = getPlatformEnvVars(userId)
+    const envVars = getPlatformEnvVars(userId, options?.syncToken)
     const machineConfig: Record<string, unknown> = {
       image: getSandboxImage(),
       init: { exec: ['/entrypoint.sh'] },
@@ -817,6 +824,7 @@ export async function updateOsborn(
   sandboxId: string,
   userId: string,
   version?: string,
+  syncToken?: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
   const existing = updateInflight.get(sandboxId)
   if (existing) {
@@ -824,7 +832,7 @@ export async function updateOsborn(
     return existing
   }
 
-  const work = updateOsbornImpl(sandboxId, userId, version)
+  const work = updateOsbornImpl(sandboxId, userId, version, syncToken)
   updateInflight.set(sandboxId, work)
   work.finally(() => {
     if (updateInflight.get(sandboxId) === work) {
@@ -903,6 +911,7 @@ async function updateOsbornImpl(
   sandboxId: string,
   userId: string,
   version?: string,
+  syncToken?: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
   const startedAt = Date.now()
   // Seed the result store immediately so verify-update knows an update is
@@ -1040,7 +1049,7 @@ async function updateOsbornImpl(
   // left as-is rather than deleted, to avoid clobbering anything set out-of-band).
   const cleanedEnv = {
     ...((existingConfig.env as Record<string, string>) ?? {}),
-    ...getPlatformEnvVars(userId),
+    ...getPlatformEnvVars(userId, syncToken),
   }
   delete cleanedEnv.HOME
   delete cleanedEnv.OSBORN_CWD

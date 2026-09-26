@@ -1,5 +1,9 @@
 // Load environment variables FIRST before any other imports
 import 'dotenv/config'
+// Then hydrate volume-persisted user secrets into process.env, BEFORE any
+// module that reads its keys at load time (recall-client's RECALL_REGION const,
+// claude-auth fallback). Side-effect import — must stay right after dotenv.
+import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
@@ -50,6 +54,7 @@ import { MCP_CATALOG } from './config.js'
 import { getRecallClient } from './recall-client.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
+import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -336,6 +341,7 @@ const AGENT_ROUTE_PREFIXES = [
   '/canvas-stream', '/events', '/room-code', '/connect-room', '/leave-room',
   '/report-bug', '/restart', '/tts', '/webhook', '/sessions/export',
   '/sessions/import', '/sessions/manifest',
+  '/secrets',
   '/editor',
 ]
 
@@ -1529,6 +1535,69 @@ function startApiServer(workingDir: string, port: number): void {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: `Delete failed: ${(err as Error).message}` }))
       }
+      return
+    }
+
+    // ── /secrets ── user-manageable API keys (live, no reboot) ───────────────
+    // GET  → status of each user key (set?/masked/source) — NEVER raw values.
+    // POST → { KEY: value, ... } set/rotate; empty string deletes. Allowlist-
+    //        filtered (USER_SECRET_KEYS); writes the volume store + process.env.
+    // DELETE ?key=KEY → remove one key.
+    // Auth is REQUIRED here (unlike the soft export/import gate): if the machine
+    // has no OSBORN_SYNC_TOKEN we refuse rather than expose an open write path.
+    if (url.pathname === '/secrets') {
+      if (!syncToken) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Secrets endpoint unavailable: no sync token configured' }))
+        return
+      }
+      const authHeader = req.headers['authorization'] ?? ''
+      if (authHeader !== `Bearer ${syncToken}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized' }))
+        return
+      }
+
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ secrets: listSecretStatus() }))
+        return
+      }
+
+      if (req.method === 'POST') {
+        let body = ''
+        req.on('data', (chunk) => { body += chunk.toString() })
+        req.on('end', () => {
+          try {
+            const parsed = JSON.parse(body || '{}')
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+              res.writeHead(400, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: 'Body must be a JSON object of { KEY: value }' }))
+              return
+            }
+            const result = setSecrets(parsed as Record<string, unknown>)
+            console.log(`🔑 /secrets POST — set:[${result.set.join(',')}] deleted:[${result.deleted.join(',')}] rejected:[${result.rejected.join(',')}]`)
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ...result, secrets: listSecretStatus() }))
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'Invalid JSON body' }))
+          }
+        })
+        return
+      }
+
+      if (req.method === 'DELETE') {
+        const key = url.searchParams.get('key') ?? ''
+        const existed = deleteSecret(key)
+        console.log(`🔑 /secrets DELETE ${key} — ${existed ? 'removed' : 'not present / not allowed'}`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ deleted: existed, key, secrets: listSecretStatus() }))
+        return
+      }
+
+      res.writeHead(405, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Method not allowed' }))
       return
     }
 
