@@ -41,10 +41,14 @@ import { getSessionPaths, getSessionSubAgents, projectPathToSlug } from './sessi
 // ============================================================
 
 export const STORE_VERSION = 1
-export const EMBED_DIM = 384
-/** Canonical embed model id — the single source of truth (embedder.ts imports this).
- * Recorded in meta.embed_model so a model swap is detected as a stale store. */
-export const EMBED_MODEL = process.env.OSBORN_EMBED_MODEL || 'Xenova/all-MiniLM-L6-v2'
+/** Vector width of the semantic layer. Qwen3-Embedding is Matryoshka-trained, so 1024
+ * is a valid MRL reduction of its native width — big enough for strong recall, small
+ * enough to keep int8 vectors ~1KB/row. Changing this rebuilds every store's vec table. */
+export const EMBED_DIM = 1024
+/** Canonical embed model id — the single source of truth (embedder.ts imports this and
+ * sends it to OpenRouter). Recorded in meta.embed_model so a model swap is detected as a
+ * stale store and triggers a re-embed. */
+export const EMBED_MODEL = process.env.OSBORN_EMBED_MODEL || 'qwen/qwen3-embedding-8b'
 
 /** An embedder turns text into int8[EMBED_DIM] vectors (quantized, normalized). */
 export type Embedder = (texts: string[]) => Promise<Int8Array[] | null>
@@ -302,14 +306,25 @@ function countLines(filePath: string, upToBytes: number): number {
 }
 
 /**
+ * Max bytes ingested from a single JSONL per sweep. A very large session file
+ * (100MB+) is drained gap-free across many turns instead of being read whole in
+ * one synchronous pass — that whole-file read + insert transaction is what pegged
+ * the single Node event loop and starved the SDK's time-boxed UserPromptSubmit hook.
+ */
+const MAX_INGEST_BYTES = 4 * 1024 * 1024
+
+/**
  * Ingest new bytes from a single JSONL file into the store.
- * Reads only from `fromOffset` forward. Returns rows inserted + new offset.
+ * Reads only from `fromOffset` forward, at most `maxBytes` per call. Returns rows
+ * inserted + new offset (which advances by the bytes actually consumed, so the next
+ * sweep resumes exactly where this one stopped).
  */
 function ingestFile(
   db: Database.Database,
   filePath: string,
   source: string,
   fromOffset: number,
+  maxBytes: number = MAX_INGEST_BYTES,
 ): { inserted: { id: number; text: string }[]; newOffset: number; linesProcessed: number } {
   const inserted: { id: number; text: string }[] = []
   if (!existsSync(filePath)) return { inserted, newOffset: fromOffset, linesProcessed: 0 }
@@ -317,12 +332,26 @@ function ingestFile(
   const fileSize = statSync(filePath).size
   if (fromOffset >= fileSize) return { inserted, newOffset: fromOffset, linesProcessed: 0 }
 
-  const buf = Buffer.alloc(fileSize - fromOffset)
+  const remaining = fileSize - fromOffset
+  const reachedEof = remaining <= maxBytes
+  const readLen = Math.min(remaining, maxBytes)
+
+  const buf = Buffer.alloc(readLen)
   const fd = openSync(filePath, 'r')
   readSync(fd, buf, 0, buf.length, fromOffset)
   closeSync(fd)
 
-  const rawLines = buf.toString('utf-8').split('\n')
+  // If we stopped short of EOF, trim back to the last complete line so a JSON record
+  // is never split across sweeps. If the window holds no newline at all (a single
+  // line longer than maxBytes), take it whole rather than stall forever.
+  let usable = buf
+  if (!reachedEof) {
+    const lastNl = buf.lastIndexOf(10)
+    if (lastNl >= 0) usable = buf.subarray(0, lastNl + 1)
+  }
+  const consumed = usable.length
+
+  const rawLines = usable.toString('utf-8').split('\n')
   let lineNum = fromOffset === 0 ? 1 : countLines(filePath, fromOffset) + 1
   let cursor = fromOffset
   let linesProcessed = 0
@@ -366,7 +395,7 @@ function ingestFile(
     lineNum++
   }
 
-  return { inserted, newOffset: fileSize, linesProcessed }
+  return { inserted, newOffset: fromOffset + consumed, linesProcessed }
 }
 
 /**
@@ -465,6 +494,8 @@ async function embedRows(
   const BATCH = 64
   let done = 0
   for (let i = 0; i < rows.length; i += BATCH) {
+    // embed() is now a network call (OpenRouter) — `await` already yields the event
+    // loop while the request is in flight, so no manual setImmediate pump is needed.
     const batch = rows.slice(i, i + BATCH)
     // Cap embedding input length — long tool outputs blow up the model with no recall gain.
     const vectors = await embed(batch.map(r => r.text.slice(0, 8000)))

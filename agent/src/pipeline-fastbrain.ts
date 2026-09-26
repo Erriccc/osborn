@@ -405,8 +405,17 @@ export async function askPipelineFastBrain(
 
   try {
     let rounds = 0
+    // Overall wall-clock cap. The per-request fetch timeout doesn't bound the whole
+    // tool loop; if the event loop is briefly busy (large ingest sweep) a search could
+    // otherwise stretch to 40–130s. Bail with whatever we have past this deadline.
+    const FASTBRAIN_DEADLINE_MS = 8000
+    const startTime = Date.now()
 
     while (rounds < MAX_TOOL_ROUNDS) {
+      if (Date.now() - startTime > FASTBRAIN_DEADLINE_MS) {
+        console.warn(`🧠⚡ [pipeline-fb] deadline hit after ${rounds} rounds`)
+        break
+      }
       rounds++
       const data = await callOpenRouter(messages, tools, apiKey)
       const choice = data.choices?.[0]

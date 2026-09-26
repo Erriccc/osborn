@@ -2411,9 +2411,16 @@ class ClaudeLLMStream extends llm.LLMStream {
                   this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory)
                 }
 
+                // Recall injection is best-effort and must NEVER approach the SDK's 30s hook
+                // budget. Cap it hard at 1.5s — if the store is momentarily busy (e.g. a large
+                // ingest sweep still draining), we skip recall for this turn rather than block
+                // the prompt. The keyword/vector layers catch up on the next turn.
                 const recalled = fromSubagent
                   ? ''
-                  : await buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || ''))
+                  : await Promise.race([
+                      buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || '')),
+                      new Promise<string>((res) => setTimeout(() => res(''), 1500)),
+                    ])
                 const additionalContext = recalled ? `${reminder}\n\n${recalled}` : reminder
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''} for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
                 return {
