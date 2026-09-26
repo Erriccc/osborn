@@ -381,12 +381,6 @@ export const NAMED_AGENTS = {
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebSearch', 'WebFetch', 'Task'],
     grounded: true,  // applyGrounding() injects the osborn-recall command + ensures Bash
-    // Declarative flow. == today: after the researcher finishes, a reasoner-based
-    // research gate judges completeness and may send it back for more.
-    coordination: {
-      then: ['reasoner'],
-      startNote: 'When you finish, a reasoner-based gate judges whether your findings are COMPLETE and well-sourced against the task; thin or unsourced findings get sent back to you. Cite file paths + line numbers and explicitly note what you looked for but did NOT find.',
-    },
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s research agent. Your job is information gathering — thorough, structured, factual.',
@@ -423,6 +417,7 @@ export const NAMED_AGENTS = {
       'Return findings to the orchestrator — never directly to the user.',
       'Run several researchers in parallel when there are independent threads to investigate.',
       'Hand off back to the orchestrator; it decides whether to invoke planner or writer next.',
+      'After you return, a reasoner-based gate judges whether your findings are COMPLETE and well-sourced; thin or unsourced findings get sent back to you — so cite paths/line numbers and state what you looked for but did NOT find.',
     ].join('\n'),
   },
   reasoner: {
@@ -489,17 +484,8 @@ export const NAMED_AGENTS = {
     ].join(' '),
     tools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Glob', 'Grep', 'NotebookRead', 'NotebookEdit'],
     grounded: true,  // applyGrounding() injects the osborn-recall command
-    policy: { write: 'anywhere' as const },  // sole writer — unrestricted; funnels through canUseTool
-    // Soft behavior via the composable `reminder` seam → SDK criticalSystemReminder_EXPERIMENTAL.
-    // Pinned into the writer's system prompt as a hard-to-ignore reminder.
-    reminder: 'BEFORE you write implementation code: make sure a test exists for the behavior you are about to change. If none exists, say so explicitly in your report so the tester can cover it — the tester is the agent that writes tests. NEVER weaken, skip, or delete a test to make your change pass.',
-    // Declarative flow (drives SubagentStop dispatch + SubagentStart injection).
-    // == today: after the writer finishes, reviewer AND tester run in parallel.
-    coordination: {
-      then: ['reviewer', 'tester'],
-      mode: 'parallel' as const,
-      startNote: 'When you finish, your change is automatically verified in parallel: a reviewer checks correctness against the git diff, and a tester runs the suite. Make the change review-ready and leave the tree in a runnable state — do not skip cleanup expecting a second pass.',
-    },
+    // SDK-native soft-behavior field — pinned into the writer's system prompt.
+    criticalSystemReminder_EXPERIMENTAL: 'BEFORE you write implementation code: make sure a test exists for the behavior you are about to change. If none exists, say so explicitly in your report so the tester can cover it — the tester is the agent that writes tests. NEVER weaken, skip, or delete a test to make your change pass.',
     model: 'opus',
     prompt: [
       'You are Osborn\'s writer agent. You execute file changes with a verify-first approach.',
@@ -542,6 +528,7 @@ export const NAMED_AGENTS = {
       'Invoked AFTER the planner produces a written plan — the writer is the SOLE agent that edits files.',
       'Do not invoke writer until a plan exists for any multi-step change.',
       'When the writer returns, the orchestrator invokes tester AND reviewer in parallel before surfacing results.',
+      'Because that verification runs automatically after you finish, make the change review-ready and leave the tree in a runnable state — do not skip cleanup expecting a second pass.',
     ].join('\n'),
   },
   tester: {
@@ -551,9 +538,7 @@ export const NAMED_AGENTS = {
       'Returns structured pass/fail results with exact output — does NOT edit files.',
       'NOT GROUNDED: no session index access — runs tests with fresh eyes, adversarial validation.',
     ].join(' '),
-    tools: ['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'],
-    // Fail-closed: may ONLY write test files (basename .test/.spec.[jt]sx?).
-    policy: { write: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true } },
+    tools: ['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'],  // write-gate: test files only (WRITE_RULES.tester)
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s tester agent. Your job is running tests and builds, then reporting results.',
@@ -702,9 +687,7 @@ export const NAMED_AGENTS = {
       'and returns an ACCEPT or REJECT verdict with specific, actionable feedback. May write documentation files (.md etc.) only.',
       'NOT GROUNDED: no session index access — reviews with fresh eyes for unbiased adversarial check.',
     ].join(' '),
-    tools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
-    // Fail-closed: may ONLY write documentation files.
-    policy: { write: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' } },
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],  // write-gate: docs only (WRITE_RULES.reviewer)
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s reviewer agent. You are the VERIFY step in a generator-verifier loop.',
@@ -879,34 +862,26 @@ export function applyGrounding(
   return out
 }
 
-/**
- * Declarative per-agent BEHAVIOR — the composable layer over NAMED_AGENTS.
- *
- * Two meta-fields may be attached to ANY agent def (built-in NAMED_AGENTS OR a
- * per-user DB-backed row via set_agents), and are honored generically — no more
- * hardcoded `if (agentType === 'reviewer')` branches in the write-gate:
- *
- *   policy.write — HARD write enforcement (PreToolUse gate). One of:
- *       'workspace'  → may only write inside the session workspace. DEFAULT for
- *                      the main orchestrator, researcher, reasoner, planner.
- *       'anywhere'   → unrestricted writes; still funnels through canUseTool
- *                      (skill-dir auto-approve / permission dialog). Used by writer.
- *       { extensions, label, matchBasename? } → fail-closed extension whitelist.
- *                      reviewer = docs only; tester = test files only.
- *
- *   reminder — SOFT behavior; mapped to the SDK's criticalSystemReminder_EXPERIMENTAL
- *      so it is pinned into the agent's system prompt (e.g. a writer reminder to
- *      ensure a test exists before writing implementation). Opt-in, empty by default.
- *
- * Both are STRIPPED / mapped by finalizeRoster() before the roster reaches the
- * SDK — mirrors how applyGrounding strips `grounded`. NEVER mutates the input.
- */
-type AgentWritePolicy =
+// ── Per-agent WRITE-GATE rules ──────────────────────────────────────────────
+// A plain name→rule lookup read by the PreToolUse write-gate. This is NOT a
+// field on the agent def (defs stay clean AgentDefinitions — no strip/compile
+// step), just the same behavior the old hardcoded per-role branches had,
+// gathered in one visible place. Any agent not listed defaults to 'workspace'.
+//   'workspace' → may only write inside the session workspace (main/researcher/
+//                 reasoner/planner).
+//   'anywhere'  → unrestricted; still funnels through canUseTool (writer).
+//   { extensions, label, matchBasename? } → fail-closed extension whitelist
+//                 (reviewer = docs only; tester = test files only).
+type WriteRule =
   | 'workspace'
   | 'anywhere'
   | { extensions: RegExp; label: string; matchBasename?: boolean }
 
-const DEFAULT_WRITE_POLICY: AgentWritePolicy = 'workspace'
+const WRITE_RULES: Record<string, WriteRule> = {
+  writer: 'anywhere',
+  tester: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true },
+  reviewer: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' },
+}
 
 /** Path is inside the per-session sandbox workspace. */
 function isWorkspacePath(filePath: string): boolean {
@@ -917,87 +892,44 @@ function isWorkspacePath(filePath: string): boolean {
   )
 }
 
-/** Effective write policy for the acting agent (null agentType = main orchestrator). */
-function resolveWritePolicy(agentType: string | null, roster: Record<string, any>): AgentWritePolicy {
-  const def = agentType ? roster?.[agentType] : null
-  return (def?.policy?.write as AgentWritePolicy) ?? DEFAULT_WRITE_POLICY
-}
-
 /**
- * Decide a Write/Edit/MultiEdit against a policy. Pure — no side effects.
- *   'allow'  → let it fall through (→ canUseTool workspace auto-approve, or {}).
- *   'defer'  → PreToolUse returns permissionDecision:'ask' (canUseTool decides).
- *   'deny'   → hard block with reason.
+ * Decide a Write/Edit/MultiEdit for the acting agent (null = main orchestrator).
+ * Pure lookup against WRITE_RULES. Returns:
+ *   'allow' → fall through (→ canUseTool workspace auto-approve, or {}).
+ *   'defer' → PreToolUse 'ask' (canUseTool decides).
+ *   'deny'  → hard block with reason.
  */
-function decideWrite(
-  policy: AgentWritePolicy,
+export function decideWrite(
+  agentType: string | null,
   filePath: string,
 ): { decision: 'allow' | 'defer' | 'deny'; reason?: string } {
-  if (policy === 'anywhere') return { decision: 'defer' }
-  if (policy === 'workspace') {
+  const rule: WriteRule = (agentType && WRITE_RULES[agentType]) || 'workspace'
+  if (rule === 'anywhere') return { decision: 'defer' }
+  if (rule === 'workspace') {
     if (filePath && !isWorkspacePath(filePath)) {
       return { decision: 'deny', reason: 'Research mode: writes restricted to session workspace.' }
     }
     return { decision: 'allow' }
   }
   // Extension whitelist — fail closed (empty/unknown path denied).
-  const target = policy.matchBasename ? (filePath ? basename(resolve(filePath)) : '') : filePath
-  if (!filePath || !policy.extensions.test(target)) {
+  const target = rule.matchBasename ? (filePath ? basename(resolve(filePath)) : '') : filePath
+  if (!filePath || !rule.extensions.test(target)) {
     const reason = filePath
-      ? `Write denied: ${filePath} is not a ${policy.label} file. This agent may only write ${policy.label} files.`
+      ? `Write denied: ${filePath} is not a ${rule.label} file. This agent may only write ${rule.label} files.`
       : 'Write denied: could not determine target file path. Failing closed.'
     return { decision: 'deny', reason }
   }
   return { decision: 'defer' }
 }
 
-/**
- * Declarative per-agent COORDINATION — the single source of truth for the
- * multi-agent flow (previously split between the hub prompt's prose and the
- * hardcoded SubagentStop branches). Each field maps to a specific SDK hook:
- *
- *   then    — roles auto-dispatched after THIS agent completes. Driven by the
- *             SubagentStop hook (replaces the hardcoded writer→reviewer+tester /
- *             researcher→gate). Names resolve to spawnReviewer/spawnTester/
- *             spawnResearchGate.
- *   mode    — 'parallel' (default; today's behavior) fires `then` concurrently;
- *             'sequential' awaits each in order before the next.
- *   delegationNote — injected to the HUB at delegation time via PreToolUse on
- *             Task (additionalContext), e.g. "add a tester for high-risk edits".
- *             Discretionary — lets the main agent decide. Empty by default.
- *   startNote — injected INTO the agent at boot via SubagentStart
- *             (additionalContext) — a reliable, always-seen note about who it is
- *             paired with. The sub-agent cannot spawn its pair itself, so this is
- *             awareness, not capability.
- */
-type AgentCoordination = {
-  then?: string[]
-  mode?: 'parallel' | 'sequential'
-  delegationNote?: string
-  startNote?: string
-}
-
-/** Coordination config for the acting/target agent (null agentType = main). */
-function coordinationFor(agentType: string | null, roster: Record<string, any>): AgentCoordination | null {
-  const def = agentType ? roster?.[agentType] : null
-  return (def?.coordination as AgentCoordination) ?? null
-}
-
-/**
- * Strip/map behavior meta-fields so the roster is a clean AgentDefinition set
- * for the SDK: drop `policy` (write-gate) and `coordination` (hook-driven),
- * and map `reminder` → criticalSystemReminder_EXPERIMENTAL. NEVER mutates input.
- */
-function finalizeRoster(agents: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = {}
-  for (const [name, agent] of Object.entries(agents)) {
-    const { policy, reminder, coordination, ...rest } = agent as Record<string, any>
-    if (reminder && !rest.criticalSystemReminder_EXPERIMENTAL) {
-      rest.criticalSystemReminder_EXPERIMENTAL = reminder
-    }
-    out[name] = rest
-  }
-  return out
+// ── Verifier chaining ───────────────────────────────────────────────────────
+// A plain name→verifiers lookup read by the SubagentStop hook. Same wiring the
+// old hardcoded branches had (writer→reviewer+tester, researcher→reasoner gate),
+// gathered in one visible place. Names resolve to spawnReviewer / spawnTester /
+// spawnResearchGate. Any agent not listed chains to nothing.
+export const VERIFIER_CHAIN: Record<string, { then: string[]; mode?: 'parallel' | 'sequential' }> = {
+  writer: { then: ['reviewer', 'tester'], mode: 'parallel' },
+  researcher: { then: ['reasoner'] },
 }
 
 const RESEARCH_TOOLS = [
@@ -2248,11 +2180,6 @@ class ClaudeLLMStream extends llm.LLMStream {
 
       const allowedTools = this.#opts.allowedTools || []
 
-      // Roster the PreToolUse write-gate reads policy from — the PRE-strip view
-      // (retains `policy`), so DB-backed custom agents (set_agents) get their
-      // write policy enforced too. The SDK receives the finalized copy (agents:).
-      const enforcementRoster = this.#opts.agents ?? NAMED_AGENTS
-
       const sdkOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
@@ -2373,37 +2300,23 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log(`🔧 Tool call ${turnToolCallCount}/${TOOL_CALL_BUDGET}: ${toolName}`)
               }
 
-              // Delegation-point injection — when the hub spawns a sub-agent, add
-              // that agent's discretionary delegationNote to the hub's context
-              // (e.g. "add a tester for high-risk edits"). Empty by default → inert.
-              if (toolName === 'Task') {
-                const targetType = String(toolInput?.subagent_type || '')
-                const note = coordinationFor(targetType || null, enforcementRoster)?.delegationNote
-                if (note) {
-                  this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
-                  console.log(`🤝 Delegation note → subagent_type=${targetType}`)
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: note } }
-                }
-              }
-
-              // Write/Edit/MultiEdit access control — DATA-DRIVEN by each agent's
-              // declarative policy.write (see AgentWritePolicy). Replaces the old
-              // hardcoded per-role branches; DB-backed custom agents get enforced too.
+              // Write/Edit/MultiEdit access control — plain WRITE_RULES lookup
+              // keyed by agent name (see decideWrite). Same behavior the old
+              // hardcoded per-role branches had, now in one visible place.
               if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
                 const filePath = String(toolInput.file_path || '')
-                const policy = resolveWritePolicy(agentType, enforcementRoster)
-                const { decision, reason } = decideWrite(policy, filePath)
-                console.log(`🔎 Write gate: agent=${agentType ?? 'main'} policy=${JSON.stringify(policy)} path="${filePath || '(none)'}" → ${decision}`)
+                const { decision, reason } = decideWrite(agentType, filePath)
+                console.log(`🔎 Write gate: agent=${agentType ?? 'main'} path="${filePath || '(none)'}" → ${decision}`)
 
                 if (decision === 'deny') {
                   this.#eventEmitter.emit('tool_blocked', { name: toolName, reason })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason }
                 }
                 if (decision === 'defer') {
-                  // Writer (write:'anywhere') surfaces its write in the live trace
-                  // before the permission dialog; adversarial agents (reviewer/tester)
-                  // do NOT emit here — parity with the prior hardcoded branches.
-                  if (policy === 'anywhere') {
+                  // Writer ('anywhere') surfaces its write in the live trace before
+                  // the permission dialog; adversarial agents (reviewer/tester) do
+                  // NOT emit here — parity with the prior hardcoded branches.
+                  if (agentType === 'writer') {
                     this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
                   }
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
@@ -2756,17 +2669,31 @@ class ClaudeLLMStream extends llm.LLMStream {
               return {}
             }]
           }],
+          // Idle-agent guard / end-of-run self-review. When the main agent tries
+          // to end its turn while background work is still in flight, block ONCE
+          // (stop_hook_active guards against a loop) and force one more turn so it
+          // either waits + synthesizes, or explicitly tells the user what's still
+          // running — never goes silent leaving dispatched work dangling.
+          Stop: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              const inFlight: any[] = Array.isArray(input?.background_tasks) ? input.background_tasks : []
+              if (input?.stop_hook_active || inFlight.length === 0) return {}
+              const labels = inFlight
+                .map((t) => t?.agent_type || t?.name || t?.command || t?.type || 'task')
+                .slice(0, 6)
+              console.log(`🛑 Stop gate: ${inFlight.length} background task(s) in flight → blocking once for self-review`)
+              return {
+                decision: 'block',
+                reason: `Before you end your turn: ${inFlight.length} background task(s) are still running (${labels.join(', ')}). Do NOT go idle. Either wait for them and synthesize their results into your answer, or explicitly tell the user what is still running and what you will do when it finishes.`,
+              }
+            }]
+          }],
           SubagentStart: [{
             matcher: '.*',
             hooks: [async (input: any) => {
               console.log('[LIFECYCLE-PROBE] SubagentStart', JSON.stringify(input))
               this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id })
-              // Inject the agent's declarative startNote (who it is paired with) —
-              // reliable, always-seen at boot regardless of what the hub relayed.
-              const startNote = coordinationFor(input?.agent_type ?? null, enforcementRoster)?.startNote
-              if (startNote) {
-                return { hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: startNote } }
-              }
               return {}
             }]
           }],
@@ -2780,25 +2707,24 @@ class ClaudeLLMStream extends llm.LLMStream {
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
               // Infinite-loop guard — verifiers never re-dispatch (they carry no
-              // coordination.then anyway; this is defense-in-depth against a
-              // DB-backed agent accidentally arming a loop).
+              // VERIFIER_CHAIN entry anyway; defense-in-depth).
               if (at === 'reviewer' || at === 'tester' || at === 'reasoner') return {}
-              // Declarative verifier chaining — driven by the finishing agent's
-              // coordination.then (replaces the hardcoded writer/researcher branches).
-              const coord = coordinationFor(at ?? null, enforcementRoster)
-              if (coord?.then?.length && msg) {
+              // Verifier chaining — driven by the plain VERIFIER_CHAIN lookup
+              // (replaces the hardcoded writer/researcher branches).
+              const chain = at ? VERIFIER_CHAIN[at] : undefined
+              if (chain?.then?.length && msg) {
                 const spawn = (role: string): Promise<void> => {
                   if (role === 'reviewer') return this.#llmRef.spawnReviewer(aid, msg, this.#eventEmitter)
                   if (role === 'tester') return this.#llmRef.spawnTester(aid, msg, this.#eventEmitter)
                   if (role === 'reasoner' || role === 'gate') return this.#llmRef.spawnResearchGate(aid, msg, this.#eventEmitter)
-                  console.warn(`[DISPATCH] unknown coordination target '${role}' for ${at} — skipped`)
+                  console.warn(`[DISPATCH] unknown chain target '${role}' for ${at} — skipped`)
                   return Promise.resolve()
                 }
-                if (coord.mode === 'sequential') {
+                if (chain.mode === 'sequential') {
                   // Await in order WITHOUT blocking the hook return (fire the chain async).
-                  void (async () => { for (const r of coord.then!) await spawn(r) })()
+                  void (async () => { for (const r of chain.then) await spawn(r) })()
                 } else {
-                  for (const r of coord.then!) void spawn(r)
+                  for (const r of chain.then) void spawn(r)
                 }
               }
               return {}
@@ -2826,13 +2752,13 @@ class ClaudeLLMStream extends llm.LLMStream {
         // opts.agents is undefined — the ?? NAMED_AGENTS fallback would skip
         // the override entirely. Explicitly apply applyTurbo(NAMED_AGENTS)
         // so built-in agents always get FAST_MODEL when turbo is on.
-        agents: finalizeRoster(applyGrounding(
+        agents: applyGrounding(
           this.#llmRef.turbo
             ? applyTurbo(this.#opts.agents ?? NAMED_AGENTS, true)
             : (this.#opts.agents ?? NAMED_AGENTS),
           this.#sessionId,
           this.#opts.workingDirectory,
-        )),
+        ),
       }
 
       // Run Claude Agent SDK query() and stream results
