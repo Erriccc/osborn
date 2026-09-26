@@ -381,6 +381,12 @@ export const NAMED_AGENTS = {
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebSearch', 'WebFetch', 'Task'],
     grounded: true,  // applyGrounding() injects the osborn-recall command + ensures Bash
+    // Declarative flow. == today: after the researcher finishes, a reasoner-based
+    // research gate judges completeness and may send it back for more.
+    coordination: {
+      then: ['reasoner'],
+      startNote: 'When you finish, a reasoner-based gate judges whether your findings are COMPLETE and well-sourced against the task; thin or unsourced findings get sent back to you. Cite file paths + line numbers and explicitly note what you looked for but did NOT find.',
+    },
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s research agent. Your job is information gathering — thorough, structured, factual.',
@@ -487,6 +493,13 @@ export const NAMED_AGENTS = {
     // Soft behavior via the composable `reminder` seam → SDK criticalSystemReminder_EXPERIMENTAL.
     // Pinned into the writer's system prompt as a hard-to-ignore reminder.
     reminder: 'BEFORE you write implementation code: make sure a test exists for the behavior you are about to change. If none exists, say so explicitly in your report so the tester can cover it — the tester is the agent that writes tests. NEVER weaken, skip, or delete a test to make your change pass.',
+    // Declarative flow (drives SubagentStop dispatch + SubagentStart injection).
+    // == today: after the writer finishes, reviewer AND tester run in parallel.
+    coordination: {
+      then: ['reviewer', 'tester'],
+      mode: 'parallel' as const,
+      startNote: 'When you finish, your change is automatically verified in parallel: a reviewer checks correctness against the git diff, and a tester runs the suite. Make the change review-ready and leave the tree in a runnable state — do not skip cleanup expecting a second pass.',
+    },
     model: 'opus',
     prompt: [
       'You are Osborn\'s writer agent. You execute file changes with a verify-first approach.',
@@ -939,14 +952,46 @@ function decideWrite(
 }
 
 /**
+ * Declarative per-agent COORDINATION — the single source of truth for the
+ * multi-agent flow (previously split between the hub prompt's prose and the
+ * hardcoded SubagentStop branches). Each field maps to a specific SDK hook:
+ *
+ *   then    — roles auto-dispatched after THIS agent completes. Driven by the
+ *             SubagentStop hook (replaces the hardcoded writer→reviewer+tester /
+ *             researcher→gate). Names resolve to spawnReviewer/spawnTester/
+ *             spawnResearchGate.
+ *   mode    — 'parallel' (default; today's behavior) fires `then` concurrently;
+ *             'sequential' awaits each in order before the next.
+ *   delegationNote — injected to the HUB at delegation time via PreToolUse on
+ *             Task (additionalContext), e.g. "add a tester for high-risk edits".
+ *             Discretionary — lets the main agent decide. Empty by default.
+ *   startNote — injected INTO the agent at boot via SubagentStart
+ *             (additionalContext) — a reliable, always-seen note about who it is
+ *             paired with. The sub-agent cannot spawn its pair itself, so this is
+ *             awareness, not capability.
+ */
+type AgentCoordination = {
+  then?: string[]
+  mode?: 'parallel' | 'sequential'
+  delegationNote?: string
+  startNote?: string
+}
+
+/** Coordination config for the acting/target agent (null agentType = main). */
+function coordinationFor(agentType: string | null, roster: Record<string, any>): AgentCoordination | null {
+  const def = agentType ? roster?.[agentType] : null
+  return (def?.coordination as AgentCoordination) ?? null
+}
+
+/**
  * Strip/map behavior meta-fields so the roster is a clean AgentDefinition set
- * for the SDK: drop `policy` (enforced in-process by the write-gate) and map
- * `reminder` → criticalSystemReminder_EXPERIMENTAL. NEVER mutates the input.
+ * for the SDK: drop `policy` (write-gate) and `coordination` (hook-driven),
+ * and map `reminder` → criticalSystemReminder_EXPERIMENTAL. NEVER mutates input.
  */
 function finalizeRoster(agents: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {}
   for (const [name, agent] of Object.entries(agents)) {
-    const { policy, reminder, ...rest } = agent as Record<string, any>
+    const { policy, reminder, coordination, ...rest } = agent as Record<string, any>
     if (reminder && !rest.criticalSystemReminder_EXPERIMENTAL) {
       rest.criticalSystemReminder_EXPERIMENTAL = reminder
     }
@@ -2328,6 +2373,19 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log(`🔧 Tool call ${turnToolCallCount}/${TOOL_CALL_BUDGET}: ${toolName}`)
               }
 
+              // Delegation-point injection — when the hub spawns a sub-agent, add
+              // that agent's discretionary delegationNote to the hub's context
+              // (e.g. "add a tester for high-risk edits"). Empty by default → inert.
+              if (toolName === 'Task') {
+                const targetType = String(toolInput?.subagent_type || '')
+                const note = coordinationFor(targetType || null, enforcementRoster)?.delegationNote
+                if (note) {
+                  this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
+                  console.log(`🤝 Delegation note → subagent_type=${targetType}`)
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: note } }
+                }
+              }
+
               // Write/Edit/MultiEdit access control — DATA-DRIVEN by each agent's
               // declarative policy.write (see AgentWritePolicy). Replaces the old
               // hardcoded per-role branches; DB-backed custom agents get enforced too.
@@ -2703,6 +2761,12 @@ class ClaudeLLMStream extends llm.LLMStream {
             hooks: [async (input: any) => {
               console.log('[LIFECYCLE-PROBE] SubagentStart', JSON.stringify(input))
               this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id })
+              // Inject the agent's declarative startNote (who it is paired with) —
+              // reliable, always-seen at boot regardless of what the hub relayed.
+              const startNote = coordinationFor(input?.agent_type ?? null, enforcementRoster)?.startNote
+              if (startNote) {
+                return { hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: startNote } }
+              }
               return {}
             }]
           }],
@@ -2715,13 +2779,27 @@ class ClaudeLLMStream extends llm.LLMStream {
               const aid = input?.agent_id ?? ('sa-' + Date.now())
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
-              // Infinite-loop guard — never re-dispatch the reviewer, tester, or reasoner.
+              // Infinite-loop guard — verifiers never re-dispatch (they carry no
+              // coordination.then anyway; this is defense-in-depth against a
+              // DB-backed agent accidentally arming a loop).
               if (at === 'reviewer' || at === 'tester' || at === 'reasoner') return {}
-              if (at === 'writer' && msg) {
-                void this.#llmRef.spawnReviewer(aid, msg, this.#eventEmitter)
-                void this.#llmRef.spawnTester(aid, msg, this.#eventEmitter)
-              } else if (at === 'researcher' && msg) {
-                void this.#llmRef.spawnResearchGate(aid, msg, this.#eventEmitter)
+              // Declarative verifier chaining — driven by the finishing agent's
+              // coordination.then (replaces the hardcoded writer/researcher branches).
+              const coord = coordinationFor(at ?? null, enforcementRoster)
+              if (coord?.then?.length && msg) {
+                const spawn = (role: string): Promise<void> => {
+                  if (role === 'reviewer') return this.#llmRef.spawnReviewer(aid, msg, this.#eventEmitter)
+                  if (role === 'tester') return this.#llmRef.spawnTester(aid, msg, this.#eventEmitter)
+                  if (role === 'reasoner' || role === 'gate') return this.#llmRef.spawnResearchGate(aid, msg, this.#eventEmitter)
+                  console.warn(`[DISPATCH] unknown coordination target '${role}' for ${at} — skipped`)
+                  return Promise.resolve()
+                }
+                if (coord.mode === 'sequential') {
+                  // Await in order WITHOUT blocking the hook return (fire the chain async).
+                  void (async () => { for (const r of coord.then!) await spawn(r) })()
+                } else {
+                  for (const r of coord.then!) void spawn(r)
+                }
               }
               return {}
             }]
