@@ -87,13 +87,13 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
   }
 }
 
-// ≤3 direct tool call budget per turn. Reset on every UserPromptSubmit (new user message).
+// ≤5 direct tool call budget per turn. Reset on every UserPromptSubmit (new user message).
 // Enforced mechanically in PreToolUse — the model CANNOT exceed this regardless of JSONL history.
 // Task/Agent delegations are exempt (delegation is what we WANT). Sub-agent tool calls
 // (agent_type !== null) are exempt (they're inside a delegation). Only the main orchestrator
 // agent's direct tool calls count against the budget.
 let turnToolCallCount = 0
-const TOOL_CALL_BUDGET = 3
+const TOOL_CALL_BUDGET = 5
 
 export interface ClaudeLLMOptions {
   workingDirectory?: string      // cwd for Claude Code (where it reads/writes/runs commands)
@@ -1816,6 +1816,16 @@ export class ClaudeLLM extends llm.LLM {
               return {}
             }],
           }],
+          // Self-review gate — block ONCE (stop_hook_active-guarded) so the reviewer
+          // re-checks its own verdict before returning, instead of stopping on a
+          // first-pass judgment.
+          Stop: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              if (input?.stop_hook_active) return {}
+              return { decision: 'block', reason: 'Before you finalize: re-read your findings against the diff once. Confirm each BLOCKER/MAJOR is real and reproducible (not a style nit or a false positive), and that your verdict matches the severity of what you actually found. Then end with exactly `VERDICT: ACCEPT` or `VERDICT: REJECT`.' }
+            }],
+          }],
         },
       }
 
@@ -1908,6 +1918,15 @@ export class ClaudeLLM extends llm.LLM {
               return {}
             }],
           }],
+          // Self-review gate — block ONCE (stop_hook_active-guarded) so the tester
+          // re-checks its own conclusion before returning.
+          Stop: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              if (input?.stop_hook_active) return {}
+              return { decision: 'block', reason: 'Before you finalize: re-check your conclusion once. Did you actually RUN the commands (not assume the outcome)? Does your result match the real output, and did you distinguish a genuine regression from a flaky/environment failure? Then end with exactly `RESULT: PASS` or `RESULT: FAIL` followed by a brief summary.' }
+            }],
+          }],
         },
       }
 
@@ -1996,6 +2015,15 @@ export class ClaudeLLM extends llm.LLM {
               const toolResponse = input?.tool_response
               emitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: 'reasoner' })
               return {}
+            }],
+          }],
+          // Self-review gate — block ONCE (stop_hook_active-guarded) so the gate
+          // re-checks its own PASS/NEEDS-MORE call before returning.
+          Stop: [{
+            matcher: '.*',
+            hooks: [async (input: any) => {
+              if (input?.stop_hook_active) return {}
+              return { decision: 'block', reason: 'Before you finalize: re-check your gate decision once. Is the research genuinely complete and well-sourced for the original question — not passing thin work, nor failing solid work? Then end with exactly `GATE: PASS` or `GATE: NEEDS-MORE`.' }
             }],
           }],
         },
