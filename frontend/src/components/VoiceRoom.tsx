@@ -1909,6 +1909,7 @@ function InstancesPanel({
   spawnPending,
   spawnError,
   onSpawn,
+  onDispatch,
   onClose,
 }: {
   slots: SlotInfo[]
@@ -1916,6 +1917,7 @@ function InstancesPanel({
   spawnPending: boolean
   spawnError: string | null
   onSpawn: () => void
+  onDispatch: (targetSessionId: string, instruction: string) => void
   onClose: () => void
 }) {
   // Build a synthetic "focused" card from the existing session if the agent's
@@ -1932,6 +1934,16 @@ function InstancesPanel({
         },
         ...slots,
       ]
+
+  // Per-slot instruction drafts for tag-&-continue dispatch. Keyed by slot id so
+  // each background row keeps its own input text.
+  const [dispatchDrafts, setDispatchDrafts] = useState<Record<string, string>>({})
+  const submitDispatch = (slotId: string) => {
+    const text = (dispatchDrafts[slotId] ?? '').trim()
+    if (!text) return
+    onDispatch(slotId, text)
+    setDispatchDrafts((prev) => ({ ...prev, [slotId]: '' }))
+  }
 
   return (
     <div className="absolute top-12 right-0 w-72 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
@@ -1954,7 +1966,7 @@ function InstancesPanel({
         {displaySlots.map((slot) => (
           <div
             key={slot.id}
-            className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg border text-xs ${
+            className={`px-2.5 py-2 rounded-lg border text-xs ${
               slot.isFocused
                 ? 'bg-amber-500/10 border-amber-500/30'
                 : slot.status === 'error'
@@ -1962,35 +1974,58 @@ function InstancesPanel({
                   : 'bg-gray-800/50 border-gray-700/40'
             }`}
           >
-            {/* Live/ready dot */}
-            <span
-              className={`w-2 h-2 rounded-full shrink-0 ${
-                slot.status === 'error'
-                  ? 'bg-red-400'
-                  : slot.hasSession
-                    ? slot.isFocused
-                      ? 'bg-amber-400'
-                      : 'bg-emerald-400'
-                    : 'bg-gray-500'
-              }`}
-            />
-            {/* Slot info */}
-            <div className="flex-1 min-w-0">
-              <div className="font-mono text-gray-200 truncate">{slot.id}</div>
-              {slot.error && (
-                <div className="text-red-400 truncate mt-0.5">{slot.error}</div>
-              )}
+            <div className="flex items-center gap-2.5">
+              {/* Live/ready dot */}
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  slot.status === 'error'
+                    ? 'bg-red-400'
+                    : slot.hasSession
+                      ? slot.isFocused
+                        ? 'bg-amber-400'
+                        : 'bg-emerald-400'
+                      : 'bg-gray-500'
+                }`}
+              />
+              {/* Slot info */}
+              <div className="flex-1 min-w-0">
+                <div className="font-mono text-gray-200 truncate">{slot.id}</div>
+                {slot.error && (
+                  <div className="text-red-400 truncate mt-0.5">{slot.error}</div>
+                )}
+              </div>
+              {/* Role badge */}
+              <span
+                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                  slot.isFocused
+                    ? 'bg-amber-500/20 text-amber-300'
+                    : 'bg-gray-700 text-gray-400'
+                }`}
+              >
+                {slot.isFocused ? 'focused' : 'background'}
+              </span>
             </div>
-            {/* Role badge */}
-            <span
-              className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                slot.isFocused
-                  ? 'bg-amber-500/20 text-amber-300'
-                  : 'bg-gray-700 text-gray-400'
-              }`}
-            >
-              {slot.isFocused ? 'focused' : 'background'}
-            </span>
+            {/* Tag & continue: dispatch an instruction to this background session.
+                Only shown for non-focused slots that have a live session. */}
+            {!slot.isFocused && slot.hasSession && slot.status !== 'error' && (
+              <div className="flex items-center gap-1.5 mt-2">
+                <input
+                  type="text"
+                  value={dispatchDrafts[slot.id] ?? ''}
+                  onChange={(e) => setDispatchDrafts((prev) => ({ ...prev, [slot.id]: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submitDispatch(slot.id) } }}
+                  placeholder="Send a task…"
+                  className="flex-1 min-w-0 bg-gray-900/70 border border-gray-700/60 rounded px-2 py-1 text-[11px] text-gray-200 placeholder-gray-500 focus:outline-none focus:border-sky-500/50"
+                />
+                <button
+                  onClick={() => submitDispatch(slot.id)}
+                  disabled={!(dispatchDrafts[slot.id] ?? '').trim()}
+                  className="shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Dispatch
+                </button>
+              </div>
+            )}
           </div>
         ))}
 
@@ -2316,6 +2351,10 @@ function VoiceRoomInner({
   // missed it entirely. New UX: keep a prominent panel visible for the entire
   // window, with a rolling list of stages so the user sees real progress.
   const [compactionStatus, setCompactionStatus] = useState<'idle' | 'compacting' | 'complete'>('idle')
+  // Background dispatch (Pattern #2 P1 — tag & continue) notice banner. Set when
+  // the agent acks a dispatch (background_dispatched) or reports a result
+  // (background_update). Cleared on dismiss or auto after the "done" toast window.
+  const [bgNotice, setBgNotice] = useState<{ kind: 'dispatched' | 'done'; sessionId: string; text: string } | null>(null)
   const [compactionStages, setCompactionStages] = useState<Array<{ stage: string; detail?: string; ts: number }>>([])
   const [compactionSkills, setCompactionSkills] = useState<string[]>([])
   const [compactionStartedAt, setCompactionStartedAt] = useState<number | null>(null)
@@ -3536,6 +3575,13 @@ function VoiceRoomInner({
           const enc = new TextEncoder()
           sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
         }
+      } else if (data.type === 'background_dispatched') {
+        // Agent acked a tag-&-continue dispatch to a background session.
+        setBgNotice({ kind: 'dispatched', sessionId: String(data.sessionId ?? ''), text: String(data.instruction ?? '') })
+      } else if (data.type === 'background_update') {
+        // Background session reported a stage/result — surface + auto-dismiss.
+        setBgNotice({ kind: 'done', sessionId: String(data.sessionId ?? ''), text: String(data.summary ?? '') })
+        setTimeout(() => setBgNotice(null), 12000)
       } else if (data.type === 'process_list') {
         // Agent replied to list_processes — update Machine tab state
         if (Array.isArray(data.processes) && data.memory) {
@@ -3933,6 +3979,14 @@ function VoiceRoomInner({
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, spawnPending])
+
+  // Dispatch an instruction to a background session (Pattern #2 P1 — tag & continue).
+  // Fire-and-forget: the agent acks with background_dispatched, then later
+  // background_update when the background session finishes.
+  const handleDispatchBackground = useCallback((targetSessionId: string, instruction: string) => {
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'dispatch_background', targetSessionId, instruction })), { reliable: true })
+  }, [sendToAgent])
 
   // Meeting (Recall.ai) handlers
   const handleJoinMeeting = useCallback((meetingUrl: string) => {
@@ -4734,6 +4788,7 @@ function VoiceRoomInner({
                     spawnPending={spawnPending}
                     spawnError={spawnError}
                     onSpawn={handleSpawnInstance}
+                    onDispatch={handleDispatchBackground}
                     onClose={() => setShowInstancesPanel(false)}
                   />
                 )}
@@ -4895,6 +4950,21 @@ function VoiceRoomInner({
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
+          </div>
+        )}
+
+        {/* Background dispatch notice — tag & continue (Pattern #2 P1). Mirrors the
+            slim compaction banner above but in sky tones so it reads as a separate,
+            informational strip. "dispatched" persists until dismissed; "done"
+            auto-dismisses via the setTimeout in the background_update handler. */}
+        {bgNotice && (
+          <div className="flex items-center gap-2 px-3 py-1 border-b text-[11px] bg-sky-500/[0.06] border-sky-500/20 text-sky-200/90">
+            <span className="truncate font-medium">
+              {bgNotice.kind === 'dispatched'
+                ? `Sent to ${bgNotice.sessionId.slice(0, 8)} — it'll ping you when done.`
+                : `${bgNotice.sessionId.slice(0, 8)} finished · ${bgNotice.text.slice(0, 80)}`}
+            </span>
+            <button onClick={() => setBgNotice(null)} className="ml-auto shrink-0 p-0.5 rounded text-gray-500 hover:text-gray-200" title="Dismiss">✕</button>
           </div>
         )}
 

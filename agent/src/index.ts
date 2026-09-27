@@ -2054,9 +2054,18 @@ async function main() {
     llm: ReturnType<typeof createClaudeLLM>
     isFocused: boolean
     workingDir: string
+    emitter?: import('node:events').EventEmitter
+    sdkOptions?: any
+    dispatchInFlight?: boolean
+    kickoffDone?: boolean  // the [BACKGROUND_INIT] ack's assistant_result has been consumed
   }
   const slots = new Map<string, SessionSlot>()
   let focusedSlotId: string | null = null  // reserved for future focused-slot wiring; not used yet
+
+  // P1 host-agent anchor: the dashboard-started session that owns the room's env + keeps it alive.
+  let hostActive = false
+  let hostSessionId: string | null = null
+  let hostWorkingDir: string | null = null
 
   // Agent-side "alone in room" leave timer (see Room-presence lifecycle note up
   // top). Armed in ParticipantDisconnected once a user has left; if no one
@@ -2073,7 +2082,25 @@ async function main() {
   // ParticipantDisconnected (covers a finished session). Cancelled the moment a
   // user joins. Net invariant: the agent never holds an empty room beyond
   // ALONE_GRACE_MS, in any scenario — the root cause of the 25h burn.
+  // P1: room stays alive while the host anchor is active or any background slot
+  // is running. Teardown timers below early-return on this so a dashboard-started
+  // session + its background dispatches aren't killed by the empty-room grace.
+  const agentsActive = (): boolean => hostActive || slots.size > 0
+  // Release the host anchor + hard-kill background slots at a genuine session-end
+  // boundary so the room can idle-exit (agentsActive → false). Idempotent. MUST be
+  // called before arming idle-exit on EVERY path where the session ends, or the
+  // empty-room billing burn returns — the keep-alive guard is only as safe as its
+  // release sites (endMeeting / intentional-leave / destroyRoomSession / disconnect).
+  const releaseAgents = (): void => {
+    hostActive = false
+    hostSessionId = null
+    hostWorkingDir = null
+    for (const [, s] of slots) { try { (s.llm as any).abortQuery?.(); (s.llm as any).abortAgent?.() } catch {} }
+    slots.clear()
+  }
+
   const armAloneTimer = () => {
+    if (agentsActive()) return
     if (aloneTimer) clearTimeout(aloneTimer)
     aloneTimer = null
     if (!activeRoom || activeRoom.remoteParticipants.size > 0) return
@@ -2098,6 +2125,7 @@ async function main() {
   let fastLeaveTimer: ReturnType<typeof setTimeout> | null = null
   const POST_LEAVE_GRACE_MS = 20 * 1000
   const armFastLeaveTimer = () => {
+    if (agentsActive()) return
     if (fastLeaveTimer) clearTimeout(fastLeaveTimer)
     fastLeaveTimer = null
     if (!activeRoom || activeRoom.remoteParticipants.size > 0) return
@@ -2137,7 +2165,7 @@ async function main() {
       idleExitTimer = null
       const stillIdle = livekitState.status === 'idle' || livekitState.status === 'failed'
       const empty = !activeRoom || activeRoom.remoteParticipants.size === 0
-      if (stillIdle && empty) {
+      if (stillIdle && empty && !agentsActive()) {
         console.log(`⏻ [IDLE-EXIT] still idle after grace — exiting 0 so Fly stops the machine (billing stops; next Resume boots it)`)
         // Give the log tee a beat to flush, then stop the machine.
         setTimeout(() => process.exit(0), 2000)
@@ -2271,6 +2299,20 @@ async function main() {
       console.error(`❌ Background slot ${slotId.substring(0, 8)}: resume failed — requested ${requestedSessionId?.substring(0, 8)} got ${actualSessionId?.substring(0, 8)}`)
       sendToFrontend({ type: 'background_session_error', slotId, error: 'Session resume failed' }).catch(() => {})
     })
+    // P1: a real dispatch finished — notify the frontend. The [BACKGROUND_INIT]
+    // ack also fires assistant_result, so gate on dispatchInFlight to skip it.
+    bgEmitter.on('assistant_result', ({ text }: { text: string }) => {
+      const slot = slots.get(slotId)
+      if (!slot) return
+      // The [BACKGROUND_INIT] kickoff also fires assistant_result and, on the cold-spawn
+      // dispatch path, can arrive AFTER dispatchInFlight was set. Consume that first result
+      // as the kickoff ack so it's never mis-reported as (and never clobbers) the dispatch's
+      // real answer.
+      if (!slot.kickoffDone) { slot.kickoffDone = true; return }
+      if (!slot.dispatchInFlight) return  // only notify for a real dispatched instruction
+      slot.dispatchInFlight = false
+      sendToFrontend({ type: 'background_update', sessionId: slotId, stage: 'done', summary: (text || '').trim().slice(0, 500) }).catch(() => {})
+    })
     // Wire up the LLM's internal EventEmitter so hook-emitted events also flow.
     bgLLM.events.on('session_id', (data: any) => bgEmitter.emit('session_id', data))
     bgLLM.events.on('tool_blocked', (data: any) => bgEmitter.emit('tool_blocked', data))
@@ -2294,6 +2336,13 @@ async function main() {
       settingSources: ['project', 'user'] as any,
       env: bgEnv,
     }
+
+    // P1: persist the cold-start emitter + sdkOptions on the slot so a later
+    // dispatch_background can reuse them. CRITICAL: pushMessage's fast path
+    // ignores the callbacks/emitter arg once the subprocess exists, so a
+    // dispatch MUST reuse THIS emitter — otherwise its output goes nowhere.
+    slot.emitter = bgEmitter
+    slot.sdkOptions = bgSdkOptions
 
     // Cold-start: deliver an init message so the subprocess actually spawns
     // and begins consuming the session JSONL.
@@ -2480,6 +2529,7 @@ async function main() {
       currentLLM = null
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
+      releaseAgents() // session over → clear host + kill slots so idle-exit can fire
       armIdleExitTimer(`meeting ended (${reason}), no user`)
     }
   }
@@ -3317,6 +3367,15 @@ async function main() {
     directLLM?.setTurbo?.(turboMode)
     currentLLM = directLLM
 
+    // P1 host-agent anchor: this dashboard-started session owns the room's env
+    // and keeps it alive (agentsActive → true) so background dispatches survive.
+    // Keep-alive keys off the hostActive boolean, NOT a session_id event;
+    // hostSessionId is best-effort (the focused id is otherwise resolved as
+    // currentLLM?.sessionId || currentResumeSessionId).
+    hostActive = true
+    hostWorkingDir = workingDir
+    if (resumeSessionId) hostSessionId = resumeSessionId
+
     // Reset the session always-allow list for each new direct session
     sessionAlwaysAllowPaths = new Set<string>()
 
@@ -3960,6 +4019,7 @@ async function main() {
       console.log('🕊️ Left LiveKit room intentionally — idle, awaiting /connect-room (no auto-rejoin)')
       // 0.9.73: idle machines must not bill forever — stop the Fly machine
       // after the grace window unless a /connect-room revives us first.
+      releaseAgents() // session over → clear host + kill slots so idle-exit can fire
       armIdleExitTimer('intentional leave → idle')
       return
     }
@@ -4926,6 +4986,13 @@ async function main() {
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
 
+      // P1 (CRITICAL FOR COST): the human left a non-meeting session. Clear the
+      // host anchor AND hard-kill every background slot so their subprocesses
+      // stop burning tokens. agentsActive() keeps the room alive on the host +
+      // slots, so this is the ONLY safe place to release them — leaving a slot
+      // alive here would defeat the empty-room teardown timers entirely.
+      releaseAgents()
+
       // Auto-leave path for a NON-meeting session. 0.9.83: a real session just
       // ended → use the FAST leave (~20s), not the 3-min alone grace. Fires even
       // on an abrupt tab close; cancelled if a user rejoins within the grace.
@@ -5813,6 +5880,32 @@ async function main() {
           })
         }
       }
+      else if (data.type === 'dispatch_background') {
+        // P1: push an instruction into a background slot (spawning it cold-start
+        // first if needed), then notify the frontend when the turn completes.
+        const targetSessionId = data.targetSessionId as string | undefined
+        const instruction = data.instruction as string | undefined
+        if (!targetSessionId || !instruction) {
+          await sendToFrontend({ type: 'background_session_error', slotId: targetSessionId ?? null, error: 'dispatch_background requires targetSessionId + instruction' })
+        } else {
+          const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
+          if (targetSessionId === focusedId) {
+            await sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error: 'Target is the focused session — use the normal path' })
+          } else {
+            const doDispatch = () => {
+              const slot = slots.get(targetSessionId)
+              if (!slot || !slot.emitter || !slot.sdkOptions) { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error: 'Slot not ready' }); return }
+              slot.dispatchInFlight = true
+              // Reuse the cold-start emitter — pushMessage's fast path ignores a
+              // fresh emitter once the subprocess exists (see spawnBackgroundSession).
+              slot.llm.pushMessage(instruction, slot.sdkOptions, { onSessionId: () => {}, onCheckpoint: () => {}, eventEmitter: slot.emitter })
+              void sendToFrontend({ type: 'background_dispatched', sessionId: targetSessionId, instruction })
+            }
+            if (slots.has(targetSessionId)) doDispatch()
+            else spawnBackgroundSession(targetSessionId).then(doDispatch).catch((err) => { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error: err instanceof Error ? err.message : String(err) }) })
+          }
+        }
+      }
       else if (data.type === 'list_slots') {
         // Return all live slots: the focused session + every background slot.
         const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
@@ -5988,6 +6081,7 @@ async function main() {
     if (!activeRoom) {
       // Already idle — still ensure billing backstop is armed.
       livekitState.status = 'idle'
+      releaseAgents() // ensure no lingering host/slots keep the machine alive
       armIdleExitTimer(`destroyRoomSession(${reason}) — already idle`)
       return
     }
@@ -6013,6 +6107,7 @@ async function main() {
     livekitState.status = 'idle'
     livekitState.error = null
     livekitState.errorCode = null
+    releaseAgents() // session torn down → clear host + kill slots so idle-exit can fire
     armIdleExitTimer(`destroyRoomSession(${reason})`)
     destroyingRoomSession = false
   }
