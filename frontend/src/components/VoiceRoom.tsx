@@ -1946,7 +1946,7 @@ function InstancesPanel({
   }
 
   return (
-    <div className="absolute top-12 right-0 w-72 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
+    <div className="absolute top-12 left-0 w-72 max-w-[calc(100vw-1rem)] bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
         <span className="text-xs font-semibold text-gray-300">Claude Instances</span>
