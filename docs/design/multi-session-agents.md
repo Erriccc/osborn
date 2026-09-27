@@ -208,3 +208,78 @@ even need the full deck before paying for the mic-lock machinery.
 > Note: the Claude Agent SDK subagents (`agents` param in `query()`) are the
 > **recommended programmatic path for SDK apps** — not CLI-only. We already use
 > this (`NAMED_AGENTS`). That was the main misconception blocking this idea.
+
+---
+
+## 9. Current state, the two patterns, and the host-agent (updated 2026-09-27)
+
+### 9.1 Two patterns — do not conflate them
+
+- **Pattern #1 — named SDK sub-agents (`agents` roster + `Task`).** Ephemeral,
+  scoped *workers* that belong to ONE parent session, do a bounded job, and
+  **return a result inline** (SDK tool result). No room/voice/identity of their
+  own. This is the reviewer / tester / reasoner / writer chain. *Coordination =
+  SDK `Task` return + a `PostToolUse`-on-`Task` reminder to enforce chaining.*
+  NOTE: the verifiers currently drifted into out-of-band `query()` calls fired
+  from `SubagentStop` (verdicts go to the UI, never back to the main agent) — that
+  drift is the "subagents don't return" bug. Fix = move them to proper Pattern #1.
+- **Pattern #2 — concurrent full sessions (this doc).** Persistent *peers*, each a
+  full `ClaudeLLM` monolith with its own cwd/config and its own Pattern-#1 roster.
+  They don't "return" — they **broadcast into the shared room**, governed by the
+  mic-lock. They *nest*: a Pattern-#2 session HAS Pattern-#1 sub-agents.
+
+### 9.2 What's actually built toward Pattern #2 ("Slice 1")
+
+- `slots: Map<string, SessionSlot>` + `spawnBackgroundSession()` (`agent/src/index.ts:2246`)
+  — runs ≥1 extra **headless** full brain (spawn + list only; cap 2 bg + focused).
+- `InstancesPanel` (`frontend/src/components/VoiceRoom.tsx:1905`) — list + spawn UI.
+- `focusedSlotId` (`index.ts:2077`) — **declared, unused** = the stubbed seam for
+  the mic-ownership pointer.
+- Missing: mic-lock router, TTS-gate-to-mic-holder, per-slot input routing,
+  focus/mute, catch-up injection, kill, per-voice. (No prior fuller version exists
+  — git-verified; this doc IS the "fuller version.")
+
+### 9.3 Host-agent (V1 compromise) — REQUIRED for P1/P2
+
+Exactly one session is the **host**: the session started from the dashboard that
+owns the room. It holds the **environment**, and everything environment-scoped
+**resolves to the host as a fallback** so pulling in more sessions never breaks it:
+
+- **Host owns:** the working directory / CWD, the session-files API, the
+  code-server / VS Code URL, and the room URL posted to the chat. These stay bound
+  to the host session — *no change to those features for V1.*
+- **Host state:** a persistent `hostSessionId` (+ its workspace/cwd) carried
+  across, used as the fallback resolver whenever a pulled-in session can't resolve
+  its own environment (which we are deliberately NOT scoping for V1).
+- **Pulled-in sessions:** additional brains for the *conversation* only —
+  speaking / events / subscriptions wired exactly like the host, just different
+  instances; run independently; we control their info-flow. They do NOT own env.
+- **Keep-alive anchor:** the host is the "≥1 always present" guarantee — the room
+  cannot self-close while the host is in it (relax teardown while host present).
+
+### 9.4 Mic-lock router — surgical seams (no LiveKit redesign)
+
+The router is a deterministic state machine over the EXISTING single room /
+single `session.say()`; "who speaks" and "who hears" are two software switches:
+
+1. **Slot state** — add `activeMicSlotId` (reuse `focusedSlotId`); default = host.
+   Extend `SessionSlot` with `emitter`, `muted`, `micVoice?`.
+2. **Output mixer (who speaks)** — gate the `tts_say` → `session.say()` listener
+   (`index.ts:3547` → `:3610`) on `activeMicSlotId`; register the gated listener
+   on every slot's emitter (bg slots deliberately omit it today — that omission is
+   the switch).
+3. **Input router (who hears)** — fan the final user transcript
+   (`conversation_item_added`, `index.ts:4307`) to chosen slots via
+   `slot.llm.pushMessage(...)` (the mechanism bg kickoff already uses at `:2331`);
+   reuse the existing dedupe/`<3char`/injection filters. Broadcast = loop.
+4. **Keep-alive** — add an `agentsActive` predicate and short-circuit the three
+   teardown timers (`armAloneTimer` `:2094`, `armFastLeaveTimer` `:2118`,
+   `armIdleExitTimer` `:2150`); the meeting path (`index.ts:4941`) is the template.
+5. **Catch-up on focus swap** — reuse the interruption / context-preservation
+   prompt injection when promoting a slot to mic-holder.
+6. **Per-voice — DEFER.** `session.say()` has no per-utterance voice; V1 ships one
+   shared voice + the runtime speed knob (`index.ts:3606`). Per-slot TTS is a
+   follow-up.
+
+Build order (all reuse existing per-slot emitter + `pushMessage` machinery):
+slot state → output mixer → input router → keep-alive → catch-up → per-voice later.

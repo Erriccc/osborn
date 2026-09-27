@@ -65,9 +65,9 @@ function normalizeAndQuantize(floats: number[]): Int8Array {
 }
 
 /** Embed one batch (≤ MAX_BATCH inputs). Returns aligned int8 vectors, or null on any failure. */
-async function embedBatch(inputs: string[], key: string): Promise<Int8Array[] | null> {
+async function embedBatch(inputs: string[], key: string, timeoutMs: number): Promise<Int8Array[] | null> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const res = await fetch(OPENROUTER_URL, {
       method: 'POST',
@@ -123,7 +123,7 @@ async function embedBatch(inputs: string[], key: string): Promise<Int8Array[] | 
  * Returns an Embedder, or null if embeddings are disabled or no key is configured.
  * The returned function degrades to null on any per-call failure (keyword-only recall).
  */
-export async function getEmbedder(): Promise<Embedder | null> {
+export async function getEmbedder(timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<Embedder | null> {
   if (process.env.OSBORN_EMBED === '0') return null
   // Re-read the key EVERY call and never latch off on a missing key: the platform
   // OpenRouter key is hydrated into the env by the secrets layer, which can finish
@@ -141,7 +141,7 @@ export async function getEmbedder(): Promise<Embedder | null> {
     const out: Int8Array[] = []
     for (let i = 0; i < texts.length; i += MAX_BATCH) {
       const chunk = texts.slice(i, i + MAX_BATCH).map((t) => t || ' ')
-      const vecs = await embedBatch(chunk, key)
+      const vecs = await embedBatch(chunk, key, timeoutMs)
       if (!vecs) return null // any failure → keyword-only for this call
       out.push(...vecs)
     }

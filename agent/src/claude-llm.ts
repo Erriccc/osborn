@@ -42,15 +42,10 @@ const TURN_SHAPE_REMINDER_PATH = join(__claudeLlmDir, 'prompts', 'turn-shape-rem
 const RECALL_TOP_K = 5
 const RECALL_PER_HIT_CHARS = 800
 const RECALL_ENABLED = () => process.env.OSBORN_RECALL_INJECT !== '0'
-
-// Warm the embedder once (fire-and-forget) so hybrid recall is ready without blocking
-// the first turn; until it's warm, recall() falls back to keyword-only (~16ms).
-let __embedderWarmed = false
-function warmEmbedder(): void {
-  if (__embedderWarmed || process.env.OSBORN_EMBED === '0') return
-  __embedderWarmed = true
-  getEmbedder().catch(() => {})
-}
+// Query-side embed budget. Vector/hybrid is the PREFERRED recall path; keyword is only
+// the fallback. This tight timeout means a slow network degrades to keyword FAST rather
+// than stalling the turn — the read path never waits the full write-path (20s) budget.
+const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS || 2500)
 
 /** Build the recalled-context block to inject alongside the turn-shape reminder. '' on any miss. */
 async function buildRecallInjection(sessionId: string | null, workingDir: string | undefined, prompt: string): Promise<string> {
@@ -60,9 +55,11 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     if (q.length < 3) return ''
     if (!storeExists(sessionId, workingDir)) return ''
 
-    warmEmbedder()
-    // Only use the embedder if it's already loaded — never block the turn on a cold load.
-    const embed = (__embedderWarmed && process.env.OSBORN_EMBED !== '0') ? (await getEmbedder()) ?? undefined : undefined
+    // Vector/hybrid is the PREFERRED recall path; keyword is only the fallback when the
+    // embedder is unavailable or the query embed exceeds its short budget. Acquire the
+    // embedder every turn with a tight query timeout — no warm-up needed (it's a cloud
+    // fetch, not a local model load). If embed is null, recall() runs keyword-only.
+    const embed = process.env.OSBORN_EMBED !== '0' ? (await getEmbedder(QUERY_EMBED_TIMEOUT_MS)) ?? undefined : undefined
 
     const { getStorePath } = await import('./session-store.js')
     const db = openStore(getStorePath(sessionId, workingDir))
@@ -458,7 +455,7 @@ export const NAMED_AGENTS = {
       '',
       '## Research-review gate',
       'When reviewing a researcher\'s findings, judge whether the research is COMPLETE and well-sourced against the original task. If it is, pass it. If it\'s thin, missing sources, or the answer likely lives somewhere the researcher didn\'t look, report that it needs more — so the orchestrator sends the researcher back.',
-      'End every research review with exactly one of:',
+      'Before you finalize, re-check your gate call ONCE: is the research genuinely complete and well-sourced for the original question — not passing thin work, nor failing solid work? Then end every research review with exactly one of:',
       '  GATE: PASS',
       '  GATE: NEEDS-MORE — <what\'s missing / where to look>',
       '',
@@ -527,8 +524,8 @@ export const NAMED_AGENTS = {
       '## When to use / handoff',
       'Invoked AFTER the planner produces a written plan — the writer is the SOLE agent that edits files.',
       'Do not invoke writer until a plan exists for any multi-step change.',
-      'When the writer returns, the orchestrator invokes tester AND reviewer in parallel before surfacing results.',
-      'Because that verification runs automatically after you finish, make the change review-ready and leave the tree in a runnable state — do not skip cleanup expecting a second pass.',
+      'A tester runs IN PARALLEL with you — it writes tests from the spec, blind to your implementation (TDD). After you return, the orchestrator RUNS those tests against your code and dispatches the reviewer; on test-fail or REJECT you may be sent back to fix (bounded rounds).',
+      'Because that verification runs after you finish, make the change review-ready and leave the tree in a runnable state — write the code so the independently-written tests can pass; do not skip cleanup expecting a second pass.',
     ].join('\n'),
   },
   tester: {
@@ -587,6 +584,7 @@ export const NAMED_AGENTS = {
       '7. Cap yourself at 6-8 tool calls unless the investigation clearly requires more.',
       '',
       '## What to return',
+      'Before you finalize, re-check your conclusion ONCE: did you actually RUN the commands (not assume the outcome), does your result match the real output, and did you distinguish a genuine regression from a flaky/environment failure? Then report:',
       '- RESULT: PASS or FAIL (one word, first line)',
       '- COMMAND: the exact command(s) you ran',
       '- OUTPUT: relevant excerpt (errors, failing test names, line numbers)',
@@ -763,7 +761,7 @@ export const NAMED_AGENTS = {
       '  NIT     — style, naming, or polish; never a reason to REJECT on its own',
       '',
       '## What to return',
-      'Structure your response EXACTLY as follows:',
+      'Before you finalize, re-check your verdict ONCE: is each BLOCKER/MAJOR real and reproducible (not a style nit or false positive), and does your ACCEPT/REJECT match the severity of what you actually found? Then structure your response EXACTLY as follows:',
       '',
       'VERDICT: ACCEPT | REJECT  — <one-line rationale>',
       '',
@@ -922,14 +920,33 @@ export function decideWrite(
   return { decision: 'defer' }
 }
 
-// ── Verifier chaining ───────────────────────────────────────────────────────
-// A plain name→verifiers lookup read by the SubagentStop hook. Same wiring the
-// old hardcoded branches had (writer→reviewer+tester, researcher→reasoner gate),
-// gathered in one visible place. Names resolve to spawnReviewer / spawnTester /
-// spawnResearchGate. Any agent not listed chains to nothing.
-export const VERIFIER_CHAIN: Record<string, { then: string[]; mode?: 'parallel' | 'sequential' }> = {
-  writer: { then: ['reviewer', 'tester'], mode: 'parallel' },
-  researcher: { then: ['reasoner'] },
+// ── Verifier chaining (Pattern #1) ──────────────────────────────────────────
+// Verifiers are real named Task sub-agents (the `agents` roster), NOT out-of-band
+// query() spawns. Two enforcement points:
+//   • parallelAtStart — verifiers the ORCHESTRATOR must dispatch IN PARALLEL with
+//     the keyed agent (enforced by the orchestrator prompt; a post-hoc hook cannot
+//     make two Tasks run concurrently). Tester is TDD: it WRITES tests from the
+//     spec in parallel with the writer, blind to the implementation.
+//   • afterReminder — injected into the MAIN agent by the PostToolUse-on-Task hook
+//     when the keyed sub-agent's Task completes, so the main agent dispatches the
+//     next verifier(s) as real Tasks (verdicts return inline). Includes RUNNING the
+//     tester's tests against the finished code. Any agent not listed chains to nothing.
+export const VERIFIER_CHAIN: Record<string, { parallelAtStart?: string[]; afterReminder?: string }> = {
+  writer: {
+    parallelAtStart: ['tester'],
+    afterReminder:
+      'The writer sub-agent just finished. Before you finalize, you MUST now use the Task tool to: ' +
+      "(1) RUN the tester's tests against the new implementation and report PASS/FAIL; " +
+      '(2) dispatch the `reviewer` on the diff for a VERDICT. ' +
+      'If tests FAIL or the reviewer REJECTs, dispatch the `writer` to fix and then re-verify — ' +
+      'at most 2 fix rounds, after which surface the outcome to the user rather than looping.',
+  },
+  researcher: {
+    afterReminder:
+      'The researcher sub-agent just finished. Before you finalize, use the Task tool to dispatch the ' +
+      '`reasoner` gate to judge whether the research is complete and well-sourced for the original ' +
+      'question. If it returns NEEDS-MORE, send the researcher back — at most 2 rounds, then surface.',
+  },
 }
 
 const RESEARCH_TOOLS = [
@@ -1732,335 +1749,6 @@ export class ClaudeLLM extends llm.LLM {
     }
   }
 
-  /**
-   * Dispatcher v1 — auto-spawn a reviewer after a writer sub-agent completes.
-   * Runs a one-shot query() with the reviewer agent and emits dispatch_rejected
-   * if the verdict is REJECT. A reviewer failure must never crash the consumer.
-   * Public so ClaudeLLMStream can call it via this.#llmRef.spawnReviewer().
-   */
-  // writerOutput intentionally NOT fed to the reviewer (neutrality); kept for signature stability
-  async spawnReviewer(agentId: string, writerOutput: string, emitter: EventEmitter): Promise<void> {
-    // Dedup guard — SubagentStop may fire more than once for the same agent_id.
-    if (this.#dispatchedFor.has(agentId)) return
-    this.#dispatchedFor.add(agentId)
-
-    try {
-      // Get the actual diff to give reviewer concrete evidence instead of just the narrative
-      let gitDiff = ''
-      try {
-        const { execSync } = await import('child_process')
-        const diffStat = execSync('git diff HEAD~1 HEAD --stat 2>/dev/null', { cwd: this.#opts.workingDirectory, timeout: 5000 }).toString().trim()
-        const diff = execSync('git diff HEAD~1 HEAD 2>/dev/null', { cwd: this.#opts.workingDirectory, timeout: 5000 }).toString().trim()
-        gitDiff = diffStat ? `\n\n<git_diff_stat>\n${diffStat}\n</git_diff_stat>\n\n<git_diff>\n${diff.slice(0, 6000)}\n</git_diff>` : ''
-      } catch {
-        // non-fatal: if git fails, proceed without diff
-      }
-
-      const prompt = [
-        'Review the change below for correctness, spec/requirement adherence, and obvious bugs.',
-        'The git diff is the AUTHORITATIVE source of what changed. Judge it on its own merits —',
-        'you are deliberately NOT given the writer\'s rationale or the session index; form an independent verdict from the code and the project\'s own documented standards.',
-        'Read the actual modified files and their callers as needed (you are not limited to the diff).',
-        'End your reply with exactly `VERDICT: ACCEPT` or `VERDICT: REJECT`.',
-        gitDiff,
-      ].join('\n')
-
-      // Do NOT pass agents here — the reviewer must be review-only and must not
-      // be able to spawn writer/researcher/reasoner sub-agents. Passing an empty
-      // agents roster prevents any SubagentStop(agent_type==='writer') from
-      // firing inside this one-shot query and re-arming the backstop loop.
-      const reviewerOptions: Options = {
-        cwd: getSubagentsDir(this.#opts.workingDirectory),
-        permissionMode: 'default',
-        systemPrompt: NAMED_AGENTS.reviewer.prompt,
-        allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
-        hooks: {
-          PreToolUse: [
-            {
-              matcher: '.*',
-              hooks: [async (input: any) => {
-                const toolName = input?.tool_name || 'unknown'
-                const toolInput = input?.tool_input || {}
-                emitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: 'reviewer' })
-                return {}
-              }],
-            },
-            {
-              matcher: '.*',
-              hooks: [async (input: any) => {
-                const toolName = input?.tool_name || ''
-                const toolInput = input?.tool_input
-                if (
-                  (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') &&
-                  !/\.(md|markdown|mdx|txt|rst|adoc)$/i.test(String(toolInput?.file_path))
-                ) {
-                  return {
-                    hookSpecificOutput: {
-                      hookEventName: 'PreToolUse',
-                      permissionDecision: 'deny',
-                    },
-                    reason: 'reviewer may only write documentation files (.md/.markdown/.mdx/.txt/.rst/.adoc)',
-                  }
-                }
-                return {}
-              }],
-            },
-          ],
-          PostToolUse: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              const toolName = input?.tool_name || 'unknown'
-              const toolInput = input?.tool_input || {}
-              const toolResponse = input?.tool_response
-              emitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: 'reviewer' })
-              return {}
-            }],
-          }],
-          // Self-review gate — block ONCE (stop_hook_active-guarded) so the reviewer
-          // re-checks its own verdict before returning, instead of stopping on a
-          // first-pass judgment.
-          Stop: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              if (input?.stop_hook_active) return {}
-              return { decision: 'block', reason: 'Before you finalize: re-read your findings against the diff once. Confirm each BLOCKER/MAJOR is real and reproducible (not a style nit or a false positive), and that your verdict matches the severity of what you actually found. Then end with exactly `VERDICT: ACCEPT` or `VERDICT: REJECT`.' }
-            }],
-          }],
-        },
-      }
-
-      console.log(`[DISPATCH] spawning reviewer for agentId=${agentId.slice(0, 8)}`)
-      const reviewerQuery = query({ prompt, options: reviewerOptions })
-      this.#activeQueries.add(reviewerQuery)
-      this.#activeQueriesById.set(agentId, reviewerQuery)
-
-      let reviewerText = ''
-      try {
-        for await (const msg of reviewerQuery) {
-          const m = msg as any
-          if (m.type === 'result' && m.result) {
-            reviewerText = String(m.result)
-          }
-        }
-      } finally {
-        this.#activeQueries.delete(reviewerQuery)
-        this.#activeQueriesById.delete(agentId)
-      }
-
-      const verdictMatch = reviewerText.match(/VERDICT:\s*(ACCEPT|REJECT)/i)
-      const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : null
-
-      if (verdict === 'REJECT') {
-        console.log(`[DISPATCH] review REJECT for agentId=${agentId.slice(0, 8)}`)
-        statusManager.upsertDispatch(agentId, { dispatchState: 'rejected', artifact: reviewerText })
-        emitter.emit('dispatch_rejected', { tuid: agentId, verdict: 'REJECT', review: reviewerText })
-      } else {
-        console.log(`[DISPATCH] review ACCEPT for agentId=${agentId.slice(0, 8)}`)
-      }
-    } catch (err) {
-      console.error('[DISPATCH] reviewer spawn failed (non-fatal):', err)
-    }
-  }
-
-  /**
-   * Dispatcher v1 — auto-spawn a tester after a writer sub-agent completes,
-   * in parallel with spawnReviewer. Runs tests against the diff and emits
-   * dispatch_rejected with verdict 'TEST-FAIL' if they fail.
-   */
-  async spawnTester(agentId: string, _writerOutput: string, emitter: EventEmitter): Promise<void> {
-    // Use a scoped key so reviewer's dedup guard (keyed on raw agentId) doesn't block us.
-    const testerKey = `${agentId}:tester`
-    if (this.#dispatchedFor.has(testerKey)) return
-    this.#dispatchedFor.add(testerKey)
-
-    try {
-      let gitDiff = ''
-      try {
-        const { execSync } = await import('child_process')
-        const diffStat = execSync('git diff HEAD~1 HEAD --stat 2>/dev/null', { cwd: this.#opts.workingDirectory, timeout: 5000 }).toString().trim()
-        const diff = execSync('git diff HEAD~1 HEAD 2>/dev/null', { cwd: this.#opts.workingDirectory, timeout: 5000 }).toString().trim()
-        gitDiff = diffStat ? `\n\n<git_diff_stat>\n${diffStat}\n</git_diff_stat>\n\n<git_diff>\n${diff.slice(0, 6000)}\n</git_diff>` : ''
-      } catch {
-        // non-fatal
-      }
-
-      const prompt = [
-        'Run tests and verify that the change below did not introduce regressions.',
-        'Use the git diff as your scope — run the full existing test suite to establish a baseline,',
-        'then target tests at the specific changed files/functions.',
-        'If no test suite exists, run the build or execute the changed code directly to confirm it works.',
-        'End your reply with exactly `RESULT: PASS` or `RESULT: FAIL` followed by a brief summary.',
-        gitDiff,
-      ].join('\n')
-
-      const testerOptions: Options = {
-        cwd: getSubagentsDir(this.#opts.workingDirectory),
-        permissionMode: 'default',
-        systemPrompt: NAMED_AGENTS.tester.prompt,
-        allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],
-        hooks: {
-          PreToolUse: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              const toolName = input?.tool_name || 'unknown'
-              const toolInput = input?.tool_input || {}
-              emitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: 'tester' })
-              return {}
-            }],
-          }],
-          PostToolUse: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              const toolName = input?.tool_name || 'unknown'
-              const toolInput = input?.tool_input || {}
-              const toolResponse = input?.tool_response
-              emitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: 'tester' })
-              return {}
-            }],
-          }],
-          // Self-review gate — block ONCE (stop_hook_active-guarded) so the tester
-          // re-checks its own conclusion before returning.
-          Stop: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              if (input?.stop_hook_active) return {}
-              return { decision: 'block', reason: 'Before you finalize: re-check your conclusion once. Did you actually RUN the commands (not assume the outcome)? Does your result match the real output, and did you distinguish a genuine regression from a flaky/environment failure? Then end with exactly `RESULT: PASS` or `RESULT: FAIL` followed by a brief summary.' }
-            }],
-          }],
-        },
-      }
-
-      console.log(`[DISPATCH] spawning tester for agentId=${agentId.slice(0, 8)}`)
-      const testerQuery = query({ prompt, options: testerOptions })
-      this.#activeQueries.add(testerQuery)
-      this.#activeQueriesById.set(testerKey, testerQuery)
-
-      let testerText = ''
-      try {
-        for await (const msg of testerQuery) {
-          const m = msg as any
-          if (m.type === 'result' && m.result) {
-            testerText = String(m.result)
-          }
-        }
-      } finally {
-        this.#activeQueries.delete(testerQuery)
-        this.#activeQueriesById.delete(testerKey)
-      }
-
-      const resultMatch = testerText.match(/RESULT:\s*(PASS|FAIL)/i)
-      const result = resultMatch ? resultMatch[1].toUpperCase() : null
-
-      if (result === 'FAIL') {
-        console.log(`[DISPATCH] tester FAIL for agentId=${agentId.slice(0, 8)}`)
-        statusManager.upsertDispatch(agentId, { dispatchState: 'rejected', artifact: testerText })
-        emitter.emit('dispatch_rejected', { tuid: agentId, verdict: 'TEST-FAIL', review: testerText })
-      } else {
-        console.log(`[DISPATCH] tester PASS for agentId=${agentId.slice(0, 8)}`)
-      }
-    } catch (err) {
-      console.error('[DISPATCH] tester spawn failed (non-fatal):', err)
-    }
-  }
-
-  /**
-   * Dispatcher v1 — research gate: vet a researcher sub-agent's output before
-   * it reaches the main agent. Emits dispatch_rejected with verdict 'NEEDS-MORE'
-   * (distinct from reviewer's 'REJECT') so the frontend can tell them apart.
-   */
-  async spawnResearchGate(agentId: string, researchOutput: string, emitter: EventEmitter): Promise<void> {
-    // Dedup guard — SubagentStop may fire more than once for the same agent_id.
-    if (this.#dispatchedFor.has(agentId)) return
-    this.#dispatchedFor.add(agentId)
-
-    try {
-      const idxPathGate = (this.#sessionId && this.#opts.workingDirectory)
-        ? getIndexPath(this.#sessionId, this.#opts.workingDirectory)
-        : null
-
-      const prompt = [
-        'Use the reasoner sub-agent to vet this research output.',
-        'Determine whether the research is sufficient to answer the original question.',
-        'End your reply with exactly `GATE: PASS` or `GATE: NEEDS-MORE`.',
-        ...(idxPathGate ? [`The session index is at ${idxPathGate} — you MUST read it before reviewing.`] : []),
-        '',
-        '<research_output>',
-        researchOutput.slice(0, 8000),
-        '</research_output>',
-      ].join('\n')
-
-      // Do NOT pass agents here — the research-gate reasoner must be review-only
-      // and must not be able to spawn sub-agents. Same rationale as spawnReviewer:
-      // an agents roster would allow delegation back to the writer, which would
-      // fire SubagentStop(agent_type==='writer') and re-arm the backstop.
-      const gateOptions: Options = {
-        cwd: getSubagentsDir(this.#opts.workingDirectory),
-        permissionMode: 'default',
-        systemPrompt: NAMED_AGENTS.reasoner.prompt,
-        hooks: {
-          PreToolUse: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              const toolName = input?.tool_name || 'unknown'
-              const toolInput = input?.tool_input || {}
-              emitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: 'reasoner' })
-              return {}
-            }],
-          }],
-          PostToolUse: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              const toolName = input?.tool_name || 'unknown'
-              const toolInput = input?.tool_input || {}
-              const toolResponse = input?.tool_response
-              emitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: 'reasoner' })
-              return {}
-            }],
-          }],
-          // Self-review gate — block ONCE (stop_hook_active-guarded) so the gate
-          // re-checks its own PASS/NEEDS-MORE call before returning.
-          Stop: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              if (input?.stop_hook_active) return {}
-              return { decision: 'block', reason: 'Before you finalize: re-check your gate decision once. Is the research genuinely complete and well-sourced for the original question — not passing thin work, nor failing solid work? Then end with exactly `GATE: PASS` or `GATE: NEEDS-MORE`.' }
-            }],
-          }],
-        },
-      }
-
-      console.log(`[DISPATCH] spawning research-gate for agentId=${agentId.slice(0, 8)}`)
-      const gateQuery = query({ prompt, options: gateOptions })
-      this.#activeQueries.add(gateQuery)
-      this.#activeQueriesById.set(agentId, gateQuery)
-
-      let review = ''
-      try {
-        for await (const msg of gateQuery) {
-          const m = msg as any
-          if (m.type === 'result' && m.result) {
-            review = String(m.result)
-          }
-        }
-      } finally {
-        this.#activeQueries.delete(gateQuery)
-        this.#activeQueriesById.delete(agentId)
-      }
-
-      const gateMatch = review.match(/GATE:\s*(PASS|NEEDS-MORE)/i)
-      const gateVerdict = gateMatch ? gateMatch[1].toUpperCase() : null
-
-      if (gateVerdict === 'NEEDS-MORE') {
-        console.log(`[DISPATCH] research-gate NEEDS-MORE for agentId=${agentId.slice(0, 8)}`)
-        statusManager.upsertDispatch(agentId, { dispatchState: 'rejected', artifact: review })
-        emitter.emit('dispatch_rejected', { tuid: agentId, verdict: 'NEEDS-MORE', review })
-      } else {
-        console.log(`[DISPATCH] research-gate PASS for agentId=${agentId.slice(0, 8)}`)
-      }
-    } catch (err) {
-      console.error('[DISPATCH] research-gate spawn failed (non-fatal):', err)
-    }
-  }
 
   chat({
     chatCtx,
@@ -2371,6 +2059,23 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log('[LIFECYCLE-PROBE] PostToolUse on', toolName, 'agent_id=', agentId, 'ts=', Date.now())
               }
               this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: agentTypePost || 'main' })
+              // Pattern #1 verifier chaining: when the MAIN agent's Task sub-agent of a
+              // chained type finishes, inject a reminder so the main agent dispatches the
+              // next verifier(s) as real Task sub-agents (verdicts return inline). Gated to
+              // the main thread (agent_type absent) so verifiers never re-chain themselves.
+              if (!agentTypePost && (toolName === 'Task' || toolName === 'Agent')) {
+                const subType = String((toolInput as any)?.subagent_type || (toolInput as any)?.agent_type || '')
+                const link = subType ? VERIFIER_CHAIN[subType] : undefined
+                if (link?.afterReminder) {
+                  console.log(`[DISPATCH] Pattern#1 chain: ${subType} done → reminding main agent to verify`)
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: 'PostToolUse',
+                      additionalContext: link.afterReminder,
+                    },
+                  }
+                }
+              }
               return {}
             }]
           }],
@@ -2411,15 +2116,17 @@ class ClaudeLLMStream extends llm.LLMStream {
                   this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory)
                 }
 
-                // Recall injection is best-effort and must NEVER approach the SDK's 30s hook
-                // budget. Cap it hard at 1.5s — if the store is momentarily busy (e.g. a large
-                // ingest sweep still draining), we skip recall for this turn rather than block
-                // the prompt. The keyword/vector layers catch up on the next turn.
+                // Recall is best-effort and must never approach the SDK's 30s hook budget.
+                // buildRecallInjection is already self-bounding — the query embed has a tight
+                // timeout (falls back to keyword INSIDE recall) and the SQL is local/ms. This
+                // outer race is only a catastrophic-hang backstop (e.g. a momentarily locked
+                // store), set well above the embed budget so a slow embed degrades to keyword
+                // rather than being cut to nothing.
                 const recalled = fromSubagent
                   ? ''
                   : await Promise.race([
                       buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || '')),
-                      new Promise<string>((res) => setTimeout(() => res(''), 1500)),
+                      new Promise<string>((res) => setTimeout(() => res(''), 6000)),
                     ])
                 const additionalContext = recalled ? `${reminder}\n\n${recalled}` : reminder
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''} for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
@@ -2704,26 +2411,11 @@ class ClaudeLLMStream extends llm.LLMStream {
               return {}
             }]
           }],
-          // Idle-agent guard / end-of-run self-review. When the main agent tries
-          // to end its turn while background work is still in flight, block ONCE
-          // (stop_hook_active guards against a loop) and force one more turn so it
-          // either waits + synthesizes, or explicitly tells the user what's still
-          // running — never goes silent leaving dispatched work dangling.
-          Stop: [{
-            matcher: '.*',
-            hooks: [async (input: any) => {
-              const inFlight: any[] = Array.isArray(input?.background_tasks) ? input.background_tasks : []
-              if (input?.stop_hook_active || inFlight.length === 0) return {}
-              const labels = inFlight
-                .map((t) => t?.agent_type || t?.name || t?.command || t?.type || 'task')
-                .slice(0, 6)
-              console.log(`🛑 Stop gate: ${inFlight.length} background task(s) in flight → blocking once for self-review`)
-              return {
-                decision: 'block',
-                reason: `Before you end your turn: ${inFlight.length} background task(s) are still running (${labels.join(', ')}). Do NOT go idle. Either wait for them and synthesize their results into your answer, or explicitly tell the user what is still running and what you will do when it finishes.`,
-              }
-            }]
-          }],
+          // (Removed the end-of-turn idle-guard Stop gate: it polled `background_tasks`
+          // — Bash background jobs, never the verifier queries — so it couldn't coordinate
+          // them, and its block-loop was a hang surface. Pattern #1 chaining via the
+          // PostToolUse-on-Task reminder makes verifiers return inline, so the main agent
+          // sees their verdicts deterministically without an end-turn gate.)
           SubagentStart: [{
             matcher: '.*',
             hooks: [async (input: any) => {
@@ -2741,27 +2433,9 @@ class ClaudeLLMStream extends llm.LLMStream {
               const aid = input?.agent_id ?? ('sa-' + Date.now())
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
-              // Infinite-loop guard — verifiers never re-dispatch (they carry no
-              // VERIFIER_CHAIN entry anyway; defense-in-depth).
-              if (at === 'reviewer' || at === 'tester' || at === 'reasoner') return {}
-              // Verifier chaining — driven by the plain VERIFIER_CHAIN lookup
-              // (replaces the hardcoded writer/researcher branches).
-              const chain = at ? VERIFIER_CHAIN[at] : undefined
-              if (chain?.then?.length && msg) {
-                const spawn = (role: string): Promise<void> => {
-                  if (role === 'reviewer') return this.#llmRef.spawnReviewer(aid, msg, this.#eventEmitter)
-                  if (role === 'tester') return this.#llmRef.spawnTester(aid, msg, this.#eventEmitter)
-                  if (role === 'reasoner' || role === 'gate') return this.#llmRef.spawnResearchGate(aid, msg, this.#eventEmitter)
-                  console.warn(`[DISPATCH] unknown chain target '${role}' for ${at} — skipped`)
-                  return Promise.resolve()
-                }
-                if (chain.mode === 'sequential') {
-                  // Await in order WITHOUT blocking the hook return (fire the chain async).
-                  void (async () => { for (const r of chain.then) await spawn(r) })()
-                } else {
-                  for (const r of chain.then) void spawn(r)
-                }
-              }
+              // Verifier chaining is Pattern #1 now: the PostToolUse-on-Task hook injects a
+              // reminder into the MAIN agent, which dispatches the reviewer/tester as real
+              // Task sub-agents (verdicts return inline). No out-of-band spawns from here.
               return {}
             }]
           }],

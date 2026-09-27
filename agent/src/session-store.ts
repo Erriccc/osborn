@@ -108,11 +108,24 @@ export function storeExists(sessionId: string, workingDir: string): string | nul
 // DB OPEN / SCHEMA
 // ============================================================
 
-export function openStore(dbPath: string): Database.Database {
+export function openStore(dbPath: string, opts?: { readonly?: boolean }): Database.Database {
+  // Read-only open for the hot read path (buildRecallInjection, fast-brain). A readonly
+  // connection takes only SHARED locks — under WAL it never blocks (or is blocked by) the
+  // writer — and it skips the DDL/migration/meta writes below entirely (a reader must not
+  // migrate). busy_timeout lets a transient exclusive lock (checkpoint/DDL on the writer)
+  // resolve instead of throwing SQLITE_BUSY. Caller guarantees the db exists (storeExists).
+  if (opts?.readonly) {
+    const rdb = new Database(dbPath, { readonly: true })
+    sqliteVec.load(rdb) // vec0 module must be registered per-connection for vec_int8() in recall()
+    rdb.pragma('busy_timeout = 5000')
+    return rdb
+  }
+
   const db = new Database(dbPath)
   sqliteVec.load(db)
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
+  db.pragma('busy_timeout = 5000') // wait out a transient lock instead of throwing SQLITE_BUSY
 
   // ── Migration gate ──────────────────────────────────────────────
   // The derived tables (content/fts/vec/sources) are a re-derivable cache of the
