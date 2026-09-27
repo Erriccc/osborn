@@ -1696,8 +1696,15 @@ export class ClaudeLLM extends llm.LLM {
           callbacks.eventEmitter.emit('query_request_id', { requestId: msg.requestId })
         }
 
-        // Stream assistant text → tts_say events
-        if (msg.type === 'assistant' && msg.message?.content) {
+        // Stream assistant text → tts_say events.
+        // SUBAGENT GUARD (regression fix): the SDK surfaces a Task sub-agent's assistant
+        // messages inline in THIS same stream, tagged with a non-null parent_tool_use_id
+        // ("non-null when the message was produced inside a subagent" — SDK docs). Only the
+        // MAIN orchestrator (parent_tool_use_id === null) may speak or post a chat bubble;
+        // a sub-agent's raw narration must NOT reach TTS/UI (its work already shows via the
+        // tool_use activity events). Without this, once verifiers/researcher became real Task
+        // sub-agents their text "took over the mic" and leaked raw code/markdown into audio.
+        if (msg.type === 'assistant' && msg.message?.content && !msg.parent_tool_use_id) {
           // Assign a stable messageId for this turn (first block sets it, rest reuse)
           if (!this.#currentTurnMessageId) {
             this.#currentTurnMessageId = crypto.randomUUID()
@@ -2577,7 +2584,9 @@ class ClaudeLLMStream extends llm.LLMStream {
         }
 
         // Stream text chunks — send each assistant text block to TTS
-        if ((message as any).type === 'assistant' && (message as any).message?.content) {
+        // SUBAGENT GUARD (see the persistent-consumer loop above): skip sub-agent messages
+        // (non-null parent_tool_use_id) so only the main orchestrator's text speaks/streams.
+        if ((message as any).type === 'assistant' && (message as any).message?.content && !(message as any).parent_tool_use_id) {
           // Emit SDK requestId on first assistant message — identifies this query()
           // in the JSONL for tracking which research task produced which output
           const sdkRequestId = (message as any).requestId
