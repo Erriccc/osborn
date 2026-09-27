@@ -47,7 +47,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
-import { ensureClaudeAuth, applyAuthFallback } from './claude-auth.js'
+import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth } from './claude-auth.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -4103,6 +4103,19 @@ async function main() {
     room.on(RoomEvent.TrackSubscribed, (track: any, publication: any, participant: any) => {
       try {
         console.log(`📥 [ROOM-TRACK-SUBSCRIBED] participant=${participant?.identity} kind=${track?.kind} source=${publication?.source} sid=${publication?.sid} t=${new Date().toISOString()}`)
+        // Auth-prompt race fix: the "Connect Claude" prompt is published in the
+        // ParticipantConnected handler ~5-6s before the browser's data channel
+        // finishes subscribing, so a no-auth user never receives it (reliable
+        // data isn't buffered for a not-yet-subscribed peer) and the modal never
+        // shows. TrackSubscribed means this participant's WebRTC transport (incl.
+        // data channel) is up — re-deliver any pending auth prompt now. No-op
+        // when already authenticated. Covers BOTH resume and new-conversation
+        // paths (both dispatch ensureClaudeAuth in the same participant handler).
+        const pid = participant?.identity
+        if (typeof pid === 'string' && pid.startsWith('user-')) {
+          const replayed = replayInFlightAuth((type, payload) => sendToFrontend({ type, ...payload as object }))
+          if (replayed) console.log(`🔑 Re-delivered pending Claude auth prompt to ${pid} on TrackSubscribed`)
+        }
       } catch {}
     })
     room.on(RoomEvent.TrackUnsubscribed, (track: any, publication: any, participant: any) => {

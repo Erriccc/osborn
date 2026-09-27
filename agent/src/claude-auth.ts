@@ -558,6 +558,38 @@ interface InFlightAuth {
 let inFlightAuth: InFlightAuth | null = null
 
 /**
+ * Re-deliver the current in-flight auth prompt to a frontend that has just
+ * (re)subscribed. WHY THIS EXISTS: ensureClaudeAuth runs inside the
+ * ParticipantConnected ("User joined") handler and publishes claude_auth_*
+ * over the LiveKit reliable data channel — but that fires ~5-6s BEFORE the
+ * browser's data channel actually finishes subscribing (observed: auth_url at
+ * :01, TrackSubscribed at :07). LiveKit reliable data is NOT buffered for a
+ * peer that hasn't subscribed yet, so a no-auth user's one-shot "Connect
+ * Claude" prompt is published to nobody and the modal never appears. Calling
+ * this on TrackSubscribed (data channel confirmed up) re-delivers the exact
+ * cached state. No-op (returns false) when no flow is in-flight — i.e. the
+ * user is already authenticated — so it costs nothing on the common path.
+ * Idempotent on the frontend (re-setting the same auth status is harmless).
+ */
+export function replayInFlightAuth(
+  send: (type: string, payload: unknown) => void
+): boolean {
+  if (!inFlightAuth) return false
+  send('claude_auth_required', {
+    message: 'Claude authentication required. A login URL will appear shortly.',
+  })
+  if (inFlightAuth.lastUrl) {
+    send('claude_auth_url', { url: inFlightAuth.lastUrl })
+  }
+  if (inFlightAuth.lastStatus === 'waiting_code') {
+    send('claude_auth_waiting_code', {
+      message: 'Paste the authentication code from the browser.',
+    })
+  }
+  return true
+}
+
+/**
  * Ensure Claude is authenticated before proceeding.
  *
  * Check order:
