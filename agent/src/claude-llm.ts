@@ -97,6 +97,16 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
 let turnToolCallCount = 0
 const TOOL_CALL_BUDGET = 5
 
+// Writer PROVENANCE REMINDER (Chesterton's Fence): before the writer mutates a
+// version-controlled file it should review that file's git history so the edit is
+// backward-informed (root cause / prior + reverted attempts / cross-component coupling),
+// not forward-only. Delivered as a ONE-SHOT PreToolUse deny-with-reminder on the writer's
+// first edit of an existing file each turn. This single flag is the irreducible minimum:
+// a PreToolUse hook can only allow/deny/ask (no "inject note + proceed"), so the reminder
+// must be a deny — and without a "already nudged this turn" flag that deny would loop
+// forever. Reset on every UserPromptSubmit (new turn).
+let writerHistoryReminded = false
+
 export interface ClaudeLLMOptions {
   workingDirectory?: string      // cwd for Claude Code (where it reads/writes/runs commands)
   sessionBaseDir?: string        // where .osborn/sessions/ lives (defaults to workingDirectory)
@@ -507,6 +517,13 @@ export const NAMED_AGENTS = {
       '3. If applicable, run the current test suite or build to confirm the starting state works.',
       '4. If ANYTHING has drifted from the plan (file moved, code refactored, dependency changed):',
       '   STOP and report back to the main agent. Do NOT improvise.',
+      '',
+      '### Step 1b: Review history before touching a versioned file',
+      'For any file that ALREADY EXISTS (i.e. has git history), review its lineage BEFORE you edit it (on your first edit of an existing file each turn you\'ll get a one-time reminder to). This is Chesterton\'s Fence — understand WHY the code is there before you change it. Do:',
+      '  1. `git log --follow -p -- "<file>"` — recent commits and the rationale behind them.',
+      '  2. `git blame` on the exact lines you will change — who/when/which commit introduced them.',
+      '  3. `git log --oneline --grep=<feature>` and `git log --oneline -S"<symbol>"` — look for related OR REVERTED work so you do not redo something already tried, and note which components were co-changed (coupling).',
+      'Fix problems backward-informed — root cause, systemic implications, prior attempts — not forward-only. New files are exempt (no history to review).',
       '',
       '### Step 2: Clarify unknowns',
       '1. If the plan is vague or ambiguous — ask the main agent a specific clarifying question.',
@@ -2041,6 +2058,27 @@ class ClaudeLLMStream extends llm.LLMStream {
               // hardcoded per-role branches had, now in one visible place.
               if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
                 const filePath = String(toolInput.file_path || '')
+
+                // Writer PROVENANCE REMINDER (Chesterton's Fence): on the writer's FIRST edit of
+                // an EXISTING (version-controlled) file this turn, deny ONCE with a reminder to
+                // review the file's git history so the change is backward-informed (root cause,
+                // prior/reverted attempts, cross-component coupling), not forward-only — then it
+                // proceeds. New files are exempt (no history). One-shot per turn so it can't loop.
+                if (agentType === 'writer' && filePath && existsSync(filePath) && !writerHistoryReminded) {
+                  writerHistoryReminded = true
+                  const base = filePath.split('/').pop() || filePath
+                  const gateReason = [
+                    `Before editing ${base}, first review its history so your change is backward-informed, not forward-only (Chesterton's Fence — understand WHY this code exists before changing it):`,
+                    `  1. git log --follow -p -- "${filePath}"   (recent commits + rationale)`,
+                    `  2. git blame the specific lines you're about to change   (who/when/which commit)`,
+                    `  3. git log --oneline --grep=<feature>  and  git log --oneline -S"<symbol>"   (related OR reverted work so you don't redo something already tried; note components co-changed in those commits)`,
+                    `Then re-attempt this edit. (One-time reminder this turn; new files are exempt.)`,
+                  ].join('\n')
+                  console.log(`🏛️  Writer provenance reminder: nudging before ${base} (first edit of an existing file this turn)`)
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Review ${base}'s git history first (one-time provenance reminder).` })
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gateReason }
+                }
+
                 const { decision, reason } = decideWrite(agentType, filePath)
                 console.log(`🔎 Write gate: agent=${agentType ?? 'main'} path="${filePath || '(none)'}" → ${decision}`)
 
@@ -2114,6 +2152,8 @@ class ClaudeLLMStream extends llm.LLMStream {
               try {
                 // Reset the per-turn tool call counter so the new turn starts fresh.
                 turnToolCallCount = 0
+                // Reset the writer provenance-reminder flag for the new turn.
+                writerHistoryReminded = false
 
                 const reminder = readFileSync(TURN_SHAPE_REMINDER_PATH, 'utf-8')
                 const promptPreview = String(input?.prompt || '').substring(0, 60).replace(/\n/g, ' ')
