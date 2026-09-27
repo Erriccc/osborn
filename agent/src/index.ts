@@ -43,6 +43,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
+import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
@@ -2803,6 +2804,28 @@ async function main() {
   // Track the active resume session ID across scopes (ParticipantConnected + DataReceived)
   // Updated by resume_session, session_selected, continue_session, switch_session handlers
   let currentResumeSessionId: string | undefined
+
+  // Housekeeping: prune stale sub-agent transcripts (>24h) + empty/corrupt slug dirs. Ships
+  // DRY-RUN by default (OSBORN_HOUSEKEEPING_DRYRUN != '0') so it only LOGS what it would remove
+  // until we flip the env. Reads the active session live so it never touches the in-use subtree.
+  const runHousekeeping = () => {
+    try {
+      const envDryRun = process.env.OSBORN_HOUSEKEEPING_DRYRUN !== '0'
+      const activeSessionId = currentLLM?.sessionId ?? currentResumeSessionId ?? null
+      // Force dry-run whenever NO session is active (e.g. the boot run): with activeSessionId
+      // null the in-use-session guards are inert, so only LOG then — real deletion waits until
+      // a session is established (the periodic 6h runs), when the guards are meaningful.
+      const dryRun = envDryRun || !activeSessionId
+      const res = cleanupHousekeeping({ dryRun, activeSessionId })
+      if (!dryRun && (res.subagentsRemoved.length > 0 || res.corruptSlugsRemoved.length > 0)) {
+        invalidateSessionListCache()
+      }
+    } catch (e) {
+      console.warn('🧹 housekeeping failed:', e)
+    }
+  }
+  runHousekeeping()
+  setInterval(runHousekeeping, 6 * 60 * 60 * 1000)
 
   // Claude auth code submission handler (set during OAuth flow, cleared after)
   let pendingAuthSubmitCode: ((code: string) => void) | null = null

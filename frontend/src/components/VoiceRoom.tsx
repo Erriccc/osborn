@@ -16,7 +16,7 @@ import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
-import { formatTime, groupSessionsByDate } from '@/lib/sessions'
+import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 
 // ---------------------------------------------------------------------------
@@ -127,6 +127,10 @@ interface SessionInfo {
   timestamp: string
   lastMessage?: string
   messageCount: number
+  // The session's on-disk cwd/project — REQUIRED to resume it as a background slot
+  // (Claude --resume looks up by file location, so spawn must forward this as workingDir).
+  cwd?: string
+  projectPath?: string
 }
 
 // Slot info from background session system
@@ -1905,6 +1909,7 @@ function VoiceVisualizer({ state, audioTrack }: { state: string; audioTrack: any
 // Compact live-instances panel + spawn control
 function InstancesPanel({
   slots,
+  sessions,
   currentSessionId,
   spawnPending,
   spawnError,
@@ -1913,10 +1918,11 @@ function InstancesPanel({
   onClose,
 }: {
   slots: SlotInfo[]
+  sessions: SessionInfo[]
   currentSessionId: string | null
   spawnPending: boolean
   spawnError: string | null
-  onSpawn: () => void
+  onSpawn: (sessionId?: string, workingDir?: string) => void
   onDispatch: (targetSessionId: string, instruction: string) => void
   onClose: () => void
 }) {
@@ -1944,6 +1950,17 @@ function InstancesPanel({
     onDispatch(slotId, text)
     setDispatchDrafts((prev) => ({ ...prev, [slotId]: '' }))
   }
+
+  // Sessions eligible to spawn as a background slot: not the currently-focused session, and
+  // not one already running as a slot. Slot ids may be the full sessionId or an 8-char prefix,
+  // so match both. Cap is 2 background slots (focused is separate).
+  const runningSlotIds = new Set(slots.map((s) => s.id))
+  const eligibleSessions = sessions.filter((s) =>
+    s.sessionId !== currentSessionId &&
+    !runningSlotIds.has(s.sessionId) &&
+    !runningSlotIds.has(s.sessionId.substring(0, 8))
+  )
+  const atSpawnCap = slots.filter((s) => !s.isFocused).length >= 2
 
   return (
     <div className="absolute top-12 right-0 w-72 max-w-[calc(100vw-1rem)] bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
@@ -2039,32 +2056,61 @@ function InstancesPanel({
         {spawnError && (
           <p className="text-[11px] text-red-400 mb-1.5 px-1 leading-snug">{spawnError}</p>
         )}
-        <button
-          onClick={onSpawn}
-          disabled={spawnPending}
-          className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium transition-all ${
-            spawnPending
-              ? 'bg-gray-800 text-gray-500 cursor-not-allowed'
-              : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 hover:border-amber-500/50'
-          }`}
-        >
-          {spawnPending ? (
-            <>
-              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Spawning...
-            </>
-          ) : (
-            <>
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
-              Spawn second instance
-            </>
-          )}
-        </button>
+        {atSpawnCap ? (
+          <p className="text-[11px] text-gray-500 px-1 py-1.5 text-center leading-snug">
+            Max background instances running (2).
+          </p>
+        ) : (
+          <>
+            {/* Session picker — spawn a specific session by title (no IDs to remember) */}
+            {eligibleSessions.length > 0 && (
+              <div className="mb-1.5">
+                <p className="text-[10px] uppercase tracking-wide text-gray-500 px-1 mb-1">Spawn from a session</p>
+                <div className="max-h-40 overflow-y-auto space-y-0.5 pr-0.5">
+                  {eligibleSessions.slice(0, 20).map((s) => (
+                    <button
+                      key={s.sessionId}
+                      onClick={() => onSpawn(s.sessionId, s.cwd)}
+                      disabled={spawnPending}
+                      title={deriveSessionTitle(s.lastMessage)}
+                      className="w-full text-left px-2 py-1.5 rounded-md hover:bg-gray-800/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors group"
+                    >
+                      <div className="text-[11px] text-gray-200 truncate group-hover:text-white">{deriveSessionTitle(s.lastMessage)}</div>
+                      <div className="text-[10px] text-gray-500">{formatTime(s.timestamp)}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Auto-pick fallback: spawn the most-recent non-focused session */}
+            <button
+              onClick={() => onSpawn()}
+              disabled={spawnPending}
+              className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium transition-all ${
+                spawnPending
+                  ? 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                  : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 hover:border-amber-500/50'
+              }`}
+            >
+              {spawnPending ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Spawning...
+                </>
+              ) : (
+                <>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                  </svg>
+                  {eligibleSessions.length > 0 ? 'Spawn most recent' : 'Spawn second instance'}
+                </>
+              )}
+            </button>
+          </>
+        )}
       </div>
     </div>
   )
@@ -3982,14 +4028,19 @@ function VoiceRoomInner({
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent])
 
-  // Spawn a second Claude instance (background slot)
-  const handleSpawnInstance = useCallback(() => {
+  // Spawn a second Claude instance (background slot). With no args the agent auto-picks the
+  // most-recent non-focused session; passing sessionId (+ its cwd as workingDir) targets a
+  // specific one chosen from the picker — the session's cwd MUST be forwarded so --resume
+  // resolves the on-disk location.
+  const handleSpawnInstance = useCallback((sessionId?: string, workingDir?: string) => {
     if (spawnPending) return
     setSpawnPending(true)
     setSpawnError(null)
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({
       type: 'spawn_background_session',
+      ...(sessionId ? { sessionId } : {}),
+      ...(workingDir ? { workingDir } : {}),
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, spawnPending])
@@ -4780,9 +4831,11 @@ function VoiceRoomInner({
                     const next = !showInstancesPanel
                     setShowInstancesPanel(next)
                     if (next) {
-                      // Refresh slot list whenever the user opens the panel
+                      // Refresh slot list AND session list whenever the user opens the panel,
+                      // so the picker shows current, titled sessions.
                       const enc = new TextEncoder()
                       sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
+                      handleLoadSessions()
                     }
                   }}
                   disabled={!agentConnected}
@@ -4811,6 +4864,7 @@ function VoiceRoomInner({
                 {showInstancesPanel && (
                   <InstancesPanel
                     slots={slots}
+                    sessions={sessions}
                     currentSessionId={currentSessionId}
                     spawnPending={spawnPending}
                     spawnError={spawnError}
