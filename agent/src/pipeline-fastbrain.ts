@@ -192,46 +192,51 @@ async function executeTool(
 // ============================================================
 
 async function executeSearch(phrases: string[], sessionId: string, workingDir: string): Promise<string> {
-  const { ripgrepSearch } = await import('./jsonl-search.js')
-  const { getIndexPath, readFullContent } = await import('./summary-index.js')
-
-  const indexPath = getIndexPath(sessionId, workingDir)
-
-  if (indexPath) {
-    const sections: string[] = []
-    const matchedRefs: { lineNum: number; byteOffset: number; source: string }[] = []
-    const seenLines = new Set<string>()
-
-    for (const phrase of phrases.slice(0, 6)) {
-      const results = ripgrepSearch(indexPath, phrase, { maxResults: 8, fromEnd: true, contextLines: 0 })
-      const newResults = results.filter((r: any) => {
-        const key = `${r.lineNumber}`
-        if (seenLines.has(key)) return false
-        seenLines.add(key)
-        return true
-      })
-      if (newResults.length > 0) {
-        sections.push(`["${phrase}" — ${newResults.length} matches]`)
-        for (const r of newResults) {
-          const parts = (r.content as string).split('|')
-          if (parts.length >= 6) {
-            matchedRefs.push({ lineNum: parseInt(parts[0], 10), byteOffset: parseInt(parts[1], 10), source: parts[3] })
-            sections.push(r.content)
-          }
-        }
+  // DB-FIRST: query the recall store (full untruncated text + hybrid keyword+vector).
+  // Vector/hybrid is PREFERRED; recall() degrades to keyword INSIDE when the vec table is
+  // empty or no embedder is available. This replaces the old ripgrep-over-search-index.txt
+  // two-step (grep summary → read JSONL by offset) with one call that already returns full text.
+  const { storeExists, openStore, recall } = await import('./session-store.js')
+  const dbPath = storeExists(sessionId, workingDir)
+  if (dbPath) {
+    let embed: any = undefined
+    try {
+      if (process.env.OSBORN_EMBED !== '0') {
+        const { getEmbedder } = await import('./embedder.js')
+        // Tight timeout so a slow/cold embed never blows the fast-brain deadline → keyword.
+        embed = (await getEmbedder(2500)) ?? undefined
       }
+    } catch {}
+    // Best-effort: a recall/decompress throw must degrade to the ripgrep fallback below,
+    // never collapse the whole fast-brain turn (mirrors buildRecallInjection's swallow).
+    let dbResult: string | null = null
+    const db = openStore(dbPath, { readonly: true })
+    try {
+      const query = phrases.slice(0, 6).join(' ')
+      const hits = await recall(db, query, { mode: embed ? 'hybrid' : 'keyword', topK: 12, embed })
+      if (!hits.length) {
+        dbResult = `No matches for: ${phrases.join(', ')}`
+      } else {
+        const sections: string[] = []
+        for (const h of hits) {
+          const src = `${h.source} L${h.lineNum} · ${h.msgType}${h.toolName ? `:${h.toolName}` : ''} · ${h.matchedBy}`
+          let body = h.text.replace(/\n{3,}/g, '\n\n').trim()
+          if (body.length > 2000) body = body.slice(0, 2000) + ' …'
+          sections.push(`[${src}]${h.ts ? ' ' + h.ts : ''}\n${body}`)
+        }
+        dbResult = sections.join('\n\n')
+      }
+    } catch (err: any) {
+      console.warn('[fast-brain] recall DB search failed, falling back to raw JSONL:', err?.message || err)
+      // dbResult stays null → fall through to the ripgrep fallback below
+    } finally {
+      db.close()
     }
-
-    if (matchedRefs.length > 0) {
-      try {
-        const fullTexts = readFullContent(matchedRefs, sessionId, workingDir, undefined, 2000)
-        if (fullTexts.length > 0) sections.push('', `[FULL CONTENT — ${fullTexts.length} entries]`, ...fullTexts)
-      } catch {}
-    }
-
-    return sections.length === 0 ? `No matches for: ${phrases.join(', ')}` : sections.join('\n')
+    if (dbResult !== null) return dbResult
   }
 
+  // FALLBACK: store not built yet (brand-new session before the first sweep) → raw-JSONL ripgrep.
+  const { ripgrepSearch } = await import('./jsonl-search.js')
   const { getSessionPaths } = await import('./session-access.js')
   const paths = getSessionPaths(sessionId, workingDir)
   if (!paths.exists) return 'No session files found'
@@ -248,33 +253,28 @@ async function executeSearch(phrases: string[], sessionId: string, workingDir: s
 }
 
 async function getRecentEntries(sessionId: string, workingDir: string, _: string | undefined, count: number): Promise<string> {
-  const { readFileSync } = await import('fs')
-  const { getIndexPath, readFullContent } = await import('./summary-index.js')
-
-  const indexPath = getIndexPath(sessionId, workingDir)
-  if (!indexPath) return 'Index not built yet.'
-
-  const content = readFileSync(indexPath, 'utf-8')
-  const recentLines = content.split('\n').filter(Boolean).slice(-count)
-  const refs: { lineNum: number; byteOffset: number; source: string }[] = []
-  const summaries: string[] = [`[RECENT — last ${recentLines.length} entries]`]
-
-  for (const line of recentLines) {
-    summaries.push(line)
-    const parts = line.split('|')
-    if (parts.length >= 6) {
-      refs.push({ lineNum: parseInt(parts[0], 10), byteOffset: parseInt(parts[1], 10), source: parts[3] })
+  // Newest content rows straight from the recall DB (append-only, so highest id = latest).
+  const { storeExists, openStore, recentRows } = await import('./session-store.js')
+  const dbPath = storeExists(sessionId, workingDir)
+  if (!dbPath) return 'Index not built yet.'
+  const db = openStore(dbPath, { readonly: true })
+  try {
+    const rows = recentRows(db, count) // newest first
+    if (!rows.length) return 'No entries yet.'
+    const out: string[] = [`[RECENT — last ${rows.length} entries, newest first]`]
+    for (const h of rows) {
+      const src = `${h.source} L${h.lineNum} · ${h.msgType}${h.toolName ? `:${h.toolName}` : ''}`
+      let body = h.text.replace(/\n{3,}/g, '\n\n').trim()
+      if (body.length > 1500) body = body.slice(0, 1500) + ' …'
+      out.push(`[${src}]${h.ts ? ' ' + h.ts : ''}\n${body}`)
     }
+    return out.join('\n\n')
+  } catch (err: any) {
+    console.warn('[fast-brain] recent-entries read failed:', err?.message || err)
+    return 'Could not read recent entries.'
+  } finally {
+    db.close()
   }
-
-  if (refs.length > 0) {
-    try {
-      const fullTexts = readFullContent(refs, sessionId, workingDir, undefined, 1500)
-      if (fullTexts.length > 0) summaries.push('', `[FULL CONTENT — ${fullTexts.length} entries]`, ...fullTexts)
-    } catch {}
-  }
-
-  return summaries.join('\n')
 }
 
 // ============================================================
@@ -302,9 +302,11 @@ function buildSystemPrompt(chatHistory?: { role: string; content: string }[], re
     `or use vague references ("that thing", "the error"). Interpret intent, not just words.`,
     ``,
     `== RESULTS FORMAT ==`,
-    `Each line: lineNum|byteOffset|timestamp|source|msgType|summary`,
-    `  source: "main" = conversation, "agent-XXXX" = sub-agent research`,
-    `Full content sections have complete untruncated text.`,
+    `Each hit is a header line then its FULL untruncated text:`,
+    `  [<source> L<lineNum> · <msgType>[:<tool>] · <matchedBy>] <timestamp>`,
+    `  <full text of that message/tool result>`,
+    `  source: "main" = conversation, "agent-XXXX" = sub-agent research.`,
+    `  matchedBy: keyword | vector | both (how recall found it — vector/hybrid is preferred).`,
     ``,
     `== HOW TO SEARCH ==`,
     `Think about what words people ACTUALLY USED when this topic came up.`,

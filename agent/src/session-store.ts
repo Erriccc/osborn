@@ -661,3 +661,30 @@ export async function recall(
   }
   return hits
 }
+
+/**
+ * Return the most recent N content rows (highest id = latest, append-only order),
+ * newest first, as RecallHit-shaped objects. Powers fast-brain's "recent entries"
+ * path. Encapsulates decompress so callers never touch the blob/compression.
+ */
+export function recentRows(db: Database.Database, count: number): RecallHit[] {
+  const rows = db.prepare(
+    `SELECT id, source, line_num, byte_offset, ts, msg_type, model, git_branch, cwd, tool_name, blob
+     FROM content ORDER BY id DESC LIMIT ?`
+  ).all(Math.max(1, count)) as any[]
+  return rows.map((row) => ({
+    id: row.id,
+    source: row.source,
+    lineNum: row.line_num,
+    byteOffset: row.byte_offset,
+    ts: row.ts,
+    msgType: row.msg_type,
+    model: row.model,
+    gitBranch: row.git_branch,
+    cwd: row.cwd,
+    toolName: row.tool_name,
+    text: decompress(row.blob),
+    score: 0,
+    matchedBy: 'keyword' as const,
+  }))
+}
