@@ -964,6 +964,13 @@ export function decideWrite(
 //     when the keyed sub-agent's Task completes, so the main agent dispatches the
 //     next verifier(s) as real Tasks (verdicts return inline). Includes RUNNING the
 //     tester's tests against the finished code. Any agent not listed chains to nothing.
+// Prepended to a verifier-chain reminder pushed into the MAIN agent at SubagentStop. Keeps the
+// dispatch SILENT — the model should emit ONLY the Task tool call(s), no spoken/streamed text —
+// so the chain advances without a robotic "now running the review…" narration on the voice path.
+export const SILENT_VERIFY_PREFIX =
+  '[SYSTEM — SILENT CONTROL MESSAGE. Do NOT narrate, speak, or emit any assistant text this turn. ' +
+  'Silently perform the following via the Task tool only.] '
+
 export const VERIFIER_CHAIN: Record<string, { parallelAtStart?: string[]; afterReminder?: string }> = {
   writer: {
     parallelAtStart: ['tester'],
@@ -1576,6 +1583,18 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   /**
+   * Verifier-chain dedup: records that agent_id has triggered its chain dispatch and returns
+   * true only the FIRST time (so a double-fired SubagentStop can't double-dispatch). A NEW
+   * agent_id (e.g. a fresh writer spawned for a fix round) is not in the set → returns true,
+   * correctly allowing the re-verify loop. Cleared when the persistent session closes.
+   */
+  markChainDispatched(agentId: string): boolean {
+    if (!agentId || this.#dispatchedFor.has(agentId)) return false
+    this.#dispatchedFor.add(agentId)
+    return true
+  }
+
+  /**
    * Close the persistent session (kills subprocess).
    * Call on disconnect, session switch, or recovery.
    */
@@ -2128,23 +2147,12 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log('[LIFECYCLE-PROBE] PostToolUse on', toolName, 'agent_id=', agentId, 'ts=', Date.now())
               }
               this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: agentTypePost || 'main' })
-              // Pattern #1 verifier chaining: when the MAIN agent's Task sub-agent of a
-              // chained type finishes, inject a reminder so the main agent dispatches the
-              // next verifier(s) as real Task sub-agents (verdicts return inline). Gated to
-              // the main thread (agent_type absent) so verifiers never re-chain themselves.
-              if (!agentTypePost && (toolName === 'Task' || toolName === 'Agent')) {
-                const subType = String((toolInput as any)?.subagent_type || (toolInput as any)?.agent_type || '')
-                const link = subType ? VERIFIER_CHAIN[subType] : undefined
-                if (link?.afterReminder) {
-                  console.log(`[DISPATCH] Pattern#1 chain: ${subType} done → reminding main agent to verify`)
-                  return {
-                    hookSpecificOutput: {
-                      hookEventName: 'PostToolUse',
-                      additionalContext: link.afterReminder,
-                    },
-                  }
-                }
-              }
+              // Pattern #1 verifier chaining has MOVED to the SubagentStop hook below. Reason:
+              // sub-agents run with run_in_background:true, so PostToolUse-on-Task fires at
+              // DISPATCH (placeholder tool_response), not completion — injecting the "now verify"
+              // reminder here fired while the writer/researcher was still running (mistimed).
+              // SubagentStop is the true completion signal; it pushes the reminder into the main
+              // agent via pushMessage.
               return {}
             }]
           }],
@@ -2504,9 +2512,31 @@ class ClaudeLLMStream extends llm.LLMStream {
               const aid = input?.agent_id ?? ('sa-' + Date.now())
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
-              // Verifier chaining is Pattern #1 now: the PostToolUse-on-Task hook injects a
-              // reminder into the MAIN agent, which dispatches the reviewer/tester as real
-              // Task sub-agents (verdicts return inline). No out-of-band spawns from here.
+              // Pattern #1 verifier chaining — CORRECT timing (moved here from PostToolUse).
+              // SubagentStop fires at REAL completion. When a chained producer (writer/researcher)
+              // finishes, push its afterReminder into the MAIN agent's streaming input so the main
+              // agent dispatches the next verifier(s) as real Task sub-agents (verdicts return
+              // inline). Only writer/researcher are VERIFIER_CHAIN keys with afterReminder, so
+              // verifiers (reviewer/tester/reasoner) never re-chain. Dedup on agent_id guards a
+              // double-fired SubagentStop; a fresh fix-round writer has a NEW id → re-chains (the
+              // intended bounded loop). Guarded on a live session so we never cold-start a query
+              // just to deliver a reminder. Silent-dispatch prefix keeps it off the voice.
+              const chainLink = at ? VERIFIER_CHAIN[at] : undefined
+              // Dedup MUST key on the REAL agent_id, never the fabricated 'sa-<ts>' fallback used
+              // above for status/emit — a synthetic id is unique every call and would defeat the
+              // double-fire guard. If the SDK omits agent_id we can't dedup safely, so skip chaining.
+              if (chainLink?.afterReminder && input?.agent_id && this.#llmRef.hasSession() && this.#llmRef.markChainDispatched(input.agent_id)) {
+                console.log(`[DISPATCH] Pattern#1 chain (SubagentStop): ${at} done → pushing verify reminder to main agent`)
+                try {
+                  this.#llmRef.pushMessage(SILENT_VERIFY_PREFIX + chainLink.afterReminder, sdkOptions, {
+                    onSessionId: this.#onSessionId,
+                    onCheckpoint: this.#onCheckpoint,
+                    eventEmitter: this.#eventEmitter,
+                  })
+                } catch (e) {
+                  console.warn('Pattern#1 chain push failed:', e)
+                }
+              }
               return {}
             }]
           }],
