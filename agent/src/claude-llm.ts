@@ -50,7 +50,11 @@ const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS 
 async function buildRecallInjection(sessionId: string | null, workingDir: string | undefined, prompt: string): Promise<string> {
   try {
     if (!RECALL_ENABLED() || !sessionId || !workingDir) return ''
-    const q = String(prompt || '').trim()
+    // CAP the recall query length (defense-in-depth). A pasted or echoed giant prompt — e.g. a
+    // "liked" log step that serialized a 24KB command+output — would otherwise build a massive
+    // FTS MATCH and an oversized embed request on the hot UserPromptSubmit path and stall the
+    // turn. A real user utterance is short; 512 chars is ample to retrieve on.
+    const q = String(prompt || '').trim().slice(0, 512)
     if (q.length < 3) return ''
     if (!storeExists(sessionId, workingDir)) return ''
 

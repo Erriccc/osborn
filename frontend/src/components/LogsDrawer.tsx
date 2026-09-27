@@ -232,7 +232,12 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
     if (next) {
       setDisliked(false)
       if (onLike) {
-        const detail = meta.command || meta.filePath || meta.description || meta.pattern || meta.url || '(no further detail)'
+        // CAP the detail: a step whose command/output is huge (e.g. a `cat >> file` heredoc
+        // that embeds a whole report) would otherwise send tens of KB back as a user message,
+        // blowing the recall hot path and stalling the turn. A short reference is all the agent
+        // needs to know WHICH step was liked.
+        const rawDetail = meta.command || meta.filePath || meta.description || meta.pattern || meta.url || '(no further detail)'
+        const detail = rawDetail.length > 200 ? rawDetail.slice(0, 200) + ' …' : rawDetail
         const noteText = `[liked] The user liked this step: ${verb} ${displayName ?? '(unknown)'}. Details: ${detail}. Positive signal — keep doing this kind of thing.`
         onLike(noteText)
       }
