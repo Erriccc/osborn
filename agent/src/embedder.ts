@@ -29,7 +29,16 @@ const MODEL_ID = EMBED_MODEL
 const MAX_BATCH = 64 // inputs per request (OpenAI-compatible arrays)
 const REQUEST_TIMEOUT_MS = Number(process.env.OSBORN_EMBED_TIMEOUT_MS || 20_000)
 
-let disabled = false
+let lastEmbedWarn = 0
+/** Throttled failure log (max ~1/30s) so a bulk re-embed can't spam, but embedded=0 is
+ * never silent — every failure surfaces a reason (status/network) in the machine logs. */
+function embedWarn(msg: string): void {
+  const now = Date.now()
+  if (now - lastEmbedWarn > 30_000) {
+    lastEmbedWarn = now
+    console.warn(`[embedder] ${msg}`)
+  }
+}
 
 function apiKey(): string | undefined {
   return process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_WORKSPACE_API_KEY
@@ -76,22 +85,34 @@ async function embedBatch(inputs: string[], key: string): Promise<Int8Array[] | 
       }),
       signal: controller.signal,
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      embedWarn(`OpenRouter ${res.status} ${res.statusText}: ${body.slice(0, 200)}`)
+      return null
+    }
     const json: any = await res.json()
     const data = json?.data
-    if (!Array.isArray(data) || !data.length) return null
+    if (!Array.isArray(data) || !data.length) {
+      embedWarn('empty/invalid embeddings response')
+      return null
+    }
     // OpenAI-compatible: each entry carries its input `index`; align by it.
+    // Fall back to array order if `index` is absent so a missing field never voids the batch.
     const byIndex = new Array<Int8Array | null>(inputs.length).fill(null)
-    for (const d of data) {
-      const idx = typeof d?.index === 'number' ? d.index : -1
+    data.forEach((d: any, pos: number) => {
+      const idx = typeof d?.index === 'number' ? d.index : pos
       const emb = d?.embedding
       if (idx >= 0 && idx < inputs.length && Array.isArray(emb)) {
         byIndex[idx] = normalizeAndQuantize(emb as number[])
       }
+    })
+    if (byIndex.some((v) => v == null)) {
+      embedWarn('response missing/misaligned embeddings')
+      return null
     }
-    if (byIndex.some((v) => v == null)) return null // malformed / partial response
     return byIndex as Int8Array[]
-  } catch {
+  } catch (err: any) {
+    embedWarn(`request failed: ${err?.name || ''} ${err?.message || err}`)
     return null // network error, timeout/abort, bad JSON — degrade to keyword-only
   } finally {
     clearTimeout(timer)
@@ -103,10 +124,15 @@ async function embedBatch(inputs: string[], key: string): Promise<Int8Array[] | 
  * The returned function degrades to null on any per-call failure (keyword-only recall).
  */
 export async function getEmbedder(): Promise<Embedder | null> {
-  if (process.env.OSBORN_EMBED === '0' || disabled) return null
+  if (process.env.OSBORN_EMBED === '0') return null
+  // Re-read the key EVERY call and never latch off on a missing key: the platform
+  // OpenRouter key is hydrated into the env by the secrets layer, which can finish
+  // AFTER the first (boot-time) warm call. A permanent latch there disabled embedding
+  // for the whole session (embedded=0) even though fast-brain — which reads the key
+  // fresh per request — kept working. Re-reading recovers as soon as the key lands.
   const key = apiKey()
   if (!key) {
-    disabled = true // no key on this machine — don't retry every turn
+    embedWarn('no OPENROUTER_API_KEY in env yet — keyword-only for this call')
     return null
   }
 

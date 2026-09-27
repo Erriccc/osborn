@@ -306,12 +306,22 @@ function countLines(filePath: string, upToBytes: number): number {
 }
 
 /**
- * Max bytes ingested from a single JSONL per sweep. A very large session file
- * (100MB+) is drained gap-free across many turns instead of being read whole in
- * one synchronous pass — that whole-file read + insert transaction is what pegged
- * the single Node event loop and starved the SDK's time-boxed UserPromptSubmit hook.
+ * Max bytes ingested from a SINGLE JSONL per sweep. Kept small so each synchronous
+ * read+parse+gzip+FTS-insert block is short (~sub-300ms) and never stutters realtime
+ * voice (VAD) between event-loop yields.
  */
-const MAX_INGEST_BYTES = 4 * 1024 * 1024
+const MAX_INGEST_BYTES = 1 * 1024 * 1024
+/**
+ * Max bytes ingested across ALL sources in one turn. This is the cap that actually
+ * matters: a session can have HUNDREDS of subagent JSONL files, and on a store
+ * migration the offsets reset so every source re-ingests from 0 at once. The old
+ * code looped all sources inside ONE synchronous db.transaction — hundreds of MB of
+ * synchronous work that pegged the single Node thread for minutes and starved VAD,
+ * the SDK's UserPromptSubmit hook (30s timeout), and fast-brain. Bounding the total
+ * per turn (and yielding between sources) drains large sessions over many turns
+ * without ever monopolizing the loop.
+ */
+const MAX_INGEST_BYTES_PER_TURN = 4 * 1024 * 1024
 
 /**
  * Ingest new bytes from a single JSONL file into the store.
@@ -439,21 +449,39 @@ export async function updateSessionStore(
     )
 
     const freshRows: { id: number; text: string }[] = []
-    const txn = db.transaction(() => {
-      for (const s of sources) {
-        const prev = getSrc.get(s.source) as { byte_offset: number; line_count: number } | undefined
-        const fromOffset = prev?.byte_offset ?? 0
-        const res = ingestFile(db, s.path, s.source, fromOffset)
-        if (res.inserted.length || res.newOffset !== fromOffset) {
-          upSrc.run({
-            source: s.source, path: s.path, off: res.newOffset,
-            lines: (prev?.line_count ?? 0) + res.linesProcessed,
-          })
-        }
-        freshRows.push(...res.inserted)
+    let budget = MAX_INGEST_BYTES_PER_TURN
+    let sinceYield = 0
+    for (const s of sources) {
+      // Yield to the event loop periodically even across drained sources, so iterating
+      // a large source list (statSync + SELECT each) can't itself stall voice/hook.
+      if (++sinceYield >= 8) { sinceYield = 0; await new Promise<void>((r) => setImmediate(r)) }
+      if (budget <= 0) break // per-turn cap reached — remaining sources drain next turn
+
+      const prev = getSrc.get(s.source) as { byte_offset: number; line_count: number } | undefined
+      const fromOffset = prev?.byte_offset ?? 0
+      const cap = Math.min(budget, MAX_INGEST_BYTES)
+
+      let res: { inserted: { id: number; text: string }[]; newOffset: number; linesProcessed: number }
+      try {
+        // Per-source transaction (not one giant txn over all sources) so we can yield
+        // between them and never hold the thread for the whole fleet of subagent files.
+        res = db.transaction(() => ingestFile(db, s.path, s.source, fromOffset, cap))()
+      } catch {
+        continue // a bad source never blocks the rest
       }
-    })
-    txn()
+
+      if (res.inserted.length || res.newOffset !== fromOffset) {
+        upSrc.run({
+          source: s.source, path: s.path, off: res.newOffset,
+          lines: (prev?.line_count ?? 0) + res.linesProcessed,
+        })
+      }
+      const consumed = res.newOffset - fromOffset
+      budget -= consumed
+      freshRows.push(...res.inserted)
+      // Yield after any source that did real synchronous work.
+      if (consumed > 0) { sinceYield = 0; await new Promise<void>((r) => setImmediate(r)) }
+    }
 
     opts?.onProgress?.(`content: +${freshRows.length} rows across ${sources.length} sources`)
 
