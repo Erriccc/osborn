@@ -2921,6 +2921,13 @@ function VoiceRoomInner({
 
       if (data.type === 'agent_ready') {
         setAgentConnected(true)
+        // Clear any stale "running" sub-agent rows. agent_ready = a fresh/cold-started agent
+        // session: any flow still marked running here predates it and can NEVER receive its
+        // task_completed (its sub-agent was hard-killed on the restart/session-drop that never
+        // fired SubagentStop). Without this reset the "Running" panel accumulates orphaned rows
+        // forever (observed: 9 stuck "researcher · running"). Real in-flight agents re-announce
+        // via agent_started, so this only drops dead rows.
+        setBackgroundFlows([])
         onAgentReadyRef.current?.()
         // Store sessions from agent_ready if provided
         if (data.sessions && Array.isArray(data.sessions)) {
