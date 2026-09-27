@@ -13,7 +13,6 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getGroundingBlock, getRecalledContextBlock } from './prompts.js'
-import { getIndexPath } from './summary-index.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
@@ -374,7 +373,7 @@ export const NAMED_AGENTS = {
       'finding patterns, reading multiple files, searching for examples.',
       'Returns structured findings — does NOT make decisions or edit files.',
       'Use this for ANY task that needs more than 2 tool calls to gather information.',
-      'GROUNDED: reads the session search-index for prior findings before researching.',
+      'GROUNDED: reads the session recall store (osborn-recall) for prior findings before researching.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebSearch', 'WebFetch', 'Task'],
     grounded: true,  // applyGrounding() injects the osborn-recall command + ensures Bash
@@ -435,7 +434,7 @@ export const NAMED_AGENTS = {
       'Think hard about complex problems. Consider multiple approaches. Identify risks and edge cases.',
       '',
       '## Session context',
-      'The orchestrator provides, as an artifact in your brief, the PATH to the session index file (search-index.txt — the running index of this session/mission). You MUST actually READ it — do not rely on a summary or a preloaded window. Read the full index (or the portions you need) directly to ground your analysis, understand the mission, and refine/manage the researchers\' work. Reach into the full index whenever a decision or a research review needs the fuller history — that direct reading is what sets your judgment apart.',
+      'You are deliberately NOT grounded (no raw session recall) — that keeps your analysis fresh and unbiased. Work from the STRUCTURED SUMMARIES the orchestrator hands you in your brief; do not attempt to pull raw session history yourself. If you need more context, ask the orchestrator for a structured summary rather than raw dumps.',
       '',
       '## How to work',
       '1. Read and understand the full context before forming an opinion.',
@@ -477,7 +476,7 @@ export const NAMED_AGENTS = {
       'Handles ALL file operations: code, config, docs, scripts, data files.',
       'VERIFY-FIRST workflow: checks assumptions before making changes, runs tests after.',
       'If anything is unclear, asks the main agent for clarification before touching files.',
-      'GROUNDED: reads the session search-index before editing to avoid contradicting prior decisions.',
+      'GROUNDED: reads the session recall store (osborn-recall) before editing to avoid contradicting prior decisions.',
     ].join(' '),
     tools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Glob', 'Grep', 'NotebookRead', 'NotebookEdit'],
     grounded: true,  // applyGrounding() injects the osborn-recall command
@@ -628,7 +627,7 @@ export const NAMED_AGENTS = {
       'ordered sequence of atomic writer-safe steps. Returns a self-contained brief the writer',
       'can execute without further clarification. Slow but thorough — only use for genuinely',
       'complex multi-file changes or when the approach is uncertain.',
-      'GROUNDED: reads the session search-index before planning to respect prior decisions.',
+      'GROUNDED: reads the session recall store (osborn-recall) before planning to respect prior decisions.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'WebSearch'],
     grounded: true,  // applyGrounding() injects the osborn-recall command + adds Bash

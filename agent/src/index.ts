@@ -46,7 +46,6 @@ import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getD
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
-import { getIndexPath, buildSummaryIndex } from './summary-index.js'
 import { ensureClaudeAuth, applyAuthFallback } from './claude-auth.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
@@ -1843,49 +1842,32 @@ function startApiServer(workingDir: string, port: number): void {
  */
 
 /**
- * Pass the session index path to the voice agent's ChatContext.
+ * Note to the voice agent's ChatContext on resume that prior conversation
+ * history is searchable via the recall store.
  *
- * For active/previously-run sessions the index already exists — startIndexWatcher
- * keeps it current throughout the conversation. We just hand the agent the file
- * path so it can reference it if the user asks about prior work. No file read at
- * resume time.
- *
- * Only exception: first-ever resume of a session that was never indexed (e.g. a
- * session started before the index watcher was added). In that case we build once.
+ * Native --resume already replays the session into the SDK, so this is not a
+ * context-injection path — it just reminds the agent that the FULL prior history
+ * (this + previous sessions) is queryable through the `osborn-recall` command,
+ * which reads the per-session recall store (session.db). We no longer inject the
+ * old flat search-index.txt path or its `lineNum|…` line format (retired).
  */
 function injectSessionIndexIntoChatCtx(
   agent: voice.Agent | null,
   sessionId: string,
-  workingDir: string,
+  _workingDir: string,
 ) {
   if (!agent || !sessionId) return
 
   try {
-    let indexPath = getIndexPath(sessionId, workingDir)
-
-    if (!indexPath) {
-      // First-ever resume with no index — build once, then point at it
-      console.log(`🗂️ No index for ${sessionId.slice(0, 8)} — building (one-time)...`)
-      try {
-        const state = buildSummaryIndex(sessionId, workingDir)
-        indexPath = (state.indexPath && existsSync(state.indexPath) && statSync(state.indexPath).size > 0)
-          ? state.indexPath : null
-      } catch { return }
-    }
-
-    if (!indexPath) return
-
-    // Pass the path — don't read the file. Native --resume already loaded the session;
-    // this is just a reference the agent can use to search history if asked.
     const chatCtx = agent.chatCtx.copy()
     chatCtx.addMessage({
       role: 'user',
-      content: `[Session resume] Previous conversation history is indexed at: ${indexPath}\nFormat per line: lineNum|timestamp|source|msgType|summary`,
+      content: `[Session resume] Prior conversation history is searchable via the \`osborn-recall\` command (hybrid keyword + semantic recall over the session store). Use it if the user asks about earlier work.`,
     })
     agent.updateChatCtx(chatCtx)
-    console.log(`🗂️ Session index path injected: ${indexPath}`)
+    console.log(`🗂️ Session recall note injected for ${sessionId.slice(0, 8)}`)
   } catch (err) {
-    console.log('⚠️ Failed to inject session index path:', err)
+    console.log('⚠️ Failed to inject session recall note:', err)
   }
 }
 
@@ -2209,21 +2191,10 @@ async function main() {
     if (!currentLLM) return
     try {
       const llm = currentLLM as any
-      // Heap-OOM fix (2026-06-02): stop the PipelineDirectLLM summary-index
-      // watcher BEFORE we abort + drop the reference. The watcher is a 10s
-      // setInterval whose closure retains the entire PipelineDirectLLM →
-      // ClaudeLLM object graph. killCurrentLLM is the single chokepoint all
-      // three cleanup sites (Disconnected, previous-session-cleanup,
-      // ParticipantDisconnected) call, but it previously only aborted the
-      // SDK subprocess — leaving the interval (and the whole graph) alive and
-      // uncollectable on every disconnect/reconnect. A reconnect-heavy session
-      // (e.g. 15 reconnects from a frontend redeploy) leaked 15 timers + 15
-      // retained graphs, each re-reading JSONL every 10s, until the node heap
-      // OOM'd (~980MB) and the process crashed. Stopping the watcher here lets
-      // the abandoned graph be GC'd. Duck-typed: only PipelineDirectLLM has it.
-      if (typeof llm.stopIndexWatcher === 'function') {
-        llm.stopIndexWatcher()
-      }
+      // NOTE (fast-brain migration): the old summary-index 10s setInterval watcher
+      // was retired — fast-brain now reads the recall store (session.db) directly,
+      // so there is no per-LLM timer holding the PipelineDirectLLM → ClaudeLLM graph
+      // alive anymore. We only abort the SDK subprocess here.
       if (typeof llm.abortQuery === 'function') {
         llm.abortQuery()
       } else if (typeof llm.abortAgent === 'function') {
@@ -4654,11 +4625,6 @@ async function main() {
           try {
             // Reuse existing session ID so Claude SDK resumes where it left off
             const recoverySessionId = currentLLM?.sessionId || resumeSessionId
-
-            // Stop old index watcher if it exists
-            if (currentLLM && 'stopIndexWatcher' in currentLLM) {
-              (currentLLM as any).stopIndexWatcher()
-            }
 
             let result
             {

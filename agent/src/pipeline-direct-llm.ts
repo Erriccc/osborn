@@ -10,10 +10,9 @@
  */
 
 import { llm, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
-import { readFileSync } from 'fs'
 import { ClaudeLLM, type ClaudeLLMOptions } from './claude-llm.js'
 import { askPipelineFastBrain, type PipelineFastBrainResult } from './pipeline-fastbrain.js'
-import { buildSummaryIndex, startIndexWatcher, getIndexPath, type IndexWatcher } from './summary-index.js'
+import { storeExists, openStore, recentRows } from './session-store.js'
 import { EventEmitter } from 'events'
 
 // ============================================================
@@ -31,32 +30,31 @@ function buildSessionTail(sessionId: string | null, workingDir: string): string 
   const maxLines = parseInt(process.env.OSBORN_SESSION_TAIL_COUNT || '3000', 10)
 
   try {
-    const indexPath = getIndexPath(sessionId, workingDir)
-    if (!indexPath) return ''
+    const dbPath = storeExists(sessionId, workingDir)
+    if (!dbPath) return '' // no store → prior empty-index behavior
 
-    const raw = readFileSync(indexPath, 'utf-8')
-    const allLines = raw.split('\n').filter(Boolean)
+    const db = openStore(dbPath, { readonly: true })
+    try {
+      // Pull the most recent user+assistant rows (filtered in SQL, so we only
+      // decompress rows we keep), newest-first, then reverse to chronological.
+      const rows = recentRows(db, maxLines, ['user', 'assistant'])
+      const convLines: string[] = []
+      for (const row of rows) {
+        if (row.msgType !== 'user' && row.msgType !== 'assistant') continue
+        const timestamp = (row.ts || '').substring(0, 19)
+        const speaker = row.msgType === 'user' ? 'User' : 'Assistant'
+        const summary = row.text.replace(/[\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 150)
+        convLines.push(`${timestamp}  ${speaker}: ${summary}`)
+      }
+      // recentRows is newest-first — reverse to chronological, then keep the tail.
+      convLines.reverse()
+      const kept = convLines.slice(-maxLines)
+      if (kept.length === 0) return ''
 
-    // Read a larger raw window (4× target) then keep the last maxLines user+assistant entries
-    const rawWindow = allLines.slice(-maxLines * 4)
-
-    const convLines: string[] = []
-    for (const line of rawWindow) {
-      const parts = line.split('|')
-      // format: lineNum|byteOffset|timestamp|source|msgType|summary
-      if (parts.length < 6) continue
-      const msgType = parts[4]
-      if (msgType !== 'user' && msgType !== 'assistant') continue
-      const timestamp = parts[2]
-      const speaker = msgType === 'user' ? 'User' : 'Assistant'
-      const summary = parts.slice(5).join('|').substring(0, 150)
-      convLines.push(`${timestamp}  ${speaker}: ${summary}`)
+      return ['<session_tail>', ...kept, '</session_tail>'].join('\n')
+    } finally {
+      db.close()
     }
-
-    const kept = convLines.slice(-maxLines)
-    if (kept.length === 0) return ''
-
-    return ['<session_tail>', ...kept, '</session_tail>'].join('\n')
   } catch {
     return ''
   }
@@ -97,8 +95,6 @@ export class PipelineDirectLLM extends llm.LLM {
   #claudeLLM: ClaudeLLM
   #opts: PipelineDirectOptions
   #turnAbort: AbortController | null = null
-  #indexWatcher: IndexWatcher | null = null
-  #indexBuilding = false
   // Set to true when PostCompact fires — cleared after injecting the tail once
   // on the next real user turn (seam-only injection, never per-turn).
   #postCompactionTailPending = false
@@ -126,14 +122,6 @@ export class PipelineDirectLLM extends llm.LLM {
     this.#opts = chainedOpts
   }
 
-  /** Stop the index watcher (call on disconnect/session switch) */
-  stopIndexWatcher() {
-    if (this.#indexWatcher) {
-      this.#indexWatcher.stop()
-      this.#indexWatcher = null
-    }
-  }
-
   // Proxy all properties
   get events(): EventEmitter { return this.#claudeLLM.events }
   get sessionId(): string | null { return this.#claudeLLM.sessionId }
@@ -145,8 +133,6 @@ export class PipelineDirectLLM extends llm.LLM {
   setResumeSessionId(id: string | null) { this.#claudeLLM.setResumeSessionId(id) }
   setContinueSession(e: boolean) { this.#claudeLLM.setContinueSession(e) }
   resetForSessionSwitch() {
-    this.stopIndexWatcher()
-    this.#indexBuilding = false
     this.#claudeLLM.resetForSessionSwitch()
   }
   respondToPermission(allow: boolean, msg?: string) { this.#claudeLLM.respondToPermission(allow, msg) }
@@ -387,21 +373,6 @@ export class PipelineDirectLLM extends llm.LLM {
     }
     const workingDir = this.#opts.workingDirectory || process.cwd()
     const sessionBaseDir = this.#opts.sessionBaseDir || workingDir
-
-    // Build summary index on first question (async, non-blocking for subsequent questions)
-    if (!this.#indexWatcher && !this.#indexBuilding && sessionId !== 'pending') {
-      this.#indexBuilding = true
-      try {
-        const startBuild = Date.now()
-        const state = buildSummaryIndex(sessionId, workingDir, undefined,
-          (msg) => console.log(`🔍 [index] ${msg}`))
-        this.#indexWatcher = startIndexWatcher(sessionId, workingDir, undefined, state)
-        console.log(`🔍 [index] Built + watching in ${Date.now() - startBuild}ms`)
-      } catch (err: any) {
-        console.error('🔍 [index] Build failed:', err?.message)
-      }
-      this.#indexBuilding = false
-    }
 
     // NOTE: the embedded session.db write-through was CONSOLIDATED into the main agent's
     // UserPromptSubmit hook (claude-llm.ts) — one canonical trigger per real user submission,
