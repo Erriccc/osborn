@@ -612,10 +612,19 @@ export async function recall(
     const qvecs = await opts!.embed!([query])
     const qv = qvecs?.[0]
     if (qv) {
-      const rows = db.prepare(
-        'SELECT rowid AS id FROM vec WHERE embedding MATCH vec_int8(?) ORDER BY distance LIMIT ?'
-      ).all(Buffer.from(qv.buffer, qv.byteOffset, qv.byteLength), pool) as { id: number }[]
-      rows.forEach((r, i) => vec.set(r.id, i))
+      try {
+        // sqlite-vec KNN REQUIRES an explicit `k = ?` bound; relying on LIMIT alone can
+        // degrade to a brute-force full scan over every int8[EMBED_DIM] row — a multi-second
+        // synchronous stall on a large session. `k = pool` caps the KNN search itself.
+        // Wrapped like the keyword leg: a vec0 version/index mismatch degrades to
+        // keyword-only rather than throwing out of recall() for callers without an outer guard.
+        const rows = db.prepare(
+          'SELECT rowid AS id FROM vec WHERE embedding MATCH vec_int8(?) AND k = ? ORDER BY distance'
+        ).all(Buffer.from(qv.buffer, qv.byteOffset, qv.byteLength), pool) as { id: number }[]
+        rows.forEach((r, i) => vec.set(r.id, i))
+      } catch {
+        // vec query failed (stale index / dim mismatch) — ignore vector leg, keep keyword
+      }
     }
   }
 

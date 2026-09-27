@@ -1946,7 +1946,7 @@ function InstancesPanel({
   }
 
   return (
-    <div className="absolute top-12 left-0 w-72 max-w-[calc(100vw-1rem)] bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
+    <div className="absolute top-12 right-0 w-72 max-w-[calc(100vw-1rem)] bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
         <span className="text-xs font-semibold text-gray-300">Claude Instances</span>
@@ -3566,11 +3566,25 @@ function VoiceRoomInner({
           sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
         }
       } else if (data.type === 'background_session_error') {
-        // Spawn failed (e.g. cap reached)
-        console.warn('[slots] background_session_error slotId=', data.slotId, 'error=', data.error)
-        setSpawnPending(false)
-        setSpawnError(typeof data.error === 'string' ? data.error : 'Failed to spawn instance')
+        // A background session reported an error. Only surface it as a SPAWN error if a
+        // spawn is actually pending — a consumer crash on an ALREADY-ready slot (fires the
+        // same event) would otherwise show a misleading "Failed to spawn" banner for an
+        // instance that came up fine minutes ago. Post-ready failures just refresh the list
+        // (the dead slot drops off) and are logged.
+        console.warn('[slots] background_session_error slotId=', data.slotId, 'error=', data.error, 'spawnPending=', spawnPending)
+        setSpawnPending((pending) => {
+          if (pending) setSpawnError(typeof data.error === 'string' ? data.error : 'Failed to spawn instance')
+          return false
+        })
         // Refresh anyway to show accurate state
+        {
+          const enc = new TextEncoder()
+          sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
+        }
+      } else if (data.type === 'background_session_spawned') {
+        // Early ack: the slot was registered and its subprocess is cold-starting.
+        // Readiness still waits for background_session_ready; just refresh the list.
+        console.log('[slots] background_session_spawned slotId=', data.slotId)
         {
           const enc = new TextEncoder()
           sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
@@ -3979,6 +3993,19 @@ function VoiceRoomInner({
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, spawnPending])
+
+  // Safety net: if a spawn never reports ready/error (e.g. the background cold-start
+  // stalls before system/init under event-loop pressure), clear the stuck "Spawning…"
+  // after a bounded wait so the panel doesn't hang forever. background_session_ready /
+  // background_session_error flip spawnPending=false first, tearing this timer down.
+  useEffect(() => {
+    if (!spawnPending) return
+    const t = setTimeout(() => {
+      setSpawnPending(false)
+      setSpawnError('Spawn timed out — the instance didn’t come online. Try again.')
+    }, 45000)
+    return () => clearTimeout(t)
+  }, [spawnPending])
 
   // Dispatch an instruction to a background session (Pattern #2 P1 — tag & continue).
   // Fire-and-forget: the agent acks with background_dispatched, then later

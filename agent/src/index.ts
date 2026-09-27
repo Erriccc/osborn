@@ -2299,6 +2299,12 @@ async function main() {
       console.error(`❌ Background slot ${slotId.substring(0, 8)}: resume failed — requested ${requestedSessionId?.substring(0, 8)} got ${actualSessionId?.substring(0, 8)}`)
       sendToFrontend({ type: 'background_session_error', slotId, error: 'Session resume failed' }).catch(() => {})
     })
+    // Cold-start crash in the background consumer (claude-llm #startBackgroundConsumer
+    // catch): surface it so the frontend's "Spawning…" clears instead of hanging forever.
+    bgEmitter.on('consumer_error', ({ message }: any) => {
+      console.error(`❌ Background slot ${slotId.substring(0, 8)}: consumer error — ${message}`)
+      sendToFrontend({ type: 'background_session_error', slotId, error: String(message || 'Background session failed to start') }).catch(() => {})
+    })
     // P1: a real dispatch finished — notify the frontend. The [BACKGROUND_INIT]
     // ack also fires assistant_result, so gate on dispatchInFlight to skip it.
     bgEmitter.on('assistant_result', ({ text }: { text: string }) => {

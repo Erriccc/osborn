@@ -61,7 +61,13 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     const embed = process.env.OSBORN_EMBED !== '0' ? (await getEmbedder(QUERY_EMBED_TIMEOUT_MS)) ?? undefined : undefined
 
     const { getStorePath } = await import('./session-store.js')
-    const db = openStore(getStorePath(sessionId, workingDir))
+    // READ-ONLY open (regression fix): the writable branch runs synchronous
+    // migration/DDL + meta writes every turn AND lock-contends with the concurrent
+    // ingest writer (triggerStoreUpdate) — under WAL those serialize, stacking the
+    // 5s busy_timeout per statement and blowing the UserPromptSubmit hook past 30s.
+    // A readonly connection takes only SHARED locks and never blocks. storeExists()
+    // above guarantees the DB is present, so readonly can't fail on a missing file.
+    const db = openStore(getStorePath(sessionId, workingDir), { readonly: true })
     let hits: RecallHit[]
     try {
       hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed })
@@ -1741,6 +1747,11 @@ export class ClaudeLLM extends llm.LLM {
       } else {
         console.error('❌ Persistent session error:', error)
         callbacks.eventEmitter.emit('tts_say', { text: 'Sorry, I encountered an error.' })
+        // Surface the failure to any listener (background slots wire this to a
+        // background_session_error → frontend). Without it a cold-start crash here
+        // is swallowed and the "Spawning…" UI hangs forever. Harmless for the main
+        // agent (no consumer_error listener; it already spoke the error above).
+        callbacks.eventEmitter.emit('consumer_error', { message: String(error?.message || error) })
       }
     } finally {
       this.#backgroundConsumerRunning = false
