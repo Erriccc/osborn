@@ -942,9 +942,12 @@ export const VERIFIER_CHAIN: Record<string, { parallelAtStart?: string[]; afterR
   },
   researcher: {
     afterReminder:
-      'The researcher sub-agent just finished. Before you finalize, use the Task tool to dispatch the ' +
-      '`reasoner` gate to judge whether the research is complete and well-sourced for the original ' +
-      'question. If it returns NEEDS-MORE, send the researcher back — at most 2 rounds, then surface.',
+      'The researcher sub-agent just finished. Before you finalize, you MUST now use the Task tool to ' +
+      'dispatch the `reasoner` GATE to judge whether the research is complete and well-sourced for the ' +
+      'original question — it returns GATE: PASS or GATE: NEEDS-MORE. ' +
+      'If it returns NEEDS-MORE, dispatch the `researcher` again with the gaps it named and then re-gate — ' +
+      'at most 2 rounds, after which surface the outcome to the user rather than looping. ' +
+      "This is the research analogue of writer→reviewer: don't rely on the findings until an independent agent has vetted them.",
   },
 }
 
