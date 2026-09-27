@@ -147,10 +147,17 @@ function extractSpeedMarker(text: string): { text: string; speed?: number } {
 
 function stripMarkdownForTTS(text: string): string {
   return text
-    // Remove code blocks (``` ... ```)
+    // Remove PAIRED code blocks (``` ... ```)
     .replace(/```[\s\S]*?```/g, ' [code block] ')
+    // Remove an UNCLOSED/partial fence to end-of-string. Assistant text streams as multiple
+    // blocks per turn and each block is stripped in isolation, so a fence that opens in one
+    // block (or is never closed) would otherwise leak raw code + literal backticks to TTS.
+    .replace(/```[\s\S]*$/g, ' [code block] ')
     // Remove inline code (` ... `)
     .replace(/`([^`]+)`/g, '$1')
+    // Sweep any remaining stray backtick runs (unbalanced ticks from split chunks) so they're
+    // never spoken aloud.
+    .replace(/`+/g, ' ')
     // Remove bold (**text** or __text__)
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/__([^_]+)__/g, '$1')

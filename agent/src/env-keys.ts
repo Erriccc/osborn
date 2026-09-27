@@ -45,6 +45,7 @@ export const AGENT_ENV_KEYS: AgentEnvKey[] = [
   { key: 'OSBORN_CWD', required: false, explicit: true, description: 'Agent working directory.' },
   { key: 'OSBORN_SYNC_TOKEN', required: false, explicit: true, description: 'Session export/import auth token.' },
   { key: 'OSBORN_FRONTEND_URL', required: false, explicit: true, description: 'Frontend base URL for artifact upload.' },
+  { key: 'OSBORN_HOUSEKEEPING_DRYRUN', required: false, explicit: true, description: 'Set "0" to enable live housekeeping deletion; any other value / unset = dry-run (log only).' },
   { key: 'DEV_DOMAIN', required: false, explicit: true, description: 'Wildcard dev-routing domain.' },
 ]
 
