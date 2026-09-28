@@ -2335,6 +2335,16 @@ async function main() {
       if (v !== undefined) bgEnv[k] = v
     }
     bgEnv['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
+    // Claude Code refuses bypassPermissions / --dangerously-skip-permissions when the
+    // process runs as root — and every Fly machine runs Osborn as root, so without this
+    // EVERY headless background spawn dies on launch. IS_SANDBOX=1 is Claude Code's
+    // sanctioned "this is an isolated container, root is acceptable" signal — accurate
+    // for a per-user Fly VM. Set on the CHILD's env copy ONLY (bgEnv); the main voice
+    // agent's process.env is never touched. Panel-spawned instances are user-initiated
+    // and intentionally run on the machine's Claude subscription (Tier 1), same as the
+    // foreground session — the "never use the subscription" rule is reserved for the
+    // future autonomous cron/event background primitive, not these.
+    bgEnv['IS_SANDBOX'] = '1'
 
     const bgSdkOptions = {
       cwd: slotWorkingDir,
@@ -5911,6 +5921,16 @@ async function main() {
             type: 'background_session_error',
             slotId: resolvedSessionId,
             error: `Session ${resolvedSessionId.substring(0, 8)} is already running as a background slot`,
+          })
+        } else if (resolvedSessionId === (currentLLM?.sessionId || currentResumeSessionId)) {
+          // Never background the session that's LIVE in the foreground. Pre-IS_SANDBOX this
+          // failed harmlessly on the root check; post-fix it would SUCCEED, putting two
+          // Claude processes appending to the same session JSONL concurrently → transcript
+          // corruption. Refuse it explicitly.
+          await sendToFrontend({
+            type: 'background_session_error',
+            slotId: resolvedSessionId,
+            error: `Session ${resolvedSessionId.substring(0, 8)} is the active foreground session — pick a different session to background`,
           })
         } else {
           spawnBackgroundSession(resolvedSessionId, bgDir).catch((err) => {
