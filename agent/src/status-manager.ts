@@ -231,6 +231,28 @@ export class StatusManager {
   }
 
   /**
+   * Dispatcher reconciliation — the agent_ids of dispatches that are still LIVE
+   * (a real sub-agent dispatch, i.e. has a subagentType, whose dispatchState has
+   * not reached a terminal 'completed'/'failed'/'rejected'). The frontend
+   * cross-checks its "running" background-flow rows against this authoritative
+   * set on each process_list poll and clears any row NOT present — self-healing
+   * the orphaned "running" cards left when a task_completed / agent_stopped event
+   * was lost to a disconnect. Because this manager is a per-process singleton, an
+   * agent restart (the common session-drop case) resets it to empty, so every
+   * stale row from the dead process is reconciled away on the next poll.
+   */
+  getActiveDispatchIds(): string[] {
+    return Array.from(this.tasks.values())
+      .filter(t =>
+        !!t.subagentType &&
+        t.dispatchState !== 'completed' &&
+        t.dispatchState !== 'failed' &&
+        t.dispatchState !== 'rejected'
+      )
+      .map(t => t.id)
+  }
+
+  /**
    * Dispatcher v1 — create or update a dispatch entry keyed by tool_use_id.
    * Creates a minimal TaskStatus shell if the id doesn't yet exist so callers
    * can upsert without a prior registerTask() call.

@@ -2342,6 +2342,7 @@ function VoiceRoomInner({
     agentType: string
     status: string
     artifact?: string
+    startedAt?: number  // client ts when the row was created — grace window for reconcile
   }>>([])
   // Meeting state (Recall.ai)
   const [showMeetingInput, setShowMeetingInput] = useState(false)
@@ -3064,7 +3065,7 @@ function VoiceRoomInner({
           setBackgroundFlows(prev => {
             // Avoid duplicates if event fires twice
             if (prev.some(f => f.agentId === data.agent_id)) return prev
-            return [...prev, { agentId: data.agent_id, agentType: data.agent_type ?? 'agent', status: 'running' }]
+            return [...prev, { agentId: data.agent_id, agentType: data.agent_type ?? 'agent', status: 'running', startedAt: Date.now() }]
           })
         }
       } else if (data.type === 'agent_stopped' && data.agent_id) {
@@ -3653,6 +3654,28 @@ function VoiceRoomInner({
         // Agent replied to list_processes — update Machine tab state
         if (Array.isArray(data.processes) && data.memory) {
           setMachineData({ processes: data.processes, totalCount: typeof data.totalCount === 'number' ? data.totalCount : data.processes.length, memory: data.memory })
+        }
+        // Reconcile stuck "running" rows against the agent's authoritative live set.
+        // Self-heals orphans whose task_completed/agent_stopped was lost to a
+        // disconnect, and rows belonging to a since-restarted agent process (its
+        // activeDispatchIds is empty, so every stale row is swept). Guarded on the
+        // field being present (older agents don't send it → skip, never mass-wipe).
+        // 10s grace so a just-dispatched row isn't wiped by an in-flight poll that
+        // predates its SubagentStart.
+        if (Array.isArray(data.activeDispatchIds)) {
+          const live = new Set<string>(data.activeDispatchIds)
+          const cutoff = Date.now() - 10_000
+          setBackgroundFlows(prev => {
+            const next = prev.filter(f =>
+              f.status !== 'running' ||           // keep completed/other rows untouched
+              live.has(f.agentId) ||              // still genuinely running
+              (f.startedAt ?? 0) > cutoff         // too fresh to judge — grace window
+            )
+            if (next.length !== prev.length) {
+              console.log(`🧹 Reconciled ${prev.length - next.length} orphaned "running" row(s) against live dispatch set`)
+            }
+            return next
+          })
         }
       } else {
         console.log('❓ Unknown message type:', data.type)
@@ -5111,6 +5134,10 @@ function VoiceRoomInner({
           onStopDispatch={(agentId) => {
             const enc = new TextEncoder()
             sendToAgent(enc.encode(JSON.stringify({ type: 'stop_dispatch', agentId })), { reliable: true })
+            // Optimistically clear the row locally. A dead/orphaned task can't be
+            // stopped agent-side (it no longer exists) so agent_stopped may never
+            // come back — the user must always be able to dismiss a stuck row.
+            setBackgroundFlows(prev => prev.filter(f => f.agentId !== agentId))
           }}
           machineData={machineData}
           agentMemory={agentMemory}

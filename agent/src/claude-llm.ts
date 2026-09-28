@@ -2500,6 +2500,13 @@ class ClaudeLLMStream extends llm.LLMStream {
             hooks: [async (input: any) => {
               console.log('[LIFECYCLE-PROBE] SubagentStart', JSON.stringify(input))
               this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id })
+              // Record the dispatch as LIVE so the frontend can reconcile orphaned
+              // "running" rows against statusManager.getActiveDispatchIds(). Without a
+              // start-time entry the manager only knew about dispatches at completion,
+              // so a reconcile had no authoritative live set to diff against.
+              if (input?.agent_id) {
+                try { statusManager.upsertDispatch(input.agent_id, { subagentType: input?.agent_type, dispatchState: 'running' }) } catch {}
+              }
               return {}
             }]
           }],

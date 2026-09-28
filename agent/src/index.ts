@@ -48,6 +48,7 @@ import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth } from './claude-auth.js'
+import { statusManager } from './status-manager.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -6005,6 +6006,12 @@ async function main() {
             processes: topProcesses,
             totalCount,
             memory: { usedMb, totalMb, freeMb },
+            // Authoritative set of still-live sub-agent dispatches. The frontend
+            // reconciles its "running" background-flow rows against this and clears
+            // any orphan whose completion/stop event was lost (or belonged to a
+            // now-dead agent process — this list is per-process, so it's empty
+            // after a restart and every stale row gets swept on the next poll).
+            activeDispatchIds: statusManager.getActiveDispatchIds(),
           })
         } catch (err) {
           console.error('❌ list_processes: failed to read /proc:', err)
