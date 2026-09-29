@@ -18,7 +18,7 @@ import { getEmbedder } from './embedder.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
+import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -1048,6 +1048,29 @@ class MessageChannel<T> {
  * Claude LLM - Wraps Claude Agent SDK for LiveKit
  * Research mode: reads anything, writes only to session workspace
  */
+/**
+ * Lightweight machine-load nudge for the MAIN agent's UserPromptSubmit context.
+ * Pure in-memory/synchronous reads (os load average + memory + live sub-agent
+ * dispatch count) — NO embedder, DB, or network — so it stays reliable even when
+ * the box is starving, which is exactly when it matters. ADVISORY ONLY: it never
+ * refuses, caps, or blocks a dispatch — the agent reads it and decides. Returns
+ * '' on any error so it can never break the turn.
+ */
+function buildMachineNudge(): string {
+  try {
+    const ncpu = Math.max(1, cpus().length)
+    const cpuPct = Math.round((loadavg()[0] / ncpu) * 100)   // 1-min load ÷ cores
+    const memPct = Math.round((1 - freemem() / totalmem()) * 100)
+    const subagents = statusManager.getActiveDispatchIds().length
+    const hot = cpuPct >= 80 || subagents >= 4
+    const head = `[MACHINE${hot ? ' ⚠️' : ''}] CPU ~${cpuPct}% · MEM ${memPct}% · sub-agents ${subagents}`
+    if (!hot) return head
+    return `${head} — load is high; prefer finishing in-flight work over spawning new sub-agents this turn, and stop any that look stuck. (advisory only — not enforced)`
+  } catch {
+    return ''
+  }
+}
+
 export class ClaudeLLM extends llm.LLM {
   #opts: ClaudeLLMOptions
   #sessionId: string | null = null
@@ -2207,8 +2230,12 @@ class ClaudeLLMStream extends llm.LLMStream {
                       buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || '')),
                       new Promise<string>((res) => setTimeout(() => res(''), 6000)),
                     ])
-                const additionalContext = recalled ? `${reminder}\n\n${recalled}` : reminder
-                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''} for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
+                // Lightweight machine-load nudge (main agent only). Cheap synchronous
+                // snapshot, prepended so it's present even when recall degrades under load.
+                // Advisory only — never caps/refuses a dispatch.
+                const machineNudge = fromSubagent ? '' : buildMachineNudge()
+                const additionalContext = [machineNudge, reminder, recalled].filter(Boolean).join('\n\n')
+                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
                 return {
                   hookSpecificOutput: {
                     hookEventName: 'UserPromptSubmit',
