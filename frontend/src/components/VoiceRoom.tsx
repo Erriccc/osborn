@@ -2342,6 +2342,7 @@ function VoiceRoomInner({
     agentType: string
     status: string
     artifact?: string
+    task?: string       // the instruction the sub-agent was dispatched with (shown while running)
     startedAt?: number  // client ts when the row was created — grace window for reconcile
   }>>([])
   // Meeting state (Recall.ai)
@@ -3065,7 +3066,8 @@ function VoiceRoomInner({
           setBackgroundFlows(prev => {
             // Avoid duplicates if event fires twice
             if (prev.some(f => f.agentId === data.agent_id)) return prev
-            return [...prev, { agentId: data.agent_id, agentType: data.agent_type ?? 'agent', status: 'running', startedAt: Date.now() }]
+            const task = typeof data.task === 'string' && data.task.trim() ? data.task.trim() : undefined
+            return [...prev, { agentId: data.agent_id, agentType: data.agent_type ?? 'agent', status: 'running', task, startedAt: Date.now() }]
           })
         }
       } else if (data.type === 'agent_stopped' && data.agent_id) {

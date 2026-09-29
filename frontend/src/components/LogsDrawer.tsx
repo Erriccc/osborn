@@ -85,6 +85,7 @@ interface BackgroundFlow {
   agentType: string
   status: string
   artifact?: string
+  task?: string   // the instruction/prompt the sub-agent was dispatched with (shown while running)
 }
 
 export interface ProcessInfo {
@@ -578,11 +579,18 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           </svg>
           <span>Activity log</span>
         </div>
-        {unreadCount > 0 && !isOpen && (
-          <span className="bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full text-[10px]">
-            {unreadCount}
-          </span>
-        )}
+        {/* Right cluster: live machine usage (always visible — no need to open the
+            Machine tab first) + unread-log badge. */}
+        <div className="flex items-center gap-2">
+          {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
+            <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
+          )}
+          {unreadCount > 0 && !isOpen && (
+            <span className="bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full text-[10px]">
+              {unreadCount}
+            </span>
+          )}
+        </div>
       </button>
 
       {/* Collapsible panel with two tabs: Log and Running */}
@@ -642,9 +650,6 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                   }`}
                 >
                   Machine
-                  {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
-                    <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
-                  )}
                 </button>
               </div>
             )
@@ -737,15 +742,15 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                         {isRunning ? 'running' : 'done'}
                       </span>
 
-                      {/* Truncated artifact — first ~60 chars */}
-                      {flow.artifact && (
-                        <span className="min-w-0 truncate text-[11px] text-gray-400 flex-1" title={flow.artifact}>
-                          {flow.artifact}
+                      {/* While running: the task the sub-agent was dispatched with.
+                          When done: a snippet of its last message (artifact). */}
+                      {(flow.artifact || flow.task) ? (
+                        <span className="min-w-0 truncate text-[11px] text-gray-400 flex-1" title={flow.artifact || flow.task}>
+                          {isRunning && flow.task ? <span className="text-gray-500 italic">{flow.task}</span> : (flow.artifact || flow.task)}
                         </span>
+                      ) : (
+                        <span className="flex-1" />
                       )}
-
-                      {/* Spacer when no artifact */}
-                      {!flow.artifact && <span className="flex-1" />}
 
                       {/* Stop button — only when running */}
                       {isRunning && (

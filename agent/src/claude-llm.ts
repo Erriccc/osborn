@@ -1946,6 +1946,10 @@ class ClaudeLLMStream extends llm.LLMStream {
   #abortController?: AbortController
   #llmRef: ClaudeLLM
   #approvedWriterToolUseIds = new Set<string>()
+  // Last Task/Agent dispatch description per subagent_type, captured at PreToolUse so
+  // SubagentStart can label the Running row with WHAT the sub-agent is doing even if the
+  // SDK hook input omits the prompt. Cleared when consumed by the matching start.
+  #pendingTaskByType = new Map<string, string>()
 
   constructor(
     llmInstance: ClaudeLLM,
@@ -2197,6 +2201,13 @@ class ClaudeLLMStream extends llm.LLMStream {
               }
 
               console.log(`🔧 Claude: ${toolName}`)
+              // Capture the dispatch description/prompt per subagent_type so SubagentStart
+              // can show WHAT a sub-agent is working on (see #pendingTaskByType).
+              if (toolName === 'Task' || toolName === 'Agent') {
+                const st = String((toolInput as any)?.subagent_type || (toolInput as any)?.agent_type || '')
+                const d = String((toolInput as any)?.description || (toolInput as any)?.prompt || '')
+                if (st && d) this.#pendingTaskByType.set(st, d)
+              }
               this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
               return {}
             }]
@@ -2570,7 +2581,15 @@ class ClaudeLLMStream extends llm.LLMStream {
             matcher: '.*',
             hooks: [async (input: any) => {
               console.log('[LIFECYCLE-PROBE] SubagentStart', JSON.stringify(input))
-              this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id })
+              // Surface WHAT the sub-agent was dispatched to do (not just its type) so the
+              // Running panel shows the task while it's in flight, before any result lands.
+              // The SDK hook may carry the initial prompt/description; fall back to the last
+              // Task/Agent dispatch of this type captured at PreToolUse. Best-effort.
+              const at0 = input?.agent_type
+              const rawTask = input?.prompt ?? input?.description ?? (at0 ? this.#pendingTaskByType.get(String(at0)) : undefined)
+              if (at0) this.#pendingTaskByType.delete(String(at0))
+              const task = rawTask ? String(rawTask).replace(/\s+/g, ' ').trim().slice(0, 160) : undefined
+              this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id, task })
               // Record the dispatch as LIVE so the frontend can reconcile orphaned
               // "running" rows against statusManager.getActiveDispatchIds(). Without a
               // start-time entry the manager only knew about dispatches at completion,
