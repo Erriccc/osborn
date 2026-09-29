@@ -1062,10 +1062,18 @@ function buildMachineNudge(): string {
     const cpuPct = Math.round((loadavg()[0] / ncpu) * 100)   // 1-min load ÷ cores
     const memPct = Math.round((1 - freemem() / totalmem()) * 100)
     const subagents = statusManager.getActiveDispatchIds().length
-    const hot = cpuPct >= 80 || subagents >= 4
-    const head = `[MACHINE${hot ? ' ⚠️' : ''}] CPU ~${cpuPct}% · MEM ${memPct}% · sub-agents ${subagents}`
-    if (!hot) return head
-    return `${head} — load is high; prefer finishing in-flight work over spawning new sub-agents this turn, and stop any that look stuck. (advisory only — not enforced)`
+    // Recommended concurrent heavy sub-agents, adapted to live headroom. This is a
+    // concrete DEFAULT the agent should follow unless a task genuinely warrants
+    // otherwise — surfaced as an actual number/target, never enforced.
+    const recMax = (cpuPct >= 80 || memPct >= 90) ? Math.max(1, ncpu - 1)   // hot: pull back below cores
+                 : (cpuPct >= 60)                  ? ncpu                     // busy: ~cores
+                 :                                   ncpu + 1                 // calm: a little headroom
+    const over = subagents > recMax
+    const warn = over || cpuPct >= 80
+    const head = `[MACHINE${warn ? ' ⚠️' : ''}] CPU ~${cpuPct}% · MEM ${memPct}% · sub-agents ${subagents}/${recMax} recommended`
+    if (over) return `${head} — over the recommended concurrency; wind down to ≤${recMax} (finish or stop in-flight sub-agents) unless a task must continue. (recommendation — the agent decides, not enforced)`
+    if (cpuPct >= 80) return `${head} — load high; hold new sub-agents beyond ${recMax} unless needed. (recommendation — the agent decides, not enforced)`
+    return head
   } catch {
     return ''
   }
