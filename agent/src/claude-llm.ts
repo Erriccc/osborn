@@ -1056,23 +1056,59 @@ class MessageChannel<T> {
  * refuses, caps, or blocks a dispatch — the agent reads it and decides. Returns
  * '' on any error so it can never break the turn.
  */
-function buildMachineNudge(): string {
+/**
+ * Instant CPU busy% from /proc/stat (Linux). One aggregate 'cpu' line: idle+iowait
+ * vs total. Two reads a short interval apart give real-time utilization across all
+ * cores — unlike the 1-min loadavg, which lags a fresh burst of heavy commands by
+ * ~30-60s. Returns null off-Linux / on any parse error (caller falls back to loadavg).
+ */
+function readProcStatCpu(): { idle: number; total: number } | null {
+  try {
+    const line = readFileSync('/proc/stat', 'utf8').split('\n', 1)[0]
+    const n = line.trim().split(/\s+/).slice(1).map(Number)   // drop the "cpu" label
+    if (n.length < 5 || n.some(Number.isNaN)) return null
+    const idle = n[3] + (n[4] || 0)              // idle + iowait
+    const total = n.reduce((a, b) => a + b, 0)
+    return { idle, total }
+  } catch {
+    return null
+  }
+}
+
+async function buildMachineNudge(): Promise<string> {
   try {
     const ncpu = Math.max(1, cpus().length)
-    const cpuPct = Math.round((loadavg()[0] / ncpu) * 100)   // 1-min load ÷ cores
+    // #3: prefer an INSTANT CPU read (proc/stat delta over ~200ms) over the lagging
+    // 1-min loadavg, so a fresh storm of tsc/build/test shows up on THIS turn, not a
+    // minute later. Falls back to loadavg÷cores off-Linux or if the delta is unusable.
+    let cpuPct: number
+    const a = readProcStatCpu()
+    if (a) {
+      await new Promise((r) => setTimeout(r, 200))
+      const b = readProcStatCpu()
+      const dTotal = b ? b.total - a.total : 0
+      cpuPct = b && dTotal > 0
+        ? Math.round(((dTotal - (b.idle - a.idle)) / dTotal) * 100)
+        : Math.round((loadavg()[0] / ncpu) * 100)
+    } else {
+      cpuPct = Math.round((loadavg()[0] / ncpu) * 100)
+    }
     const memPct = Math.round((1 - freemem() / totalmem()) * 100)
     const subagents = statusManager.getActiveDispatchIds().length
-    // Recommended concurrent heavy sub-agents, adapted to live headroom. This is a
-    // concrete DEFAULT the agent should follow unless a task genuinely warrants
-    // otherwise — surfaced as an actual number/target, never enforced.
+    // Recommended concurrent heavy sub-agents, adapted to live headroom. A concrete
+    // DEFAULT the agent follows unless a task warrants otherwise — never enforced.
     const recMax = (cpuPct >= 80 || memPct >= 90) ? Math.max(1, ncpu - 1)   // hot: pull back below cores
                  : (cpuPct >= 60)                  ? ncpu                     // busy: ~cores
                  :                                   ncpu + 1                 // calm: a little headroom
     const over = subagents > recMax
     const warn = over || cpuPct >= 80
-    const head = `[MACHINE${warn ? ' ⚠️' : ''}] CPU ~${cpuPct}% · MEM ${memPct}% · sub-agents ${subagents}/${recMax} recommended`
-    if (over) return `${head} — over the recommended concurrency; wind down to ≤${recMax} (finish or stop in-flight sub-agents) unless a task must continue. (recommendation — the agent decides, not enforced)`
-    if (cpuPct >= 80) return `${head} — load high; hold new sub-agents beyond ${recMax} unless needed. (recommendation — the agent decides, not enforced)`
+    // #4: name the actual CPU culprits — the spikes come from heavy COMMANDS sub-agents
+    // run, not their count. One tsc/build/test pegs a core for 30-120s; ten file-reading
+    // agents barely register. Tell the agent WHAT to throttle.
+    const culprits = 'CPU cost is heavy commands (tsc/typecheck, build, test, npm/pnpm install, eslint) — not agent count. Prefer scoped/incremental runs, cache, and never fire several at once.'
+    const head = `[MACHINE${warn ? ' ⚠️' : ''}] CPU ${cpuPct}% · MEM ${memPct}% · sub-agents ${subagents}/${recMax} recommended`
+    if (over) return `${head} — over the recommended concurrency; wind down to ≤${recMax} (finish or stop in-flight sub-agents) unless a task must continue. ${culprits} (recommendation — the agent decides, not enforced)`
+    if (cpuPct >= 80) return `${head} — load high; hold new sub-agents beyond ${recMax} unless needed. ${culprits} (recommendation — the agent decides, not enforced)`
     return head
   } catch {
     return ''
@@ -2241,7 +2277,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // Lightweight machine-load nudge (main agent only). Cheap synchronous
                 // snapshot, prepended so it's present even when recall degrades under load.
                 // Advisory only — never caps/refuses a dispatch.
-                const machineNudge = fromSubagent ? '' : buildMachineNudge()
+                const machineNudge = fromSubagent ? '' : await buildMachineNudge()
                 const additionalContext = [machineNudge, reminder, recalled].filter(Boolean).join('\n\n')
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
                 return {
