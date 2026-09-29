@@ -100,7 +100,17 @@ export default function ChatPage() {
   // provider, so all LiveKit hooks (useRoomContext, useLocalParticipant,
   // useDataChannel) work from here down.
   if (connected && token && roomCode) {
-    return <VoiceRoom waitingMode={false} />
+    // Pin the connected view to the viewport so the PAGE itself never scrolls/drags
+    // (only the inner scroll areas do). Without this wrapper VoiceRoom's 85vh card was
+    // the sole flow child of an unconstrained <body>, so the page rubber-banded and the
+    // background "grew" below it. h-[100dvh] + overflow-hidden locks it; centering makes
+    // the remaining desktop margin symmetric instead of a growing bottom gap. Scoped to
+    // the chat route (not global body) so the dashboard keeps its normal scroll.
+    return (
+      <main className="h-[100dvh] overflow-hidden flex items-center justify-center bg-[var(--background)]">
+        <VoiceRoom waitingMode={false} />
+      </main>
+    )
   }
 
   // ─── Disconnected / idle dead-state ───────────────
