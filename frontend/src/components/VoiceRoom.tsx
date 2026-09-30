@@ -4667,7 +4667,7 @@ function VoiceRoomInner({
         </div>
       )}
 
-      <div className="w-full h-[100dvh] sm:h-[85vh] flex gap-3 transition-all duration-300 max-w-[90rem]">
+      <div className="w-full h-full flex gap-3">
       <div className="flex-1 min-w-0 flex flex-col bg-gradient-to-b from-gray-900 to-gray-950 sm:rounded-2xl overflow-hidden border-0 sm:border border-gray-800/50 shadow-2xl">
         {/* Header - Streamlined */}
         <div className="relative z-30 px-1.5 sm:px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">

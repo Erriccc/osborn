@@ -107,7 +107,7 @@ export default function ChatPage() {
     // the remaining desktop margin symmetric instead of a growing bottom gap. Scoped to
     // the chat route (not global body) so the dashboard keeps its normal scroll.
     return (
-      <main className="h-[100dvh] overflow-hidden flex items-center justify-center bg-[var(--background)]">
+      <main className="h-[100dvh] w-full overflow-hidden bg-[var(--background)]">
         <VoiceRoom waitingMode={false} />
       </main>
     )
