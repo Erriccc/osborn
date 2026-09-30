@@ -2342,8 +2342,9 @@ function VoiceRoomInner({
     agentType: string
     status: string
     artifact?: string
-    task?: string       // the instruction the sub-agent was dispatched with (shown while running)
-    startedAt?: number  // client ts when the row was created — grace window for reconcile
+    task?: string        // the instruction the sub-agent was dispatched with (shown while running)
+    lastMessage?: string // latest live activity while running (from the sub-agent's tool stream)
+    startedAt?: number   // client ts when the row was created — grace window for reconcile
   }>>([])
   // Meeting state (Recall.ai)
   const [showMeetingInput, setShowMeetingInput] = useState(false)
@@ -3111,6 +3112,15 @@ function VoiceRoomInner({
         }
         // Human summary line (also used as the message content / fallback).
         const target = data.fileName || data.command || data.pattern || data.url || ''
+        // Live sub-agent progress: a tool_use tagged with agentId belongs to a running
+        // sub-agent — surface it on that Running row so you can watch it work. Reuses the
+        // existing tool stream; no separate channel. (Log-feed card below is unchanged.)
+        if (data.agentId) {
+          const label = target ? `${data.tool}: ${target}` : `Using ${data.tool}`
+          setBackgroundFlows(prev => prev.map(f =>
+            f.agentId === data.agentId && f.status === 'running' ? { ...f, lastMessage: label } : f
+          ))
+        }
         if (data.status === 'completed') {
           // Find and update the most recent running row for this tool.
           setMessages((prev) => {

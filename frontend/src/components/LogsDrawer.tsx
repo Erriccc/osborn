@@ -85,7 +85,8 @@ interface BackgroundFlow {
   agentType: string
   status: string
   artifact?: string
-  task?: string   // the instruction/prompt the sub-agent was dispatched with (shown while running)
+  task?: string        // the instruction/prompt the sub-agent was dispatched with (shown while running)
+  lastMessage?: string // latest live activity while running (from the sub-agent's tool stream)
 }
 
 export interface ProcessInfo {
@@ -737,20 +738,24 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                         {flow.agentType}
                       </span>
 
-                      {/* Status */}
-                      <span className={`text-[11px] shrink-0 ${isRunning ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {/* Status — pulses while running so a live row reads as alive. */}
+                      <span className={`text-[11px] shrink-0 ${isRunning ? 'text-amber-400 animate-pulse' : 'text-emerald-400'}`}>
                         {isRunning ? 'running' : 'done'}
                       </span>
 
-                      {/* While running: the task the sub-agent was dispatched with.
-                          When done: a snippet of its last message (artifact). */}
-                      {(flow.artifact || flow.task) ? (
-                        <span className="min-w-0 truncate text-[11px] text-gray-400 flex-1" title={flow.artifact || flow.task}>
-                          {isRunning && flow.task ? <span className="text-gray-500 italic">{flow.task}</span> : (flow.artifact || flow.task)}
-                        </span>
-                      ) : (
-                        <span className="flex-1" />
-                      )}
+                      {/* While running: live activity (from the sub-agent's tool stream) if we
+                          have it, else the dispatch task. When done: its last message (artifact). */}
+                      {(() => {
+                        const text = isRunning ? (flow.lastMessage || flow.task) : (flow.artifact || flow.task)
+                        if (!text) return <span className="flex-1" />
+                        const isLive = isRunning && !!flow.lastMessage
+                        const cls = isLive ? 'text-amber-300/90' : (isRunning ? 'text-gray-500 italic' : 'text-gray-400')
+                        return (
+                          <span className={`min-w-0 truncate text-[11px] flex-1 ${cls}`} title={text}>
+                            {text}
+                          </span>
+                        )
+                      })()}
 
                       {/* Stop button — only when running */}
                       {isRunning && (

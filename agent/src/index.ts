@@ -77,8 +77,11 @@ function buildToolLogEvent(
   input: any,
   status: 'running' | 'completed',
   agentRole: string,
+  agentId?: string,
 ): Record<string, any> {
-  const ev: Record<string, any> = { type: 'tool_use', tool: name, status, agentRole }
+  // agentId is the sub-agent's id (present only for sub-agent tool calls) — lets the
+  // frontend tie this activity to its Running row, not just the Log feed.
+  const ev: Record<string, any> = { type: 'tool_use', tool: name, status, agentRole, agentId }
   const inp = input || {}
   const basename = (p: string) => String(p).split('/').pop() || String(p)
 
@@ -3454,12 +3457,12 @@ async function main() {
     // Wire up events from the Claude SDK wrapper to frontend
     directLLM.events.on('tool_use', (data) => {
       console.log(`🔧 Claude: ${data.name}`)
-      sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', data.agentRole || 'main'))
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', data.agentRole || 'main', data.agentId))
     })
 
     directLLM.events.on('tool_result', (data) => {
       console.log(`✅ Done: ${data.name}`)
-      sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', data.agentRole || 'main'))
+      sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', data.agentRole || 'main', data.agentId))
 
       // Detect research artifact writes (session workspace or legacy research dir)
       if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {
@@ -3821,6 +3824,7 @@ async function main() {
       type: 'agent_started',
       agent_type: d.agent_type,
       agent_id: d.agent_id,
+      task: d.task,   // forward the dispatch instruction so the Running row can label itself
     }))
 
     // Create the Agent with instructions, STT, LLM, TTS

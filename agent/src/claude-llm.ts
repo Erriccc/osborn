@@ -2192,7 +2192,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                   // the permission dialog; adversarial agents (reviewer/tester) do
                   // NOT emit here — parity with the prior hardcoded branches.
                   if (agentType === 'writer') {
-                    this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
+                    this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main', agentId: input?.agent_id })
                   }
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
                 }
@@ -2208,7 +2208,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const d = String((toolInput as any)?.description || (toolInput as any)?.prompt || '')
                 if (st && d) this.#pendingTaskByType.set(st, d)
               }
-              this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main' })
+              this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main', agentId: input?.agent_id })
               return {}
             }]
           }],
@@ -2224,7 +2224,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const agentId = input?.tool_input?.agent_id ?? input?.tool_input?.id ?? undefined
                 console.log('[LIFECYCLE-PROBE] PostToolUse on', toolName, 'agent_id=', agentId, 'ts=', Date.now())
               }
-              this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: agentTypePost || 'main' })
+              this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: agentTypePost || 'main', agentId: input?.agent_id })
               // Pattern #1 verifier chaining has MOVED to the SubagentStop hook below. Reason:
               // sub-agents run with run_in_background:true, so PostToolUse-on-Task fires at
               // DISPATCH (placeholder tool_response), not completion — injecting the "now verify"
