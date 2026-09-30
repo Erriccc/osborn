@@ -13,6 +13,7 @@ import { llm, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livek
 import { ClaudeLLM, type ClaudeLLMOptions } from './claude-llm.js'
 import { askPipelineFastBrain, type PipelineFastBrainResult } from './pipeline-fastbrain.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
+import { statusManager } from './status-manager.js'
 import { EventEmitter } from 'events'
 
 // ============================================================
@@ -239,6 +240,19 @@ export class PipelineDirectLLM extends llm.LLM {
         // Actual mid-TTS interruption — keep the full [INTERRUPTED] template
         console.log(`🔇 [pipeline] Enriching: interrupt (spoken=${interruptCtx.spokenText.length} chars, suppressed=${interruptCtx.suppressedText.length} chars)`)
         this.#claudeLLM.interruptQuery().catch(() => {})
+        // An interrupt/cutoff SEVERS in-flight background Task sub-agents — the SDK's
+        // interrupt() kills run_in_background Task children and they never fire SubagentStop,
+        // so the agent gets NO signal they died and they can't be resumed. statusManager still
+        // lists them (start-tracked, never stopped) = the authoritative orphan set. Name them
+        // so the agent re-dispatches the necessary ones; mark them terminal so the tracker +
+        // Running panel don't leave them stuck "running" forever.
+        const orphanedSubagents = statusManager.getActiveDispatches()
+        const subagentReminder = orphanedSubagents.length
+          ? `SUB-AGENTS SEVERED BY THE CUTOFF: your in-flight background sub-agents were killed by the interrupt and will NOT report back (no completion signal, cannot be resumed): ${orphanedSubagents.map(o => o.subagentType || 'agent').join(', ')}. Check which of these you still need and RE-DISPATCH them fresh — do not wait on them.`
+          : `SUB-AGENTS: if you had any background Task sub-agents in flight, an interrupt severs them silently (no completion signal, no resume) — check and re-dispatch any still needed rather than waiting on them.`
+        for (const o of orphanedSubagents) {
+          try { statusManager.upsertDispatch(o.id, { dispatchState: 'failed' }) } catch {}
+        }
         enrichedMessage = [
           `[INTERRUPTED] The user interrupted your response mid-speech.`,
           ``,
@@ -259,6 +273,8 @@ export class PipelineDirectLLM extends llm.LLM {
           ``,
           `CONTEXT PRESERVATION (READ THIS):`,
           `The user has NO memory of unheard content. If any of it bears on their current message — answers a question they just asked, sets up a follow-up they're now asking about, or shows a knowledge gap and fills in a detail they're reacting to — you MUST surface it. Briefly is fine if their message is off-topic or explores a direction they haven't asked about yet. But never assume they remember what they never heard.`,
+          ``,
+          subagentReminder,
           ``,
           `RESPOND with speech first, then act:`,
           `- ALWAYS reply with at least one spoken sentence before doing any tool calls`,

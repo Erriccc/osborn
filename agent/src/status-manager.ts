@@ -253,6 +253,23 @@ export class StatusManager {
   }
 
   /**
+   * Non-terminal dispatches with their type — the set considered "in flight". Used on
+   * a voice interrupt to name the sub-agents that were just severed: an interrupt kills
+   * in-flight Task sub-agents (SDK regression) and they never fire SubagentStop, so they
+   * linger here as the authoritative orphan list until we mark them terminal.
+   */
+  getActiveDispatches(): Array<{ id: string; subagentType?: string }> {
+    return Array.from(this.tasks.values())
+      .filter(t =>
+        !!t.subagentType &&
+        t.dispatchState !== 'completed' &&
+        t.dispatchState !== 'failed' &&
+        t.dispatchState !== 'rejected'
+      )
+      .map(t => ({ id: t.id, subagentType: t.subagentType }))
+  }
+
+  /**
    * Dispatcher v1 — create or update a dispatch entry keyed by tool_use_id.
    * Creates a minimal TaskStatus shell if the id doesn't yet exist so callers
    * can upsert without a prior registerTask() call.
