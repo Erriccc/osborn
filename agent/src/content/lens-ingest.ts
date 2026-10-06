@@ -120,15 +120,30 @@ export function buildIngestPayload(p: IngestPage, scrub: (s: string) => string =
 
 /** POST one page to content_ingest. Never throws; returns the state to record in the manifest. */
 export async function ingestPage(p: IngestPage, o: IngestOptions = {}): Promise<IngestState> {
-  const log = o.log ?? (() => {})
-  const at = new Date().toISOString()
   let contentHash = ''
-  const tag = `library: ingest period ${p.index} (#${p.startRowId})`
   try {
     contentHash = contentHashFor(p)
+    if (!resolveIngestConfig().ok) return postContentIngest(null, contentHash, '', o)
+    return postContentIngest(buildIngestPayload(p, o.scrub), contentHash, `library: ingest period ${p.index} (#${p.startRowId})`, o)
+  } catch {
+    (o.log ?? (() => {}))(`library: ingest period ${p.index} (#${p.startRowId}) → failed: network (will retry next run)`)
+    return { status: 'error', reason: 'network', contentHash, at: new Date().toISOString() }
+  }
+}
+
+/**
+ * The content_ingest RPC call itself, shared by library pages and Stage A script
+ * drafts (content-ingest.ts). `payload` must already be redacted and must carry
+ * `content_hash`; null = only resolve config (returns skipped when not configured).
+ * Never throws. Logs outcomes only (never the token, headers or body).
+ */
+export async function postContentIngest(payload: Record<string, unknown> | null, contentHash: string, tag: string, o: IngestOptions = {}): Promise<IngestState> {
+  const log = o.log ?? (() => {})
+  const at = new Date().toISOString()
+  try {
     const cfg = resolveIngestConfig()
     if (!cfg.ok) return { status: 'skipped', reason: (cfg as { reason: string }).reason, contentHash, at }
-    const payload = buildIngestPayload(p, o.scrub)
+    if (!payload) return { status: 'skipped', reason: 'no-payload', contentHash, at }
     const body = JSON.stringify({ p_token: cfg.token, p_payload: payload })
     const bytes = Buffer.byteLength(body, 'utf-8')
     if (bytes > INGEST_MAX_BYTES) {
