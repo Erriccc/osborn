@@ -140,7 +140,7 @@ export const FORMAT_CATALOG: FormatEntry[] = [
 /** Writing rules shared by every script prompt (rules §4, §5, §7). */
 export const SCRIPT_RULES: string[] = [
   'WHO: write to the named viewer, someone living the situation. Context, not explaining every line: terms they already know need no setup; anything outside their world gets just enough setup nearby.',
-  'Every quote, term and number must be understandable to that viewer: either familiar to them or explained in the line before or right after it. A quote with no context for THAT viewer fails.',
+  'Every quote, term and number must be understandable to that viewer: either already known to that viewer or explained in the line before or right after it. A quote with no context for THAT viewer fails.',
   'STORY: the cause -> effect chain must be clean. Every line is the next thing that happened or the reason for it. No unexplained jumps, numbers or version strings.',
   'Hook placement is free (start, middle or end), but the hook must be explained.',
   // WHAT-WORKS-video-writing-rules.md (round 2, gate PASS): the rules that separate postable videos from incoherent ones.

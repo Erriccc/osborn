@@ -116,7 +116,7 @@ export function validateCandidates(raw: unknown, range: { from: number; to: numb
   for (const p of list) {
     const k = str(p?.kind ?? p?.tier, 20).toLowerCase().replace(/[^a-z]/g, '')
     const kind: Tier | null = k.startsWith('highlight') ? 'highlight' : k.startsWith('howto') ? 'howto' : null
-    const subtopic = str(p?.subtopic, 120)
+    const subtopic = str(p?.subtopic ?? p?.topic ?? p?.title ?? p?.story, 120)
     if (!kind || !subtopic) continue
     if (kind === 'highlight' ? highlights >= 1 : howtos >= 3) continue
     if (out.length >= maxPieces) break
