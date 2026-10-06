@@ -10,7 +10,8 @@
  *   content_hash  sha256(session, period start row, piece id) — stable per piece, so a
  *                 re-ingest upserts and a later media attach hits the same row
  *   source_anchors  project_slug (basename(projectDir), as lens-library), period, brief,
- *                 research citations, check result, dev-voice row ids, auto_generated: true
+ *                 research citations, check result, quality_flags (advisory warnings),
+ *                 dev-voice row ids, auto_generated: true
  * Every string in the payload goes through scrubDeep() (content-redact.ts) first.
  * Blocked pieces never reach this module (content-run).
  */
@@ -34,6 +35,8 @@ export interface ScriptDraft {
   brief: Brief
   script: Script
   checks: CheckSummary
+  /** Advisory quality warnings (not blocking) → source_anchors.quality_flags + "Draft quality notes:" in the body. */
+  qualityFlags?: string[]
   citations: { url: string; title: string; source: string }[]
   model: string
 }
@@ -51,10 +54,12 @@ export function scriptMarkdown(d: ScriptDraft): string {
   const s = d.script
   const fmt = FORMAT_CATALOG.find(f => f.id === b.format)
   const devRow = new Map(d.checks.prepass.rows.map(r => [r.line, r.row]))
+  const q = d.qualityFlags ?? []
   return [
     `> **${AUTO_LABEL}** — written by the content pipeline from this session; review before publishing.`,
     `# ${s.title || '(untitled)'}`,
     s.hook ? `*${s.hook}*` : '',
+    q.length ? `**Draft quality notes:** this draft passed the hard checks but is weak on ${q.length} point(s):\n${q.map(f => `- ${f}`).join('\n')}` : '',
     '## Brief',
     `- **Viewer:** ${b.viewer}`,
     `- **Living through:** ${b.situation}`,
@@ -100,6 +105,7 @@ export function buildScriptPayload(d: ScriptDraft, scrubDeep: <T>(v: T) => T = v
       },
       research: { key: b.researchKey, citations: d.citations },
       checks: { ...d.checks, flags: 0 },
+      quality_flags: d.qualityFlags ?? [],
       dev_rows: d.checks.prepass.rows,
       est_seconds: s.estSeconds,
       generator: { model: d.model, check_model: CHECK_MODEL, check_provider: CHECK_PROVIDER },

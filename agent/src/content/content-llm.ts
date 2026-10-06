@@ -46,6 +46,16 @@ export function isContentPipelineEnabled(): boolean {
   return !off('OSBORN_CONTENT_PIPELINE') && !off('OSBORN_CONTENT_INGEST')
 }
 
+/**
+ * OSBORN_CONTENT_STRICT=1 restores hard blocks for the quality gates (structure,
+ * over-length tolerance, missing stake, audience). Default: those are advisory —
+ * the piece is still scripted and ingested as a draft with quality_flags attached.
+ * Dev-voice, truth-check, redaction, the outbound-query gate and the caps are hard either way.
+ */
+export function isContentStrict(): boolean {
+  return ['1', 'on', 'true', 'yes'].includes((process.env.OSBORN_CONTENT_STRICT ?? '').trim().toLowerCase())
+}
+
 const envNum = (k: string, d: number): number => {
   const raw = (process.env[k] ?? '').trim()
   const n = Number(raw)

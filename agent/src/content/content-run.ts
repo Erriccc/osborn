@@ -10,7 +10,8 @@
  * NEVER throws. Idempotent per period via .content-manifest.json (library dir):
  * a done period costs nothing; settled pieces are never regenerated; a blocked
  * piece is never ingested and never auto-fixed. Caps ⇒ status "capped".
- * Flags: OSBORN_CONTENT_PIPELINE (default ON), OSBORN_CONTENT_LENS, OSBORN_CONTENT_INGEST.
+ * Flags: OSBORN_CONTENT_PIPELINE (default ON), OSBORN_CONTENT_LENS, OSBORN_CONTENT_INGEST,
+ * OSBORN_CONTENT_STRICT=1 (quality gates block again instead of flagging the draft).
  * --dry: everything except the ingest (it still spends; the caps apply).
  */
 
@@ -21,7 +22,7 @@ import { loadConversationRows, recordView, resolveSessionDb, type DbRecord } fro
 import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { pageFileName, segmentPeriods, type LibraryPeriod } from './lens-library-select.js'
 import { libraryDirFor, readManifest } from './lens-library.js'
-import { CapError, contentCaps, daySpent, genModel, isContentPipelineEnabled, SpendGuard, type CapKind, type ContentLlmOptions } from './content-llm.js'
+import { CapError, contentCaps, daySpent, genModel, isContentPipelineEnabled, isContentStrict, SpendGuard, type CapKind, type ContentLlmOptions } from './content-llm.js'
 import { makeScrubber, type ContentScrubber } from './content-redact.js'
 import {
   CONTENT_DIR, isPieceSettled, periodDirName, periodStatusFor, readContentManifest, writeAtomic, writeContentManifest,
@@ -276,7 +277,7 @@ export async function runContentStep(o: ContentRunOptions): Promise<ContentRunRe
       const prev = entry.pieces[b.id]
       if (isPieceSettled(prev)) continue
       const piece: PieceEntry = {
-        id: b.id, kind: b.tier, status: 'error', title: prev?.title || b.subtopic, flags: [], costUsd: prev?.costUsd ?? 0, errors: [],
+        id: b.id, kind: b.tier, status: 'error', title: prev?.title || b.subtopic, flags: [], warnings: [], costUsd: prev?.costUsd ?? 0, errors: [],
         updatedAt: new Date().toISOString(), contentHash: pieceContentHash(o.sessionId, p.startRowId, b.id),
       }
       entry.pieces[b.id] = piece
@@ -284,8 +285,8 @@ export async function runContentStep(o: ContentRunOptions): Promise<ContentRunRe
         piece.status = 'capped'
         continue
       }
-      if (!b.stake) {
-        // WHAT-WORKS rule 1: no provable before/after ⇒ not scripted (no spend).
+      if (!b.stake && isContentStrict()) {
+        // Strict: WHAT-WORKS rule 1, no provable before/after ⇒ not scripted (no spend). Default: scripted, flagged "no visible proof".
         piece.status = 'blocked'
         piece.flags = ['brief has no before -> after stake quantity (rule 1: stake and proof both visible)']
         continue
@@ -298,14 +299,15 @@ export async function runContentStep(o: ContentRunOptions): Promise<ContentRunRe
         const script = scrubScript(raw, sc)
         piece.title = script.title || piece.title
         const sources = truthSources(pageText, records, b, script, r?.digest ?? '')
-        const { summary, flags } = await runChecks(script, b, { projectDir, llm, records, sources })
+        const { summary, flags, warnings } = await runChecks(script, b, { projectDir, llm, records, sources })
         piece.checks = summary
         piece.flags = flags
+        piece.warnings = warnings
         piece.status = flags.length ? 'blocked' : 'ready'
-        const draft: ScriptDraft = { sessionId: o.sessionId, projectDir, period, brief: b, script, checks: summary, citations: r?.citations ?? [], model: genModel() }
+        const draft: ScriptDraft = { sessionId: o.sessionId, projectDir, period, brief: b, script, checks: summary, qualityFlags: warnings, citations: r?.citations ?? [], model: genModel() }
         piece.file = saveDraft(dir, draft, piece)
         drafts.set(b.id, draft)
-        log(`content: ${b.id} → ${piece.status}${flags.length ? ` (${flags.length} flag(s))` : ''} ~${script.estSeconds}s`)
+        log(`content: ${b.id} → ${piece.status}${flags.length ? ` (${flags.length} flag(s))` : ''}${warnings.length ? ` (${warnings.length} quality warning(s))` : ''} ~${script.estSeconds}s`)
       } catch (e: any) {
         if (e instanceof CapError) {
           capped = true

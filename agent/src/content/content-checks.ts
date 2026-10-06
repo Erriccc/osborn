@@ -1,6 +1,12 @@
 /**
- * content-checks.ts — Stage A gates. ANY flag ⇒ the piece is "blocked":
+ * content-checks.ts — Stage A gates. A HARD flag ⇒ the piece is "blocked":
  * never ingested, never auto-fixed (content-run records the flags).
+ * HARD always: dev-voice pre-pass, truth-check, length below the tier min or
+ * more than +15% over the tier max, an empty script.
+ * ADVISORY by default (warnings → the draft's quality_flags; still ingested):
+ * the structure gate (stake / "no visible proof", causes, terms/min, spoken
+ * versions/codes), up to +15% over the tier max, and the audience check.
+ * OSBORN_CONTENT_STRICT=1 makes every advisory warning a hard flag again.
  *
  * Order (cheapest first; a failing stage skips the paid ones after it):
  *   1. length      deterministic: estimated seconds within the tier bounds.
@@ -20,7 +26,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { DbRecord } from './lens-db.js'
-import { CHECK_MODEL, CHECK_PROVIDER, CHECK_PROVIDER_NAME, llmJson, type ContentLlmOptions } from './content-llm.js'
+import { CHECK_MODEL, CHECK_PROVIDER, CHECK_PROVIDER_NAME, isContentStrict, llmJson, type ContentLlmOptions } from './content-llm.js'
 import { writeAtomic, type CheckSummary } from './content-manifest.js'
 import { AUDIENCE_RULES, TIER_TEMPLATES, scriptLimits, type ScriptLimits } from './content-script-rules.js'
 import { lengthCheck, type Script, type ScriptLine } from './content-script.js'
@@ -29,6 +35,9 @@ import type { Brief } from './content-brief.js'
 export const CHECK_CACHE_DIR = '.content-check-cache'
 export const MIN_PIECE_CHARS = 12
 export const MIN_CUT_COVERAGE = 0.8
+/** Non-strict: a script may run up to this fraction over the tier max (flagged, not blocked). */
+export const OVER_LENGTH_TOLERANCE = 0.15
+export const NO_PROOF_FLAG = 'no visible proof: brief has no before -> after stake quantity (rule 1: stake and proof both visible)'
 
 /** Whitespace + typographic quote/dash normalisation only (never wording). */
 export const normText = (s: string): string =>
@@ -164,7 +173,7 @@ export interface StructureResult {
 /** WHAT-WORKS deterministic gate, run on the script BEFORE any LLM judge. Thresholds: scriptLimits() (env-tunable). */
 export function structureCheck(s: Script, brief: Pick<Brief, 'stake'>, limits: ScriptLimits = scriptLimits()): StructureResult {
   const flags: string[] = []
-  if (!brief.stake) flags.push('brief has no before -> after stake quantity (rule 1: stake and proof both visible)')
+  if (!brief.stake) flags.push(NO_PROOF_FLAG)
   const seconds = lengthCheck(s).seconds
   const causes = s.causes.length
   const maxC = limits.maxCauses[s.tier]
@@ -225,24 +234,37 @@ async function pinnedJudge(kind: 'truth' | 'audience', system: string, user: str
   return { flags, provider: r.provider, cacheKey: key, cached: false }
 }
 
-/** All gates for one script. `flags` non-empty ⇒ blocked. Throws CapError / Error (piece → capped / error). */
-export async function runChecks(s: Script, brief: Brief, ctx: CheckContext): Promise<{ summary: CheckSummary; flags: string[] }> {
+/**
+ * All gates for one script. `flags` (hard) non-empty ⇒ blocked. `warnings` are advisory
+ * quality flags (empty under OSBORN_CONTENT_STRICT=1, where they are hard flags instead).
+ * Throws CapError / Error (piece → capped / error).
+ */
+export async function runChecks(s: Script, brief: Brief, ctx: CheckContext): Promise<{ summary: CheckSummary; flags: string[]; warnings: string[] }> {
+  const strict = isContentStrict()
   const length = lengthCheck(s)
   const prepass = devVoicePrepass(s.lines, ctx.records, s.tier)
   const structure = structureCheck(s, brief)
   const summary: CheckSummary = { prepass, truth: null, audience: null, length, structure }
-  const flags = [
-    ...(length.ok ? [] : [`length ~${length.seconds}s outside ${length.min}-${length.max}s for ${s.tier}`]),
-    ...prepass.flags,
-    ...structure.flags,
-  ]
+  const flags: string[] = []
+  const warnings: string[] = []
+  // Advisory unless strict: same text either way, only where it lands differs.
+  const soft = (f: string) => (strict ? flags : warnings).push(f)
+  if (!length.ok) {
+    const msg = `length ~${length.seconds}s outside ${length.min}-${length.max}s for ${s.tier}`
+    const tolerated = length.seconds > length.max && length.seconds <= length.max * (1 + OVER_LENGTH_TOLERANCE)
+    if (tolerated) soft(`${msg} (within +${OVER_LENGTH_TOLERANCE * 100}% over-length tolerance)`)
+    else flags.push(msg)
+  }
+  flags.push(...prepass.flags)
+  structure.flags.forEach(soft)
   if (!s.lines.length) flags.push('script has no lines')
-  if (flags.length) return { summary, flags }
+  if (flags.length) return { summary, flags, warnings }
   const draft = draftText(s)
   const t = await pinnedJudge('truth', TRUTH_SYSTEM, truthUser(ctx.sources, draft), ctx)
   summary.truth = { ok: t.flags.length === 0, flags: t.flags, model: CHECK_MODEL, provider: t.provider, cacheKey: t.cacheKey, cached: t.cached }
-  if (t.flags.length) return { summary, flags: t.flags.map(f => `truth: ${f}`) }
+  if (t.flags.length) return { summary, flags: t.flags.map(f => `truth: ${f}`), warnings }
   const a = await pinnedJudge('audience', AUDIENCE_SYSTEM, audienceUser(brief, draft), ctx)
   summary.audience = { ok: a.flags.length === 0, flags: a.flags, model: CHECK_MODEL, provider: a.provider }
-  return { summary, flags: a.flags.map(f => `audience: ${f}`) }
+  a.flags.forEach(f => soft(`audience: ${f}`))
+  return { summary, flags, warnings }
 }

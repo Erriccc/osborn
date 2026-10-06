@@ -39,8 +39,10 @@ export interface PieceEntry {
   kind: PieceKind
   status: PieceStatus
   title: string
-  /** Every flag from every check (empty unless blocked). */
+  /** Every HARD flag from every check (empty unless blocked). */
   flags: string[]
+  /** Advisory quality flags (piece still scripted + ingested as a draft); see OSBORN_CONTENT_STRICT. */
+  warnings?: string[]
   checks?: CheckSummary
   /** Stable per piece (session + period + piece id), so later media attach hits the same row. */
   contentHash?: string
