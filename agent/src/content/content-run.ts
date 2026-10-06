@@ -20,7 +20,7 @@ import { loadConversationRows, recordView, resolveSessionDb, type DbRecord } fro
 import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { pageFileName, segmentPeriods, type LibraryPeriod } from './lens-library-select.js'
 import { libraryDirFor, readManifest } from './lens-library.js'
-import { CapError, contentCaps, daySpent, genModel, isContentPipelineEnabled, SpendGuard, type ContentLlmOptions } from './content-llm.js'
+import { CapError, contentCaps, daySpent, genModel, isContentPipelineEnabled, SpendGuard, type CapKind, type ContentLlmOptions } from './content-llm.js'
 import { makeScrubber, type ContentScrubber } from './content-redact.js'
 import {
   CONTENT_DIR, isPieceSettled, periodDirName, periodStatusFor, readContentManifest, writeAtomic, writeContentManifest,
@@ -49,7 +49,12 @@ export interface ContentRunOptions {
   researchRefresh?: boolean
   keepAlive?: () => void
   log?: (m: string) => void
+  /** Wall-clock budget: no new model call starts after this many ms (default 25 min). */
+  budgetMs?: number
 }
+
+/** Stop starting new calls after ~25 minutes; what is left resumes on the next run. */
+export const CONTENT_BUDGET_MS = 25 * 60_000
 
 export interface ContentPieceReport {
   id: string
@@ -68,7 +73,8 @@ export interface ContentRunResult {
   period: { index: number; startRowId: number; endRowId: number; page: string } | null
   pieces: ContentPieceReport[]
   costUsd: number
-  capHit: 'period' | 'day' | null
+  /** 'time' = the wall-clock budget ran out (no new call started); the rest resumes next run. */
+  capHit: CapKind | null
   errors: string[]
 }
 
@@ -179,6 +185,7 @@ async function retryIngests(dir: string, m: ContentManifest, sc: ContentScrubber
 /** Run Stage A once for one period. Never throws. */
 export async function runContentStep(o: ContentRunOptions): Promise<ContentRunResult> {
   const log = o.log ?? (() => {})
+  const deadline = Date.now() + (o.budgetMs ?? CONTENT_BUDGET_MS)
   const res: ContentRunResult = { status: 'failed', libraryDir: null, period: null, pieces: [], costUsd: 0, capHit: null, errors: [] }
   const timer = o.keepAlive ? setInterval(o.keepAlive, 60_000) : null
   timer?.unref()
@@ -210,14 +217,14 @@ export async function runContentStep(o: ContentRunOptions): Promise<ContentRunRe
     entry.errors = []
     manifest.periods[key] = entry
     const caps = contentCaps()
-    const g = (guard = new SpendGuard(projectDir, caps, entry.costUsd))
+    const g = (guard = new SpendGuard(projectDir, caps, entry.costUsd, deadline))
     const llm: ContentLlmOptions = { apiKey, guard: g, scrub: sc.scrub, log }
     const save = () => {
       entry.costUsd = Number(g.periodUsd.toFixed(6))
       entry.updatedAt = new Date().toISOString()
       writeContentManifest(dir, manifest)
     }
-    log(`content: period ${p.index} rows #${range.from}–#${range.to} (${pick.page}); spent so far $${entry.costUsd.toFixed(4)} period / $${daySpent(projectDir).toFixed(4)} today`)
+    log(`content: period ${p.index} rows #${range.from}–#${range.to} (${pick.page}); spent so far $${entry.costUsd.toFixed(4)} period / $${daySpent().toFixed(4)} today (machine)`)
     const records = loadConversationRows(db, range.from - 1, sc.scrub, range.to).records
 
     // 1. Plan → research → briefs, once per period.
