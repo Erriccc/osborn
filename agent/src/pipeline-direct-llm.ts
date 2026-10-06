@@ -130,6 +130,22 @@ export class PipelineDirectLLM extends llm.LLM {
   get isResumingSession(): boolean { return this.#claudeLLM.isResumingSession }
   label(): string { return 'pipeline-direct' }
 
+  // ── Instance swap (foreground ⇄ background handoff) ──────────────────────────
+  // The voice AgentSession binds THIS wrapper for the whole session; chat() routes
+  // to #claudeLLM. To move the voice to a different, already-running Claude
+  // subprocess (a background slot) WITHOUT tearing down the AgentSession or killing
+  // either subprocess, we hot-swap the inner ClaudeLLM. The caller is responsible
+  // for moving the voice event listeners from the old inner's emitter to the new
+  // one (wireVoice/unwireVoice in index.ts) — `.events` changes target after swap,
+  // but already-attached listeners stay on the old emitter until re-wired.
+  get inner(): ClaudeLLM { return this.#claudeLLM }
+  swapInner(next: ClaudeLLM): ClaudeLLM {
+    const prev = this.#claudeLLM
+    this.#claudeLLM = next
+    console.log('🔁 [pipeline] swapped inner ClaudeLLM (voice handoff)')
+    return prev
+  }
+
   // Proxy all methods
   setResumeSessionId(id: string | null) { this.#claudeLLM.setResumeSessionId(id) }
   setContinueSession(e: boolean) { this.#claudeLLM.setContinueSession(e) }

@@ -2047,6 +2047,12 @@ async function main() {
   let participantConnectedHandler: ((p: RemoteParticipant) => Promise<void>) | null = null
   let currentAgent: voice.Agent | null = null  // For updateChatCtx() context injection
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
+  // Voice bus for instance-swap handoff (assigned in createDirectSession). Declared
+  // here so the swap_foreground handler (different scope) can re-pipe the voice to a
+  // promoted background slot. See the "Voice bus" block in createDirectSession.
+  let voiceBus: import('node:events').EventEmitter | null = null
+  let unpipeVoice: (() => void) | null = null
+  let pipeVoiceFrom: ((emitter: import('node:events').EventEmitter) => (() => void)) | null = null
 
   // ============================================================
   // SLICE 1: HEADLESS BACKGROUND SESSION REGISTRY
@@ -3410,6 +3416,31 @@ async function main() {
     directLLM?.setTurbo?.(turboMode)
     currentLLM = directLLM
 
+    // ── Voice bus (instance-swap handoff) ───────────────────────────────────────
+    // The heavy LLM-event handlers below attach ONCE to this stable bus. A thin
+    // pipe forwards events from whichever inner ClaudeLLM is currently foreground.
+    // To hand the voice to a different, already-running subprocess (a background
+    // slot) we just re-pipe the bus (swap_foreground) — the handlers never move,
+    // and neither subprocess is killed. Handlers that need the live foreground LLM
+    // (respondToPermission / suppressMeetingTTS) read `currentLLM`, which the swap
+    // keeps pointed at the voice-owning wrapper.
+    const { EventEmitter: VoiceBusEmitter } = await import('node:events')
+    const vbus = new VoiceBusEmitter()
+    vbus.setMaxListeners(50)
+    voiceBus = vbus
+    const VOICE_EVENTS = ['mcp_servers_changed', 'tool_use', 'tool_result', 'assistant_text', 'assistant_result', 'tts_chunks', 'permission_request', 'tts_say', 'session_resume_failed', 'checkpoint_captured', 'dispatch_rejected', 'task_completed', 'agent_started']
+    pipeVoiceFrom = (emitter: import('node:events').EventEmitter): (() => void) => {
+      const forwarders: Array<[string, (...a: any[]) => void]> = []
+      for (const ev of VOICE_EVENTS) {
+        const fn = (...args: any[]) => { vbus.emit(ev, ...args) }
+        emitter.on(ev, fn)
+        forwarders.push([ev, fn])
+      }
+      return () => { for (const [ev, fn] of forwarders) emitter.off(ev, fn) }
+    }
+    // Pipe the initial foreground inner. Reassigned by swap_foreground.
+    unpipeVoice = pipeVoiceFrom(directLLM.events)
+
     // P1 host-agent anchor: this dashboard-started session owns the room's env
     // and keeps it alive (agentsActive → true) so background dispatches survive.
     // Keep-alive keys off the hostActive boolean, NOT a session_id event;
@@ -3445,7 +3476,7 @@ async function main() {
     }
 
     // Wire up MCP server changes to frontend
-    directLLM.events.on('mcp_servers_changed', (data) => {
+    vbus.on('mcp_servers_changed', (data) => {
       console.log(`🔌 MCP servers changed: ${data.enabledKeys.join(', ') || 'none'}`)
       sendToFrontend({
         type: 'mcp_servers_changed',
@@ -3455,12 +3486,12 @@ async function main() {
     })
 
     // Wire up events from the Claude SDK wrapper to frontend
-    directLLM.events.on('tool_use', (data) => {
+    vbus.on('tool_use', (data) => {
       console.log(`🔧 Claude: ${data.name}`)
       sendToFrontend(buildToolLogEvent(data.name, data.input, 'running', data.agentRole || 'main', data.agentId))
     })
 
-    directLLM.events.on('tool_result', (data) => {
+    vbus.on('tool_result', (data) => {
       console.log(`✅ Done: ${data.name}`)
       sendToFrontend(buildToolLogEvent(data.name, data.input, 'completed', data.agentRole || 'main', data.agentId))
 
@@ -3478,7 +3509,7 @@ async function main() {
     })
 
     // Wire up Claude text output - RAW text goes to frontend for chat bubbles
-    directLLM.events.on('assistant_text', (data) => {
+    vbus.on('assistant_text', (data) => {
       console.log(`💬 Claude text (${data.text?.length || 0} chars): ${data.text || ''}`)
       sendToFrontend({
         type: 'claude_output',
@@ -3491,7 +3522,7 @@ async function main() {
     })
 
     // Wire up Claude final result - RAW result goes to frontend
-    directLLM.events.on('assistant_result', (data) => {
+    vbus.on('assistant_result', (data) => {
       console.log(`📋 Claude result (${data.text?.length || 0} chars): ${data.text || ''}`)
       sendToFrontend({
         type: 'claude_output',
@@ -3504,7 +3535,7 @@ async function main() {
     })
 
     // Wire up ordered TTS chunk list — emitted once per turn for read-along
-    directLLM.events.on('tts_chunks', (data) => {
+    vbus.on('tts_chunks', (data) => {
       sendToFrontend({
         type: 'tts_chunks',
         messageId: data.messageId,
@@ -3513,7 +3544,7 @@ async function main() {
     })
 
     // Wire up permission requests - sends to frontend for user approval
-    directLLM.events.on('permission_request', (data) => {
+    vbus.on('permission_request', (data) => {
       console.log(`⚠️ Permission needed: ${data.toolName}`)
       const toolName = data.toolName
       const input = data.input || {}
@@ -3523,7 +3554,7 @@ async function main() {
         const filePath = String(input?.file_path || '')
         if (filePath && sessionAlwaysAllowPaths.has(filePath)) {
           console.log(`✅ Session always-allow: ${filePath}`)
-          directLLM.respondToPermission(true)
+          currentLLM?.respondToPermission(true)
           return
         }
       }
@@ -3617,7 +3648,7 @@ async function main() {
 
     // Wire up TTS say — bypass LiveKit's BufferedTokenStream, speak directly via session.say()
     // Each text block from Claude gets spoken immediately as it arrives, no internal buffering
-    directLLM.events.on('tts_say', (data) => {
+    vbus.on('tts_say', (data) => {
       if (!data.text?.trim()) {
         console.log(`🔇 tts_say fired but text is empty — skipping`)
         return
@@ -3632,7 +3663,7 @@ async function main() {
       // nulled currentSession and EVERY meeting reply was "text dropped" — the
       // deaf-bot bug proven live 2026-08-01 via synthetic transcript inject.
       // Set by PipelineDirectLLM.chat() when the turn is a [MEETING —] chunk.
-      if ((directLLM as unknown as { suppressMeetingTTS?: boolean }).suppressMeetingTTS) {
+      if ((currentLLM as unknown as { suppressMeetingTTS?: boolean }).suppressMeetingTTS) {
         // Parity relay (behind OSBORN_MEETING_AUDIO=parity) speaks via
         // session.say, so it still needs a live session — it falls through to
         // the normal browser-TTS path below only when currentSession exists.
@@ -3782,7 +3813,7 @@ async function main() {
     })
 
     // Wire up session resume failure - notify frontend when SDK creates new session instead
-    directLLM.events.on('session_resume_failed', (data) => {
+    vbus.on('session_resume_failed', (data) => {
       console.error(`❌ Session resume failed: ${data.requestedSessionId} → ${data.actualSessionId}`)
       sendToFrontend({
         type: 'session_resume_failed',
@@ -3792,7 +3823,7 @@ async function main() {
     })
 
     // Wire up file checkpoint capture - track restore points for file rewind
-    directLLM.events.on('checkpoint_captured', (data) => {
+    vbus.on('checkpoint_captured', (data) => {
       console.log(`📍 Checkpoint: ${data.checkpointId.substring(0, 8)}...`)
       sendToFrontend({
         type: 'checkpoint_captured',
@@ -3801,7 +3832,7 @@ async function main() {
     })
 
     // Dispatcher v1 — writer reviewer rejected verdict → frontend
-    directLLM.events.on('dispatch_rejected', (data: { tuid: string; verdict: string; review: string }) => {
+    vbus.on('dispatch_rejected', (data: { tuid: string; verdict: string; review: string }) => {
       console.log(`[DISPATCH] dispatch_rejected tuid=${(data.tuid ?? '').slice(0, 8)} sending to frontend`)
       sendToFrontend({
         type: 'task_review',
@@ -3812,7 +3843,7 @@ async function main() {
     })
 
     // Dispatcher v1 — sub-agent completed → frontend (Feature A)
-    directLLM.events.on('task_completed', (d: any) => sendToFrontend({
+    vbus.on('task_completed', (d: any) => sendToFrontend({
       type: 'task_completed',
       agent_type: d.agent_type,
       agent_id: d.agent_id,
@@ -3820,7 +3851,7 @@ async function main() {
     }))
 
     // Dispatcher v1 — sub-agent started → frontend stop-key signal (Feature A2)
-    directLLM.events.on('agent_started', (d: any) => sendToFrontend({
+    vbus.on('agent_started', (d: any) => sendToFrontend({
       type: 'agent_started',
       agent_type: d.agent_type,
       agent_id: d.agent_id,
@@ -5998,6 +6029,68 @@ async function main() {
           await sendToFrontend({ type: 'slots_list', slots: [...focusedEntry2, ...bgEntries2] })
           // If that was the last background agent and no host anchor, let the room idle-exit.
           armAloneTimer()
+        }
+      }
+      else if (data.type === 'swap_foreground') {
+        // Promote a background slot to the live voice session, and DEMOTE the current
+        // foreground to a background slot — KEEPING BOTH SUBPROCESSES ALIVE (so the old
+        // primary's in-flight sub-agents keep running). Mechanics:
+        //   1. detach the voice bus from the old inner, 2. swapInner → the slot's ClaudeLLM,
+        //   3. re-pipe the bus from the promoted inner's events, 4. adopt the old inner as a
+        //   background slot with its own UI-forwarding, 5. drop the promoted slot from the map.
+        // The voice AgentSession is untouched (it holds the wrapper); no reconnect.
+        const sid = data.sessionId as string | undefined
+        let key: string | undefined
+        if (sid) {
+          if (slots.has(sid)) key = sid
+          else key = [...slots.keys()].find(k => k === sid || k.startsWith(sid) || sid.startsWith(k))
+        }
+        const wrapper = currentLLM as any
+        if (!currentLLM || !voiceBus || !pipeVoiceFrom || typeof wrapper?.swapInner !== 'function') {
+          await sendToFrontend({ type: 'background_session_error', slotId: sid ?? null, error: 'Swap unavailable (no live voice session or unsupported mode)' })
+        } else if (!key) {
+          await sendToFrontend({ type: 'background_session_error', slotId: sid ?? null, error: 'No matching background instance to promote' })
+        } else {
+          const slot = slots.get(key)!
+          const oldInner = wrapper.inner
+          const oldId = (oldInner?.sessionId as string | null) || currentResumeSessionId || null
+          const oldWorkingDir = workingDir
+          console.log(`🔀 Swap foreground: promote ${key.substring(0, 8)} ⇄ demote ${(oldId || '?').substring(0, 8)}`)
+
+          // 1-3) Move the voice bus from the old inner to the promoted inner.
+          try { unpipeVoice?.() } catch {}
+          wrapper.swapInner(slot.llm)
+          unpipeVoice = pipeVoiceFrom(slot.llm.events)
+          currentResumeSessionId = key
+          if (hostSessionId) hostSessionId = key
+
+          // 4) Adopt the old foreground as a LIVE background slot (not killed). Forward its
+          //    in-flight events (it's chat-driven → emits on oldInner.events) to the UI tagged
+          //    with its id so you can still watch it. NOTE: no sdkOptions captured for the
+          //    demoted session, so a NEW dispatch to it requires a respawn — it stays alive and
+          //    finishes current work regardless. (Flagged for sandbox verification.)
+          if (oldId && oldInner) {
+            const { EventEmitter: DemoteEmitter } = await import('node:events')
+            const demoteBus = new DemoteEmitter()
+            const demoted: SessionSlot = { id: oldId, llm: oldInner, isFocused: false, workingDir: oldWorkingDir, emitter: demoteBus }
+            for (const ev of ['assistant_text', 'tool_use', 'tool_result', 'task_completed']) {
+              oldInner.events.on(ev, (payload: any) => { sendToFrontend({ type: ev === 'assistant_text' ? 'claude_output' : ev, slotId: oldId, ...(payload || {}) }).catch(() => {}) })
+            }
+            slots.set(oldId, demoted)
+          }
+
+          // 5) The promoted session is now foreground — remove it from the slot registry.
+          slots.delete(key)
+
+          // Tell the frontend: reload the promoted session's context + refresh the panel.
+          const summary = await getSessionSummary(key, workingDir).catch(() => null)
+          const conversationHistory = await getConversationHistory(key, workingDir, 30).catch(() => [])
+          await sendToFrontend({ type: 'session_switched', sessionId: key, success: true, summary, conversationHistory })
+          const fId = key
+          const fEntry = [{ id: fId, isFocused: true, workingDir, hasSession: currentLLM.hasSession?.() ?? false }]
+          const bEntries = [...slots.values()].map(s => ({ id: s.id, isFocused: s.isFocused, workingDir: s.workingDir, hasSession: s.llm.hasSession?.() ?? false }))
+          await sendToFrontend({ type: 'slots_list', slots: [...fEntry, ...bEntries] })
+          try { if (currentSession) await (currentSession as any).say('Switched. This instance is live now — the previous one keeps running in the background.') } catch {}
         }
       }
       else if (data.type === 'list_slots') {

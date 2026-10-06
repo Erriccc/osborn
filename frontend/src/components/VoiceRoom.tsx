@@ -1916,6 +1916,7 @@ function InstancesPanel({
   onSpawn,
   onDispatch,
   onStopInstance,
+  onSwap,
   onClose,
 }: {
   slots: SlotInfo[]
@@ -1926,6 +1927,7 @@ function InstancesPanel({
   onSpawn: (sessionId?: string, workingDir?: string) => void
   onDispatch: (targetSessionId: string, instruction: string) => void
   onStopInstance: (sessionId: string) => void
+  onSwap: (sessionId: string) => void
   onClose: () => void
 }) {
   // Build a synthetic "focused" card from the existing session if the agent's
@@ -2023,6 +2025,20 @@ function InstancesPanel({
               >
                 {slot.isFocused ? 'focused' : 'background'}
               </span>
+              {/* Make foreground — promote this background slot to the live voice session
+                  (the current focused one is demoted to background, kept running). */}
+              {!slot.isFocused && slot.hasSession && slot.status !== 'error' && (
+                <button
+                  onClick={() => onSwap(slot.id)}
+                  title="Make this the live voice instance (current one moves to background)"
+                  aria-label="Make foreground"
+                  className="shrink-0 p-0.5 rounded text-gray-500 hover:text-amber-300 hover:bg-amber-500/10 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                  </svg>
+                </button>
+              )}
               {/* Close/stop — background slots only (never the focused voice session). */}
               {!slot.isFocused && (
                 <button
@@ -4136,6 +4152,14 @@ function VoiceRoomInner({
     setSlots(prev => prev.filter(s => s.id !== sessionId))
   }, [sendToAgent])
 
+  // Promote a background instance to the live voice session (demotes the current
+  // focused one to background, keeping it alive). The agent re-points the voice bus
+  // and replies with session_switched + slots_list; those handlers do the UI update.
+  const handleSwapInstance = useCallback((sessionId: string) => {
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'swap_foreground', sessionId })), { reliable: true })
+  }, [sendToAgent])
+
   // Meeting (Recall.ai) handlers
   const handleJoinMeeting = useCallback((meetingUrl: string) => {
     // Cast the meeting CANVAS as the bot's camera+mic (Recall output_media) —
@@ -4941,6 +4965,7 @@ function VoiceRoomInner({
                     onSpawn={handleSpawnInstance}
                     onDispatch={handleDispatchBackground}
                     onStopInstance={handleStopInstance}
+                    onSwap={handleSwapInstance}
                     onClose={() => setShowInstancesPanel(false)}
                   />
                 )}
