@@ -35,9 +35,11 @@ const PRICES: Record<string, { p: number; c: number }> = {
 const UNKNOWN_PRICE = { p: 3e-6, c: 15e-6 }
 export const priceFor = (model: string) => PRICES[model] ?? UNKNOWN_PRICE
 
+/** OFF when OSBORN_CONTENT_PIPELINE, OSBORN_CONTENT_LENS or OSBORN_CONTENT_INGEST is 0/off/false/no: ingest off ⇒ no LLM spend at all. */
 export function isContentPipelineEnabled(): boolean {
   if (!isContentLensEnabled()) return false
-  return !OFF.includes((process.env.OSBORN_CONTENT_PIPELINE ?? '').trim().toLowerCase())
+  const off = (k: string) => OFF.includes((process.env[k] ?? '').trim().toLowerCase())
+  return !off('OSBORN_CONTENT_PIPELINE') && !off('OSBORN_CONTENT_INGEST')
 }
 
 const envNum = (k: string, d: number): number => {
@@ -52,9 +54,10 @@ export interface ContentCaps {
   maxPieces: number
 }
 export function contentCaps(): ContentCaps {
+  // Official names first; the plan's earlier names (…_PERIOD_CAP_USD / …_DAY_CAP_USD) are accepted as fallback aliases.
   return {
-    periodUsd: envNum('OSBORN_CONTENT_PERIOD_USD', 0.75),
-    dailyUsd: envNum('OSBORN_CONTENT_DAILY_USD', 2.0),
+    periodUsd: envNum('OSBORN_CONTENT_PERIOD_USD', envNum('OSBORN_CONTENT_PERIOD_CAP_USD', 0.75)),
+    dailyUsd: envNum('OSBORN_CONTENT_DAILY_USD', envNum('OSBORN_CONTENT_DAY_CAP_USD', 2.0)),
     maxPieces: Math.max(0, Math.floor(envNum('OSBORN_CONTENT_MAX_PIECES', 4))),
   }
 }

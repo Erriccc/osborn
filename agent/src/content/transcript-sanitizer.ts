@@ -187,6 +187,12 @@ export const SECRET_RULES: SecretRule[] = [
     re: /(?<![A-Za-z0-9_])snx_proj_[A-Za-z0-9_-]{20,}/g,
     replace: '[REDACTED-SONIOX-KEY]',
   },
+  // Bare Soniox key (snx_<body>, no proj_ segment); the 16-char floor skips prefix mentions.
+  {
+    kind: 'SONIOX-KEY',
+    re: /(?<![A-Za-z0-9_])snx_(?!proj_)[A-Za-z0-9]{16,}/g,
+    replace: '[REDACTED-SONIOX-KEY]',
+  },
   // JWTs (header.payload.signature, base64url).
   {
     kind: 'JWT',
