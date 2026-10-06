@@ -2069,6 +2069,7 @@ async function main() {
     sdkOptions?: any
     dispatchInFlight?: boolean
     kickoffDone?: boolean  // the [BACKGROUND_INIT] ack's assistant_result has been consumed
+    unforward?: () => void // disposes this slot's background UI forwarders (for promote/stop)
   }
   const slots = new Map<string, SessionSlot>()
   let focusedSlotId: string | null = null  // reserved for future focused-slot wiring; not used yet
@@ -2253,6 +2254,39 @@ async function main() {
   // Output events are forwarded to the frontend data channel only,
   // tagged with the slot id so the frontend can distinguish them.
   // ============================================================
+  // Attach a background slot's UI forwarders to the emitter its consumer emits on, and
+  // return a disposer. Forwards turn events to the frontend tagged with slotId but
+  // DELIBERATELY never forwards tts_say — a background slot must stay silent. Shared by
+  // spawnBackgroundSession (fresh slot) and the swap demote path (adopted old foreground)
+  // so both slot kinds behave identically, and so promotion can cleanly stop background
+  // forwarding (call the disposer) before re-piping that same emitter to the voice bus.
+  function attachBackgroundForwarders(emitter: import('node:events').EventEmitter, slotId: string): () => void {
+    const handlers: Array<[string, (...a: any[]) => void]> = []
+    const on = (ev: string, fn: (...a: any[]) => void) => { emitter.on(ev, fn); handlers.push([ev, fn]) }
+    on('assistant_text', ({ text }: any) => { sendToFrontend({ type: 'claude_output', slotId, text }).catch(() => {}) })
+    on('tool_use', ({ name, input, agentRole, agentId }: any) => { sendToFrontend({ type: 'tool_use', slotId, name, input, agentRole, agentId }).catch(() => {}) })
+    on('tool_result', ({ name, response, agentRole, agentId }: any) => { sendToFrontend({ type: 'tool_result', slotId, name, response, agentRole, agentId }).catch(() => {}) })
+    on('tool_blocked', ({ name, reason }: any) => { sendToFrontend({ type: 'tool_blocked', slotId, name, reason }).catch(() => {}) })
+    on('session_id', ({ sessionId: sid }: any) => { sendToFrontend({ type: 'background_session_ready', slotId, sessionId: sid }).catch(() => {}) })
+    on('session_resume_failed', ({ requestedSessionId, actualSessionId }: any) => {
+      console.error(`❌ Background slot ${slotId.substring(0, 8)}: resume failed — requested ${requestedSessionId?.substring(0, 8)} got ${actualSessionId?.substring(0, 8)}`)
+      sendToFrontend({ type: 'background_session_error', slotId, error: 'Session resume failed' }).catch(() => {})
+    })
+    on('consumer_error', ({ message }: any) => {
+      console.error(`❌ Background slot ${slotId.substring(0, 8)}: consumer error — ${message}`)
+      sendToFrontend({ type: 'background_session_error', slotId, error: String(message || 'Background session failed to start') }).catch(() => {})
+    })
+    on('assistant_result', ({ text }: any) => {
+      const slot = slots.get(slotId)
+      if (!slot) return
+      if (!slot.kickoffDone) { slot.kickoffDone = true; return }
+      if (!slot.dispatchInFlight) return
+      slot.dispatchInFlight = false
+      sendToFrontend({ type: 'background_update', sessionId: slotId, stage: 'done', summary: (text || '').trim().slice(0, 500) }).catch(() => {})
+    })
+    return () => { for (const [ev, fn] of handlers) emitter.off(ev, fn) }
+  }
+
   async function spawnBackgroundSession(sessionId: string, bgWorkingDir?: string): Promise<void> {
     // Hard cap: focused session + background slots must not exceed 3 total.
     // slots Map holds ONLY background slots; focused session is separate.
@@ -2268,15 +2302,19 @@ async function main() {
 
     console.log(`🔲 Spawning background slot: sessionId=${slotId.substring(0, 8)} cwd=${slotWorkingDir}`)
 
-    // Create a headless LLM instance — reuse the same factory, no voice options.
+    // Create the headless LLM in the SAME SHAPE as the foreground inner so it can be
+    // promoted to the voice session with a simple re-pipe (no reconfiguration):
+    //   skipTTSQueue: true → its consumer emits `tts_say` (speech), exactly like the
+    //   foreground, instead of queue.put. All events land on the instance's own
+    //   `.events` emitter (the unified bus), so promote = pipe the voice bus from
+    //   slot.llm.events; background = forward those same events to the UI minus tts_say.
     // permissionMode bypassPermissions: no dialogs (headless — nobody to click Allow).
-    // No AgentSession, no room involvement.
     const bgLLM = createClaudeLLM({
       workingDirectory: slotWorkingDir,
       sessionBaseDir: slotWorkingDir,
       resumeSessionId: sessionId,
       voiceMode: 'direct',           // picks up the research system prompt
-      skipTTSQueue: false,           // not going through TTS at all
+      skipTTSQueue: true,            // emit tts_say like the foreground (promotable)
       permissionMode: 'bypassPermissions',
     })
 
@@ -2285,54 +2323,11 @@ async function main() {
     const slot: SessionSlot = { id: slotId, llm: bgLLM, isFocused: false, workingDir: slotWorkingDir }
     slots.set(slotId, slot)
 
-    // Dedicated EventEmitter for this background slot's SDK events.
-    // Forwards every event to the frontend data channel tagged with slotId.
-    // NEVER touches session.say() / TTS / voice.
-    const { EventEmitter: SlotEventEmitter } = await import('node:events')
-    const bgEmitter = new SlotEventEmitter()
-
-    bgEmitter.on('assistant_text', ({ text }: { text: string }) => {
-      sendToFrontend({ type: 'claude_output', slotId, text }).catch(() => {})
-    })
-    bgEmitter.on('tool_use', ({ name, input, agentRole }: any) => {
-      sendToFrontend({ type: 'tool_use', slotId, name, input, agentRole }).catch(() => {})
-    })
-    bgEmitter.on('tool_result', ({ name, response, agentRole }: any) => {
-      sendToFrontend({ type: 'tool_result', slotId, name, response, agentRole }).catch(() => {})
-    })
-    bgEmitter.on('tool_blocked', ({ name, reason }: any) => {
-      sendToFrontend({ type: 'tool_blocked', slotId, name, reason }).catch(() => {})
-    })
-    bgEmitter.on('session_id', ({ sessionId: sid }: { sessionId: string }) => {
-      sendToFrontend({ type: 'background_session_ready', slotId, sessionId: sid }).catch(() => {})
-    })
-    bgEmitter.on('session_resume_failed', ({ requestedSessionId, actualSessionId }: any) => {
-      console.error(`❌ Background slot ${slotId.substring(0, 8)}: resume failed — requested ${requestedSessionId?.substring(0, 8)} got ${actualSessionId?.substring(0, 8)}`)
-      sendToFrontend({ type: 'background_session_error', slotId, error: 'Session resume failed' }).catch(() => {})
-    })
-    // Cold-start crash in the background consumer (claude-llm #startBackgroundConsumer
-    // catch): surface it so the frontend's "Spawning…" clears instead of hanging forever.
-    bgEmitter.on('consumer_error', ({ message }: any) => {
-      console.error(`❌ Background slot ${slotId.substring(0, 8)}: consumer error — ${message}`)
-      sendToFrontend({ type: 'background_session_error', slotId, error: String(message || 'Background session failed to start') }).catch(() => {})
-    })
-    // P1: a real dispatch finished — notify the frontend. The [BACKGROUND_INIT]
-    // ack also fires assistant_result, so gate on dispatchInFlight to skip it.
-    bgEmitter.on('assistant_result', ({ text }: { text: string }) => {
-      const slot = slots.get(slotId)
-      if (!slot) return
-      // The [BACKGROUND_INIT] kickoff also fires assistant_result and, on the cold-spawn
-      // dispatch path, can arrive AFTER dispatchInFlight was set. Consume that first result
-      // as the kickoff ack so it's never mis-reported as (and never clobbers) the dispatch's
-      // real answer.
-      if (!slot.kickoffDone) { slot.kickoffDone = true; return }
-      if (!slot.dispatchInFlight) return  // only notify for a real dispatched instruction
-      slot.dispatchInFlight = false
-      sendToFrontend({ type: 'background_update', sessionId: slotId, stage: 'done', summary: (text || '').trim().slice(0, 500) }).catch(() => {})
-    })
-    // Wire up the LLM's internal EventEmitter so hook-emitted events also flow.
-    bgLLM.events.on('session_id', (data: any) => bgEmitter.emit('session_id', data))
-    bgLLM.events.on('tool_blocked', (data: any) => bgEmitter.emit('tool_blocked', data))
+    // Background UI forwarders on the instance's own emitter (the unified bus). Silent
+    // (no tts_say). Disposer stored so promotion can stop background forwarding before
+    // the same emitter is piped to the voice bus.
+    const unforward = attachBackgroundForwarders(bgLLM.events, slotId)
+    slot.unforward = unforward
 
     // Build minimal sdkOptions for the headless cold start.
     // resume: sessionId brings up real prior context from JSONL.
@@ -2364,11 +2359,11 @@ async function main() {
       env: bgEnv,
     }
 
-    // P1: persist the cold-start emitter + sdkOptions on the slot so a later
-    // dispatch_background can reuse them. CRITICAL: pushMessage's fast path
-    // ignores the callbacks/emitter arg once the subprocess exists, so a
-    // dispatch MUST reuse THIS emitter — otherwise its output goes nowhere.
-    slot.emitter = bgEmitter
+    // Persist the cold-start emitter + sdkOptions on the slot so a later
+    // dispatch_background can reuse them. The slot's output emitter IS its own
+    // bgLLM.events (unified bus) — pushMessage's fast path ignores the callbacks/emitter
+    // arg once the subprocess exists, so the consumer stays bound to bgLLM.events.
+    slot.emitter = bgLLM.events
     slot.sdkOptions = bgSdkOptions
 
     // Cold-start: deliver an init message so the subprocess actually spawns
@@ -2378,10 +2373,10 @@ async function main() {
     bgLLM.pushMessage(KICKOFF_TEXT, bgSdkOptions as any, {
       onSessionId: (sid: string) => {
         console.log(`✅ Background slot ${slotId.substring(0, 8)}: session confirmed ${sid.substring(0, 8)}`)
-        bgEmitter.emit('session_id', { sessionId: sid })
+        bgLLM.events.emit('session_id', { sessionId: sid })
       },
       onCheckpoint: (_ckpt: string) => { /* not needed for headless */ },
-      eventEmitter: bgEmitter,
+      eventEmitter: bgLLM.events,
     })
 
     console.log(`✅ Background slot registered: id=${slotId.substring(0, 8)} workingDir=${slotWorkingDir}`)
@@ -6018,6 +6013,7 @@ async function main() {
           await sendToFrontend({ type: 'background_session_error', slotId: sid ?? null, error: 'No matching background instance to stop' })
         } else {
           const slot = slots.get(key)!
+          try { slot.unforward?.() } catch {}   // remove its UI forwarders (no leak on repeat)
           try { (slot.llm as any).abortQuery?.(); (slot.llm as any).abortAgent?.() } catch {}
           slots.delete(key)
           console.log(`🗑️ Stopped background slot ${key.substring(0, 8)}`)
@@ -6055,31 +6051,39 @@ async function main() {
           const oldInner = wrapper.inner
           const oldId = (oldInner?.sessionId as string | null) || currentResumeSessionId || null
           const oldWorkingDir = workingDir
-          console.log(`🔀 Swap foreground: promote ${key.substring(0, 8)} ⇄ demote ${(oldId || '?').substring(0, 8)}`)
+          if (!oldId || !oldInner) {
+            await sendToFrontend({ type: 'background_session_error', slotId: sid ?? null, error: 'Foreground session not ready to demote yet — try again in a moment' })
+          } else {
+          console.log(`🔀 Swap foreground: promote ${key.substring(0, 8)} ⇄ demote ${oldId.substring(0, 8)}`)
 
-          // 1-3) Move the voice bus from the old inner to the promoted inner.
+          // PROMOTE — the slot was spawned in foreground shape (skipTTSQueue:true, events on
+          // slot.llm.events). Stop forwarding it as a (silent) background row, then pipe the
+          // voice bus from that SAME emitter so its tts_say/text/tools now drive the voice.
+          try { slot.unforward?.() } catch {}
           try { unpipeVoice?.() } catch {}
-          wrapper.swapInner(slot.llm)
+          wrapper.swapInner(slot.llm)                 // also aborts old inner's in-flight fast-brain turn
+          wrapper.setWorkingContext?.(slot.workingDir)
           unpipeVoice = pipeVoiceFrom(slot.llm.events)
           currentResumeSessionId = key
           if (hostSessionId) hostSessionId = key
 
-          // 4) Adopt the old foreground as a LIVE background slot (not killed). Forward its
-          //    in-flight events (it's chat-driven → emits on oldInner.events) to the UI tagged
-          //    with its id so you can still watch it. NOTE: no sdkOptions captured for the
-          //    demoted session, so a NEW dispatch to it requires a respawn — it stays alive and
-          //    finishes current work regardless. (Flagged for sandbox verification.)
-          if (oldId && oldInner) {
-            const { EventEmitter: DemoteEmitter } = await import('node:events')
-            const demoteBus = new DemoteEmitter()
-            const demoted: SessionSlot = { id: oldId, llm: oldInner, isFocused: false, workingDir: oldWorkingDir, emitter: demoteBus }
-            for (const ev of ['assistant_text', 'tool_use', 'tool_result', 'task_completed']) {
-              oldInner.events.on(ev, (payload: any) => { sendToFrontend({ type: ev === 'assistant_text' ? 'claude_output' : ev, slotId: oldId, ...(payload || {}) }).catch(() => {}) })
-            }
-            slots.set(oldId, demoted)
+          // DEMOTE — adopt the old foreground as a LIVE, full background slot (not killed).
+          // Its consumer emits on oldInner.events, so attach the shared background forwarders
+          // there (silent — no tts_say). Give it sdkOptions so dispatch_background accepts it,
+          // and kickoffDone=true (it's already live; no [BACKGROUND_INIT] to consume).
+          const demoteUnforward = attachBackgroundForwarders(oldInner.events, oldId)
+          const demotedEnv: Record<string, string> = {}
+          for (const [k, v] of Object.entries(process.env)) { if (v !== undefined) demotedEnv[k] = v }
+          demotedEnv['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
+          demotedEnv['IS_SANDBOX'] = '1'
+          const demoted: SessionSlot = {
+            id: oldId, llm: oldInner, isFocused: false, workingDir: oldWorkingDir,
+            emitter: oldInner.events, unforward: demoteUnforward, kickoffDone: true,
+            sdkOptions: { cwd: oldWorkingDir, resume: oldId, permissionMode: 'bypassPermissions' as const, enableFileCheckpointing: false, settingSources: ['project', 'user'] as any, env: demotedEnv },
           }
+          slots.set(oldId, demoted)
 
-          // 5) The promoted session is now foreground — remove it from the slot registry.
+          // The promoted session is now foreground — remove it from the slot registry.
           slots.delete(key)
 
           // Tell the frontend: reload the promoted session's context + refresh the panel.
@@ -6091,6 +6095,7 @@ async function main() {
           const bEntries = [...slots.values()].map(s => ({ id: s.id, isFocused: s.isFocused, workingDir: s.workingDir, hasSession: s.llm.hasSession?.() ?? false }))
           await sendToFrontend({ type: 'slots_list', slots: [...fEntry, ...bEntries] })
           try { if (currentSession) await (currentSession as any).say('Switched. This instance is live now — the previous one keeps running in the background.') } catch {}
+          }
         }
       }
       else if (data.type === 'list_slots') {

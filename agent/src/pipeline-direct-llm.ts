@@ -141,9 +141,21 @@ export class PipelineDirectLLM extends llm.LLM {
   get inner(): ClaudeLLM { return this.#claudeLLM }
   swapInner(next: ClaudeLLM): ClaudeLLM {
     const prev = this.#claudeLLM
+    // Cancel any in-flight fast-brain turn bound to the OLD inner so its agentControl
+    // closures (which capture `this`) can't fire interrupt/sendPrompt into the newly
+    // promoted session. Clear per-turn flags so the new inner starts clean.
+    try { this.#turnAbort?.abort() } catch {}
+    this.#turnAbort = null
+    this.#postCompactionTailPending = false
     this.#claudeLLM = next
     console.log('🔁 [pipeline] swapped inner ClaudeLLM (voice handoff)')
     return prev
+  }
+  // After a swap, point the dir-derived work (fast brain, session-tail) at the promoted
+  // session's working dir. Without this, #opts stays bound to the pre-swap session and a
+  // slot spawned with a different cwd would search the wrong store.
+  setWorkingContext(workingDirectory: string, sessionBaseDir?: string) {
+    this.#opts = { ...this.#opts, workingDirectory, sessionBaseDir: sessionBaseDir ?? workingDirectory }
   }
 
   // Proxy all methods
