@@ -13,7 +13,8 @@
  * Cache: 7 days per topic under <project>/.content-research-cache/<hash>.json.
  * --research-refresh bypasses it. Search queries are scrubbed, then must pass
  * the deterministic outbound gate (content-query-gate.ts) before leaving the
- * machine; if none survive, no search runs (status no-threads). Fail-open: network errors give fewer sources, never a throw —
+ * machine; if none survive, no search runs (status no-threads). A no-threads
+ * result is cached only when at least one source answered. Fail-open: network errors give fewer sources, never a throw —
  * EXCEPT a spend-cap hit (CapError), which the run turns into status "capped".
  */
 
@@ -259,7 +260,8 @@ export async function researchTopic(topic: ResearchTopic, o: ResearchOptions): P
   base.citations = cites
   log(`research "${clip(topic.subtopic, 60)}": ${cites.length} thread(s) (${cites.filter(c => c.source === 'github-issue').length} GitHub)`)
   if (cites.length < 2) {
-    writeCache(o.projectDir, base)
+    // Cache "no threads" only when a source actually answered; a network failure must not stick for 7 days.
+    if (reachable) writeCache(o.projectDir, base)
     return base
   }
   try {
