@@ -16,7 +16,8 @@
  * All outbound prompt text goes through the caller's scrub() first.
  */
 
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { closeSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { isContentLensEnabled } from './lens-launch.js'
@@ -111,9 +112,70 @@ const LOCK_TRIES = 40
 const LOCK_WAIT_MS = 50
 const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
+const lockToken = () => `${process.pid}.${randomBytes(8).toString('hex')}`
+
+/**
+ * Claim a stale lock atomically: rename it to a unique name (only ONE waiter's
+ * rename can succeed), then check the renamed file is the same stale lock we
+ * judged (inode, mtime, content). If a fresh lock was swapped in meanwhile, put
+ * it back with link() (fails rather than clobbers if a new lock exists). Returns
+ * true only to the waiter that removed the stale lock; any error = keep waiting.
+ */
+function claimStaleLock(lock: string): boolean {
+  let seen: { ino: number; mtimeMs: number; body: string }
+  try {
+    const fd = openSync(lock, 'r')
+    try {
+      const st = fstatSync(fd)
+      if (Date.now() - st.mtimeMs <= LOCK_STALE_MS) return false
+      seen = { ino: st.ino, mtimeMs: st.mtimeMs, body: readFileSync(fd, 'utf-8') }
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return false // vanished between calls
+  }
+  const claimed = `${lock}.stale.${process.pid}.${randomBytes(6).toString('hex')}`
+  try {
+    renameSync(lock, claimed)
+  } catch {
+    return false // another waiter claimed it first
+  }
+  let same = false
+  try {
+    const st = statSync(claimed)
+    same = st.ino === seen.ino && st.mtimeMs === seen.mtimeMs && readFileSync(claimed, 'utf-8') === seen.body
+  } catch {
+    /* treat as not ours */
+  }
+  if (!same) {
+    try {
+      linkSync(claimed, lock) // a live lock was swapped in: restore it
+    } catch {
+      /* a newer lock already exists */
+    }
+  }
+  try {
+    unlinkSync(claimed)
+  } catch {
+    /* already gone */
+  }
+  return same
+}
+
+/** Release only a lock this holder owns (its token is still in the file). */
+function releaseLock(lock: string, token: string): void {
+  try {
+    if (readFileSync(lock, 'utf-8') === token) unlinkSync(lock)
+  } catch {
+    /* already gone */
+  }
+}
+
 /**
  * Atomic read-modify-write of the machine ledger under a short `wx` lock file
- * (stale after 30s). `fn` returns the new ledger, or null to leave it unchanged.
+ * holding a unique token (stale after 30s, claimed via rename so only one waiter
+ * can remove it). `fn` returns the new ledger, or null to leave it unchanged.
  * Returns false when the lock could not be taken (callers decide fail-closed vs best-effort).
  */
 function withLedger(fn: (l: Ledger) => Ledger | null, tries = LOCK_TRIES): boolean {
@@ -127,16 +189,13 @@ function withLedger(fn: (l: Ledger) => Ledger | null, tries = LOCK_TRIES): boole
       fd = openSync(lock, 'wx')
     } catch (e: any) {
       if (e?.code !== 'EEXIST') throw e
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) unlinkSync(lock)
-      } catch {
-        /* lock vanished between calls → retry */
-      }
+      if (claimStaleLock(lock)) continue // we removed the stale lock: retry the wx create now
       sleepSync(LOCK_WAIT_MS)
       continue
     }
+    const token = lockToken()
     try {
-      writeSync(fd, String(process.pid))
+      writeSync(fd, token)
       const next = fn(readLedgerAt(path))
       if (next) {
         const cutoff = today(Date.now() - 14 * 86_400_000)
@@ -148,11 +207,7 @@ function withLedger(fn: (l: Ledger) => Ledger | null, tries = LOCK_TRIES): boole
       return true
     } finally {
       closeSync(fd)
-      try {
-        unlinkSync(lock)
-      } catch {
-        /* already gone */
-      }
+      releaseLock(lock, token)
     }
   }
   return false
