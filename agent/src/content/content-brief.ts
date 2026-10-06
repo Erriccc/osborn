@@ -101,7 +101,8 @@ export function planPrompt(page: string, maxHighlights: number, maxHowtos: numbe
     `- highlight = ${TIER_TEMPLATES.highlight.promise} Pick the period's strongest arc.`,
     `- howto = ${TIER_TEMPLATES.howto.promise} Only for something concrete someone else could copy. Skip if the period has none.`,
     'Each piece: {"id": "p1"..., "kind": "highlight"|"howto", "subtopic": the problem space in 3-8 words a stranger would search, ' +
-      '"story": the story title from the page it is built on, "queries": 1-2 short web search queries (2-5 words) people with this problem would type, ' +
+      '"story": the story title from the page it is built on, "queries": 1-2 SHORT searches (2-4 words) for the underlying general problem, phrased the way outsiders search HN / GitHub issues ' +
+      '(e.g. "claude code compaction", "api key machine auth"); no project-specific names or phrases, ' +
       `"from_row", "to_row": the row range on the page it comes from (within ${range.from}-${range.to}), "why": one line}.`,
     'Never plan pieces about invoices, payments owed, contracts or rates. Keep [client]-style tags; never guess names.',
     'Output ONLY: {"pieces": [...]}',
