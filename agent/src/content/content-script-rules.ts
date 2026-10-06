@@ -11,6 +11,8 @@
  *   SYSTEM-format-playbook-oct06.md (templates, ~2.5 words/s, audience anchor).
  */
 
+import { isContentStrict } from './content-llm.js'
+
 export type Tier = 'highlight' | 'howto'
 
 /** Spoken pace used for every length estimate (playbook: about 2.5 words/s). */
@@ -158,13 +160,21 @@ export const SCRIPT_RULES: string[] = [
   'Plain spoken English, short sentences, no markdown, no emojis, no stage directions inside "text".',
 ]
 
+const STAKE_RULE = 'STAKE: name the before -> after quantity or verdict the piece will SHOW (e.g. "facts recalled: 0/4 -> 4/4"), taken from the session.'
+
 export const BRIEF_RULES: string[] = [
   'Every brief starts with WHO is consuming it and what they are living through, picked from the research (who is living through it / common problems).',
   'One highlight per period at most; how-tos only where the session shows ONE specific, useful accomplishment someone could copy.',
   'Pick the format from the catalog by fit (what it needs vs. what the session has). No format is the default.',
   'Pick the stretch of the session (row range) the piece is built from; dev lines can only come from user rows in it.',
-  'STAKE: name the before -> after quantity or verdict the piece will SHOW (e.g. "facts recalled: 0/4 -> 4/4"), taken from the session. If the story has no provable before/after in the session, leave stake empty — it will not be scripted.',
+  `${STAKE_RULE} If the story has no provable before/after in the session, leave stake empty — the draft will be flagged "no visible proof".`,
 ]
+
+/** BRIEF_RULES for the current mode: under OSBORN_CONTENT_STRICT a missing stake blocks scripting, so say so. */
+export function briefRules(): string[] {
+  if (!isContentStrict()) return BRIEF_RULES
+  return BRIEF_RULES.map(r => (r.startsWith(STAKE_RULE) ? `${STAKE_RULE} If the story has no provable before/after in the session, leave stake empty — it will not be scripted.` : r))
+}
 
 export const AUDIENCE_RULES =
   'AUDIENCE CHECK (rules §4): for the target viewer named below, is every quote or term either already familiar to them or set up nearby ' +

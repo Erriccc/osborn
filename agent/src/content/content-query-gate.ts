@@ -10,6 +10,9 @@
  *   - has a token equal to the project basename or a cwd path segment, or
  *     contains such a segment as a phrase (acme-billing ⇔ "acme billing"), case-insensitive
  *   - is not 2-5 plain words
+ *
+ * The allowlist is structural only: it cannot recognise private plain words
+ * (client names, IPs, people), so it relies on the scrubber running first.
  */
 
 import { basename } from 'node:path'

@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { llmJson, type ContentLlmOptions } from './content-llm.js'
-import { BRIEF_RULES, FORMAT_CATALOG, TIER_TEMPLATES, type Tier } from './content-script-rules.js'
+import { briefRules, FORMAT_CATALOG, TIER_TEMPLATES, type Tier } from './content-script-rules.js'
 import type { TopicResearch } from './content-research.js'
 import { researchDigest } from './content-research.js'
 import { gateQueries } from './content-query-gate.js'
@@ -167,7 +167,7 @@ export function briefPrompt(cands: PieceCandidate[], research: Map<string, Topic
   })
   return [
     ...blocks,
-    `RULES:\n${BRIEF_RULES.map(r => `- ${r}`).join('\n')}`,
+    `RULES:\n${briefRules().map(r => `- ${r}`).join('\n')}`,
     'For EACH piece return {"id", "viewer": who is consuming it (role + situation, from the research), "situation": what they are living through (1 line), ' +
       '"format": one format id from its list, "angle": the one-line promise of the piece to that viewer, ' +
       '"problems": 1-3 of the research problems/scenarios it speaks to (copy their text), ' +
