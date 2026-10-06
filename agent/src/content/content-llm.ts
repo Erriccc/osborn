@@ -115,16 +115,16 @@ const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuf
 const lockToken = () => `${process.pid}.${randomBytes(8).toString('hex')}`
 
 /**
- * Claim a stale lock atomically: rename it to a unique name (only ONE waiter's
- * rename can succeed), then check the renamed file is the same stale lock we
- * judged (inode, mtime, content). If a fresh lock was swapped in meanwhile, put
- * it back with link() (fails rather than clobbers if a new lock exists). Returns
- * true only to the waiter that removed the stale lock; any error = keep waiting.
+ * Remove `path` if it is stale: rename it to a unique name (only ONE caller's
+ * rename can succeed), check the renamed file is the same stale file we judged
+ * (inode, mtime, content), and put it back with link() if a fresh one was
+ * swapped in (link fails rather than clobbers). True only to the caller that
+ * removed a stale file; any error = keep waiting.
  */
-function claimStaleLock(lock: string): boolean {
+function removeIfStale(path: string): boolean {
   let seen: { ino: number; mtimeMs: number; body: string }
   try {
-    const fd = openSync(lock, 'r')
+    const fd = openSync(path, 'r')
     try {
       const st = fstatSync(fd)
       if (Date.now() - st.mtimeMs <= LOCK_STALE_MS) return false
@@ -135,11 +135,11 @@ function claimStaleLock(lock: string): boolean {
   } catch {
     return false // vanished between calls
   }
-  const claimed = `${lock}.stale.${process.pid}.${randomBytes(6).toString('hex')}`
+  const claimed = `${path}.stale.${process.pid}.${randomBytes(6).toString('hex')}`
   try {
-    renameSync(lock, claimed)
+    renameSync(path, claimed)
   } catch {
-    return false // another waiter claimed it first
+    return false // another caller claimed it first
   }
   let same = false
   try {
@@ -150,9 +150,9 @@ function claimStaleLock(lock: string): boolean {
   }
   if (!same) {
     try {
-      linkSync(claimed, lock) // a live lock was swapped in: restore it
+      linkSync(claimed, path) // a live file was swapped in: restore it
     } catch {
-      /* a newer lock already exists */
+      /* a newer one already exists */
     }
   }
   try {
@@ -161,6 +161,33 @@ function claimStaleLock(lock: string): boolean {
     /* already gone */
   }
   return same
+}
+
+/**
+ * Claim a stale ledger lock. The judge-then-rename step runs under a short
+ * `<lock>.reap` guard so two waiters can never both act on one stale lock (or
+ * rename away the fresh lock the other just created). A guard left by a crash
+ * goes stale too and is removed the same way.
+ */
+function claimStaleLock(lock: string): boolean {
+  const guard = `${lock}.reap`
+  let g: number
+  try {
+    g = openSync(guard, 'wx')
+  } catch {
+    removeIfStale(guard)
+    return false
+  }
+  const token = lockToken()
+  try {
+    writeSync(g, token)
+    return removeIfStale(lock)
+  } catch {
+    return false
+  } finally {
+    closeSync(g)
+    releaseLock(guard, token)
+  }
 }
 
 /** Release only a lock this holder owns (its token is still in the file). */
