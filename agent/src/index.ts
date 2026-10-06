@@ -6049,7 +6049,11 @@ async function main() {
         } else {
           const slot = slots.get(key)!
           const oldInner = wrapper.inner
-          const oldId = (oldInner?.sessionId as string | null) || currentResumeSessionId || null
+          // Require a CONFIRMED session id for the session being demoted — never fall back
+          // to currentResumeSessionId, which can be stale from a prior swap and would tag the
+          // demoted row (and its stop/re-promote key) with the wrong id. If the foreground
+          // hasn't established its session yet (cold replay), refuse rather than mis-adopt.
+          const oldId = (oldInner?.sessionId as string | null) || null
           const oldWorkingDir = workingDir
           if (!oldId || !oldInner) {
             await sendToFrontend({ type: 'background_session_error', slotId: sid ?? null, error: 'Foreground session not ready to demote yet — try again in a moment' })
