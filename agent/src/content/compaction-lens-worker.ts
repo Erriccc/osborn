@@ -13,10 +13,15 @@
  *       copy to <path> instead of content-profile.md and leaves the HWM alone.
  *   node compaction-lens-worker.js --library <sessionId> [--cwd <dir>] [--dry] [--out-dir <dir>]
  *       LIBRARY step only (manual / dry run). Takes the per-project lock itself.
- * Per-compaction runs do TWO independent, fail-open steps under one lock:
+ *   node compaction-lens-worker.js --content <sessionId> [--cwd <dir>] [--dry] [--research-refresh]
+ *       CONTENT step (Stage A) only: manual / the per-project "Refresh research"
+ *       backend. --dry = no ingest (still spends, capped). Takes the per-project lock.
+ * Per-compaction runs do THREE independent, fail-open steps under one lock:
  *   1. the content lens (content-profile.md + HWM), unchanged;
  *   2. the library step (lens-library.ts): one period-map page for the period
- *      that just ended + INDEX.md. A failure in either never stops the other.
+ *      that just ended + INDEX.md;
+ *   3. the content step (content-run.ts, Stage A): research → briefs → scripts →
+ *      checks → draft ingest for that period. A failure in any never stops the others.
  * Fully self-contained: top-level try/catch, redacted log in the project dir,
  * refreshes + releases the per-project lock, always exits.
  */
@@ -28,17 +33,21 @@ import { resolveSessionDb } from './lens-db.js'
 import { acquireLock, refuseOutPath, releaseLock, resolveProjectDir, touchLock } from './lens-paths.js'
 import { logLine } from './lens-profile.js'
 import { runLibraryStep, type LibraryStepOptions } from './lens-library.js'
+import { runContentStep } from './content-run.js'
 
-// ≤2 big windows + reduce at ≤6 min/call, then the library step (1 call ≤6 min + model meta).
-const INCREMENTAL_TIMEOUT_MS = 35 * 60_000
+// ≤2 big windows + reduce at ≤6 min/call, then the library step (1 call ≤6 min + model meta),
+// then the content step (Stage A: ~10-18 small calls, ≤4 min each, capped in $).
+const INCREMENTAL_TIMEOUT_MS = 45 * 60_000
 const BACKFILL_TIMEOUT_MS = 3 * 60 * 60_000
 const LIBRARY_TIMEOUT_MS = 15 * 60_000
+const CONTENT_TIMEOUT_MS = 20 * 60_000
 
 interface Job {
   opts: LensRunOptions
-  /** 'library' = the --library CLI entry: library step only, no lens step. */
-  kind?: 'lens' | 'library'
+  /** 'library' = the --library CLI entry: library step only. 'content' = the --content entry: content step only. */
+  kind?: 'lens' | 'library' | 'content'
   library?: Pick<LibraryStepOptions, 'dry' | 'outDir'>
+  content?: { dry: boolean; researchRefresh: boolean }
   lockDir: string | null
   logDir: string | null
   timeoutMs: number
@@ -50,6 +59,22 @@ function argVal(argv: string[], flag: string): string | undefined {
 }
 
 function parseJob(argv: string[]): Job {
+  if (argv[0] === '--content') {
+    const sessionId = argv[1]
+    if (!sessionId || sessionId.startsWith('--')) throw new Error('usage: --content <sessionId> [--cwd <dir>] [--dry] [--research-refresh]')
+    const cwd = argVal(argv, '--cwd')
+    const db = resolveSessionDb(sessionId, null, cwd)
+    const projectDir = db ? dirname(dirname(dirname(db))) : null
+    if (!projectDir || !acquireLock(projectDir)) throw new Error(`content: project dir ${projectDir ?? '(none)'} missing or locked`)
+    return {
+      opts: { sessionId, cwd, mode: 'incremental' },
+      kind: 'content',
+      content: { dry: argv.includes('--dry'), researchRefresh: argv.includes('--research-refresh') },
+      lockDir: projectDir,
+      logDir: projectDir,
+      timeoutMs: CONTENT_TIMEOUT_MS,
+    }
+  }
   if (argv[0] === '--library') {
     const sessionId = argv[1]
     if (!sessionId || sessionId.startsWith('--')) throw new Error('usage: --library <sessionId> [--cwd <dir>] [--dry] [--out-dir <dir>]')
@@ -141,7 +166,7 @@ async function main(): Promise<number> {
     const t0 = Date.now()
     let lensErr: unknown = null
     // Step 1 — content lens (skipped by the --library entry).
-    if (job.kind !== 'library') {
+    if (job.kind !== 'library' && job.kind !== 'content') {
       try {
         const r = await runCompactionLens({
           ...job.opts,
@@ -163,7 +188,8 @@ async function main(): Promise<number> {
     }
     // Step 2 — library page for the period that just ended (per-compaction + --library only; never backfill).
     // runLibraryStep never throws; any failure is logged and the worker still exits cleanly.
-    if (job.opts.mode === 'incremental') {
+    let libPeriod: Awaited<ReturnType<typeof runLibraryStep>>['period'] = null
+    if (job.opts.mode === 'incremental' && job.kind !== 'content') {
       if (lockDir) touchLock(lockDir)
       const lib = await runLibraryStep({
         sessionId: job.opts.sessionId,
@@ -175,11 +201,33 @@ async function main(): Promise<number> {
       })
       logLine(logDir, `session ${sid}: library status=${lib.status} cost=$${lib.costUsd.toFixed(4)}${lib.page ? ` page=${lib.page}` : ''}`)
       if (job.kind === 'library') process.stdout.write(`${JSON.stringify({ status: lib.status, page: lib.page, index: lib.index, period: lib.period, cost: lib.costUsd, errors: lib.errors })}\n`)
+      if (lib.status === 'written') libPeriod = lib.period
+    }
+    // Step 3 — content plan (Stage A) for the period (per-compaction + --content; never backfill / --library).
+    // runContentStep never throws; the try is belt and braces so nothing here can fail the worker.
+    if (job.opts.mode === 'incremental' && job.kind !== 'library') {
+      try {
+        if (lockDir) touchLock(lockDir)
+        const c = await runContentStep({
+          sessionId: job.opts.sessionId,
+          projectDir: lockDir,
+          cwd: job.opts.cwd,
+          period: libPeriod,
+          dry: job.content?.dry,
+          researchRefresh: job.content?.researchRefresh,
+          keepAlive: () => lockDir && touchLock(lockDir),
+          log: m => logLine(logDir, `session ${sid} [content]: ${m}`),
+        })
+        logLine(logDir, `session ${sid}: content status=${c.status} pieces=${c.pieces.length} cost=$${c.costUsd.toFixed(4)}${c.capHit ? ` cap=${c.capHit}` : ''}`)
+        if (job.kind === 'content') process.stdout.write(`${JSON.stringify(c)}\n`)
+      } catch (err) {
+        logLine(logDir, `content step error (ignored): ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
     return lensErr ? 1 : 0
   } catch (err) {
     logLine(logDir, `worker error: ${err instanceof Error ? err.stack || err.message : String(err)}`)
-    if (err instanceof Error && /^(backfill|library):/.test(err.message)) process.stderr.write(`${err.message}\n`)
+    if (err instanceof Error && /^(backfill|library|content):/.test(err.message)) process.stderr.write(`${err.message}\n`)
     return 1
   } finally {
     if (lockDir) releaseLock(lockDir)
