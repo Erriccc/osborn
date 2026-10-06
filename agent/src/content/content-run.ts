@@ -15,7 +15,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import Database from 'better-sqlite3'
 import { loadConversationRows, recordView, resolveSessionDb, type DbRecord } from './lens-db.js'
 import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { pageFileName, segmentPeriods, type LibraryPeriod } from './lens-library-select.js'
@@ -32,6 +33,7 @@ import { writeScript, type Script } from './content-script.js'
 import { runChecks } from './content-checks.js'
 import { ingestScript, isIngestConfigured, pieceContentHash, scriptMarkdown, type ScriptDraft } from './content-ingest.js'
 import { needsIngest } from './lens-ingest.js'
+import { privateSegments } from './content-query-gate.js'
 
 export { isContentPipelineEnabled } from './content-llm.js'
 
@@ -118,6 +120,20 @@ export function pageRange(page: string, p: LibraryPeriod): { from: number; to: n
   const a = m ? Number(m[1]) : NaN
   const b = m ? Number(m[2]) : NaN
   return { from: Number.isFinite(a) ? Math.min(a, p.startRowId) : p.startRowId, to: Number.isFinite(b) ? Math.max(b, p.endRowId) : p.endRowId }
+}
+
+/** The session's working directories (session.db cwd column) — for the outbound-query gate. Best-effort. */
+function sessionCwds(db: string): string[] {
+  try {
+    const d = new Database(db, { readonly: true, fileMustExist: true })
+    try {
+      return (d.prepare('SELECT DISTINCT cwd FROM content WHERE cwd IS NOT NULL AND cwd != \'\' LIMIT 20').all() as { cwd: string }[]).map(r => String(r.cwd))
+    } finally {
+      d.close()
+    }
+  } catch {
+    return []
+  }
 }
 
 /** Truth-check ground truth: the page, the rows the script draws on, and the research it speaks to. */
@@ -233,9 +249,11 @@ export async function runContentStep(o: ContentRunOptions): Promise<ContentRunRe
       try {
         const { candidates } = await planPieces(pageText, range, caps.maxPieces, llm)
         const research = new Map<string, TopicResearch>()
+        // Project basename, slug and every cwd path segment: queries naming any of them never leave the machine.
+        const privateTerms = privateSegments([o.cwd, process.env.OSBORN_CWD, basename(projectDir), ...sessionCwds(db)])
         for (const c of candidates) {
           o.keepAlive?.()
-          research.set(c.id, await researchTopic({ subtopic: c.subtopic, queries: c.queries }, { projectDir, llm, refresh: o.researchRefresh }))
+          research.set(c.id, await researchTopic({ subtopic: c.subtopic, queries: c.queries }, { projectDir, llm, refresh: o.researchRefresh, privateTerms }))
         }
         const { briefs } = await buildBriefs(candidates, research, loadOwner(projectDir), llm)
         plan = { candidates, briefs, research: Object.fromEntries([...research].map(([id, r]) => [id, { key: r.key, digest: researchDigest(r), citations: researchCitations(r) }])) }

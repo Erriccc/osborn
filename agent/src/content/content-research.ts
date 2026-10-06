@@ -11,8 +11,9 @@
  *      uncited / unknown-cite findings are dropped deterministically.
  *
  * Cache: 7 days per topic under <project>/.content-research-cache/<hash>.json.
- * --research-refresh bypasses it. Search queries are scrubbed before leaving
- * the machine. Fail-open: network errors give fewer sources, never a throw —
+ * --research-refresh bypasses it. Search queries are scrubbed, then must pass
+ * the deterministic outbound gate (content-query-gate.ts) before leaving the
+ * machine; if none survive, no search runs (status no-threads). Fail-open: network errors give fewer sources, never a throw —
  * EXCEPT a spend-cap hit (CapError), which the run turns into status "capped".
  */
 
@@ -22,6 +23,7 @@ import { join } from 'node:path'
 import { gapCheck, type HnStory } from './lens-hn.js'
 import { CapError, llmJson, type ContentLlmOptions } from './content-llm.js'
 import { writeAtomic } from './content-manifest.js'
+import { gateQueries } from './content-query-gate.js'
 
 export const RESEARCH_CACHE_DIR = '.content-research-cache'
 export const RESEARCH_TTL_MS = 7 * 86_400_000
@@ -70,6 +72,8 @@ export interface ResearchOptions {
   llm: ContentLlmOptions
   refresh?: boolean
   now?: number
+  /** Project basename / cwd paths: queries naming any of their segments never leave the machine. */
+  privateTerms?: string[]
 }
 
 export function researchKey(t: ResearchTopic): string {
@@ -90,25 +94,34 @@ const stripHtml = (s: string) =>
     .trim()
 const clip = (s: string, n = SNIPPET) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s)
 
-async function getJson(url: string, headers: Record<string, string> = {}): Promise<any> {
+/** `ok` = the source answered (HTTP 2xx + JSON), even with zero hits. */
+async function getJson(url: string, headers: Record<string, string> = {}): Promise<{ ok: boolean; data: any }> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
   try {
     const r = await fetch(url, { signal: ctrl.signal, headers })
-    if (!r.ok) return null
-    return await r.json()
+    if (!r.ok) return { ok: false, data: null }
+    return { ok: true, data: await r.json() }
   } catch {
-    return null
+    return { ok: false, data: null }
   } finally {
     clearTimeout(timer)
   }
 }
 
+interface Fetched {
+  reachable: boolean
+  cites: Citation[]
+}
+
 /** HN comments matching the query: where people describe what broke for them. */
 export async function hnComments(q: string): Promise<Citation[]> {
-  const d = await getJson(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(q)}&tags=comment&hitsPerPage=8`)
+  return (await hnCommentsR(q)).cites
+}
+async function hnCommentsR(q: string): Promise<Fetched> {
+  const { ok, data: d } = await getJson(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(q)}&tags=comment&hitsPerPage=8`)
   const hits: any[] = Array.isArray(d?.hits) ? d.hits : []
-  return hits
+  const cites = hits
     .filter(h => h?.objectID && h?.comment_text)
     .map(h => ({
       id: '',
@@ -119,16 +132,20 @@ export async function hnComments(q: string): Promise<Citation[]> {
       points: Number(h.points) || undefined,
     }))
     .filter(c => c.snippet.length >= 60)
+  return { reachable: ok, cites }
 }
 
 /** GitHub issues matching the query, best match first (sort=comments surfaced bot status boards). Keyless unless GITHUB_TOKEN is set. */
 export async function githubIssues(q: string): Promise<Citation[]> {
+  return (await githubIssuesR(q)).cites
+}
+async function githubIssuesR(q: string): Promise<Fetched> {
   const headers: Record<string, string> = { Accept: 'application/vnd.github+json', 'User-Agent': 'osborn-content-research' }
   const tok = (process.env.GITHUB_TOKEN || '').trim()
   if (tok) headers.Authorization = `Bearer ${tok}`
-  const d = await getJson(`https://api.github.com/search/issues?q=${encodeURIComponent(`${q} is:issue`)}&per_page=6`, headers)
+  const { ok, data: d } = await getJson(`https://api.github.com/search/issues?q=${encodeURIComponent(`${q} is:issue`)}&per_page=6`, headers)
   const items: any[] = Array.isArray(d?.items) ? d.items : []
-  return items
+  const cites = items
     .filter(i => typeof i?.html_url === 'string' && /^https:\/\/github\.com\//.test(i.html_url) && i?.title)
     .map(i => ({
       id: '',
@@ -138,6 +155,7 @@ export async function githubIssues(q: string): Promise<Citation[]> {
       snippet: clip(stripHtml(i.body || '')),
       comments: Number(i.comments) || 0,
     }))
+  return { reachable: ok, cites }
 }
 
 function readCache(projectDir: string | null, key: string, now: number): TopicResearch | null {
@@ -210,7 +228,10 @@ export async function researchTopic(topic: ResearchTopic, o: ResearchOptions): P
     if (hit) return hit
   }
   const log = o.llm.log ?? (() => {})
-  const queries = topic.queries.map(q => o.llm.scrub(q).replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim()).filter(q => q.length >= 3).slice(0, 2)
+  const scrubbed = topic.queries.map(q => o.llm.scrub(q).replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim()).filter(q => q.length >= 3)
+  // Deterministic outbound gate: only plain, non-project-specific queries ever reach HN / GitHub.
+  const queries = gateQueries(scrubbed, o.privateTerms ?? []).slice(0, 2)
+  if (scrubbed.length > queries.length) log(`research "${clip(topic.subtopic, 60)}": ${scrubbed.length - queries.length} query(ies) held back by the outbound gate`)
   const base: TopicResearch = {
     key, topic: { subtopic: topic.subtopic, queries }, at: new Date(now).toISOString(), status: 'no-threads',
     demand: { note: 'No search queries.', reachable: false, stories: [] },
@@ -219,6 +240,7 @@ export async function researchTopic(topic: ResearchTopic, o: ResearchOptions): P
   if (!queries.length) return base
   const gap = await gapCheck(queries).catch(() => null)
   if (gap) base.demand = { note: gap.note, reachable: gap.reachable, stories: gap.stories }
+  let reachable = !!gap?.reachable
   const seen = new Set<string>()
   const cites: Citation[] = []
   const add = (c: Citation) => {
@@ -227,9 +249,12 @@ export async function researchTopic(topic: ResearchTopic, o: ResearchOptions): P
     cites.push({ ...c, id: `S${cites.length + 1}`, title: o.llm.scrub(c.title), snippet: o.llm.scrub(c.snippet) })
   }
   for (const s of base.demand.stories) add({ id: '', source: 'hn-story', url: s.url, title: s.title, snippet: s.title, points: s.points, comments: s.num_comments })
+  const none: Fetched = { reachable: false, cites: [] }
   for (const q of queries) {
-    for (const c of await hnComments(q).catch(() => [])) add(c)
-    for (const c of await githubIssues(q).catch(() => [])) add(c)
+    for (const f of [await hnCommentsR(q).catch(() => none), await githubIssuesR(q).catch(() => none)]) {
+      reachable ||= f.reachable
+      for (const c of f.cites) add(c)
+    }
   }
   base.citations = cites
   log(`research "${clip(topic.subtopic, 60)}": ${cites.length} thread(s) (${cites.filter(c => c.source === 'github-issue').length} GitHub)`)

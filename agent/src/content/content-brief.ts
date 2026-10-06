@@ -19,6 +19,7 @@ import { llmJson, type ContentLlmOptions } from './content-llm.js'
 import { BRIEF_RULES, FORMAT_CATALOG, TIER_TEMPLATES, type Tier } from './content-script-rules.js'
 import type { TopicResearch } from './content-research.js'
 import { researchDigest } from './content-research.js'
+import { gateQueries } from './content-query-gate.js'
 
 export const OWNER_FILE = 'content-owner.json'
 const PAGE_MAX_CHARS = 60_000
@@ -125,13 +126,12 @@ export function validateCandidates(raw: unknown, range: { from: number; to: numb
     const b = Math.floor(Number(p?.to_row ?? p?.toRow))
     const fromRow = Number.isFinite(a) && a >= range.from && a <= range.to ? a : range.from
     const toRow = Number.isFinite(b) && b >= fromRow && b <= range.to ? b : range.to
-    const queries = (Array.isArray(p?.queries) ? p.queries : [])
-      .map((q: unknown) => str(q, 60))
-      .filter((q: string) => q.split(' ').length >= 2)
-      .slice(0, 2)
+    // Outbound gate (structure rules here; research re-gates with the project's private path terms before any fetch).
+    const queries = gateQueries((Array.isArray(p?.queries) ? p.queries : []).map((q: unknown) => str(q, 60))).slice(0, 2)
+    const fallback = gateQueries([subtopic.split(' ').slice(0, 5).join(' ')])
     if (kind === 'highlight') highlights++
     else howtos++
-    out.push({ id: `${kind}-${kind === 'highlight' ? highlights : howtos}`, kind, subtopic, story: str(p?.story, 160), queries: queries.length ? queries : [subtopic.split(' ').slice(0, 5).join(' ')], fromRow, toRow, why: str(p?.why, 200) })
+    out.push({ id: `${kind}-${kind === 'highlight' ? highlights : howtos}`, kind, subtopic, story: str(p?.story, 160), queries: queries.length ? queries : fallback, fromRow, toRow, why: str(p?.why, 200) })
   }
   // Highlight first, then how-tos (stable ids → stable content hashes across reruns).
   return out.sort((x, y) => (x.kind === y.kind ? 0 : x.kind === 'highlight' ? -1 : 1))
