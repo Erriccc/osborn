@@ -53,7 +53,6 @@
     "livekit-server-sdk": "^2.15.0",
     "minisearch": "^7.2.0",
     "node-pty": "^1.1.0",
-    "sharp": "^0.35.3",
     "sqlite-vec": "^0.1.9",
     "tsx": "^4.0.0",
     "ws": "^8.19.0",
@@ -69,8 +68,5 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "optionalDependencies": {
-    "@ffmpeg-installer/ffmpeg": "^1.1.0"
   }
 }
