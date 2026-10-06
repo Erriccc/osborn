@@ -15,7 +15,7 @@
  *     APPEND to <project>/content-profile.md (or a scratch file); advance HWM
  */
 
-import { dirname } from 'node:path'
+import { basename, dirname } from 'node:path'
 import { loadConversationRows, packWindows, resolveSessionDb, type DbRecord } from './lens-db.js'
 import {
   buildRecordIndex, explainQuote, parseJsonObject, readAngles, readCapabilities, splitByEvidence, verifyItems,
@@ -24,6 +24,8 @@ import {
 import { Budget, chat, getModelInfo, mapPrompt, reducePrompt, windowTokensFor } from './lens-model.js'
 import { DENYLIST_FILE, hasBillingQuote, isBillingAngle, isBillingCapability, loadClientRedactor } from './lens-redact.js'
 import { gapCheck } from './lens-hn.js'
+import { makeScrubber } from './content-redact.js'
+import { gateQueries, privateSegments } from './content-query-gate.js'
 import { alignRecording, findSessionRecording } from './lens-audio.js'
 import { appendProfile, formatEntry, writeScratch, type FinalAngle, type FinalCapability } from './lens-profile.js'
 import { findTranscriptBySessionId, isProjectDir, readHwm, refuseOutPath, resolveProjectDir, writeHwm } from './lens-paths.js'
@@ -257,8 +259,16 @@ export async function runCompactionLens(opts: LensRunOptions): Promise<LensRunRe
     bumpHwm(covered)
     return { ...r, status: 'nothing-survived' }
   }
+  // Outbound HN queries are model output built from session text: scrub, then the same
+  // deterministic gate research uses (project basename / cwd segments never leave the machine).
+  // gapCheck([]) makes no fetch and returns its neutral "no queries" result.
+  const sc = makeScrubber(projectDir)
+  const privateTerms = privateSegments([opts.cwd, process.env.OSBORN_CWD, basename(projectDir)])
   for (const a of fin.c.angles) {
-    r.angles.push({ title: a.title, why: a.why, quotes: a.quotes as any, gap: await gapCheck(a.queries) })
+    const scrubbed = (a.queries ?? []).map(q => sc.scrub(String(q ?? '')).replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim()).filter(q => q.length >= 3)
+    const queries = gateQueries(scrubbed, privateTerms)
+    if ((a.queries ?? []).length > queries.length) log(`gap check "${a.title.slice(0, 60)}": ${(a.queries ?? []).length - queries.length} query(ies) held back by the outbound gate`)
+    r.angles.push({ title: a.title, why: a.why, quotes: a.quotes as any, gap: await gapCheck(queries) })
   }
   r.capabilities = fin.c.capabilities.map(c => ({
     name: c.name, did: c.did, evidence: c.evidence as Evidence, proof: c.proof, quotes: c.quotes as any,
