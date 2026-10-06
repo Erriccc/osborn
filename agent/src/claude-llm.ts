@@ -15,6 +15,7 @@ import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getGroundingBlock, getRecalledContextBlock } from './prompts.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
+import { launchCompactionLens } from './content/lens-launch.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -2561,6 +2562,18 @@ class ClaudeLLMStream extends llm.LLMStream {
                   }
                 } catch (ucErr) {
                   console.error('⚠️ PostCompact: USER_CONTEXT write failed:', ucErr instanceof Error ? ucErr.message : ucErr)
+                }
+
+                // ── Section 6: CONTENT_LENS — detached background worker appends to <project>/content-profile.md ──
+                // Passes ONLY the session key (+ transcript_path/cwd); the worker derives everything else.
+                // ON by default; OSBORN_CONTENT_LENS=0|off|false|no disables. Spawn is sync + unref'd: never awaited.
+                try {
+                  if (!['0', 'off', 'false', 'no'].includes((process.env.OSBORN_CONTENT_LENS || '').trim().toLowerCase())) {
+                    const cl = launchCompactionLens({ sessionId: input?.session_id || sessionId, transcriptPath: input?.transcript_path, cwd: this.#opts.workingDirectory })
+                    progress('Content lens', cl.status === 'spawned' ? 'background worker started' : cl.status)
+                  }
+                } catch (clErr) {
+                  console.error('⚠️ PostCompact: CONTENT_LENS launch failed:', clErr instanceof Error ? clErr.message : clErr)
                 }
 
                 this.#opts.onCompactionEvent?.({ type: 'compaction_complete', skillsWritten, skillNames })
