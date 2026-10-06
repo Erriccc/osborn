@@ -5973,6 +5973,33 @@ async function main() {
           }
         }
       }
+      else if (data.type === 'stop_background_session') {
+        // Close/kill a background slot: abort its subprocess + drop it from the registry.
+        // Never touches the focused voice session (currentLLM). Keyed by full sessionId or
+        // an 8-char prefix (the frontend row id may be either).
+        const sid = data.sessionId as string | undefined
+        let key: string | undefined
+        if (sid) {
+          if (slots.has(sid)) key = sid
+          else key = [...slots.keys()].find(k => k === sid || k.startsWith(sid) || sid.startsWith(k))
+        }
+        if (!key) {
+          await sendToFrontend({ type: 'background_session_error', slotId: sid ?? null, error: 'No matching background instance to stop' })
+        } else {
+          const slot = slots.get(key)!
+          try { (slot.llm as any).abortQuery?.(); (slot.llm as any).abortAgent?.() } catch {}
+          slots.delete(key)
+          console.log(`🗑️ Stopped background slot ${key.substring(0, 8)}`)
+          await sendToFrontend({ type: 'background_session_stopped', slotId: key })
+          // Authoritative refresh so the panel drops the row.
+          const focusedId2 = currentLLM?.sessionId || currentResumeSessionId || null
+          const focusedEntry2 = currentLLM ? [{ id: focusedId2 || '(pending)', isFocused: true, workingDir, hasSession: currentLLM.hasSession?.() ?? false }] : []
+          const bgEntries2 = [...slots.values()].map(s => ({ id: s.id, isFocused: s.isFocused, workingDir: s.workingDir, hasSession: s.llm.hasSession?.() ?? false }))
+          await sendToFrontend({ type: 'slots_list', slots: [...focusedEntry2, ...bgEntries2] })
+          // If that was the last background agent and no host anchor, let the room idle-exit.
+          armAloneTimer()
+        }
+      }
       else if (data.type === 'list_slots') {
         // Return all live slots: the focused session + every background slot.
         const focusedId = currentLLM?.sessionId || currentResumeSessionId || null

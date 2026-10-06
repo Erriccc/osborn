@@ -1915,6 +1915,7 @@ function InstancesPanel({
   spawnError,
   onSpawn,
   onDispatch,
+  onStopInstance,
   onClose,
 }: {
   slots: SlotInfo[]
@@ -1924,6 +1925,7 @@ function InstancesPanel({
   spawnError: string | null
   onSpawn: (sessionId?: string, workingDir?: string) => void
   onDispatch: (targetSessionId: string, instruction: string) => void
+  onStopInstance: (sessionId: string) => void
   onClose: () => void
 }) {
   // Build a synthetic "focused" card from the existing session if the agent's
@@ -2021,6 +2023,19 @@ function InstancesPanel({
               >
                 {slot.isFocused ? 'focused' : 'background'}
               </span>
+              {/* Close/stop — background slots only (never the focused voice session). */}
+              {!slot.isFocused && (
+                <button
+                  onClick={() => onStopInstance(slot.id)}
+                  title="Stop this instance"
+                  aria-label="Stop this instance"
+                  className="shrink-0 p-0.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
             </div>
             {/* Tag & continue: dispatch an instruction to this background session.
                 Only shown for non-focused slots that have a live session. */}
@@ -3655,6 +3670,11 @@ function VoiceRoomInner({
           const enc = new TextEncoder()
           sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
         }
+      } else if (data.type === 'background_session_stopped') {
+        // Agent killed a background slot. slots_list (sent right after) is the
+        // authoritative refresh; just drop the row immediately for snappiness.
+        console.log('[slots] background_session_stopped slotId=', data.slotId)
+        setSlots(prev => prev.filter(s => s.id !== data.slotId))
       } else if (data.type === 'background_dispatched') {
         // Agent acked a tag-&-continue dispatch to a background session.
         setBgNotice({ kind: 'dispatched', sessionId: String(data.sessionId ?? ''), text: String(data.instruction ?? '') })
@@ -4106,6 +4126,14 @@ function VoiceRoomInner({
   const handleDispatchBackground = useCallback((targetSessionId: string, instruction: string) => {
     const encoder = new TextEncoder()
     sendToAgent(encoder.encode(JSON.stringify({ type: 'dispatch_background', targetSessionId, instruction })), { reliable: true })
+  }, [sendToAgent])
+
+  // Close/stop a background instance. Optimistically drop the row; the agent's
+  // slots_list refresh (after it kills the subprocess) is authoritative.
+  const handleStopInstance = useCallback((sessionId: string) => {
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'stop_background_session', sessionId })), { reliable: true })
+    setSlots(prev => prev.filter(s => s.id !== sessionId))
   }, [sendToAgent])
 
   // Meeting (Recall.ai) handlers
@@ -4912,6 +4940,7 @@ function VoiceRoomInner({
                     spawnError={spawnError}
                     onSpawn={handleSpawnInstance}
                     onDispatch={handleDispatchBackground}
+                    onStopInstance={handleStopInstance}
                     onClose={() => setShowInstancesPanel(false)}
                   />
                 )}
