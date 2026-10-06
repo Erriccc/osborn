@@ -30,6 +30,8 @@ export interface CheckSummary {
   truth: { ok: boolean; flags: string[]; model: string; provider: string; cacheKey: string; cached: boolean } | null
   audience: { ok: boolean; flags: string[]; model: string; provider: string } | null
   length: { ok: boolean; seconds: number; min: number; max: number }
+  /** WHAT-WORKS deterministic gate: stake present, causes vs duration, terms/min, no spoken versions/codes. */
+  structure?: { ok: boolean; flags: string[]; causes: number; termsPerMin: number }
 }
 
 export interface PieceEntry {

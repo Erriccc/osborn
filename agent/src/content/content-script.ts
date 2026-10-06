@@ -28,6 +28,10 @@ export interface Script {
   title: string
   hook: string
   lines: ScriptLine[]
+  /** Model-declared distinct causes (faults/catches needing their own fix) — gated by content-checks. */
+  causes: string[]
+  /** Model-declared load-bearing terms — gated per minute by content-checks. */
+  terms: string[]
   words: number
   estSeconds: number
 }
@@ -72,7 +76,6 @@ export const SCRIPT_SYSTEM =
 export function scriptPrompt(brief: Brief, page: string, rows: DbRecord[], researchText: string): string {
   const t = TIER_TEMPLATES[brief.tier]
   const fmt = FORMAT_CATALOG.find(f => f.id === brief.format)
-  const words = Math.round(t.targetS * WORDS_PER_SECOND)
   return [
     '<period_page>',
     page.length > PAGE_MAX_CHARS ? page.slice(0, PAGE_MAX_CHARS) : page,
@@ -84,12 +87,15 @@ export function scriptPrompt(brief: Brief, page: string, rows: DbRecord[], resea
     researchText || '(none)',
     '</research>',
     `BRIEF:\n- Viewer: ${brief.viewer}\n- They are living through: ${brief.situation}\n- Angle: ${brief.angle}\n- Problems to speak to: ${brief.problems.join(' | ') || '(none)'}\n` +
+      (brief.stake ? `- STAKE (show it): ${brief.stake.quantity}: BEFORE ${brief.stake.before} -> AFTER ${brief.stake.after}\n` : '') +
       `- Built on: "${brief.story}" (rows ${brief.fromRow}-${brief.toRow})\n- Format: ${fmt ? `${fmt.name} — beats: ${fmt.beats}` : brief.format}` +
       (brief.owner ? `\n- Developer (owns the video): ${brief.owner.name}${brief.owner.handle ? ` (${brief.owner.handle})` : ''}` : '\n- Developer name unknown: no name in the sign-off'),
     `TIER: ${t.label}. ${t.promise}\nBeats:\n${t.beats.map((b, i) => `${i + 1}. ${b}`).join('\n')}\n` +
-      `LENGTH: about ${words} spoken words in total (${t.minS}-${t.maxS}s at ${WORDS_PER_SECOND} words/s). Dev lines: ${t.devLines.min}-${t.devLines.max}.`,
+      `BUDGET: ${t.budget}\nLENGTH: ${t.words.min}-${t.words.max} spoken words in total (hard limit ${t.minS}-${t.maxS}s at ${WORDS_PER_SECOND} words/s). Dev lines: ${t.devLines.min}-${t.devLines.max}.`,
     `RULES:\n${SCRIPT_RULES.map(r => `- ${r}`).join('\n')}`,
-    'Output ONLY: {"title": "<= 80 chars", "hook": "one line", "lines": [{"speaker": "narrator"|"dev"|"agent", "text": "...", "row": <row number, dev lines only>}]}',
+    'Output ONLY: {"title": "<= 80 chars", "hook": "one line", "lines": [{"speaker": "narrator"|"dev"|"agent", "text": "...", "row": <row number, dev lines only>}], ' +
+      '"causes": [each distinct cause (fault or catch needing its own fix) the script tells, one short phrase each], ' +
+      '"terms": [each load-bearing term the viewer must understand, as written]}',
   ].join('\n\n')
 }
 
@@ -110,9 +116,11 @@ export function normalizeScript(raw: unknown, brief: Pick<Brief, 'id' | 'tier'>)
     const rowN = Math.floor(Number(String(l?.row ?? l?.source_row ?? '').replace(/^#/, '')))
     lines.push({ speaker, text, ...(Number.isFinite(rowN) && rowN > 0 ? { row: rowN } : {}) })
   }
+  const list = (v: unknown) => (Array.isArray(v) ? v : []).map(x => String(typeof x === 'object' && x ? ((x as any).text ?? (x as any).term ?? (x as any).cause ?? '') : x).replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 30)
   const clip = (s: unknown, n: number) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
   return {
     id: brief.id, tier: brief.tier, title: clip(src.title, 120), hook: clip(src.hook, 280), lines,
+    causes: list(src.causes ?? j.causes), terms: list(src.terms ?? j.terms),
     words: lines.reduce((n, l) => n + countWords(l.text), 0), estSeconds: estimateSeconds(lines),
   }
 }
