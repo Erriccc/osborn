@@ -18,6 +18,7 @@ import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 interface SessionInfo {
   sessionId: string
@@ -1204,6 +1205,17 @@ export default function Dashboard() {
             </div>
 
             <div className="flex items-center gap-1.5">
+              {/* Library — the user's content library (Supabase content_items) */}
+              <Link
+                href="/library"
+                title="Library"
+                className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface)] transition-all">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                </svg>
+              </Link>
+
               {/* Live clock — date/time/timezone so screenshots carry when */}
               <LiveClock showDate />
 
