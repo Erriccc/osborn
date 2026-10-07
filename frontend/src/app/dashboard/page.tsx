@@ -1193,7 +1193,8 @@ export default function Dashboard() {
         {/* ── Header ──────────────────────────────── */}
         <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
           <div className="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
-            <div className="flex items-center gap-3">
+            {/* Logo → home (voice-native.com). Clickable from the dashboard back to root. */}
+            <Link href="/" title="Home" className="flex items-center gap-3 rounded-lg -mx-1 px-1 py-0.5 hover:opacity-80 transition-opacity">
               <div className="w-7 h-7 rounded-full flex items-center justify-center"
                 style={{ background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)' }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--background)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1202,20 +1203,9 @@ export default function Dashboard() {
                 </svg>
               </div>
               <span className="font-display text-[var(--text-primary)] font-semibold text-[16px] tracking-tight">Osborn</span>
-            </div>
+            </Link>
 
             <div className="flex items-center gap-1.5">
-              {/* Library — the user's content library (Supabase content_items) */}
-              <Link
-                href="/library"
-                title="Library"
-                className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface)] transition-all">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-                </svg>
-              </Link>
-
               {/* Live clock — date/time/timezone so screenshots carry when */}
               <LiveClock showDate />
 
@@ -1700,6 +1690,18 @@ export default function Dashboard() {
                   </button>
                 </div>
               )}
+
+              {/* ── Navigate ── */}
+              <Link
+                href="/library"
+                onClick={() => setShowSettings(false)}
+                className="flex items-center gap-2.5 px-1 py-2 rounded-lg text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                <svg className="w-4 h-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                </svg>
+                Library
+              </Link>
 
               {/* ── Account ── */}
               {user && (
