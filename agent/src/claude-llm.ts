@@ -2865,11 +2865,19 @@ class ClaudeLLMStream extends llm.LLMStream {
         // PERSISTENT SESSION: Push message to existing subprocess (no JSONL replay).
         // First call creates the query (cold start). Subsequent calls are instant.
         // The background consumer in ClaudeLLM handles all message routing (TTS, tools, etc.)
+        // Progressive interrupt (locked design): every real user message carries
+        // priority 'now' — the SDK natively aborts the current turn and answers
+        // immediately, while perTaskStopAffordance spares background sub-agents,
+        // so interrupting is free (work lives in interrupt-surviving tasks).
+        // Meeting transcript chunks are ambient and must NOT interrupt (they
+        // arrive continuously and would abort working turns nonstop).
+        // Escape hatch: OSBORN_MSG_PRIORITY=off restores queue-and-fold.
+        const steerNow = process.env.OSBORN_MSG_PRIORITY !== 'off' && !userText.startsWith('[MEETING')
         this.#llmRef.pushMessage(userText, sdkOptions, {
           onSessionId: this.#onSessionId,
           onCheckpoint: this.#onCheckpoint,
           eventEmitter: this.#eventEmitter,
-        })
+        }, steerNow ? { priority: 'now' } : undefined)
 
         // Return immediately — queue closes, pipeline completes, say() handles play
         console.log('🚀 Direct mode: Claude query running in background, pipeline released')

@@ -5975,7 +5975,9 @@ async function main() {
               slot.dispatchInFlight = true
               // Reuse the cold-start emitter — pushMessage's fast path ignores a
               // fresh emitter once the subprocess exists (see spawnBackgroundSession).
-              slot.llm.pushMessage(instruction, slot.sdkOptions, { onSessionId: () => {}, onCheckpoint: () => {}, eventEmitter: slot.emitter })
+              // User instructions interrupt the slot's current turn too (priority
+              // 'now' — same ladder as the main agent; its background tasks survive).
+              slot.llm.pushMessage(instruction, slot.sdkOptions, { onSessionId: () => {}, onCheckpoint: () => {}, eventEmitter: slot.emitter }, { priority: 'now' })
               void sendToFrontend({ type: 'background_dispatched', sessionId: targetSessionId, instruction })
             }
             if (slots.has(targetSessionId)) doDispatch()
