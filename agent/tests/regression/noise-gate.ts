@@ -21,7 +21,7 @@ sandboxHome()
 delete process.env.OSBORN_NOISE_GATE
 delete process.env.OPENROUTER_API_KEY
 
-const { noiseGate } = await import('../../src/noise-gate.js')
+const { noiseGate, parseGateResponse } = await import('../../src/noise-gate.js')
 
 // G1/G2 — shouldGate + kill switch + allowOnce
 check('G1a', noiseGate.shouldGate('hello there') === false, 'gate is OFF by default — nothing gated')
@@ -84,5 +84,16 @@ check('G7b', /data\.type === 'gate_send_anyway'/.test(idxSrc) && /noiseGate\.all
 const autoExit = anchoredSlice(idxSrc, "noiseGate.on('auto_exit'", { len: 700 })
 check('G7c', /\[SYSTEM note/.test(autoExit) && /sendPrompt/.test(autoExit), "auto_exit pushes a [SYSTEM-prefixed resume note (never priority 'now')")
 check('G7d', /noiseGate\.on\('drop'/.test(idxSrc) && /gate_dropped/.test(idxSrc), 'drops are forwarded to the frontend (tombstones)')
+
+// G8 — ambient memory (parse + memo TTL, no network)
+check('G8a', parseGateResponse('side_talk | music lyrics').verdict === 'side_talk'
+  && parseGateResponse('side_talk | music lyrics').tag === 'music lyrics', 'parse: label | tag')
+check('G8b', parseGateResponse('directed').tag === undefined, 'parse: bare label has no tag')
+check('G8c', parseGateResponse('directed | music').tag === undefined, 'parse: tags on directed are IGNORED (never cache ambient off a forwarded utterance)')
+check('G8d', parseGateResponse('garbage output !!').verdict === 'directed', 'parse: unknown labels fail open to directed')
+noiseGate.noteAmbient('music lyrics')
+noiseGate.noteAmbient('music lyrics')
+check('G8e', /music lyrics \(seen 2x/.test(noiseGate.getAmbientBlock()), 'ambient memo counts repeat sightings')
+check('G8f', noiseGate.getAmbientBlock(-1) === '', 'ambient memo expires by TTL')
 
 finish('noise-gate')

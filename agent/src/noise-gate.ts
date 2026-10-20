@@ -53,7 +53,17 @@ const GATE_SYSTEM_PROMPT = [
   '',
   'Bias: when the utterance plausibly relates to the current work context, prefer directed.',
   'Short backchannels ("yeah", "okay", "mhm") during active assistant work are directed.',
-  'Never reply with anything except one of the three labels.',
+  '',
+  'AMBIENT TAGGING: when the utterance is clearly ambient media or a recurring other-speaker',
+  'source — song lyrics, movie/TV dialogue, a lecture, a driver/cashier conversation — append',
+  'a short source tag after the label, separated by " | ". Examples:',
+  '  side_talk | music lyrics',
+  '  side_talk | movie or tv audio',
+  '  side_talk | lecture',
+  'The tag is cached and shown to you on future utterances ("Known ambient context") so',
+  'recurring sources get easier to filter. Omit the tag when unsure.',
+  '',
+  'Reply with the label (optionally "label | tag") and NOTHING else.',
 ].join('\n')
 
 export interface GateContext {
@@ -65,6 +75,20 @@ export interface GateDrop {
   text: string
   verdict: GateVerdict
   ts: number
+}
+
+/** Parse the classifier's raw reply: "label" or "label | ambient tag". Pure +
+ * exported so the regression suite can pin it without network. Unknown labels
+ * fail open to 'directed' (and then any tag is ignored — never cache ambient
+ * context off a forwarded utterance). */
+export function parseGateResponse(raw: string): { verdict: GateVerdict; tag?: string } {
+  const [head, ...rest] = String(raw || '').split('|')
+  const h = head.toLowerCase()
+  const verdict: GateVerdict = h.includes('side_talk') || h.includes('side talk')
+    ? 'side_talk'
+    : h.includes('ambiguous') ? 'ambiguous' : 'directed'
+  const tag = rest.join('|').trim().toLowerCase().replace(/[^a-z0-9 /_-]/g, '').slice(0, 48)
+  return verdict !== 'directed' && tag ? { verdict, tag } : { verdict }
 }
 
 class NoiseGate extends EventEmitter {
@@ -104,6 +128,35 @@ class NoiseGate extends EventEmitter {
       console.log(`🚪 [gate] ${on ? 'ENABLED' : 'DISABLED'} (${reason})`)
       this.emit('state', { enabled: on, reason: on ? this.reason : reason })
     }
+  }
+
+  // ── Ambient memory ─────────────────────────────────────────────────────────
+  // Short-lived, self-updating scratchpad of ambient sources the classifier has
+  // tagged (music, movie/TV, lecture, a recurring other speaker). Carried into
+  // every classify prompt so recurring sources get easier to filter; entries
+  // expire AMBIENT_TTL after last sighting (the user can start/stop media any
+  // time), capped at 8 so the prompt stays tiny.
+  #ambient = new Map<string, { count: number; lastAt: number }>()
+
+  noteAmbient(tag: string): void {
+    if (!tag) return
+    const e = this.#ambient.get(tag)
+    this.#ambient.set(tag, { count: (e?.count ?? 0) + 1, lastAt: Date.now() })
+    if (this.#ambient.size > 8) {
+      const oldest = [...this.#ambient.entries()].sort((a, b) => a[1].lastAt - b[1].lastAt)[0]
+      if (oldest) this.#ambient.delete(oldest[0])
+    }
+  }
+
+  /** Live (unexpired) ambient memos as a prompt block; '' when none. */
+  getAmbientBlock(ttlMs = Number(process.env.OSBORN_GATE_AMBIENT_TTL_MS || 10 * 60_000)): string {
+    const now = Date.now()
+    for (const [k, v] of this.#ambient) if (now - v.lastAt > ttlMs) this.#ambient.delete(k)
+    if (this.#ambient.size === 0) return ''
+    const lines = [...this.#ambient.entries()]
+      .sort((a, b) => b[1].lastAt - a[1].lastAt)
+      .map(([tag, v]) => `- ${tag} (seen ${v.count}x, last ${Math.round((now - v.lastAt) / 1000)}s ago)`)
+    return `Known ambient context (recently observed around the user):\n${lines.join('\n')}`
   }
 
   // One-shot allowlist for tombstone recovery ("send anyway"): the resent text
@@ -164,6 +217,12 @@ class NoiseGate extends EventEmitter {
         .slice(-GATE_CONTEXT_TURNS)
         .map(t => `${t.role === 'user' ? 'USER' : 'ASSISTANT'}: ${String(t.content).slice(0, 300)}`)
         .join('\n')
+      // Gate's own short-term memory: live ambient memos + a digest of recent
+      // drops, so recurring sources (same song, same lecture) stay consistent.
+      const ambientBlock = this.getAmbientBlock()
+      const recentDrops = this.#dropped.slice(-6)
+        .map(d => `- "${d.text.slice(0, 80)}"`)
+        .join('\n')
       const controller = new AbortController()
       const to = setTimeout(() => controller.abort(), GATE_TIMEOUT_MS)
       const resp = await fetch(OPENROUTER_URL, {
@@ -172,7 +231,7 @@ class NoiseGate extends EventEmitter {
         signal: controller.signal,
         body: JSON.stringify({
           model: GATE_MODEL,
-          max_tokens: 5,
+          max_tokens: 16,
           temperature: 0,
           messages: [
             { role: 'system', content: GATE_SYSTEM_PROMPT },
@@ -181,6 +240,8 @@ class NoiseGate extends EventEmitter {
               content: [
                 `Current work with the assistant:\n${ctx.activeWork || '(none known)'}`,
                 ``,
+                ...(ambientBlock ? [ambientBlock, ``] : []),
+                ...(recentDrops ? [`Recently filtered as side_talk:\n${recentDrops}`, ``] : []),
                 `Recent conversation:\n${recent || '(none)'}`,
                 ``,
                 `New utterance heard by the microphone:\n"${text}"`,
@@ -194,11 +255,10 @@ class NoiseGate extends EventEmitter {
       clearTimeout(to)
       if (!resp.ok) return 'directed'
       const data: any = await resp.json()
-      const raw = String(data?.choices?.[0]?.message?.content || '').toLowerCase()
-      const verdict: GateVerdict = raw.includes('side_talk') || raw.includes('side talk')
-        ? 'side_talk'
-        : raw.includes('ambiguous') ? 'ambiguous' : 'directed'
-      console.log(`🚪 [gate] verdict=${verdict} (${Date.now() - started}ms) "${text.slice(0, 60)}"`)
+      const raw = String(data?.choices?.[0]?.message?.content || '')
+      const { verdict, tag } = parseGateResponse(raw)
+      if (tag) this.noteAmbient(tag)
+      console.log(`🚪 [gate] verdict=${verdict}${tag ? ` [ambient: ${tag}]` : ''} (${Date.now() - started}ms) "${text.slice(0, 60)}"`)
       return verdict
     } catch (err: any) {
       console.log(`🚪 [gate] classify failed (${Date.now() - started}ms, ${err?.name || err?.message}) — fail-open → directed`)
