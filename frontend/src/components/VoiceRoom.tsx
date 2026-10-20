@@ -5051,6 +5051,41 @@ function VoiceRoomInner({
                 )}
               </button>
 
+              {/* Noise cancellation — desktop header, next to Mute. Amber when
+                  filtering; badge = filtered count, click badge to send the
+                  latest tombstoned utterance to the agent anyway. */}
+              <button
+                onClick={toggleNoiseCancel}
+                className={`hidden sm:flex items-center gap-1 p-2 rounded-lg transition-all ${
+                  noiseCancelOn
+                    ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
+                    : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                }`}
+                title={noiseCancelOn
+                  ? `Noise cancellation ON — filtering side conversations${gateDropped.length ? ` (${gateDropped.length} filtered)` : ''}. Click to turn off.`
+                  : 'Noise cancellation — filter side conversations before they reach the agent'}
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 18v-6a9 9 0 0118 0v6M3 18a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3zm18 0a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h1a2 2 0 012 2v3z" />
+                </svg>
+                {noiseCancelOn && gateDropped.length > 0 && (
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const last = gateDropped[gateDropped.length - 1]
+                      if (!last) return
+                      try {
+                        const enc = new TextEncoder()
+                        sendToAgent(enc.encode(JSON.stringify({ type: 'gate_send_anyway', text: last.text })), { reliable: true })
+                        setGateDropped(prev => prev.slice(0, -1))
+                      } catch {}
+                    }}
+                    className="px-1 rounded-full bg-amber-500/30 text-[10px]"
+                    title={`${gateDropped.length} filtered — click to send the latest to the agent anyway`}
+                  >{gateDropped.length}</span>
+                )}
+              </button>
+
               {/* Mute button — desktop header only; mobile mute lives in the
                   composer control strip next to the input. */}
               <button
