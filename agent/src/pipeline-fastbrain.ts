@@ -10,7 +10,7 @@
  * Tools:
  *   search_session — ripgrep the summary index + read full content via byte offsets
  *   get_recent     — latest N index entries + full content
- *   emergency_stop — kill and restart the main agent
+ *   emergency_stop — interrupt the main agent's turn and redirect it (background tasks survive)
  */
 
 // ============================================================
@@ -111,7 +111,7 @@ function buildTools(hasAgentControl: boolean) {
       function: {
         name: 'emergency_stop',
         description: [
-          'Kill and restart the main agent with new instructions.',
+          'Stop the main agent\'s current turn and redirect it (background sub-agents keep running).',
           'Call when the user clearly wants the agent to STOP a DESTRUCTIVE or ALTERING action:',
           '  - Destructive actions: write, edit, delete, install, deploy, push, modify files/data',
           '  - Wrong direction: agent is doing something the user didn\'t ask for or explicitly rejects',
@@ -163,7 +163,11 @@ async function executeTool(
     console.log(`🧠⚡ [pipeline-fb] emergency_stop: ${reason}`)
     const recentUserMessages = agentControl.getRecentUserMessages(10)
     const recentActivity = await getRecentEntries(sessionId, workingDir, undefined, 10)
-    agentControl.abort()
+    // Interrupt, not abort: abort() kills the whole subprocess — including the
+    // background sub-agents perTaskStopAffordance deliberately spares. A voice
+    // "stop" should end the current turn only; a true hard kill stays an
+    // explicit UI action (abortQuery).
+    await agentControl.interrupt()
     agentControl.sendPrompt([
       `[EMERGENCY STOP] The user stopped your previous action.`,
       ``,
@@ -181,7 +185,7 @@ async function executeTool(
       `3. If unclear, ask what they'd like to do next`,
       `Do NOT silently do tool calls — speak first.`,
     ].join('\n'))
-    return `Agent stopped and restarted. Reason: ${reason}`
+    return `Agent turn interrupted and redirected (background sub-agents unaffected). Reason: ${reason}`
   }
 
   return 'Unknown tool'

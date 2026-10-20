@@ -149,7 +149,7 @@ export class PipelineDirectLLM extends llm.LLM {
   abortAgent() { this.#claudeLLM.abortQuery() }
   async rewindAgent(checkpointId?: string) { return this.#claudeLLM.rewindToCheckpoint(checkpointId) }
   hasActiveAgent() { return this.#claudeLLM.hasActiveQuery() }
-  stopAgent(agentId: string): boolean { return this.#claudeLLM.stopAgent(agentId) }
+  stopAgent(agentId: string): Promise<boolean> { return this.#claudeLLM.stopAgent(agentId) }
 
   /** Send a new prompt to Claude via direct chat() — event listeners stay attached */
   sendPrompt(prompt: string) {
@@ -239,20 +239,20 @@ export class PipelineDirectLLM extends llm.LLM {
       if (hasInterrupt) {
         // Actual mid-TTS interruption — keep the full [INTERRUPTED] template
         console.log(`🔇 [pipeline] Enriching: interrupt (spoken=${interruptCtx.spokenText.length} chars, suppressed=${interruptCtx.suppressedText.length} chars)`)
+        // Fire-and-forget is safe now: ClaudeLLM tracks the in-flight interrupt and
+        // pushMessage defers the enriched message until the abort settles, so it can
+        // never fold into the dying turn (the old same-instant race).
         this.#claudeLLM.interruptQuery().catch(() => {})
-        // An interrupt/cutoff SEVERS in-flight background Task sub-agents — the SDK's
-        // interrupt() kills run_in_background Task children and they never fire SubagentStop,
-        // so the agent gets NO signal they died and they can't be resumed. statusManager still
-        // lists them (start-tracked, never stopped) = the authoritative orphan set. Name them
-        // so the agent re-dispatches the necessary ones; mark them terminal so the tracker +
-        // Running panel don't leave them stuck "running" forever.
-        const orphanedSubagents = statusManager.getActiveDispatches()
-        const subagentReminder = orphanedSubagents.length
-          ? `SUB-AGENTS SEVERED BY THE CUTOFF: your in-flight background sub-agents were killed by the interrupt and will NOT report back (no completion signal, cannot be resumed): ${orphanedSubagents.map(o => o.subagentType || 'agent').join(', ')}. Check which of these you still need and RE-DISPATCH them fresh — do not wait on them.`
-          : `SUB-AGENTS: if you had any background Task sub-agents in flight, an interrupt severs them silently (no completion signal, no resume) — check and re-dispatch any still needed rather than waiting on them.`
-        for (const o of orphanedSubagents) {
-          try { statusManager.upsertDispatch(o.id, { dispatchState: 'failed' }) } catch {}
-        }
+        // With perTaskStopAffordance declared (claude-llm.ts sdkOptions), an interrupt
+        // SPARES in-flight background Task sub-agents — Stop aborts only the current
+        // turn. The old "SEVERED → RE-DISPATCH" reminder is now a lie that would spawn
+        // DUPLICATE workers alongside the survivors, and marking them 'failed' would
+        // orphan live rows. Name the survivors truthfully instead; they still fire
+        // SubagentStop/task_notification on completion like any other dispatch.
+        const liveSubagents = statusManager.getActiveDispatches()
+        const subagentReminder = liveSubagents.length
+          ? `SUB-AGENTS STILL RUNNING: the interrupt stopped only your current turn — your in-flight background sub-agents SURVIVED and will report back normally: ${liveSubagents.map(o => o.subagentType || 'agent').join(', ')}. Do NOT re-dispatch them; wait for their results (or stop any that are no longer needed).`
+          : `SUB-AGENTS: background sub-agents survive an interrupt (only your current turn was stopped) — any in flight will still report back; do not re-dispatch duplicates.`
         enrichedMessage = [
           `[INTERRUPTED] The user interrupted your response mid-speech.`,
           ``,

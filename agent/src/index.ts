@@ -5685,12 +5685,22 @@ async function main() {
           }
         }
       }
-      // Feature B — per-flow stop (does NOT affect other running flows)
+      // Feature B — per-flow stop (does NOT affect other running flows).
+      // Real now: stopAgent resolves agent_id → SDK task_id and issues
+      // query.stopTask (perTaskStopAffordance pairing). `stopped` is truthful —
+      // false means no live task matched (ghost/stale row), card still clears.
       else if (data.type === 'stop_dispatch' && currentLLM) {
         const agentId = String(data.agentId)
-        currentLLM.stopAgent?.(agentId)
+        let stopped = false
+        try { stopped = !!(await currentLLM.stopAgent?.(agentId)) } catch {}
+        // Only mark the row terminal when a task was ACTUALLY stopped — an
+        // unmatched id means the sub-agent (if any) is still running and its
+        // own SubagentStop must land on a live row, not one pre-marked failed.
+        if (stopped) {
+          try { statusManager.upsertDispatch(agentId, { dispatchState: 'failed', artifact: 'stopped by user' }) } catch {}
+        }
         // Always confirm so frontend clears the card (covers ghost/stale flows too)
-        await sendToFrontend({ type: 'agent_stopped', agent_id: agentId })
+        await sendToFrontend({ type: 'agent_stopped', agent_id: agentId, stopped })
       }
       else if (data.type === 'join_meeting') {
         const meetingUrl = data.url as string

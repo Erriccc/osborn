@@ -1155,6 +1155,25 @@ export class ClaudeLLM extends llm.LLM {
   // Strictly additive; abortQuery/interruptQuery still iterate #activeQueries (kill-all).
   #activeQueriesById: Map<string, any> = new Map()
 
+  // ── Background-task registry (real per-flow stop) ──────────────────────────
+  // With perTaskStopAffordance declared, an interrupt spares background tasks,
+  // so a spared runaway task MUST be stoppable via query.stopTask(taskId).
+  // Task ids arrive on system/task_started messages; the frontend's stop
+  // button sends an agent_id (from SubagentStart). Correlation chain:
+  //   PreToolUse(Task) records tool_use_id per subagent_type (FIFO) →
+  //   SubagentStart claims the oldest unclaimed tool_use_id of its type →
+  //   task_started maps tool_use_id → task_id.
+  #tasksById = new Map<string, { toolUseId?: string; subagentType?: string; description?: string; status: string }>()
+  #taskIdByToolUse = new Map<string, string>()
+  #pendingToolUseByType = new Map<string, string[]>()
+  #toolUseByAgentId = new Map<string, string>()
+  #typeByAgentId = new Map<string, string>()
+
+  // In-flight interrupt — pushMessage defers its channel push until this
+  // settles, so an enriched [INTERRUPTED] message can never land inside the
+  // turn being aborted (a fold-in-flight message dies with that turn).
+  #pendingInterrupt: Promise<void> | null = null
+
   // Dedup guard — prevents double-firing reviewer/gate if SubagentStop fires
   // more than once for the same agent_id (e.g. retry edge cases).
   #dispatchedFor: Set<string> = new Set()
@@ -1527,7 +1546,15 @@ export class ClaudeLLM extends llm.LLM {
     // Prefer persistent query's interrupt() — graceful Esc that keeps subprocess alive
     if (this.#persistentQuery && typeof this.#persistentQuery.interrupt === 'function') {
       try {
-        await this.#persistentQuery.interrupt()
+        // Expose the in-flight interrupt so pushMessage can order itself AFTER
+        // the abort (callers like the sync voice chat() path can't await us).
+        const p: Promise<void> = Promise.resolve(this.#persistentQuery.interrupt()).then(() => {})
+        let tracked: Promise<void>
+        tracked = p.catch(() => {}).finally(() => {
+          if (this.#pendingInterrupt === tracked) this.#pendingInterrupt = null
+        })
+        this.#pendingInterrupt = tracked
+        await p
         console.log('🛑 Interrupted persistent session (Esc equivalent — subprocess stays alive)')
         return true
       } catch (err: any) {
@@ -1625,17 +1652,103 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   /**
-   * Stop a single dispatch flow by agent_id.
-   * Returns true if the agent was found and stopped; false if not found.
-   * Does NOT affect other active queries (use abortQuery() to kill all).
+   * Stop a single dispatch flow by agent_id — REAL stop via query.stopTask().
+   * Resolves agent_id → tool_use_id (claimed at SubagentStart) → task_id
+   * (from the SDK's task_started message); falls back to the only running
+   * task of the same subagent_type when the chain has a gap. Returns true
+   * only when a stopTask was actually issued — the old #activeQueriesById
+   * path never populated, so this used to report "stopped" while nothing
+   * stopped. Does NOT affect other tasks (use abortQuery() to kill all).
    */
-  stopAgent(agentId: string): boolean {
-    const q = this.#activeQueriesById.get(agentId)
-    if (!q) return false
-    try { q.return?.() } catch {}
-    this.#activeQueriesById.delete(agentId)
-    this.#activeQueries.delete(q)
-    return true
+  async stopAgent(agentId: string): Promise<boolean> {
+    const taskId = this.#resolveTaskId(agentId)
+    if (!taskId || !this.#persistentQuery || typeof this.#persistentQuery.stopTask !== 'function') {
+      console.log(`🛑 stopAgent(${agentId}): no task to stop (taskId=${taskId ?? 'none'})`)
+      return false
+    }
+    try {
+      await this.#persistentQuery.stopTask(taskId)
+      const t = this.#tasksById.get(taskId)
+      if (t) t.status = 'stopped'
+      console.log(`🛑 stopAgent(${agentId}) → stopTask(${taskId}) issued (${t?.subagentType || '?'})`)
+      return true
+    } catch (err: any) {
+      console.error(`⚠️ stopTask(${taskId}) failed:`, err?.message)
+      return false
+    }
+  }
+
+  #resolveTaskId(agentId: string): string | null {
+    const toolUse = this.#toolUseByAgentId.get(agentId)
+    if (toolUse) {
+      const byToolUse = this.#taskIdByToolUse.get(toolUse)
+      if (byToolUse) return byToolUse
+      // Pairing exists but its task already ended (terminal notification unmapped
+      // it). This agent's work is DONE — do not fall through to the type fallback,
+      // which would retarget the stop onto a DIFFERENT live agent of the same type.
+      return null
+    }
+    // Fallback: a single running task of the agent's subagent_type is unambiguous.
+    const type = this.#typeByAgentId.get(agentId)
+    if (type) {
+      const candidates = [...this.#tasksById.entries()]
+        .filter(([, t]) => t.subagentType === type && (t.status === 'running' || t.status === 'pending'))
+      if (candidates.length === 1) return candidates[0][0]
+    }
+    return null
+  }
+
+  /** PreToolUse(Task) capture: remember the dispatching tool_use_id per type (FIFO). */
+  noteTaskDispatch(toolUseId: string | undefined, subagentType: string | undefined): void {
+    if (!toolUseId || !subagentType) return
+    const q = this.#pendingToolUseByType.get(subagentType) || []
+    q.push(toolUseId)
+    this.#pendingToolUseByType.set(subagentType, q)
+  }
+
+  /** SubagentStart claim: pair this agent_id with the oldest unclaimed dispatch of its type. */
+  claimTaskDispatch(agentId: string | undefined, subagentType: string | undefined): void {
+    if (!agentId || !subagentType) return
+    this.#typeByAgentId.set(agentId, subagentType)
+    const q = this.#pendingToolUseByType.get(subagentType)
+    if (q?.length) {
+      // Prefer the oldest dispatch the registry has seen START (task_started
+      // already mapped its tool_use_id): a denied/errored Task never starts,
+      // and pairing with its stale id would skew every later pairing of this
+      // type. Fall back to plain FIFO when no started id is known yet.
+      const idx = q.findIndex(tu => this.#taskIdByToolUse.has(tu))
+      const toolUse = idx >= 0 ? q.splice(idx, 1)[0] : q.shift()
+      if (toolUse) this.#toolUseByAgentId.set(agentId, toolUse)
+    }
+  }
+
+  /** Background consumer feed: track SDK task lifecycle messages. */
+  trackTaskMessage(msg: any): void {
+    if (msg?.type !== 'system') return
+    if (msg.subtype === 'task_started') {
+      this.#tasksById.set(msg.task_id, {
+        toolUseId: msg.tool_use_id,
+        subagentType: msg.subagent_type,
+        description: msg.description,
+        status: 'running',
+      })
+      if (msg.tool_use_id) this.#taskIdByToolUse.set(msg.tool_use_id, msg.task_id)
+    } else if (msg.subtype === 'task_updated') {
+      const t = this.#tasksById.get(msg.task_id)
+      if (t && msg.patch?.status) t.status = msg.patch.status
+    } else if (msg.subtype === 'task_notification') {
+      // Terminal: completed | failed | stopped — drop from the live registry.
+      const t = this.#tasksById.get(msg.task_id)
+      if (t?.toolUseId) this.#taskIdByToolUse.delete(t.toolUseId)
+      this.#tasksById.delete(msg.task_id)
+    }
+  }
+
+  /** Live background tasks (for truthful status/UX). */
+  getRunningTasks(): Array<{ taskId: string; subagentType?: string; description?: string; status: string }> {
+    return [...this.#tasksById.entries()]
+      .filter(([, t]) => t.status === 'running' || t.status === 'pending')
+      .map(([taskId, t]) => ({ taskId, subagentType: t.subagentType, description: t.description, status: t.status }))
   }
 
   // ============================================================
@@ -1678,6 +1791,13 @@ export class ClaudeLLM extends llm.LLM {
     this.#messageChannel = null
     this.#backgroundConsumerRunning = false
     this.#dispatchedFor.clear()
+    // Task registry is per-process (SDK task ids die with the subprocess).
+    this.#tasksById.clear()
+    this.#taskIdByToolUse.clear()
+    this.#pendingToolUseByType.clear()
+    this.#toolUseByAgentId.clear()
+    this.#typeByAgentId.clear()
+    this.#pendingInterrupt = null
     console.log('🔒 Persistent session closed')
   }
 
@@ -1698,6 +1818,10 @@ export class ClaudeLLM extends llm.LLM {
       onCheckpoint: (checkpointId: string) => void
       eventEmitter: EventEmitter
     },
+    // Progressive-interrupt ladder: the SDK's own queue delivers mid-turn
+    // messages at the next tool boundary (native fold) — default. 'now' =
+    // native interrupt-and-redirect; 'later' = wait for the turn to finish.
+    pushOpts?: { priority?: 'now' | 'next' | 'later' },
   ): void {
     // (Compaction/1M env is set once at module load — see ENABLE_1M_CONTEXT /
     // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE near ensureCompactionSettings(). Setting it
@@ -1708,12 +1832,30 @@ export class ClaudeLLM extends llm.LLM {
       message: { role: 'user', content: [{ type: 'text', text: userText }] } as any,
       parent_tool_use_id: null,
       session_id: this.#sessionId || '',
+      ...(pushOpts?.priority && { priority: pushOpts.priority }),
     }
 
     if (this.#persistentQuery && this.#messageChannel && !this.#messageChannel.closed) {
-      // Fast path — push to existing subprocess (no cold start)
-      console.log('⚡ Persistent session: pushing message (no JSONL replay)')
-      this.#messageChannel.push(userMessage)
+      // Fast path — push to existing subprocess (no cold start).
+      // If an interrupt is in flight, order the push AFTER it settles: a message
+      // that folds into the turn being aborted never runs as its own turn, so
+      // pushing during the abort window can lose the user's message.
+      const pending = this.#pendingInterrupt
+      if (pending) {
+        console.log('⚡ Persistent session: interrupt in flight — deferring push until it settles')
+        pending.then(() => {
+          if (this.#messageChannel && !this.#messageChannel.closed) {
+            console.log('⚡ Persistent session: pushing deferred message (post-interrupt)')
+            this.#messageChannel.push(userMessage)
+          } else {
+            // Never drop a user message silently — make the loss loud in logs.
+            console.warn(`⚠️ Deferred message NOT delivered (channel closed during interrupt): "${userText.slice(0, 80)}"`)
+          }
+        })
+      } else {
+        console.log('⚡ Persistent session: pushing message (no JSONL replay)')
+        this.#messageChannel.push(userMessage)
+      }
       return
     }
 
@@ -1745,6 +1887,11 @@ export class ClaudeLLM extends llm.LLM {
     try {
       for await (const message of pq) {
         const msg = message as any
+
+        // Background-task lifecycle → registry (task_started/updated/notification).
+        // This is what makes the per-flow stop button real: stopTask() needs the
+        // task_id these messages carry.
+        this.trackTaskMessage(msg)
 
         // Session ID capture
         if (msg.type === 'system' && msg.subtype === 'init') {
@@ -2044,6 +2191,13 @@ class ClaudeLLMStream extends llm.LLMStream {
         // model: this.#llmRef.turbo ? FAST_MODEL : (this.#opts.model || 'claude-opus-4-8[1m]'), // prev
         model: this.#llmRef.turbo ? FAST_MODEL : (this.#opts.model || 'claude-opus-5-5'), // Opus 5.5 default — 1M context built-in, no beta suffix needed
         enableFileCheckpointing: true,
+        // Declares a per-task stop control (stop_dispatch → query.stopTask), so an
+        // interrupt on this open-input streaming session SPARES running background
+        // agents/workflows — Stop aborts only the current turn. Without this the
+        // CLI fails closed: every interrupt killed in-flight sub-agents (the
+        // "stuck running writers" bug). Live-proven on d4f24f46: flag off = busy
+        // sub-agent killed at interrupt; flag on = survived; stopTask stops it.
+        perTaskStopAffordance: true,
         settingSources: ['project', 'user'],
         extraArgs: { 'replay-user-messages': null },
         ...(this.#abortController && { abortController: this.#abortController }),
@@ -2208,6 +2362,9 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const st = String((toolInput as any)?.subagent_type || (toolInput as any)?.agent_type || '')
                 const d = String((toolInput as any)?.description || (toolInput as any)?.prompt || '')
                 if (st && d) this.#pendingTaskByType.set(st, d)
+                // Per-flow stop correlation: remember the dispatching tool_use_id so
+                // SubagentStart can pair agent_id → tool_use_id → task_id (stopTask).
+                this.#llmRef.noteTaskDispatch((input as any)?.tool_use_id, st || undefined)
               }
               this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main', agentId: input?.agent_id })
               return {}
@@ -2602,6 +2759,8 @@ class ClaudeLLMStream extends llm.LLMStream {
               const rawTask = input?.prompt ?? input?.description ?? (at0 ? this.#pendingTaskByType.get(String(at0)) : undefined)
               if (at0) this.#pendingTaskByType.delete(String(at0))
               const task = rawTask ? String(rawTask).replace(/\s+/g, ' ').trim().slice(0, 160) : undefined
+              // Pair this agent_id with its dispatching tool_use_id (per-flow stop chain).
+              this.#llmRef.claimTaskDispatch(input?.agent_id, at0 ? String(at0) : undefined)
               this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id, task })
               // Record the dispatch as LIVE so the frontend can reconcile orphaned
               // "running" rows against statusManager.getActiveDispatchIds(). Without a
