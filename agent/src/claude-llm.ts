@@ -1399,6 +1399,14 @@ export class ClaudeLLM extends llm.LLM {
   /** Read-only accessor used by ClaudeLLMStream (private fields are class-scoped). */
   get turbo(): boolean { return this.#turbo }
 
+  // Steer-priority suppression state (adversarial findings #1/#8): a 'now'
+  // message aborts the running turn, so never stamp it while that turn is
+  // parked on a permission dialog (the user's spoken "yes, allow it" would
+  // abort the asking turn) or while the session is compacting (repeated
+  // voice chatter could cancel compaction over and over).
+  permissionPending = false
+  compacting = false
+
   /**
    * Set session ID to resume a specific conversation
    * Call this before sending the first message to resume from a previous session
@@ -1843,7 +1851,10 @@ export class ClaudeLLM extends llm.LLM {
       const pending = this.#pendingInterrupt
       if (pending) {
         console.log('⚡ Persistent session: interrupt in flight — deferring push until it settles')
-        pending.then(() => {
+        // Deadline (adversarial finding #2): a wedged interrupt control request
+        // must not make the agent permanently deaf — push anyway after 8s.
+        const deadline = new Promise<void>((res) => setTimeout(res, 8000))
+        Promise.race([pending, deadline]).then(() => {
           if (this.#messageChannel && !this.#messageChannel.closed) {
             console.log('⚡ Persistent session: pushing deferred message (post-interrupt)')
             this.#messageChannel.push(userMessage)
@@ -1944,6 +1955,7 @@ export class ClaudeLLM extends llm.LLM {
         if (msg.type === 'system' && msg.subtype === 'status') {
           const status = msg.status
           if (status === 'compacting' || status === null) {
+            this.compacting = status === 'compacting'
             console.log(`[COMPACT-SDK-ITER] status change: ${status === 'compacting' ? 'ENTERED compacting' : 'EXITED compacting'} session=${msg.session_id?.substring(0,8) ?? '?'}`)
           }
         }
@@ -2007,6 +2019,11 @@ export class ClaudeLLM extends llm.LLM {
           this.#currentTurnChunkIndex = 0
           this.#currentTurnChunks = []
           this.#currentTurnSpeed = undefined
+          // Stale-dispatch pruning (adversarial finding #6): any Task dispatch id
+          // still unclaimed at turn end never reached SubagentStart (denied,
+          // errored, or its turn aborted) — drop it so it can't poison the next
+          // agent_id pairing of the same type.
+          this.#pendingToolUseByType.clear()
           console.log('✅ Claude turn complete (persistent session stays alive)')
         }
       }
@@ -2281,7 +2298,14 @@ class ClaudeLLMStream extends llm.LLMStream {
           }
           
           console.log(`⚠️ Permission needed: ${toolName}`)
-          return this.#onPermissionRequest(toolName, input)
+          // Track the pending dialog so steer-priority ('now') suppression can
+          // avoid aborting the very turn that's waiting on the user's answer.
+          this.#llmRef.permissionPending = true
+          try {
+            return await this.#onPermissionRequest(toolName, input)
+          } finally {
+            this.#llmRef.permissionPending = false
+          }
         },
         hooks: {
           PreToolUse: [{
@@ -2872,7 +2896,11 @@ class ClaudeLLMStream extends llm.LLMStream {
         // Meeting transcript chunks are ambient and must NOT interrupt (they
         // arrive continuously and would abort working turns nonstop).
         // Escape hatch: OSBORN_MSG_PRIORITY=off restores queue-and-fold.
-        const steerNow = process.env.OSBORN_MSG_PRIORITY !== 'off' && !userText.startsWith('[MEETING')
+        const steerNow = process.env.OSBORN_MSG_PRIORITY !== 'off'
+          && !userText.startsWith('[MEETING')   // ambient transcript chunks never abort a turn
+          && !userText.startsWith('[SYSTEM')    // join/end notes etc. never abort a turn
+          && !this.#llmRef.permissionPending    // don't abort the turn awaiting the user's answer
+          && !this.#llmRef.compacting           // don't cancel an in-flight compaction
         this.#llmRef.pushMessage(userText, sdkOptions, {
           onSessionId: this.#onSessionId,
           onCheckpoint: this.#onCheckpoint,

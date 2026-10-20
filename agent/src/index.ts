@@ -5699,8 +5699,11 @@ async function main() {
         if (stopped) {
           try { statusManager.upsertDispatch(agentId, { dispatchState: 'failed', artifact: 'stopped by user' }) } catch {}
         }
-        // Always confirm so frontend clears the card (covers ghost/stale flows too)
-        await sendToFrontend({ type: 'agent_stopped', agent_id: agentId, stopped })
+        // Always confirm so frontend clears the card (covers ghost/stale flows too).
+        // runningTasks lets the frontend tell a ghost row (0 → safe to clear)
+        // from a live-but-uncorrelated runaway (>0 → keep the row visible).
+        const runningTasks = (() => { try { return currentLLM.getRunningTasks?.()?.length ?? 0 } catch { return 0 } })()
+        await sendToFrontend({ type: 'agent_stopped', agent_id: agentId, stopped, runningTasks })
       }
       else if (data.type === 'join_meeting') {
         const meetingUrl = data.url as string
@@ -5975,9 +5978,11 @@ async function main() {
               slot.dispatchInFlight = true
               // Reuse the cold-start emitter — pushMessage's fast path ignores a
               // fresh emitter once the subprocess exists (see spawnBackgroundSession).
-              // User instructions interrupt the slot's current turn too (priority
-              // 'now' — same ladder as the main agent; its background tasks survive).
-              slot.llm.pushMessage(instruction, slot.sdkOptions, { onSessionId: () => {}, onCheckpoint: () => {}, eventEmitter: slot.emitter }, { priority: 'now' })
+              // NO priority override here (adversarial finding #4): slot work is
+              // FOREGROUND turn work — a 'now' dispatch would abort the previous
+              // instruction mid-flight and corrupt dispatchInFlight accounting.
+              // Instructions queue/fold like before.
+              slot.llm.pushMessage(instruction, slot.sdkOptions, { onSessionId: () => {}, onCheckpoint: () => {}, eventEmitter: slot.emitter })
               void sendToFrontend({ type: 'background_dispatched', sessionId: targetSessionId, instruction })
             }
             if (slots.has(targetSessionId)) doDispatch()

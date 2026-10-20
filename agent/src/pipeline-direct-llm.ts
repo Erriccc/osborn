@@ -150,6 +150,7 @@ export class PipelineDirectLLM extends llm.LLM {
   async rewindAgent(checkpointId?: string) { return this.#claudeLLM.rewindToCheckpoint(checkpointId) }
   hasActiveAgent() { return this.#claudeLLM.hasActiveQuery() }
   stopAgent(agentId: string): Promise<boolean> { return this.#claudeLLM.stopAgent(agentId) }
+  getRunningTasks() { return this.#claudeLLM.getRunningTasks() }
 
   /** Send a new prompt to Claude via direct chat() — event listeners stay attached */
   sendPrompt(prompt: string) {
@@ -222,7 +223,13 @@ export class PipelineDirectLLM extends llm.LLM {
     // interrupting active TTS. We need to forward BOTH cases so the agent knows
     // what it produced that the user didn't hear, and so the buffer is cleared
     // every turn even when there was no interrupt.
-    const interruptCtx = this.#opts.getAndConsumeInterruptionContext?.()
+    // MEETING GUARD (adversarial finding): never consume/enrich interrupt context
+    // on a meeting transcript chunk — enrichment would prefix it [INTERRUPTED]/
+    // [CONTEXT] (defeating the downstream '[MEETING' priority guard) and fire
+    // interruptQuery() for a transcript chunk, aborting working turns nonstop.
+    // Leave the pending context for the next REAL user message.
+    const isMeetingChunkEarly = userText.startsWith('[MEETING')
+    const interruptCtx = isMeetingChunkEarly ? null : this.#opts.getAndConsumeInterruptionContext?.()
     if (interruptCtx && userText.trim()) {
       const hasInterrupt = !!interruptCtx.spokenText
       const hasSuppressed = !!interruptCtx.suppressedText
