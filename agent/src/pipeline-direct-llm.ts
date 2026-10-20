@@ -14,7 +14,7 @@ import { ClaudeLLM, type ClaudeLLMOptions } from './claude-llm.js'
 import { askPipelineFastBrain, type PipelineFastBrainResult } from './pipeline-fastbrain.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { statusManager } from './status-manager.js'
-import { noiseGate } from './noise-gate.js'
+import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
 import { EventEmitter } from 'events'
 
 // Bypass marker for gate-approved contexts: the deferred gate stream re-enters
@@ -162,7 +162,7 @@ export class PipelineDirectLLM extends llm.LLM {
    * Research finding: conversational context is the load-bearing signal for
    * addressee detection (its absence roughly halves F1). */
   #buildGateContext() {
-    const recentTurns = (this.#opts.getChatHistory?.() || []).slice(-8)
+    const recentTurns = (this.#opts.getChatHistory?.() || []).slice(-GATE_CONTEXT_TURNS)
     const dispatches = statusManager.getActiveDispatches()
     const tasks = this.#claudeLLM.getRunningTasks()
     const activeWork = [

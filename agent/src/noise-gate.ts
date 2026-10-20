@@ -31,6 +31,12 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 const GATE_MODEL = process.env.OSBORN_GATE_MODEL || process.env.OSBORN_FAST_BRAIN_MODEL || 'deepseek/deepseek-chat'
 const GATE_TIMEOUT_MS = Number(process.env.OSBORN_GATE_TIMEOUT_MS || 2000)
 const SILENCE_EXIT_MS = Number(process.env.OSBORN_GATE_SILENCE_EXIT_MS || 5 * 60_000)
+// Context depth: how many recent user/assistant turns the classifier sees.
+// Research (docs/noise-gate-research-2026-10.md §4): conversational context is
+// the load-bearing signal — too shallow and side-talk about adjacent topics
+// slips through / real work talk gets dropped. Deep by default, esp. for
+// meeting mode where topics drift.
+export const GATE_CONTEXT_TURNS = Math.min(60, Math.max(8, Number(process.env.OSBORN_GATE_CONTEXT_TURNS || 30)))
 const DROP_RING_MAX = 50
 
 // Static system prompt — keep byte-stable (prompt caching is prefix-matched).
@@ -155,8 +161,8 @@ class NoiseGate extends EventEmitter {
     const started = Date.now()
     try {
       const recent = ctx.recentTurns
-        .slice(-8)
-        .map(t => `${t.role === 'user' ? 'USER' : 'ASSISTANT'}: ${String(t.content).slice(0, 200)}`)
+        .slice(-GATE_CONTEXT_TURNS)
+        .map(t => `${t.role === 'user' ? 'USER' : 'ASSISTANT'}: ${String(t.content).slice(0, 300)}`)
         .join('\n')
       const controller = new AbortController()
       const to = setTimeout(() => controller.abort(), GATE_TIMEOUT_MS)

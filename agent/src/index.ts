@@ -5710,9 +5710,23 @@ async function main() {
       }
       // Noise cancellation (noise gate) — UI toggle. Meeting chunks auto-engage
       // it pipeline-side; this is the explicit button next to mute.
+      // FORWARD COUPLING: the agent's loaded meeting skill already knows how to
+      // enter meeting-mode behavior on its own (it auto-detects multi-speaker
+      // rooms without Recall) — so the toggle also tells the agent, via a
+      // non-interrupting [SYSTEM note (never priority 'now'), to switch its
+      // conversational behavior in the same direction.
       else if (data.type === 'noise_cancel') {
-        noiseGate.setEnabled(!!data.enabled, 'ui')
+        const turningOn = !!data.enabled
+        const wasOn = noiseGate.enabled
+        noiseGate.setEnabled(turningOn, 'ui')
         await sendToFrontend({ type: 'noise_cancel_state', enabled: noiseGate.enabled, reason: noiseGate.reason })
+        if (noiseGate.enabled !== wasOn) {
+          try {
+            (currentLLM as any)?.sendPrompt?.(turningOn
+              ? '[SYSTEM note — the user enabled noise-cancellation mode: they are in a noisy, multi-speaker environment (other conversations around them). Enter your meeting-mode behavior now even though no Recall meeting is connected: listen more than you speak, keep spoken replies short and only when clearly addressed, and expect filtered/sparse transcripts. Do not read this note aloud.]'
+              : '[SYSTEM note — the user disabled noise-cancellation mode: the room is back to a normal one-on-one voice conversation. Exit meeting-mode behavior and resume normal conversational responses. Do not read this note aloud.]')
+          } catch {}
+        }
       }
       // Tombstone recovery — "send anyway" on a gate-dropped utterance. The text
       // is allow-listed for one pass so the gate can't re-drop it.
