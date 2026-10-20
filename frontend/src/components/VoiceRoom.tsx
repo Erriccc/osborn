@@ -2184,6 +2184,11 @@ function VoiceRoomInner({
   const [agentState, setAgentState] = useState<string>('idle')
   const [speakingChunk, setSpeakingChunk] = useState<SpeakingChunk | null>(null)
   const [isMuted, setIsMuted] = useState(false)
+  // Noise-cancellation (noise gate): agent-side transcript triage. State is
+  // authoritative from the agent (noise_cancel_state) — meeting mode can
+  // auto-engage it without a click here.
+  const [noiseCancelOn, setNoiseCancelOn] = useState(false)
+  const [gateDropped, setGateDropped] = useState<Array<{ text: string; verdict: string; ts: number }>>([])
   // Session management state
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
@@ -2862,6 +2867,15 @@ function VoiceRoomInner({
 
   const { send: sendToAgent } = useDataChannel('user-input')
 
+  const toggleNoiseCancel = useCallback(() => {
+    const next = !noiseCancelOn
+    setNoiseCancelOn(next) // optimistic; agent confirms via noise_cancel_state
+    try {
+      const enc = new TextEncoder()
+      sendToAgent(enc.encode(JSON.stringify({ type: 'noise_cancel', enabled: next })), { reliable: true })
+    } catch {}
+  }, [noiseCancelOn, sendToAgent])
+
   // Track recent messages to prevent duplicates (keep last 5 per role)
   const recentMessagesRef = useRef<{ user: string[]; assistant: string[]; system: string[] }>({
     user: [],
@@ -3086,6 +3100,12 @@ function VoiceRoomInner({
             return [...prev, { agentId: data.agent_id, agentType: data.agent_type ?? 'agent', status: 'running', task, startedAt: Date.now() }]
           })
         }
+      } else if (data.type === 'noise_cancel_state') {
+        setNoiseCancelOn(!!data.enabled)
+        if (data.reason === 'silence') console.log('🚪 Noise cancellation auto-exited (5 min quiet)')
+      } else if (data.type === 'gate_dropped' && typeof data.text === 'string') {
+        // Tombstone — dropped utterances stay visible and recoverable
+        setGateDropped(prev => [...prev.slice(-49), { text: data.text, verdict: data.verdict ?? 'side_talk', ts: data.ts ?? Date.now() }])
       } else if (data.type === 'agent_stopped' && data.agent_id) {
         if (data.stopped === false && (data.runningTasks ?? 0) > 0) {
           // Stop failed to correlate while tasks are still live — keep/restore the
@@ -5255,8 +5275,42 @@ function VoiceRoomInner({
 
           {/* Mic / mute — pinned right (ml-auto opens the gap) */}
           <button
-            onClick={toggleMute}
+            onClick={toggleNoiseCancel}
             className={`ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
+              noiseCancelOn
+                ? 'bg-amber-500/20 text-amber-300'
+                : 'bg-gray-800/60 text-gray-400 hover:bg-gray-700/60'
+            }`}
+            title={noiseCancelOn
+              ? `Noise cancellation ON — filtering side conversations${gateDropped.length ? ` (${gateDropped.length} filtered — latest: "${gateDropped[gateDropped.length - 1].text.slice(0, 80)}")` : ''}. Click to turn off.`
+              : 'Noise cancellation — filter side conversations before they reach the agent'}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 18v-6a9 9 0 0118 0v6M3 18a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3zm18 0a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h1a2 2 0 012 2v3z" />
+            </svg>
+            <span>NC</span>
+            {noiseCancelOn && gateDropped.length > 0 && (
+              <span
+                onClick={(e) => {
+                  // Send-anyway recovery for the latest tombstoned utterance
+                  e.stopPropagation()
+                  const last = gateDropped[gateDropped.length - 1]
+                  if (!last) return
+                  try {
+                    const enc = new TextEncoder()
+                    sendToAgent(enc.encode(JSON.stringify({ type: 'gate_send_anyway', text: last.text })), { reliable: true })
+                    setGateDropped(prev => prev.slice(0, -1))
+                  } catch {}
+                }}
+                className="px-1 rounded-full bg-amber-500/30 text-[10px]"
+                title={`${gateDropped.length} utterance(s) filtered — click to send the latest to the agent anyway`}
+              >{gateDropped.length}</span>
+            )}
+          </button>
+
+          <button
+            onClick={toggleMute}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
               isMuted
                 ? 'bg-red-500/20 text-red-400'
                 : 'bg-gray-800/60 text-gray-300 hover:bg-gray-700/60'

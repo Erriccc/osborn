@@ -20,6 +20,12 @@
  *
  * Run: npx tsx agent/tests/regression/meeting-mode.ts  (self-sandboxes HOME)
  */
+
+// The noise-gate feature (noise-gate.ts) deliberately changes behavior when ON:
+// meeting chunks auto-engage it and real turns get triaged. This suite pins the
+// LEGACY (gate-off) contracts, so run with the gate kill switch — read lazily
+// by the gate, so setting it here (after imports) still applies.
+process.env.OSBORN_NOISE_GATE = 'off'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

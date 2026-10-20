@@ -14,7 +14,13 @@ import { ClaudeLLM, type ClaudeLLMOptions } from './claude-llm.js'
 import { askPipelineFastBrain, type PipelineFastBrainResult } from './pipeline-fastbrain.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { statusManager } from './status-manager.js'
+import { noiseGate } from './noise-gate.js'
 import { EventEmitter } from 'events'
+
+// Bypass marker for gate-approved contexts: the deferred gate stream re-enters
+// chat() with the SAME chatCtx after a forward verdict; the marker makes the
+// second pass skip the gate and run the normal (enrichment + Claude) path.
+const gateApproved = new WeakSet<llm.ChatContext>()
 
 // ============================================================
 // SESSION TAIL — compact recent-conversation block prepended to every user turn
@@ -152,6 +158,20 @@ export class PipelineDirectLLM extends llm.LLM {
   stopAgent(agentId: string): Promise<boolean> { return this.#claudeLLM.stopAgent(agentId) }
   getRunningTasks() { return this.#claudeLLM.getRunningTasks() }
 
+  /** Context for the noise-gate classifier: recent turns + what's in flight.
+   * Research finding: conversational context is the load-bearing signal for
+   * addressee detection (its absence roughly halves F1). */
+  #buildGateContext() {
+    const recentTurns = (this.#opts.getChatHistory?.() || []).slice(-8)
+    const dispatches = statusManager.getActiveDispatches()
+    const tasks = this.#claudeLLM.getRunningTasks()
+    const activeWork = [
+      dispatches.length ? `active sub-agents: ${dispatches.map(d => d.subagentType || 'agent').join(', ')}` : '',
+      tasks.length ? `running tasks: ${tasks.map(t => `${t.subagentType || 'task'}: ${(t.description || '').slice(0, 80)}`).join('; ')}` : '',
+    ].filter(Boolean).join(' | ')
+    return { recentTurns, activeWork }
+  }
+
   /** Send a new prompt to Claude via direct chat() — event listeners stay attached */
   sendPrompt(prompt: string) {
     console.log(`📋 [pipeline] Sending prompt to Claude (${prompt.length} chars)`)
@@ -192,6 +212,28 @@ export class PipelineDirectLLM extends llm.LLM {
     }
 
     console.log(`📥 [pipeline] chat() call #${callN} (${userText.length} chars): "${userText}"`)
+
+    // ── NOISE GATE (noise-cancellation mode) ─────────────────────────────────
+    // Triage BEFORE any enrichment: a dropped stranger utterance must never
+    // consume pending interruption context, fire an interrupt, or reach the
+    // agent/fast brain. chat() stays synchronous (LiveKit contract) — the gate
+    // returns a deferred stream that re-enters chat() with a bypass marker on
+    // forward. Fail-open: classifier error/timeout forwards verbatim.
+    if (noiseGate.shouldGate(userText) && !gateApproved.has(chatCtx)) {
+      console.log(`🚪 [gate] holding utterance for triage: "${userText.slice(0, 60)}"`)
+      return new NoiseGateStream(this, { chatCtx, toolCtx, connOptions }, async () => {
+        const verdict = await noiseGate.classify(userText, this.#buildGateContext())
+        if (verdict === 'side_talk') {
+          noiseGate.recordDrop(userText, verdict)
+          console.log(`🚪 [gate] dropped side_talk: "${userText.slice(0, 60)}"`)
+          return
+        }
+        // directed | ambiguous → forward the VERBATIM text through the normal path
+        noiseGate.noteActivity()
+        gateApproved.add(chatCtx)
+        this.chat({ chatCtx, toolCtx, connOptions, abortController })
+      })
+    }
 
     // ── SESSION TAIL injection (seam-only) ───────────────────────────────────
     // Inject the tail ONCE on the first real user turn after a compaction
@@ -358,6 +400,14 @@ export class PipelineDirectLLM extends llm.LLM {
     const isMeetingChunk = userText.startsWith('[MEETING')
     this.suppressMeetingTTS = isMeetingChunk
 
+    // Meeting mode ⇄ noise cancellation coupling: meeting chunks auto-engage the
+    // gate (same detection the user already relies on) and count as activity so
+    // the silence auto-exit doesn't fire mid-meeting while the user listens.
+    if (isMeetingChunk) {
+      if (!noiseGate.enabled) noiseGate.setEnabled(true, 'meeting')
+      noiseGate.noteActivity()
+    }
+
     // Fire Claude
     const claudeStream = this.#claudeLLM.chat({ chatCtx, toolCtx, connOptions, abortController })
 
@@ -450,6 +500,31 @@ export class PipelineDirectLLM extends llm.LLM {
       console.error('❌ [pipeline] Fast brain error:', err?.message)
     } finally {
       if (this.#turnAbort?.signal === signal) this.#turnAbort = null
+    }
+  }
+}
+
+// Deferred stream returned while the noise gate triages an utterance. Satisfies
+// the synchronous chat() → llm.LLMStream contract (LiveKit); run() resolves the
+// verdict and either drops (tombstoned by the gate) or re-enters chat() with the
+// bypass marker so the full normal path (enrichment, Claude, fast brain) runs.
+// Mirrors ClaudeLLMStream's direct-mode shape: run() returns quickly and the
+// pipeline is released; the real reply flows via tts_say/assistant events.
+class NoiseGateStream extends llm.LLMStream {
+  #task: () => Promise<void>
+  constructor(
+    llmInstance: PipelineDirectLLM,
+    { chatCtx, toolCtx, connOptions }: { chatCtx: llm.ChatContext; toolCtx?: llm.ToolContext; connOptions: APIConnectOptions },
+    task: () => Promise<void>,
+  ) {
+    super(llmInstance, { chatCtx, toolCtx, connOptions })
+    this.#task = task
+  }
+  protected async run(): Promise<void> {
+    try {
+      await this.#task()
+    } catch (err: any) {
+      console.warn('🚪 [gate] deferred stream error (fail-open already applied upstream):', err?.message)
     }
   }
 }

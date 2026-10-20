@@ -55,6 +55,7 @@ import { MCP_CATALOG } from './config.js'
 import { getRecallClient } from './recall-client.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
+import { noiseGate } from './noise-gate.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
@@ -3261,6 +3262,28 @@ async function main() {
   const MAX_MESSAGE_SIZE = 30000       // 30KB soft limit — truncate text/content fields
   const HARD_MAX_MESSAGE_SIZE = 50000  // 50KB hard limit — drop if still too large after truncation
 
+  // ── Noise-gate wiring (once per session scope) ────────────────────────────
+  // state → frontend toggle sync; drop → tombstone in the UI (never silently
+  // lost); auto_exit (5 min quiet) → back to full conversation + a NON-
+  // interrupting resume note ([SYSTEM prefix keeps it off priority 'now') so
+  // the agent speaks first and picks the thread back up.
+  noiseGate.removeAllListeners()
+  noiseGate.on('state', (s: { enabled: boolean; reason: string | null }) => {
+    void sendToFrontend({ type: 'noise_cancel_state', enabled: s.enabled, reason: s.reason })
+  })
+  noiseGate.on('drop', (d: { text: string; verdict: string; ts: number }) => {
+    void sendToFrontend({ type: 'gate_dropped', text: d.text, verdict: d.verdict, ts: d.ts })
+  })
+  noiseGate.on('auto_exit', () => {
+    try {
+      (currentLLM as any)?.sendPrompt?.(
+        '[SYSTEM note — noise-cancellation mode auto-exited after ~5 minutes of quiet. ' +
+        'The user has been silent and the room is back to normal voice conversation. ' +
+        'Resume naturally: briefly check in out loud and mention anything useful that finished while they were away.]'
+      )
+    } catch {}
+  })
+
   async function sendToFrontend(data: object) {
     if (!localParticipant) {
       console.log('⚠️ sendToFrontend: no localParticipant!')
@@ -5683,6 +5706,21 @@ async function main() {
           } catch (err) {
             await sendToFrontend({ type: 'skill_remove_result', success: false, error: String(err) })
           }
+        }
+      }
+      // Noise cancellation (noise gate) — UI toggle. Meeting chunks auto-engage
+      // it pipeline-side; this is the explicit button next to mute.
+      else if (data.type === 'noise_cancel') {
+        noiseGate.setEnabled(!!data.enabled, 'ui')
+        await sendToFrontend({ type: 'noise_cancel_state', enabled: noiseGate.enabled, reason: noiseGate.reason })
+      }
+      // Tombstone recovery — "send anyway" on a gate-dropped utterance. The text
+      // is allow-listed for one pass so the gate can't re-drop it.
+      else if (data.type === 'gate_send_anyway' && currentLLM) {
+        const text = String(data.text || '').trim()
+        if (text) {
+          noiseGate.allowOnce(text)
+          try { (currentLLM as any).sendPrompt?.(text) } catch {}
         }
       }
       // Feature B — per-flow stop (does NOT affect other running flows).
