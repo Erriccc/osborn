@@ -25,9 +25,10 @@
  * gesture), and ended the voice session mid-conversation.
  */
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
+import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
 
 interface ChatSessionContextValue {
@@ -505,14 +506,53 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     router.push('/dashboard')
   }, [router, activeSandboxId, agentUrl, captureSessionLog])
 
-  // LiveKit lifecycle disconnect (transient drops, tab close, mobile background).
-  // Do NOT call /leave-room — the user is likely reconnecting in seconds and
-  // we don't want to kick the agent out of the room they're trying to rejoin.
-  // The agent's 3-min alone-timer is the backstop if the user truly walked away.
-  const disconnectFromLiveKitLifecycle = useCallback(() => {
+  // Reconnect-attempt guard: bound auto-rejoin so a truly-down machine can't
+  // spin the full connect() flow forever. Reset on a successful ready.
+  const reconnectAttemptsRef = useRef(0)
+  const MAX_AUTO_RECONNECTS = 3
+
+  // LiveKit lifecycle disconnect — now REASON-GATED (reconnect-survival Phase 0b).
+  // `onDisconnected` hands us a DisconnectReason; the old code bounced to the
+  // dashboard on ALL of them, so a hotspot blip or iPad screen-lock yanked the
+  // user off the voice page mid-session. Branch instead:
+  //   • DUPLICATE_IDENTITY → the same session was opened on another device
+  //     (device handoff / single-client takeover). STAND DOWN: show a message,
+  //     do NOT navigate, do NOT reconnect (reconnecting would start a flap war
+  //     — "someone deliberately took the seat").
+  //   • explicit/terminal (CLIENT_INITIATED / ROOM_DELETED / PARTICIPANT_REMOVED)
+  //     → the session really ended → go to the dashboard (original behavior).
+  //   • anything else (network: SIGNAL_CLOSE, SERVER_SHUTDOWN, STATE_MISMATCH…)
+  //     → attempt to rejoin the SAME room via connect() (bounded), which lands
+  //     back on the warm brain once the server-side grace/re-attach ships. Never
+  //     call /leave-room on this path (preserves the agent's room).
+  const disconnectFromLiveKitLifecycle = useCallback((reason?: DisconnectReason) => {
+    if (reason === DisconnectReason.DUPLICATE_IDENTITY) {
+      console.log('🔀 Session moved to another device (duplicate identity) — standing down')
+      setStatusMsg('This session is now active on another device.')
+      setConnected(false)
+      return
+    }
+    const terminal =
+      reason === DisconnectReason.CLIENT_INITIATED ||
+      reason === DisconnectReason.ROOM_DELETED ||
+      reason === DisconnectReason.PARTICIPANT_REMOVED
+    if (terminal) {
+      captureSessionLog()
+      router.push('/dashboard')
+      return
+    }
+    // Network-class drop → try to rejoin the same room (bounded), don't bounce.
+    if (reconnectAttemptsRef.current < MAX_AUTO_RECONNECTS) {
+      reconnectAttemptsRef.current += 1
+      console.log(`🔁 Network disconnect (reason=${reason ?? 'unknown'}) — auto-rejoin attempt ${reconnectAttemptsRef.current}/${MAX_AUTO_RECONNECTS}`)
+      setStatusMsg('Reconnecting…')
+      void connect()
+      return
+    }
+    console.log('🔁 Auto-rejoin attempts exhausted — returning to dashboard')
     captureSessionLog()
     router.push('/dashboard')
-  }, [router, captureSessionLog])
+  }, [router, captureSessionLog, connect])
 
   const markAgentReady = useCallback(() => {
     // Reset activity clock + clear idle state on connection so the machine
@@ -520,6 +560,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setLastActivityAt(Date.now())
     setIdleStopped(false)
     setConnected(true)
+    // A clean ready = reconnect succeeded → reset the auto-rejoin budget.
+    reconnectAttemptsRef.current = 0
   }, [])
 
   const markAuthRequired = useCallback(() => {

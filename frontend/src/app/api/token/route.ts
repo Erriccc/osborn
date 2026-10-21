@@ -36,7 +36,16 @@ export async function GET(request: NextRequest) {
   const roomCode = request.nextUrl.searchParams.get('roomCode') || generateRoomCode()
   const roomName = `osborn-${roomCode}`
 
-  const participantName = `user-${Date.now()}`
+  // STABLE per-session identity (reconnect-survival Phase 0): key the participant
+  // to the logical session, not a per-mint timestamp. This turns LiveKit's native
+  // duplicate-identity eviction into the single-client + device-handoff primitive —
+  // opening the same session link on a second device cleanly evicts the first,
+  // and a reconnecting client reclaims its own seat. sessionId (from the dashboard
+  // link) is the stable key; roomCode (reused across reconnects) backs a brand-new
+  // session until an id is assigned. The agent treats the identity as opaque
+  // (only 'meeting-canvas' is special-cased), so this is safe server-side.
+  const sessionKey = sessionId || roomCode
+  const participantName = `user-${sessionKey}`
 
   // Resolve the authenticated Supabase user so the agent can scope workspace
   // artifact uploads (and any future per-user data) to the right owner. This
