@@ -1818,6 +1818,57 @@ export class ClaudeLLM extends llm.LLM {
    * @param sdkOptions - Full V1 Options (only used on first call to create the query)
    * @param callbacks - Event callbacks for the background consumer
    */
+  /**
+   * CLICK-TIME OVERLAP (0.9.258): eager-prime the resume. Starts the persistent
+   * SDK query with an OPEN-BUT-EMPTY channel so the CLI subprocess spawns and
+   * performs the `--resume` JSONL replay NOW — overlapping the connect handshake
+   * — then idles awaiting the first real message (which then hits the fast path,
+   * no replay). Verified against @anthropic-ai/claude-agent-sdk: with plain
+   * `options.resume` (no sessionStore), the subprocess spawns + the initialize/
+   * resume handshake fires at query() construction, independent of the input
+   * stream (streamInput only reads the stream AFTER init is written). No user
+   * message is pushed, so no turn/output is produced. Idempotent: no-op if a
+   * persistent query already exists. The primed query is owned by this LLM, so
+   * the normal teardown (abortQuery via killCurrentLLM/killWarm) reclaims it —
+   * covering the SDK caveat that a never-yielding primed query won't self-close.
+   */
+  primeResume(
+    sdkOptions: Options,
+    callbacks: {
+      onSessionId: (id: string) => void
+      onCheckpoint: (checkpointId: string) => void
+      eventEmitter: EventEmitter
+    },
+  ): void {
+    if (this.#persistentQuery) {
+      console.log('⚡ primeResume: persistent query already live — skip (no double-spawn)')
+      return
+    }
+    console.log('🔥 primeResume: eager cold-start — resume replay overlaps connect (no user message)')
+    this.#messageChannel = new MessageChannel<SDKUserMessage>()
+    this.#persistentQuery = query({ prompt: this.#messageChannel as any, options: sdkOptions })
+    this.#activeQueries.add(this.#persistentQuery)
+    this.#startBackgroundConsumer(callbacks)
+  }
+
+  /**
+   * Kick a prime via the normal chat() path so the EXACT turn sdkOptions are
+   * reused (single source of truth — zero drift). Fire-and-forget: chat() starts
+   * run(), which builds sdkOptions and diverts to primeResume. No-op if there's
+   * nothing to resume or a query is already live.
+   */
+  prewarmResume(): void {
+    if (!this.#opts.resumeSessionId && !this.#sessionId) {
+      console.log('⚡ prewarmResume: no session to resume — skip')
+      return
+    }
+    if (this.#persistentQuery) {
+      console.log('⚡ prewarmResume: query already live — skip')
+      return
+    }
+    this.chat({ chatCtx: new llm.ChatContext(), primeOnly: true })
+  }
+
   pushMessage(
     userText: string,
     sdkOptions: Options,
@@ -2054,6 +2105,7 @@ export class ClaudeLLM extends llm.LLM {
     toolCtx,
     connOptions = DEFAULT_API_CONNECT_OPTIONS,
     abortController,
+    primeOnly,
   }: {
     chatCtx: llm.ChatContext
     toolCtx?: llm.ToolContext
@@ -2062,6 +2114,7 @@ export class ClaudeLLM extends llm.LLM {
     toolChoice?: llm.ToolChoice
     extraKwargs?: Record<string, unknown>
     abortController?: AbortController
+    primeOnly?: boolean
   }): llm.LLMStream {
     return new ClaudeLLMStream(this, {
       chatCtx,
@@ -2070,6 +2123,7 @@ export class ClaudeLLM extends llm.LLM {
       opts: this.#opts,
       sessionId: this.#sessionId,
       abortController,
+      primeOnly,
       onSessionId: (id) => {
         const isFirst = !this.#sessionId
         this.#sessionId = id
@@ -2110,6 +2164,11 @@ class ClaudeLLMStream extends llm.LLMStream {
   #onCheckpoint: (checkpointId: string) => void
   #abortController?: AbortController
   #llmRef: ClaudeLLM
+  // CLICK-TIME OVERLAP (0.9.258): when true, run() builds the exact turn
+  // sdkOptions but, instead of pushing a user message, EAGER-PRIMES the resume —
+  // starts the SDK query with an empty channel so the --resume JSONL replay
+  // overlaps the connect handshake. Never speaks, never pushes a turn.
+  #primeOnly = false
   #approvedWriterToolUseIds = new Set<string>()
   // Last Task/Agent dispatch description per subagent_type, captured at PreToolUse so
   // SubagentStart can label the Running row with WHAT the sub-agent is doing even if the
@@ -2129,6 +2188,7 @@ class ClaudeLLMStream extends llm.LLMStream {
       onCheckpoint,
       onPermissionRequest,
       abortController,
+      primeOnly,
     }: {
       chatCtx: llm.ChatContext
       toolCtx?: ToolContextLike
@@ -2140,6 +2200,7 @@ class ClaudeLLMStream extends llm.LLMStream {
       onCheckpoint: (checkpointId: string) => void
       onPermissionRequest: (toolName: string, input: Record<string, unknown>) => Promise<PermissionResult>
       abortController?: AbortController
+      primeOnly?: boolean
     },
   ) {
     super(llmInstance, { chatCtx, toolCtx, connOptions })
@@ -2151,6 +2212,7 @@ class ClaudeLLMStream extends llm.LLMStream {
     this.#onCheckpoint = onCheckpoint
     this.#onPermissionRequest = onPermissionRequest
     this.#abortController = abortController
+    this.#primeOnly = primeOnly === true
   }
 
   protected async run(): Promise<void> {
@@ -2177,6 +2239,13 @@ class ClaudeLLMStream extends llm.LLMStream {
         }
       }
 
+      // CLICK-TIME OVERLAP: a prime has NO user message. Use a sentinel so the
+      // sdkOptions build below runs unchanged; it is never pushed to the model
+      // (run() diverts to primeResume before the pushMessage call).
+      if (this.#primeOnly && !userText.trim()) {
+        userText = '[CONNECT_PREWARM]'
+      }
+
       if (!userText.trim()) {
         this.queue.put({
           id: requestId,
@@ -2185,7 +2254,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         return
       }
 
-      console.log(`🎤 User (${userText.length} chars): "${userText}"`)
+      if (!this.#primeOnly) console.log(`🎤 User (${userText.length} chars): "${userText}"`)
 
       // Build Claude Agent SDK options
       const resumeSessionId = this.#opts.resumeSessionId
@@ -2896,6 +2965,20 @@ class ClaudeLLMStream extends llm.LLMStream {
         // Meeting transcript chunks are ambient and must NOT interrupt (they
         // arrive continuously and would abort working turns nonstop).
         // Escape hatch: OSBORN_MSG_PRIORITY=off restores queue-and-fold.
+        // CLICK-TIME OVERLAP diversion: start the resume replay NOW with an
+        // empty channel (no user message) so it overlaps the connect handshake.
+        // The subprocess then idles awaiting the first real message, which hits
+        // the fast path. Uses the EXACT sdkOptions a real turn would (built
+        // above) — so the primed subprocess IS the session's, zero drift.
+        if (this.#primeOnly) {
+          console.log('🔥 [CONNECT-OVERLAP] priming resume replay (empty channel, no message pushed)')
+          this.#llmRef.primeResume(sdkOptions, {
+            onSessionId: this.#onSessionId,
+            onCheckpoint: this.#onCheckpoint,
+            eventEmitter: this.#eventEmitter,
+          })
+          return
+        }
         const steerNow = process.env.OSBORN_MSG_PRIORITY !== 'off'
           && !userText.startsWith('[MEETING')   // ambient transcript chunks never abort a turn
           && !userText.startsWith('[SYSTEM')    // join/end notes etc. never abort a turn

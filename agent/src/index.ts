@@ -8,7 +8,7 @@ import './boot-secrets.js'
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
 import {
-  Room, RoomEvent, RemoteParticipant, LocalParticipant,
+  Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason,
 } from '@livekit/rtc-node'
 import { AccessToken } from 'livekit-server-sdk'
 
@@ -2213,6 +2213,131 @@ async function main() {
     }
   }
 
+  // ── 0.9.258: KEEP-WARM RE-ATTACH (default-ON; OSBORN_KEEP_WARM=off to disable) ──
+  // On a hard disconnect we normally kill the Claude subprocess (killCurrentLLM),
+  // so a reconnect must cold-resume the JSONL — a 21–40s replay of the active
+  // context window on a big session. Keep-warm instead PARKS the live subprocess
+  // for a short grace: a reconnect to the SAME session re-attaches with ZERO
+  // replay. The parked brain is independent of the LiveKit room/machine — it
+  // costs only memory, and is bounded by THREE backstops so it can never leak
+  // into the $123 empty-room/idle-machine bill:
+  //   1. normal room teardown still runs on a network drop (releaseAgents +
+  //      fast-leave) — the parked brain does NOT hold the room (it's no longer
+  //      `currentLLM` nor in `slots`, so agentsActive() is false);
+  //   2. a grace timer frees the parked brain if no reconnect arrives;
+  //   3. an INDEPENDENT watchdog hard-kills it at a ceiling even if (2) is buggy.
+  // One-owner invariant: the subprocess is owned by exactly one of
+  // {currentLLM, warmLLM}, or it's aborted — never two live, never orphaned.
+  // DEFAULT-ON (user, 2026-10-21): the three backstops above — not the flag —
+  // are what make this safe, so it ships live. OSBORN_KEEP_WARM=off is the
+  // escape hatch if a billing anomaly ever appears.
+  const KEEP_WARM = process.env.OSBORN_KEEP_WARM !== 'off'
+  // CLICK-TIME OVERLAP (default-ON; OSBORN_CONNECT_OVERLAP=off to disable): on a
+  // resumed connect, eager-prime the JSONL replay so it overlaps the user
+  // getting situated + speaking, instead of paying it serially on the first
+  // message. Reuses the SAME subprocess that turn would spawn, so it only moves
+  // the cost earlier — no extra subprocess, no billing delta.
+  const CONNECT_OVERLAP = process.env.OSBORN_CONNECT_OVERLAP !== 'off'
+  const REATTACH_GRACE_MS = Number(process.env.OSBORN_REATTACH_GRACE_MS || 150_000)  // 2.5 min reconnect window (user: 2–3 min)
+  const WARM_HARD_CEILING_MS = Number(process.env.OSBORN_WARM_CEILING_MS || 420_000) // 7 min absolute backstop
+  let warmLLM: ReturnType<typeof createClaudeLLM> | null = null
+  let warmSessionId: string | null = null
+  let warmExpiry = 0
+  let warmGraceTimer: ReturnType<typeof setTimeout> | null = null
+  let warmWatchdog: ReturnType<typeof setTimeout> | null = null
+  const warmStats = { starts: 0, reattachHits: 0, wastedTimeouts: 0, watchdogKills: 0, mismatchKills: 0 }
+
+  // The outbound events createDirectSession() OWNS the wiring for. Stripped on
+  // every (re-)wire so a re-attached subprocess ends up with exactly one
+  // listener per event — no double TTS, no stacked handlers. Only OUR event
+  // names; PipelineDirectLLM's internal emitter wiring is never touched.
+  const DIRECT_SESSION_WIRED_EVENTS = [
+    'session_id', 'mcp_servers_changed', 'tool_use', 'tool_result',
+    'assistant_text', 'assistant_result', 'tts_chunks', 'permission_request',
+    'tts_say', 'session_resume_failed', 'checkpoint_captured',
+    'dispatch_rejected', 'task_completed', 'agent_started',
+  ] as const
+
+  // Abort + clear the parked brain. Clears BOTH timers so grace/watchdog can't
+  // double-fire. Used on grace expiry, watchdog, and session mismatch.
+  const killWarm = (reason: string): void => {
+    if (warmGraceTimer) { clearTimeout(warmGraceTimer); warmGraceTimer = null }
+    if (warmWatchdog) { clearTimeout(warmWatchdog); warmWatchdog = null }
+    if (warmLLM) {
+      try {
+        const llm = warmLLM as any
+        if (typeof llm.abortQuery === 'function') llm.abortQuery()
+        else if (typeof llm.abortAgent === 'function') llm.abortAgent()
+      } catch (err) {
+        console.error(`❌ killWarm(${reason}) abort failed:`, err instanceof Error ? err.message : err)
+      }
+    }
+    if (warmLLM) console.log(`🧊 [KEEP-WARM] freed warm slot (${reason})`)
+    warmLLM = null
+    warmSessionId = null
+    warmExpiry = 0
+  }
+
+  // Grace timer (free memory if no reconnect) + INDEPENDENT watchdog ceiling.
+  // Both end in the SAME teardown: kill warm → releaseAgents → arm idle-exit, so
+  // the machine always self-stops within WARM_HARD_CEILING_MS + idle-grace.
+  const armWarmTimers = (): void => {
+    if (warmGraceTimer) clearTimeout(warmGraceTimer)
+    if (warmWatchdog) clearTimeout(warmWatchdog)
+    warmGraceTimer = setTimeout(() => {
+      warmGraceTimer = null
+      warmStats.wastedTimeouts++
+      console.log('🧊 [KEEP-WARM] grace expired with no reconnect — freeing warm slot')
+      killWarm('grace_expired')
+      releaseAgents()
+      armIdleExitTimer('warm-grace-expired')
+    }, REATTACH_GRACE_MS)
+    warmWatchdog = setTimeout(() => {
+      warmWatchdog = null
+      warmStats.watchdogKills++
+      console.warn('🧊 [KEEP-WARM] WATCHDOG ceiling hit — hard-freeing warm slot (backstop)')
+      killWarm('watchdog_ceiling')
+      releaseAgents()
+      armIdleExitTimer('warm-watchdog')
+    }, WARM_HARD_CEILING_MS)
+  }
+
+  // Move currentLLM → warm slot WITHOUT aborting it (the park). If there's no
+  // session id to key re-attach on, there's nothing to reuse — abort instead so
+  // we never strand an unkeyable subprocess.
+  const parkWarm = (reason: string): void => {
+    if (!currentLLM) return
+    const sid = (currentLLM as any).sessionId as string | undefined
+    if (!sid) {
+      console.log(`🔥 [KEEP-WARM] no sessionId to key re-attach — aborting instead (${reason})`)
+      killCurrentLLM(reason + '_no_sessionid')
+      currentLLM = null
+      return
+    }
+    // Supersede any existing parked brain (one-owner): abort the old one first.
+    if (warmLLM && warmLLM !== currentLLM) { warmStats.mismatchKills++; killWarm('superseded_by_new_park') }
+    warmLLM = currentLLM
+    warmSessionId = sid
+    warmExpiry = Date.now() + REATTACH_GRACE_MS
+    currentLLM = null
+    warmStats.starts++
+    armWarmTimers()
+    console.log(`🔥 [KEEP-WARM] parked session ${sid.slice(0, 8)} (${reason}); grace ${REATTACH_GRACE_MS / 1000}s, ceiling ${WARM_HARD_CEILING_MS / 1000}s`)
+  }
+
+  // Detach the parked brain for reuse WITHOUT aborting it, cancelling its timers.
+  // Caller takes ownership (becomes currentLLM via createDirectSession).
+  const claimWarm = (): ReturnType<typeof createClaudeLLM> | null => {
+    if (warmGraceTimer) { clearTimeout(warmGraceTimer); warmGraceTimer = null }
+    if (warmWatchdog) { clearTimeout(warmWatchdog); warmWatchdog = null }
+    const llm = warmLLM
+    warmLLM = null
+    warmSessionId = null
+    warmExpiry = 0
+    warmStats.reattachHits++
+    return llm
+  }
+
   // ── 0.9.83: Zombie-presence watchdog + event-loss adopter DELETED ──
   // Both poll-based layers existed solely to compensate for Room-reuse damage:
   //   • zombie-watchdog: RoomEvent callbacks stopped firing after a leave/rejoin
@@ -3482,6 +3607,15 @@ async function main() {
       console.log(`📁 Session workspace (resumed): ${workspace}`)
     }
 
+    // Listener hygiene (keep-warm re-attach): createDirectSession OWNS the
+    // outbound event wiring below. On a cold start the LLM is fresh so this is a
+    // no-op; on a warm re-attach the reused subprocess still carries the prior
+    // session's listeners, so strip exactly the events we re-wire to guarantee
+    // exactly one listener each — no double TTS, no stacked handlers.
+    for (const ev of DIRECT_SESSION_WIRED_EVENTS) {
+      try { (directLLM.events as import('node:events').EventEmitter).removeAllListeners(ev) } catch {}
+    }
+
     // For new sessions, create workspace when SDK assigns real session ID
     directLLM.events.once('session_id', ({ sessionId }: { sessionId: string }) => {
       const workspace = ensureSessionWorkspace(workingDir, sessionId)
@@ -4348,7 +4482,25 @@ async function main() {
     let session: voice.AgentSession
     let agent: voice.Agent
 
-    if (true) {
+    // KEEP-WARM re-attach (default-OFF via OSBORN_KEEP_WARM): if the warm slot
+    // holds exactly this session and the grace hasn't lapsed, reuse the live
+    // subprocess — ZERO replay. Listener re-wiring is idempotent inside
+    // createDirectSession. On any mismatch/expiry, free the stale warm brain
+    // (no leak) and fall through to the normal cold start.
+    let reattached = false
+    if (KEEP_WARM && warmLLM && warmSessionId && resumeSessionId && warmSessionId === resumeSessionId && Date.now() < warmExpiry) {
+      console.log(`🔥 [KEEP-WARM] re-attaching session ${warmSessionId.slice(0, 8)} — zero replay`)
+      const reused = claimWarm()
+      if (pendingSessionClose) { try { await pendingSessionClose } catch {} }
+      const result = await createDirectSession(resumeSessionId, reused)
+      session = result.session
+      agent = result.agent
+      reattached = true
+    } else if (warmLLM) {
+      killWarm(warmSessionId && warmSessionId !== resumeSessionId ? 'reattach_session_mismatch' : 'reattach_expired')
+    }
+
+    if (!reattached) {
       console.log(`🎯 PIPELINE MODE: Claude SDK + parallel fast brain`)
       // Pipeline mode = direct mode underneath + parallel fast brain
       // Fast brain runs in PipelineDirectLLM.chat() — fires Gemini alongside Claude
@@ -4397,6 +4549,18 @@ async function main() {
     }
     currentSession = session
     currentAgent = agent  // Store for updateChatCtx() context injection
+
+    // CLICK-TIME OVERLAP (default-ON; OSBORN_CONNECT_OVERLAP=off): for a resumed
+    // session, kick the JSONL replay NOW (fire-and-forget) so it overlaps the
+    // user getting situated + speaking — instead of paying it serially on the
+    // first message (the 21–40s first-answer silence). The primed subprocess is
+    // reused by that first message's fast path, so this only moves the cost
+    // earlier. Skipped on re-attach (already holds a live warm subprocess) and a
+    // no-op internally if a query is already live.
+    if (CONNECT_OVERLAP && resumeSessionId && !reattached) {
+      try { (currentLLM as any)?.prewarmResume?.() }
+      catch (e) { console.error('⚠️ prewarmResume failed (non-fatal):', e instanceof Error ? e.message : e) }
+    }
 
     // ============================================================
     // Session event wiring — extracted into function for auto-recovery
@@ -5089,6 +5253,30 @@ async function main() {
       // single teardown while a meeting is live.
       console.log('📽️ Meeting active — keeping currentLLM alive across the voice-session drop (leave-grace owns teardown)')
       armMeetingLeaveGrace()
+    } else if (KEEP_WARM && participant.disconnectReason === DisconnectReason.DUPLICATE_IDENTITY) {
+      // DEVICE HANDOFF (keep-warm): the same identity rejoined from another
+      // device, so LiveKit evicted THIS participant. It's not a session end —
+      // park the brain for the incoming device's re-attach and do NOTHING
+      // destructive to the room or agents; the new participant's
+      // participantConnectedHandler owns continuation (re-attach or, on a
+      // mismatch, it frees the warm slot). The warm watchdog is the backstop.
+      console.log('🔀 [KEEP-WARM] duplicate-identity eviction — device handoff; parking brain, keeping room')
+      parkWarm('duplicate_identity')
+      clearPipelineFastBrainSession()
+      clearPipelineFastBrainSession()
+    } else if (KEEP_WARM && currentLLM && (currentLLM as any).sessionId) {
+      // KEEP-WARM network/tab-close drop: park the subprocess instead of killing
+      // it so a reconnect within the grace re-attaches with ZERO replay. We
+      // STILL run the normal room teardown below — the parked brain is
+      // independent of the room (no longer currentLLM, not in slots, so
+      // agentsActive() is false), so releaseAgents + fast-leave free the empty
+      // room with no billing burn. The warm grace/watchdog free the parked brain.
+      parkWarm('participant_disconnected')
+      clearPipelineFastBrainSession()
+      clearPipelineFastBrainSession()
+      releaseAgents()
+      armMeetingLeaveGrace()
+      armFastLeaveTimer()
     } else {
       // Kill the Claude SDK subprocess BEFORE dropping the reference, otherwise the
       // persistent session keeps running tools and pushing TTS into a dead session.

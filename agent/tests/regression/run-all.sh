@@ -40,6 +40,8 @@ run "meeting-mode"               env HOME="$SANDBOX" npx tsx "$DIR/meeting-mode.
 run "pipeline-direct-contract"   env HOME="$SANDBOX" npx tsx "$DIR/pipeline-direct-contract.ts"
 run "noise-gate"                 env HOME="$SANDBOX" npx tsx "$DIR/noise-gate.ts"
 run "dashboard-preview"          env HOME="$SANDBOX" npx tsx "$DIR/dashboard-preview.ts"
+run "keep-warm"                  env HOME="$SANDBOX" npx tsx "$DIR/keep-warm.ts"
+run "connect-overlap"            env HOME="$SANDBOX" npx tsx "$DIR/connect-overlap.ts"
 
 # Type-level pins — tsx strips types without checking, so these MUST go through tsc
 run "type-pins (tsc)"          npx tsc --noEmit -p "$DIR/tsconfig.json"

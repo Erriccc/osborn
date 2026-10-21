@@ -149,6 +149,9 @@ export class PipelineDirectLLM extends llm.LLM {
   setMcpServers(s: any) { this.#claudeLLM.setMcpServers(s) }
   setAgents(a: any) { this.#claudeLLM.setAgents(a) }
   setTurbo(on: boolean) { this.#claudeLLM.setTurbo(on) }
+  // CLICK-TIME OVERLAP (0.9.258): start the resume replay early so it overlaps
+  // the connect handshake. Proxied to the inner ClaudeLLM.
+  prewarmResume() { this.#claudeLLM.prewarmResume() }
 
   // Agent control — proxied to ClaudeLLM for fast brain access
   async interruptAgent() { return this.#claudeLLM.interruptQuery() }
