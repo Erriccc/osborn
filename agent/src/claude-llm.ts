@@ -2236,8 +2236,8 @@ class ClaudeLLMStream extends llm.LLMStream {
           // only, no shell chaining — not a general curl allowance.
           if ((toolName as string) === 'Bash') {
             const cmd = String((input as any)?.command || '')
-            if (/^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts)\b/.test(cmd) && !/[;&|]/.test(cmd)) {
-              console.log(`✅ Auto-approved Bash → own API (canvas/tts speak path)`)
+            if (/^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts|noise-cancel)\b/.test(cmd) && !/[;&|]/.test(cmd)) {
+              console.log(`✅ Auto-approved Bash → own API (canvas/tts/noise-cancel path)`)
               return { behavior: 'allow', updatedInput: input }
             }
           }

@@ -344,7 +344,7 @@ function parseDevSubdomainPort(req: { headers: { host?: string; 'fly-replay-src'
 const AGENT_ROUTE_PREFIXES = [
   '/health', '/sessions', '/skills', '/agents', '/canvas', '/canvas-token',
   '/canvas-stream', '/events', '/room-code', '/connect-room', '/leave-room',
-  '/report-bug', '/restart', '/tts', '/webhook', '/sessions/export',
+  '/report-bug', '/restart', '/tts', '/noise-cancel', '/webhook', '/sessions/export',
   '/sessions/import', '/sessions/manifest',
   '/secrets',
   '/editor',
@@ -942,6 +942,31 @@ function startApiServer(workingDir: string, port: number): void {
           }
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: true, clients: canvasClients.size }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+      return
+    }
+
+    // ── Noise cancellation: agent self-service toggle ────────────────────────
+    // POST /noise-cancel { enabled: boolean }. Lets the AGENT flip the gate the
+    // moment its own meeting-mode detection fires ("that sounded like it was for
+    // someone near you") — the skill-based detection produces no [MEETING chunks,
+    // so without this bridge the gate never engaged in real side-conversations
+    // (verified in the 2026-10-21 Uber session). Auto-approved for the agent via
+    // the canvas/tts localhost curl allowance in claude-llm.ts canUseTool.
+    if (req.method === 'POST' && url.pathname === '/noise-cancel') {
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        try {
+          const { enabled } = JSON.parse(body || '{}') as { enabled?: boolean }
+          if (typeof enabled !== 'boolean') throw new Error('enabled must be a boolean')
+          noiseGate.setEnabled(enabled, 'meeting')
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, enabled: noiseGate.enabled, reason: noiseGate.reason }))
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error: (e as Error).message }))
