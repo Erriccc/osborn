@@ -828,6 +828,37 @@ export function invalidateSessionListCache(): void {
   _sessionListCache = null
 }
 
+// ── Persisted session-list manifest (cold-boot dashboard fix) ──
+// The in-memory `_sessionListCache` above is wiped on every machine restart, so
+// the FIRST dashboard build after a cold boot re-reads every session file's
+// head/tail from disk (slow — the "loading spinner on first visit in a while").
+// This manifest persists each session's computed preview on the volume, keyed by
+// the file's mtime+size, so a cold boot serves unchanged sessions instantly and
+// only re-reads the handful that actually changed. Self-correcting: a stale
+// (mtime/size-mismatched) entry is simply re-read; deleted files are pruned.
+interface SessionManifestEntry { mtimeMs: number; size: number; lastMessage?: string; messageCount: number; cwd: string }
+interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
+const SESSION_MANIFEST_VERSION = 1
+function sessionManifestPath(): string {
+  return join(homedir(), '.claude', 'session-manifest.json')
+}
+function loadSessionManifest(): SessionManifest {
+  try {
+    const raw = readFileSync(sessionManifestPath(), 'utf-8')
+    const m = JSON.parse(raw) as SessionManifest
+    if (m && m.v === SESSION_MANIFEST_VERSION && m.entries && typeof m.entries === 'object') return m
+  } catch { /* missing / corrupt → start fresh */ }
+  return { v: SESSION_MANIFEST_VERSION, entries: {} }
+}
+function saveSessionManifest(m: SessionManifest): void {
+  try {
+    const p = sessionManifestPath()
+    const tmp = `${p}.tmp`
+    writeFileSync(tmp, JSON.stringify(m))
+    renameSync(tmp, p)  // atomic swap — a reader never sees a half-written file
+  } catch { /* best-effort — a failed manifest write just means the next cold boot re-reads */ }
+}
+
 /**
  * Scan ALL Claude Code projects for sessions.
  * Returns lightweight metadata for every main session JSONL across all projects.
@@ -885,17 +916,42 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
   candidates.sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
   const topCandidates = candidates.slice(0, limit)
 
-  // 4. Read metadata in parallel (sequential was ~10ms × N files = seconds at scale)
+  // 4. Read metadata in parallel (sequential was ~10ms × N files = seconds at scale).
+  //    COLD-BOOT FIX: consult the persisted manifest first — a session whose
+  //    file mtime+size is unchanged since last build is served from the manifest
+  //    with NO file read. Only changed/new sessions pay the head/tail read. This
+  //    is what makes the first dashboard build after a machine restart fast.
   const sessions: ClaudeSessionEntry[] = []
+  const manifest = loadSessionManifest()
+  let manifestDirty = false
 
   const results = await Promise.all(
     topCandidates.map(async (c) => {
+      const hit = manifest.entries[c.filePath]
+      if (hit && hit.mtimeMs === c.mtime.getTime() && hit.size === c.size) {
+        // Unchanged since last build — reuse cached preview + cwd, skip the read.
+        return { c, preview: { lastMessage: hit.lastMessage, messageCount: hit.messageCount }, cwd: hit.cwd }
+      }
       try {
         const [preview, cwd] = await Promise.all([getSessionPreview(c.filePath, c.size), extractCwd(c.filePath)])
+        manifest.entries[c.filePath] = {
+          mtimeMs: c.mtime.getTime(), size: c.size,
+          lastMessage: preview.lastMessage, messageCount: preview.messageCount, cwd,
+        }
+        manifestDirty = true
         return { c, preview, cwd }
       } catch { return null }
     })
   )
+
+  // Prune manifest entries for files that no longer exist on disk (deleted
+  // sessions), keyed off the full candidate set so the manifest can't grow
+  // unbounded or resurrect stale rows.
+  const liveKeys = new Set(candidates.map(c => c.filePath))
+  for (const key of Object.keys(manifest.entries)) {
+    if (!liveKeys.has(key)) { delete manifest.entries[key]; manifestDirty = true }
+  }
+  if (manifestDirty) saveSessionManifest(manifest)
 
   for (const r of results) {
     if (!r) continue
