@@ -308,45 +308,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       ctMark('sandbox checked/started')
       setStatusMsg('Connecting to agent...')
 
-      // Step 2: Fetch room code from agent.
-      // Cloud mode: proxy through Next.js API — handles cold-wake and CORS server-side.
-      // Local mode: direct fetch with mixed-content guard (skip if HTTPS frontend → HTTP agent).
+      // Step 2 (room-code) REMOVED (0.9.260 connect-latency fix): connect-room
+      // below now self-wakes the machine + waits for health + returns the
+      // authoritative roomName. The old separate room-code round-trip stacked a
+      // second wake + waitForHealth(15s) + a 5x(5s fetch + 2s sleep) retry loop
+      // ON TOP of connect-room — up to ~35s, measured as the bulk of the
+      // "Connecting to agent…" orb. One wake, one health wait, one round-trip now.
       let code: string | null = null
-      try {
-        if (effectiveMode === 'cloud') {
-          const r = await fetch('/api/sandbox', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'room-code' }),
-          })
-          if (r.ok) {
-            const d = (await r.json()) as { roomCode?: string; agentUrl?: string }
-            code = d.roomCode ?? null
-            if (d.agentUrl) {
-              resolvedUrl = d.agentUrl
-              setAgentUrl(resolvedUrl)
-              const url = new URL(window.location.href)
-              url.searchParams.set('agentUrl', resolvedUrl)
-              window.history.replaceState({}, '', url.toString())
-            }
-          }
-        } else {
-          const isMixed =
-            window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
-          if (!isMixed) {
-            const r = await fetch(`${resolvedUrl}/room-code`, {
-              signal: AbortSignal.timeout(3000),
-            })
-            if (r.ok) {
-              const d = (await r.json()) as { roomCode?: string }
-              code = d.roomCode ?? null
-            }
-          }
-        }
-      } catch {
-        // room-code unavailable — token API will generate a fresh room
-      }
-      ctMark('room-code fetched')
 
       // Step 2.5: Ensure the agent is in its LiveKit room before we join, and
       // — critically for agent 0.9.83+ (temporary rooms) — use the roomName it
@@ -375,7 +343,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           if (!isMixed) {
             const cr = await fetch(`${resolvedUrl}/connect-room`, {
               method: 'POST',
-              signal: AbortSignal.timeout(5000),
+              signal: AbortSignal.timeout(8000),
             }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
             if (cr?.roomName) { code = String(cr.roomName).replace(/^osborn-/, ''); roomConfirmed = true }
           }

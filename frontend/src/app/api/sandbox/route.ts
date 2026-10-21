@@ -324,22 +324,59 @@ export async function POST(request: Request) {
       // agent leaves the room whenever no user is present (idle/alone timer or
       // explicit leave); this brings it back. Idempotent on the agent side
       // (no-op if already connected). Server-side fetch — no CORS.
+      //
+      // SELF-WAKE (0.9.260, connect-latency fix): connect-room now WAKES the
+      // machine + waits for health itself, so the client can fire it the instant
+      // the button is clicked and SKIP the separate room-code round-trip (whose
+      // wake + waitForHealth(15s) + 5x(5s fetch + 2s sleep) retry loop stacked
+      // ON TOP of this call — up to ~35s of redundant waiting, measured as the
+      // bulk of the "Connecting to agent…" orb). One wake, one health wait, here.
       const sbCR = await findUserSandbox(user.id, await getKnownSandboxId())
       if (!sbCR?.previewUrl) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
-      try {
-        const r = await fetch(`${sbCR.previewUrl}/connect-room`, {
-          method: 'POST',
-          signal: AbortSignal.timeout(6000),
-        })
-        // Forward the roomName the agent returns (0.9.83+ temporary rooms) so
-        // the client mints its token for the room the agent actually joined.
-        const body = r.ok ? await r.json().catch(() => ({})) : {}
-        return NextResponse.json({ success: r.ok, roomName: (body as any)?.roomName ?? null })
-      } catch {
-        return NextResponse.json({ success: false })
+
+      // Wake the machine if it isn't running (boot time is inherent — the agent
+      // must be up to join the room). Idempotent: a no-op when already running.
+      if (sbCR.status !== 'running') {
+        console.log(`[sandbox] connect-room: sandbox is ${sbCR.status}, starting...`)
+        const crSyncToken = await getSyncToken()
+        const woken = await startSandbox(sbCR.id, user.id, crSyncToken)
+        if (!woken || woken.status !== 'running') {
+          return NextResponse.json({ success: false, error: 'Failed to wake sandbox' }, { status: 503 })
+        }
       }
+
+      // Ensure osborn is actually answering before we ask it to join (a just-woken
+      // or frozen agent won't). Restart the service only if it's unhealthy.
+      const crUrl = sbCR.previewUrl
+      const crHealthy = await checkOsbornHealth(crUrl)
+      if (!crHealthy) {
+        console.log(`[sandbox] connect-room: osborn health check failed, restarting service...`)
+        await restartService(sbCR.id)
+        await waitForHealth(crUrl, 15)
+      }
+
+      // Hit the agent's /connect-room. Retry a few times — a freshly-woken agent
+      // may need a moment after /health goes green before it accepts connect-room.
+      for (let i = 0; i < 4; i++) {
+        try {
+          const r = await fetch(`${crUrl}/connect-room`, {
+            method: 'POST',
+            signal: AbortSignal.timeout(6000),
+          })
+          if (r.ok) {
+            // Forward the roomName the agent returns (0.9.83+ temporary rooms) so
+            // the client mints its token for the room the agent actually joined.
+            const body = await r.json().catch(() => ({}))
+            return NextResponse.json({ success: true, roomName: (body as any)?.roomName ?? null })
+          }
+        } catch {
+          // agent not ready yet — brief backoff then retry
+        }
+        await new Promise(res => setTimeout(res, 1500))
+      }
+      return NextResponse.json({ success: false })
     }
 
     case 'leave-room': {
