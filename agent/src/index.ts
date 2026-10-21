@@ -2238,6 +2238,46 @@ async function main() {
   // message. Reuses the SAME subprocess that turn would spawn, so it only moves
   // the cost earlier — no extra subprocess, no billing delta.
   const CONNECT_OVERLAP = process.env.OSBORN_CONNECT_OVERLAP !== 'off'
+
+  // ── CONNECT TIMING (0.9.259): physically measure every stage from the
+  // dashboard button click → first REAL agent answer (excluding the hardcoded
+  // "Welcome back" greeting). The frontend stamps the click (clickTs) and
+  // forwards it in participant metadata; the agent stamps each server-side stage
+  // and prints a single breakdown so we can see exactly what eats the seconds.
+  // One live line per mark + a summary table at the first real answer.
+  let connectTiming: {
+    clickTs: number | null
+    connectRoomTs: number
+    marks: Array<{ label: string; ts: number }>
+    sawUserMsg: boolean
+    answered: boolean
+  } | null = null
+  const ctReset = () => {
+    connectTiming = { clickTs: null, connectRoomTs: Date.now(), marks: [], sawUserMsg: false, answered: false }
+  }
+  const ctMark = (label: string) => {
+    if (!connectTiming) return
+    const ts = Date.now()
+    connectTiming.marks.push({ label, ts })
+    const prev = connectTiming.marks.length > 1 ? connectTiming.marks[connectTiming.marks.length - 2].ts : connectTiming.connectRoomTs
+    const base = connectTiming.clickTs || connectTiming.connectRoomTs
+    console.log(`⏱️ [CT] ${label}  +${ts - base}ms from ${connectTiming.clickTs ? 'CLICK' : 'connect-room'}  (Δ${ts - prev}ms prev)  [${new Date(ts).toISOString()}]`)
+  }
+  const ctSummary = () => {
+    if (!connectTiming) return
+    const base = connectTiming.clickTs || connectTiming.connectRoomTs
+    const lines = connectTiming.marks.map((m, i) => {
+      const prev = i > 0 ? connectTiming!.marks[i - 1].ts : base
+      return `    ${String(m.ts - base).padStart(6)}ms  (Δ${m.ts - prev}ms)  ${m.label}`
+    })
+    const total = connectTiming.marks.length ? connectTiming.marks[connectTiming.marks.length - 1].ts - base : 0
+    console.log(
+      `\n⏱️ ═══ CONNECT TIMING BREAKDOWN ═══\n` +
+      `   base = ${connectTiming.clickTs ? 'dashboard CLICK' : 'server connect-room (no clickTs from frontend)'} @ ${new Date(base).toISOString()}\n` +
+      lines.join('\n') +
+      `\n   ──────────────────────────────\n   TOTAL click→first-real-answer: ${total}ms (${(total / 1000).toFixed(1)}s)\n⏱️ ═══════════════════════════════\n`,
+    )
+  }
   const REATTACH_GRACE_MS = Number(process.env.OSBORN_REATTACH_GRACE_MS || 150_000)  // 2.5 min reconnect window (user: 2–3 min)
   const WARM_HARD_CEILING_MS = Number(process.env.OSBORN_WARM_CEILING_MS || 420_000) // 7 min absolute backstop
   let warmLLM: ReturnType<typeof createClaudeLLM> | null = null
@@ -3859,6 +3899,15 @@ async function main() {
         return
       }
 
+      // CONNECT TIMING: the FIRST real spoken answer (a tts_say from Claude —
+      // NOT the hardcoded "Welcome back", which is a direct session.say). Gated
+      // on having seen the user's first message so it can only be a response.
+      if (connectTiming && !connectTiming.answered && connectTiming.sawUserMsg) {
+        connectTiming.answered = true
+        ctMark('FIRST REAL ANSWER spoken')
+        ctSummary()
+      }
+
       const sayId = Date.now() // simple ID to correlate start/end logs
       console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
 
@@ -4417,6 +4466,13 @@ async function main() {
         preSelectedSessionId = metadata.sessionId
         console.log(`📂 Pre-selected session from frontend: ${preSelectedSessionId}`)
       }
+      // CONNECT TIMING: adopt the dashboard button-click timestamp so the agent
+      // can report the TRUE end-to-end (click→first-answer) in one place, with no
+      // cross-log clock-skew. Falls back to the server connect-room time if absent.
+      if (connectTiming && metadata.clickTs) {
+        const c = Number(metadata.clickTs)
+        if (Number.isFinite(c) && c > 0) connectTiming.clickTs = c
+      }
       // Read working directory override from frontend.
       //
       // If the path doesn't exist yet (new project on first use, or freshly
@@ -4439,6 +4495,8 @@ async function main() {
     } catch (err) {
       console.log('⚠️ Could not parse participant metadata, using config voiceMode:', voiceMode)
     }
+
+    ctMark('participant joined + metadata parsed')
 
     // Sync to outer scope so DataReceived handler can use it
     currentVoiceMode = sessionVoiceMode
@@ -4558,8 +4616,10 @@ async function main() {
     // earlier. Skipped on re-attach (already holds a live warm subprocess) and a
     // no-op internally if a query is already live.
     if (CONNECT_OVERLAP && resumeSessionId && !reattached) {
-      try { (currentLLM as any)?.prewarmResume?.() }
+      try { (currentLLM as any)?.prewarmResume?.(); ctMark('resume replay primed (overlap)') }
       catch (e) { console.error('⚠️ prewarmResume failed (non-fatal):', e instanceof Error ? e.message : e) }
+    } else if (reattached) {
+      ctMark('re-attached warm brain (zero replay)')
     }
 
     // ============================================================
@@ -4585,6 +4645,10 @@ async function main() {
         console.log(`📝 User (${source}, ${transcript.length} chars): "${transcript}"`)
         sendToFrontend({ type: 'user_transcript', text: transcript })
         lastSentUserTranscript = normalized
+        if (connectTiming && !connectTiming.sawUserMsg) {
+          connectTiming.sawUserMsg = true
+          ctMark('first user message received (STT final)')
+        }
       }
 
       function sendAgentTranscript(text: string, source: string) {
@@ -6522,6 +6586,10 @@ async function main() {
   connectRoomHook = async (): Promise<string> => {
     intentionalLeave = false
     cancelIdleExitTimer()
+    // CONNECT TIMING: stamp the server's request-incoming moment (the user asked
+    // to timestamp this explicitly). New attempt → fresh timeline.
+    ctReset()
+    ctMark('connect-room received (server)')
     // Idempotency: an active session with a user present is reused (return its
     // room name). An active-but-empty session (agent joined, user never showed,
     // or a stale race) is torn down and replaced with a fresh one.

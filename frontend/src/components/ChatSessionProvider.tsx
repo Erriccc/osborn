@@ -228,6 +228,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setError(null)
     let resolvedUrl = agentUrl
 
+    // CONNECT TIMING: stamp the dashboard button click and log every frontend
+    // stage delta (visible in Railway logs). clickTs is forwarded to the agent
+    // so it can report the true end-to-end click→first-answer in one place.
+    const clickTs = Date.now()
+    const ctMark = (label: string) =>
+      console.log(`⏱️ [connect-timing] +${Date.now() - clickTs}ms ${label}`)
+    ctMark('button clicked (connect start)')
+
     try {
       // Step 1: Respect the user's connection mode preference from the dashboard.
       // Cloud is the DEFAULT (no saved preference = cloud); 'local' is opt-in.
@@ -297,6 +305,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       }
       // If effectiveMode === 'local', use the agentUrl from query param / localStorage as-is
 
+      ctMark('sandbox checked/started')
       setStatusMsg('Connecting to agent...')
 
       // Step 2: Fetch room code from agent.
@@ -337,6 +346,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       } catch {
         // room-code unavailable — token API will generate a fresh room
       }
+      ctMark('room-code fetched')
 
       // Step 2.5: Ensure the agent is in its LiveKit room before we join, and
       // — critically for agent 0.9.83+ (temporary rooms) — use the roomName it
@@ -373,6 +383,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       } catch {
         // best-effort — the agent's boot-connect / retry loop is the backstop
       }
+      ctMark(`connect-room done (roomConfirmed=${roomConfirmed})`)
 
       // Step 2.6: Wait until the agent is actually IN the room before minting
       // our token. Agent-side ParticipantConnected only fires for users who
@@ -406,11 +417,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         } catch {
           // best-effort — worst case we reproduce the old race odds
         }
+        ctMark('health-poll fallback done')
       }
 
       // Step 3: Get LiveKit token
       let url = `/api/token?provider=${provider}&voiceArch=${voiceArch}&codingAgent=${codingAgent}`
       if (code) url += `&roomCode=${code}`
+      // CONNECT TIMING: forward the click epoch so the agent reports true E2E.
+      url += `&clickTs=${clickTs}`
       if (preSelectedSessionId)
         url += `&sessionId=${encodeURIComponent(preSelectedSessionId)}`
       // Forward the session's cwd into the token metadata so the agent boots with
@@ -422,6 +436,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const res = await fetch(url)
       const data = await res.json()
 
+      ctMark('token minted — handing off to LiveKit room join')
       setToken(data.token)
       setRoomCode(data.roomCode)
       setStatusMsg(null)

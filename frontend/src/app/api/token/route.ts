@@ -30,6 +30,10 @@ export async function GET(request: NextRequest) {
   const codingAgent = request.nextUrl.searchParams.get('codingAgent') || 'claude'
   const sessionId = request.nextUrl.searchParams.get('sessionId') || ''
   const workingDirectory = request.nextUrl.searchParams.get('workingDirectory') || ''
+  // CONNECT TIMING: the dashboard button-click epoch (ms). Forwarded into the
+  // agent so it can report the true end-to-end click→first-answer with no
+  // cross-log clock skew. Empty for flows that don't stamp it.
+  const clickTs = request.nextUrl.searchParams.get('clickTs') || ''
 
   // Get or generate room code
   // If provided, use it (for reconnection); otherwise generate new
@@ -67,7 +71,7 @@ export async function GET(request: NextRequest) {
     // this metadata on participant join (see ParticipantConnected handler
     // in agent/src/index.ts) and uses userId when uploading workspace
     // artifacts to Supabase Storage so files are scoped by owner.
-    metadata: JSON.stringify({ provider, voiceArch, codingAgent, sessionId, workingDirectory, userId }),
+    metadata: JSON.stringify({ provider, voiceArch, codingAgent, sessionId, workingDirectory, userId, clickTs }),
   })
 
   at.addGrant({
