@@ -2864,7 +2864,13 @@ async function main() {
       console.warn('🧹 housekeeping failed:', e)
     }
   }
-  runHousekeeping()
+  // PERF (sub-second-connect initiative): the BOOT run is always forced dry-run
+  // (no active session yet) — it scans thousands of artifacts purely to LOG them,
+  // which blocked the listen port on every cold start. Defer it off the critical
+  // path so boot reaches "ready" first; the periodic 6h runs (when a session
+  // exists) do the real pruning. unref so it never holds the process open.
+  const firstHousekeeping = setTimeout(runHousekeeping, 60_000)
+  firstHousekeeping.unref?.()
   setInterval(runHousekeeping, 6 * 60 * 60 * 1000)
 
   // Claude auth code submission handler (set during OAuth flow, cleared after)
