@@ -7,7 +7,48 @@ during a replay), Phase 4 eliminates the replay entirely on *reconnect*.
 
 ---
 
-## Phase 3 — fast-brain-speaks-first
+> **DECISIONS (user, 2026-10-21) — pruned:** Phase 3 (fast-brain-speaks-first)
+> is **CUT** (no "temporary handover" to the fast brain — avoids the wrong-answer
+> risk). Speculative "warm the most-recent session on dashboard load" is **CUT**.
+> The first-connect lever is **click-time overlap ONLY** (start the replay when the
+> user clicks to connect, overlapping the handshake — NOT on hover, no speculation).
+> Remaining deterministic stack: **click-time overlap** (first connect) +
+> **keep-warm re-attach** (reconnects) + **cap/SDK-cache lever** (residual on huge
+> cold sessions, pending the replay-cost agent).
+
+---
+
+## Click-time overlap (first-connect lever — replaces Phase 3)
+
+**Goal:** the one-time cold replay for a selected session runs DURING the connect
+handshake, not serially after the first spoken word.
+
+Today the replay starts lazily on the first `pushMessage` after the full connect
+(`claude-llm.ts:1874` cold-start). `/connect-room` takes no body
+(`index.ts:743`); the sessionId only reaches the agent via JWT metadata on
+`ParticipantConnected` (after the WebRTC join). So the replay can't begin until
+late.
+
+**Change:** carry the selected `sessionId` into `/connect-room` so the agent can
+kick off the subprocess cold-start (an empty warm-up turn / `resume`) the instant
+connect-room is called — in parallel with the frontend's token mint + WebRTC
+join + the user getting situated.
+- Frontend: `ChatSessionProvider.connect()` already knows `preSelectedSessionId`
+  — include it in the `/connect-room` POST body (cloud: `/api/sandbox` action
+  body; local: `/connect-room` body).
+- Agent: `/connect-room` / `connectRoomHook` reads the body sessionId and, if
+  present and not already warm, begins the cold-start resume immediately (fire-
+  and-forget; the normal `participantConnectedHandler` then finds it in-flight or
+  done instead of starting it). Guard against double-start.
+- No speculation, no prediction: the session is the one the user just clicked.
+
+**Residual:** for a 323MB session, replay (~30s) still exceeds the handshake
+(~5–10s), so a gap remains on a first cold touch — covered by the cap (50–100MB)
+and/or the SDK-cache lever, NOT the fast brain.
+
+---
+
+## Phase 3 — fast-brain-speaks-first — CUT (kept below for reference only)
 
 ### Current state (verified)
 The fast brain runs in parallel on every turn (`pipeline-direct-llm.ts:458`
