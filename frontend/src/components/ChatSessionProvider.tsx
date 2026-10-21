@@ -345,6 +345,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // stale/different, so joining it lands us in an empty room stuck
       // "Connecting". connect-room's returned roomName is the authoritative one.
       // (Older agents don't return roomName → we keep the room-code value.)
+      // connect-room AWAITS the agent's room-join before it returns a roomName,
+      // so a returned name means the agent is already in the room — the health
+      // poll below (step 2.6) is then redundant. Track that to skip it: this is
+      // the fix for the ~29s "connecting orb" measured in the connect video (the
+      // serial room-code → connect-room → 30s-health-poll chain before token mint).
+      let roomConfirmed = false
       try {
         if (effectiveMode === 'cloud') {
           const cr = await fetch('/api/sandbox', {
@@ -352,7 +358,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'connect-room' }),
           }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
-          if (cr?.roomName) code = String(cr.roomName).replace(/^osborn-/, '')
+          if (cr?.roomName) { code = String(cr.roomName).replace(/^osborn-/, ''); roomConfirmed = true }
         } else {
           const isMixed =
             window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
@@ -361,7 +367,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
               method: 'POST',
               signal: AbortSignal.timeout(5000),
             }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
-            if (cr?.roomName) code = String(cr.roomName).replace(/^osborn-/, '')
+            if (cr?.roomName) { code = String(cr.roomName).replace(/^osborn-/, ''); roomConfirmed = true }
           }
         }
       } catch {
@@ -374,25 +380,32 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // created and the UI hangs at "Connecting...". (Agent 0.9.76+ also
       // adopts pre-existing participants, but ordering correctly here means
       // we don't depend on the machine running a fixed version.)
-      try {
-        const isMixed =
-          window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
-        if (!isMixed) {
-          const deadline = Date.now() + 30_000
-          while (Date.now() < deadline) {
-            const h = await fetch(`${resolvedUrl}/health`, {
-              signal: AbortSignal.timeout(3000),
-            })
-              .then((r) => (r.ok ? r.json() : null))
-              .catch(() => null)
-            // Break on connected — or on agents too old to report livekit
-            // status, where waiting longer can't tell us anything.
-            if (!h || !h.livekit || h.livekit.status === 'connected') break
-            await new Promise((r) => setTimeout(r, 1000))
+      // Skip entirely when connect-room already confirmed the agent is in the
+      // room (the common warm/cloud path) — no need to poll for what we just
+      // awaited. Only poll as a FALLBACK when the room wasn't confirmed (older
+      // agent that doesn't return roomName, or a connect-room failure), and
+      // with a shorter deadline since the room is usually up by now.
+      if (!roomConfirmed) {
+        try {
+          const isMixed =
+            window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
+          if (!isMixed) {
+            const deadline = Date.now() + 30_000
+            while (Date.now() < deadline) {
+              const h = await fetch(`${resolvedUrl}/health`, {
+                signal: AbortSignal.timeout(3000),
+              })
+                .then((r) => (r.ok ? r.json() : null))
+                .catch(() => null)
+              // Break on connected — or on agents too old to report livekit
+              // status, where waiting longer can't tell us anything.
+              if (!h || !h.livekit || h.livekit.status === 'connected') break
+              await new Promise((r) => setTimeout(r, 1000))
+            }
           }
+        } catch {
+          // best-effort — worst case we reproduce the old race odds
         }
-      } catch {
-        // best-effort — worst case we reproduce the old race odds
       }
 
       // Step 3: Get LiveKit token
