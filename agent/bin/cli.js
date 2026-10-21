@@ -99,8 +99,20 @@ if (existsSync(srcPath)) {
     env: process.env,
   })
 } else if (existsSync(distPath)) {
-  // Production: run compiled JS directly
-  child = spawn('node', [distPath, mode, ...args], {
+  // Production: run compiled JS directly.
+  // HEAP-OOM CRASH FIX (0.9.261): long heavy sessions (big context + many
+  // sub-agents) grew the MAIN process past its default V8 old-space limit
+  // (~2GB), and a barge-in interrupt tipped it over → "FATAL ERROR: Reached
+  // heap limit" → process crash → Fly restart → session lost. Observed 3x in
+  // one day, always `🔇 Speech interrupted` → heap OOM. Give the main process a
+  // heap limit scaled to the machine's RAM (~half), so it has real headroom and
+  // AUTO-SCALES if the machine's memory is bumped. Passed as a node ARGV flag —
+  // NOT NODE_OPTIONS — so it applies ONLY to the main process and is NOT
+  // inherited by the Claude SDK sub-agent subprocesses (which would multiply
+  // memory use and cause a system OOM instead).
+  const heapMB = Math.max(3072, Math.floor((os.totalmem() / (1024 * 1024)) * 0.5))
+  console.log(`[cli] main agent --max-old-space-size=${heapMB}MB (machine RAM ${Math.round(os.totalmem() / (1024 * 1024))}MB)`)
+  child = spawn('node', [`--max-old-space-size=${heapMB}`, distPath, mode, ...args], {
     stdio: 'inherit',
     cwd: join(__dirname, '..'),
     env: process.env,
