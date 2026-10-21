@@ -1177,6 +1177,13 @@ export class ClaudeLLM extends llm.LLM {
   // Dedup guard — prevents double-firing reviewer/gate if SubagentStop fires
   // more than once for the same agent_id (e.g. retry edge cases).
   #dispatchedFor: Set<string> = new Set()
+  // MEM probe v2 (leak hunt, 0.9.263): cheap per-message attribution so a heap
+  // spike in the [MEM] log can be correlated with what just flowed through the
+  // SDK consumer. No stringify — only text lengths, O(blocks) per message.
+  #memMsgCount = 0
+  #memCharsSeen = 0           // cumulative text chars observed on the stream
+  #memMaxMsgChars = 0         // largest single message seen
+  #memLastMsg: { type: string; subtype?: string; chars: number; t: number } | null = null
   // Embedded session.db write-through guard. The store write is triggered from the
   // UserPromptSubmit hook (once per real user submission, main-thread only) and sweeps
   // the FULL source set — main JSONL + every sub-agent JSONL — exactly like the flat
@@ -1540,7 +1547,8 @@ export class ClaudeLLM extends llm.LLM {
    * whichever counter climbs in lockstep with heapUsed is the retainer behind
    * the heap-OOM crashes (11x since 2026-10-02). Read-only — no behavior change.
    */
-  getMemDebug(): Record<string, number> {
+  getMemDebug(): Record<string, number | string> {
+    const last = this.#memLastMsg
     return {
       checkpoints: this.#checkpoints.length,
       tasksById: this.#tasksById.size,
@@ -1550,6 +1558,13 @@ export class ClaudeLLM extends llm.LLM {
       dispatchedFor: this.#dispatchedFor.size,
       busListeners: this.#eventEmitter.eventNames()
         .reduce((n, e) => n + this.#eventEmitter.listenerCount(e as string), 0),
+      // v2 attribution: if heap creep tracks charsSeenMB, content flowing
+      // through the consumer is being retained; a spike right after a huge
+      // lastMsg names the allocator.
+      msgCount: this.#memMsgCount,
+      charsSeenMB: Math.round(this.#memCharsSeen / 1e6),
+      maxMsgKB: Math.round(this.#memMaxMsgChars / 1e3),
+      lastMsg: last ? `${last.type}${last.subtype ? '/' + last.subtype : ''}:${last.chars}ch@${Math.round((Date.now() - last.t) / 1000)}s` : 'none',
     }
   }
 
@@ -1968,6 +1983,18 @@ export class ClaudeLLM extends llm.LLM {
     try {
       for await (const message of pq) {
         const msg = message as any
+
+        // MEM probe v2: cheap attribution — count text chars (no stringify).
+        {
+          let chars = 0
+          const c = msg.message?.content
+          if (typeof c === 'string') chars = c.length
+          else if (Array.isArray(c)) for (const b of c) { if (typeof b?.text === 'string') chars += b.text.length }
+          this.#memMsgCount++
+          this.#memCharsSeen += chars
+          if (chars > this.#memMaxMsgChars) this.#memMaxMsgChars = chars
+          this.#memLastMsg = { type: msg.type, subtype: msg.subtype, chars, t: Date.now() }
+        }
 
         // Background-task lifecycle → registry (task_started/updated/notification).
         // This is what makes the per-flow stop button real: stopTask() needs the

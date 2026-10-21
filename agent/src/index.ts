@@ -26,6 +26,7 @@ import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtem
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
+import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes } from 'node:crypto'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
@@ -2378,27 +2379,78 @@ async function main() {
     return llm
   }
 
-  // ── MEM PROBE (leak hunt, 0.9.262) ──
-  // The heap-OOM crashes (11x since 2026-10-02) exceed what the known small
-  // leaks can retain — something holds LARGE message content in the main heap.
-  // Every 2 min, log heapUsed alongside the size of every suspect structure;
-  // over one heavy session, whichever counter climbs in lockstep with heapUsed
-  // is the retainer. heapUsed is the series that matters for the V8 limit
-  // (external/arrayBuffers — LiveKit audio — do NOT count toward it).
+  // ── MEM PROBE v2 + GRACEFUL SELF-RECYCLE (leak hunt, 0.9.263) ──
+  // v1 (0.9.262) proved the crash shape: transient 1–2.4GB allocation spikes on
+  // a ~17MB/min creeping post-GC baseline; every suspect counter stayed in the
+  // kilobytes — the retained content is NOT in the registries. v2 adds:
+  //   • 15s sampling with SPIKE detection — a ≥200MB jump between samples logs
+  //     an immediate [MEM-SPIKE] line carrying lastMsg attribution from the SDK
+  //     consumer (what just flowed through names the allocator); the normal
+  //     [MEM] cadence line still prints every 2 min (8 ticks).
+  //   • GRACEFUL SELF-RECYCLE, two tiers, so the process never OOM-dies:
+  //       SOFT (≥82% of ceiling, idle: no user in room, voice quiet, no bg
+  //       agents) → exit(0): machine stops cleanly, next connect boots a fresh
+  //       low-memory process and resumes the session. Same shape as idle-exit,
+  //       just memory-triggered.
+  //       HARD (≥95% of ceiling, even mid-session) → notify frontend, exit(1):
+  //       Fly's on-failure policy restarts the process immediately; the client
+  //       auto-rejoin + resume recovers in ~15s — vs an uncontrolled OOM crash
+  //       mid-sentence (same outcome, but announced and at a flush boundary).
+  //   Local dev (no FLY_APP_NAME) never self-exits. Ceiling read from V8 (the
+  //   --max-old-space-size the launcher set). Escape hatch: OSBORN_RECYCLE=off.
+  const HEAP_LIMIT_MB = Math.round(getHeapStatistics().heap_size_limit / 1048576)
+  const RECYCLE_ON = process.env.OSBORN_RECYCLE !== 'off'
+  const RECYCLE_SOFT_MB = Math.round(HEAP_LIMIT_MB * Number(process.env.OSBORN_RECYCLE_SOFT_FRAC || 0.82))
+  const RECYCLE_HARD_MB = Math.round(HEAP_LIMIT_MB * Number(process.env.OSBORN_RECYCLE_HARD_FRAC || 0.95))
+  let memHighWaterMB = 0
+  let memLastSampleMB = 0
+  let memTick = 0
+  let recycling = false
+  console.log(`🧠 [MEM] heap ceiling ${HEAP_LIMIT_MB}MB — soft recycle ≥${RECYCLE_SOFT_MB}MB (idle only), hard ≥${RECYCLE_HARD_MB}MB`)
+
+  const memLine = (tag: string, m: NodeJS.MemoryUsage & { arrayBuffers?: number }) => {
+    const mb = (b: number | undefined) => Math.round((b || 0) / 1048576)
+    const s = (currentLLM as any)?.getMemDebug?.() ?? {}
+    const chatCtxItems = (currentAgent as any)?.chatCtx?.items?.length ?? -1
+    const structs = Object.entries(s).map(([k, v]) => `${k}=${v}`).join(' ')
+    return `🧠 [${tag}] heapUsed=${mb(m.heapUsed)}MB heapTotal=${mb(m.heapTotal)}MB rss=${mb(m.rss)}MB ` +
+      `external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB high=${memHighWaterMB}/${HEAP_LIMIT_MB}MB ` +
+      `chatCtxItems=${chatCtxItems} slots=${slots.size} warm=${warmLLM ? 1 : 0} ${structs}`
+  }
+
+  // Safe to recycle = nothing a restart would interrupt: no user in the room,
+  // voice pipeline quiet, no host/background agents running.
+  const safeToRecycle = (): boolean => {
+    const noUser = !activeRoom || activeRoom.remoteParticipants.size === 0
+    const voiceQuiet = !currentSpeechHandle && voiceQueue.length === 0 && userState !== 'speaking'
+    return noUser && voiceQuiet && !agentsActive()
+  }
+
   setInterval(() => {
     try {
       const m = process.memoryUsage() as NodeJS.MemoryUsage & { arrayBuffers?: number }
-      const mb = (b: number | undefined) => Math.round((b || 0) / 1048576)
-      const s = (currentLLM as any)?.getMemDebug?.() ?? {}
-      const chatCtxItems = (currentAgent as any)?.chatCtx?.items?.length ?? -1
-      const structs = Object.entries(s).map(([k, v]) => `${k}=${v}`).join(' ')
-      console.log(
-        `🧠 [MEM] heapUsed=${mb(m.heapUsed)}MB heapTotal=${mb(m.heapTotal)}MB rss=${mb(m.rss)}MB ` +
-        `external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB ` +
-        `chatCtxItems=${chatCtxItems} slots=${slots.size} warm=${warmLLM ? 1 : 0} ${structs}`,
-      )
+      const usedMB = Math.round(m.heapUsed / 1048576)
+      if (usedMB > memHighWaterMB) memHighWaterMB = usedMB
+      memTick++
+      const spiked = memLastSampleMB > 0 && usedMB - memLastSampleMB >= 200
+      if (spiked) console.log(memLine('MEM-SPIKE', m) + ` Δ=+${usedMB - memLastSampleMB}MB/15s`)
+      else if (memTick % 8 === 0) console.log(memLine('MEM', m))
+      memLastSampleMB = usedMB
+
+      // Self-recycle tiers (Fly only, never local dev, escape hatch honored).
+      if (!RECYCLE_ON || !process.env.FLY_APP_NAME || recycling) return
+      if (usedMB >= RECYCLE_HARD_MB) {
+        recycling = true
+        console.warn(`♻️ [MEM] HARD recycle: heapUsed ${usedMB}MB ≥ ${RECYCLE_HARD_MB}MB (95% of ${HEAP_LIMIT_MB}MB) — restarting process NOW to pre-empt an OOM crash; client auto-rejoin + resume recovers`)
+        sendToFrontend({ type: 'agent_recycling', reason: 'memory_hard', heapMB: usedMB }).catch(() => {})
+        setTimeout(() => process.exit(1), 1500)   // exit(1): on-failure policy RESTARTS the process (machine stays up)
+      } else if (usedMB >= RECYCLE_SOFT_MB && safeToRecycle()) {
+        recycling = true
+        console.warn(`♻️ [MEM] SOFT recycle: heapUsed ${usedMB}MB ≥ ${RECYCLE_SOFT_MB}MB and idle — stopping cleanly; next connect boots a fresh process and resumes`)
+        setTimeout(() => process.exit(0), 1500)   // exit(0): machine stops (same as idle-exit); next Resume boots fresh
+      }
     } catch { /* probe must never break the agent */ }
-  }, 120_000).unref()
+  }, 15_000).unref()
 
   // ── 0.9.83: Zombie-presence watchdog + event-loss adopter DELETED ──
   // Both poll-based layers existed solely to compensate for Room-reuse damage:
