@@ -2378,6 +2378,28 @@ async function main() {
     return llm
   }
 
+  // ── MEM PROBE (leak hunt, 0.9.262) ──
+  // The heap-OOM crashes (11x since 2026-10-02) exceed what the known small
+  // leaks can retain — something holds LARGE message content in the main heap.
+  // Every 2 min, log heapUsed alongside the size of every suspect structure;
+  // over one heavy session, whichever counter climbs in lockstep with heapUsed
+  // is the retainer. heapUsed is the series that matters for the V8 limit
+  // (external/arrayBuffers — LiveKit audio — do NOT count toward it).
+  setInterval(() => {
+    try {
+      const m = process.memoryUsage() as NodeJS.MemoryUsage & { arrayBuffers?: number }
+      const mb = (b: number | undefined) => Math.round((b || 0) / 1048576)
+      const s = (currentLLM as any)?.getMemDebug?.() ?? {}
+      const chatCtxItems = (currentAgent as any)?.chatCtx?.items?.length ?? -1
+      const structs = Object.entries(s).map(([k, v]) => `${k}=${v}`).join(' ')
+      console.log(
+        `🧠 [MEM] heapUsed=${mb(m.heapUsed)}MB heapTotal=${mb(m.heapTotal)}MB rss=${mb(m.rss)}MB ` +
+        `external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB ` +
+        `chatCtxItems=${chatCtxItems} slots=${slots.size} warm=${warmLLM ? 1 : 0} ${structs}`,
+      )
+    } catch { /* probe must never break the agent */ }
+  }, 120_000).unref()
+
   // ── 0.9.83: Zombie-presence watchdog + event-loss adopter DELETED ──
   // Both poll-based layers existed solely to compensate for Room-reuse damage:
   //   • zombie-watchdog: RoomEvent callbacks stopped firing after a leave/rejoin

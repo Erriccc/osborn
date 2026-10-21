@@ -1535,6 +1535,25 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   /**
+   * MEMORY-LEAK HUNT (0.9.262): sizes of every long-lived internal structure,
+   * logged by the periodic [MEM] probe in index.ts. Over a long heavy session,
+   * whichever counter climbs in lockstep with heapUsed is the retainer behind
+   * the heap-OOM crashes (11x since 2026-10-02). Read-only — no behavior change.
+   */
+  getMemDebug(): Record<string, number> {
+    return {
+      checkpoints: this.#checkpoints.length,
+      tasksById: this.#tasksById.size,
+      taskIdByToolUse: this.#taskIdByToolUse.size,
+      toolUseByAgentId: this.#toolUseByAgentId.size,
+      typeByAgentId: this.#typeByAgentId.size,
+      dispatchedFor: this.#dispatchedFor.size,
+      busListeners: this.#eventEmitter.eventNames()
+        .reduce((n, e) => n + this.#eventEmitter.listenerCount(e as string), 0),
+    }
+  }
+
+  /**
    * Check if checkpoints are available
    */
   hasCheckpoints(): boolean {

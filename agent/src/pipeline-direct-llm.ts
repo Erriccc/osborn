@@ -152,6 +152,8 @@ export class PipelineDirectLLM extends llm.LLM {
   // CLICK-TIME OVERLAP (0.9.258): start the resume replay early so it overlaps
   // the connect handshake. Proxied to the inner ClaudeLLM.
   prewarmResume() { this.#claudeLLM.prewarmResume() }
+  // MEM probe (leak hunt, 0.9.262) — proxied to the inner ClaudeLLM.
+  getMemDebug() { return this.#claudeLLM.getMemDebug() }
 
   // Agent control — proxied to ClaudeLLM for fast brain access
   async interruptAgent() { return this.#claudeLLM.interruptQuery() }
