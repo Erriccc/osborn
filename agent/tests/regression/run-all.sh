@@ -39,6 +39,7 @@ run "fastbrain-contract"         env HOME="$SANDBOX" npx tsx "$DIR/fastbrain-con
 run "meeting-mode"               env HOME="$SANDBOX" npx tsx "$DIR/meeting-mode.ts"
 run "pipeline-direct-contract"   env HOME="$SANDBOX" npx tsx "$DIR/pipeline-direct-contract.ts"
 run "noise-gate"                 env HOME="$SANDBOX" npx tsx "$DIR/noise-gate.ts"
+run "dashboard-preview"          env HOME="$SANDBOX" npx tsx "$DIR/dashboard-preview.ts"
 
 # Type-level pins — tsx strips types without checking, so these MUST go through tsc
 run "type-pins (tsc)"          npx tsc --noEmit -p "$DIR/tsconfig.json"

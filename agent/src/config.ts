@@ -527,7 +527,7 @@ export function buildMcpServersForKeys(
 // ============================================================
 
 import * as readline from 'readline'
-import { createReadStream, statSync, readdirSync } from 'fs'
+import { createReadStream, statSync, readdirSync, openSync, readSync, closeSync } from 'fs'
 
 /**
  * Session metadata for listing available sessions
@@ -593,7 +593,7 @@ export async function listSessions(projectPath?: string): Promise<SessionInfo[]>
       const stats = statSync(filePath)
       // Only include non-empty sessions with real conversation (> 2 messages)
       if (stats.size > 0) {
-        const info = await getSessionPreview(filePath)
+        const info = await getSessionPreview(filePath, stats.size)
         if (info.messageCount > 2) {
           sessions.push({
             sessionId,
@@ -616,53 +616,100 @@ export async function listSessions(projectPath?: string): Promise<SessionInfo[]>
   return sessions
 }
 
-/**
- * Get a preview of a session (last message and count)
- */
-async function getSessionPreview(filePath: string): Promise<{ lastMessage?: string; messageCount: number }> {
-  return new Promise((resolve) => {
-    let messageCount = 0
-    let lastUserMessage: string | undefined
-
-    const fileStream = createReadStream(filePath)
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity,
-    })
-
-    rl.on('line', (line) => {
-      if (!line.trim()) return
-
-      try {
-        const entry = JSON.parse(line)
-        if (entry.type === 'user' || entry.type === 'assistant') {
-          messageCount++
+/** Parse JSONL text for the preview fields (message count + last user text). */
+function scanPreviewLines(text: string, skipFirstPartial: boolean): { count: number; lastUser?: string } {
+  const lines = text.split('\n')
+  let count = 0
+  let lastUser: string | undefined
+  // A tail slice usually begins mid-line — drop that fragment so JSON.parse
+  // doesn't choke on it (and never counts a half-record).
+  for (let i = skipFirstPartial ? 1 : 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (!line) continue
+    try {
+      const entry = JSON.parse(line)
+      if (entry.type === 'user' || entry.type === 'assistant') count++
+      if (entry.type === 'user' && entry.message?.content) {
+        const content = entry.message.content
+        if (typeof content === 'string') lastUser = content.substring(0, 100)
+        else if (Array.isArray(content)) {
+          const textPart = content.find((p: any) => p.type === 'text')
+          if (textPart?.text) lastUser = textPart.text.substring(0, 100)
         }
-        if (entry.type === 'user' && entry.message?.content) {
-          // Extract text from user message
-          const content = entry.message.content
-          if (typeof content === 'string') {
-            lastUserMessage = content.substring(0, 100)
-          } else if (Array.isArray(content)) {
-            const textPart = content.find((p: any) => p.type === 'text')
-            if (textPart?.text) {
-              lastUserMessage = textPart.text.substring(0, 100)
-            }
-          }
-        }
-      } catch {
-        // Skip malformed lines
       }
-    })
+    } catch {
+      // skip malformed / partial line
+    }
+  }
+  return { count, lastUser }
+}
 
-    rl.on('close', () => {
-      resolve({ lastMessage: lastUserMessage, messageCount })
-    })
+/**
+ * Get a preview of a session (last message + count).
+ *
+ * PERF (sub-second-connect initiative): this used to stream and JSON.parse the
+ * ENTIRE transcript — which meant the dashboard session list read a 155–323MB
+ * JSONL end-to-end per cold load (the ~30s dashboard stall measured in the
+ * connect video). The preview only needs (a) enough to clear the ">2 messages"
+ * gate and (b) the LAST user message. So: small files are read whole (exact);
+ * large files read a bounded HEAD (gate + density sample) + TAIL (last user
+ * message), turning a hundreds-of-MB parse into ~192KB. messageCount becomes an
+ * estimate for large files — it's display-only and gated on ">2", which any
+ * large session clears from the head alone.
+ */
+async function getSessionPreview(filePath: string, fileSize?: number): Promise<{ lastMessage?: string; messageCount: number }> {
+  const HEAD = 64 * 1024
+  const TAIL = 128 * 1024
+  try {
+    const size = fileSize ?? statSync(filePath).size
+    if (size <= HEAD + TAIL) {
+      // Small enough to read whole — exact count + last message (cheap).
+      const whole = await new Promise<{ count: number; lastUser?: string }>((resolve) => {
+        let count = 0
+        let lastUser: string | undefined
+        const rl = readline.createInterface({ input: createReadStream(filePath), crlfDelay: Infinity })
+        rl.on('line', (line) => {
+          if (!line.trim()) return
+          try {
+            const entry = JSON.parse(line)
+            if (entry.type === 'user' || entry.type === 'assistant') count++
+            if (entry.type === 'user' && entry.message?.content) {
+              const content = entry.message.content
+              if (typeof content === 'string') lastUser = content.substring(0, 100)
+              else if (Array.isArray(content)) {
+                const textPart = content.find((p: any) => p.type === 'text')
+                if (textPart?.text) lastUser = textPart.text.substring(0, 100)
+              }
+            }
+          } catch { /* skip */ }
+        })
+        rl.on('close', () => resolve({ count, lastUser }))
+        rl.on('error', () => resolve({ count: 0 }))
+      })
+      return { lastMessage: whole.lastUser, messageCount: whole.count }
+    }
 
-    rl.on('error', () => {
-      resolve({ messageCount: 0 })
-    })
-  })
+    // Large file: bounded head + tail only.
+    const fd = openSync(filePath, 'r')
+    try {
+      const headBuf = Buffer.alloc(HEAD)
+      const hn = readSync(fd, headBuf, 0, HEAD, 0)
+      const tailBuf = Buffer.alloc(TAIL)
+      const tn = readSync(fd, tailBuf, 0, TAIL, Math.max(0, size - TAIL))
+      const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
+      const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
+      const lastMessage = tail.lastUser ?? head.lastUser
+      // Estimate total from head density (display-only). Gate ">2" is satisfied
+      // by head.count alone for any real large session.
+      const avg = head.count > 0 ? hn / head.count : hn
+      const messageCount = head.count >= 3 ? Math.max(3, Math.round(size / avg)) : head.count
+      return { lastMessage, messageCount }
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return { messageCount: 0 }
+  }
 }
 
 /**
@@ -844,7 +891,7 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
   const results = await Promise.all(
     topCandidates.map(async (c) => {
       try {
-        const [preview, cwd] = await Promise.all([getSessionPreview(c.filePath), extractCwd(c.filePath)])
+        const [preview, cwd] = await Promise.all([getSessionPreview(c.filePath, c.size), extractCwd(c.filePath)])
         return { c, preview, cwd }
       } catch { return null }
     })
