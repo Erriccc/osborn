@@ -529,6 +529,19 @@ export default function Dashboard() {
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
           setSandboxStatus(d.sandbox.status)
+          // WARM-ON-LOAD (0.9.266): if the machine is idle-stopped, start warming
+          // it the instant the dashboard loads — so by the time the user picks a
+          // session, the ~24s cold boot is already overlapping their browsing.
+          // Fire-and-forget; Fly's /start is idempotent so the chat-page connect
+          // can't double-start, and the agent's 15-min idle self-exit reclaims it
+          // if no session is opened.
+          if (d.sandbox.id && d.sandbox.status && d.sandbox.status !== 'running') {
+            fetch('/api/sandbox', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'start', sandboxId: d.sandbox.id }),
+            }).catch(() => {})
+          }
           // If a cloud sandbox exists, always switch to cloud — even if the
           // user previously clicked Local. Local mode is meaningless when a
           // Fly machine is provisioned (no local agent runs on the user's

@@ -254,6 +254,22 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         : null
       let effectiveMode: string = connectionMode
 
+      // CLICK-TIME START (0.9.266): fire the self-waking connect-room NOW, in
+      // parallel with the status GET below — instead of serializing GET → start
+      // → connect-room. connect-room resolves the sandbox + wakes the machine
+      // server-side (route.ts self-wake) and returns the authoritative roomName,
+      // and Fly's /start is idempotent so it can't conflict with the GET block's
+      // start. Measured: the serial GET-before-start stacked ~6s before Fly was
+      // even told to boot. Cloud path only; awaited at step 2.5.
+      let connectRoomPromise: Promise<{ roomName?: string } | null> | null = null
+      if (connectionMode === 'cloud') {
+        connectRoomPromise = fetch('/api/sandbox', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'connect-room' }),
+        }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      }
+
       // Check/start the cloud sandbox unless the user explicitly chose local
       if (connectionMode === 'cloud') {
         try {
@@ -331,11 +347,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       let roomConfirmed = false
       try {
         if (effectiveMode === 'cloud') {
-          const cr = await fetch('/api/sandbox', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'connect-room' }),
-          }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+          // Await the connect-room we already fired at click-time (above).
+          const cr = await connectRoomPromise
           if (cr?.roomName) { code = String(cr.roomName).replace(/^osborn-/, ''); roomConfirmed = true }
         } else {
           const isMixed =
