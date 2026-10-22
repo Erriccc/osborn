@@ -31,6 +31,7 @@ export const AGENT_ENV_KEYS: AgentEnvKey[] = [
   { key: 'DEEPGRAM_API_KEY', required: true, explicit: false, description: 'Deepgram STT (LiveKit plugin).' },
   { key: 'SONIOX_API_KEY', required: false, explicit: false, description: 'Soniox STT (LiveKit plugin).' },
   { key: 'GROQ_API_KEY', required: false, explicit: true, description: 'Groq fast-brain inference.' },
+  { key: 'FIREWORKS_API_KEY', required: false, explicit: true, description: 'Fireworks AI — fast-brain inference + embeddings (preferred over OpenRouter when set).' },
   { key: 'OPENAI_API_KEY', required: true, explicit: true, description: 'OpenAI realtime + pipeline.' },
   { key: 'GOOGLE_API_KEY', required: false, explicit: false, description: 'Google Gemini realtime (plugin).' },
   // LLM auth (Claude vs OpenRouter switch)

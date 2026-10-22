@@ -58,6 +58,7 @@ export const PLATFORM_ENV_SPEC: EnvKeySpec[] = [
   { key: 'DEEPGRAM_API_KEY', source: 'host-env', scope: 'platform', required: true, secret: true, description: 'Deepgram STT (consumed implicitly by the LiveKit Deepgram plugin).' },
   { key: 'SONIOX_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Soniox STT (alternate transcription plugin).' },
   { key: 'GROQ_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Groq inference (fast-brain / low-latency paths).' },
+  { key: 'FIREWORKS_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Fireworks AI — fast-brain inference + embeddings (preferred over OpenRouter when set).' },
   // ── LLM providers ──
   { key: 'OPENAI_API_KEY', source: 'host-env', scope: 'platform', required: true, secret: true, description: 'OpenAI (realtime voice + pipeline STT/TTS fallbacks).' },
   { key: 'GOOGLE_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Google Gemini (realtime plugin, consumed implicitly).' },

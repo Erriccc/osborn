@@ -23,9 +23,20 @@
 
 import { EMBED_DIM, EMBED_MODEL, type Embedder } from './session-store.js'
 
-const OPENROUTER_URL =
-  process.env.OPENROUTER_EMBED_URL || 'https://openrouter.ai/api/v1/embeddings'
-const MODEL_ID = EMBED_MODEL
+// Provider switch: Fireworks when FIREWORKS_API_KEY is set, else OpenRouter.
+// Fireworks hosts the SAME qwen3-embedding-8b model, so vectors land in the same
+// space as previously-embedded rows — no re-embed. EMBED_MODEL stays the store's
+// model IDENTITY (the cache-invalidation key in session-store); only the
+// per-provider API id differs, mapped here.
+const FIREWORKS = !!process.env.FIREWORKS_API_KEY
+const EMBED_URL =
+  process.env.OPENROUTER_EMBED_URL ||
+  (FIREWORKS
+    ? 'https://api.fireworks.ai/inference/v1/embeddings'
+    : 'https://openrouter.ai/api/v1/embeddings')
+const MODEL_ID = FIREWORKS && EMBED_MODEL === 'qwen/qwen3-embedding-8b'
+  ? 'accounts/fireworks/models/qwen3-embedding-8b'
+  : EMBED_MODEL
 const MAX_BATCH = 64 // inputs per request (OpenAI-compatible arrays)
 const REQUEST_TIMEOUT_MS = Number(process.env.OSBORN_EMBED_TIMEOUT_MS || 20_000)
 
@@ -41,7 +52,11 @@ function embedWarn(msg: string): void {
 }
 
 function apiKey(): string | undefined {
-  return process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_WORKSPACE_API_KEY
+  return (
+    process.env.FIREWORKS_API_KEY ||
+    process.env.OPENROUTER_API_KEY ||
+    process.env.OPENROUTER_WORKSPACE_API_KEY
+  )
 }
 
 /**
@@ -69,7 +84,7 @@ async function embedBatch(inputs: string[], key: string, timeoutMs: number): Pro
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(OPENROUTER_URL, {
+    const res = await fetch(EMBED_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,
@@ -87,7 +102,7 @@ async function embedBatch(inputs: string[], key: string, timeoutMs: number): Pro
     })
     if (!res.ok) {
       const body = await res.text().catch(() => '')
-      embedWarn(`OpenRouter ${res.status} ${res.statusText}: ${body.slice(0, 200)}`)
+      embedWarn(`${FIREWORKS ? "Fireworks" : "OpenRouter"} ${res.status} ${res.statusText}: ${body.slice(0, 200)}`)
       return null
     }
     const json: any = await res.json()
@@ -132,7 +147,7 @@ export async function getEmbedder(timeoutMs: number = REQUEST_TIMEOUT_MS): Promi
   // fresh per request — kept working. Re-reading recovers as soon as the key lands.
   const key = apiKey()
   if (!key) {
-    embedWarn('no OPENROUTER_API_KEY in env yet — keyword-only for this call')
+    embedWarn('no FIREWORKS_API_KEY/OPENROUTER_API_KEY in env yet — keyword-only for this call')
     return null
   }
 
