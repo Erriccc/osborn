@@ -612,14 +612,6 @@ const MessageBubble = React.memo(function MessageBubble({
         )}
       </div>
 
-      {/* Avatar for user — hidden on mobile */}
-      {isUser && (
-        <div className="hidden sm:flex w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-yellow-500 items-center justify-center ml-2 mt-1 shrink-0 shadow-lg">
-          <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-          </svg>
-        </div>
-      )}
     </div>
   )
 })
