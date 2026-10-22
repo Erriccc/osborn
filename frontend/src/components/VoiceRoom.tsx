@@ -457,7 +457,7 @@ const MessageBubble = React.memo(function MessageBubble({
       <div
         className={`max-w-[92%] sm:max-w-[80%] transition-all ${
           isUser
-            ? 'bg-gray-700/80 text-gray-100 rounded-2xl rounded-br-md px-3.5 sm:px-4 py-2 sm:py-2.5 border border-white/5 shadow-sm'
+            ? 'bg-gray-800/70 text-gray-100 rounded-lg px-3 py-1.5'
             : isSystem
             ? 'bg-amber-500/10 text-amber-200/90 border border-amber-500/20 rounded-xl px-3.5 py-2'
             : message.toolName === 'fast-brain'
@@ -531,9 +531,9 @@ const MessageBubble = React.memo(function MessageBubble({
           <MessageContent content={isUser ? (userText as string) : message.content} />
         )}
 
-        {/* Timestamp */}
-        <div className="flex items-center gap-2 mt-1.5">
-          <p className="text-[10px] opacity-40 select-none">
+        {/* Timestamp — hover-reveal (Slack-style) so the transcript reads as a clean column */}
+        <div className="flex items-center gap-2 mt-1">
+          <p className="text-[10px] opacity-0 group-hover:opacity-40 transition-opacity select-none">
             {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </p>
           {message.isStreaming && (
@@ -746,7 +746,7 @@ function ChatPanel({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto overflow-x-hidden px-2 sm:px-4 py-3 sm:py-4 space-y-3 sm:space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+        className="h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-3 space-y-2 sm:space-y-2.5 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
       >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">

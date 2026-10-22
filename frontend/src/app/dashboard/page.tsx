@@ -1205,7 +1205,7 @@ export default function Dashboard() {
       <main className="min-h-screen bg-[var(--background)] flex flex-col">
         {/* ── Header ──────────────────────────────── */}
         <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
-          <div className="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
+          <div className="max-w-3xl lg:max-w-4xl mx-auto px-4 h-12 flex items-center justify-between">
             {/* Logo → home (voice-native.com). Clickable from the dashboard back to root. */}
             <Link href="/" title="Home" className="flex items-center gap-3 rounded-lg -mx-1 px-1 py-0.5 hover:opacity-80 transition-opacity">
               <div className="w-7 h-7 rounded-full flex items-center justify-center"
@@ -1316,7 +1316,7 @@ export default function Dashboard() {
             <span className="h-1.5 w-12 rounded-full bg-[var(--muted)]/70 ring-1 ring-[var(--border-subtle)] shadow-sm group-active:w-14 group-active:bg-[var(--accent)]/60 transition-all duration-200" />
           </button>
           <div className="sm:border-b border-[var(--border-subtle)]">
-            <div className="max-w-2xl mx-auto px-4 py-5 max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-5">
+            <div className="max-w-3xl lg:max-w-4xl mx-auto px-4 py-5 max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-5">
 
               {/* ── Environment ── */}
               <div className="space-y-3">
@@ -1737,10 +1737,10 @@ export default function Dashboard() {
         </div>
 
         {/* ── Content ──────────────────────────────── */}
-        <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-6">
+        <div className="flex-1 max-w-3xl lg:max-w-4xl mx-auto w-full px-4 py-6">
 
           {/* Serif greeting — the voice's presence on the page (Claude-style) */}
-          <div className="mb-5 mt-1" style={{ animation: 'fadeSlideIn .4s ease both' }}>
+          <div className="mb-4 mt-1" style={{ animation: 'fadeSlideIn .4s ease both' }}>
             <h1 className="font-display text-[26px] sm:text-3xl font-medium text-[var(--text-primary)] leading-tight">
               {(() => { const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening' })()}
               {user?.user_metadata?.full_name ? `, ${String(user.user_metadata.full_name).split(' ')[0]}` : ''}.
@@ -1750,13 +1750,12 @@ export default function Dashboard() {
 
           {/* New chat button */}
           <button onClick={() => startChat()}
-            className="w-full h-14 rounded-2xl font-semibold text-[15px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.98] mb-6 flex items-center justify-center gap-2.5"
+            className="w-full h-11 rounded-lg font-semibold text-[14px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.99] mb-5 flex items-center justify-center gap-2"
             style={{
-              background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)',
+              background: 'var(--accent)',
               color: 'var(--background)',
-              boxShadow: '0 2px 8px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.1)',
             }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
               <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
               <line x1="12" y1="19" x2="12" y2="23"/>
@@ -1802,15 +1801,26 @@ export default function Dashboard() {
           {/* Projects section — only shown when agent is reachable */}
           {agentOnline !== false && (
             <div>
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between mb-2">
                 <h2 className="text-[var(--text-secondary)] text-xs font-medium uppercase tracking-wider">Projects</h2>
-                {sessionsLoading && (
-                  <div className="w-3 h-3 border border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
-                )}
+                <div className="flex items-center gap-2">
+                  {sessionsLoading && (
+                    <div className="w-3 h-3 border border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
+                  )}
+                  {!showNewProject && (
+                    <button
+                      onClick={() => setShowNewProject(true)}
+                      className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors px-1.5 py-0.5 rounded"
+                    >
+                      + New project
+                    </button>
+                  )}
+                </div>
               </div>
 
-              {/* New Project */}
-              <div className="mb-4">
+              {/* New Project input — shown only while naming (the trigger lives in the section header) */}
+              {showNewProject && (
+              <div className="mb-3">
                 {showNewProject ? (
                   <div className="flex gap-2">
                     <input
@@ -1831,15 +1841,9 @@ export default function Dashboard() {
                       Start
                     </button>
                   </div>
-                ) : (
-                  <button
-                    onClick={() => setShowNewProject(true)}
-                    className="w-full rounded-2xl bg-[var(--surface)] px-4 py-3.5 text-left text-sm font-medium hover:opacity-80 transition-opacity"
-                  >
-                    + New project
-                  </button>
-                )}
+                ) : null}
               </div>
+              )}
 
               {/* Shared with me (0.9.123) */}
               {(sharedWithMe.length > 0 || importMsg) && (
@@ -1904,16 +1908,16 @@ export default function Dashboard() {
               ) : sessions.length === 0 && agentOnline ? (
                 <p className="px-4 text-sm text-[var(--muted)]">No conversations yet</p>
               ) : (
-                <div className="space-y-2">
+                <div className="rounded-xl border border-[var(--border-subtle)]/60 bg-[var(--surface)] divide-y divide-[var(--border-subtle)]/40">{/* Slack-style flush list: one bordered container, rows divided by hairlines — replaces the old per-project bubble cards (space-y-2 + rounded-2xl each) */}
                   {groupByProject(sessions, baseCwd).map(project => (
-                    <div key={project.cwd} className={`relative rounded-2xl border transition-colors ${openProjectMenu === project.cwd ? 'z-30' : 'z-0'} ${expandedProjects.has(project.cwd) ? 'bg-[var(--surface)] border-[var(--accent-dim)]/30' : 'bg-[var(--surface)] border-[var(--border-subtle)]/50 hover:border-[var(--accent-dim)]/25'}`}>{/* relative + z-30 when its ⋯ menu is open so the dropdown floats ABOVE sibling cards (was ghosting through them). no overflow-hidden — it clipped the dropdown */}
+                    <div key={project.cwd} className={`relative transition-colors first:rounded-t-xl last:rounded-b-xl ${openProjectMenu === project.cwd ? 'z-30' : 'z-0'} ${expandedProjects.has(project.cwd) ? 'bg-[var(--surface-2)]/30' : 'hover:bg-[var(--surface-2)]/40'}`}>{/* relative + z-30 when its ⋯ menu is open so the dropdown floats ABOVE sibling rows (was ghosting through them). no overflow-hidden — it clipped the dropdown */}
                       {/* Project header row */}
-                      <div className={`relative flex items-center gap-3 px-4 py-3.5 ${openProjectMenu === project.cwd ? 'z-40' : ''}`}>
+                      <div className={`relative flex items-center gap-3 px-3 py-2.5 ${openProjectMenu === project.cwd ? 'z-40' : ''}`}>
                         <button
                           className="flex-1 flex items-center gap-3 text-left min-w-0 group/proj"
                           onClick={() => toggleProject(project.cwd)}
                         >
-                          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--accent-dim)]/25 to-[var(--surface-2)] ring-1 ring-[var(--border-subtle)]/50 group-hover/proj:ring-[var(--accent-dim)]/40 flex items-center justify-center flex-shrink-0 text-base transition-all">
+                          <div className="w-8 h-8 rounded-lg bg-[var(--surface-2)] flex items-center justify-center flex-shrink-0 text-sm transition-all">
                             {project.name === 'General' ? '📁' : '🗂️'}
                           </div>
                           <div className="min-w-0 flex-1">
@@ -2052,22 +2056,21 @@ export default function Dashboard() {
 
                       {/* Expanded session list — cards with staggered reveal */}
                       {expandedProjects.has(project.cwd) && (
-                        <div className="border-t border-[var(--border)] p-2 space-y-1.5">
+                        <div className="border-t border-[var(--border-subtle)]/40 py-1">{/* flat nested rows (Slack-style) — no per-session bubble cards, no stagger/lift animation */}
                           {(expandedSessionLists.has(project.cwd)
                             ? project.sessions
                             : project.sessions.slice(0, 15)
-                          ).map((s, si) => { const pv = prettySessionPreview(s.lastMessage); return (
+                          ).map((s) => { const pv = prettySessionPreview(s.lastMessage); return (
                             <div
                               key={s.sessionId}
-                              style={{ animation: 'fadeSlideIn .28s ease both', animationDelay: `${Math.min(si, 8) * 35}ms` }}
-                              className="relative rounded-xl bg-[var(--surface-2)]/40 border border-[var(--border-subtle)]/40 hover:border-[var(--accent-dim)]/40 hover:bg-[var(--surface-2)] hover:-translate-y-px hover:shadow-[0_4px_16px_-8px_rgba(0,0,0,0.5)] transition-all group/sess"
+                              className="relative hover:bg-[var(--surface-2)]/50 transition-colors group/sess"
                             >
                               <button
                                 onClick={() => startChat(s.sessionId, s.cwd)}
-                                className="w-full px-3 py-2.5 text-left active:scale-[0.99] transition-transform"
+                                className="w-full pl-[44px] pr-3 py-2 text-left"
                               >
                                 <div className="flex items-start gap-2.5 pr-9">
-                                  <div className={`mt-0.5 w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : pv.kind === 'task' ? 'bg-[var(--surface)] text-[var(--text-muted)]' : 'bg-[var(--surface)] text-[var(--text-secondary)] group-hover/sess:text-[var(--accent)]'}`}>
+                                  <div className={`mt-0.5 w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : pv.kind === 'task' ? 'bg-[var(--surface-2)] text-[var(--text-muted)]' : 'bg-[var(--surface-2)] text-[var(--text-secondary)] group-hover/sess:text-[var(--accent)]'}`}>
                                     {pv.kind === 'meeting' ? (
                                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                                     ) : pv.kind === 'task' ? (
@@ -2080,7 +2083,7 @@ export default function Dashboard() {
                                     <div className="text-[13px] font-medium text-[var(--text-primary)] line-clamp-1">
                                       {pv.text}
                                     </div>
-                                    <div className="text-[11px] text-[var(--text-muted)] mt-1 flex items-center gap-1.5">
+                                    <div className="text-[11px] text-[var(--text-muted)] mt-0.5 flex items-center gap-1.5">
                                       {pv.kind !== 'chat' && (
                                         <span className={`px-1.5 py-px rounded-full text-[10px] font-medium ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : 'bg-[var(--surface)] text-[var(--text-muted)]'}`}>{pv.label}</span>
                                       )}
