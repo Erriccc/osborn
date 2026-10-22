@@ -5291,40 +5291,51 @@ async function main() {
           currentLLM.setResumeSessionId(preSelectedSessionId)
           console.log(`🔄 Session resume configured: ${preSelectedSessionId}`)
 
-          // Fetch context and greet with it
-          const summary = await getSessionSummary(preSelectedSessionId, workingDir)
-
-          await sendToFrontend({
-            type: 'session_resume_set',
-            sessionId: preSelectedSessionId,
-            success: true,
-          })
-
-          // Send existing workspace artifacts to frontend (session-scoped)
-          const preArtifacts = listWorkspaceArtifacts(workingDir, preSelectedSessionId!)
-          if (preArtifacts.length > 0) {
-            console.log(`📁 Sending ${preArtifacts.length} workspace artifacts to frontend`)
-            await sendToFrontend({
-              type: 'session_artifacts',
-              sessionId: preSelectedSessionId,
-              artifacts: preArtifacts.map(a => ({
-                filePath: a.filePath,
-                fileName: a.fileName,
-                type: a.type,
-                updatedAt: a.updatedAt,
-              }))
-            })
+          // DEAD-AIR FIX (0.9.264): greet IMMEDIATELY — the greeting is a static
+          // string that needs nothing from the resume-prep. Previously it was
+          // awaited AFTER getSessionSummary (slow on a 323MB session) + a 452-
+          // artifact enumeration, so the user heard silence for ~13.7s after the
+          // screen connected (measured). Now the first words play at session-
+          // ready (~2s); the prep runs in the background and never blocks voice.
+          try {
+            await (session as any).say("Welcome back! Ready to continue our previous conversation.")
+          } catch (err) {
+            console.log('⚠️ Pre-selected session greeting failed:', err)
           }
 
-          // Greet first, then point agent to session index (non-blocking)
-          if (summary) {
+          // Resume-prep in the BACKGROUND: session summary → index injection +
+          // artifact list to the UI. None of this gates the greeting or the
+          // user's first turn (the real context comes from the primed JSONL
+          // resume). Best-effort; failures are non-fatal.
+          void (async () => {
             try {
-              await (session as any).say("Welcome back! Ready to continue our previous conversation.")
+              const summary = await getSessionSummary(preSelectedSessionId!, workingDir)
+              await sendToFrontend({
+                type: 'session_resume_set',
+                sessionId: preSelectedSessionId,
+                success: true,
+              })
+              const preArtifacts = listWorkspaceArtifacts(workingDir, preSelectedSessionId!)
+              if (preArtifacts.length > 0) {
+                // Cap at 120 so the payload stays under the 49KB data-channel
+                // limit (452 artifacts = 106KB was silently dropped before).
+                console.log(`📁 Sending ${Math.min(preArtifacts.length, 120)}/${preArtifacts.length} workspace artifacts to frontend`)
+                await sendToFrontend({
+                  type: 'session_artifacts',
+                  sessionId: preSelectedSessionId,
+                  artifacts: preArtifacts.slice(0, 120).map(a => ({
+                    filePath: a.filePath,
+                    fileName: a.fileName,
+                    type: a.type,
+                    updatedAt: a.updatedAt,
+                  })),
+                })
+              }
+              if (summary) injectSessionIndexIntoChatCtx(currentAgent, preSelectedSessionId!, workingDir)
             } catch (err) {
-              console.log('⚠️ Pre-selected session greeting failed:', err)
+              console.warn('⚠️ resume-prep (background) failed:', err instanceof Error ? err.message : err)
             }
-            injectSessionIndexIntoChatCtx(currentAgent, preSelectedSessionId!, workingDir)
-          }
+          })()
         }
       } else if (!preSelectedSessionId && hasRecentSession) {
         // No pre-selected session but sessions exist — defer greeting for session gate
