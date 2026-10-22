@@ -45,11 +45,13 @@ export interface AgentControlCallbacks {
 // Model reads from env var (set by main process from getInferenceConfig) or DEFAULT_CONFIG default.
 // To switch model: update DEFAULT_CONFIG.inference.fastBrainModel in config.ts, or set OSBORN_FAST_BRAIN_MODEL env var.
 // Provider switch: Fireworks (OpenAI-compatible) when FIREWORKS_API_KEY is set, else
-// OpenRouter. deepseek-v3p1 on Fireworks ≈ deepseek-chat (V3) on OpenRouter.
+// OpenRouter. Default Fireworks model: deepseek-v4p1-flash — v3p1 is deprecated off
+// Fireworks serverless (verified 2026-10-22 via the model page metadata); V4.1 Flash
+// is the live successor in the same fast/cheap DeepSeek class (262K ctx, tool calls).
 const FIREWORKS = !!process.env.FIREWORKS_API_KEY
 const PROVIDER_NAME = FIREWORKS ? 'Fireworks' : 'OpenRouter'
 const OPENROUTER_MODEL = process.env.OSBORN_FAST_BRAIN_MODEL ||
-  (FIREWORKS ? 'accounts/fireworks/models/deepseek-v3p1' : 'deepseek/deepseek-chat')
+  (FIREWORKS ? 'accounts/fireworks/models/deepseek-v4p1-flash' : 'deepseek/deepseek-chat')
 const OPENROUTER_URL = FIREWORKS
   ? 'https://api.fireworks.ai/inference/v1/chat/completions'
   : 'https://openrouter.ai/api/v1/chat/completions'
