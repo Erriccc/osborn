@@ -991,7 +991,16 @@ export default function Dashboard() {
   }
 
   const signOut = async () => {
-    await supabase.auth.signOut()
+    try { await supabase.auth.signOut() } catch {}
+    // "Connect without account" users have NO Supabase session — the osborn-*
+    // localStorage flags are what keep them connected, so signOut() alone is a
+    // no-op and redirecting just bounces them straight back in. Clear the local
+    // connection state so sign-out actually signs them out.
+    try {
+      ['osborn-setup-completed', 'osborn-agent-url', 'osborn-provider',
+       'osborn-voice-arch', 'osborn-coding-agent', 'osborn-room-code']
+        .forEach(k => localStorage.removeItem(k))
+    } catch {}
     window.location.href = '/'
   }
 
@@ -1281,9 +1290,13 @@ export default function Dashboard() {
                   className={`p-1 rounded-full transition-all ${showProfileMenu ? 'bg-[var(--accent-dim)]/20 ring-1 ring-[var(--accent)]/50' : 'hover:bg-[var(--surface)]'}`}>
                   {user?.user_metadata?.avatar_url ? (
                     <img src={user.user_metadata.avatar_url} alt="" className={`w-7 h-7 rounded-full ring-1 ${showProfileMenu ? 'ring-[var(--accent)]' : 'ring-[var(--border)]'}`} />
-                  ) : (
+                  ) : user?.email ? (
                     <div className="w-7 h-7 rounded-full bg-[var(--accent-dim)] flex items-center justify-center text-[11px] font-semibold text-[var(--background)]">
-                      {(user?.email?.[0] || '?').toUpperCase()}
+                      {user.email[0].toUpperCase()}
+                    </div>
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-muted)]">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
                     </div>
                   )}
                 </button>
@@ -1294,8 +1307,8 @@ export default function Dashboard() {
                       className="absolute right-0 top-full mt-2 z-50 w-56 rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] shadow-2xl overflow-hidden origin-top-right"
                       style={{ animation: 'fadeSlideIn .12s ease both' }}>
                       <div className="px-3.5 py-2.5 border-b border-[var(--border-subtle)]">
-                        <p className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">Signed in</p>
-                        <p className="text-sm text-[var(--text-primary)] truncate">{user?.email || 'you'}</p>
+                        <p className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">{user?.email ? 'Signed in' : 'Guest session'}</p>
+                        <p className="text-sm text-[var(--text-primary)] truncate">{user?.email || 'No account connected'}</p>
                       </div>
                       <button role="menuitem"
                         onClick={() => { setShowProfileMenu(false); setShowSettings(true) }}
@@ -1314,7 +1327,7 @@ export default function Dashboard() {
                         onClick={() => { setShowProfileMenu(false); signOut() }}
                         className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-red-400 hover:bg-red-500/10 transition-colors">
                         <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-                        Sign out
+                        {user?.email ? 'Sign out' : 'Exit guest session'}
                       </button>
                     </div>
                   </>
