@@ -232,6 +232,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     // stage delta (visible in Railway logs). clickTs is forwarded to the agent
     // so it can report the true end-to-end click→first-answer in one place.
     const clickTs = Date.now()
+    ;(window as any).__osbornClickTs = clickTs
     const ctMark = (label: string) =>
       console.log(`⏱️ [connect-timing] +${Date.now() - clickTs}ms ${label}`)
     ctMark('button clicked (connect start)')
@@ -420,6 +421,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       ctMark('token minted — handing off to LiveKit room join')
       setToken(data.token)
       setRoomCode(data.roomCode)
+      ctMark('token+roomCode set → LiveKit client mounting (WebRTC start)')
       setStatusMsg(null)
     } catch (e) {
       setError('Failed to connect to agent')

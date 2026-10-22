@@ -2621,7 +2621,13 @@ function VoiceRoomInner({
     }
     const onReconnecting = () => log('RoomReconnecting')
     const onReconnected = () => log('RoomReconnected')
-    const onConnState = (s: ConnectionState) => log('ConnectionStateChanged', { state: s })
+    const onConnState = (s: ConnectionState) => {
+      log('ConnectionStateChanged', { state: s })
+      if (s === ConnectionState.Connected) {
+        const cts = (window as any).__osbornClickTs
+        if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms LiveKit browser WebRTC connected`)
+      }
+    }
     const onTrackSubscribed = (track: any, pub: any, participant: any) => {
       const isAgent = !participant.isLocal
       const isAudio = track.kind === Track.Kind.Audio
@@ -2949,6 +2955,8 @@ function VoiceRoomInner({
       console.log('📨 Received data message:', data.type, data)
 
       if (data.type === 'agent_ready') {
+        const cts = (window as any).__osbornClickTs
+        if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms agent_ready received → setConnected(true)`)
         setAgentConnected(true)
         // Clear any stale "running" sub-agent rows. agent_ready = a fresh/cold-started agent
         // session: any flow still marked running here predates it and can NEVER receive its

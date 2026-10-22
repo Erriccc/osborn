@@ -26,10 +26,10 @@ export default function ChatPage() {
     disconnect,
   } = useChatSession()
 
-  // ─── Connecting state ────────────────────────────
-  // Show the pulsing indicator while: (a) no token yet, or (b) token
-  // landed but agent hasn't fired `agent_ready` over the data channel.
-  if (connecting || (!connected && token && roomCode)) {
+  // ─── Pre-token spinner ───────────────────────────
+  // Only show the full-screen blank spinner BEFORE we have a token.
+  // Once token+roomCode land we go straight to the optimistic VoiceRoom.
+  if (connecting && !token) {
     return (
       <>
         <style>{`
@@ -58,15 +58,6 @@ export default function ChatPage() {
               Cancel
             </button>
           </div>
-
-          {/* Hidden VoiceRoom keeps the data channel + agent event loop
-              running while the connect UI is visible. Once the agent
-              fires `agent_ready`, we swap to the full UI below. */}
-          {token && roomCode && (
-            <div className="hidden">
-              <VoiceRoom waitingMode={true} />
-            </div>
-          )}
         </main>
       </>
     )
@@ -95,21 +86,46 @@ export default function ChatPage() {
     )
   }
 
-  // ─── Connected — show VoiceRoom ───────────────────
-  // VoiceRoom is rendered inside the <LiveKitRoom> established by the
-  // provider, so all LiveKit hooks (useRoomContext, useLocalParticipant,
-  // useDataChannel) work from here down.
-  if (connected && token && roomCode) {
-    // Pin the connected view to the viewport so the PAGE itself never scrolls/drags
-    // (only the inner scroll areas do). Without this wrapper VoiceRoom's 85vh card was
-    // the sole flow child of an unconstrained <body>, so the page rubber-banded and the
-    // background "grew" below it. h-[100dvh] + overflow-hidden locks it; centering makes
-    // the remaining desktop margin symmetric instead of a growing bottom gap. Scoped to
-    // the chat route (not global body) so the dashboard keeps its normal scroll.
+  // ─── Optimistic VoiceRoom ─────────────────────────
+  // Once token+roomCode land, mount VoiceRoom immediately so the data
+  // channel is active and agent_ready can fire. Overlay a connecting
+  // indicator until agent_ready fires and setConnected(true) is called.
+  if (token && roomCode) {
     return (
-      <main className="h-[100dvh] w-full overflow-hidden bg-[var(--background)]">
-        <VoiceRoom waitingMode={false} />
-      </main>
+      <>
+        <style>{`
+          @keyframes breathe { 0%, 100% { transform: scale(1); opacity: 0.7; } 50% { transform: scale(1.15); opacity: 1; } }
+          @keyframes ring { 0% { transform: scale(0.8); opacity: 0.5; } 100% { transform: scale(2.2); opacity: 0; } }
+        `}</style>
+        <main className="h-[100dvh] w-full overflow-hidden bg-[var(--background)] relative">
+          <VoiceRoom waitingMode={!connected} />
+          {!connected && (
+            <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[var(--background)]">
+              <div className="flex flex-col items-center gap-6">
+                <div className="relative w-20 h-20">
+                  <div
+                    className="absolute inset-0 rounded-full bg-[var(--accent)]"
+                    style={{ animation: 'breathe 2.4s ease-in-out infinite' }}
+                  />
+                  <div
+                    className="absolute inset-0 rounded-full border border-[var(--accent)]"
+                    style={{ animation: 'ring 2.4s ease-out infinite', opacity: 0.3 }}
+                  />
+                </div>
+                <p className="text-[var(--text-secondary)] text-sm">
+                  {statusMsg || 'Connecting...'}
+                </p>
+                <button
+                  onClick={disconnect}
+                  className="text-[var(--text-muted)] text-sm hover:text-[var(--text-secondary)] underline underline-offset-2 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </main>
+      </>
     )
   }
 
