@@ -11,8 +11,20 @@ const sans = Instrument_Sans({ subsets: ['latin'], variable: '--font-sans-loaded
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono-loaded', weight: ['400', '500'] })
 
 export const metadata: Metadata = {
-  title: 'Osborn - Voice AI Research Assistant',
-  description: 'Voice-native AI research assistant powered by Claude',
+  metadataBase: new URL('https://voice-native.com'),
+  title: {
+    default: 'Osborn — Voice-Native AI Coding Agent',
+    template: '%s — Osborn',
+  },
+  description: 'Talk to Osborn and it writes, runs, and debugs code on your own machine. A team of Claude sub-agents, persistent memory, live activity.',
+  openGraph: {
+    type: 'website',
+    siteName: 'Osborn',
+    url: 'https://voice-native.com',
+    title: 'Osborn — Talk to it. It ships.',
+    description: 'A voice-native AI engineer that writes and runs code on your machine, with a team of Claude sub-agents you watch work in real time.',
+  },
+  twitter: { card: 'summary_large_image' },
 }
 
 export default function RootLayout({

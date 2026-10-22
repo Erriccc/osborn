@@ -62,6 +62,9 @@ export default function LibraryPage() {
   const [filter, setFilter] = useState<StatusFilter>('all')
   const [query, setQuery] = useState('')
   const [reading, setReading] = useState<ContentItem | null>(null)
+  const [handle, setHandle] = useState<string | null>(null)
+  const [publishing, setPublishing] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   // Resolve the signed-in user, then load their library rows (RLS scopes to owner).
   useEffect(() => {
@@ -71,6 +74,13 @@ export default function LibraryPage() {
       setUser(u ?? null)
       setAuthChecked(true)
       if (!u) { setLoading(false); return }
+      // Owner handle for public URLs = profiles.username (email during alpha,
+      // per migration 007). Fall back to the email if the profile isn't loaded.
+      supabase.from('profiles').select('username').eq('id', u.id).maybeSingle()
+        .then(({ data: p }) => {
+          if (cancelled) return
+          setHandle((p as { username?: string } | null)?.username ?? u.email ?? null)
+        })
       const { data, error: qErr } = await supabase
         .from('content_items')
         .select('id, type, status, title, hook, body, source_session_id, source_kind, slug, published_at, created_at, updated_at')
@@ -82,6 +92,51 @@ export default function LibraryPage() {
     })
     return () => { cancelled = true }
   }, [supabase])
+
+  // Public URL for a published item (null until we know handle + slug).
+  const publicUrl = (item: ContentItem): string | null =>
+    handle && item.slug && item.status === 'published'
+      ? `https://voice-native.com/p/${encodeURIComponent(handle)}/${item.slug}`
+      : null
+
+  async function togglePublish(item: ContentItem, action: 'publish' | 'unpublish') {
+    if (publishing) return
+    setPublishing(true)
+    try {
+      const res = await fetch('/api/content/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, itemId: item.id, slug: item.slug ?? undefined }),
+      })
+      const json = await res.json()
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed')
+      // Optimistically patch the item in place (and the open modal).
+      const patch = (i: ContentItem): ContentItem =>
+        i.id === item.id
+          ? {
+              ...i,
+              status: action === 'publish' ? 'published' : 'draft',
+              slug: json.slug ?? i.slug,
+              published_at: action === 'publish' ? (json.publishedAt ?? i.published_at ?? new Date().toISOString()) : i.published_at,
+            }
+          : i
+      setItems(prev => prev.map(patch))
+      setReading(prev => (prev && prev.id === item.id ? patch(prev) : prev))
+      if (json.handle) setHandle(json.handle)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Publish failed')
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  async function copyLink(url: string) {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch { /* clipboard unavailable */ }
+  }
 
   // Esc closes the reading modal.
   useEffect(() => {
@@ -96,6 +151,21 @@ export default function LibraryPage() {
     published: items.filter(i => i.status === 'published').length,
     draft: items.filter(i => i.status === 'draft').length,
   }), [items])
+
+  // Most-recently-published item, for the Featured hero. Only shown when the
+  // current filter would include it (so it never fights the filter/search).
+  const featured = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const matches = items
+      .filter(i => i.status === 'published' && i.published_at)
+      .filter(i => {
+        if (filter === 'draft') return false
+        if (!q) return true
+        return [i.title, i.hook, i.body, i.slug, i.type].some(f => (f ?? '').toLowerCase().includes(q))
+      })
+      .sort((a, b) => (b.published_at! > a.published_at! ? 1 : -1))
+    return matches[0] ?? null
+  }, [items, filter, query])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -185,6 +255,34 @@ export default function LibraryPage() {
             </p>
           </div>
         ) : (
+          <>
+            {/* Featured hero — the most recently published page, feed-style. */}
+            {featured && (
+              <div className="mb-7 rounded-3xl border border-[var(--border-subtle)] bg-gradient-to-br from-[var(--surface)] to-[var(--surface-2)] p-6 sm:p-8">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--accent-dim)]/25 text-[var(--accent)]">Featured</span>
+                  <span className="text-[11px] text-[var(--text-muted)]">{fmtDate(featured.published_at)}</span>
+                  {featured.type && <><span className="text-[var(--text-muted)] opacity-40">·</span><span className="text-[11px] text-[var(--text-muted)] capitalize">{featured.type.replace(/_/g, ' ')}</span></>}
+                </div>
+                <h2 className="font-display text-2xl sm:text-3xl font-medium text-[var(--text-primary)] leading-tight max-w-2xl">
+                  {featured.title || featured.slug || 'Untitled page'}
+                </h2>
+                {featured.hook && <p className="mt-2.5 text-[14px] text-[var(--text-secondary)] italic leading-relaxed max-w-2xl">{featured.hook}</p>}
+                <div className="mt-5 flex flex-wrap items-center gap-2.5">
+                  <button onClick={() => setReading(featured)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2 text-[13px] font-semibold hover:opacity-90 transition-opacity">
+                    Read →
+                  </button>
+                  {publicUrl(featured) && (
+                    <button onClick={() => copyLink(publicUrl(featured)!)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--text-secondary)] px-4 py-2 text-[13px] font-medium hover:text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 transition-all">
+                      {copied ? 'Copied ✓' : 'Copy link'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {visible.map(item => {
               const heading = item.title || item.slug || 'Untitled page'
@@ -213,6 +311,7 @@ export default function LibraryPage() {
               )
             })}
           </div>
+          </>
         )}
       </div>
 
@@ -240,6 +339,45 @@ export default function LibraryPage() {
               {reading.body
                 ? <pre className="whitespace-pre-wrap break-words font-sans text-[13.5px] text-[var(--text-secondary)] leading-relaxed">{reading.body}</pre>
                 : <p className="text-[12px] text-[var(--text-muted)] italic">No body content.</p>}
+            </div>
+
+            {/* Publish control — the only way to make an item public is this POST
+                to /api/content/publish (the browser RLS can't flip to published). */}
+            <div className="shrink-0 border-t border-[var(--border-subtle)] px-5 py-3.5">
+              {reading.status === 'published' ? (
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-emerald-300">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Public ✓
+                    </span>
+                    {publicUrl(reading) && (
+                      <>
+                        <span className="text-[var(--text-muted)] opacity-40">·</span>
+                        <button onClick={() => copyLink(publicUrl(reading)!)}
+                          className="text-[12.5px] text-[var(--accent)] hover:underline">
+                          {copied ? 'Copied ✓' : 'Copy link'}
+                        </button>
+                        <span className="text-[var(--text-muted)] opacity-40">·</span>
+                      </>
+                    )}
+                    <button disabled={publishing} onClick={() => togglePublish(reading, 'unpublish')}
+                      className="text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50">
+                      {publishing ? 'Working…' : 'Make private'}
+                    </button>
+                  </div>
+                  {publicUrl(reading) && (
+                    <code className="block text-[11px] text-[var(--text-muted)] truncate font-mono">{publicUrl(reading)}</code>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[12px] text-[var(--text-muted)]">Publishing makes this page public and indexable.</p>
+                  <button disabled={publishing} onClick={() => togglePublish(reading, 'publish')}
+                    className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2 text-[13px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
+                    {publishing ? 'Publishing…' : 'Publish to web'}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

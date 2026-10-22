@@ -1797,6 +1797,32 @@ export default function Dashboard() {
             <p className="mt-1 text-[13px] text-[var(--text-secondary)]">What should we look into?</p>
           </div>
 
+          {/* Continue where you left off — featured resume of the most-recent
+              session (agenda-card idiom: one clear primary action using real
+              data, surfaced above the full list). */}
+          {agentOnline !== false && sessions.length > 0 && (() => {
+            const recent = [...sessions].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
+            if (!recent) return null
+            const pv = prettySessionPreview(recent.lastMessage)
+            return (
+              <button onClick={() => startChat(recent.sessionId, recent.cwd)}
+                className="w-full mb-3 flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)]/40 transition-all group"
+                style={{ animation: 'fadeSlideIn .45s ease both' }}>
+                <div className="w-10 h-10 rounded-xl bg-[var(--accent-dim)]/20 flex items-center justify-center shrink-0 text-[var(--accent)]">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--accent)]">Continue</span>
+                    <span className="text-[11px] text-[var(--text-muted)]">{formatDate(recent.timestamp)}</span>
+                  </div>
+                  <div className="text-sm font-medium text-[var(--text-primary)] truncate mt-0.5">{pv.text}</div>
+                </div>
+                <svg className="w-5 h-5 shrink-0 text-[var(--text-muted)] group-hover:text-[var(--accent)] group-hover:translate-x-0.5 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+              </button>
+            )
+          })()}
+
           {/* New chat button */}
           <button onClick={() => startChat()}
             className="w-full h-11 rounded-lg font-semibold text-[14px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.99] mb-5 flex items-center justify-center gap-2"
