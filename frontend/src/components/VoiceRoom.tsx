@@ -788,7 +788,7 @@ function ChatPanel({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-3 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+        className="h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-3 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
       >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
@@ -827,6 +827,9 @@ function ChatPanel({
           </div>
         </div>
       )}
+      {/* Reading column — full width on phone/tablet, centered 3xl at lg+ so
+          lines stop running 180 chars on wide monitors (Slack/Claude width). */}
+      <div className="w-full lg:max-w-3xl lg:mx-auto space-y-1">
       {messages.filter(m => m.category !== 'log').map((msg) => (
         <MessageBubble
           key={msg.id}
@@ -839,6 +842,7 @@ function ChatPanel({
           isLiked={likedIds?.has(msg.id)}
         />
       ))}
+      </div>
       {/* Inline research tracking spinner */}
       {activeResearch && (
         <div className="flex items-start gap-3 px-2">
@@ -5207,8 +5211,9 @@ function VoiceRoomInner({
               {onDisconnect && (
                 <button
                   onClick={onDisconnect}
-                  className="hidden sm:block shrink-0 p-2 rounded-lg transition-all bg-red-500/20 text-red-400 hover:bg-red-500/40 hover:text-red-300 border border-red-500/30"
-                  title="Disconnect (saves LiveKit minutes)"
+                  aria-label="End session"
+                  className="hidden sm:flex shrink-0 items-center justify-center w-10 h-10 ml-2 rounded-lg transition-all bg-red-500/90 text-white hover:bg-red-500"
+                  title="End session (saves LiveKit minutes — session stays resumable)"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
@@ -5414,7 +5419,7 @@ function VoiceRoomInner({
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 18v-6a9 9 0 0118 0v6M3 18a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3zm18 0a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h1a2 2 0 012 2v3z" />
             </svg>
-            <span>NC</span>
+            <span>Filter</span>
             {noiseCancelOn && gateDropped.length > 0 && (
               <span
                 onClick={(e) => {
@@ -5455,10 +5460,11 @@ function VoiceRoomInner({
           {onDisconnect && (
             <button
               onClick={onDisconnect}
-              className="flex items-center justify-center p-2 rounded-full bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-all"
-              title="Hang up — end session (saves minutes)"
+              aria-label="End session"
+              className="flex items-center justify-center w-11 h-11 ml-3 rounded-full bg-red-500/90 text-white hover:bg-red-500 transition-all"
+              title="Hang up — end session (saves minutes, session stays resumable)"
             >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
               </svg>
             </button>
