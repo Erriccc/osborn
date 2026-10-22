@@ -182,6 +182,7 @@ export default function Dashboard() {
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [showProfileMenu, setShowProfileMenu] = useState(false) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
 
   // Session sharing (0.9.123) — Share modal + "Shared with me".
   const [shareTarget, setShareTarget] = useState<{ sessionId: string; title: string } | null>(null)
@@ -1270,20 +1271,55 @@ export default function Dashboard() {
                 )}
               </button>
 
-              {/* Avatar = settings + profile (2026-08-01 tray rule: the gear
-                  collapsed into the profile button — one control, ring shows
-                  open state; Sign out lives inside the sheet, killing the old
-                  one-tap-signout hazard). */}
-              <button onClick={() => setShowSettings(s => !s)} title="Settings & account"
-                className={`p-1 rounded-lg transition-all ${showSettings ? 'bg-[var(--accent-dim)]/20 ring-1 ring-[var(--accent)]/50' : 'hover:bg-[var(--surface)]'}`}>
-                {user?.user_metadata?.avatar_url ? (
-                  <img src={user.user_metadata.avatar_url} alt="" className={`w-7 h-7 rounded-full ring-1 ${showSettings ? 'ring-[var(--accent)]' : 'ring-[var(--border)]'}`} />
-                ) : (
-                  <div className="w-7 h-7 rounded-full bg-[var(--accent-dim)] flex items-center justify-center text-[11px] font-semibold text-[var(--background)]">
-                    {(user?.email?.[0] || '?').toUpperCase()}
-                  </div>
+              {/* Avatar → profile dropdown — the universal top-right anchor
+                  (Google/Claude/ChatGPT). One glance, zero learning curve:
+                  Settings · Library · Sign out. Replaces the old behavior where
+                  the avatar dumped the whole settings sheet. */}
+              <div className="relative">
+                <button onClick={() => setShowProfileMenu(s => !s)} title="Account"
+                  aria-haspopup="menu" aria-expanded={showProfileMenu}
+                  className={`p-1 rounded-full transition-all ${showProfileMenu ? 'bg-[var(--accent-dim)]/20 ring-1 ring-[var(--accent)]/50' : 'hover:bg-[var(--surface)]'}`}>
+                  {user?.user_metadata?.avatar_url ? (
+                    <img src={user.user_metadata.avatar_url} alt="" className={`w-7 h-7 rounded-full ring-1 ${showProfileMenu ? 'ring-[var(--accent)]' : 'ring-[var(--border)]'}`} />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-[var(--accent-dim)] flex items-center justify-center text-[11px] font-semibold text-[var(--background)]">
+                      {(user?.email?.[0] || '?').toUpperCase()}
+                    </div>
+                  )}
+                </button>
+                {showProfileMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowProfileMenu(false)} />
+                    <div role="menu"
+                      className="absolute right-0 top-full mt-2 z-50 w-56 rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] shadow-2xl overflow-hidden origin-top-right"
+                      style={{ animation: 'fadeSlideIn .12s ease both' }}>
+                      <div className="px-3.5 py-2.5 border-b border-[var(--border-subtle)]">
+                        <p className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">Signed in</p>
+                        <p className="text-sm text-[var(--text-primary)] truncate">{user?.email || 'you'}</p>
+                      </div>
+                      <button role="menuitem"
+                        onClick={() => { setShowProfileMenu(false); setShowSettings(true) }}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] transition-colors">
+                        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                        Settings
+                      </button>
+                      <Link role="menuitem" href="/library"
+                        onClick={() => setShowProfileMenu(false)}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] transition-colors">
+                        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+                        Library
+                      </Link>
+                      <div className="h-px bg-[var(--border-subtle)] mx-2 my-1" />
+                      <button role="menuitem"
+                        onClick={() => { setShowProfileMenu(false); signOut() }}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-red-400 hover:bg-red-500/10 transition-colors">
+                        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                        Sign out
+                      </button>
+                    </div>
+                  </>
                 )}
-              </button>
+              </div>
             </div>
           </div>
         </header>
