@@ -1453,14 +1453,15 @@ function ControlMenu({
 
   return (
     <div className="relative flex items-center gap-2">
-      {/* Research mode indicator - always visible */}
+      {/* Session menu — history + tools. (Was mislabeled "Research".) */}
       <button
         onClick={() => setIsOpen(!isOpen)}
         disabled={disabled}
-        className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all text-xs bg-amber-500/10 border-amber-500/30 text-amber-400 ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:opacity-80'}`}
-        title="Open settings"
+        className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-all text-xs ${isOpen ? 'bg-gray-800/60 text-gray-200' : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+        title="Session history & tools"
       >
-        <span className="font-medium">Research</span>
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        <span className="font-medium">History</span>
         <svg className={`w-3 h-3 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
@@ -2226,6 +2227,7 @@ function VoiceRoomInner({
   const [spawnPending, setSpawnPending] = useState(false)
   const [spawnError, setSpawnError] = useState<string | null>(null)
   const [showInstancesPanel, setShowInstancesPanel] = useState(false)
+  const [showHeaderMore, setShowHeaderMore] = useState(false) // desktop header overflow — consolidates the loose icon row into one labeled "More"
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
   const [agentState, setAgentState] = useState<string>('idle')
   const [speakingChunk, setSpeakingChunk] = useState<SpeakingChunk | null>(null)
@@ -5072,114 +5074,58 @@ function VoiceRoomInner({
                 )}
               </div>
 
-              {/* Files button - hidden on mobile */}
-              <button
-                onClick={() => setIsFilesModalOpen(!isFilesModalOpen)}
-                className={`hidden sm:block relative p-2 rounded-lg transition-all ${
-                  isFilesModalOpen
-                    ? 'bg-amber-500/20 text-amber-400'
-                    : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
-                }`}
-                title="Toggle files explorer"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-                {generatedFiles.length > 0 && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
-                    {generatedFiles.length}
-                  </span>
+              {/* More — single labeled overflow consolidating the loose icon
+                  row (Files, Auto-approve, Copy all, Noise filter) into one
+                  menu. Amber dot signals an active setting inside. */}
+              <div className="hidden sm:block relative">
+                <button
+                  onClick={() => setShowHeaderMore(v => !v)}
+                  aria-haspopup="menu" aria-expanded={showHeaderMore}
+                  className={`flex items-center gap-1 p-2 rounded-lg transition-all ${
+                    showHeaderMore ? 'bg-gray-800/60 text-gray-200' : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
+                  }`}
+                  title="More controls"
+                >
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+                  {(autoApprovePermissions || noiseCancelOn || generatedFiles.length > 0) && (
+                    <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  )}
+                </button>
+                {showHeaderMore && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowHeaderMore(false)} />
+                    <div role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
+                      <button role="menuitem" onClick={() => { setShowHeaderMore(false); setIsFilesModalOpen(true) }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
+                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                        <span className="flex-1">Files Explorer</span>
+                        {generatedFiles.length > 0 && <span className="text-[11px] text-gray-500">{generatedFiles.length}</span>}
+                      </button>
+                      <button role="menuitem" onClick={() => setAutoApprovePermissions(v => !v)}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
+                        <svg className={`w-4 h-4 shrink-0 ${autoApprovePermissions ? 'text-amber-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                        <span className="flex-1">Auto-approve tools</span>
+                        <span className={`text-[11px] font-medium ${autoApprovePermissions ? 'text-amber-400' : 'text-gray-500'}`}>{autoApprovePermissions ? 'ON' : 'OFF'}</span>
+                      </button>
+                      <button role="menuitem" onClick={() => { setShowHeaderMore(false); toggleNoiseCancel() }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
+                        <svg className={`w-4 h-4 shrink-0 ${noiseCancelOn ? 'text-amber-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 18v-6a9 9 0 0118 0v6M3 18a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3zm18 0a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h1a2 2 0 012 2v3z" /></svg>
+                        <span className="flex-1">Noise filter</span>
+                        <span className={`text-[11px] font-medium ${noiseCancelOn ? 'text-amber-400' : 'text-gray-500'}`}>{noiseCancelOn ? (gateDropped.length ? `${gateDropped.length} filtered` : 'ON') : 'OFF'}</span>
+                      </button>
+                      <div className="h-px bg-gray-800 mx-2 my-1" />
+                      <button role="menuitem" onClick={() => { setShowHeaderMore(false); handleCopyAllMessages() }} disabled={messages.length === 0}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                        <span className="flex-1">{copyFeedback ? 'Copied!' : 'Copy all messages'}</span>
+                      </button>
+                    </div>
+                  </>
                 )}
-              </button>
+              </div>
 
-              {/* Auto-approve (YOLO) toggle — always visible in the toolbar
-                  so the user can flip it mid-conversation without waiting
-                  for a permission modal. When ON, incoming permission_request
-                  events are intercepted and answered 'allow' before the modal
-                  renders (see handleDataMessage branch above). Icon swaps
-                  between a lock (off) and a lightning bolt (on). */}
-              <button
-                onClick={() => setAutoApprovePermissions(v => !v)}
-                className={`hidden sm:block p-2 rounded-lg transition-all ${
-                  autoApprovePermissions
-                    ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 ring-1 ring-amber-500/50'
-                    : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
-                }`}
-                title={autoApprovePermissions
-                  ? 'Auto-approve ON — all tool permissions accepted instantly. Click to turn off.'
-                  : 'Auto-approve OFF — permission prompts appear. Click to enable YOLO mode.'}
-              >
-                {autoApprovePermissions ? (
-                  // Lightning bolt — YOLO engaged
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                ) : (
-                  // Shield-check — default safe mode (prompts appear)
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                  </svg>
-                )}
-              </button>
-
-              {/* Copy All Messages button — hidden on mobile */}
-              <button
-                onClick={handleCopyAllMessages}
-                disabled={messages.length === 0}
-                className={`hidden sm:block p-2 rounded-lg transition-all ${
-                  copyFeedback
-                    ? 'bg-green-500/20 text-green-400'
-                    : messages.length === 0
-                      ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
-                      : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
-                }`}
-                title={copyFeedback ? 'Copied!' : 'Copy all messages'}
-              >
-                {copyFeedback ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                )}
-              </button>
-
-              {/* Noise cancellation — desktop header, next to Mute. Amber when
-                  filtering; badge = filtered count, click badge to send the
-                  latest tombstoned utterance to the agent anyway. */}
-              <button
-                onClick={toggleNoiseCancel}
-                className={`hidden sm:flex items-center gap-1 p-2 rounded-lg transition-all ${
-                  noiseCancelOn
-                    ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
-                    : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
-                }`}
-                title={noiseCancelOn
-                  ? `Noise cancellation ON — filtering side conversations${gateDropped.length ? ` (${gateDropped.length} filtered)` : ''}. Click to turn off.`
-                  : 'Noise cancellation — filter side conversations before they reach the agent'}
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 18v-6a9 9 0 0118 0v6M3 18a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3zm18 0a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h1a2 2 0 012 2v3z" />
-                </svg>
-                {noiseCancelOn && gateDropped.length > 0 && (
-                  <span
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      const last = gateDropped[gateDropped.length - 1]
-                      if (!last) return
-                      try {
-                        const enc = new TextEncoder()
-                        sendToAgent(enc.encode(JSON.stringify({ type: 'gate_send_anyway', text: last.text })), { reliable: true })
-                        setGateDropped(prev => prev.slice(0, -1))
-                      } catch {}
-                    }}
-                    className="px-1 rounded-full bg-amber-500/30 text-[10px]"
-                    title={`${gateDropped.length} filtered — click to send the latest to the agent anyway`}
-                  >{gateDropped.length}</span>
-                )}
-              </button>
+              {/* Auto-approve, Copy-all, and Noise-filter moved into the "More"
+                  menu above — the loose header icon row is consolidated. */}
 
               {/* Mute button — desktop header only; mobile mute lives in the
                   composer control strip next to the input. */}
