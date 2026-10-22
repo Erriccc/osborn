@@ -53,6 +53,7 @@ import { statusManager } from './status-manager.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
+import { storeExists, openStore, recentRows } from './session-store.js'
 import { getRecallClient } from './recall-client.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
@@ -5309,6 +5310,28 @@ async function main() {
           // resume). Best-effort; failures are non-fatal.
           void (async () => {
             try {
+              // OPTIMISTIC UX (0.9.265): push the last ~20 messages straight from
+              // the per-session recall store (SQLite) so the UI can show prior
+              // conversation during the connect wait instead of an empty orb.
+              // recentRows reads the DB directly — NO JSONL replay. Best-effort.
+              try {
+                const dbPath = storeExists(preSelectedSessionId!, workingDir)
+                if (dbPath) {
+                  const db = openStore(dbPath, { readonly: true })
+                  try {
+                    const rows = recentRows(db, 20, ['user', 'assistant'])  // newest-first
+                    const priorMessages = rows
+                      .reverse()  // → chronological
+                      .map(r => ({ role: r.msgType === 'assistant' ? 'assistant' : 'user', content: (r.text || '').slice(0, 800) }))
+                      .filter(m => m.content.trim().length > 0)
+                    if (priorMessages.length > 0) {
+                      await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages })
+                      console.log(`💬 Sent ${priorMessages.length} prior messages from DB for optimistic UI`)
+                    }
+                  } finally { try { db.close() } catch {} }
+                }
+              } catch (e) { console.warn('⚠️ prior_messages (optimistic) failed:', e instanceof Error ? e.message : e) }
+
               const summary = await getSessionSummary(preSelectedSessionId!, workingDir)
               await sendToFrontend({
                 type: 'session_resume_set',

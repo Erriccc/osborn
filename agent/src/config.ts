@@ -1452,8 +1452,14 @@ function scanDirForArtifacts(dir: string): ResearchArtifact[] {
         if (stat.isDirectory()) {
           scan(fullPath)
         } else {
-          // Skip internal index files
-          if (entry.startsWith('search-index')) continue
+          // Skip internal index files, hidden files, and the session
+          // transcript / recall store (JSONL + sqlite .db/-wal/-shm + subagent
+          // .meta.json). These are NOT user-facing artifacts and were the bulk
+          // of the 452-file resume payload that blew past the 49KB data-channel
+          // limit (silently dropped). User research outputs — plans, diagrams,
+          // notes, images, html, summaries — still pass through.
+          if (entry.startsWith('search-index') || entry.startsWith('.')) continue
+          if (/\.(jsonl|db|db-wal|db-shm|sqlite)$/i.test(entry) || entry.endsWith('.meta.json')) continue
           results.push({
             fileName: entry,
             filePath: fullPath,
