@@ -357,13 +357,16 @@ export async function POST(request: Request) {
         await waitForHealth(crUrl, 15)
       }
 
-      // Hit the agent's /connect-room. Retry a few times — a freshly-woken agent
-      // may need a moment after /health goes green before it accepts connect-room.
+      // Hit the agent's /connect-room. The agent joins the LiveKit room on this
+      // call; cold connect (room.connect via rtc-node) takes 7-15s. Timeout must
+      // exceed that so we don't abort and force a second connect cycle (which
+      // previously doubled the cold-path latency). Retry only for transient
+      // network errors, not for "still connecting" races.
       for (let i = 0; i < 4; i++) {
         try {
           const r = await fetch(`${crUrl}/connect-room`, {
             method: 'POST',
-            signal: AbortSignal.timeout(6000),
+            signal: AbortSignal.timeout(25000),
           })
           if (r.ok) {
             // Forward the roomName the agent returns (0.9.83+ temporary rooms) so

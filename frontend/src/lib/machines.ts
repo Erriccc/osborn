@@ -672,7 +672,11 @@ export async function checkOsbornHealth(previewUrl: string): Promise<boolean> {
     // image versions that don't return JSON (legacy / pre-0.8.x).
     try {
       const body = await res.json() as { status?: string; livekit?: { status?: string } }
-      if (body?.status === 'ok' && body?.livekit?.status && body.livekit.status !== 'connected') {
+      // 'idle' is the normal pre-connect state — agent is ready to receive /connect-room.
+      // Only 'failed' (LiveKit hard error) warrants a restart. Treating 'idle' as
+      // unhealthy was triggering restartService + 30s polling on every cold connect,
+      // adding 10-13s of unnecessary latency before the first room.connect() call.
+      if (body?.status === 'ok' && body?.livekit?.status === 'failed') {
         return false
       }
     } catch {

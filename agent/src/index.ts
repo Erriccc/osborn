@@ -6545,89 +6545,100 @@ async function main() {
   // attempts fail we surface status='failed' and rethrow so the caller sees it.
   // A single transient blip is absorbed; a persistent failure (quota/auth) is
   // reported promptly rather than hanging the connect flow.
-  let creatingRoomSession = false
+  // Tracks an in-flight createRoomSession so concurrent /connect-room calls
+  // await the same underlying room.connect() rather than racing or triggering a
+  // double-connect cycle (which previously doubled cold-path latency when the
+  // sandbox route's 6s timeout fired before room.connect() finished).
+  let createRoomSessionInflight: Promise<void> | null = null
   const createRoomSession = async (targetRoomName: string): Promise<void> => {
-    if (creatingRoomSession) {
-      console.log('⏳ createRoomSession already in progress — skipping duplicate')
-      return
+    if (createRoomSessionInflight) {
+      console.log('⏳ createRoomSession already in progress — awaiting in-flight connect (idempotent)')
+      return createRoomSessionInflight
     }
-    creatingRoomSession = true
-    try {
-      // Discard any prior (dead/stale) instance without reuse.
-      if (activeRoom) {
-        console.warn('⚠️ createRoomSession called with an existing activeRoom — discarding it (no reuse)')
-        activeRoom = null
-      }
-      const room = new Room()
-      room.setMaxListeners(50)  // Prevent MaxListenersExceeded warnings
-      wireRoomHandlers(room)
+    const run = async () => {
+      try {
+        // Discard any prior (dead/stale) instance without reuse.
+        if (activeRoom) {
+          console.warn('⚠️ createRoomSession called with an existing activeRoom — discarding it (no reuse)')
+          activeRoom = null
+        }
+        const room = new Room()
+        room.setMaxListeners(50)  // Prevent MaxListenersExceeded warnings
+        wireRoomHandlers(room)
 
-      const backoffSchedule = [5_000, 10_000, 20_000]
-      let lastErr: unknown = null
-      for (let attempt = 0; attempt < 3; attempt++) {
-        livekitState.status = livekitState.attemptCount === 0 ? 'connecting' : 'retrying'
-        livekitState.lastAttemptAt = Date.now()
-        livekitState.attemptCount += 1
-        try {
-          const jwt = await mintAgentToken(targetRoomName)
-          await room.connect(livekitUrl, jwt, {
-            autoSubscribe: true,
-            dynacast: true,
-          })
-          // Success — adopt this instance as the active room.
-          activeRoom = room
-          activeRoomName = targetRoomName
-          currentRoomCode = targetRoomName  // legacy /room-code returns last-created NAME
-          localParticipant = room.localParticipant
-          livekitState.status = 'connected'
-          livekitState.error = null
-          livekitState.errorCode = null
-          console.log('✅ Connected to room:', targetRoomName)
+        const backoffSchedule = [5_000, 10_000, 20_000]
+        let lastErr: unknown = null
+        for (let attempt = 0; attempt < 3; attempt++) {
+          livekitState.status = livekitState.attemptCount === 0 ? 'connecting' : 'retrying'
+          livekitState.lastAttemptAt = Date.now()
+          livekitState.attemptCount += 1
+          try {
+            const t0 = Date.now()
+            const jwt = await mintAgentToken(targetRoomName)
+            const t1 = Date.now()
+            await room.connect(livekitUrl, jwt, {
+              autoSubscribe: true,
+              dynacast: true,
+            })
+            const t2 = Date.now()
+            console.log(`⏱️ [room-connect] mintToken=${t1-t0}ms connect=${t2-t1}ms total=${t2-t0}ms`)
+            // Success — adopt this instance as the active room.
+            activeRoom = room
+            activeRoomName = targetRoomName
+            currentRoomCode = targetRoomName  // legacy /room-code returns last-created NAME
+            localParticipant = room.localParticipant
+            livekitState.status = 'connected'
+            livekitState.error = null
+            livekitState.errorCode = null
+            console.log('✅ Connected to room:', targetRoomName)
 
-          // Post-connect setup (re-homed from the dead RoomEvent.Connected handler).
-          postConnectSetup(room, targetRoomName)
+            // Post-connect setup (re-homed from the dead RoomEvent.Connected handler).
+            postConnectSetup(room, targetRoomName)
 
-          // Adopt-sweep: ParticipantConnected only fires for participants who join
-          // AFTER us. Anyone already in the room at connect time is populated by
-          // rtc-node from the connect callback (no event) — invoke the handler
-          // directly so their voice session is created. Runs exactly once per
-          // connect (replaces the old adopt-poll + connectRoomHook adopt loop).
-          for (const p of room.remoteParticipants.values()) {
-            console.log(`👥 Participant already in room at join: ${p.identity} — adopting (invoking handler directly)`)
-            participantConnectedHandler?.(p).catch((e) => console.error('👥 adopt handler error:', e instanceof Error ? e.message : e))
-          }
-          console.log('\n⏳ Waiting for user to connect...')
-          console.log(`   Room: ${targetRoomName}\n`)
-          return
-        } catch (err) {
-          lastErr = err
-          const msg = err instanceof Error ? err.message : String(err)
-          // Categorize the error so the frontend can show specific guidance.
-          let errorCode: string
-          if (/429|connection minutes limit/i.test(msg)) errorCode = 'quota_exceeded'
-          else if (/401|403|unauthorized|invalid/i.test(msg)) errorCode = 'auth'
-          else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(msg)) errorCode = 'network'
-          else errorCode = 'unknown'
-          livekitState.status = 'failed'
-          livekitState.error = msg
-          livekitState.errorCode = errorCode
-          console.error(`❌ LiveKit connect failed (${errorCode}, attempt ${attempt + 1}/3): ${msg.substring(0, 200)}`)
-          if (attempt < 2) {
-            const waitMs = backoffSchedule[attempt]
-            console.error(`   Retrying in ${waitMs / 1000}s...`)
-            await new Promise(r => setTimeout(r, waitMs))
+            // Adopt-sweep: ParticipantConnected only fires for participants who join
+            // AFTER us. Anyone already in the room at connect time is populated by
+            // rtc-node from the connect callback (no event) — invoke the handler
+            // directly so their voice session is created. Runs exactly once per
+            // connect (replaces the old adopt-poll + connectRoomHook adopt loop).
+            for (const p of room.remoteParticipants.values()) {
+              console.log(`👥 Participant already in room at join: ${p.identity} — adopting (invoking handler directly)`)
+              participantConnectedHandler?.(p).catch((e) => console.error('👥 adopt handler error:', e instanceof Error ? e.message : e))
+            }
+            console.log('\n⏳ Waiting for user to connect...')
+            console.log(`   Room: ${targetRoomName}\n`)
+            return
+          } catch (err) {
+            lastErr = err
+            const msg = err instanceof Error ? err.message : String(err)
+            // Categorize the error so the frontend can show specific guidance.
+            let errorCode: string
+            if (/429|connection minutes limit/i.test(msg)) errorCode = 'quota_exceeded'
+            else if (/401|403|unauthorized|invalid/i.test(msg)) errorCode = 'auth'
+            else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(msg)) errorCode = 'network'
+            else errorCode = 'unknown'
+            livekitState.status = 'failed'
+            livekitState.error = msg
+            livekitState.errorCode = errorCode
+            console.error(`❌ LiveKit connect failed (${errorCode}, attempt ${attempt + 1}/3): ${msg.substring(0, 200)}`)
+            if (attempt < 2) {
+              const waitMs = backoffSchedule[attempt]
+              console.error(`   Retrying in ${waitMs / 1000}s...`)
+              await new Promise(r => setTimeout(r, waitMs))
+            }
           }
         }
+        // All attempts failed. Drop the dead instance; leave status='failed' so
+        // /health surfaces it and the frontend can retry /connect-room.
+        activeRoom = null
+        activeRoomName = null
+        console.error('❌ createRoomSession: all 3 connect attempts failed — giving up (status=failed)')
+        throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+      } finally {
+        createRoomSessionInflight = null
       }
-      // All attempts failed. Drop the dead instance; leave status='failed' so
-      // /health surfaces it and the frontend can retry /connect-room.
-      activeRoom = null
-      activeRoomName = null
-      console.error('❌ createRoomSession: all 3 connect attempts failed — giving up (status=failed)')
-      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
-    } finally {
-      creatingRoomSession = false
     }
+    createRoomSessionInflight = run()
+    return createRoomSessionInflight
   }
 
   // destroyRoomSession(reason): tear down the active room session and DISCARD
@@ -6712,7 +6723,11 @@ async function main() {
     const targetRoomName = buildRoomName()
     console.log(`🔌 /connect-room — creating fresh room session: ${targetRoomName}`)
     await createRoomSession(targetRoomName)
-    return targetRoomName
+    // Return the room the agent actually joined. When a concurrent /connect-room
+    // call awaited an in-flight session, activeRoomName is the first call's room
+    // name — which differs from targetRoomName generated here. Always use the
+    // actual active name so the client mints a token for the right room.
+    return activeRoomName || targetRoomName
   }
   leaveRoomHook = async (reason: string) => {
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }

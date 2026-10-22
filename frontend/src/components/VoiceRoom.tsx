@@ -3740,6 +3740,31 @@ function VoiceRoomInner({
             return next
           })
         }
+      } else if (data.type === 'prior_messages') {
+        // Optimistic UX: prior session messages from DB pushed during connect wait.
+        // Prepend before any messages already in state (the greeting may have arrived first).
+        if (Array.isArray(data.messages) && data.messages.length > 0) {
+          console.log(`💬 prior_messages received: ${data.messages.length} messages`)
+          const priorItems: ChatMessage[] = data.messages.map((m: { role: string; content: string }, i: number) => ({
+            id: `prior-${i}-${data.sessionId ?? 'x'}`,
+            role: (m.role === 'assistant' ? 'assistant' : 'user') as ChatMessage['role'],
+            content: m.content,
+            timestamp: new Date(0),
+          }))
+          const separator: ChatMessage = {
+            id: `prior-sep-${data.sessionId ?? 'x'}`,
+            role: 'system',
+            content: '── Prior conversation ──',
+            timestamp: new Date(0),
+          }
+          setMessages(prev => {
+            // Don't double-inject: skip if we already have prior- prefixed messages
+            if (prev.some(m => m.id.startsWith('prior-'))) return prev
+            return [...priorItems, separator, ...prev]
+          })
+        }
+      } else if (data.type === 'checkpoint_captured' || data.type === 'tts_chunks') {
+        // Informational only — no UI action needed
       } else {
         console.log('❓ Unknown message type:', data.type)
       }
