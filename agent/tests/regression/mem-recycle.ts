@@ -79,4 +79,23 @@ check('R8b', /charsSeenMB/.test(llm) && /maxMsgKB/.test(llm) && /lastMsg/.test(l
   'getMemDebug surfaces msg attribution (charsSeenMB / maxMsgKB / lastMsg)')
 void tap
 
+// ── R9: checkpoints array is capped (bounded-leak fix, 0.9.264) ─────────────
+const cap = anchoredSlice(llm, 'captureCheckpoint(checkpointId: string)', { len: 900 })
+check('R9a', /#checkpoints\.length > 600/.test(cap) && /splice\(1,/.test(cap),
+  'captureCheckpoint caps the array (drop the middle, splice from index 1)')
+check('R9b', /splice\(1/.test(cap) && !/splice\(0/.test(cap),
+  'cap PRESERVES [0] — getFirstCheckpoint (rewind-to-session-start) must survive')
+
+// ── R10: per-agent pairing released at SubagentStop, both maps together ─────
+const rel = anchoredSlice(llm, 'releaseAgentTracking(agentId: string | undefined)', { len: 400 })
+check('R10a', /#toolUseByAgentId\.delete\(agentId\)/.test(rel) && /#typeByAgentId\.delete\(agentId\)/.test(rel),
+  'releaseAgentTracking deletes BOTH maps together (keeps stale-stop resolve at null — no retargeting)')
+check('R10b', !/#dispatchedFor\.delete/.test(rel),
+  'releaseAgentTracking does NOT touch #dispatchedFor (it is the SubagentStop double-fire dedup)')
+const stopHook = anchoredSlice(llm, "SubagentStop: [{", { endAnchor: 'TaskCreated: [{' })
+const relIdx = stopHook.indexOf('releaseAgentTracking')
+const chainIdx = stopHook.indexOf('markChainDispatched')
+check('R10c', relIdx > 0 && chainIdx > 0 && relIdx > chainIdx,
+  'SubagentStop hook releases tracking AFTER the verifier-chain logic has run')
+
 finish('mem-recycle')

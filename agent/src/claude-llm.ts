@@ -1503,6 +1503,14 @@ export class ClaudeLLM extends llm.LLM {
   captureCheckpoint(checkpointId: string): void {
     this.#checkpoints.push(checkpointId)
     this.#latestCheckpoint = checkpointId
+    // Bounded-leak fix (0.9.264): a checkpoint lands on EVERY user-type SDK
+    // message (tool results included) — thousands over a long session, never
+    // pruned. Rewind only ever consumes the FIRST (getFirstCheckpoint →
+    // session start) and the LATEST (#latestCheckpoint, kept separately), so
+    // retain [0] + the most recent 500 and drop the middle.
+    if (this.#checkpoints.length > 600) {
+      this.#checkpoints.splice(1, this.#checkpoints.length - 501)
+    }
     console.log(`📍 Checkpoint captured: ${checkpointId.substring(0, 8)}...`)
     this.#eventEmitter.emit('checkpoint_captured', { checkpointId })
   }
@@ -1762,6 +1770,22 @@ export class ClaudeLLM extends llm.LLM {
       const toolUse = idx >= 0 ? q.splice(idx, 1)[0] : q.shift()
       if (toolUse) this.#toolUseByAgentId.set(agentId, toolUse)
     }
+  }
+
+  /**
+   * Bounded-leak fix (0.9.264): drop a finished agent's pairing entries at
+   * SubagentStop. BOTH maps must go together — #resolveTaskId deliberately
+   * returns null when a pairing exists for an ended task (so a stale stop-click
+   * can never retarget a DIFFERENT live agent of the same type); with both
+   * entries deleted the resolve is null just the same, so behavior is unchanged
+   * while the maps stay bounded (they previously grew one entry per sub-agent
+   * for the life of the session, 200+ in heavy use). #dispatchedFor is NOT
+   * cleared here: it IS the double-fire dedup for the SubagentStop hook itself.
+   */
+  releaseAgentTracking(agentId: string | undefined): void {
+    if (!agentId) return
+    this.#toolUseByAgentId.delete(agentId)
+    this.#typeByAgentId.delete(agentId)
   }
 
   /** Background consumer feed: track SDK task lifecycle messages. */
@@ -2945,6 +2969,9 @@ class ClaudeLLMStream extends llm.LLMStream {
                   console.warn('Pattern#1 chain push failed:', e)
                 }
               }
+              // Bounded-leak fix (0.9.264): the agent is done — release its
+              // pairing entries (after the chain logic above has run).
+              if (input?.agent_id) this.#llmRef.releaseAgentTracking(input.agent_id)
               return {}
             }]
           }],
