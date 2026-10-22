@@ -603,6 +603,45 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    if (req.method === 'GET' && url.pathname === '/session-messages') {
+      // Prior-conversation hydration for the chat page. The browser calls this at
+      // MOUNT, in parallel with the LiveKit connect, so the resumed transcript
+      // paints before the voice handshake finishes. Reads the per-session recall
+      // store directly (readonly, no JSONL replay) — same source as the
+      // data-channel prior_messages push, which remains the fallback for older
+      // frontends. Rows carry real timestamps so the UI can date-stamp them.
+      try {
+        const sessionId = url.searchParams.get('session') || ''
+        const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
+        if (!sessionId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'session required' }))
+          return
+        }
+        const dbPath = storeExists(sessionId, workingDir)
+        if (!dbPath) {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ sessionId, messages: [] }))
+          return
+        }
+        const db = openStore(dbPath, { readonly: true })
+        try {
+          const rows = recentRows(db, limit, ['user', 'assistant'])
+          const messages = rows
+            .reverse() // newest-first → chronological
+            .map(r => ({ role: r.msgType === 'assistant' ? 'assistant' : 'user', content: (r.text || '').slice(0, 1200), ts: r.ts || null }))
+            .filter(m => m.content.trim().length > 0)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ sessionId, messages }))
+        } finally { try { db.close() } catch {} }
+      } catch (err) {
+        console.error('API /session-messages error:', err)
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'failed to read session messages' }))
+      }
+      return
+    }
+
     if (req.method === 'GET' && url.pathname === '/canvas-token') {
       // Listen-only LiveKit credentials for the meeting canvas (see hook doc).
       const out = canvasTokenHook ? await canvasTokenHook() : null
@@ -5322,7 +5361,7 @@ async function main() {
                     const rows = recentRows(db, 20, ['user', 'assistant'])  // newest-first
                     const priorMessages = rows
                       .reverse()  // → chronological
-                      .map(r => ({ role: r.msgType === 'assistant' ? 'assistant' : 'user', content: (r.text || '').slice(0, 800) }))
+                      .map(r => ({ role: r.msgType === 'assistant' ? 'assistant' : 'user', content: (r.text || '').slice(0, 800), ts: r.ts || null }))
                       .filter(m => m.content.trim().length > 0)
                     if (priorMessages.length > 0) {
                       await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages })

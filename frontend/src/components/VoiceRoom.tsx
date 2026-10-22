@@ -439,6 +439,19 @@ const MessageBubble = React.memo(function MessageBubble({
     return message.parts || [{ type: 'text' as const, content: message.content }]
   }, [message])
 
+  // Date / prior-conversation dividers — centered hairline label (Slack-style),
+  // not a notice box. Emitted by buildPriorItems as system rows starting with ──.
+  if (isSystem && /^──/.test(message.content)) {
+    const label = message.content.replace(/─/g, '').trim()
+    return (
+      <div className="flex items-center gap-3 w-full py-1.5 select-none">
+        <div className="flex-1 h-px bg-gray-800/70" />
+        <span className="text-[11px] text-gray-500 font-medium">{label}</span>
+        <div className="flex-1 h-px bg-gray-800/70" />
+      </div>
+    )
+  }
+
   return (
     <div className="flex min-w-0 w-full justify-start group rounded-md px-2 py-1 -mx-2 hover:bg-white/[0.02] transition-colors" data-message-id={message.messageId ?? undefined}>{/* Slack model: every message is a left-aligned row; sender identity comes from the avatar + name line, not bubble position */}
       {/* Avatar — flat rounded square, hidden on mobile to save space */}
@@ -469,9 +482,11 @@ const MessageBubble = React.memo(function MessageBubble({
         {!isSystem && message.toolName !== 'fast-brain' && (
           <div className="flex items-baseline gap-2">
             <span className={`text-[13px] font-bold ${isUser ? 'text-sky-300' : 'text-amber-300'}`}>{isUser ? 'You' : 'Osborn'}</span>
-            <span className="text-[10px] text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity select-none">
-              {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </span>
+            {message.timestamp.getTime() > 0 && (
+              <span className="text-[10px] text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity select-none">
+                {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
           </div>
         )}
 
@@ -615,6 +630,36 @@ const MessageBubble = React.memo(function MessageBubble({
     </div>
   )
 })
+
+// Build the prior-conversation block for a resumed session: real timestamps plus
+// Slack-style date dividers wherever the calendar day changes. Shared by the HTTP
+// hydration path (mount-time fetch) and the data-channel prior_messages fallback —
+// both emit `prior-` prefixed ids so whichever lands second is deduped.
+function buildPriorItems(
+  sessionId: string,
+  msgs: Array<{ role: string; content: string; ts?: string | number | null }>,
+): ChatMessage[] {
+  const items: ChatMessage[] = []
+  let lastDay = ''
+  msgs.forEach((m, i) => {
+    const t = m.ts ? new Date(m.ts) : new Date(0)
+    const day = t.getTime() > 0 ? t.toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''
+    if (day && day !== lastDay) {
+      lastDay = day
+      items.push({ id: `prior-day-${day}-${sessionId}`, role: 'system', content: `── ${day} ──`, timestamp: t })
+    }
+    items.push({
+      id: `prior-${i}-${sessionId}`,
+      role: (m.role === 'assistant' ? 'assistant' : 'user') as ChatMessage['role'],
+      content: m.content,
+      timestamp: t,
+    })
+  })
+  if (items.length > 0) {
+    items.push({ id: `prior-sep-${sessionId}`, role: 'system', content: '── Today ──', timestamp: new Date() })
+  }
+  return items
+}
 
 // Suggestion prompts (AI SDK style)
 const SUGGESTIONS = [
@@ -2400,6 +2445,31 @@ function VoiceRoomInner({
     const id = setInterval(poll, 15_000)
     return () => { cancelled = true; clearInterval(id) }
   }, [agentUrl])
+  // PRIOR-CONVERSATION HYDRATION — fetch the resumed session's recent messages
+  // over plain HTTP at MOUNT, in parallel with the LiveKit connect, so the
+  // transcript paints immediately instead of after the voice handshake. The
+  // agent's data-channel prior_messages push stays as the fallback for older
+  // agent builds; the `prior-` id guard dedupes whichever lands second.
+  useEffect(() => {
+    if (!agentUrl || !preSelectedSessionId) return
+    const base = agentUrl.replace(/\/$/, '')
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await fetch(
+          `${base}/session-messages?session=${encodeURIComponent(preSelectedSessionId)}&limit=50`,
+          { signal: AbortSignal.timeout(8000) },
+        )
+        if (cancelled || !r.ok) return
+        const d = await r.json()
+        if (cancelled || !Array.isArray(d?.messages) || d.messages.length === 0) return
+        console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length}`)
+        const priorItems = buildPriorItems(preSelectedSessionId, d.messages)
+        setMessages(prev => (prev.some(m => m.id.startsWith('prior-')) ? prev : [...priorItems, ...prev]))
+      } catch { /* older agent build or network — the data-channel push covers it */ }
+    })()
+    return () => { cancelled = true }
+  }, [agentUrl, preSelectedSessionId])
   const [meetingError, setMeetingError] = useState<string | null>(null)
   // IDE (code-server) state
   const [ideStatus, setIdeStatus] = useState<'idle' | 'starting' | 'ready' | 'error'>('idle')
@@ -3746,26 +3816,17 @@ function VoiceRoomInner({
           })
         }
       } else if (data.type === 'prior_messages') {
-        // Optimistic UX: prior session messages from DB pushed during connect wait.
-        // Prepend before any messages already in state (the greeting may have arrived first).
+        // Fallback path: prior session messages pushed by the agent over the data
+        // channel after connect. The PRIMARY path is the mount-time HTTP fetch of
+        // /session-messages (parallel with the LiveKit handshake); the prior- id
+        // guard dedupes whichever arrives second.
         if (Array.isArray(data.messages) && data.messages.length > 0) {
           console.log(`💬 prior_messages received: ${data.messages.length} messages`)
-          const priorItems: ChatMessage[] = data.messages.map((m: { role: string; content: string }, i: number) => ({
-            id: `prior-${i}-${data.sessionId ?? 'x'}`,
-            role: (m.role === 'assistant' ? 'assistant' : 'user') as ChatMessage['role'],
-            content: m.content,
-            timestamp: new Date(0),
-          }))
-          const separator: ChatMessage = {
-            id: `prior-sep-${data.sessionId ?? 'x'}`,
-            role: 'system',
-            content: '── Prior conversation ──',
-            timestamp: new Date(0),
-          }
+          const priorItems = buildPriorItems(data.sessionId ?? 'x', data.messages)
           setMessages(prev => {
             // Don't double-inject: skip if we already have prior- prefixed messages
             if (prev.some(m => m.id.startsWith('prior-'))) return prev
-            return [...priorItems, separator, ...prev]
+            return [...priorItems, ...prev]
           })
         }
       } else if (data.type === 'checkpoint_captured' || data.type === 'tts_chunks') {
