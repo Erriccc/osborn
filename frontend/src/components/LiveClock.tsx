@@ -31,7 +31,7 @@ export default function LiveClock({ showDate = false }: { showDate?: boolean }) 
 
   return (
     <div
-      className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800/40 border border-gray-700/30 select-none shrink-0"
+      className="flex items-center gap-1.5 px-1.5 py-1 rounded-md select-none shrink-0"
       title={now.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
     >
       <span className="relative flex h-1.5 w-1.5">

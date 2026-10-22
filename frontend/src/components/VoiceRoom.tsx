@@ -440,12 +440,14 @@ const MessageBubble = React.memo(function MessageBubble({
   }, [message])
 
   return (
-    <div className={`flex min-w-0 w-full ${isUser ? 'justify-end' : 'justify-start'} group`} data-message-id={message.messageId ?? undefined}>
-      {/* Avatar for assistant — hidden on mobile to save space */}
-      {!isUser && !isSystem && (
-        <div className="hidden sm:flex w-8 h-8 rounded-full bg-gradient-to-br from-amber-500 to-amber-600 items-center justify-center mr-2 mt-1 shrink-0 shadow-lg">
-          {message.toolName === 'fast-brain' ? (
-            <span className="text-sm">&#9889;</span>
+    <div className="flex min-w-0 w-full justify-start group rounded-md px-2 py-1 -mx-2 hover:bg-white/[0.02] transition-colors" data-message-id={message.messageId ?? undefined}>{/* Slack model: every message is a left-aligned row; sender identity comes from the avatar + name line, not bubble position */}
+      {/* Avatar — flat rounded square, hidden on mobile to save space */}
+      {!isSystem && message.toolName !== 'fast-brain' && (
+        <div className={`hidden sm:flex w-7 h-7 rounded-md items-center justify-center mr-2.5 mt-0.5 shrink-0 ${isUser ? 'bg-gray-700' : 'bg-amber-600'}`}>
+          {isUser ? (
+            <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
           ) : (
             <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -455,16 +457,24 @@ const MessageBubble = React.memo(function MessageBubble({
       )}
 
       <div
-        className={`max-w-[92%] sm:max-w-[80%] transition-all ${
-          isUser
-            ? 'bg-gray-800/70 text-gray-100 rounded-lg px-3 py-1.5'
-            : isSystem
-            ? 'bg-amber-500/10 text-amber-200/90 border border-amber-500/20 rounded-xl px-3.5 py-2'
+        className={`max-w-[92%] sm:max-w-[85%] transition-all ${
+          isSystem
+            ? 'bg-amber-500/10 text-amber-200/90 border border-amber-500/20 rounded-lg px-3 py-1.5'
             : message.toolName === 'fast-brain'
-            ? 'text-gray-300/90 border-l-2 border-amber-500/40 pl-3 pr-1 py-1'
-            : 'text-gray-100 px-0.5 py-1'
+            ? 'border-l-2 border-amber-500/30 pl-3 pr-1 py-0.5 opacity-70 [&_p]:!my-0.5 [&_p]:!text-xs [&_p]:!leading-snug [&_p]:!text-gray-400 [&_p]:!font-mono'
+            : 'text-gray-100 px-0.5 py-0.5'
         } ${message.isStreaming ? 'opacity-95' : ''}`}
       >
+        {/* Sender line — Slack-style bold name + hover-reveal time */}
+        {!isSystem && message.toolName !== 'fast-brain' && (
+          <div className="flex items-baseline gap-2">
+            <span className={`text-[13px] font-bold ${isUser ? 'text-sky-300' : 'text-amber-300'}`}>{isUser ? 'You' : 'Osborn'}</span>
+            <span className="text-[10px] text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity select-none">
+              {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          </div>
+        )}
+
         {/* Tool name badge — skip for fast-brain (has its own label in content) */}
         {message.toolName && message.toolName !== 'fast-brain' && (
           <ToolCallBlock
@@ -531,15 +541,10 @@ const MessageBubble = React.memo(function MessageBubble({
           <MessageContent content={isUser ? (userText as string) : message.content} />
         )}
 
-        {/* Timestamp — hover-reveal (Slack-style) so the transcript reads as a clean column */}
-        <div className="flex items-center gap-2 mt-1">
-          <p className="text-[10px] opacity-0 group-hover:opacity-40 transition-opacity select-none">
-            {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </p>
-          {message.isStreaming && (
-            <span className="text-[10px] text-amber-400">streaming</span>
-          )}
-        </div>
+        {/* Time moved into the sender line (Slack model); keep only the live streaming badge */}
+        {message.isStreaming && (
+          <span className="text-[10px] text-amber-400">streaming</span>
+        )}
 
         {/* Action buttons */}
         {!isSystem && !message.isStreaming && (
@@ -746,7 +751,7 @@ function ChatPanel({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-3 space-y-2 sm:space-y-2.5 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+        className="h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-3 space-y-1 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
       >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
@@ -1040,7 +1045,7 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, 
             ? 'bg-gray-800/30 text-gray-600 border-transparent cursor-not-allowed'
             : open
               ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
-              : 'bg-gradient-to-b from-gray-800/70 to-gray-800/40 text-gray-300 border-gray-700/40 hover:text-amber-300 hover:border-amber-500/30'
+              : 'border-transparent text-gray-400 hover:text-amber-300 hover:bg-gray-800/60'
         }`}
       >
         {/* Users/agents icon */}
@@ -1300,7 +1305,7 @@ function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean }) {
             ? 'bg-gray-800/30 text-gray-600 border-transparent cursor-not-allowed'
             : open
               ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
-              : 'bg-gradient-to-b from-gray-800/70 to-gray-800/40 text-gray-300 border-gray-700/40 hover:text-amber-300 hover:border-amber-500/30'
+              : 'border-transparent text-gray-400 hover:text-amber-300 hover:bg-gray-800/60'
         }`}
       >
         {/* Sparkles icon */}
@@ -4762,7 +4767,7 @@ function VoiceRoomInner({
       )}
 
       <div className="w-full h-full flex gap-3">
-      <div className="flex-1 min-w-0 flex flex-col bg-gradient-to-b from-gray-900 to-gray-950 sm:rounded-2xl overflow-hidden border-0 sm:border border-gray-800/50 shadow-2xl">
+      <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Header - Streamlined */}
         <div className="relative z-30 px-1.5 sm:px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
           <div className="flex flex-wrap items-center gap-1 sm:gap-3">
@@ -4905,7 +4910,7 @@ function VoiceRoomInner({
                         ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
                         : showMeetingInput
                           ? 'bg-amber-500/20 text-amber-400'
-                          : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                          : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                     }`}
                     title={meetingError || 'Join a meeting'}
                   >
@@ -4972,7 +4977,7 @@ function VoiceRoomInner({
                         ? 'bg-amber-500/20 text-amber-400'
                         : slots.length > 1 || spawnPending
                           ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
-                          : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                          : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                   }`}
                   title="Claude instances"
                 >
@@ -5008,7 +5013,7 @@ function VoiceRoomInner({
                 className={`hidden sm:block relative p-2 rounded-lg transition-all ${
                   isFilesModalOpen
                     ? 'bg-amber-500/20 text-amber-400'
-                    : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                    : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                 }`}
                 title="Toggle files explorer"
               >
@@ -5033,7 +5038,7 @@ function VoiceRoomInner({
                 className={`hidden sm:block p-2 rounded-lg transition-all ${
                   autoApprovePermissions
                     ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 ring-1 ring-amber-500/50'
-                    : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                    : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                 }`}
                 title={autoApprovePermissions
                   ? 'Auto-approve ON — all tool permissions accepted instantly. Click to turn off.'
@@ -5061,7 +5066,7 @@ function VoiceRoomInner({
                     ? 'bg-green-500/20 text-green-400'
                     : messages.length === 0
                       ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
-                      : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                      : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                 }`}
                 title={copyFeedback ? 'Copied!' : 'Copy all messages'}
               >
@@ -5084,7 +5089,7 @@ function VoiceRoomInner({
                 className={`hidden sm:flex items-center gap-1 p-2 rounded-lg transition-all ${
                   noiseCancelOn
                     ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
-                    : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                    : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                 }`}
                 title={noiseCancelOn
                   ? `Noise cancellation ON — filtering side conversations${gateDropped.length ? ` (${gateDropped.length} filtered)` : ''}. Click to turn off.`
@@ -5118,7 +5123,7 @@ function VoiceRoomInner({
                 className={`hidden sm:block p-2 rounded-lg transition-all ${
                   isMuted
                     ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                    : 'bg-gray-800/50 text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
+                    : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                 }`}
                 title={isMuted ? 'Unmute' : 'Mute'}
               >
@@ -5300,7 +5305,7 @@ function VoiceRoomInner({
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
               autoApprovePermissions
                 ? 'bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/40'
-                : 'bg-gray-800/60 text-gray-400 hover:bg-gray-700/60'
+                : 'text-gray-500 hover:bg-gray-800/60'
             }`}
             title={autoApprovePermissions ? 'Auto-approve ON' : 'Auto-approve OFF'}
           >
@@ -5339,7 +5344,7 @@ function VoiceRoomInner({
             className={`ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
               noiseCancelOn
                 ? 'bg-amber-500/20 text-amber-300'
-                : 'bg-gray-800/60 text-gray-400 hover:bg-gray-700/60'
+                : 'text-gray-500 hover:bg-gray-800/60'
             }`}
             title={noiseCancelOn
               ? `Noise cancellation ON — filtering side conversations${gateDropped.length ? ` (${gateDropped.length} filtered — latest: "${gateDropped[gateDropped.length - 1].text.slice(0, 80)}")` : ''}. Click to turn off.`
@@ -5373,7 +5378,7 @@ function VoiceRoomInner({
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
               isMuted
                 ? 'bg-red-500/20 text-red-400'
-                : 'bg-gray-800/60 text-gray-300 hover:bg-gray-700/60'
+                : 'text-gray-400 hover:bg-gray-800/60'
             }`}
             title={isMuted ? 'Unmute mic' : 'Mute mic'}
           >
@@ -5410,7 +5415,7 @@ function VoiceRoomInner({
 
       {/* Inline files preview panel — hidden on mobile */}
       {showFilesPanel && (
-        <div className="hidden sm:flex w-[28rem] shrink-0 flex-col bg-gray-900 rounded-2xl overflow-hidden border border-gray-800/50 shadow-2xl">
+        <div className="hidden sm:flex w-[28rem] shrink-0 flex-col bg-gray-900 rounded-xl overflow-hidden border border-gray-800/50">
           {/* Panel header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700/50">
             <div className="flex items-center gap-2">
