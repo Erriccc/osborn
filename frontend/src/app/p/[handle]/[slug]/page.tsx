@@ -17,10 +17,11 @@ import remarkGfm from 'remark-gfm'
 import { createSupabaseAnon, SITE_URL, type PublicContent } from '@/lib/supabase-anon'
 import TalkAboutItButton from '@/components/TalkAboutItButton'
 
-export const revalidate = 3600
-// Generate pages for slugs published AFTER the last build on first request
-// (ISR), so a newly-published item resolves without needing a redeploy.
-export const dynamicParams = true
+// Render at REQUEST time against the live DB — never prebuild. This page
+// toggles published/unpublished and re-titles (new slug) via the studio, so
+// static generation baked a stale "Not Found" at build time (seen in prod:
+// 10-byte text/plain 404 that Safari downloaded). Correctness over CDN cache.
+export const dynamic = 'force-dynamic'
 
 interface PageParams {
   params: { handle: string; slug: string }
@@ -53,18 +54,6 @@ function fmtDate(iso: string | null): string {
   } catch {
     return iso.slice(0, 10)
   }
-}
-
-export async function generateStaticParams(): Promise<Array<{ handle: string; slug: string }>> {
-  const supabase = createSupabaseAnon()
-  if (!supabase) return []
-  const { data, error } = await supabase
-    .from('public_content')
-    .select('handle, slug')
-  if (error || !data) return []
-  return data
-    .filter((r): r is { handle: string; slug: string } => !!r.handle && !!r.slug)
-    .map(r => ({ handle: r.handle, slug: r.slug }))
 }
 
 export async function generateMetadata({ params }: PageParams): Promise<Metadata> {
@@ -133,8 +122,8 @@ export default async function PublicArticlePage({ params }: PageParams) {
             </span>
             <span className="font-display font-semibold text-[15px] text-[var(--text-primary)] tracking-tight">Voice Native</span>
           </Link>
-          <Link href="/login" className="text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors">
-            Made with Voice Native · <span className="text-[var(--accent)]">Start your own →</span>
+          <Link href="/login" className="text-[12.5px] text-[var(--accent)] hover:opacity-80 transition-opacity whitespace-nowrap">
+            Start your own →
           </Link>
         </div>
       </header>

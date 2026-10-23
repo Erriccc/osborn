@@ -9,8 +9,7 @@ import Link from 'next/link'
 import type { Metadata } from 'next'
 import { createSupabaseAnon, SITE_URL, type PublicContent } from '@/lib/supabase-anon'
 
-export const revalidate = 3600
-export const dynamicParams = true
+export const dynamic = 'force-dynamic'
 
 interface PageParams {
   params: { handle: string }
