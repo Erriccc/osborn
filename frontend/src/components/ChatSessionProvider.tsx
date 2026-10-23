@@ -48,6 +48,10 @@ interface ChatSessionContextValue {
   voiceArch: string
   codingAgent: string
   preSelectedSessionId: string | null
+  // Optional seed prompt (URL ?prompt=) auto-sent once when a FRESH session
+  // connects — powers "Talk about it" from a public page without any new API:
+  // same /chat route + the existing send path, just pre-filled.
+  seedPrompt: string | null
 
   // ── Actions consumed by the page + inner UI ─
   reconnect: () => Promise<void>
@@ -90,6 +94,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // token API so the agent boots with the matching directory and the session lookup
   // path resolves correctly. Empty when starting a fresh conversation.
   const workingDirectory = params.get('workingDirectory') || ''
+  // Seed prompt for "Talk about it" / shared-content flows. Capped so the URL
+  // stays well under browser limits — a concise starter, not the whole doc.
+  const seedPrompt = (params.get('prompt') || '').slice(0, 1200) || null
 
   const initialAgentUrl =
     typeof window !== 'undefined'
@@ -598,6 +605,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     voiceArch,
     codingAgent,
     preSelectedSessionId,
+    seedPrompt,
     reconnect: connect,
     disconnect,
     markAgentReady,

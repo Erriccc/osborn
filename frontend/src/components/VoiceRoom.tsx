@@ -2187,6 +2187,7 @@ function VoiceRoomInner({
   waitingMode,
   preSelectedSessionId,
   agentUrl,
+  seedPrompt,
 }: {
   onDisconnect?: () => void
   onAgentReady?: () => void
@@ -2195,6 +2196,7 @@ function VoiceRoomInner({
   waitingMode?: boolean
   preSelectedSessionId?: string | null
   agentUrl?: string
+  seedPrompt?: string | null
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
@@ -4169,6 +4171,19 @@ function VoiceRoomInner({
     handleSendText(`[favorited] The user favorited the file ${fileName}.`)
   }, [handleSendText])
 
+  // SEED PROMPT — auto-send a ?prompt= starter ONCE on a FRESH session (no
+  // preSelectedSessionId) as soon as the agent is connected. This is the whole
+  // "Talk about it" / seeded-chat mechanism: no new API, no new route — the
+  // same /chat flow + the existing send path, just pre-filled.
+  const seedSentRef = useRef(false)
+  useEffect(() => {
+    if (seedSentRef.current) return
+    if (!seedPrompt || preSelectedSessionId) return
+    if (!agentConnected) return
+    seedSentRef.current = true
+    handleSendText(seedPrompt)
+  }, [agentConnected, seedPrompt, preSelectedSessionId, handleSendText])
+
   // Wraps toggleFavorite so that starring a file (toggling ON) also sends a
   // note to the agent over the user-input data channel. Un-favoriting is silent.
   const handleToggleFavoriteWithNote = useCallback(async (file: GeneratedFile) => {
@@ -5773,7 +5788,7 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl } =
+  const { disconnect, markAgentReady, markAuthRequired, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl, seedPrompt } =
     useChatSession()
 
   if (idleStopped) {
@@ -5809,6 +5824,7 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       waitingMode={waitingMode}
       preSelectedSessionId={preSelectedSessionId}
       agentUrl={agentUrl}
+      seedPrompt={seedPrompt}
     />
   )
 }
