@@ -2,7 +2,7 @@ const CARDS = [
   {
     title: 'Code stays on your machine',
     body:
-      'Osborn runs the agent on your cloud box or local machine. Your source code is read, written, and executed where it already lives — it is never uploaded to or stored on our servers.',
+      'Voice Native runs the agent on your cloud box or local machine. Your source code is read, written, and executed where it already lives — it is never uploaded to or stored on our servers.',
   },
   {
     title: 'Keys encrypted, never shown back',
@@ -17,7 +17,7 @@ const CARDS = [
   {
     title: 'No lock-in',
     body:
-      'Run Osborn on infrastructure you own — self-hosted or your own cloud. No lock-in at the model, compute, or data layer.',
+      'Run Voice Native on infrastructure you own — self-hosted or your own cloud. No lock-in at the model, compute, or data layer.',
   },
 ]
 

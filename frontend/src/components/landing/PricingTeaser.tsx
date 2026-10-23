@@ -26,7 +26,7 @@ export default function PricingTeaser() {
               Bring your own keys
             </p>
             <p className="mt-3 text-[var(--text-secondary)] text-[15px] leading-[1.6]">
-              Run Osborn on your own machine with your own model keys. You pay the model
+              Run Voice Native on your own machine with your own model keys. You pay the model
               providers directly — nothing in between.
             </p>
             <ul className="mt-6 flex flex-col gap-2.5 font-mono text-[13px] text-[var(--text-secondary)]">
@@ -84,7 +84,7 @@ export default function PricingTeaser() {
               ))}
             </ul>
             <a
-              href="mailto:hello@voice-native.com?subject=Osborn%20for%20teams"
+              href="mailto:hello@voice-native.com?subject=Voice Native%20for%20teams"
               className="mt-8 h-12 inline-flex items-center justify-center rounded-xl text-[15px] font-medium text-[var(--text-primary)] border border-[var(--border)] hover:bg-[var(--surface)] transition-colors"
             >
               Talk to us

@@ -11,7 +11,7 @@
  * status filter + search, a responsive card grid, and a reading modal.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
@@ -29,9 +29,21 @@ interface ContentItem {
   published_at: string | null
   created_at: string
   updated_at: string
+  parent_source_id?: string | null
 }
 
 type StatusFilter = 'all' | 'published' | 'draft'
+
+// Refine studio — platform/format targets. Values match the `type` column
+// accepted by content_create_rendition (migration 009).
+const PLATFORMS = [
+  { id: 'blog', label: 'Blog' },
+  { id: 'x_thread', label: 'X thread' },
+  { id: 'linkedin', label: 'LinkedIn' },
+  { id: 'short', label: 'Short' },
+  { id: 'newsletter', label: 'Newsletter' },
+] as const
+type PlatformId = (typeof PLATFORMS)[number]['id']
 
 function fmtDate(iso: string | null): string {
   if (!iso) return ''
@@ -65,6 +77,113 @@ export default function LibraryPage() {
   const [handle, setHandle] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
   const [copied, setCopied] = useState(false)
+
+  // --- Refine studio state (scoped to the open reading modal's source) ------
+  const [tab, setTab] = useState<'source' | 'refine'>('source')
+  const [platform, setPlatform] = useState<PlatformId>('blog')
+  const [generating, setGenerating] = useState(false)
+  const [refineErr, setRefineErr] = useState<string | null>(null)
+  const [instruction, setInstruction] = useState('')
+  const [renditions, setRenditions] = useState<ContentItem[]>([])
+  // The rendition currently shown in the editable draft area (create/iterate).
+  const [draft, setDraft] = useState<ContentItem | null>(null)
+  const [rendPublishingId, setRendPublishingId] = useState<string | null>(null)
+
+  // Load the open source's existing renditions.
+  const loadRenditions = useCallback(async (sourceId: string) => {
+    try {
+      const res = await fetch(`/api/content/renditions?sourceId=${encodeURIComponent(sourceId)}`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Failed to load renditions')
+      setRenditions((json.renditions ?? []) as ContentItem[])
+    } catch (e) {
+      setRefineErr(e instanceof Error ? e.message : 'Failed to load renditions')
+    }
+  }, [])
+
+  // When the reading modal opens (or switches item), reset the studio.
+  useEffect(() => {
+    if (!reading) return
+    setTab('source')
+    setPlatform('blog')
+    setRefineErr(null)
+    setInstruction('')
+    setDraft(null)
+    setRenditions([])
+    // A rendition can itself be opened in the modal; refine against its source.
+    const sourceId = reading.parent_source_id ?? reading.id
+    void loadRenditions(sourceId)
+  }, [reading, loadRenditions])
+
+  // Generate a fresh rendition, or iterate on the current draft in place.
+  async function runRefine(opts: { iterate: boolean }) {
+    if (!reading || generating) return
+    const sourceId = reading.parent_source_id ?? reading.id
+    setGenerating(true)
+    setRefineErr(null)
+    try {
+      const res = await fetch('/api/content/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceItemId: sourceId,
+          platform: opts.iterate && draft ? (draft.type as PlatformId) ?? platform : platform,
+          instruction: opts.iterate ? instruction.trim() || undefined : undefined,
+          renditionId: opts.iterate && draft ? draft.id : undefined,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || json.detail || 'Refine failed')
+      const r = json.rendition as ContentItem
+      setDraft(r)
+      if (opts.iterate) setInstruction('')
+      // Refresh the rendition list (new row on create; updated row on iterate).
+      setRenditions(prev => {
+        const without = prev.filter(x => x.id !== r.id)
+        return [r, ...without]
+      })
+    } catch (e) {
+      setRefineErr(e instanceof Error ? e.message : 'Refine failed')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  // Edit the open draft's fields locally (persisted on next iterate/refine).
+  function patchDraft(field: 'title' | 'hook' | 'body', value: string) {
+    setDraft(prev => (prev ? { ...prev, [field]: value } : prev))
+  }
+
+  // Publish a rendition through the SAME /api/content/publish used for sources,
+  // so every polished version gets its own public /p URL.
+  async function publishRendition(r: ContentItem) {
+    if (rendPublishingId) return
+    setRendPublishingId(r.id)
+    setRefineErr(null)
+    try {
+      const res = await fetch('/api/content/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: r.status === 'published' ? 'unpublish' : 'publish', itemId: r.id, slug: r.slug ?? undefined }),
+      })
+      const json = await res.json()
+      if (!res.ok || !json.success) throw new Error(json.error || 'Publish failed')
+      const nextStatus = r.status === 'published' ? 'draft' : 'published'
+      const patch = (x: ContentItem): ContentItem =>
+        x.id === r.id
+          ? { ...x, status: nextStatus, slug: json.slug ?? x.slug, published_at: nextStatus === 'published' ? (json.publishedAt ?? x.published_at ?? new Date().toISOString()) : x.published_at }
+          : x
+      setRenditions(prev => prev.map(patch))
+      setDraft(prev => (prev && prev.id === r.id ? patch(prev) : prev))
+      if (json.handle) setHandle(json.handle)
+      // A rendition is a content_items row; keep the main grid in sync if it's loaded.
+      setItems(prev => prev.some(i => i.id === r.id) ? prev.map(patch) : prev)
+    } catch (e) {
+      setRefineErr(e instanceof Error ? e.message : 'Publish failed')
+    } finally {
+      setRendPublishingId(null)
+    }
+  }
 
   // Resolve the signed-in user, then load their library rows (RLS scopes to owner).
   useEffect(() => {
@@ -186,7 +305,7 @@ export default function LibraryPage() {
               <div className="w-6 h-6 rounded-full bg-[var(--accent)] flex items-center justify-center">
                 <svg className="w-3.5 h-3.5 text-[var(--background)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
               </div>
-              <span className="font-display font-semibold text-[15px] text-[var(--text-primary)] tracking-tight">Osborn</span>
+              <span className="font-display font-semibold text-[15px] text-[var(--text-primary)] tracking-tight">Voice Native</span>
             </Link>
             <span className="text-[var(--text-muted)]">/</span>
             <span className="text-[14px] text-[var(--text-secondary)]">Library</span>
@@ -334,15 +453,144 @@ export default function LibraryPage() {
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
-            <div className="overflow-y-auto px-5 py-4">
-              {reading.hook && <p className="text-[13px] text-[var(--text-secondary)] italic mb-3">{reading.hook}</p>}
-              {reading.body
-                ? <pre className="whitespace-pre-wrap break-words font-sans text-[13.5px] text-[var(--text-secondary)] leading-relaxed">{reading.body}</pre>
-                : <p className="text-[12px] text-[var(--text-muted)] italic">No body content.</p>}
+
+            {/* Tabs: read the source vs. the refine studio */}
+            <div className="shrink-0 flex items-center gap-1 px-5 pt-3">
+              {(['source', 'refine'] as const).map(t => (
+                <button key={t} onClick={() => setTab(t)}
+                  className={`px-3 py-1.5 rounded-lg text-[12.5px] font-medium capitalize transition-all ${
+                    tab === t
+                      ? 'bg-[var(--accent)] text-[var(--background)]'
+                      : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                  }`}>
+                  {t === 'source' ? 'Source' : 'Refine studio'}
+                </button>
+              ))}
             </div>
 
+            {tab === 'source' ? (
+              <div className="overflow-y-auto px-5 py-4">
+                {reading.hook && <p className="text-[13px] text-[var(--text-secondary)] italic mb-3">{reading.hook}</p>}
+                {reading.body
+                  ? <pre className="whitespace-pre-wrap break-words font-sans text-[13.5px] text-[var(--text-secondary)] leading-relaxed">{reading.body}</pre>
+                  : <p className="text-[12px] text-[var(--text-muted)] italic">No body content.</p>}
+              </div>
+            ) : (
+              <div className="overflow-y-auto px-5 py-4 flex flex-col gap-5">
+                {/* Platform chips */}
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Target format</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {PLATFORMS.map(p => (
+                      <button key={p.id} onClick={() => setPlatform(p.id)}
+                        className={`px-3 py-1.5 rounded-xl text-[12.5px] font-medium border transition-all ${
+                          platform === p.id
+                            ? 'bg-[var(--accent)] text-[var(--background)] border-[var(--accent)]'
+                            : 'bg-[var(--surface-2)] text-[var(--text-secondary)] border-[var(--border-subtle)] hover:border-[var(--accent-dim)]/50'
+                        }`}>
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-3">
+                    <button disabled={generating} onClick={() => runRefine({ iterate: false })}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2 text-[13px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
+                      {generating && !instruction ? 'Generating…' : `Generate ${PLATFORMS.find(p => p.id === platform)?.label}`}
+                    </button>
+                  </div>
+                </div>
+
+                {refineErr && (
+                  <div className="rounded-lg border border-red-400/30 bg-red-400/[0.06] px-3 py-2 text-[12px] text-red-200">{refineErr}</div>
+                )}
+
+                {/* Editable draft of the generated rendition */}
+                {draft && (
+                  <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-2)]/40 p-4 flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--accent-dim)]/25 text-[var(--accent)] capitalize">
+                        {(draft.type ?? '').replace(/_/g, ' ')} · draft
+                      </span>
+                    </div>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[11px] text-[var(--text-muted)]">Title</span>
+                      <input value={draft.title ?? ''} onChange={e => patchDraft('title', e.target.value)}
+                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]/50" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[11px] text-[var(--text-muted)]">Hook</span>
+                      <input value={draft.hook ?? ''} onChange={e => patchDraft('hook', e.target.value)}
+                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]/50" />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[11px] text-[var(--text-muted)]">Body</span>
+                      <textarea value={draft.body ?? ''} onChange={e => patchDraft('body', e.target.value)} rows={10}
+                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-secondary)] leading-relaxed font-sans resize-y focus:outline-none focus:border-[var(--accent)]/50" />
+                    </label>
+
+                    {/* Chat-to-refine */}
+                    <div className="flex flex-col gap-2">
+                      <span className="text-[11px] text-[var(--text-muted)]">Refine with an instruction</span>
+                      <div className="flex gap-2">
+                        <input value={instruction} onChange={e => setInstruction(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter' && instruction.trim()) runRefine({ iterate: true }) }}
+                          placeholder="make it punchier · target enterprise CTOs · shorten"
+                          className="flex-1 bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]/50" />
+                        <button disabled={generating || !instruction.trim()} onClick={() => runRefine({ iterate: true })}
+                          className="shrink-0 rounded-lg bg-[var(--surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)] px-3 py-2 text-[12.5px] font-medium hover:text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 disabled:opacity-50 transition-all">
+                          {generating && instruction ? 'Refining…' : 'Refine'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Existing renditions for this source */}
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-2">
+                    Renditions {renditions.length > 0 && <span className="opacity-60">({renditions.length})</span>}
+                  </p>
+                  {renditions.length === 0 ? (
+                    <p className="text-[12px] text-[var(--text-muted)] italic">No renditions yet. Pick a format and generate one.</p>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {renditions.map(r => {
+                        const url = publicUrl(r)
+                        return (
+                          <div key={r.id} className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)]/30 px-3 py-2.5 flex items-center justify-between gap-3">
+                            <button onClick={() => setDraft(r)} className="min-w-0 text-left flex-1 group">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] text-[var(--text-muted)] capitalize shrink-0">{(r.type ?? '').replace(/_/g, ' ')}</span>
+                                <span className="text-[13px] text-[var(--text-primary)] truncate group-hover:text-[var(--accent)] transition-colors">{r.title || 'Untitled'}</span>
+                              </div>
+                              {url && <code className="block text-[10.5px] text-[var(--text-muted)] truncate font-mono mt-0.5">{url}</code>}
+                            </button>
+                            <div className="shrink-0 flex items-center gap-2">
+                              {r.status === 'published' && url && (
+                                <button onClick={() => copyLink(url)} className="text-[11.5px] text-[var(--accent)] hover:underline">Copy</button>
+                              )}
+                              <button disabled={rendPublishingId === r.id} onClick={() => publishRendition(r)}
+                                className={`rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium disabled:opacity-50 transition-all ${
+                                  r.status === 'published'
+                                    ? 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                                    : 'bg-[var(--accent)] text-[var(--background)] hover:opacity-90'
+                                }`}>
+                                {rendPublishingId === r.id ? 'Working…' : r.status === 'published' ? 'Make private' : 'Publish'}
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Publish control — the only way to make an item public is this POST
-                to /api/content/publish (the browser RLS can't flip to published). */}
+                to /api/content/publish (the browser RLS can't flip to published).
+                Shown on the Source tab; the Refine tab publishes per-rendition. */}
+            {tab === 'source' && (
             <div className="shrink-0 border-t border-[var(--border-subtle)] px-5 py-3.5">
               {reading.status === 'published' ? (
                 <div className="flex flex-col gap-2.5">
@@ -379,6 +627,7 @@ export default function LibraryPage() {
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
       )}

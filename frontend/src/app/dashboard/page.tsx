@@ -1225,7 +1225,7 @@ export default function Dashboard() {
                   <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                 </svg>
               </div>
-              <span className="font-display text-[var(--text-primary)] font-semibold text-[16px] tracking-tight">Osborn</span>
+              <span className="font-display text-[var(--text-primary)] font-semibold text-[16px] tracking-tight">Voice Native</span>
             </Link>
 
             <div className="flex items-center gap-1.5">
@@ -1785,8 +1785,19 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ── Content ──────────────────────────────── */}
-        <div className="flex-1 max-w-3xl lg:max-w-4xl mx-auto w-full px-4 py-6">
+        {/* ── Content ──────────────────────────────────
+            Desktop (lg+): a two-region workspace — a sticky LEFT SIDEBAR nav
+            rail (projects + shared) beside a MAIN column (greeting, continue,
+            CTA, action cards). The overall grid spans ~max-w-7xl so the sides
+            aren't empty, while the main content stays readable (~max-w-3xl).
+            Mobile/tablet (<lg): the grid collapses to a single column and
+            `order-*` restores the original top-to-bottom flow
+            (greeting → continue → new conversation → projects). Same data,
+            same handlers — layout only. */}
+        <div className="flex-1 w-full max-w-3xl lg:max-w-7xl mx-auto px-4 py-6 lg:grid lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-8 lg:items-start lg:py-8">
+
+          {/* ── MAIN column (desktop) / primary stack (mobile) ── */}
+          <div className="order-1 lg:order-2 w-full lg:max-w-3xl">
 
           {/* Serif greeting — the voice's presence on the page (Claude-style) */}
           <div className="mb-4 mt-1" style={{ animation: 'fadeSlideIn .4s ease both' }}>
@@ -1823,7 +1834,7 @@ export default function Dashboard() {
             )
           })()}
 
-          {/* New chat button */}
+          {/* New chat button — primary amber CTA (both mobile + desktop) */}
           <button onClick={() => startChat()}
             className="w-full h-11 rounded-lg font-semibold text-[14px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.99] mb-5 flex items-center justify-center gap-2"
             style={{
@@ -1837,6 +1848,49 @@ export default function Dashboard() {
             </svg>
             New conversation
           </button>
+
+          {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary
+              actions visible: the amber CTA above + these two. Each is a single
+              clear action in the icon + title + description + arrow idiom.
+              Hidden on mobile so the phone flow stays the lean single column. */}
+          {agentOnline !== false && (
+            <div className="hidden lg:flex lg:flex-col gap-2.5 mb-6" style={{ animation: 'fadeSlideIn .5s ease both' }}>
+              {/* Resume a session — jumps straight into the most-recent session
+                  if one exists; otherwise falls back to a fresh conversation. */}
+              <button
+                onClick={() => {
+                  const recent = [...sessions].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
+                  if (recent) startChat(recent.sessionId, recent.cwd)
+                  else startChat()
+                }}
+                className="group w-full flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)]/40 transition-all"
+              >
+                <div className="w-9 h-9 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-[var(--text-secondary)] group-hover:text-[var(--accent)] transition-colors">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h11M9 21V3m-6 7l4-4m-4 4l4 4" /><path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-9-9" /></svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">Resume a session</div>
+                  <div className="text-[12px] text-[var(--text-muted)] truncate">{sessions.length > 0 ? 'Pick up your most recent conversation' : 'Start a fresh conversation'}</div>
+                </div>
+                <svg className="w-5 h-5 shrink-0 text-[var(--text-muted)] group-hover:text-[var(--accent)] group-hover:translate-x-0.5 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+              </button>
+
+              {/* Browse your library → /library */}
+              <Link
+                href="/library"
+                className="group w-full flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)]/40 transition-all"
+              >
+                <div className="w-9 h-9 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-[var(--text-secondary)] group-hover:text-[var(--accent)] transition-colors">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">Browse your library</div>
+                  <div className="text-[12px] text-[var(--text-muted)] truncate">Saved outputs, documents, and references</div>
+                </div>
+                <svg className="w-5 h-5 shrink-0 text-[var(--text-muted)] group-hover:text-[var(--accent)] group-hover:translate-x-0.5 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+              </Link>
+            </div>
+          )}
 
           {/* Agent offline states */}
           {agentOnline === false && isCloud && provisioning && (
@@ -1873,10 +1927,20 @@ export default function Dashboard() {
             </div>
           )}
 
+          </div>{/* ── end MAIN column ── */}
+
+          {/* ── LEFT SIDEBAR (desktop) / projects stack (mobile) ──
+              The projects nav rail. On lg+ it becomes a sticky, bordered left
+              rail (`order-1`, its own subtle surface) filling the left real
+              estate; below lg it's `order-2` with no chrome — the plain
+              single-column projects list that shipped before. Same markup,
+              same handlers; CSS/grid decides where it lives. */}
+          <aside className="order-2 lg:order-1 w-full lg:sticky lg:top-[4.5rem] lg:self-start lg:max-h-[calc(100dvh-5.5rem)] lg:overflow-y-auto lg:rounded-2xl lg:border lg:border-[var(--border-subtle)] lg:bg-[var(--surface)]/40 lg:p-3 mt-6 lg:mt-0">
+
           {/* Projects section — only shown when agent is reachable */}
           {agentOnline !== false && (
             <div>
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-2 lg:px-1">
                 <h2 className="text-[var(--text-secondary)] text-xs font-medium uppercase tracking-wider">Projects</h2>
                 <div className="flex items-center gap-2">
                   {sessionsLoading && (
@@ -2198,6 +2262,7 @@ export default function Dashboard() {
               )}
             </div>
           )}
+          </aside>{/* ── end LEFT SIDEBAR ── */}
         </div>
       </main>
     </>

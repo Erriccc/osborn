@@ -11,7 +11,7 @@ export default function FeatureMemory() {
               It remembers your project. Every session.
             </h2>
             <p className="mt-5 max-w-[34rem] text-[var(--text-secondary)] text-[16px] leading-[1.65]">
-              Osborn keeps per-session memory with semantic recall — decisions you made,
+              Voice Native keeps per-session memory with semantic recall — decisions you made,
               the shape of your codebase, the bug you chased last Tuesday. Pick up exactly
               where you left off instead of re-explaining your stack every single time.
             </p>

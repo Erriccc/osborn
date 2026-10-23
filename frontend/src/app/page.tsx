@@ -16,21 +16,21 @@ import FinalCTA from '@/components/landing/FinalCTA'
 import LandingFooter from '@/components/landing/LandingFooter'
 
 export const metadata: Metadata = {
-  title: 'Osborn — Voice-Native AI Coding Agent',
+  title: 'Voice Native — The AI Coding Agent You Talk To',
   description:
-    'Talk to Osborn and it writes, runs, and debugs code on your own machine. A team of Claude sub-agents, persistent memory, live activity. Your code, your keys.',
+    'Talk to Voice Native and it writes, runs, and debugs code on your own machine. A team of Claude sub-agents, persistent memory, live activity. Your code, your keys.',
   alternates: { canonical: '/' },
   openGraph: {
     type: 'website',
-    siteName: 'Osborn',
+    siteName: 'Voice Native',
     url: 'https://voice-native.com',
-    title: 'Osborn — Talk to it. It ships.',
+    title: 'Voice Native — Talk to it. It ships.',
     description:
       'A voice-native AI engineer that writes and runs code on your machine, with a team of Claude sub-agents you watch work in real time. Your code, your keys.',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Osborn — Talk to it. It ships.',
+    title: 'Voice Native — Talk to it. It ships.',
     description:
       'Voice-native AI engineer. Speak to it; it writes and runs code on your machine with a team of Claude sub-agents. Your code, your keys.',
   },
@@ -40,7 +40,7 @@ export const metadata: Metadata = {
 const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
-  name: 'Osborn',
+  name: 'Voice Native',
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'Web, macOS, Linux',
   description:

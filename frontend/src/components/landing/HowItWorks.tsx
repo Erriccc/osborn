@@ -3,13 +3,13 @@ const STEPS = [
     n: '01',
     title: 'Talk to it',
     body:
-      "Join a voice room and describe what you want in plain language — 'add Stripe billing,' 'find why the deploy is flaking,' 'refactor the auth module.' Osborn listens, asks clarifying questions, and plans out loud.",
+      "Join a voice room and describe what you want in plain language — 'add Stripe billing,' 'find why the deploy is flaking,' 'refactor the auth module.' Voice Native listens, asks clarifying questions, and plans out loud.",
   },
   {
     n: '02',
     title: 'It works on your machine',
     body:
-      'Osborn writes and runs real code on your cloud box or local machine — editing files, running tests, hitting your services. Nothing is simulated and nothing is copied to our servers.',
+      'Voice Native writes and runs real code on your cloud box or local machine — editing files, running tests, hitting your services. Nothing is simulated and nothing is copied to our servers.',
   },
   {
     n: '03',

@@ -51,10 +51,10 @@ export default function LandingNav() {
     >
       <nav className="mx-auto max-w-[1200px] px-6 h-16 flex items-center justify-between">
         {/* Brand */}
-        <Link href="/" className="flex items-center gap-2.5 group" aria-label="Osborn home">
+        <Link href="/" className="flex items-center gap-2.5 group" aria-label="Voice Native home">
           <OrbMark size={28} />
           <span className="font-display text-[var(--text-primary)] text-[20px] font-semibold tracking-[-0.02em]">
-            Osborn
+            Voice Native
           </span>
         </Link>
 

@@ -13,15 +13,15 @@ const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono-loaded'
 export const metadata: Metadata = {
   metadataBase: new URL('https://voice-native.com'),
   title: {
-    default: 'Osborn — Voice-Native AI Coding Agent',
-    template: '%s — Osborn',
+    default: 'Voice Native — The AI Coding Agent You Talk To',
+    template: '%s — Voice Native',
   },
-  description: 'Talk to Osborn and it writes, runs, and debugs code on your own machine. A team of Claude sub-agents, persistent memory, live activity.',
+  description: 'Talk to Voice Native and it writes, runs, and debugs code on your own machine. A team of Claude sub-agents, persistent memory, live activity.',
   openGraph: {
     type: 'website',
-    siteName: 'Osborn',
+    siteName: 'Voice Native',
     url: 'https://voice-native.com',
-    title: 'Osborn — Talk to it. It ships.',
+    title: 'Voice Native — Talk to it. It ships.',
     description: 'A voice-native AI engineer that writes and runs code on your machine, with a team of Claude sub-agents you watch work in real time.',
   },
   twitter: { card: 'summary_large_image' },

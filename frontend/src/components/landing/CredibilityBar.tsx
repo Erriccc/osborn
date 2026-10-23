@@ -8,7 +8,7 @@ export default function CredibilityBar() {
 
   return (
     <section
-      aria-label="How Osborn runs"
+      aria-label="How Voice Native runs"
       className="border-y border-[var(--border-subtle)]"
       style={{ background: 'var(--surface)' }}
     >

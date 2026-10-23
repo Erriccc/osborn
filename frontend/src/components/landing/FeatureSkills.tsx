@@ -40,7 +40,7 @@ export default function FeatureSkills() {
               Give it new abilities in one line.
             </h2>
             <p className="mt-5 max-w-[34rem] text-[var(--text-secondary)] text-[16px] leading-[1.65]">
-              Skills extend Osborn beyond code. Install what you need and it just picks them
+              Skills extend Voice Native beyond code. Install what you need and it just picks them
               up — browser automation, PDF parsing, Slack, YouTube transcripts, meeting bots,
               and more.
             </p>

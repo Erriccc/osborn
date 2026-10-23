@@ -77,7 +77,7 @@ export default function LandingFooter() {
 
         <div className="mt-14 pt-6 border-t border-[var(--border-subtle)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <p className="font-mono text-[12px] text-[var(--text-muted)]">
-            © 2026 Osborn · voice-native.com
+            © 2026 Voice Native · voice-native.com
           </p>
           <p className="font-display italic text-[14px] text-[var(--text-secondary)]">
             Research deeply. Build faster.

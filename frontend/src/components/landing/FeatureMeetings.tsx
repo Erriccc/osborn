@@ -14,7 +14,7 @@ export default function FeatureMeetings() {
               It can sit in your meetings.
             </h2>
             <p className="mt-5 max-w-[34rem] text-[var(--text-secondary)] text-[16px] leading-[1.65]">
-              Send Osborn into a Zoom or Google Meet as a bot. It listens, captures
+              Send Voice Native into a Zoom or Google Meet as a bot. It listens, captures
               decisions, and can turn &lsquo;we should fix that race condition&rsquo; into
               actual work the moment the call ends.
             </p>

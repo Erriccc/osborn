@@ -26,7 +26,7 @@ export default function Hero() {
             </h1>
 
             <p className="mt-6 max-w-[34rem] text-[var(--text-secondary)] text-[17px] md:text-[18px] leading-[1.6]">
-              Osborn is a voice-native AI engineer. Speak to it like a teammate and it
+              Voice Native is an AI engineer you talk to. Speak to it like a teammate and it
               writes, runs, and debugs code on your machine — dispatching a team of
               specialist sub-agents while you watch every move in real time.
             </p>
