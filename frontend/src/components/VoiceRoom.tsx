@@ -397,6 +397,31 @@ function sanitizeUserTranscript(text: string): string | null {
   return m ? m[1].trim() : null
 }
 
+/**
+ * Strip internal recall provenance that the fast brain sometimes echoes into an
+ * answer so it never clutters the chat bubble — e.g.
+ *   [main L550 · tool_result · both] 2026-08-09T19:29:01.229Z
+ * plus bare "L123: ..." prefixes and standalone ISO timestamps. Mirrors the
+ * agent-side sanitizer (pipeline-fastbrain) so resumed/historical messages that
+ * predate that fix also render clean.
+ */
+function stripProvenance(text: string): string {
+  if (!text || (!text.includes('·') && !/\bL\d+\b/.test(text))) return text
+  return text
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim()
+      if (!t) return true
+      if (/^\[[^\]]*\bL\d+\b[^\]]*·[^\]]*\]/.test(t)) return false
+      if (/^L\d+\s*:/.test(t)) return false
+      if (/^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$/.test(t)) return false
+      return true
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 // Modern chat message bubble with parts support
 const MessageBubble = React.memo(function MessageBubble({
   message,
@@ -422,23 +447,26 @@ const MessageBubble = React.memo(function MessageBubble({
   const userText = isUser ? sanitizeUserTranscript(message.content) : message.content
   if (isUser && userText === null) return null
 
+  // Display text: user transcripts get their own sanitizer; agent/system text
+  // gets provenance stripped so echoed recall citations never clutter the UI.
+  const displayContent = isUser ? (userText as string) : stripProvenance(message.content)
+
   const [copyDone, setCopyDone] = useState(false)
 
   const handleCopy = useCallback(() => {
-    const text = isUser ? (userText as string) : message.content
-    navigator.clipboard.writeText(text).catch(() => {})
+    navigator.clipboard.writeText(displayContent).catch(() => {})
     setCopyDone(true)
     setTimeout(() => setCopyDone(false), 1500)
     onCopy?.()
-  }, [isUser, userText, message.content, onCopy])
+  }, [displayContent, onCopy])
 
   // Parse content into parts for assistant messages
   const parts = useMemo(() => {
+    const raw = message.role === 'user' ? message.content : stripProvenance(message.content)
     if (message.role === 'assistant' && !message.parts) {
-      const parsed = parseMessageParts(message.content)
-      return parsed
+      return parseMessageParts(raw)
     }
-    return message.parts || [{ type: 'text' as const, content: message.content }]
+    return message.parts || [{ type: 'text' as const, content: raw }]
   }, [message])
 
   // Date / prior-conversation dividers — centered hairline label (Slack-style),
@@ -551,11 +579,11 @@ const MessageBubble = React.memo(function MessageBubble({
               })
             ) : (
               // Fallback: render raw content if parts parsing failed
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">{displayContent}</p>
             )}
             {/* Extra fallback: if all parts were empty, show raw content */}
-            {parts.length > 0 && parts.every(p => !p.content?.trim()) && message.content?.trim() && (
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+            {parts.length > 0 && parts.every(p => !p.content?.trim()) && displayContent?.trim() && (
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">{displayContent}</p>
             )}
             {message.isStreaming && <StreamingDots />}
           </div>
