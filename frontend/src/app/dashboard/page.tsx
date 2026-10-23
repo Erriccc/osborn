@@ -1214,7 +1214,7 @@ export default function Dashboard() {
       <main className="min-h-screen bg-[var(--background)] flex flex-col">
         {/* ── Header ──────────────────────────────── */}
         <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
-          <div className="max-w-3xl lg:max-w-4xl mx-auto px-4 h-12 flex items-center justify-between">
+          <div className="max-w-3xl lg:max-w-6xl mx-auto px-4 h-12 flex items-center justify-between">
             {/* Logo → home (voice-native.com). Clickable from the dashboard back to root. */}
             <Link href="/" title="Home" className="flex items-center gap-3 rounded-lg -mx-1 px-1 py-0.5 hover:opacity-80 transition-opacity">
               <div className="w-7 h-7 rounded-full flex items-center justify-center"
@@ -1346,10 +1346,10 @@ export default function Dashboard() {
             `order-*` restores the original top-to-bottom flow
             (greeting → continue → new conversation → projects). Same data,
             same handlers — layout only. */}
-        <div className="flex-1 w-full max-w-3xl lg:max-w-7xl mx-auto px-4 py-6 lg:grid lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-8 lg:items-start lg:py-8">
+        <div className="flex-1 w-full max-w-3xl lg:max-w-6xl mx-auto px-4 py-6 lg:grid lg:grid-cols-[320px_minmax(0,1fr)] lg:gap-8 lg:items-start lg:py-8">
 
           {/* ── MAIN column (desktop) / primary stack (mobile) ── */}
-          <div className="order-1 lg:order-2 w-full lg:max-w-3xl">
+          <div className="order-1 lg:order-2 w-full lg:max-w-3xl lg:mx-auto">
 
           {/* Serif greeting — only in the empty state. Once there's a Continue
               card (sessions exist), the greeting is redundant with it, so we
