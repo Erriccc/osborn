@@ -44,6 +44,12 @@ const GUIDES: { href: string; eyebrow: string; title: string; blurb: string }[] 
     title: 'What people ship by voice',
     blurb: 'Real workflows — from campaign launches to automated content pipelines — reproduced hands-free.',
   },
+  {
+    href: '/industries',
+    eyebrow: 'Industries',
+    title: 'Hands-free, everywhere work happens',
+    blurb: 'See the agent dropped into real scenes — the driver’s seat, the boardroom, the battlestation, the remote call.',
+  },
 ]
 
 async function getLatest(): Promise<PublicContent[]> {

@@ -30,6 +30,12 @@ export default function MarketingShell({ children }: { children: ReactNode }) {
               Blog
             </Link>
             <Link
+              href="/industries"
+              className="hidden sm:inline text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+            >
+              Industries
+            </Link>
+            <Link
               href="/compare"
               className="text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
             >
