@@ -21,14 +21,16 @@ const COLUMNS: { heading: string; links: { label: string; href: string }[] }[] =
   {
     heading: 'Resources',
     links: [
+      { label: 'Blog', href: '/blog' },
+      { label: 'Compare', href: '/compare' },
+      { label: 'Use cases', href: '/use-cases' },
       { label: 'FAQ', href: '#faq-heading' },
-      { label: 'The sub-agent team', href: '#team-heading' },
-      { label: 'Live activity', href: '#live-activity-heading' },
     ],
   },
   {
     heading: 'Company',
     links: [
+      { label: 'About', href: '/about' },
       { label: 'Contact', href: 'mailto:hello@voice-native.com' },
     ],
   },

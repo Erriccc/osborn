@@ -24,6 +24,12 @@ export default function MarketingShell({ children }: { children: ReactNode }) {
           </Link>
           <div className="flex items-center gap-5 font-mono text-[12px] uppercase tracking-[0.14em]">
             <Link
+              href="/blog"
+              className="text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+            >
+              Blog
+            </Link>
+            <Link
               href="/compare"
               className="text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
             >
