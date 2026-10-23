@@ -19,7 +19,14 @@ export function createSupabaseAnon() {
   // of throwing "supabaseUrl is required" and crashing the build. Callers treat
   // null as "no data" so pages fall back to on-demand ISR rather than failing.
   if (!url || !key) return null
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+  // Pin the `public` schema explicitly. This project's PostgREST exposes many
+  // schemas with `storage` listed FIRST, so an unqualified request can default
+  // to the wrong schema and fail with "relation storage.public_content does not
+  // exist". Setting db.schema sends Accept-Profile: public on every request.
+  return createClient(url, key, {
+    db: { schema: 'public' },
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
 }
 
 /** The canonical public base URL. metadataBase is set in layout; we still emit

@@ -13,7 +13,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
+import { REFINE_PLATFORMS, buildSeededChatUrl, refineSeed } from '@/lib/seed-chat'
 import type { User } from '@supabase/supabase-js'
 
 interface ContentItem {
@@ -65,6 +67,7 @@ function DocIcon({ className }: { className?: string }) {
 }
 
 export default function LibraryPage() {
+  const router = useRouter()
   const supabase = useMemo(() => createSupabaseBrowser(), [])
   const [user, setUser] = useState<User | null>(null)
   const [authChecked, setAuthChecked] = useState(false)
@@ -250,11 +253,33 @@ export default function LibraryPage() {
   }
 
   async function copyLink(url: string) {
+    let ok = false
+    // Primary: async Clipboard API (needs a secure context + the tab focused).
     try {
       await navigator.clipboard.writeText(url)
+      ok = true
+    } catch { /* fall through to the legacy path */ }
+    // Fallback: hidden textarea + execCommand — works where the Clipboard API
+    // is blocked (some in-app/mobile webviews, non-focused documents).
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = url
+        ta.setAttribute('readonly', '')
+        ta.style.position = 'fixed'
+        ta.style.top = '0'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        ta.setSelectionRange(0, url.length)
+        ok = document.execCommand('copy')
+        document.body.removeChild(ta)
+      } catch { /* give up silently */ }
+    }
+    if (ok) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1800)
-    } catch { /* clipboard unavailable */ }
+    }
   }
 
   // Esc closes the reading modal.
@@ -477,6 +502,32 @@ export default function LibraryPage() {
               </div>
             ) : (
               <div className="overflow-y-auto px-5 py-4 flex flex-col gap-5">
+                {/* Chat-based refine (primary) — open a voice session seeded
+                    with this draft + a platform instruction. Reuses /chat, no
+                    new API. Refine by talking, then publish. */}
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Refine in chat</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {REFINE_PLATFORMS.map(p => (
+                      <button key={p.id}
+                        onClick={() => router.push(buildSeededChatUrl(refineSeed(p, reading)))}
+                        className="flex items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)]/40 px-3 py-2.5 text-left text-[13px] text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)] transition-all">
+                        <span>{p.label}</span>
+                        <svg className="w-4 h-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] text-[var(--text-muted)]">Opens a session seeded with this draft — refine by talking, then publish the result.</p>
+                </div>
+
+                <div className="h-px bg-[var(--border-subtle)]" />
+
+                <details className="group">
+                  <summary className="cursor-pointer list-none text-[11px] uppercase tracking-wide text-[var(--text-muted)] hover:text-[var(--text-secondary)] flex items-center gap-1.5">
+                    <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                    Or edit inline
+                  </summary>
+                  <div className="mt-4 flex flex-col gap-5">
                 {/* Platform chips */}
                 <div>
                   <p className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Target format</p>
@@ -584,6 +635,8 @@ export default function LibraryPage() {
                     </div>
                   )}
                 </div>
+                  </div>
+                </details>
               </div>
             )}
 

@@ -94,9 +94,18 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // token API so the agent boots with the matching directory and the session lookup
   // path resolves correctly. Empty when starting a fresh conversation.
   const workingDirectory = params.get('workingDirectory') || ''
-  // Seed prompt for "Talk about it" / shared-content flows. Capped so the URL
-  // stays well under browser limits — a concise starter, not the whole doc.
-  const seedPrompt = (params.get('prompt') || '').slice(0, 1200) || null
+  // Seed prompt for "Talk about it" / chat-based refine. A short seed rides the
+  // URL (?prompt=); a FULL draft body (too big for a URL) is stashed in
+  // sessionStorage by the caller and signalled with ?seed=1. VoiceRoom clears
+  // it after sending so a refresh never re-seeds.
+  const seedPrompt = (() => {
+    const p = params.get('prompt')
+    if (p) return p.slice(0, 4000)
+    if (params.get('seed') === '1' && typeof window !== 'undefined') {
+      try { return sessionStorage.getItem('voice-native-seed') || null } catch { return null }
+    }
+    return null
+  })()
 
   const initialAgentUrl =
     typeof window !== 'undefined'

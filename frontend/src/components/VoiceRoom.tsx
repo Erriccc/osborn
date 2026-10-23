@@ -4182,6 +4182,8 @@ function VoiceRoomInner({
     if (!agentConnected) return
     seedSentRef.current = true
     handleSendText(seedPrompt)
+    // Clear the stashed seed so a page refresh doesn't re-send it.
+    try { sessionStorage.removeItem('voice-native-seed') } catch {}
   }, [agentConnected, seedPrompt, preSelectedSessionId, handleSendText])
 
   // Wraps toggleFavorite so that starring a file (toggling ON) also sends a

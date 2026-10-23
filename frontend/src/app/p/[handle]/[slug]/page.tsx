@@ -15,6 +15,7 @@ import type { Metadata } from 'next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { createSupabaseAnon, SITE_URL, type PublicContent } from '@/lib/supabase-anon'
+import TalkAboutItButton from '@/components/TalkAboutItButton'
 
 export const revalidate = 3600
 // Generate pages for slugs published AFTER the last build on first request
@@ -168,17 +169,20 @@ export default async function PublicArticlePage({ params }: PageParams) {
         </div>
       </article>
 
-      {/* Footer CTA */}
+      {/* Footer CTA — talk about this page, or start your own */}
       <footer className="border-t border-[var(--border-subtle)]">
         <div className="max-w-[72ch] mx-auto px-5 py-10 text-center">
-          <p className="font-display text-xl text-[var(--text-primary)]">Your voice, written down.</p>
+          <p className="font-display text-xl text-[var(--text-primary)]">Want to build on this?</p>
           <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
-            Voice Native turns your voice sessions into pages like this one.
+            Drop into a voice session seeded with this page and talk it through — or start your own.
           </p>
-          <Link href="/login"
-            className="inline-flex mt-4 items-center gap-1.5 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2 text-[13px] font-semibold hover:opacity-90 transition-opacity">
-            Start your own →
-          </Link>
+          <div className="mt-5 flex flex-col sm:flex-row items-center justify-center gap-3">
+            <TalkAboutItButton itemId={item.id} title={item.title} hook={item.hook} body={item.body} />
+            <Link href="/login"
+              className="text-[13px] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors">
+              Start your own →
+            </Link>
+          </div>
         </div>
       </footer>
     </main>
