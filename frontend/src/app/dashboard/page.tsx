@@ -1284,10 +1284,10 @@ export default function Dashboard() {
                   (Google/Claude/ChatGPT). One glance, zero learning curve:
                   Settings · Library · Sign out. Replaces the old behavior where
                   the avatar dumped the whole settings sheet. */}
-              <div className="relative">
+              <div className="relative shrink-0">
                 <button onClick={() => setShowProfileMenu(s => !s)} title="Account"
                   aria-haspopup="menu" aria-expanded={showProfileMenu}
-                  className={`p-1 rounded-full transition-all ${showProfileMenu ? 'bg-[var(--accent-dim)]/20 ring-1 ring-[var(--accent)]/50' : 'hover:bg-[var(--surface)]'}`}>
+                  className={`shrink-0 p-1 rounded-full transition-all ${showProfileMenu ? 'bg-[var(--accent-dim)]/20 ring-1 ring-[var(--accent)]/50' : 'hover:bg-[var(--surface)]'}`}>
                   {user?.user_metadata?.avatar_url ? (
                     <img src={user.user_metadata.avatar_url} alt="" className={`w-7 h-7 rounded-full object-cover shrink-0 ring-1 ${showProfileMenu ? 'ring-[var(--accent)]' : 'ring-[var(--border)]'}`} />
                   ) : user?.email ? (
