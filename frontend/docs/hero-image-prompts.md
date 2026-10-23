@@ -4,6 +4,19 @@ Cinematic hero images for the `/industries` gallery and the niche pages
 (`/drivers`, etc). Generate each, then drop the file at the exact path below —
 the page swaps the placeholder for your render automatically (no code change).
 
+## Fastest path — generate all of them with Fireworks (FLUX)
+
+One command renders every scene 16:9 into `public/industries/` using the same
+Fireworks key the fast brain uses:
+
+```
+FIREWORKS_API_KEY=fw_… node frontend/scripts/gen-industry-images.mjs
+```
+
+Flags: `FORCE=1` redo existing · `MODEL=flux-1-schnell-fp8` faster/cheaper
+(default `flux-1-dev-fp8`, higher quality). Then review and commit the JPGs.
+Prefer a different tool? The per-scene prompts are below.
+
 **Where files go:** `frontend/public/industries/<slug>.jpg`
 (e.g. `frontend/public/industries/drivers.jpg`). Served at `/industries/<slug>.jpg`.
 
