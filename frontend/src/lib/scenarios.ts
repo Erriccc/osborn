@@ -47,8 +47,8 @@ export const SCENARIOS: Scenario[] = [
   {
     slug: 'meeting-room',
     segment: 'Enterprise meeting room',
-    headline: 'Run the room by voice. It captures, decides, and ships the follow-ups.',
-    scene: 'A boardroom talks; the agent listens to everyone, drafts the decisions, and has the work moving before the meeting ends.',
+    headline: 'The meeting ends. The work’s already done.',
+    scene: 'The room talks over itself. It catches every decision and ships the follow-ups before anyone stands up.',
     style: 'human',
     image: '/industries/meeting-room.jpg',
     imagePrompt:
@@ -56,9 +56,9 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     slug: 'gamers',
-    segment: 'Gaming & streaming studios',
-    headline: 'Build while you play. Talk to it mid-session, never break flow.',
-    scene: 'Headset on, hands on the controls — you describe the fix out loud and it ships to your build while the match keeps going.',
+    segment: 'Game studios & streamers',
+    headline: 'Call the shot. It ships before you respawn.',
+    scene: 'Headset on, hands on the controls. You say the fix out loud and it lands in the build without ever pausing the match.',
     style: 'cabin',
     image: '/industries/gamers.jpg',
     imagePrompt:
@@ -67,8 +67,8 @@ export const SCENARIOS: Scenario[] = [
   {
     slug: 'onboarding',
     segment: 'Enterprise onboarding',
-    headline: 'Onboard by conversation. New hires talk; the agent walks them in.',
-    scene: 'No 200-page wiki. A new engineer asks out loud and the agent sets up, explains, and ships their first change with them.',
+    headline: 'Day one. First commit. Just by talking.',
+    scene: 'No 200-page wiki. The new hire asks out loud; it sets up their machine, explains the codebase, and ships their first change with them.',
     style: 'human',
     image: '/industries/onboarding.jpg',
     imagePrompt:
@@ -77,8 +77,8 @@ export const SCENARIOS: Scenario[] = [
   {
     slug: 'remote-meeting-assistant',
     segment: 'Remote meeting assistant',
-    headline: 'Your voice in every call. It listens, acts, and ships live.',
-    scene: 'On the video call, you think out loud — the agent turns the conversation into done work before you hang up.',
+    headline: 'Think out loud on the call. Hang up to find it done.',
+    scene: 'It sits in on the video call, follows the conversation, and turns what you say into shipped work before anyone leaves.',
     style: 'human',
     image: '/industries/remote-meeting-assistant.jpg',
     imagePrompt:
@@ -87,8 +87,8 @@ export const SCENARIOS: Scenario[] = [
   {
     slug: 'multi-speaker',
     segment: 'Multi-speaker collaboration',
-    headline: 'One agent, a room full of voices. It hears everyone and keeps up.',
-    scene: 'Several people in the same room talk over each other — the agent follows every speaker and ships what the group decides.',
+    headline: 'A room full of voices. One agent keeps up with all of them.',
+    scene: 'Several people in the same room, talking over each other. It tells them apart, follows every thread, and ships what the group lands on.',
     style: 'human',
     image: '/industries/multi-speaker.jpg',
     imagePrompt:

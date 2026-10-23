@@ -9,7 +9,7 @@ import Link from 'next/link'
 import type { Metadata } from 'next'
 import MarketingShell from '@/components/marketing/MarketingShell'
 import ScenarioImage from '@/components/ScenarioImage'
-import { SCENARIOS } from '@/lib/scenarios'
+import { SCENARIOS, type Scenario } from '@/lib/scenarios'
 import { SITE_URL } from '@/lib/supabase-anon'
 
 export const metadata: Metadata = {
@@ -27,6 +27,42 @@ export const metadata: Metadata = {
   twitter: { card: 'summary_large_image', title: 'Industries — Voice Native' },
 }
 
+/** Shared meta block (segment · treatment · headline · scene · link). */
+function ScenarioMeta({ s }: { s: Scenario }) {
+  return (
+    <div className="mt-5">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-[var(--accent)]">{s.segment}</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)] opacity-70">
+          {s.style === 'cabin' ? 'POV' : 'Scene'}
+        </span>
+      </div>
+      <h2 className="mt-2 font-display text-2xl text-[var(--text-primary)] leading-snug">{s.headline}</h2>
+      <p className="mt-2 text-[14px] text-[var(--text-secondary)] leading-relaxed max-w-[52ch]">{s.scene}</p>
+      {s.page ? (
+        <Link href={s.page}
+          className="mt-4 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--accent)] hover:opacity-80 transition-opacity">
+          Explore {s.segment} →
+        </Link>
+      ) : (
+        <span className="mt-4 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+          Concept — page coming
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** Featured full-width scenario — image + meta side by side on large screens. */
+function FeatureCard({ s }: { s: Scenario }) {
+  return (
+    <article className="grid gap-6 lg:grid-cols-2 lg:items-center">
+      <ScenarioImage src={s.image} alt={s.headline} scene={s.scene} style={s.style} priority />
+      <ScenarioMeta s={s} />
+    </article>
+  )
+}
+
 export default function IndustriesPage() {
   return (
     <MarketingShell>
@@ -41,32 +77,14 @@ export default function IndustriesPage() {
         </p>
       </section>
 
-      {/* Gallery */}
+      {/* Gallery — first scenario featured full-width, rest in a 2-col grid */}
       <section className="mx-auto max-w-[1200px] px-6 pb-20">
-        <div className="grid gap-x-6 gap-y-12 lg:grid-cols-2">
-          {SCENARIOS.map((s, i) => (
+        {SCENARIOS.length > 0 && <FeatureCard s={SCENARIOS[0]} />}
+        <div className="mt-12 grid gap-x-6 gap-y-12 lg:grid-cols-2">
+          {SCENARIOS.slice(1).map((s) => (
             <article key={s.slug} className="flex flex-col">
-              <ScenarioImage src={s.image} alt={s.headline} scene={s.scene} style={s.style} priority={i < 2} />
-              <div className="mt-5">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-[var(--accent)]">{s.segment}</span>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)] opacity-70">
-                    {s.style === 'cabin' ? 'POV' : 'Scene'}
-                  </span>
-                </div>
-                <h2 className="mt-2 font-display text-2xl text-[var(--text-primary)] leading-snug">{s.headline}</h2>
-                <p className="mt-2 text-[14px] text-[var(--text-secondary)] leading-relaxed max-w-[52ch]">{s.scene}</p>
-                {s.page ? (
-                  <Link href={s.page}
-                    className="mt-4 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--accent)] hover:opacity-80 transition-opacity">
-                    Explore {s.segment} →
-                  </Link>
-                ) : (
-                  <span className="mt-4 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                    Concept — page coming
-                  </span>
-                )}
-              </div>
+              <ScenarioImage src={s.image} alt={s.headline} scene={s.scene} style={s.style} />
+              <ScenarioMeta s={s} />
             </article>
           ))}
         </div>
