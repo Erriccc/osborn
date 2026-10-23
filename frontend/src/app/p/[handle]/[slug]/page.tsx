@@ -17,6 +17,9 @@ import remarkGfm from 'remark-gfm'
 import { createSupabaseAnon, SITE_URL, type PublicContent } from '@/lib/supabase-anon'
 
 export const revalidate = 3600
+// Generate pages for slugs published AFTER the last build on first request
+// (ISR), so a newly-published item resolves without needing a redeploy.
+export const dynamicParams = true
 
 interface PageParams {
   params: { handle: string; slug: string }

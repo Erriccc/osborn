@@ -10,6 +10,7 @@ import type { Metadata } from 'next'
 import { createSupabaseAnon, SITE_URL, type PublicContent } from '@/lib/supabase-anon'
 
 export const revalidate = 3600
+export const dynamicParams = true
 
 interface PageParams {
   params: { handle: string }
