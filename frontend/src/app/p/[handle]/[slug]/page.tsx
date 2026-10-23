@@ -16,6 +16,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { createSupabaseAnon, SITE_URL, type PublicContent } from '@/lib/supabase-anon'
 import TalkAboutItButton from '@/components/TalkAboutItButton'
+import FastBrainChat from '@/components/FastBrainChat'
 
 // Render at REQUEST time against the live DB — never prebuild. This page
 // toggles published/unpublished and re-titles (new slug) via the studio, so
@@ -158,18 +159,24 @@ export default async function PublicArticlePage({ params }: PageParams) {
         </div>
       </article>
 
-      {/* Footer CTA — talk about this page, or start your own */}
+      {/* On-page conversation — a lightweight fast-brain chat grounded in this
+          piece. Ask questions here; reproduce the whole thing below. */}
+      <section className="w-full max-w-[72ch] mx-auto px-5 pb-4">
+        <FastBrainChat itemId={item.id} title={item.title} hook={item.hook} body={item.body} />
+      </section>
+
+      {/* Footer CTA — reproduce this task as your own, or start fresh */}
       <footer className="border-t border-[var(--border-subtle)]">
         <div className="max-w-[72ch] mx-auto px-5 py-10 text-center">
-          <p className="font-display text-xl text-[var(--text-primary)]">Want to build on this?</p>
+          <p className="font-display text-xl text-[var(--text-primary)]">Want your own version?</p>
           <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
-            Drop into a voice session seeded with this page and talk it through — or start your own.
+            Drop into a Voice Native session seeded with this piece and reproduce it as your own — same format, your topic.
           </p>
           <div className="mt-5 flex flex-col sm:flex-row items-center justify-center gap-3">
-            <TalkAboutItButton itemId={item.id} title={item.title} hook={item.hook} body={item.body} />
+            <TalkAboutItButton itemId={item.id} type={item.type} title={item.title} hook={item.hook} body={item.body} />
             <Link href="/login"
               className="text-[13px] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors">
-              Start your own →
+              Start fresh →
             </Link>
           </div>
         </div>

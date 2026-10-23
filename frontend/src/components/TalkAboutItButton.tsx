@@ -3,21 +3,23 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
-import { buildSeededChatUrl, talkAboutSeed } from '@/lib/seed-chat'
+import { buildSeededChatUrl, reproduceTaskSeed } from '@/lib/seed-chat'
 
 /**
- * Public-page CTA. On mount it records a view; on click it seeds a chat with
- * the content and (if signed in) drops the visitor into a fresh session that
- * auto-sends the seed — otherwise it routes to sign-in. No new API: reuses the
- * /chat flow + the seed-prompt mechanism.
+ * Public-page CTA to REPRODUCE the task. A published piece is a finished task;
+ * clicking drops a signed-in visitor into a fresh Voice Native session seeded
+ * to help them produce their OWN version (not just discuss it) — otherwise it
+ * routes to sign-in. No new API: reuses the /chat flow + seed-prompt mechanism.
  */
 export default function TalkAboutItButton({
   itemId,
+  type,
   title,
   hook,
   body,
 }: {
   itemId: string
+  type?: string | null
   title: string | null
   hook: string | null
   body: string | null
@@ -45,7 +47,7 @@ export default function TalkAboutItButton({
       signedIn = !!data.session
     } catch { /* treat as signed-out */ }
     if (signedIn) {
-      router.push(buildSeededChatUrl(talkAboutSeed({ title, hook, body })))
+      router.push(buildSeededChatUrl(reproduceTaskSeed({ type, title, hook, body })))
     } else {
       router.push('/login')
     }
@@ -58,9 +60,9 @@ export default function TalkAboutItButton({
       className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2.5 text-[14px] font-semibold hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-60"
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+        <path d="M5 3v4M3 5h4M6 17v4m-2-2h4" /><path d="M13 3l2.5 6.5L22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5L13 3z" />
       </svg>
-      {busy ? 'Opening…' : 'Talk about it'}
+      {busy ? 'Opening…' : 'Make your own version'}
     </button>
   )
 }

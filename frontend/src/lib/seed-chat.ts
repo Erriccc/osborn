@@ -81,3 +81,30 @@ export function talkAboutSeed(item: {
 }): string {
   return `I just read this and want to talk through it and build on it with you.\n\nTitle: ${item.title ?? 'Untitled'}\n${item.hook ? `Hook: ${item.hook}\n` : ''}\n--- CONTENT ---\n${item.body ?? ''}`
 }
+
+/**
+ * Compose a "reproduce this task" seed. A published piece is a finished TASK —
+ * the reader clicked it because they want their OWN version. Seed a DOING
+ * session: hand the agent the finished result as a reference and tell it to
+ * recreate the same kind of task for this user, starting by asking what their
+ * version should be about, then actually producing it.
+ */
+export function reproduceTaskSeed(item: {
+  type?: string | null
+  title?: string | null
+  hook?: string | null
+  body?: string | null
+}): string {
+  const kind = (item.type || 'piece').replace(/_/g, ' ')
+  return [
+    `A reader opened this published ${kind} because they want to produce their OWN version of it — not just discuss it. Treat it as a task to reproduce.`,
+    ``,
+    `Do this: briefly acknowledge the reference, ask the one or two questions you need (their topic/angle and any specifics), then actually create their version — same format and quality bar as the reference. Keep momentum; when they're happy, offer to save and publish it.`,
+    ``,
+    `--- REFERENCE ${kind.toUpperCase()} ---`,
+    `Title: ${item.title ?? 'Untitled'}`,
+    item.hook ? `Hook: ${item.hook}` : '',
+    ``,
+    item.body ?? '',
+  ].filter(Boolean).join('\n')
+}
