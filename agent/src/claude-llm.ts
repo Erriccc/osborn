@@ -389,6 +389,29 @@ if (!process.env.ANTHROPIC_SMALL_FAST_MODEL) {
   process.env.ANTHROPIC_SMALL_FAST_MODEL = 'claude-haiku-4-5-20251001'
 }
 
+// RESUME-TURN 400 FIX: disable the Claude Code CLI's prompt-cache *diagnostics*
+// on outbound /v1/messages. Recent CLI builds opt the request into the
+// `diagnostics.previous_message_id` feature (the `msg_...` id of the client's
+// previous response, so the server can report prompt-cache cache-miss reasons —
+// pure telemetry we never read). On a FRESH session turn 1 sends
+// `previous_message_id: null` (the valid "opt-in with no prior message" case),
+// so it works. On a RESUMED session the CLI rebuilds conversation state from the
+// replayed JSONL but has NO in-memory `msg_...` id for the last response (that id
+// is never persisted to the transcript), so the first post-resume turn sends an
+// invalid/empty/non-`msg_` value and the API 400s:
+//   diagnostics.previous_message_id: must be the `id` from a prior /v1/messages
+//   response (starts with `msg_`)
+// — twice (the CLI's one turn retry), after which only the Fast Brain fallback
+// answers. The diagnostics request-adornment is non-essential traffic, which the
+// CLI suppresses entirely under this flag, so it never attaches
+// `previous_message_id` — fixing resume with zero behavioral change beyond losing
+// cache-miss telemetry. Set at module load (same lifecycle as ENABLE_1M_CONTEXT):
+// the subprocess reads env once at cold-start, so a per-message write would be too
+// late for the persistent query. Respect an explicit operator override.
+if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === undefined) {
+  process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+}
+
 // Research mode tools — full research capabilities
 // Named sub-agents — the orchestrator delegates to these specialists. Each has
 // a specific role, model, and tool set. Module-level + exported so the HTTP

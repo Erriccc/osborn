@@ -310,6 +310,9 @@ function buildSystemPrompt(chatHistory?: { role: string; content: string }[], re
     ``,
     `== STYLE ==`,
     `1-3 sentences. Grounded in results. Never fabricate.`,
+    `Answer in plain prose ONLY. NEVER include result header lines (the`,
+    `"[source L… · msgType · matchedBy] timestamp" brackets), line numbers, or raw`,
+    `timestamps in your reply — those are internal provenance the user must never see.`,
     `If not found after thorough searching: "I didn't find that in the session history."`,
     ``,
     `== AUDIENCE ==`,
@@ -381,6 +384,29 @@ async function callOpenRouter(messages: any[], tools: any[], apiKey: string): Pr
 // MAIN FUNCTION
 // ============================================================
 
+/**
+ * Strip internal recall provenance the fast brain may echo into its answer so
+ * the user never sees it: citation headers like
+ *   [main L550 · tool_result · both] 2026-08-09T19:29:01.229Z
+ * bare "L123: ..." line prefixes, and standalone ISO timestamps.
+ */
+function sanitizeFastBrainAnswer(text: string): string {
+  if (!text) return text
+  return text
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim()
+      if (!t) return true
+      if (/^\[[^\]]*\bL\d+\b[^\]]*·[^\]]*\]/.test(t)) return false // citation header
+      if (/^L\d+\s*:/.test(t)) return false                        // "L123: ..." prefix
+      if (/^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$/.test(t)) return false     // bare timestamp
+      return true
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 export async function askPipelineFastBrain(
   workingDir: string,
   sessionId: string,
@@ -445,8 +471,11 @@ export async function askPipelineFastBrain(
 
       const calls = msg.tool_calls
       if (!calls || calls.length === 0) {
-        // Final text response
-        const text = (msg.content || '').trim()
+        // Final text response. Strip any internal recall provenance the model
+        // may have echoed (citation headers / line numbers / bare timestamps) —
+        // those leak as ugly "[main L550 · tool_result · both] 2026-…" lines in
+        // the chat bubble. Defense-in-depth alongside the system-prompt rule.
+        const text = sanitizeFastBrainAnswer((msg.content || '').trim())
 
         // Update persistent history with this exchange
         persistentMessages.push({ role: 'user', content: question })
