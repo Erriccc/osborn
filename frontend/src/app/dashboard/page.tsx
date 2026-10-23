@@ -1224,7 +1224,7 @@ export default function Dashboard() {
                   <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                 </svg>
               </div>
-              <span className="font-display text-[var(--text-primary)] font-semibold text-[16px] tracking-tight">Voice Native</span>
+              <span className="hidden sm:inline font-display text-[var(--text-primary)] font-semibold text-[16px] tracking-tight">Voice Native</span>
             </Link>
 
             <div className="flex items-center gap-1.5">
@@ -1351,14 +1351,18 @@ export default function Dashboard() {
           {/* ── MAIN column (desktop) / primary stack (mobile) ── */}
           <div className="order-1 lg:order-2 w-full lg:max-w-3xl">
 
-          {/* Serif greeting — the voice's presence on the page (Claude-style) */}
-          <div className="mb-4 mt-1" style={{ animation: 'fadeSlideIn .4s ease both' }}>
-            <h1 className="font-display text-[26px] sm:text-3xl font-medium text-[var(--text-primary)] leading-tight">
-              {(() => { const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening' })()}
-              {user?.user_metadata?.full_name ? `, ${String(user.user_metadata.full_name).split(' ')[0]}` : ''}.
-            </h1>
-            <p className="mt-1 text-[13px] text-[var(--text-secondary)]">What should we look into?</p>
-          </div>
+          {/* Serif greeting — only in the empty state. Once there's a Continue
+              card (sessions exist), the greeting is redundant with it, so we
+              drop it and let Continue be the single orienting header. */}
+          {!(agentOnline !== false && sessions.length > 0) && (
+            <div className="mb-4 mt-1" style={{ animation: 'fadeSlideIn .4s ease both' }}>
+              <h1 className="font-display text-[26px] sm:text-3xl font-medium text-[var(--text-primary)] leading-tight">
+                {(() => { const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening' })()}
+                {user?.user_metadata?.full_name ? `, ${String(user.user_metadata.full_name).split(' ')[0]}` : ''}.
+              </h1>
+              <p className="mt-1 text-[13px] text-[var(--text-secondary)]">What should we look into?</p>
+            </div>
+          )}
 
           {/* Continue where you left off — featured resume of the most-recent
               session (agenda-card idiom: one clear primary action using real
