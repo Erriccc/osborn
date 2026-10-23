@@ -1,32 +1,34 @@
 #!/usr/bin/env node
 /**
- * Generate the /industries scenario hero images with Fireworks AI (FLUX).
+ * Generate the /industries scenario hero images and write them to
+ * public/industries/<slug>.<ext>. The ScenarioImage component picks them up
+ * automatically (it points at <slug> + whatever extension we save).
  *
- * Reads FIREWORKS_API_KEY from env (same key as the fast brain / refine route),
- * renders each scene 16:9, and writes public/industries/<slug>.jpg. The
- * ScenarioImage component picks them up automatically — no code change.
+ * Providers (auto-detected by which key is in the environment):
+ *   GEMINI_API_KEY   → Google Generative Language API (gemini image models;
+ *                      has a free tier). DEFAULT when present.
+ *   OPENROUTER_API_KEY / OPENROUTER_WORKSPACE_API_KEY → OpenRouter image models
+ *                      (needs ≥$1 OpenRouter balance for image output).
  *
- * Usage (key stays in your hands):
- *   FIREWORKS_API_KEY=fw_… node frontend/scripts/gen-industry-images.mjs
- *   FORCE=1 …                      # regenerate even if the file exists
- *   MODEL=flux-1-schnell-fp8 …     # faster/cheaper (default: flux-1-dev-fp8)
+ * Usage:
+ *   GEMINI_API_KEY=… node frontend/scripts/gen-industry-images.mjs
+ *   OPENROUTER_WORKSPACE_API_KEY=… node frontend/scripts/gen-industry-images.mjs
+ *   FORCE=1 …                       # regenerate even if a file exists
+ *   MODEL=…                         # override the provider's default model
  *
- * Prompts mirror src/lib/scenarios.ts (imagePrompt). Keep them in sync.
+ * Prints the final slug→filename map so scenarios.ts can be aligned if the
+ * provider returns PNG (default jpg paths). Prompts mirror src/lib/scenarios.ts.
  */
 
-import { writeFile, mkdir, access } from 'node:fs/promises'
+import { writeFile, mkdir, readdir, unlink, access } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = resolve(__dirname, '../public/industries')
-
-const MODEL = process.env.MODEL || 'flux-1-dev-fp8'
-const KEY = process.env.FIREWORKS_API_KEY
 const FORCE = process.env.FORCE === '1'
 
-// Appended to every prompt — belt-and-suspenders against text/logo artifacts.
-const HOUSE = 'dark premium palette, one warm amber accent glow, cinematic lighting, shallow depth of field, photorealistic, high detail, no on-screen text, no words, no logos, no watermark'
+const HOUSE = 'widescreen 16:9 aspect ratio, dark premium palette, one warm amber accent glow, cinematic lighting, shallow depth of field, photorealistic, high detail, no on-screen text, no words, no logos, no watermark'
 
 const SCENES = [
   { slug: 'drivers', prompt: "Cinematic first-person POV from a driver's seat at dusk, warm amber ambient cabin lighting, dark premium interior, hands relaxed on a steering wheel, a large glowing dashboard screen ahead softly displaying streaming code and a merged pull request, a subtle luminous voice waveform reflected on the windshield, moody high-contrast, calm and in-control mood" },
@@ -37,55 +39,89 @@ const SCENES = [
   { slug: 'multi-speaker', prompt: 'Cinematic shot of four colleagues gathered around a single large table-top screen in a warm modern workspace, all talking and gesturing, the screen showing multiple attributed voice threads merging into one stream of shipped work, warm amber ambient glow, glowing multi-source waveform visualization, energetic yet premium' },
 ]
 
-async function exists(p) {
-  try { await access(p); return true } catch { return false }
+const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+const OR_KEY = process.env.OPENROUTER_WORKSPACE_API_KEY || process.env.OPENROUTER_API_KEY
+
+const extFromMime = (m) => (m.includes('png') ? 'png' : m.includes('webp') ? 'webp' : 'jpg')
+
+async function removeExisting(slug) {
+  const files = await readdir(OUT_DIR).catch(() => [])
+  for (const f of files) if (f.startsWith(slug + '.') && f !== slug + '.md') await unlink(resolve(OUT_DIR, f)).catch(() => {})
 }
 
-async function generate({ slug, prompt }) {
-  const out = resolve(OUT_DIR, `${slug}.jpg`)
-  if (!FORCE && (await exists(out))) {
-    console.log(`• ${slug}: exists, skipping (FORCE=1 to redo)`)
-    return 'skip'
+async function anyExists(slug) {
+  for (const ext of ['jpg', 'png', 'webp']) {
+    try { await access(resolve(OUT_DIR, `${slug}.${ext}`)); return `${slug}.${ext}` } catch {}
   }
-  const url = `https://api.fireworks.ai/inference/v1/workflows/accounts/fireworks/models/${MODEL}/text_to_image`
-  const t0 = Date.now()
-  const resp = await fetch(url, {
+  return null
+}
+
+// ── Google Gemini (generativelanguage) ──────────────────────────────────────
+async function genGemini(prompt, model) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
+  const r = await fetch(url, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${KEY}`,
-      'Content-Type': 'application/json',
-      Accept: 'image/jpeg',
-    },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_KEY },
     body: JSON.stringify({
-      prompt: `${prompt}, ${HOUSE}`,
-      aspect_ratio: '16:9',
-      guidance_scale: 3.5,
+      contents: [{ parts: [{ text: `${prompt}, ${HOUSE}` }] }],
+      generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: '16:9' } },
     }),
   })
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => '')
-    throw new Error(`${slug}: HTTP ${resp.status} ${detail.slice(0, 200)}`)
-  }
-  const buf = Buffer.from(await resp.arrayBuffer())
-  await writeFile(out, buf)
-  console.log(`✓ ${slug}: ${(buf.length / 1024).toFixed(0)} KB in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
-  return 'ok'
+  if (!r.ok) throw new Error(`HTTP ${r.status} ${(await r.text().catch(() => '')).slice(0, 220)}`)
+  const j = await r.json()
+  const part = (j?.candidates?.[0]?.content?.parts || []).find((p) => p.inlineData || p.inline_data)
+  const inline = part?.inlineData || part?.inline_data
+  if (!inline?.data) throw new Error(`no image in response ${JSON.stringify(j).slice(0, 220)}`)
+  return { buf: Buffer.from(inline.data, 'base64'), ext: extFromMime(inline.mimeType || inline.mime_type || 'image/png') }
+}
+
+// ── OpenRouter (chat completions, image modality) ───────────────────────────
+async function genOpenRouter(prompt, model) {
+  const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${OR_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, modalities: ['image', 'text'], messages: [{ role: 'user', content: `${prompt}, ${HOUSE}` }] }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status} ${(await r.text().catch(() => '')).slice(0, 220)}`)
+  const j = await r.json()
+  const dataUri = j?.choices?.[0]?.message?.images?.[0]?.image_url?.url
+  if (!dataUri) throw new Error(`no image in response ${JSON.stringify(j?.error || j).slice(0, 220)}`)
+  const m = dataUri.match(/^data:([^;]+);base64,(.*)$/)
+  if (!m) throw new Error('unexpected image url format')
+  return { buf: Buffer.from(m[2], 'base64'), ext: extFromMime(m[1]) }
 }
 
 async function main() {
-  if (!KEY) {
-    console.error('Missing FIREWORKS_API_KEY. Run: FIREWORKS_API_KEY=fw_… node frontend/scripts/gen-industry-images.mjs')
+  const gemini = !!GEMINI_KEY
+  if (!gemini && !OR_KEY) {
+    console.error('Set GEMINI_API_KEY (preferred) or OPENROUTER_WORKSPACE_API_KEY.')
     process.exit(1)
   }
+  const provider = gemini ? 'gemini' : 'openrouter'
+  const model = process.env.MODEL || (gemini ? 'gemini-2.5-flash-image' : 'google/gemini-3-pro-image')
+  const gen = gemini ? genGemini : genOpenRouter
+
   await mkdir(OUT_DIR, { recursive: true })
-  console.log(`Generating ${SCENES.length} images with ${MODEL} → ${OUT_DIR}\n`)
+  console.log(`Provider: ${provider} · model: ${model} · out: ${OUT_DIR}\n`)
   let ok = 0, fail = 0
-  for (const scene of SCENES) {
-    try { if ((await generate(scene)) !== 'skip') ok++ }
-    catch (e) { fail++; console.error(`✗ ${e.message}`) }
+  const map = {}
+  for (const { slug, prompt } of SCENES) {
+    const existing = await anyExists(slug)
+    if (!FORCE && existing) { console.log(`• ${slug}: exists (${existing}), skipping`); map[slug] = existing; continue }
+    const t0 = Date.now()
+    try {
+      const { buf, ext } = await gen(prompt, model)
+      await removeExisting(slug)
+      const name = `${slug}.${ext}`
+      await writeFile(resolve(OUT_DIR, name), buf)
+      map[slug] = name
+      ok++
+      console.log(`✓ ${slug}: ${name} ${(buf.length / 1024).toFixed(0)}KB in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+    } catch (e) { fail++; console.error(`✗ ${slug}: ${e.message}`) }
   }
-  console.log(`\nDone: ${ok} generated, ${fail} failed.`)
-  process.exit(fail ? 1 : 0)
+  console.log(`\nDone: ${ok} ok, ${fail} failed.`)
+  console.log('slug→file map:', JSON.stringify(map))
+  process.exit(fail && !ok ? 1 : 0)
 }
 
 main()
