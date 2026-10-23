@@ -400,6 +400,7 @@ function sanitizeUserTranscript(text: string): string | null {
 // Modern chat message bubble with parts support
 const MessageBubble = React.memo(function MessageBubble({
   message,
+  grouped,
   speakingChunk,
   onCopy,
   onLike,
@@ -408,6 +409,7 @@ const MessageBubble = React.memo(function MessageBubble({
   isLiked,
 }: {
   message: ChatMessage
+  grouped?: boolean
   speakingChunk?: SpeakingChunk | null
   onCopy?: () => void
   onLike?: () => void
@@ -454,19 +456,24 @@ const MessageBubble = React.memo(function MessageBubble({
 
   return (
     <div className="flex min-w-0 w-full justify-start group rounded-md px-2 py-1 -mx-2 hover:bg-white/[0.02] transition-colors" data-message-id={message.messageId ?? undefined}>{/* Slack model: every message is a left-aligned row; sender identity comes from the avatar + name line, not bubble position */}
-      {/* Avatar — flat rounded square, hidden on mobile to save space */}
+      {/* Avatar — flat rounded square, only on the FIRST message of a run; a
+          spacer keeps grouped rows aligned. Hidden on mobile to save space. */}
       {!isSystem && message.toolName !== 'fast-brain' && (
-        <div className={`hidden sm:flex w-7 h-7 rounded-md items-center justify-center mr-2.5 mt-0.5 shrink-0 ${isUser ? 'bg-gray-700' : 'bg-amber-600'}`}>
-          {isUser ? (
-            <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-            </svg>
-          ) : (
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-            </svg>
-          )}
-        </div>
+        grouped ? (
+          <div className="hidden sm:block w-7 mr-2.5 shrink-0" aria-hidden="true" />
+        ) : (
+          <div className={`hidden sm:flex w-7 h-7 rounded-md items-center justify-center mr-2.5 mt-0.5 shrink-0 ${isUser ? 'bg-gray-700' : 'bg-amber-600'}`}>
+            {isUser ? (
+              <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+            )}
+          </div>
+        )
       )}
 
       <div
@@ -478,8 +485,8 @@ const MessageBubble = React.memo(function MessageBubble({
             : 'text-gray-100 px-0.5 py-0.5'
         } ${message.isStreaming ? 'opacity-95' : ''}`}
       >
-        {/* Sender line — Slack-style bold name + hover-reveal time */}
-        {!isSystem && message.toolName !== 'fast-brain' && (
+        {/* Sender line — only on the first message of a run (Slack grouping) */}
+        {!isSystem && message.toolName !== 'fast-brain' && !grouped && (
           <div className="flex items-baseline gap-2">
             <span className={`text-[13px] font-bold ${isUser ? 'text-sky-300' : 'text-amber-300'}`}>{isUser ? 'You' : 'Osborn'}</span>
             {message.timestamp.getTime() > 0 && (
@@ -830,18 +837,32 @@ function ChatPanel({
       {/* Reading column — full width on phone/tablet, centered 3xl at lg+ so
           lines stop running 180 chars on wide monitors (Slack/Claude width). */}
       <div className="w-full lg:max-w-3xl lg:mx-auto space-y-1">
-      {messages.filter(m => m.category !== 'log').map((msg) => (
-        <MessageBubble
-          key={msg.id}
-          message={msg}
-          speakingChunk={speakingChunk}
-          onCopy={() => onCopy?.(msg)}
-          onLike={() => onLike?.(msg)}
-          onIgnore={() => onIgnore?.(msg)}
-          onReplay={() => onReplay?.(msg)}
-          isLiked={likedIds?.has(msg.id)}
-        />
-      ))}
+      {(() => {
+        const shown = messages.filter(m => m.category !== 'log')
+        return shown.map((msg, i) => {
+          // Slack-style grouping: show the avatar + sender name only on the
+          // FIRST message of a run from the same sender (same role + kind).
+          // System notices and fast-brain log lines never group.
+          const prev = shown[i - 1]
+          const kind = (m: ChatMessage) => m.role === 'system' ? 'system' : m.toolName === 'fast-brain' ? 'fast' : m.role
+          const grouped = !!prev && prev.role !== 'system' && msg.role !== 'system'
+            && msg.toolName !== 'fast-brain' && prev.toolName !== 'fast-brain'
+            && kind(prev) === kind(msg)
+          return (
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              grouped={grouped}
+              speakingChunk={speakingChunk}
+              onCopy={() => onCopy?.(msg)}
+              onLike={() => onLike?.(msg)}
+              onIgnore={() => onIgnore?.(msg)}
+              onReplay={() => onReplay?.(msg)}
+              isLiked={likedIds?.has(msg.id)}
+            />
+          )
+        })
+      })()}
       </div>
       {/* Inline research tracking spinner */}
       {activeResearch && (

@@ -1,7 +1,42 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { MarkdownMessage, MermaidBlock } from './MarkdownMessage'
+
+// Compact relative time for a file row: "2h", "Yesterday", "Oct 18".
+// Voice product — rows are glanceable, so keep it short and right-aligned.
+function fmtRelative(date: Date): string {
+  const d = date instanceof Date ? date : new Date(date)
+  const ms = d.getTime()
+  if (!Number.isFinite(ms)) return ''
+  const now = Date.now()
+  const diff = now - ms
+  const min = Math.floor(diff / 60000)
+  if (min < 1) return 'now'
+  if (min < 60) return `${min}m`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h`
+  // Compare by calendar day so "Yesterday" is correct across midnight.
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  const days = Math.floor((startOfToday.getTime() - d.getTime()) / 86400000) + 1
+  if (days === 1) return 'Yesterday'
+  if (days < 7) return `${days}d`
+  const sameYear = d.getFullYear() === new Date().getFullYear()
+  return d.toLocaleDateString(undefined, sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { month: 'short', day: 'numeric', year: '2-digit' })
+}
+
+// Prettified display title derived from a filename — drop the extension and
+// turn separators into spaces. The literal mono filename is still shown as a
+// secondary line because the agent speaks filenames aloud.
+function prettyTitle(fileName: string): string | null {
+  const base = fileName.replace(/\.[^.]+$/, '')
+  const pretty = base.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!pretty || pretty === fileName || pretty === base) return null
+  return pretty
+}
 
 // Matches GeneratedFile from VoiceRoom.tsx
 interface GeneratedFile {
@@ -62,21 +97,35 @@ export function FilesExplorerModal({
   const [searchQuery, setSearchQuery] = useState('')
   const [isMaximized, setIsMaximized] = useState(false)
   const [mobileView, setMobileView] = useState<'list' | 'content'>('list')
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
-  // Reset mobile view when modal closes
+  // Reset mobile view + query when modal closes
   useEffect(() => {
-    if (!isOpen) setMobileView('list')
+    if (!isOpen) {
+      setMobileView('list')
+      setSearchQuery('')
+    }
   }, [isOpen])
 
-  // Escape to close
+  // Autofocus the filter input when the modal opens.
+  useEffect(() => {
+    if (isOpen) searchInputRef.current?.focus()
+  }, [isOpen])
+
+  // Escape: clear the query first, then close on a second press.
   useEffect(() => {
     if (!isOpen) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Escape') return
+      if (searchQuery) {
+        setSearchQuery('')
+      } else {
+        onClose()
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isOpen, onClose])
+  }, [isOpen, onClose, searchQuery])
 
   // Filter files by search query
   const filteredFiles = useMemo(() => {
@@ -89,17 +138,47 @@ export function FilesExplorerModal({
 
   const isFav = useCallback((fp: string) => !!favoritePaths?.has(fp), [favoritePaths])
 
+  // Every group shows most-recent-first. Files arrive in arrival order, so we
+  // sort by updatedAt descending here (stable copy — never mutate the prop).
+  const ts = (f: GeneratedFile) => {
+    const t = (f.updatedAt instanceof Date ? f.updatedAt : new Date(f.updatedAt)).getTime()
+    return Number.isFinite(t) ? t : 0
+  }
+  const byRecent = useCallback(
+    (list: GeneratedFile[]) => [...list].sort((a, b) => ts(b) - ts(a)),
+    []
+  )
+
   // Favorites pin to the top in their own section; the source groups below then
   // exclude them so a starred file isn't listed twice.
-  const favoriteFilesList = useMemo(() => filteredFiles.filter(f => isFav(f.filePath)), [filteredFiles, isFav])
-  const planFiles = useMemo(() => filteredFiles.filter(f => f.source === 'plan' && !isFav(f.filePath)), [filteredFiles, isFav])
-  const researchFiles = useMemo(() => filteredFiles.filter(f => f.source === 'research' && !isFav(f.filePath)), [filteredFiles, isFav])
-  const otherFiles = useMemo(() => filteredFiles.filter(f => f.source !== 'plan' && f.source !== 'research' && !isFav(f.filePath)), [filteredFiles, isFav])
+  const favoriteFilesList = useMemo(() => byRecent(filteredFiles.filter(f => isFav(f.filePath))), [filteredFiles, isFav, byRecent])
+  const planFiles = useMemo(() => byRecent(filteredFiles.filter(f => f.source === 'plan' && !isFav(f.filePath))), [filteredFiles, isFav, byRecent])
+  const researchFiles = useMemo(() => byRecent(filteredFiles.filter(f => f.source === 'research' && !isFav(f.filePath))), [filteredFiles, isFav, byRecent])
+  const otherFiles = useMemo(() => byRecent(filteredFiles.filter(f => f.source !== 'plan' && f.source !== 'research' && !isFav(f.filePath))), [filteredFiles, isFav, byRecent])
 
-  // Currently selected file
-  const selectedFile = useMemo(
-    () => files.find(f => f.filePath === selectedFilePath) || files[0] || null,
+  // A flattened, in-display-order list of all visible rows. Keyboard nav
+  // (ArrowUp/Down + Enter) walks this so it matches what the eye sees.
+  const orderedVisible = useMemo(
+    () => [...favoriteFilesList, ...planFiles, ...researchFiles, ...otherFiles],
+    [favoriteFilesList, planFiles, researchFiles, otherFiles]
+  )
+
+  // The explicitly selected file, if any. Used for the highlight so no row is
+  // falsely marked selected before the user actually picks one.
+  const explicitlySelected = useMemo(
+    () => files.find(f => f.filePath === selectedFilePath) || null,
     [files, selectedFilePath]
+  )
+
+  // What the content pane previews. On the desktop two-pane layout we fall back
+  // to the most-recent file so the pane is never empty; on mobile the content
+  // pane is hidden (mobileView === 'list') until the user taps a row, so we do
+  // NOT auto-select files[0] there — that would fire a default into a pane the
+  // user can't see. Once mobileView is 'content' the explicit selection drives it.
+  const previewFallback = useMemo(() => byRecent(files)[0] || null, [files, byRecent])
+  const selectedFile = useMemo(
+    () => explicitlySelected || (mobileView === 'content' ? null : previewFallback),
+    [explicitlySelected, previewFallback, mobileView]
   )
 
   const handleBackdropClick = useCallback((e: React.MouseEvent) => {
@@ -110,6 +189,29 @@ export function FilesExplorerModal({
     onSelectFile(filePath)
     setMobileView('content')
   }, [onSelectFile])
+
+  // ArrowUp/Down moves the selection through the visible rows; Enter opens it.
+  // Walks orderedVisible so keyboard order matches the on-screen order.
+  const handleSearchKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (orderedVisible.length === 0) return
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const curIdx = orderedVisible.findIndex(f => f.filePath === selectedFilePath)
+      const delta = e.key === 'ArrowDown' ? 1 : -1
+      let next: number
+      if (curIdx === -1) {
+        next = e.key === 'ArrowDown' ? 0 : orderedVisible.length - 1
+      } else {
+        next = (curIdx + delta + orderedVisible.length) % orderedVisible.length
+      }
+      // Move selection without leaving the list view (don't open on arrow).
+      onSelectFile(orderedVisible[next].filePath)
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      const target = orderedVisible.find(f => f.filePath === selectedFilePath) || orderedVisible[0]
+      if (target) handleSelectFile(target.filePath)
+    }
+  }, [orderedVisible, selectedFilePath, onSelectFile, handleSelectFile])
 
   // When the selected file has a Supabase URL but no inline content, fetch
   // the text once and cache it keyed by URL. PDFs and images render from
@@ -141,7 +243,7 @@ export function FilesExplorerModal({
       onClick={handleBackdropClick}
     >
       <div
-        className={`flex flex-col bg-gray-900 border border-gray-700/50 shadow-2xl overflow-hidden transition-all duration-200 ${
+        className={`flex flex-col bg-gray-900 border border-gray-700/50 shadow-2xl overflow-hidden transition-all duration-200 motion-reduce:transition-none ${
           isMaximized
             ? 'w-[95vw] h-[95vh] rounded-2xl'
             : 'w-full h-full rounded-none sm:rounded-2xl sm:w-[80vw] sm:max-w-5xl sm:h-[75vh]'
@@ -150,7 +252,7 @@ export function FilesExplorerModal({
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-gray-700/50 bg-gray-900/80 shrink-0">
           <div className="flex items-center gap-3">
-            <svg className="w-5 h-5 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-5 h-5 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
             <span className="text-sm font-semibold text-white">Files Explorer</span>
@@ -161,7 +263,7 @@ export function FilesExplorerModal({
             {files.filter(f => !f.isImage).length > 1 && (
               <button
                 onClick={onCopyAll}
-                className={`px-2.5 py-1 text-xs rounded transition-colors ${
+                className={`px-2.5 py-1 text-xs rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                   fileCopyFeedback === 'all'
                     ? 'bg-green-500/20 text-green-400'
                     : 'bg-gray-800 text-gray-400 hover:text-gray-200'
@@ -173,8 +275,9 @@ export function FilesExplorerModal({
             {/* Maximize / Restore */}
             <button
               onClick={() => setIsMaximized(!isMaximized)}
-              className="p-1.5 text-gray-400 hover:text-white rounded transition-colors"
+              className="p-1.5 text-gray-400 hover:text-white rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               title={isMaximized ? 'Restore' : 'Maximize'}
+              aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
             >
               {isMaximized ? (
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -189,8 +292,9 @@ export function FilesExplorerModal({
             {/* Close */}
             <button
               onClick={onClose}
-              className="p-1.5 text-gray-400 hover:text-white rounded transition-colors"
+              className="p-1.5 text-gray-400 hover:text-white rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               title="Close (Esc)"
+              aria-label="Close files explorer"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -210,11 +314,16 @@ export function FilesExplorerModal({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
                 <input
+                  ref={searchInputRef}
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={handleSearchKeyDown}
                   placeholder="Filter files..."
-                  className="w-full pl-8 pr-3 py-1.5 text-xs bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/20"
+                  aria-label="Filter files"
+                  autoFocus
+                  /* text-base (16px) so iOS Safari doesn't zoom on focus. */
+                  className="w-full pl-8 pr-3 py-1.5 text-base bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:border-[var(--accent)]/50 focus:ring-1 focus:ring-[var(--accent)]/20"
                 />
               </div>
             </div>
@@ -311,8 +420,9 @@ export function FilesExplorerModal({
                     {/* Back button — mobile only */}
                     <button
                       onClick={() => setMobileView('list')}
-                      className="sm:hidden flex items-center gap-1 text-xs text-gray-400 hover:text-white shrink-0 mr-1"
+                      className="sm:hidden flex items-center gap-1 text-xs text-gray-400 hover:text-white shrink-0 mr-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
                       title="Back to files"
+                      aria-label="Back to files list"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -322,12 +432,24 @@ export function FilesExplorerModal({
                     <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${(typeBadge[selectedFile.type] || typeBadge.other).color}`}>
                       {(typeBadge[selectedFile.type] || typeBadge.other).label}
                     </span>
-                    <span className="text-xs font-mono text-violet-300 truncate">{selectedFile.fileName}</span>
+                    {/* Pretty title primary (if derivable), literal mono filename
+                        secondary — voice product, the agent speaks the filename. */}
+                    {(() => {
+                      const pretty = prettyTitle(selectedFile.fileName)
+                      return pretty ? (
+                        <span className="flex flex-col min-w-0">
+                          <span className="text-xs font-medium text-gray-100 truncate">{pretty}</span>
+                          <span className="text-[10px] font-mono text-[var(--accent)]/80 truncate">{selectedFile.fileName}</span>
+                        </span>
+                      ) : (
+                        <span className="text-xs font-mono text-[var(--accent)] truncate">{selectedFile.fileName}</span>
+                      )
+                    })()}
                   </div>
                   {!selectedFile.isImage && (
                     <button
                       onClick={() => onCopyFile(selectedFile.filePath)}
-                      className={`px-2.5 py-1 text-xs rounded transition-colors shrink-0 ml-3 ${
+                      className={`px-2.5 py-1 text-xs rounded transition-colors shrink-0 ml-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                         fileCopyFeedback === selectedFile.filePath
                           ? 'bg-green-500/20 text-green-400'
                           : 'bg-gray-700 text-gray-400 hover:text-gray-200'
@@ -370,7 +492,7 @@ export function FilesExplorerModal({
                       if (!fetched) {
                         return (
                           <div className="flex items-center justify-center py-12 text-gray-500 text-xs">
-                            <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
+                            <svg className="w-5 h-5 animate-spin motion-reduce:animate-none mr-2" fill="none" viewBox="0 0 24 24">
                               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                             </svg>
@@ -481,27 +603,46 @@ function FileListItem({
   onToggleFavorite?: (file: GeneratedFile) => void
 }) {
   const badge = typeBadge[file.type] || typeBadge.other
+  const pretty = prettyTitle(file.fileName)
+  const relative = fmtRelative(file.updatedAt)
 
   // Row is a div (not a button) so the star can be its own button without
   // nesting interactive elements. The name area stays keyboard-activatable.
+  // `group` lets the star hover-reveal only on hover-capable pointers.
+  // min-h-[44px] gives a comfortable touch target on mobile.
   return (
     <div
-      className={`w-full px-3 py-2.5 flex items-center gap-2 transition-colors ${
+      className={`group w-full min-h-[44px] px-3 py-2.5 flex items-center gap-2 transition-colors motion-reduce:transition-none ${
         isSelected
-          ? 'bg-violet-500/15 border-l-2 border-violet-400'
+          ? 'bg-[var(--accent)]/15 border-l-2 border-[var(--accent)]'
           : 'hover:bg-gray-800/50 border-l-2 border-transparent'
       }`}
     >
       <button
         onClick={() => onSelect(file.filePath)}
-        className="flex items-center gap-2 min-w-0 flex-1 text-left"
+        className="flex items-center gap-2 min-w-0 flex-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
       >
         <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${badge.color}`}>{badge.label}</span>
-        <span className="text-xs font-mono text-gray-300 truncate">{file.fileName}</span>
+        {/* Pretty title primary, literal mono filename secondary — the agent
+            speaks the filename aloud, so it must always stay visible. */}
+        {pretty ? (
+          <span className="flex flex-col min-w-0">
+            <span className="text-xs font-medium text-gray-200 truncate">{pretty}</span>
+            <span className="text-[10px] font-mono text-gray-500 truncate">{file.fileName}</span>
+          </span>
+        ) : (
+          <span className="text-xs font-mono text-gray-300 truncate">{file.fileName}</span>
+        )}
       </button>
+      {/* Right-aligned relative time, derived from updatedAt. */}
+      {relative && (
+        <span className="shrink-0 text-[10px] text-gray-500 tabular-nums" title={new Date(file.updatedAt).toLocaleString()}>
+          {relative}
+        </span>
+      )}
       {/* Spinner only while we have neither content nor URL. */}
       {!file.content && !file.url && (
-        <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
+        <svg className="w-3 h-3 animate-spin motion-reduce:animate-none text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
@@ -509,11 +650,14 @@ function FileListItem({
       {onToggleFavorite && (
         <button
           onClick={(e) => { e.stopPropagation(); onToggleFavorite(file) }}
-          className={`shrink-0 p-1 rounded transition-colors ${
+          /* Always visible on touch; on hover-capable pointers it fades in on
+             row hover/focus. A favorited (or focused) star always stays shown. */
+          className={`shrink-0 p-1.5 rounded transition-opacity transition-colors motion-reduce:transition-none focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:opacity-100 ${
             isFavorite ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-300'
-          }`}
+          } ${isFavorite ? '' : '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100'}`}
           title={isFavorite ? 'Unfavorite — remove from pinned' : 'Favorite — keep this file pinned'}
           aria-label={isFavorite ? 'Unfavorite' : 'Favorite'}
+          aria-pressed={!!isFavorite}
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={isFavorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" />
