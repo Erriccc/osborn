@@ -11,7 +11,7 @@ const sans = Instrument_Sans({ subsets: ['latin'], variable: '--font-sans-loaded
 const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono-loaded', weight: ['400', '500'] })
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://voice-native.com'),
+  metadataBase: new URL('https://www.voice-native.com'),
   title: {
     default: 'Voice Native — The AI Coding Agent You Talk To',
     template: '%s — Voice Native',
@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   openGraph: {
     type: 'website',
     siteName: 'Voice Native',
-    url: 'https://voice-native.com',
+    url: 'https://www.voice-native.com',
     title: 'Voice Native — Talk to it. It ships.',
     description: 'A voice-native AI engineer that writes and runs code on your machine, with a team of Claude sub-agents you watch work in real time.',
   },

@@ -8,7 +8,7 @@ import MarketingShell from '@/components/marketing/MarketingShell'
 import MarketingCTA from '@/components/marketing/MarketingCTA'
 import { CASE_STUDIES } from '@/lib/case-studies'
 
-const SITE_URL = 'https://voice-native.com'
+const SITE_URL = 'https://www.voice-native.com'
 const CANONICAL = `${SITE_URL}/use-cases`
 
 const TITLE = 'Use cases — real work Voice Native has shipped'

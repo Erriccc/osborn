@@ -218,7 +218,7 @@ export default function LibraryPage() {
   // Public URL for a published item (null until we know handle + slug).
   const publicUrl = (item: ContentItem): string | null =>
     handle && item.slug && item.status === 'published'
-      ? `https://voice-native.com/p/${encodeURIComponent(handle)}/${item.slug}`
+      ? `https://www.voice-native.com/p/${encodeURIComponent(handle)}/${item.slug}`
       : null
 
   async function togglePublish(item: ContentItem, action: 'publish' | 'unpublish') {

@@ -31,7 +31,7 @@ export function createSupabaseAnon() {
 
 /** The canonical public base URL. metadataBase is set in layout; we still emit
  *  absolute canonicals explicitly everywhere. */
-export const SITE_URL = 'https://voice-native.com'
+export const SITE_URL = 'https://www.voice-native.com'
 
 /** Shape of a published row as exposed by the public_content view. */
 export interface PublicContent {

@@ -10,7 +10,7 @@ import MarketingShell from '@/components/marketing/MarketingShell'
 import ComparisonMatrix from '@/components/marketing/ComparisonMatrix'
 import MarketingCTA from '@/components/marketing/MarketingCTA'
 
-const SITE_URL = 'https://voice-native.com'
+const SITE_URL = 'https://www.voice-native.com'
 const CANONICAL = `${SITE_URL}/compare`
 
 const TITLE = 'Voice Native vs. Cursor, Copilot, Devin, Claude Code & Replit'

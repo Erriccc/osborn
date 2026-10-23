@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
       publishedAt,
       handle,
       path,
-      url: path ? `https://voice-native.com${path}` : null,
+      url: path ? `https://www.voice-native.com${path}` : null,
     })
   }
 
