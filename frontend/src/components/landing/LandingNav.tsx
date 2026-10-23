@@ -24,10 +24,14 @@ export default function LandingNav() {
   }, [])
 
   // Auth-aware CTAs: signed-in visitors can hang out on the landing and get
-  // "Open dashboard" instead of "Sign in / Start talking".
+  // "Open dashboard" instead of "Sign in / Start talking". Use getSession()
+  // (reads the locally-stored session, no slow network validation) + subscribe
+  // so it reflects reality immediately and on sign-in/out.
   useEffect(() => {
     const supabase = createSupabaseBrowser()
-    supabase.auth.getUser().then(({ data }) => setAuthed(!!data.user)).catch(() => {})
+    supabase.auth.getSession().then(({ data }) => setAuthed(!!data.session)).catch(() => {})
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => setAuthed(!!session))
+    return () => sub.subscription.unsubscribe()
   }, [])
 
   // Lock body scroll while the mobile sheet is open
@@ -151,25 +155,43 @@ export default function LandingNav() {
               </a>
             ))}
             <div className="h-px bg-[var(--border-subtle)] my-2" />
-            <Link
-              href="/login"
-              onClick={() => setOpen(false)}
-              className="font-mono text-[14px] uppercase tracking-[0.08em] text-[var(--text-secondary)]"
-            >
-              Sign in
-            </Link>
-            <Link
-              href="/login"
-              onClick={() => setOpen(false)}
-              className="h-12 inline-flex items-center justify-center rounded-xl text-[15px] font-semibold tracking-[-0.01em]"
-              style={{
-                background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)',
-                color: 'var(--background)',
-                boxShadow: '0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12)',
-              }}
-            >
-              Start talking
-            </Link>
+            {authed ? (
+              <Link
+                href="/dashboard"
+                onClick={() => setOpen(false)}
+                className="h-12 inline-flex items-center justify-center gap-2 rounded-xl text-[15px] font-semibold tracking-[-0.01em]"
+                style={{
+                  background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)',
+                  color: 'var(--background)',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12)',
+                }}
+              >
+                Open dashboard
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 5l7 7-7 7" /></svg>
+              </Link>
+            ) : (
+              <>
+                <Link
+                  href="/login"
+                  onClick={() => setOpen(false)}
+                  className="font-mono text-[14px] uppercase tracking-[0.08em] text-[var(--text-secondary)]"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/login"
+                  onClick={() => setOpen(false)}
+                  className="h-12 inline-flex items-center justify-center rounded-xl text-[15px] font-semibold tracking-[-0.01em]"
+                  style={{
+                    background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)',
+                    color: 'var(--background)',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12)',
+                  }}
+                >
+                  Start talking
+                </Link>
+              </>
+            )}
           </div>
         </div>
       )}

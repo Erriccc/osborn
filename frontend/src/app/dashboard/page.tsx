@@ -1289,7 +1289,7 @@ export default function Dashboard() {
                   aria-haspopup="menu" aria-expanded={showProfileMenu}
                   className={`p-1 rounded-full transition-all ${showProfileMenu ? 'bg-[var(--accent-dim)]/20 ring-1 ring-[var(--accent)]/50' : 'hover:bg-[var(--surface)]'}`}>
                   {user?.user_metadata?.avatar_url ? (
-                    <img src={user.user_metadata.avatar_url} alt="" className={`w-7 h-7 rounded-full ring-1 ${showProfileMenu ? 'ring-[var(--accent)]' : 'ring-[var(--border)]'}`} />
+                    <img src={user.user_metadata.avatar_url} alt="" className={`w-7 h-7 rounded-full object-cover shrink-0 ring-1 ${showProfileMenu ? 'ring-[var(--accent)]' : 'ring-[var(--border)]'}`} />
                   ) : user?.email ? (
                     <div className="w-7 h-7 rounded-full bg-[var(--accent-dim)] flex items-center justify-center text-[11px] font-semibold text-[var(--background)]">
                       {user.email[0].toUpperCase()}
