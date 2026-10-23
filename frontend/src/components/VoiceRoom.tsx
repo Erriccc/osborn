@@ -3094,40 +3094,17 @@ function VoiceRoomInner({
           setSessionGateCompleted(true)
           setCurrentSessionId(preSelectedSessionId || data.preSelectedSessionId)
         }
-        // Session gate — show immediately on first agent_ready, don't wait for sessionsLoaded.
-        // isLoadingSessions drives the spinner inside the prompt while the scan runs.
-        else if (!sessionGateCompletedRef.current && !showResumePromptRef.current) {
-          if (!data.sessionsLoaded) {
-            // Scan still running — show gate immediately with loading spinner so the
-            // user isn't stuck at "Connecting to agent..." for the full scan duration.
-            setIsLoadingSessions(true)
-            setShowResumePrompt(true)
-            setIsMuted(true)
-            localParticipant?.setMicrophoneEnabled(false)
-          } else if (data.sessions?.length > 0 || (data.hasRecentSession && data.recentSessionId)) {
-            // Scan done, sessions found — show browser
-            setIsLoadingSessions(false)
-            setRecentSessionId(data.recentSessionId)
-            setShowResumePrompt(true)
-            setIsMuted(true)
-            localParticipant?.setMicrophoneEnabled(false)
-          } else {
-            // Scan done, genuinely no sessions — complete gate
-            setIsLoadingSessions(false)
-            setSessionGateCompleted(true)
-          }
-        } else if (data.sessionsLoaded && showResumePromptRef.current) {
-          // Gate already showing (loading state) — scan just finished, update sessions and spinner
+        // No preselected session = fresh conversation. Start immediately,
+        // no gate. The dashboard is the session picker now — "Continue where
+        // you left off", "Resume a session", and every session-list row all
+        // route to /chat?session=…, so re-prompting here was redundant (the
+        // "Previous Sessions" popup). Users switch sessions mid-chat from the
+        // in-chat session browser; the list below keeps it warm.
+        else if (!sessionGateCompletedRef.current) {
           setIsLoadingSessions(false)
+          setSessionGateCompleted(true)
           if (data.recentSessionId) setRecentSessionId(data.recentSessionId)
           if (data.sessions && Array.isArray(data.sessions)) setSessions(data.sessions)
-          // If scan finished with no sessions at all, auto-complete the gate
-          if (!data.sessions?.length && !data.hasRecentSession) {
-            setShowResumePrompt(false)
-            setSessionGateCompleted(true)
-            setIsMuted(false)
-            localParticipant?.setMicrophoneEnabled(true)
-          }
         }
         // Request slot list so the instances panel populates on connect
         {
@@ -5440,17 +5417,20 @@ function VoiceRoomInner({
             <span>{isMuted ? 'Muted' : 'Mic'}</span>
           </button>
 
-          {/* Hangup — rightmost, next to Mute (moved off the top bar) */}
+          {/* Hangup — rightmost, next to Mute (moved off the top bar). Labeled
+              red pill so it's an easy, unmistakable tap target on mobile
+              (icon-only 44px round was too small to hit reliably). */}
           {onDisconnect && (
             <button
               onClick={onDisconnect}
               aria-label="End session"
-              className="flex items-center justify-center w-11 h-11 ml-3 rounded-full bg-red-500/90 text-white hover:bg-red-500 transition-all"
+              className="flex items-center gap-1.5 ml-2 px-3.5 py-2 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
               title="Hang up — end session (saves minutes, session stays resumable)"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
               </svg>
+              <span>End</span>
             </button>
           )}
         </div>
