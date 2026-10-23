@@ -5325,7 +5325,7 @@ function VoiceRoomInner({
             input instead of crammed in the header where they clip.
             Layout: Auto on the LEFT, then agents/skills; Mute + Hangup pinned
             to the RIGHT (thumb-reachable, and hangup off the top bar). */}
-        <div className="sm:hidden flex items-center gap-1.5 px-3 pt-1.5">
+        <div className="sm:hidden flex flex-wrap items-center gap-x-1.5 gap-y-2 px-3 pt-1.5">
           {/* Auto-approve (automation accept) — left edge */}
           <button
             onClick={() => setAutoApprovePermissions(v => !v)}
@@ -5424,7 +5424,7 @@ function VoiceRoomInner({
             <button
               onClick={onDisconnect}
               aria-label="End session"
-              className="flex items-center gap-1.5 ml-2 px-3.5 py-2 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
+              className="shrink-0 flex items-center gap-1.5 ml-1 px-3.5 py-2 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
               title="Hang up — end session (saves minutes, session stays resumable)"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
