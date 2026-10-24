@@ -84,9 +84,26 @@ a cold launch must not auto-burn LiveKit minutes).
     HMAC + expiry, POSTs the ack to the agent's `/watch/ack` → pending
     permission resolves allow. Web-UI answers always win; late wrist acks are
     no-ops; an ack whose callback got lost is recovered by the expiry poll.
-- **Track 2 (scaffold):** `native/watchos/` SwiftUI app + `agent/src/watch-gateway.ts`
-  (Node ws gateway ↔ @livekit/rtc-node). Needs the Apple account + TestFlight
-  to reach a real watch.
+- **Track 2 (scaffold, built by CI):** `frontend/native/watchos/` SwiftUI app
+  (watchOS 9+) + `agent/src/watch-gateway.ts` (Node `ws` server ↔
+  `@livekit/rtc-node`, both already agent deps).
+  - Why a gateway: watchOS has no WKWebView and LiveKit's Swift SDK won't
+    target watchOS (client-sdk-swift #288) — the watch speaks a small WS
+    protocol (24kHz Int16LE PCM binary + JSON text) to the gateway on the
+    user's own machine, which bridges into their LiveKit room (resample
+    24k↔48k, data-channel JSON → watch state/question events; answers ride
+    back as permission_response, same shape as the web UI).
+  - App screens (3-6-9): Connect = 1 action · Live = 3 (Talk / Mute / End) ·
+    question sheet = 2 (Yes / No). Protocol mirrored in GatewayLink.swift and
+    watch-gateway.ts — keep them in sync.
+  - Enable: agent env `WATCH_GATEWAY=1` (port `WATCH_GATEWAY_PORT`, default
+    8742; open it on the machine's firewall/fly config before testing).
+  - Build: Actions → *watchos-build* (macos-26). The xcodeproj is NOT
+    committed — CI runs `brew install xcodegen && xcodegen generate` from
+    `frontend/native/watchos/project.yml` (xcodegen needs full Xcode, which
+    the CLT-only founder Mac lacks). Artifact = unsigned watchOS-Simulator
+    .app — runs in any Mac's watch simulator, no dev account needed.
+  - Real watch: needs the $99 account + TestFlight (90-day expiry re-uplift).
 
 ## Gotchas register
 - **OAuth in the shell (G-OAUTH):** `signInWithOAuth` top-level redirect hits

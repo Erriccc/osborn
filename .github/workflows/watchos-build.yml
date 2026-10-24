@@ -1,0 +1,69 @@
+# watchOS Track 2 scaffold — unsigned cloud build (Phase 3).
+#
+# Runs on macos-26 (arm64, watchOS SDK included). The Xcode project is NOT
+# committed — xcodegen generates it from frontend/native/watchos/project.yml
+# (xcodegen needs full Xcode, which the founder's CLT-only Mac lacks; CI has
+# it). Unsigned + watchOS SIMULATOR destination so the .app runs in any Mac's
+# watch simulator without a dev account:
+#   xcrun simctl install booted <watch-sim> OsbornWatch-unsigned.app
+#
+# Needs the $99 Apple account + TestFlight to ever reach a real watch.
+
+name: watchos-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/native/watchos/**'
+      - '.github/workflows/watchos-build.yml'
+
+concurrency:
+  group: watchos-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: frontend/native/watchos
+        run: xcodegen generate
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build (unsigned, watchOS Simulator)
+        working-directory: frontend/native/watchos
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project OsbornWatch.xcodeproj \
+            -scheme OsbornWatch \
+            -configuration Release \
+            -destination 'generic/platform=watchOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" build | tail -40
+
+      - name: Collect .app
+        working-directory: frontend/native/watchos
+        run: |
+          mkdir -p build/artifact
+          cp -R "build/DerivedData/Build/Products/Release-watchsimulator/OsbornWatch.app" build/artifact/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OsbornWatch-unsigned-${{ github.sha }}
+          path: frontend/native/watchos/build/artifact/
+          retention-days: 14
+          if-no-files-found: error

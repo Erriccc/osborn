@@ -58,6 +58,7 @@ import { getRecallClient } from './recall-client.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './pushover.js'
+import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { llm } from '@livekit/agents'
@@ -2130,6 +2131,23 @@ async function main() {
   // null while the agent is idle (between sessions).
   let activeRoom: Room | null = null
   let activeRoomName: string | null = null  // the temporary room name currently joined
+
+  // Watch gateway (mobile Track 2): bridges the native watchOS app's WS audio
+  // + JSON into the user's LiveKit room via rtc-node. Opt-in — dormant unless
+  // WATCH_GATEWAY=1 (port WATCH_GATEWAY_PORT, default 8742).
+  if (process.env.WATCH_GATEWAY === '1') {
+    const livekitUrl = process.env.LIVEKIT_URL || ''
+    if (livekitUrl) {
+      startWatchGateway({
+        port: parseInt(process.env.WATCH_GATEWAY_PORT || '8742', 10),
+        livekitUrl,
+        getActiveRoom: () => activeRoomName,
+        mintToken: mintAgentToken,
+      })
+    } else {
+      console.log('⌚️ Watch gateway: WATCH_GATEWAY=1 but LIVEKIT_URL unset — not starting')
+    }
+  }
 
   // Track state
   let pendingSessionClose: Promise<void> | null = null  // Tracks async session close for reconnect safety

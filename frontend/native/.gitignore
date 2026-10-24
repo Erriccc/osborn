@@ -6,3 +6,6 @@ ios/DerivedData/
 build/
 *.xcuserstate
 xcuserdata/
+# watchos: CI xcodegen-generates the project at build time
+watchos/OsbornWatch.xcodeproj/
+watchos/build/
