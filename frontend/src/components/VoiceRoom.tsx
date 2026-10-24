@@ -596,12 +596,14 @@ const MessageBubble = React.memo(function MessageBubble({
           <span className="text-[10px] text-amber-400">streaming</span>
         )}
 
-        {/* Action buttons */}
+        {/* Action buttons — hover-reveal on pointer devices; always visible on
+            touch (no hover): max-sm:opacity-100 (P1.10 — actions were
+            unreachable on phones). Targets padded to 44pt-equivalent spacing. */}
         {!isSystem && !message.isStreaming && (
-          <div className={`flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity ${isUser ? 'justify-end' : 'justify-start'}`}>
+          <div className={`flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity ${isUser ? 'justify-end' : 'justify-start'}`}>
             <button
               onClick={handleCopy}
-              className="p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
+              className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
               title="Copy"
             >
               {copyDone ? (
@@ -618,7 +620,7 @@ const MessageBubble = React.memo(function MessageBubble({
             {!isUser && (
               <button
                 onClick={onLike}
-                className={`p-0.5 rounded transition-colors active:scale-95 ${isLiked ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-gray-200'}`}
+                className={`p-1.5 -m-1 rounded transition-colors active:scale-95 ${isLiked ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-gray-200'}`}
                 title="Like"
               >
                 {isLiked ? (
@@ -637,7 +639,7 @@ const MessageBubble = React.memo(function MessageBubble({
             {!isUser && (
               <button
                 onClick={onReplay}
-                className="p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
+                className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
                 title="Replay"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -649,7 +651,7 @@ const MessageBubble = React.memo(function MessageBubble({
             {isUser && (
               <button
                 onClick={onIgnore}
-                className="p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
+                className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
                 title="Ignore"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -798,7 +800,7 @@ function ChatPanel({
             isAtBottomRef.current = true
             setShowJumpPill(false)
           }}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 min-h-9 px-3.5 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
         >
           Jump to latest
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -812,7 +814,7 @@ function ChatPanel({
             // Nudge only — does NOT force-scroll, does NOT set isAtBottomRef
             speakingElRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
           }}
-          className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/80 hover:bg-amber-400/80 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 min-h-9 px-3.5 py-1.5 rounded-full bg-amber-500/80 hover:bg-amber-400/80 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
         >
           Now speaking
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -1031,7 +1033,8 @@ function TextInput({
               )}
               <button
                 onClick={() => onRemoveFile(idx)}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-md hover:bg-red-600"
+                className="absolute -top-1.5 -right-1.5 w-5 h-5 max-sm:w-6 max-sm:h-6 bg-red-500 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity shadow-md hover:bg-red-600"
+                aria-label="Remove attachment"
               >
                 ×
               </button>
@@ -1051,12 +1054,12 @@ function TextInput({
           onChange={handleFileSelect}
           className="hidden"
         />
-        <div className="flex items-center gap-1.5 rounded-full bg-gray-800/60 border border-gray-700/50 focus-within:border-amber-500/50 focus-within:ring-2 focus-within:ring-amber-500/15 transition-all pl-1.5 pr-1.5 py-1">
-          {/* Attach */}
+        <div className="flex items-center gap-1.5 rounded-full bg-gray-800/60 border border-gray-700/50 focus-within:border-amber-500/50 focus-within:ring-2 focus-within:ring-amber-500/15 transition-all pl-1.5 pr-1.5 py-1 max-sm:py-1.5">
+          {/* Attach — 44pt target on touch (P1.10) */}
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="p-2 text-gray-500 hover:text-amber-300 rounded-full hover:bg-gray-700/50 active:scale-95 transition-all shrink-0"
+            className="p-2 max-sm:min-h-11 max-sm:min-w-11 flex items-center justify-center text-gray-500 hover:text-amber-300 rounded-full hover:bg-gray-700/50 active:scale-95 transition-all shrink-0"
             title="Attach file"
           >
             <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1075,11 +1078,11 @@ function TextInput({
             className="flex-1 min-w-0 bg-transparent text-[15px] text-white px-1 py-2 focus:outline-none placeholder:text-gray-500"
           />
 
-          {/* Send */}
+          {/* Send — 44pt target on touch (P1.10) */}
           <button
             type="submit"
             disabled={!text.trim() && attachedFiles.length === 0}
-            className="w-9 h-9 flex items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 hover:from-amber-500 hover:to-amber-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed active:scale-95 transition-all shadow-[0_2px_12px_rgba(245,158,11,0.35)] disabled:shadow-none shrink-0"
+            className="w-9 h-9 max-sm:w-11 max-sm:h-11 flex items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 hover:from-amber-500 hover:to-amber-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed active:scale-95 transition-all shadow-[0_2px_12px_rgba(245,158,11,0.35)] disabled:shadow-none shrink-0"
           >
             <svg className="w-4 h-4 text-gray-950" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.4}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14m0 0l-6-6m6 6l-6 6" />
@@ -1910,15 +1913,15 @@ function PermissionModal({
         <div className="shrink-0 space-y-3">
           <div className="flex gap-2">
             <button onClick={() => onRespond('deny')}
-              className="flex-1 px-3 py-2.5 bg-gray-800 hover:bg-gray-700 rounded-xl transition-colors text-gray-300 text-sm font-medium border border-gray-700">
+              className="flex-1 min-h-11 px-3 py-2.5 bg-gray-800 hover:bg-gray-700 rounded-xl transition-colors text-gray-300 text-sm font-medium border border-gray-700">
               Deny
             </button>
             <button onClick={() => onRespond('allow')}
-              className="flex-1 px-3 py-2.5 bg-green-600 hover:bg-green-500 rounded-xl transition-colors text-white text-sm font-medium shadow-lg shadow-green-500/20">
+              className="flex-1 min-h-11 px-3 py-2.5 bg-green-600 hover:bg-green-500 rounded-xl transition-colors text-white text-sm font-medium shadow-lg shadow-green-500/20">
               Allow
             </button>
             <button onClick={() => onRespond('always_allow')}
-              className="flex-1 px-3 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 rounded-xl transition-all text-white text-sm font-medium shadow-lg shadow-amber-500/20">
+              className="flex-1 min-h-11 px-3 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 rounded-xl transition-all text-white text-sm font-medium shadow-lg shadow-amber-500/20">
               Always
             </button>
           </div>
@@ -5344,7 +5347,7 @@ function VoiceRoomInner({
                 meeting, history (8 ≤ technical-9 cap). Top bar stays clean:
                 status + clock on the left, burger on the right. */}
             <button onClick={() => setShowMobileMenu(true)}
-              className="sm:hidden shrink-0 p-2 rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
+              className="sm:hidden shrink-0 min-h-11 min-w-11 flex items-center justify-center rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
               </svg>
@@ -5486,7 +5489,7 @@ function VoiceRoomInner({
         <div className="sm:hidden flex items-center justify-end gap-1.5 px-3 pt-1.5">
           <button
             onClick={toggleMute}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
+            className={`flex items-center gap-1.5 min-h-11 px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
               isMuted
                 ? 'bg-red-500/20 text-red-400'
                 : 'text-gray-400 hover:bg-gray-800/60'
@@ -5508,7 +5511,7 @@ function VoiceRoomInner({
             <button
               onClick={onDisconnect}
               aria-label="End session"
-              className="shrink-0 flex items-center gap-1.5 ml-1 px-3.5 py-2 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
+              className="shrink-0 flex items-center gap-1.5 min-h-11 ml-1 px-3.5 py-2 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
               title="Hang up — end session (saves minutes, session stays resumable)"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -5872,7 +5875,7 @@ function VoiceRoomInner({
                 </div>
                 {meetingStatus === 'joined' ? (
                   <button onClick={() => { handleLeaveMeeting(); setShowMobileMenu(false) }}
-                    className="w-full py-2.5 text-sm bg-green-500/15 text-green-400 border border-green-500/30 rounded hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/30 transition-colors">
+                    className="w-full min-h-11 py-2.5 text-sm bg-green-500/15 text-green-400 border border-green-500/30 rounded hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/30 transition-colors">
                     Leave meeting
                   </button>
                 ) : meetingStatus === 'joining' ? (
@@ -5892,7 +5895,7 @@ function VoiceRoomInner({
                     <button
                       onClick={() => { if (meetingUrlInput.trim()) { handleJoinMeeting(meetingUrlInput.trim()); setMeetingUrlInput(''); setShowMobileMenu(false) } }}
                       disabled={!meetingUrlInput.trim()}
-                      className="mt-2 w-full py-2.5 text-sm bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors disabled:opacity-50"
+                      className="mt-2 w-full min-h-11 py-2.5 text-sm bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors disabled:opacity-50"
                     >
                       Send bot to meeting
                     </button>

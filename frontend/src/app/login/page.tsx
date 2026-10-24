@@ -319,7 +319,7 @@ export default function Home() {
                   <span className="text-[var(--text-secondary)] text-[11px] uppercase tracking-wider">Agent URL</span>
                   <input type="text" value={agentUrl}
                     onChange={e => { setAgentUrl(e.target.value); localStorage.setItem('osborn-agent-url', e.target.value) }}
-                    className="w-full h-9 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[13px] px-3 font-mono outline-none focus:border-[var(--accent)]" />
+                    className="w-full h-9 max-sm:h-11 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[13px] max-sm:text-base px-3 font-mono outline-none focus:border-[var(--accent)]" />
                 </label>
 
                 {/* Toggle rows */}
@@ -364,7 +364,7 @@ function ToggleRow({ label, options, value, onChange }: {
       <div className="inline-flex rounded-full border border-[var(--border)] overflow-hidden">
         {options.map(([v, l]) => (
           <button key={v} onClick={() => onChange(v)}
-            className="px-3 py-1 text-[12px] border-none cursor-pointer transition-all duration-150"
+            className="px-3 py-1 max-sm:min-h-9 max-sm:px-3.5 text-[12px] border-none cursor-pointer transition-all duration-150"
             style={{
               background: value === v ? 'var(--accent)' : 'transparent',
               color: value === v ? 'var(--background)' : 'var(--text-secondary)',
