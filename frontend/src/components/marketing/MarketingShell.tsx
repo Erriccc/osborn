@@ -65,7 +65,7 @@ export default function MarketingShell({ children }: { children: ReactNode }) {
             Voice Native
           </span>
           <div className="flex items-center gap-5">
-            <a href="https://www.linkedin.com/in/osbornojure/" target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-[var(--text-secondary)]">LinkedIn</a>
+            <a href="https://www.linkedin.com/in/ojure-osborn-12677216b/" target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-[var(--text-secondary)]">LinkedIn</a>
             <a href="https://github.com/Erriccc/osborn" target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-[var(--text-secondary)]">GitHub</a>
             <span className="font-mono text-[11px] uppercase tracking-[0.14em]">
               Talk to it. It ships.

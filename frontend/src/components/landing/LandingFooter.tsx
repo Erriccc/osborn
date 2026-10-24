@@ -31,7 +31,7 @@ const COLUMNS: { heading: string; links: { label: string; href: string }[] }[] =
     heading: 'Company',
     links: [
       { label: 'About', href: '/about' },
-      { label: 'LinkedIn', href: 'https://www.linkedin.com/in/osbornojure/' },
+      { label: 'LinkedIn', href: 'https://www.linkedin.com/in/ojure-osborn-12677216b/' },
       { label: 'GitHub', href: 'https://github.com/Erriccc/osborn' },
       { label: 'Contact', href: 'mailto:hello@voice-native.com' },
     ],
