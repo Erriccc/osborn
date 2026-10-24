@@ -26,6 +26,12 @@ Every **mobile** screen exposes at most:
 Everything else lives in popups, nav, or a separate page. Each deep-map section below
 carries an **IA (3-6-9)** row assigning every control a tier + overflow destination.
 
+**Counting exemption (founder, 2026-10-24):** persistent navigation chrome — nav bars,
+tab bars, menus/burger sheets, and footers — does **not** count against a screen's 3-6-9
+tally. The rule measures the screen's *content* actionables (the screen's job); the nav
+that gets you between screens is infrastructure. A burger sheet may therefore hold any
+number of overflow entries regardless of the host screen's tier.
+
 ### 0.3 Completeness guarantee
 - Routes enumerated from `frontend/src/app` — 20 user routes + 1 bot route + 1 redirect.
 - API endpoints enumerated from `frontend/src/app/api` — 18 handlers.
@@ -105,13 +111,18 @@ Wrapper states (`chat/page.tsx`): (1) pre-token orb spinner + **Cancel**; (2) er
 | Jump-to-latest pill, speaking pill | — | — | — | — | ✅ | passive |
 | More menu (viewport-cut fallback @5707) | 5707 | — | — | — | ✅ | **technical page (≤9)** |
 
-#### IA (3-6-9) — voice screen
-- **Primary 3:** mic · composer (incl. attach) · End session
+#### IA (3-6-9) — voice screen (✅ shipped P1.e, commit series Oct 2026)
+- **Primary 3:** mic · composer (incl. attach) · End session — the mobile composer strip
+  now carries exactly Mic + End (Auto/Ask, Agents, Skills, Filter were removed from it)
 - **Extended (≤6, only while relevant):** resume-prompt modal, permission modal, OAuth
-  modal, reconnect overlay — all *event-driven*, never ambient
-- **Technical 9:** More menu — Sessions, Files, Skills, Agents, Sub-agents, Instances,
-  Meetings, Noise-cancel, Settings-shortcuts (exactly 9)
-- **Overflow destination:** existing More menu + per-feature panels/modals
+  modal, reconnect overlay, autoplay-unlock bar, mic-denied dialog — all *event-driven*,
+  never ambient
+- **Overflow destination:** the mobile **burger sheet** (nav chrome — counting-exempt,
+  §0.2): Auto-approve, Noise filter (with send-anyway count chip), Agents, Skills, Files
+  Explorer, Copy all, Meeting join/leave, Session History = 8 rows. Agents/Skills rows
+  bridge to the header-less popover panels (`requestOpen`/`hideTrigger`). The sheet's old
+  Disconnect row was removed — End is a permanent primary, never cut.
+- Desktop header (status/clock/popovers/More) is untouched by the restructure.
 
 #### Subsystems owned here
 See §3 (audio pipeline, connection lifecycle, data-channel protocol, idle timer).

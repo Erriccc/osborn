@@ -1110,20 +1110,29 @@ export interface UserAgentDraft {
   tools: string[]
 }
 
-function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, onRestoreAgent }: {
+function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, onRestoreAgent, requestOpen, hideTrigger }: {
   agents?: NamedAgent[]
   disabled?: boolean
   onSaveAgent?: (a: UserAgentDraft) => void
   onDeleteAgent?: (name: string, isCustom: boolean) => void
   removed?: string[]
   onRestoreAgent?: (name: string) => void
+  /** Increment to force the panel open (mobile burger sheet rows use this —
+      they can't reach internal state). Ignored while disabled. */
+  requestOpen?: number
+  /** Render panel only, no trigger button (driven purely by requestOpen). */
+  hideTrigger?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<UserAgentDraft | null>(null)
   const [deleteArm, setDeleteArm] = useState<string | null>(null)
   const count = agents?.length ?? 0
+  useEffect(() => {
+    if (requestOpen && !disabled) setOpen(true)
+  }, [requestOpen, disabled])
   return (
     <div className="relative">
+      {!hideTrigger && (
       <button
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
@@ -1149,6 +1158,7 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, 
           </span>
         )}
       </button>
+      )}
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
@@ -1379,11 +1389,15 @@ function SkillsPanel({
 
 // First-class Skills button — promotes skills out of the buried menu into the
 // header: sparkle icon + live count badge, opens a dedicated popover.
-function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean }) {
+function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean; requestOpen?: number; hideTrigger?: boolean }) {
   const [open, setOpen] = useState(false)
   const count = props.skills?.length ?? 0
+  useEffect(() => {
+    if (props.requestOpen && !props.disabled) setOpen(true)
+  }, [props.requestOpen, props.disabled])
   return (
     <div className="relative">
+      {!props.hideTrigger && (
       <button
         onClick={() => setOpen((v) => !v)}
         disabled={props.disabled}
@@ -1409,6 +1423,7 @@ function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean }) {
           </span>
         )}
       </button>
+      )}
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
@@ -2458,6 +2473,11 @@ function VoiceRoomInner({
   const [skillRemoveArm, setSkillRemoveArm] = useState<string | null>(null)
   const [showAddSkill, setShowAddSkill] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
+  // Burger-sheet → popover bridges: incrementing these force-opens the
+  // header-less (hideTrigger) Agents/Skills panels rendered at top level,
+  // after the sheet has closed.
+  const [agentsOpenReq, setAgentsOpenReq] = useState(0)
+  const [skillsOpenReq, setSkillsOpenReq] = useState(0)
   const [newSkillName, setNewSkillName] = useState('')
   const [newSkillContent, setNewSkillContent] = useState('')
   // Research tracking state
@@ -5318,9 +5338,11 @@ function VoiceRoomInner({
               )}
             </div>
 
-            {/* Mobile menu button — far right, by itself. Overflow (history,
-                sessions, MCP, meeting, files) lives behind it so the top bar
-                stays clean: status + clock on the left, burger on the right. */}
+            {/* Mobile menu button — far right, by itself. Per the 3-6-9 rule
+                (2026-10-24) this sheet is the voice screen's single overflow:
+                auto-approve, noise filter, agents, skills, files, copy,
+                meeting, history (8 ≤ technical-9 cap). Top bar stays clean:
+                status + clock on the left, burger on the right. */}
             <button onClick={() => setShowMobileMenu(true)}
               className="sm:hidden shrink-0 p-2 rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -5456,85 +5478,12 @@ function VoiceRoomInner({
           machineChipProcCount={machineData?.totalCount ?? machineData?.processes.length}
         />
 
-        {/* Mobile composer control strip — Claude-style controls next to the
-            input instead of crammed in the header where they clip.
-            Layout: Auto on the LEFT, then agents/skills; Mute + Hangup pinned
-            to the RIGHT (thumb-reachable, and hangup off the top bar). */}
-        <div className="sm:hidden flex flex-wrap items-center gap-x-1.5 gap-y-2 px-3 pt-1.5">
-          {/* Auto-approve (automation accept) — left edge */}
-          <button
-            onClick={() => setAutoApprovePermissions(v => !v)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
-              autoApprovePermissions
-                ? 'bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/40'
-                : 'text-gray-500 hover:bg-gray-800/60'
-            }`}
-            title={autoApprovePermissions ? 'Auto-approve ON' : 'Auto-approve OFF'}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              {autoApprovePermissions
-                ? <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                : <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />}
-            </svg>
-            <span>{autoApprovePermissions ? 'Auto' : 'Ask'}</span>
-          </button>
-
-          {/* Agents + Skills — reuse the header popovers (mobile-anchored panels) */}
-          <AgentsPopover agents={namedAgents} disabled={!agentConnected}
-            onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
-            removed={removedAgentNames} onRestoreAgent={handleRestoreAgent} />
-          <SkillsPopover
-            disabled={!agentConnected}
-            skills={skills}
-            onAddSkill={handleAddSkill}
-            onViewSkill={handleViewSkill}
-            onRemoveSkill={handleRemoveSkill}
-            onInstallFromCatalog={handleInstallFromCatalog}
-            skillRemoveArm={skillRemoveArm}
-            setSkillRemoveArm={setSkillRemoveArm}
-            showAddSkill={showAddSkill}
-            setShowAddSkill={setShowAddSkill}
-            newSkillName={newSkillName}
-            setNewSkillName={setNewSkillName}
-            newSkillContent={newSkillContent}
-            setNewSkillContent={setNewSkillContent}
-          />
-
-          {/* Mic / mute — pinned right (ml-auto opens the gap) */}
-          <button
-            onClick={toggleNoiseCancel}
-            className={`ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
-              noiseCancelOn
-                ? 'bg-amber-500/20 text-amber-300'
-                : 'text-gray-500 hover:bg-gray-800/60'
-            }`}
-            title={noiseCancelOn
-              ? `Noise cancellation ON — filtering side conversations${gateDropped.length ? ` (${gateDropped.length} filtered — latest: "${gateDropped[gateDropped.length - 1].text.slice(0, 80)}")` : ''}. Click to turn off.`
-              : 'Noise cancellation — filter side conversations before they reach the agent'}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 18v-6a9 9 0 0118 0v6M3 18a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3zm18 0a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h1a2 2 0 012 2v3z" />
-            </svg>
-            <span>Filter</span>
-            {noiseCancelOn && gateDropped.length > 0 && (
-              <span
-                onClick={(e) => {
-                  // Send-anyway recovery for the latest tombstoned utterance
-                  e.stopPropagation()
-                  const last = gateDropped[gateDropped.length - 1]
-                  if (!last) return
-                  try {
-                    const enc = new TextEncoder()
-                    sendToAgent(enc.encode(JSON.stringify({ type: 'gate_send_anyway', text: last.text })), { reliable: true })
-                    setGateDropped(prev => prev.slice(0, -1))
-                  } catch {}
-                }}
-                className="px-1 rounded-full bg-amber-500/30 text-[10px]"
-                title={`${gateDropped.length} utterance(s) filtered — click to send the latest to the agent anyway`}
-              >{gateDropped.length}</span>
-            )}
-          </button>
-
+        {/* Mobile composer control strip — 3-6-9 rule (2026-10-24): the voice
+            screen's primary actionables are exactly Mic + End (+ the composer
+            input itself). Everything that used to live here — Auto/Ask,
+            Agents, Skills, Filter — collapsed into the burger sheet (tray
+            rule), which sits at 8 rows ≤ the technical-9 cap. */}
+        <div className="sm:hidden flex items-center justify-end gap-1.5 px-3 pt-1.5">
           <button
             onClick={toggleMute}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
@@ -5826,6 +5775,67 @@ function VoiceRoomInner({
                 </span>
               </button>
 
+              {/* Noise filter — moved here from the composer strip (3-6-9).
+                  The count chip is the send-anyway recovery for the latest
+                  tombstoned utterance, same as the old strip chip. */}
+              <button onClick={toggleNoiseCancel}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
+                <svg className={`w-5 h-5 ${noiseCancelOn ? 'text-amber-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 18v-6a9 9 0 0118 0v6M3 18a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3zm18 0a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h1a2 2 0 012 2v3z" />
+                </svg>
+                <span className="text-sm text-gray-200">Noise filter</span>
+                {noiseCancelOn && gateDropped.length > 0 && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      // Send-anyway recovery for the latest tombstoned utterance
+                      e.stopPropagation()
+                      const last = gateDropped[gateDropped.length - 1]
+                      if (!last) return
+                      try {
+                        const enc = new TextEncoder()
+                        sendToAgent(enc.encode(JSON.stringify({ type: 'gate_send_anyway', text: last.text })), { reliable: true })
+                        setGateDropped(prev => prev.slice(0, -1))
+                      } catch {}
+                    }}
+                    className="ml-auto px-2 py-0.5 rounded-full bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[11px] font-semibold"
+                    title={`${gateDropped.length} utterance(s) filtered — tap to send the latest to the agent anyway`}
+                  >{gateDropped.length} filtered · send</span>
+                )}
+                <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${noiseCancelOn ? 'bg-amber-500/25 text-amber-300 border border-amber-500/30' : 'bg-gray-800 text-gray-500 border border-gray-700'} ${noiseCancelOn && gateDropped.length > 0 ? 'hidden' : ''}`}>
+                  {noiseCancelOn ? 'ON' : 'OFF'}
+                </span>
+              </button>
+
+              {/* Agents — opens the header-less AgentsPopover panel (bridge
+                  via agentsOpenReq; the sheet closes first so only one
+                  surface is up). */}
+              <button onClick={() => { setAgentsOpenReq(n => n + 1); setShowMobileMenu(false) }}
+                disabled={!agentConnected}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+                </svg>
+                <span className="text-sm text-gray-200">Agents</span>
+                {namedAgents.length > 0 && (
+                  <span className="ml-auto text-xs bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full">{namedAgents.length}</span>
+                )}
+              </button>
+
+              {/* Skills — opens the header-less SkillsPopover panel. */}
+              <button onClick={() => { setSkillsOpenReq(n => n + 1); setShowMobileMenu(false) }}
+                disabled={!agentConnected}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
+                </svg>
+                <span className="text-sm text-gray-200">Skills</span>
+                {skills.length > 0 && (
+                  <span className="ml-auto text-xs bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full">{skills.length}</span>
+                )}
+              </button>
+
               {/* Files */}
               <button onClick={() => { setIsFilesModalOpen(true); setShowMobileMenu(false) }}
                 className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
@@ -5848,29 +5858,46 @@ function VoiceRoomInner({
                 <span className="text-sm text-gray-200">Copy All Messages</span>
               </button>
 
-              {/* Meeting — inline input (mobile-friendly, no native prompt) */}
+              {/* Meeting — inline input (mobile-friendly, no native prompt).
+                  Joined/Joining states mirror the desktop header pill — mobile
+                  previously had NO way to leave a meeting. */}
               <div className="w-full px-3 py-2">
                 <div className="flex items-center gap-3 mb-2">
                   <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                   </svg>
-                  <span className="text-sm text-gray-200">Join a meeting</span>
+                  <span className="text-sm text-gray-200">
+                    {meetingStatus === 'joined' ? 'In meeting' : meetingStatus === 'joining' ? 'Joining meeting…' : 'Join a meeting'}
+                  </span>
                 </div>
-                <input
-                  type="url"
-                  value={meetingUrlInput}
-                  onChange={(e) => setMeetingUrlInput(e.target.value)}
-                  placeholder="Paste Zoom or Google Meet URL"
-                  data-testid="join-meeting-mobile"
-                  className="w-full px-2 py-2 text-sm bg-gray-950 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500"
-                />
-                <button
-                  onClick={() => { if (meetingUrlInput.trim()) { handleJoinMeeting(meetingUrlInput.trim()); setMeetingUrlInput(''); setShowMobileMenu(false) } }}
-                  disabled={!meetingUrlInput.trim()}
-                  className="mt-2 w-full py-2 text-sm bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors disabled:opacity-50"
-                >
-                  Send bot to meeting
-                </button>
+                {meetingStatus === 'joined' ? (
+                  <button onClick={() => { handleLeaveMeeting(); setShowMobileMenu(false) }}
+                    className="w-full py-2.5 text-sm bg-green-500/15 text-green-400 border border-green-500/30 rounded hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/30 transition-colors">
+                    Leave meeting
+                  </button>
+                ) : meetingStatus === 'joining' ? (
+                  <div className="w-full py-2.5 text-sm text-center text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 rounded">
+                    Bot is joining…
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      type="url"
+                      value={meetingUrlInput}
+                      onChange={(e) => setMeetingUrlInput(e.target.value)}
+                      placeholder="Paste Zoom or Google Meet URL"
+                      data-testid="join-meeting-mobile"
+                      className="w-full px-2 py-2 text-base bg-gray-950 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500"
+                    />
+                    <button
+                      onClick={() => { if (meetingUrlInput.trim()) { handleJoinMeeting(meetingUrlInput.trim()); setMeetingUrlInput(''); setShowMobileMenu(false) } }}
+                      disabled={!meetingUrlInput.trim()}
+                      className="mt-2 w-full py-2.5 text-sm bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors disabled:opacity-50"
+                    >
+                      Send bot to meeting
+                    </button>
+                  </>
+                )}
               </div>
 
               {/* Sessions */}
@@ -5882,23 +5909,39 @@ function VoiceRoomInner({
                 <span className="text-sm text-gray-200">Session History</span>
               </button>
 
-              {/* Divider */}
-              <div className="h-px bg-gray-800 my-2" />
-
-              {/* Disconnect */}
-              {onDisconnect && (
-                <button onClick={() => { onDisconnect(); setShowMobileMenu(false) }}
-                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-red-500/10 transition-colors text-left">
-                  <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
-                  </svg>
-                  <span className="text-sm text-red-400">Disconnect</span>
-                </button>
-              )}
+              {/* No Disconnect row (3-6-9, 2026-10-24): the red End pill is a
+                  permanent primary control in the composer strip, so a tray
+                  duplicate would be dead weight. */}
             </div>
           </div>
         </div>
       )}
+
+      {/* Header-less Agents/Skills panels — driven by the burger sheet's
+          Agents/Skills rows via requestOpen. Rendered at top level (not inside
+          the sheet) so they survive the sheet closing; their panels are the
+          standard viewport-anchored mobile popovers. */}
+      <AgentsPopover agents={namedAgents} disabled={!agentConnected}
+        onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
+        removed={removedAgentNames} onRestoreAgent={handleRestoreAgent}
+        requestOpen={agentsOpenReq} hideTrigger />
+      <SkillsPopover
+        disabled={!agentConnected}
+        skills={skills}
+        onAddSkill={handleAddSkill}
+        onViewSkill={handleViewSkill}
+        onRemoveSkill={handleRemoveSkill}
+        onInstallFromCatalog={handleInstallFromCatalog}
+        skillRemoveArm={skillRemoveArm}
+        setSkillRemoveArm={setSkillRemoveArm}
+        showAddSkill={showAddSkill}
+        setShowAddSkill={setShowAddSkill}
+        newSkillName={newSkillName}
+        setNewSkillName={setNewSkillName}
+        newSkillContent={newSkillContent}
+        setNewSkillContent={setNewSkillContent}
+        requestOpen={skillsOpenReq} hideTrigger
+      />
 
       {/* Files Explorer Modal */}
       <FilesExplorerModal
