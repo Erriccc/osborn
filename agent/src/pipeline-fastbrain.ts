@@ -316,7 +316,19 @@ async function getRecentEntries(sessionId: string, workingDir: string, _: string
 // SYSTEM PROMPT
 // ============================================================
 
-function buildSystemPrompt(chatHistory?: { role: string; content: string }[], researchContext?: string): string {
+// ============================================================
+// SYSTEM PROMPT
+// ============================================================
+//
+// PROMPT-CACHING NOTE (Fireworks/z.ai auto-cache long prefixes): the system
+// message is the START of the OpenAI prompt and those providers cache by
+// prefix. buildSystemPrompt() is therefore fully STATIC — the volatile
+// per-call inputs (chatHistory, researchContext) live in buildTurnContext()
+// and are prepended to the CURRENT user message instead, so the system +
+// persistent-messages prefix stays byte-identical across a session and every
+// turn after the first is a cache hit.
+
+function buildSystemPrompt(): string {
   const parts = [
     `You are a fast memory recall agent for a voice AI assistant called Osborn.`,
     `You search the user's conversation history — their questions, the assistant's answers,`,
@@ -359,16 +371,26 @@ function buildSystemPrompt(chatHistory?: { role: string; content: string }[], re
     `⚠ Your own prior answers may have errors. Trust search results over your memory.`,
   ]
 
+  return parts.join('\n')
+}
+
+/**
+ * Volatile per-turn context (recent conversation, active research) that USED to be
+ * interpolated into the system prompt. Moved into the first user message so the
+ * system + persistent-messages PREFIX stays byte-stable across a session and the
+ * Fireworks/z.ai prefix cache hits on every turn after the first. Rendered LAST
+ * (just before the question) so the stable head hits cache. '' when empty.
+ */
+function buildTurnContext(chatHistory?: { role: string; content: string }[], researchContext?: string): string {
+  const parts: string[] = []
   if (chatHistory && chatHistory.length > 0) {
-    parts.push(``, `== RECENT CONVERSATION ==`)
+    parts.push(`== RECENT CONVERSATION ==`)
     for (const turn of chatHistory.slice(-6)) {
       parts.push(`${turn.role}: ${turn.content.substring(0, 200)}`)
     }
   }
-
-  if (researchContext) parts.push(``, `== ACTIVE RESEARCH ==`, researchContext)
-
-  return parts.join('\n')
+  if (researchContext) parts.push(`== ACTIVE RESEARCH ==`, researchContext)
+  return parts.length ? parts.join('\n') + '\n\n' : ''
 }
 
 // ============================================================
@@ -463,16 +485,19 @@ export async function askPipelineFastBrain(
     persistentMessages = persistentMessages.slice(-24)
   }
 
-  const systemPrompt = buildSystemPrompt(opts?.chatHistory, opts?.researchContext)
+  const systemPrompt = buildSystemPrompt()
+  const turnContext = buildTurnContext(opts?.chatHistory, opts?.researchContext)
   const sessionBaseDir = opts?.sessionBaseDir || workingDir
   const tools = buildTools(!!opts?.agentControl)
   const toolsUsed: string[] = []
 
-  // Build messages: system + persistent history + new user message
+  // Build messages: STATIC system + persistent history + new user message.
+  // The volatile per-turn context rides INSIDE the current user message (last)
+  // so the system+history prefix is a cache-stable head (see buildTurnContext).
   const messages: any[] = [
     { role: 'system', content: systemPrompt },
     ...persistentMessages,
-    { role: 'user', content: question },
+    { role: 'user', content: turnContext ? `${turnContext}${question}` : question },
   ]
 
   try {
@@ -490,6 +515,14 @@ export async function askPipelineFastBrain(
       }
       rounds++
       const data = await callOpenRouter(messages, tools, apiKey)
+      // Cache observability: OpenAI-compatible providers report cached prefix
+      // tokens on usage.prompt_tokens_details.cached_tokens (Fireworks/z.ai both
+      // populate it when the prefix cache hits).
+      const cachedTokens = (data as any)?.usage?.prompt_tokens_details?.cached_tokens
+      if (typeof cachedTokens === 'number' && cachedTokens > 0) {
+        const promptTokens = (data as any)?.usage?.prompt_tokens || 0
+        console.log(`[cache] fast-brain cached=${cachedTokens} prompt=${promptTokens} (hit${promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) : 0}%)`)
+      }
       const choice = data.choices?.[0]
       const msg = choice?.message
 

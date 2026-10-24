@@ -30,6 +30,23 @@ export async function register() {
         })
       runHarness()
       setInterval(runHarness, 15 * 60 * 1000)
+
+      // Warm machine pool: pre-provision ~2 spare Fly machines at boot so a new
+      // user's first session starts in seconds instead of a 1-2 min cold create.
+      // Fire-and-forget — must NEVER block startup or the healthcheck. No-ops
+      // unless FLY_API_TOKEN is set (isMachinesConfigured) and the service-role
+      // Supabase key is present (getPoolClient).
+      if (process.env.FLY_API_TOKEN) {
+        import('./lib/machine-pool')
+          .then(({ ensurePool }) =>
+            ensurePool().catch((err) => {
+              console.error('[instrumentation] machine pool ensure failed:', err?.message ?? err)
+            }),
+          )
+          .catch((err) => {
+            console.error('[instrumentation] machine-pool import failed:', err?.message ?? err)
+          })
+      }
     } catch (err: unknown) {
       console.error('[instrumentation] failed to import image-build-check:', err)
     }

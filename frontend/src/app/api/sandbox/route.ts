@@ -182,7 +182,16 @@ export async function POST(request: Request) {
       // When unset, the volume is created empty (existing behavior).
       const provider = process.env.CLOUD_PROVIDER === 'machines' ? 'machines' : 'sprites'
       const info = provider === 'machines'
-        ? await (createSandbox as unknown as (userId: string, opts: { sourceSnapshotId?: string; syncToken?: string }) => ReturnType<typeof createSandbox>)(
+        // Pool-first: try claiming a warm pre-provisioned machine (fast path);
+        // internally falls back to legacy createSandbox when the pool is empty
+        // or the claim fails. Passes the golden-snapshot + sync token through
+        // to whichever path runs. Cast mirrors the pre-existing provider
+        // signature-mismatch workaround (sprites' assignFromPoolOrCreate has
+        // a different 2nd parameter than machines').
+        ? await (assignFromPoolOrCreate as unknown as (
+            userId: string,
+            opts: { sourceSnapshotId?: string; syncToken?: string },
+          ) => ReturnType<typeof assignFromPoolOrCreate>)(
             user.id,
             { sourceSnapshotId: process.env.FLY_GOLDEN_SNAPSHOT_ID || undefined, syncToken },
           )
