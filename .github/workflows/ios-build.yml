@@ -58,7 +58,7 @@ jobs:
           xcodebuild -version
           xcodebuild -project ios/App/App.xcodeproj -resolvePackageDependencies | tail -20
 
-      - name: Build (unsigned)
+      - name: Build (unsigned, device)
         run: |
           set -o pipefail
           xcodebuild \
@@ -74,10 +74,31 @@ jobs:
             CODE_SIGN_ENTITLEMENTS="" \
             build | tail -40
 
+      - name: Build (unsigned, simulator — the one you actually run locally)
+        # A device-SDK .app will NOT install into a simulator (wrong slices).
+        # This pass produces the x86_64+arm64 simulator build that runs on any
+        # Mac's Xcode — including the founder's Intel/Xcode 15.2 (iOS 17.2
+        # runtime; Capacitor's deployment target is 14.0, so the newer-SDK
+        # binary still installs on the older runtime).
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build | tail -40
+
       - name: Collect .app
         run: |
           mkdir -p build/artifact
           cp -R "build/DerivedData/Build/Products/Release-iphoneos/App.app" build/artifact/VoiceNative-unsigned.app
+          cp -R "build/DerivedData/Build/Products/Release-iphonesimulator/App.app" build/artifact/VoiceNative-sim.app
           # Companion dSYMs, when present
           find build/DerivedData/Build/Products -name '*.dSYM' -maxdepth 3 -exec cp -R {} build/artifact/ \; 2>/dev/null || true
 

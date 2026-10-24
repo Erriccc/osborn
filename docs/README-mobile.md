@@ -39,9 +39,26 @@ that patch first (or `brew install cocoapods` just for the generation step).
   200 real macOS min/mo (~5–10 builds; the run itself is ~8–15 min).
 - **Codemagic (overflow):** codemagic.io → connect repo → start *ios-unsigned*.
   500 free M2 min/mo.
-- **Artifact:** Actions run page → `VoiceNative-unsigned-<sha>` (.app, 14-day
-  retention). Run unsigned on any Mac's simulator:
-  `xcrun simctl install booted VoiceNative-unsigned.app && xcrun simctl launch booted <bundle-id>`
+- **Artifacts (ios-build):** `VoiceNative-unsigned-<sha>` contains BOTH
+  `VoiceNative-unsigned.app` (device slices — for the signed flip later) and
+  `VoiceNative-sim.app` (simulator slices — **this is the one you run
+  locally**; the device build won't install into a simulator).
+
+## Where to test what (the ladder)
+1. **PWA — today, $0, no build:** iPhone Safari → `www.voice-native.com` →
+   Share → Add to Home Screen. This IS the mobile version; checklist below (§PWA).
+   On the Mac's Xcode 15.2: iOS Simulator → Safari → same URL (mic works in
+   sim on Intel builds).
+2. **iOS shell in simulator — needs one CI run:** download `VoiceNative-sim.app`
+   from the Actions artifact → `xcrun simctl install booted VoiceNative-sim.app
+   && xcrun simctl launch booted com.audos.voicenative`. Xcode 15.2's iOS 17.2
+   runtime is fine (deployment target 14.0). If the runtime ever rejects a
+   newer-SDK binary, fall back to the PWA-in-Simulator route.
+3. **watch app in simulator:** `watchos-build` artifact `OsbornWatch-unsigned-<sha>`
+   → install into a booted watch simulator the same way (it's already a
+   simulator build).
+4. **Real devices — after the $99 Apple account:** TestFlight (90-day expiry
+   per build). Watch needs the account too.
 
 ## Signed flip (when the Apple Developer account is bought)
 1. App Store Connect → Users & Access → Integrations → **Keys** → generate
