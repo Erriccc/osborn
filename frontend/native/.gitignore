@@ -1,0 +1,8 @@
+# Native shell build artifacts — the ios/ project itself IS committed
+# (Capacitor's canonical layout; Info.plist + AppDelegate carry our edits).
+node_modules/
+ios/App/App/public/build/
+ios/DerivedData/
+build/
+*.xcuserstate
+xcuserdata/

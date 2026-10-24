@@ -1,0 +1,44 @@
+# Zero-cost frontend gate (ubuntu minutes are free on private repos).
+# TypeScript + lint on every PR / push touching the frontend — catches the
+# class of breakage the iOS shell loads remotely, before Railway deploys it.
+
+name: frontend-lint
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-lint.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+
+concurrency:
+  group: frontend-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint --if-present
