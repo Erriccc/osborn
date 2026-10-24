@@ -704,6 +704,36 @@ export default function SettingsPage() {
     RECALL_REGION: { label: 'Recall region', placeholder: 'us-west-2' },
   }
 
+  /** Editable public handle (profiles.username) — drives /p/{handle}/{slug}
+   *  URLs. Self-contained: loads on mount, PUTs /api/account/handle on save. */
+  const [handleValue, setHandleValue] = useState<string>('')
+  const [handleEdit, setHandleEdit] = useState(false)
+  const [handleBusy, setHandleBusy] = useState(false)
+  const [handleMsg, setHandleMsg] = useState<string | null>(null)
+  useEffect(() => {
+    if (!user?.id) return
+    ;(async () => {
+      try {
+        const { data } = await supabase.from('profiles').select('username').eq('id', user.id).maybeSingle()
+        setHandleValue((data as { username?: string } | null)?.username || '')
+      } catch { /* profile not loaded yet */ }
+    })()
+  }, [user?.id, supabase])
+  const saveHandle = useCallback(async () => {
+    setHandleBusy(true); setHandleMsg(null)
+    try {
+      const r = await fetch('/api/account/handle', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle: handleValue.trim() }),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setHandleMsg(j?.error || 'Could not save') }
+      else { setHandleValue(j.handle); setHandleEdit(false); setHandleMsg('Saved — your public pages now live at /p/' + j.handle) }
+    } catch { setHandleMsg('Could not save') }
+    finally { setHandleBusy(false) }
+  }, [handleValue])
+
   // ───────────────────────── Section bodies ─────────────────────────
   // Each returns the content for one settings section. Shared between the
   // desktop long-scroll pane and the mobile drill-in screen.
@@ -711,6 +741,34 @@ export default function SettingsPage() {
   const AccountSection = (
     <SettingsSection title="Account" description="Your Voice Native identity and session.">
       <SettingsRow label="Signed in as" sublabel={user?.email || 'No account connected'} />
+      {user && (
+        <SettingsRow label="Public handle" sublabel={handleMsg || (handleValue ? `voice-native.com/p/${handleValue}` : 'Your public pages URL — lowercase letters, numbers, hyphens')}>
+          {handleEdit ? (
+            <div className="flex items-center gap-2">
+              <input
+                value={handleValue}
+                onChange={(e) => { setHandleValue(e.target.value); setHandleMsg(null) }}
+                maxLength={30}
+                autoFocus
+                className="min-h-[44px] w-40 rounded-lg border border-[var(--border-subtle)] bg-[var(--background)] px-2.5 text-[13px] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+              />
+              <button onClick={saveHandle} disabled={handleBusy || !handleValue.trim()}
+                className="min-h-[44px] rounded-lg bg-[var(--accent)] px-3 text-[13px] font-semibold text-[var(--background)] disabled:opacity-50">
+                {handleBusy ? '…' : 'Save'}
+              </button>
+              <button onClick={() => { setHandleEdit(false); setHandleMsg(null) }}
+                className="min-h-[44px] rounded-lg border border-[var(--border-subtle)] px-3 text-[13px] text-[var(--text-secondary)]">
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => setHandleEdit(true)}
+              className="min-h-[44px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 text-[13px] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]">
+              Edit
+            </button>
+          )}
+        </SettingsRow>
+      )}
       <SettingsRow label="Library" sublabel="Saved outputs, documents, and references">
         <Link
           href="/library"

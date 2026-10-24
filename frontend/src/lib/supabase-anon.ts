@@ -23,8 +23,13 @@ export function createSupabaseAnon() {
   // schemas with `storage` listed FIRST, so an unqualified request can default
   // to the wrong schema and fail with "relation storage.public_content does not
   // exist". Setting db.schema sends Accept-Profile: public on every request.
+  // Next.js can memoize GET fetches even on dynamic renders; force every DB
+  // read to bypass any fetch-layer cache so unpublishes show up instantly.
+  const noStoreFetch: typeof fetch = (input, init) =>
+    fetch(input, { ...init, cache: 'no-store' })
   return createClient(url, key, {
     db: { schema: 'public' },
+    global: { fetch: noStoreFetch },
     auth: { persistSession: false, autoRefreshToken: false },
   })
 }
@@ -45,4 +50,5 @@ export interface PublicContent {
   poster_path: string | null
   published_at: string | null
   handle: string | null
+  author_name: string | null
 }
