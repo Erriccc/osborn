@@ -521,11 +521,39 @@ export default function Dashboard() {
   // One-time sandbox discovery on mount: if the user has a saved cloud
   // preference AND a sandbox already exists, adopt its previewUrl as the
   // agentUrl so the polling loop picks up the right target.
+  //
+  // AUTO-PROVISION: a fresh account (cloud available, no sandbox yet) gets a
+  // machine assigned automatically (warm pool first, cold create fallback) —
+  // unless the user explicitly chose Local. autoProvisionFiredRef guards
+  // strict-mode double effects; the server's create is idempotent per user
+  // (returns the existing sandbox / joins an in-flight create) for re-mounts
+  // and multiple tabs.
+  const autoProvisionFiredRef = useRef(false)
   useEffect(() => {
     if (loading || !user) return
-    fetch('/api/sandbox').then(r => r.json())
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    const discover = (attempt: number) => {
+      fetch('/api/sandbox').then(async r => {
+        // Right after signup the auth cookie can lag the client session —
+        // retry the first 401 once instead of leaving a blank dashboard.
+        if (r.status === 401 && attempt === 0) {
+          if (!cancelled) retryTimer = setTimeout(() => discover(1), 1500)
+          return null
+        }
+        return r.json()
+      })
       .then(d => {
+        if (!d || cancelled) return
         setSandboxAvailable(d.available || false)
+        if (d.available && !d.sandbox) {
+          let explicitLocal = false
+          try { explicitLocal = localStorage.getItem('osborn-connection-mode') === 'local' } catch {}
+          if (!explicitLocal && !autoProvisionFiredRef.current) {
+            autoProvisionFiredRef.current = true
+            handleProvisionSandbox()
+          }
+        }
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
           setSandboxStatus(d.sandbox.status)
@@ -554,7 +582,9 @@ export default function Dashboard() {
           }
         }
       })
-      .catch(() => setSandboxAvailable(false))
+      .catch(() => { if (!cancelled) setSandboxAvailable(false) })
+    }
+    discover(0)
     fetch('/api/instance')
       .then(r => r.json())
       .then(d => {
@@ -562,6 +592,11 @@ export default function Dashboard() {
         if (typeof d.instance?.turbo === 'boolean') setTurbo(d.instance.turbo)
       })
       .catch(() => {})
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, loading])
 
   const isCloud = connectionMode === 'cloud'
@@ -590,6 +625,9 @@ export default function Dashboard() {
     if (!user) return
     setProvisioning(true)
     setSandboxStatus('creating')
+    // A sandbox is being created → the dashboard targets the cloud, not the
+    // localhost default (shows the "Setting up your cloud workspace" spinner).
+    setConnectionMode('cloud')
     try {
       const r = await fetch('/api/sandbox', {
         method: 'POST',
@@ -602,6 +640,21 @@ export default function Dashboard() {
         setSandboxStatus('running')
         setAgentUrl(data.previewUrl)
         setConnectionMode('cloud')
+      } else if (data.id && data.status && data.status !== 'error') {
+        // Idempotent create returned an existing, not-running machine — start it.
+        setSandboxId(data.id)
+        setSandboxStatus(data.status)
+        if (data.previewUrl) setAgentUrl(data.previewUrl)
+        const sr = await fetch('/api/sandbox', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'start', sandboxId: data.id }),
+        })
+        const started = await sr.json().catch(() => null)
+        if (started?.previewUrl) {
+          setSandboxStatus('running')
+          setAgentUrl(started.previewUrl)
+        }
       } else {
         setSandboxStatus('error')
       }

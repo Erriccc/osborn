@@ -115,6 +115,11 @@ export async function GET() {
   return NextResponse.json({ available: true, sandbox: null })
 }
 
+// Per-user in-flight create promises (module scope = per server process).
+// Prevents two concurrent `create` calls from provisioning two machines in the
+// window before the first one writes instances.sandbox_id.
+const inflightCreates = new Map<string, Promise<Awaited<ReturnType<typeof createSandbox>>>>()
+
 /**
  * POST /api/sandbox — create, start, stop, or keepalive a sandbox
  *
@@ -185,6 +190,27 @@ export async function POST(request: Request) {
 
   switch (action) {
     case 'create': {
+      // Idempotency (auto-provision on dashboard mount can fire from several
+      // tabs / re-mounts): if this user's instances row already points at a
+      // sandbox that still exists, return it instead of creating a second one.
+      // The client then runs its normal start/connect flow if it isn't running.
+      const existingId = await getKnownSandboxId()
+      if (existingId) {
+        try {
+          const existing = await findUserSandbox(user.id, existingId)
+          if (existing) return NextResponse.json(existing)
+          // null = confirmed gone (404) — fall through and create a fresh one.
+        } catch {
+          // Transient lookup failure: don't risk a duplicate machine.
+          return NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
+        }
+      }
+      // Same-process de-dupe for concurrent creates before the DB row lands.
+      const inflight = inflightCreates.get(user.id)
+      if (inflight) {
+        const info = await inflight
+        return NextResponse.json(info, { status: info.status === 'error' ? 500 : 200 })
+      }
       const syncToken = await getSyncToken()
       // Provider-dispatched call: sprites' createSandbox expects (userId, syncToken: string),
       // machines' expects (userId, options: { sourceSnapshotId?, autostopMode? }).
@@ -195,7 +221,7 @@ export async function POST(request: Request) {
       // user's volume from that snapshot → first boot drops from ~60-90s to ~15-20s.
       // When unset, the volume is created empty (existing behavior).
       const provider = process.env.CLOUD_PROVIDER === 'machines' ? 'machines' : 'sprites'
-      const info = provider === 'machines'
+      const createPromise = (async () => provider === 'machines'
         // Pool-first: try claiming a warm pre-provisioned machine (fast path);
         // internally falls back to legacy createSandbox when the pool is empty
         // or the claim fails. Passes the golden-snapshot + sync token through
@@ -209,7 +235,14 @@ export async function POST(request: Request) {
             user.id,
             { sourceSnapshotId: process.env.FLY_GOLDEN_SNAPSHOT_ID || undefined, syncToken },
           )
-        : await createSandbox(user.id, syncToken)
+        : await createSandbox(user.id, syncToken))()
+      inflightCreates.set(user.id, createPromise)
+      let info: Awaited<typeof createPromise>
+      try {
+        info = await createPromise
+      } finally {
+        inflightCreates.delete(user.id)
+      }
 
       if (info.status === 'running' && info.previewUrl) {
         // Save to DB — this becomes the user's agent URL
