@@ -60,6 +60,26 @@ const OPENROUTER_URL = FIREWORKS
 const TIMEOUT_MS = 20_000
 const MAX_TOOL_ROUNDS = 4
 
+/**
+ * Per-call provider resolution for the HOUSE DEMO PASS. When the user has no
+ * Claude auth, applyAuthFallback() sets OSBORN_DEMO_PASS='zai' - the whole
+ * model layer (main agent AND this fast brain) then rides the shared z.ai GLM
+ * subscription instead of pay-per-use Fireworks/OpenRouter. Checked per call
+ * (not module-load) because applyAuthFallback runs after this module loads, and
+ * because a mid-session real-Claude login clears the flag via clearAuthFallback.
+ * Returns null on the normal (user pays their own providers) path.
+ */
+function resolveFastBrainProvider(): { url: string; model: string; name: string } | null {
+  if (process.env.OSBORN_DEMO_PASS !== 'zai') return null
+  const zaiKey = process.env.Z_AI_PERSONAL_API_KEY || process.env.ZAI_API_KEY
+  if (!zaiKey) return null
+  return {
+    url: 'https://api.z.ai/api/paas/v4/chat/completions',
+    model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-4.5-air', // fast/cheap tier of the pass
+    name: 'z.ai (demo pass)',
+  }
+}
+
 // ============================================================
 // PERSISTENT STATE (OpenAI message format)
 // ============================================================
@@ -356,7 +376,12 @@ function buildSystemPrompt(chatHistory?: { role: string; content: string }[], re
 // ============================================================
 
 async function callOpenRouter(messages: any[], tools: any[], apiKey: string): Promise<any> {
-  const resp = await fetch(OPENROUTER_URL, {
+  // Demo pass first — same OpenAI-compatible tool-loop contract, house z.ai key.
+  const demo = resolveFastBrainProvider()
+  const url = demo?.url || OPENROUTER_URL
+  const model = demo?.model || OPENROUTER_MODEL
+  const providerName = demo?.name || PROVIDER_NAME
+  const resp = await fetch(url, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -364,7 +389,7 @@ async function callOpenRouter(messages: any[], tools: any[], apiKey: string): Pr
       'X-OpenRouter-Title': 'Osborn Fast Brain',
     },
     body: JSON.stringify({
-      model: OPENROUTER_MODEL,
+      model,
       messages,
       tools,
       tool_choice: 'auto',
@@ -374,7 +399,7 @@ async function callOpenRouter(messages: any[], tools: any[], apiKey: string): Pr
 
   if (!resp.ok) {
     const body = await resp.text().catch(() => '')
-    throw new Error(`${PROVIDER_NAME} ${resp.status}: ${body.substring(0, 200)}`)
+    throw new Error(`${providerName} ${resp.status}: ${body.substring(0, 200)}`)
   }
 
   return resp.json()
@@ -417,7 +442,11 @@ export async function askPipelineFastBrain(
     return { script: 'Session is still initializing.', type: 'acknowledgment', toolsUsed: [] }
   }
 
-  const apiKey = process.env.FIREWORKS_API_KEY || process.env.OPENROUTER_API_KEY
+  // Demo pass (house z.ai key) takes precedence when active; else the user's own
+  // pay-per-use providers (Fireworks preferred, OpenRouter fallback).
+  const apiKey = resolveFastBrainProvider()
+    ? (process.env.Z_AI_PERSONAL_API_KEY || process.env.ZAI_API_KEY)
+    : (process.env.FIREWORKS_API_KEY || process.env.OPENROUTER_API_KEY)
   if (!apiKey) {
     return { script: 'Search system not available right now.', type: 'acknowledgment', toolsUsed: [] }
   }

@@ -211,7 +211,34 @@ export function applyAuthFallback(): void {
     return
   }
 
-  // Tier 3: central OpenRouter key.
+  // Tier 3: HOUSE DEMO PASS - z.ai GLM coding subscription (flat/shared, not
+  // pay-per-use). Cline/opencode-style: unauthenticated demo users ride the
+  // house pass instead of raw API billing. The z.ai Anthropic-compatible
+  // endpoint (api.z.ai/api/anthropic) speaks native Messages - verified live
+  // 2026-10-24 (glm-4.7 returned a real response). Precedence: Z_AI_PERSONAL_API_KEY
+  // (verified working; ZAI_STANDARD_API_KEY in .env is expired).
+  const zaiKey = process.env.Z_AI_PERSONAL_API_KEY || process.env.ZAI_API_KEY
+  if (zaiKey && zaiKey.trim() !== '') {
+    // Native Anthropic-Messages endpoint - no local translation proxy needed.
+    process.env.ANTHROPIC_BASE_URL = process.env.OSBORN_DEMO_BASE_URL || 'https://api.z.ai/api/anthropic'
+    process.env.ANTHROPIC_AUTH_TOKEN = zaiKey
+    process.env.ANTHROPIC_API_KEY = '' // required - a set key bypasses AUTH_TOKEN
+    const demoModel = process.env.OSBORN_DEMO_MODEL || 'glm-4.7'
+    process.env.ANTHROPIC_MODEL = demoModel
+    process.env.ANTHROPIC_SMALL_FAST_MODEL = demoModel
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = demoModel
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = demoModel
+    // GLM-4.7 exposes a 200K window; pins the CLI's context-cap handling.
+    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = process.env.OSBORN_DEMO_MAX_CONTEXT || '200000'
+    // Signal for the fast brain (pipeline-fastbrain reads this per call) so the
+    // WHOLE model layer - main agent AND fast brain - rides the same pass.
+    process.env.OSBORN_DEMO_PASS = 'zai'
+    fallbackTierActive = true
+    console.log(`[auth-fallback] using house demo pass (z.ai), model=${demoModel}`)
+    return
+  }
+
+  // Tier 4: central OpenRouter key (pay-per-use fallback of the fallback).
   const openRouterKey = process.env.OPENROUTER_API_KEY
   if (openRouterKey && openRouterKey.trim() !== '') {
     // Native Anthropic-Messages endpoint — no local translation proxy needed.
@@ -242,8 +269,8 @@ export function applyAuthFallback(): void {
     return
   }
 
-  // Tier 3 fail: no OpenRouter key — do NOT throw.
-  console.warn('[auth-fallback] no Claude login, no ANTHROPIC_API_KEY, and no OPENROUTER_API_KEY — agent may be unauthenticated')
+  // Tier 4 fail: no fallback key at all — do NOT throw.
+  console.warn('[auth-fallback] no Claude login, no ANTHROPIC_API_KEY, no Z_AI key, and no OPENROUTER_API_KEY — agent may be unauthenticated')
 }
 
 /**
@@ -264,8 +291,11 @@ function clearAuthFallbackIfActive(): void {
   // must be unset so the per-agent sonnet/opus fields take effect again.
   delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
   delete process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE
+  // Demo-pass signal - without this a post-login fast brain would keep routing
+  // to the house z.ai pass instead of the user's own pay-per-use providers.
+  delete process.env.OSBORN_DEMO_PASS
   fallbackTierActive = false
-  console.log('[auth-fallback] real Claude login completed — cleared OpenRouter redirect')
+  console.log('[auth-fallback] real Claude login completed — cleared fallback redirect')
 }
 
 /**
