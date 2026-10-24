@@ -352,8 +352,26 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
   if (!isMachinesConfigured()) {
     return { id: '', status: 'error', userId, createdAt: new Date().toISOString(), error: 'FLY_API_TOKEN not configured' }
   }
+  return createSandboxRaw(appNameFromUserId(userId), userId, options)
+}
 
-  const appName = appNameFromUserId(userId)
+/**
+ * Provision a Fly app + volume + machine with an EXPLICIT app name (the pool
+ * uses `osborn-pool-*` names, not the deterministic per-user name). This is
+ * createSandbox's machinery, factored out so machine-pool.ts can pre-provision
+ * machines that have no owner yet. Public createSandbox() signature is
+ * unchanged — it just delegates here with the deterministic name.
+ *
+ * No DB writes happen here (instances rows are written by the API route for
+ * real users, and by the pool for pool machines) — so reusing this for pool
+ * provisioning cannot create phantom instances rows.
+ */
+export async function createSandboxRaw(
+  appName: string,
+  userId: string,
+  options?: { autostopMode?: 'off' | 'stop'; sourceSnapshotId?: string; syncToken?: string },
+  opts?: { skipHealthWait?: boolean },
+): Promise<SandboxInfo> {
   const previewUrl = `https://${appName}.fly.dev`
   console.log(`[machines] Creating sandbox "${appName}" for user ${userId}...`)
 
@@ -454,11 +472,17 @@ export async function createSandbox(userId: string, options?: { autostopMode?: '
       console.warn(`[machines] Machine ${machine.id} did not reach started state within 120s`)
     }
 
-    // Step 6: Poll /health
-    console.log(`[machines] Waiting for agent health at ${previewUrl}/health...`)
-    const healthy = await waitForHealth(previewUrl, 60) // 60 × 2s = 2min
-    if (!healthy) {
-      console.warn(`[machines] Agent did not become healthy within 2 minutes`)
+    // Step 6: Poll /health (skippable for pool provisioning — the machine gets
+    // cold-stopped right after anyway; the state wait above already proves it boots)
+    let healthy: boolean
+    if (opts?.skipHealthWait) {
+      healthy = true
+    } else {
+      console.log(`[machines] Waiting for agent health at ${previewUrl}/health...`)
+      healthy = await waitForHealth(previewUrl, 60) // 60 × 2s = 2min
+      if (!healthy) {
+        console.warn(`[machines] Agent did not become healthy within 2 minutes`)
+      }
     }
 
     return {
@@ -689,12 +713,92 @@ export async function checkOsbornHealth(previewUrl: string): Promise<boolean> {
 }
 
 /**
- * Assign a sandbox to a user — alias to createSandbox.
- * No pool needed on Fly Machines (one app per user, deterministic name).
- * Drop-in parity with sprites.ts assignFromPoolOrCreate().
+ * Repoint a (preferably stopped) machine's user-specific env at a new user and
+ * restart it. Pool machines are provisioned with a placeholder owner, so the
+ * three user-derived env keys (LIVEKIT_ROOM, DEV_APP_NAME, OSBORN_SYNC_TOKEN)
+ * must be re-baked before a real user can use the machine. Everything else in
+ * the env (forwardHostEnv platform keys) is owner-independent and already set.
+ *
+ * A config POST triggers an in-place Fly replacement; since we patched while
+ * stopped, it settles in "stopped" — we then start + health-wait and return
+ * the SandboxInfo callers expect. Returns null on any failure (caller falls
+ * back to legacy createSandbox).
  */
-export async function assignFromPoolOrCreate(userId: string): Promise<SandboxInfo> {
-  return createSandbox(userId)
+export async function repointAndStartSandbox(
+  appName: string,
+  userId: string,
+  syncToken?: string,
+): Promise<SandboxInfo | null> {
+  try {
+    const machine = await getFirstMachine(appName)
+    if (!machine) return null
+
+    // Stop cold so the PATCH lands cleanly (mirrors updateOsbornImpl's flow).
+    await stopMachineCold(appName)
+
+    const existingConfig = (machine.config ?? {}) as Record<string, unknown>
+    const cleanedEnv = {
+      ...((existingConfig.env as Record<string, string>) ?? {}),
+      ...getPlatformEnvVars(userId, syncToken),
+    }
+    delete cleanedEnv.HOME
+    delete cleanedEnv.OSBORN_CWD
+    await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, {
+      config: { ...existingConfig, env: cleanedEnv },
+    })
+
+    const settled = await waitForReplacementComplete(appName, machine.id, 300)
+    if (!settled) return null
+
+    if (settled === 'started') {
+      const previewUrl = `https://${appName}.fly.dev`
+      const healthy = await waitForHealth(previewUrl, 30)
+      return {
+        id: appName,
+        status: healthy ? 'running' : 'error',
+        previewUrl,
+        userId,
+        createdAt: machine.created_at,
+        ...(healthy ? {} : { error: 'Agent did not pass health check after repoint' }),
+      }
+    }
+    return startSandbox(appName, userId)
+  } catch (err) {
+    console.error(`[machines] repointAndStartSandbox(${appName}) failed: ${(err as Error).message}`)
+    return null
+  }
+}
+
+/**
+ * Assign a sandbox to a user: prefer claiming a warm machine from the pool
+ (see machine-pool.ts); fall back to legacy createSandbox on any pool failure.
+ * Options are forwarded to whichever path runs, keeping the public signature
+ * backward-compatible (options argument is new + optional).
+ */
+export async function assignFromPoolOrCreate(
+  userId: string,
+  options?: { autostopMode?: 'off' | 'stop'; sourceSnapshotId?: string; syncToken?: string },
+): Promise<SandboxInfo> {
+  if (process.env.CLOUD_PROVIDER !== 'machines') {
+    return createSandbox(userId, options as never)
+  }
+  // Lazy import to avoid a module-load cycle: machine-pool imports helpers
+  // from this module, so it must not be in this module's static import graph.
+  const { takeSpareFromPool, replenishPool } = await import('./machine-pool')
+  const claimed = await takeSpareFromPool(userId, {
+    sourceSnapshotId: options?.sourceSnapshotId,
+    syncToken: options?.syncToken,
+  }).catch((err) => {
+    console.warn(`[machines] pool claim failed for ${userId}, falling back to createSandbox: ${(err as Error).message}`)
+    return null
+  })
+  if (claimed) {
+    void replenishPool()
+    return claimed
+  }
+  const info = await createSandbox(userId, options)
+  void replenishPool()
+  return info
 }
 
 /**
