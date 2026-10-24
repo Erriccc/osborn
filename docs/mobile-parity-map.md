@@ -151,6 +151,12 @@ See §3 (audio pipeline, connection lifecycle, data-channel protocol, idle timer
 
 **IA:** Primary 3 = Resume · New chat · Projects. **Machine subpage** (technical, ≤9):
 sandbox lifecycle, version, secrets, skills, agents, logs, region, turbo, sync-token.
+**✅ Verified P1.e (Oct 2026):** already compliant as-rendered — mobile stack = Continue
+card (P1) + New conversation CTA (P2) + Projects stack with per-project ⋯ overflow menus
+(P3); agenda cards are already `hidden lg:flex`; header (logo/clock/badge/avatar menu) is
+nav chrome (counting-exempt). No edit required. The "Machine subpage" rows above actually
+render in **/settings** sections (dashboard only reads status for its badge), which
+satisfies the subpage tier via settings' drill-in.
 
 ### 2.3 `/settings` (1,259 lines) — technical page (9 max per section)
 Sections (sidebar on desktop / back-button nav on mobile): Voice-mode toggles ·
@@ -158,6 +164,9 @@ Connection (local/cloud radio, agent-URL input) · Sandbox (Start/Stop, Update,
 Restart, Delete → `DeleteSandboxDialog`) · Sync (copy tokens) · Secrets manager ·
 Skills/Agents. Network: `/api/sandbox`, `/api/instance`, `${agent}/skills|agents|secrets|health`.
 **IA:** already sectioned; enforce ≤9 rows per section + 44pt targets (P1.10).
+**✅ Verified P1.e:** mobile is already iOS-Settings style — grouped root list → drill-in
+section, back button pops section → list → dashboard. Root list = nav chrome
+(counting-exempt); each section body is its own technical page. No IA edit required.
 
 ### 2.4 `/library` (689 lines)
 Filter pills · search · card grid · featured · reading modal (fullscreen on mobile) ·
@@ -166,6 +175,9 @@ platform renditions (Blog/X/LinkedIn/Short/Newsletter) · Generate rendition
 · Copy public link · Refine-in-chat (→ seeded `/chat`).
 **IA:** Primary 3 = Search · Filter · Open item. All studio actions inside the reading
 modal (technical ≤9).
+**✅ Verified P1.e:** page = filter + search + card grid (+ featured Copy) — within 3–6;
+reading modal is already a fullscreen mobile sheet with Read/Refine tabs chunking the
+studio controls per tab. No IA edit required.
 
 ### 2.5 `/login`
 Google OAuth · GitHub OAuth (top-level redirect, `signInWithOAuth`) · legacy local-mode
