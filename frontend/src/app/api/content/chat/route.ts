@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
+import { resolveTextProvider } from '@/lib/model-provider'
 
 /**
  * POST /api/content/chat — a LIGHTWEIGHT, conversational "talk to this page"
@@ -23,8 +24,7 @@ import { createSupabaseServer } from '@/lib/supabase-server'
  * keyed by FIREWORKS_API_KEY (set on Railway).
  */
 
-const FIREWORKS_URL = 'https://api.fireworks.ai/inference/v1/chat/completions'
-const FIREWORKS_MODEL = 'accounts/fireworks/models/gpt-oss-120b'
+
 const CHAT_TIMEOUT_MS = 45_000
 const MAX_TOKENS = 1024
 const MAX_TURNS = 20          // cap history we forward (cost + context)
@@ -79,8 +79,8 @@ export async function POST(req: NextRequest) {
     return json({ error: 'Last message must be from the user' }, 400)
   }
 
-  const apiKey = process.env.FIREWORKS_API_KEY
-  if (!apiKey) return json({ error: 'Chat is not configured (missing FIREWORKS_API_KEY)' }, 503)
+  const prov = resolveTextProvider()
+  if (!prov) return json({ error: 'Chat is not configured (no FIREWORKS_API_KEY / Z_AI_PERSONAL_API_KEY)' }, 503)
 
   // ---- Call Fireworks (streaming) -----------------------------------------
   const controller = new AbortController()
@@ -88,11 +88,11 @@ export async function POST(req: NextRequest) {
 
   let upstream: Response
   try {
-    upstream = await fetch(FIREWORKS_URL, {
+    upstream = await fetch(prov.url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${prov.key}` },
       body: JSON.stringify({
-        model: FIREWORKS_MODEL,
+        model: prov.model,
         max_tokens: MAX_TOKENS,
         temperature: 0.7,
         stream: true,

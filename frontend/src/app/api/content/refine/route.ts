@@ -7,6 +7,7 @@ import {
   userPrompt,
   type RefineResult,
 } from '@/lib/content-refine'
+import { resolveTextProvider } from '@/lib/model-provider'
 
 /**
  * POST /api/content/refine — turn a raw library item into a polished,
@@ -29,8 +30,7 @@ import {
  * the fresh rendition row (plain RLS select).
  */
 
-const FIREWORKS_URL = 'https://api.fireworks.ai/inference/v1/chat/completions'
-const FIREWORKS_MODEL = 'accounts/fireworks/models/gpt-oss-120b'
+
 const REFINE_TIMEOUT_MS = 30_000
 const MAX_TOKENS = 2048
 
@@ -69,9 +69,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '`platform` must be one of blog, x_thread, linkedin, short, newsletter' }, { status: 400 })
   }
 
-  const apiKey = process.env.FIREWORKS_API_KEY
-  if (!apiKey) {
-    return NextResponse.json({ error: 'Refine is not configured (missing FIREWORKS_API_KEY)' }, { status: 503 })
+  const prov = resolveTextProvider()
+  if (!prov) {
+    return NextResponse.json({ error: 'Refine is not configured (no FIREWORKS_API_KEY / Z_AI_PERSONAL_API_KEY)' }, { status: 503 })
   }
 
   // ---- Load the content to rewrite -----------------------------------------
@@ -96,14 +96,14 @@ export async function POST(req: NextRequest) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REFINE_TIMEOUT_MS)
   try {
-    const resp = await fetch(FIREWORKS_URL, {
+    const resp = await fetch(prov.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${prov.key}`,
       },
       body: JSON.stringify({
-        model: FIREWORKS_MODEL,
+        model: prov.model,
         max_tokens: MAX_TOKENS,
         temperature: 0.6,
         messages: [
