@@ -186,8 +186,8 @@ export default function Home() {
         <div className="w-full max-w-[360px] flex flex-col gap-6 relative z-10"
           style={{ animation: 'enter 0.5s ease both' }}>
 
-          {/* ── Hero: Orb + Brand ──────────────────────────── */}
-          <div className="flex flex-col items-center gap-5 pt-4 pb-2">
+          {/* Hero: Orb + Brand — links home (only way back from /login) */}
+          <a href="/" className="flex flex-col items-center gap-5 pt-4 pb-2 group" aria-label="Voice Native home">
             <div className="relative w-16 h-16">
               <div className="absolute inset-0 rounded-full"
                 style={{
@@ -204,14 +204,14 @@ export default function Home() {
               </svg>
             </div>
             <div className="text-center">
-              <h1 className="text-[var(--text-primary)] text-2xl font-semibold tracking-[-0.03em]">
+              <h1 className="text-[var(--text-primary)] text-2xl font-semibold tracking-[-0.03em] group-hover:text-[var(--accent)] transition-colors">
                 Osborn
               </h1>
               <p className="text-[var(--text-secondary)] text-[13px] mt-1 tracking-wide uppercase">
                 Voice-native AI
               </p>
             </div>
-          </div>
+          </a>
 
           {/* ── Auth card ──────────────────────────────────── */}
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 flex flex-col gap-3"
