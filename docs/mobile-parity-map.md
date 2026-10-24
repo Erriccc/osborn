@@ -310,11 +310,15 @@ the native app itself.
 - **G-WATCH** ⛔ LiveKit Swift has no watchOS target (#288) → WS gateway (Track 2)
 
 ## 6. Watch parity (from docs/watch-app-research-2026-10.md)
-- **Track 1 (answers-only):** permission prompts + blocking questions push to the
-  wrist via Pushover priority=2; ack (tap) = yes, expiry (10 min) = no. Maps the
-  `permission_request` DC event and agent blocking-question paths → push →
-  `/api/watch/ack/[qid]` (HMAC) → agent `permission_response`. No other controls.
-  **3-6-9: watch = 1 action (the tap).**
+- **Track 1 (answers-only) — ✅ SHIPPED 2026-10-24 (c040625), live when keys
+  land:** permission prompts push to the wrist via Pushover priority=2
+  (retry 30s, expire 600s); ack (tap) = yes, expiry (10 min) = no. Flow:
+  `permission_request` DC event → `agent/src/pushover.ts` emergency push with
+  HMAC-signed callback token → `/api/watch/ack/[qid]` (frontend verifies HMAC +
+  expiry, forwards) → agent `POST /watch/ack` → `respondToPermission(true)`.
+  Expiry receipts-poll denies + cancels buzzing; late-ack recovery approves.
+  Web-UI answers always win; dormant until PUSHOVER_* keys set (README-mobile
+  §Watch has the setup). No other controls. **3-6-9: watch = 1 action (the tap).**
 - **Track 2 (full voice):** watch app streams 24kHz PCM over WS to a gateway on the
   user's Fly machine bridging into LiveKit; reuses §3.3 protocol as WS JSON. Glance
   (agent state) + tap-to-talk + question sheet. **3-6-9: 3 (glance/talk/answer).**
