@@ -57,6 +57,7 @@ import { storeExists, openStore, recentRows } from './session-store.js'
 import { getRecallClient } from './recall-client.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
+import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './pushover.js'
 import { noiseGate } from './noise-gate.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { llm } from '@livekit/agents'
@@ -1008,6 +1009,29 @@ function startApiServer(workingDir: string, port: number): void {
           noiseGate.setEnabled(enabled, 'meeting')
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: true, enabled: noiseGate.enabled, reason: noiseGate.reason }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+      return
+    }
+
+    // POST /watch/ack — landing for the Pushover wrist bridge (mobile Track 1).
+    // The frontend /api/watch/ack/[qid] route verifies the HMAC signature and
+    // forwards here; pushover.ts re-verifies against its pending map before
+    // resolving the blocking permission (ack = approve). Dormant unless
+    // PUSHOVER_* + WATCH_ACK_SECRET are configured.
+    if (req.method === 'POST' && url.pathname === '/watch/ack') {
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        try {
+          const { qid, receipt } = JSON.parse(body || '{}') as { qid?: string; receipt?: string }
+          if (!qid) throw new Error('qid required')
+          const ok = handleWatchAck(qid, receipt)
+          res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok }))
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error: (e as Error).message }))
@@ -3743,6 +3767,19 @@ async function main() {
     directLLM?.setTurbo?.(turboMode)
     currentLLM = directLLM
 
+    // Watch bridge (mobile Track 1): a wrist ack/expiry settles whatever
+    // permission is currently pending. Re-registered per session — harmless,
+    // the latest closure wins and they all resolve through currentLLM.
+    setWatchResultHandler((allow, toolName) => {
+      if (currentLLM?.hasPendingPermission?.()) {
+        currentLLM.respondToPermission(allow)
+        console.log(`⌚️ Watch bridge settled ${toolName}: ${allow ? 'approve' : 'deny'}`)
+      } else {
+        // Already answered via the web UI — a late ack/expiry is a no-op.
+        console.log(`⌚️ Watch bridge ${allow ? 'ack' : 'expiry'} for ${toolName} — no pending permission, ignoring`)
+      }
+    })
+
     // P1 host-agent anchor: this dashboard-started session owns the room's env
     // and keeps it alive (agentsActive → true) so background dispatches survive.
     // Keep-alive keys off the hostActive boolean, NOT a session_id event;
@@ -3947,6 +3984,10 @@ async function main() {
         agentRole: 'direct',
         diff: diffString,
       })
+      // Watch bridge (mobile Track 1): mirror this blocking question to the
+      // wrist via Pushover. Fire-and-forget — dormant unless PUSHOVER_* env is
+      // configured; web-UI answers always win (late wrist acks are no-ops).
+      void armPermissionPush({ toolName, description }).catch(() => {})
       // Speak the descriptive request so user knows to respond
       //do not delete!! Leave this section commented out
       // say permission, request permission, ask for permission with session.say

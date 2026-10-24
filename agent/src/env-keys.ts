@@ -41,6 +41,11 @@ export const AGENT_ENV_KEYS: AgentEnvKey[] = [
   { key: 'RECALL_API_KEY', required: false, explicit: true, description: 'Recall.ai meeting bot.' },
   { key: 'RECALL_REGION', required: false, explicit: true, description: 'Recall.ai region.' },
   { key: 'SMITHERY_API_KEY', required: false, explicit: true, description: 'Smithery hosted-MCP catalog.' },
+  // Watch bridge (Track 1 — Pushover wrist yes/no)
+  { key: 'PUSHOVER_TOKEN', required: false, explicit: true, description: 'Pushover app token — emergency permission pushes to the wrist (pushover.ts).' },
+  { key: 'PUSHOVER_USER_KEY', required: false, explicit: true, description: 'Pushover user/group key receiving permission pushes.' },
+  { key: 'WATCH_ACK_SECRET', required: false, explicit: true, description: 'HMAC secret signing watch-ack links; shared with the frontend /api/watch/ack route.' },
+  { key: 'OSBORN_PUBLIC_URL', required: false, explicit: true, description: 'This machine\'s public base URL, embedded in signed watch-ack links so the callback knows where to forward.' },
   // Platform / infra
   { key: 'OSBORN_API_PORT', required: true, explicit: true, description: 'Agent HTTP server port.' },
   { key: 'OSBORN_CWD', required: false, explicit: true, description: 'Agent working directory.' },

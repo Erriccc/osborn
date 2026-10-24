@@ -69,6 +69,21 @@ a cold launch must not auto-burn LiveKit minutes).
 - **Track 1 (zero-build, live when keys land):** Pushover priority-2 push →
   yes/no tap on the wrist → HMAC-signed callback route → agent permission
   auto-answer. See `agent/src/pushover.ts` + `frontend/src/app/api/watch/ack/`.
+  - Settled semantics: **tap = approve · ignore-to-expiry (10 min) = deny** —
+    the expiry receipts-poll also cancels further watch buzzing.
+  - Setup (one-time, $5): pushover.net → create application (token) + note
+    your user key; install Pushover on the iPhone (Watch mirroring is
+    automatic). Then set on EACH agent machine:
+    `PUSHOVER_TOKEN`, `PUSHOVER_USER_KEY`, `WATCH_ACK_SECRET` (random 32+ hex),
+    `OSBORN_PUBLIC_URL` (that machine's public https base) — and the SAME
+    `WATCH_ACK_SECRET` in the Railway frontend env (it verifies the callback).
+    All dormant unless set: no keys, no behavior change.
+  - Flow: agent permission blocks → pushover.ts POSTs messages.json
+    (priority=2, retry=30s, expire=600s, callback=…/api/watch/ack/<signed
+    token>) → tap on Watch → Pushover hits the frontend route → route verifies
+    HMAC + expiry, POSTs the ack to the agent's `/watch/ack` → pending
+    permission resolves allow. Web-UI answers always win; late wrist acks are
+    no-ops; an ack whose callback got lost is recovered by the expiry poll.
 - **Track 2 (scaffold):** `native/watchos/` SwiftUI app + `agent/src/watch-gateway.ts`
   (Node ws gateway ↔ @livekit/rtc-node). Needs the Apple account + TestFlight
   to reach a real watch.
