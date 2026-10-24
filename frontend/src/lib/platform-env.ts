@@ -64,6 +64,7 @@ export const PLATFORM_ENV_SPEC: EnvKeySpec[] = [
   { key: 'GOOGLE_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Google Gemini (realtime plugin, consumed implicitly).' },
   { key: 'ANTHROPIC_API_KEY', source: 'host-env', scope: 'user', required: false, secret: true, description: 'Anthropic API key — per-user Claude auth (users may bring their own; also settable via OAuth file).' },
   { key: 'OPENROUTER_API_KEY', source: 'host-env', scope: 'user', required: false, secret: true, description: 'OpenRouter key — alternate model routing for the agent.' },
+  { key: 'Z_AI_PERSONAL_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'z.ai house demo pass — routes unauthenticated-user model layer to the shared GLM subscription (see claude-auth applyAuthFallback).' },
   // ── Integrations ──
   { key: 'RECALL_API_KEY', source: 'host-env', scope: 'user', required: false, secret: true, description: 'Recall.ai meeting-bot token.' },
   { key: 'RECALL_REGION', source: 'host-env', scope: 'user', required: false, secret: false, description: 'Recall.ai regional endpoint selector (default us-west-2).' },
