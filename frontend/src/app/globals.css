@@ -108,3 +108,36 @@ body {
 .animate-teach-sheen {
   animation: teachSheen 2.4s ease-in-out infinite;
 }
+
+/* ── Mobile / standalone hardening (2026-10-24 mobile branch, P1.4) ──
+   Applies everywhere but only *matters* on touch/standalone: kills rubber-band
+   overscroll in the A2HS shell, the 300ms double-tap-zoom delay, and the gray
+   tap flash. In standalone mode we also disable selection so long-pressing the
+   transcript doesn't fight scrolling — [data-selectable] re-enables it where
+   copying is the point (message bodies, code, diffs, inputs). */
+html, body {
+  overscroll-behavior: none;
+}
+body {
+  -webkit-tap-highlight-color: transparent;
+}
+button, [role="button"], a, label, summary {
+  touch-action: manipulation;
+}
+/* iOS never auto-zooms a ≥16px input. Scoped to coarse-pointer touch devices
+   so desktop input density (11–15px in dense panels) is untouched. (P1.5) */
+@media (hover: none) and (pointer: coarse) {
+  input, textarea, select {
+    font-size: max(16px, 1em);
+  }
+}
+@media (display-mode: standalone) {
+  body {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  [data-selectable], input, textarea {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+}

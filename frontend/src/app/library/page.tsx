@@ -323,7 +323,7 @@ export default function LibraryPage() {
   return (
     <main className="min-h-screen bg-[var(--background)] flex flex-col">
       {/* Header — logo home + breadcrumb, mirrors the dashboard chrome */}
-      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
+      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md pt-[env(safe-area-inset-top)]">
         <div className="max-w-6xl mx-auto px-4 lg:px-6 h-12 flex items-center justify-between">
           <div className="flex items-center gap-2.5 min-w-0">
             <Link href="/dashboard" className="flex items-center gap-2 hover:opacity-80 transition-opacity shrink-0">

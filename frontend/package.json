@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "prebuild": "node scripts/copy-sandbox-dockerfile.mjs && node scripts/build-harness-bundle.mjs",
+    "prebuild": "node scripts/copy-sandbox-dockerfile.mjs && node scripts/build-harness-bundle.mjs && node scripts/generate-icons.mjs",
+    "icons": "node scripts/generate-icons.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
@@ -39,6 +40,7 @@
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.0",
     "postcss": "^8.4.0",
+    "sharp": "^0.35.5",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.0.0"
   },

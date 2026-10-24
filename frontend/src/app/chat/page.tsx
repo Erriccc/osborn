@@ -97,7 +97,7 @@ export default function ChatPage() {
           @keyframes breathe { 0%, 100% { transform: scale(1); opacity: 0.7; } 50% { transform: scale(1.15); opacity: 1; } }
           @keyframes ring { 0% { transform: scale(0.8); opacity: 0.5; } 100% { transform: scale(2.2); opacity: 0; } }
         `}</style>
-        <main className="h-[100dvh] w-full overflow-hidden bg-[var(--background)] relative">
+        <main className="h-[100dvh] w-full overflow-hidden bg-[var(--background)] relative pt-[env(safe-area-inset-top)]">
           <VoiceRoom waitingMode={!connected} />
           {!connected && (
             <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[var(--background)]">

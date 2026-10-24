@@ -1213,7 +1213,7 @@ export default function Dashboard() {
       `}</style>
       <main className="min-h-screen bg-[var(--background)] flex flex-col">
         {/* ── Header ──────────────────────────────── */}
-        <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
+        <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md pt-[env(safe-area-inset-top)]">
           <div className="max-w-3xl lg:max-w-6xl mx-auto px-4 h-12 flex items-center justify-between">
             {/* Logo → home (voice-native.com). Clickable from the dashboard back to root. */}
             <Link href="/" title="Home" className="flex items-center gap-3 rounded-lg -mx-1 px-1 py-0.5 hover:opacity-80 transition-opacity">
