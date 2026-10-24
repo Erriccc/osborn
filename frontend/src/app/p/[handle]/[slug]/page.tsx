@@ -34,7 +34,7 @@ async function getItem(handle: string, slug: string): Promise<PublicContent | nu
   if (!supabase) return null
   const { data, error } = await supabase
     .from('public_content')
-    .select('id, type, title, hook, body, transcript, slug, poster_path, published_at, handle')
+    .select('id, type, title, hook, body, transcript, slug, poster_path, published_at, handle, author_name')
     .eq('handle', decodeURIComponent(handle))
     .eq('slug', slug)
     .maybeSingle()
@@ -134,7 +134,7 @@ export default async function PublicArticlePage({ params }: PageParams) {
         <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-[var(--text-muted)] mb-4">
           {item.published_at && <time dateTime={item.published_at}>{fmtDate(item.published_at)}</time>}
           {item.handle && <><span className="opacity-40">·</span>
-            <Link href={`/p/${encodeURIComponent(item.handle)}`} className="hover:text-[var(--accent)] transition-colors">{item.handle}</Link></>}
+            <Link href={`/p/${encodeURIComponent(item.handle)}`} className="hover:text-[var(--accent)] transition-colors">{item.author_name || item.handle}</Link></>}
           {item.type && <><span className="opacity-40">·</span><span className="capitalize">{item.type.replace(/_/g, ' ')}</span></>}
         </div>
 

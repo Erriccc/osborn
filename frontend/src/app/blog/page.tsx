@@ -57,7 +57,7 @@ async function getLatest(): Promise<PublicContent[]> {
   if (!supabase) return []
   const { data, error } = await supabase
     .from('public_content')
-    .select('id, type, title, hook, body, transcript, slug, poster_path, published_at, handle')
+    .select('id, type, title, hook, body, transcript, slug, poster_path, published_at, handle, author_name')
     .order('published_at', { ascending: false })
     .limit(24)
   if (error || !data) return []
@@ -125,7 +125,7 @@ export default async function BlogIndexPage() {
                   {item.title || item.slug}
                 </h3>
                 {item.hook && <p className="mt-2 text-[13px] text-[var(--text-secondary)] line-clamp-3 leading-relaxed">{item.hook}</p>}
-                {item.handle && <span className="mt-auto pt-4 text-[11px] text-[var(--text-muted)]">{item.handle}</span>}
+                {item.handle && <span className="mt-auto pt-4 text-[11px] text-[var(--text-muted)]">{item.author_name || item.handle}</span>}
               </Link>
             ))}
           </div>
