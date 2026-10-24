@@ -3046,6 +3046,11 @@ function VoiceRoomInner({
   isMutedRef.current = isMuted
   const localParticipantRef = useRef(localParticipant)
   localParticipantRef.current = localParticipant
+  // P1.9 (2026-10-24): wall-clock "TTS audio may still be flushing" marker,
+  // stamped on every tts_chunk_playing. The iOS AEC re-enable below refuses to
+  // fire inside this window — enabling mid-flush gets the track re-muted by
+  // iOS and the mic stays dead for the rest of the turn.
+  const ttsActiveUntilRef = useRef(0)
 
   const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number }) => void>()
 
@@ -3172,8 +3177,19 @@ function VoiceRoomInner({
         // iOS AEC mutes the mic track during TTS playback. Re-enable it when
         // agent transitions to listening (TTS done) — only if user hasn't
         // intentionally muted themselves via the mute button.
+        // P1.9 hardening: (a) skip while TTS audio may still be flushing
+        // (older agents emit `listening` with chunks queued — enabling then
+        // gets re-muted by AEC and the mic stays dead); (b) try/catch —
+        // setMicrophoneEnabled can reject on detached participants; (c) one
+        // delayed re-check retry in case the enable landed on the tail of the
+        // audio session and was silently dropped.
         if (data.state === 'listening' && !isMutedRef.current && sessionGateCompletedRef.current) {
-          localParticipantRef.current?.setMicrophoneEnabled(true)
+          const enableMic = () => {
+            if (isMutedRef.current || Date.now() < ttsActiveUntilRef.current) return
+            try { void localParticipantRef.current?.setMicrophoneEnabled(true) } catch { /* detached participant */ }
+          }
+          enableMic()
+          setTimeout(enableMic, 500)
         }
         // Any voice state change (thinking/speaking/listening) = active session
         onVoiceActivity?.()
@@ -3187,6 +3203,8 @@ function VoiceRoomInner({
           onVoiceActivity?.()
         }
       } else if (data.type === 'tts_chunk_playing') {
+        // P1.9: mark the AEC no-fly window (see ttsActiveUntilRef above).
+        ttsActiveUntilRef.current = Date.now() + 1200
         if (data.messageId != null && data.chunkIndex != null) {
           setSpeakingChunk({ messageId: data.messageId, chunkIndex: data.chunkIndex })
         }
