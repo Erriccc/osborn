@@ -23,6 +23,18 @@ export default function Home() {
   const [showSessionBrowser, setShowSessionBrowser] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
 
+  // Free/demo email gate: "Connect without account" reveals an inline email
+  // field; submitting stores the email then proceeds with the normal guest
+  // flow (session stays decoupled from a full account).
+  const [showEmailGate, setShowEmailGate] = useState(false)
+  const [guestEmail, setGuestEmail] = useState('')
+  const [gateError, setGateError] = useState<string | null>(null)
+  const [gateBusy, setGateBusy] = useState(false)
+  const emailInputRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (showEmailGate) emailInputRef.current?.focus()
+  }, [showEmailGate])
+
   // Supabase auth
   const [user, setUser] = useState<User | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -111,6 +123,39 @@ export default function Home() {
     // create fresh" — just forward.
     navigateToChat()
   }, [navigateToChat])
+
+  // Email gate submit: record the lead (best-effort — network failure logs and
+  // proceeds), stash it for the guest session, then run the normal guest flow.
+  const handleGuestEmailSubmit = useCallback(async (e?: React.FormEvent) => {
+    e?.preventDefault()
+    const email = guestEmail.trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+      setGateError('Enter a valid email address.')
+      return
+    }
+    setGateError(null)
+    setGateBusy(true)
+    try {
+      const res = await fetch('/api/demo-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      if (!res.ok) {
+        let msg = 'Could not verify your email. Please try again.'
+        try { msg = (await res.json())?.error ?? msg } catch { /* keep default */ }
+        setGateError(msg)
+        setGateBusy(false)
+        return
+      }
+    } catch (err) {
+      // Best-effort gate: a network failure shouldn't block usage.
+      console.warn('[login] demo-access unreachable, proceeding anyway:', err)
+    }
+    localStorage.setItem('osborn-guest-email', email)
+    setGateBusy(false)
+    autoConnect()
+  }, [guestEmail, autoConnect])
 
   const handleJoinRoom = useCallback((_code: string, sessionId?: string | null, sessionCwd?: string | null) => {
     navigateToChat(sessionId, sessionCwd)
@@ -292,15 +337,47 @@ export default function Home() {
                       <div className="flex-1 h-px bg-[var(--border)]" />
                     </div>
 
-                    <button onClick={autoConnect}
-                      className="w-full h-12 rounded-xl font-semibold text-[15px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.98]"
-                      style={{
-                        background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)',
-                        color: 'var(--background)',
-                        boxShadow: '0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
-                      }}>
-                      Connect without account
-                    </button>
+                    {!showEmailGate ? (
+                      <button onClick={() => { setShowEmailGate(true); setGateError(null) }}
+                        className="w-full h-12 rounded-xl font-semibold text-[15px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.98]"
+                        style={{
+                          background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)',
+                          color: 'var(--background)',
+                          boxShadow: '0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
+                        }}>
+                        Connect without account
+                      </button>
+                    ) : (
+                      <form onSubmit={handleGuestEmailSubmit} className="flex flex-col gap-2">
+                        <input
+                          ref={emailInputRef}
+                          type="email"
+                          inputMode="email"
+                          autoComplete="email"
+                          placeholder="you@example.com"
+                          value={guestEmail}
+                          onChange={(e) => { setGuestEmail(e.target.value); if (gateError) setGateError(null) }}
+                          className="w-full h-11 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[15px] px-3 outline-none focus:border-[var(--accent)]"
+                        />
+                        <button type="submit" disabled={gateBusy}
+                          className="w-full h-11 rounded-xl font-semibold text-[15px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.98] disabled:opacity-60"
+                          style={{
+                            background: 'linear-gradient(135deg, #d9a441 0%, #b5842b 100%)',
+                            color: 'var(--background)',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
+                          }}>
+                          {gateBusy ? 'Starting…' : 'Start building — free'}
+                        </button>
+                        <button type="button" onClick={() => { setShowEmailGate(false); setGateError(null); setGuestEmail('') }}
+                          className="text-[var(--text-muted)] text-xs hover:text-[var(--text-secondary)] transition-colors self-center py-1">
+                          Back
+                        </button>
+                      </form>
+                    )}
+
+                    {gateError && (
+                      <p className="text-amber-400 text-xs text-center">{gateError}</p>
+                    )}
 
                     {connectError && (
                       <p className="text-red-400 text-xs text-center">{connectError}</p>

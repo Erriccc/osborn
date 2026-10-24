@@ -70,6 +70,7 @@ export const PLATFORM_ENV_SPEC: EnvKeySpec[] = [
   { key: 'RECALL_REGION', source: 'host-env', scope: 'user', required: false, secret: false, description: 'Recall.ai regional endpoint selector (default us-west-2).' },
   { key: 'SMITHERY_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Smithery hosted-MCP catalog key.' },
   { key: 'OSBORN_HOUSEKEEPING_DRYRUN', source: 'host-env', scope: 'platform', required: false, secret: false, description: 'Housekeeping deletion switch forwarded to every machine: "0" enables live deletion of stale sub-agent transcripts + empty slug dirs; any other value / unset = dry-run (log only). Set on the host to flip the fleet.' },
+  { key: 'SUPABASE_SERVICE_ROLE_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Supabase service-role key — server-route-only writes that bypass RLS (e.g. demo_leads email gate). NEVER exposed to the client.' },
   // ── Platform literals (built per-backend; listed here for visibility) ──
   { key: 'OSBORN_API_PORT', source: 'literal', scope: 'platform', required: true, secret: false, description: 'Port the agent HTTP server binds (8741 on Fly, 8080 on Sprites).' },
   { key: 'LIVEKIT_ROOM', source: 'literal', scope: 'platform', required: true, secret: false, description: 'Per-user LiveKit room name (osborn-<uid8>).' },
