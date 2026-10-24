@@ -688,24 +688,9 @@ export default function SettingsPage() {
     })
   }
 
-  if (loading) {
-    return (
-      <main className="min-h-screen bg-[var(--background)] flex items-center justify-center">
-        <div className="w-5 h-5 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
-      </main>
-    )
-  }
-
-  // Secret-field metadata (label + placeholder) — shared by desktop + mobile.
-  const SECRET_META: Record<string, { label: string; placeholder: string }> = {
-    ANTHROPIC_API_KEY: { label: 'Anthropic', placeholder: 'sk-ant-…' },
-    OPENROUTER_API_KEY: { label: 'OpenRouter', placeholder: 'sk-or-…' },
-    RECALL_API_KEY: { label: 'Recall.ai', placeholder: 'API key' },
-    RECALL_REGION: { label: 'Recall region', placeholder: 'us-west-2' },
-  }
-
   /** Editable public handle (profiles.username) — drives /p/{handle}/{slug}
-   *  URLs. Self-contained: loads on mount, PUTs /api/account/handle on save. */
+   *  URLs. Self-contained: loads on mount, PUTs /api/account/handle on save.
+   *  Must stay ABOVE the `if (loading)` early return (Rules of Hooks). */
   const [handleValue, setHandleValue] = useState<string>('')
   const [handleEdit, setHandleEdit] = useState(false)
   const [handleBusy, setHandleBusy] = useState(false)
@@ -733,6 +718,22 @@ export default function SettingsPage() {
     } catch { setHandleMsg('Could not save') }
     finally { setHandleBusy(false) }
   }, [handleValue])
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-[var(--background)] flex items-center justify-center">
+        <div className="w-5 h-5 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
+      </main>
+    )
+  }
+
+  // Secret-field metadata (label + placeholder) — shared by desktop + mobile.
+  const SECRET_META: Record<string, { label: string; placeholder: string }> = {
+    ANTHROPIC_API_KEY: { label: 'Anthropic', placeholder: 'sk-ant-…' },
+    OPENROUTER_API_KEY: { label: 'OpenRouter', placeholder: 'sk-or-…' },
+    RECALL_API_KEY: { label: 'Recall.ai', placeholder: 'API key' },
+    RECALL_REGION: { label: 'Recall region', placeholder: 'us-west-2' },
+  }
 
   // ───────────────────────── Section bodies ─────────────────────────
   // Each returns the content for one settings section. Shared between the
