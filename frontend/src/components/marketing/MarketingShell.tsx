@@ -64,9 +64,13 @@ export default function MarketingShell({ children }: { children: ReactNode }) {
           <span className="font-display text-[15px] text-[var(--text-secondary)]">
             Voice Native
           </span>
-          <span className="font-mono text-[11px] uppercase tracking-[0.14em]">
-            Talk to it. It ships.
-          </span>
+          <div className="flex items-center gap-5">
+            <a href="https://www.linkedin.com/in/osbornojure/" target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-[var(--text-secondary)]">LinkedIn</a>
+            <a href="https://github.com/Erriccc/osborn" target="_blank" rel="noopener noreferrer" className="transition-colors hover:text-[var(--text-secondary)]">GitHub</a>
+            <span className="font-mono text-[11px] uppercase tracking-[0.14em]">
+              Talk to it. It ships.
+            </span>
+          </div>
         </div>
       </footer>
     </div>
