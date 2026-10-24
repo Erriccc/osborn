@@ -2249,6 +2249,13 @@ function VoiceRoomInner({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
+  // iOS recovery surfaces (2026-10-24 mobile branch, P1.6/P1.7). audioBlocked →
+  // "tap to enable sound" bar when the room's AudioContext started suspended
+  // (connect flow begins without a user gesture; the first TTS would play into
+  // silence). micError → recovery overlay when mic capture fails — previously
+  // MediaDevicesError was log-only and a denied mic meant an eternal spinner.
+  const [audioBlocked, setAudioBlocked] = useState(false)
+  const [micError, setMicError] = useState<'denied' | 'notfound' | 'busy' | null>(null)
   // YOLO toggle: when enabled, the frontend intercepts every incoming
   // permission_request and sends back an immediate allow without showing
   // the modal. Persisted to localStorage so it survives reloads. Default
@@ -2774,16 +2781,29 @@ function VoiceRoomInner({
       log('TrackUnsubscribed', { kind: track.kind, participant: participant.identity, sid: pub?.trackSid })
     const onTrackMuted = (pub: any, participant: any) =>
       log('TrackMuted', { kind: pub?.kind, participant: participant.identity, sid: pub?.trackSid, isLocal: participant.isLocal })
-    const onTrackUnmuted = (pub: any, participant: any) =>
+    const onTrackUnmuted = (pub: any, participant: any) => {
       log('TrackUnmuted', { kind: pub?.kind, participant: participant.identity, sid: pub?.trackSid, isLocal: participant.isLocal })
+      // P1.7: a live local audio track means whatever mic error we surfaced
+      // (or never showed) is resolved — clear the recovery overlay.
+      if (participant.isLocal && pub?.kind === 'audio') setMicError(null)
+    }
     const onActiveSpeakers = (speakers: any[]) =>
       log('ActiveSpeakersChanged', { count: speakers.length, identities: speakers.map(s => s.identity) })
     const onConnQuality = (q: any, p: any) =>
       log('ConnectionQualityChanged', { participant: p.identity, quality: q })
-    const onAudioPlayback = () =>
+    const onAudioPlayback = () => {
       log('AudioPlaybackStatusChanged', { canPlay: room.canPlaybackAudio })
-    const onMediaDevicesError = (err: Error) =>
+      // P1.6: canPlaybackAudio === false means the AudioContext is suspended
+      // (iOS autoplay policy). Only a user gesture can resume it — surface bar.
+      setAudioBlocked(room.canPlaybackAudio === false)
+    }
+    const onMediaDevicesError = (err: Error) => {
       log('MediaDevicesError', { err: err.message })
+      // P1.7: map the DOMException to a recovery path instead of a silent log.
+      if (err?.name === 'NotAllowedError') setMicError('denied')
+      else if (err?.name === 'NotFoundError') setMicError('notfound')
+      else if (err?.name === 'NotReadableError') setMicError('busy')
+    }
     const onParticipantConnected = (p: any) =>
       log('ParticipantConnected', { identity: p.identity, isAgent: !p.isLocal })
     const onParticipantDisconnected = (p: any) =>
@@ -3085,6 +3105,10 @@ function VoiceRoomInner({
         const cts = (window as any).__osbornClickTs
         if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms agent_ready received → setConnected(true)`)
         setAgentConnected(true)
+        // P1.6: catch a suspended AudioContext at agent_ready — BEFORE the
+        // first TTS chunk plays into silence. On iOS the connect flow starts
+        // without a direct tap on this page, so this is the common case.
+        if (room.canPlaybackAudio === false) setAudioBlocked(true)
         // Clear any stale "running" sub-agent rows. agent_ready = a fresh/cold-started agent
         // session: any flow still marked running here predates it and can NEVER receive its
         // task_completed (its sub-agent was hard-killed on the restart/session-drop that never
@@ -4788,6 +4812,71 @@ function VoiceRoomInner({
                 Authentication failed. Check the agent logs for details. The agent will fall back to API key authentication if available.
               </p>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* P1.6 — iOS autoplay unlock. The whole bar is the gesture: tapping it
+          resumes the suspended AudioContext. Sits above everything (z-70);
+          disappears via AudioPlaybackStatusChanged once audio can play. */}
+      {audioBlocked && (
+        <button
+          onClick={async () => {
+            // startAudio() is livekit-client's official gesture-driven unlock
+            // (resumes the internal AudioContext + starts the audio elements).
+            try { await room.startAudio() } catch { /* surfaced by re-check */ }
+            // Unlock is async; AudioPlaybackStatusChanged usually flips it —
+            // re-check both now and slightly later for late-firing browsers.
+            setAudioBlocked(room.canPlaybackAudio === false)
+            setTimeout(() => setAudioBlocked(room.canPlaybackAudio === false), 250)
+          }}
+          className="fixed inset-x-0 top-0 z-[70] flex items-center justify-center gap-2 bg-amber-400/95 text-black text-sm font-semibold px-4 py-3 touch-manipulation"
+          aria-live="polite"
+        >
+          🔊 Tap to enable sound
+        </button>
+      )}
+
+      {/* P1.7 — mic failure recovery. Maps NotAllowed/NotFound/NotReadable to
+          a path forward; "Try again" doubles as the gesture LiveKit needs to
+          re-request the mic (iOS allows re-request after a Settings flip). */}
+      {micError && (
+        <div className="fixed inset-0 z-[65] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 max-w-sm w-full shadow-2xl" role="alertdialog" aria-label="Microphone problem">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
+                <span className="text-xl">🎙️</span>
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-white">
+                  {micError === 'denied' ? 'Microphone blocked' : micError === 'notfound' ? 'No microphone found' : 'Microphone busy'}
+                </h3>
+                <p className="text-sm text-gray-400 mt-1">
+                  {micError === 'denied'
+                    ? 'Allow mic access: iPhone Settings → Safari (or this app) → Microphone → Allow — then come back and tap Try again.'
+                    : micError === 'notfound'
+                      ? 'This device reports no microphone input. Connect a mic and tap Try again.'
+                      : 'Another app is using the microphone. Close it and tap Try again.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={async () => {
+                  setMicError(null)
+                  try { await localParticipant.setMicrophoneEnabled(true) } catch { /* MediaDevicesError re-fires and re-surfaces */ }
+                }}
+                className="flex-1 min-h-11 px-4 rounded-lg bg-amber-400 text-black text-sm font-semibold hover:bg-amber-300 transition-colors"
+              >
+                Try again
+              </button>
+              <button
+                onClick={() => setMicError(null)}
+                className="min-h-11 px-4 rounded-lg bg-gray-800 text-gray-300 text-sm hover:bg-gray-700 transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         </div>
       )}
