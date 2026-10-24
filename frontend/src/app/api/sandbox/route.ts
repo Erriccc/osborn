@@ -148,6 +148,20 @@ export async function POST(request: Request) {
     return data?.sandbox_id ?? undefined
   }
 
+  // Ownership guard for actions that take a client-supplied sandboxId. The
+  // caller's own instances row (RLS-scoped, filtered by user_id) is the source
+  // of truth; any other id is rejected so one user can't start/stop/delete
+  // another user's machine. Same check + response shape as restart-service /
+  // update-osborn / version. GET /api/sandbox syncs a fallback-found sandbox
+  // id into instances before returning it, so legit callers always match.
+  const rejectIfNotOwned = async (id: string): Promise<NextResponse | null> => {
+    const ownedId = await getKnownSandboxId()
+    if (!ownedId || ownedId !== id) {
+      return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
+    }
+    return null
+  }
+
   // Helper: read the user's sync_token for forwarding to sprites as OSBORN_SYNC_TOKEN.
   // If no token exists yet, generate one, persist it, and return the new value.
   const getSyncToken = async (): Promise<string | undefined> => {
@@ -221,6 +235,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
+      const startDenied = await rejectIfNotOwned(sandboxId)
+      if (startDenied) return startDenied
       const startSyncToken = await getSyncToken()
       const info = await startSandbox(sandboxId, user.id, startSyncToken)
       if (info?.previewUrl) {
@@ -241,6 +257,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
+      const stopDenied = await rejectIfNotOwned(sandboxId)
+      if (stopDenied) return stopDenied
       const ok = await stopSandbox(sandboxId)
       if (ok) {
         await supabase.from('instances').update({
@@ -255,6 +273,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
+      const keepaliveDenied = await rejectIfNotOwned(sandboxId)
+      if (keepaliveDenied) return keepaliveDenied
       const ok = await keepAliveSandbox(sandboxId)
       return NextResponse.json({ success: ok })
     }
@@ -263,6 +283,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
+      const deleteDenied = await rejectIfNotOwned(sandboxId)
+      if (deleteDenied) return deleteDenied
       // Delete the sprite, then clear DB record
       await deleteSandbox(sandboxId).catch(() => {})
       await supabase.from('instances').update({

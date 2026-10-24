@@ -1080,7 +1080,7 @@ export default function SettingsPage() {
   const KeysSection = (
     <SettingsSection
       title="API Keys"
-      description="Add your own keys — applied live, no restart. Stored encrypted on your machine, never shown back."
+      description="Add your own keys — applied live, no restart. Stored on your machine (owner-only file), never shown back."
     >
       {syncToken && dashSecrets.length > 0 ? (
         dashSecrets.map((s) => {
