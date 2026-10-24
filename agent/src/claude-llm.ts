@@ -81,6 +81,15 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     }
     if (!hits.length) return ''
 
+    // PREFIX-STABILITY: this block rides AFTER the whole stable conversation prefix
+    // (tools → system → history), so it never invalidates the cached head. Keep the
+    // body deterministic anyway: recall() orders top-K by score (deterministic given
+    // the same DB state) and V8's Array.sort is stable, so equal-score hits keep
+    // insertion order — same DB state ⇒ same injected bytes. No timestamps are
+    // rendered here (only source/line/msgType), so the block has no volatile head.
+    // The one genuinely volatile per-turn injection (the machine-load nudge) is
+    // placed LAST in additionalContext by the UserPromptSubmit hook below.
+
     const lines = hits.map((h, i) => {
       let body = h.text.replace(/\n{3,}/g, '\n\n').trim()
       if (body.length > RECALL_PER_HIT_CHARS) body = body.slice(0, RECALL_PER_HIT_CHARS) + ' …'
@@ -92,6 +101,19 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
   } catch {
     return '' // recall is best-effort — never break the turn
   }
+}
+
+/** Per-turn cache observability: log Anthropic prompt-cache reads/writes from an SDK result's usage. */
+function logCacheUsage(usage: any): void {
+  try {
+    const read = usage?.cache_read_input_tokens
+    const write = usage?.cache_creation_input_tokens
+    if (typeof read !== 'number' && typeof write !== 'number') return
+    const r = read || 0
+    const w = write || 0
+    const hit = r + w > 0 ? Math.round((r / (r + w)) * 100) : 0
+    console.log(`[cache] read=${r} write=${w} (hit${hit}%)`)
+  } catch { /* observability only */ }
 }
 
 // ≤5 direct tool call budget per turn. Reset on every UserPromptSubmit (new user message).
@@ -412,11 +434,35 @@ if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === undefined) {
   process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
 }
 
+// ── PROMPT-CACHING POSTURE ───────────────────────────────────────────────────
+// We pay Anthropic usage credits, so maximizing cache hits (reads are ~0.1x the
+// input price vs. 1x uncached; writes ~1.25x) matters. What the cache needs: a
+// byte-stable prompt PREFIX. The Claude Code CLI caches the Anthropic prefix
+// (tools → system → conversation) automatically on every /v1/messages call —
+// it is ON by default and nothing we set disables it. Audit of our env/config:
+//   • ENABLE_1M_CONTEXT / CLAUDE_AUTOCOMPACT_PCT_OVERRIDE — context-window only,
+//     cache-neutral (per-1m-model cache entry; invalidates only on model switch).
+//   • ANTHROPIC_SMALL_FAST_MODEL — internal non-main calls only.
+//   • CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC — strips the cache-miss *diagnostics*
+//     telemetry (previous_message_id); it does NOT disable caching itself.
+//   • No DISABLE_PROMPT_CACHING / PROMPT_CACHING=0 style flags are set anywhere.
+// What WE are responsible for: keeping per-turn injections out of the stable
+// prefix and deterministic (buildRecallInjection + the UserPromptSubmit hook
+// below — static content first, volatile last), and static sub-agent system
+// prompts (NAMED_AGENTS are module-level constants; applyGrounding interpolates
+// only the per-session --db path ONCE at query() creation, stable for the
+// session's lifetime). Per-turn cache reads/writes are logged by
+// logCacheUsage() on each SDK result message: `[cache] read=X write=Y (hitZ%)`.
+
 // Research mode tools — full research capabilities
 // Named sub-agents — the orchestrator delegates to these specialists. Each has
 // a specific role, model, and tool set. Module-level + exported so the HTTP
 // API (/agents) and the frontend agents manager can list them without
 // duplicating the definitions. The query options reference this same object.
+// CACHE NOTE: keep these system prompts STATIC — no per-turn interpolation.
+// Per-session values (the applyGrounding --db path) are injected exactly once
+// at query() creation and never change for the session, so the sub-agent
+// prompt prefix stays cacheable across the session's turns.
 export const NAMED_AGENTS = {
   researcher: {
     description: [
@@ -2150,6 +2196,7 @@ export class ClaudeLLM extends llm.LLM {
 
         // Result — marks end of a turn (but we keep consuming for next turn)
         if (msg.type === 'result') {
+          logCacheUsage((msg as any).usage)  // per-turn cache reads/writes (main loop only)
           const turnMessageId = this.#currentTurnMessageId
           const turnChunks = [...this.#currentTurnChunks]
           if (msg.result) {
@@ -2633,7 +2680,13 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // snapshot, prepended so it's present even when recall degrades under load.
                 // Advisory only — never caps/refuses a dispatch.
                 const machineNudge = fromSubagent ? '' : await buildMachineNudge()
-                const additionalContext = [machineNudge, reminder, recalled].filter(Boolean).join('\n\n')
+                // PREFIX-STABILITY order (cache-friendly): STATIC first (turn-shape
+                // reminder — byte-stable across the session), then recall (deterministic
+                // given the DB state), then the volatile machine-load nudge LAST. The
+                // whole block already lands after the cached tools→system→history
+                // prefix, but ordering volatile content last keeps any future
+                // cache_control breakpoint inside this block useful too.
+                const additionalContext = [reminder, recalled, machineNudge].filter(Boolean).join('\n\n')
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
                 return {
                   hookSpecificOutput: {
@@ -3204,6 +3257,7 @@ class ClaudeLLMStream extends llm.LLMStream {
 
         // Final result — only speak if no text blocks were streamed already
         if ((message as any).type === 'result' && (message as any).result) {
+          logCacheUsage((message as any).usage)  // per-turn cache reads/writes (cold-start path)
           const rawResult = (message as any).result
 
           // Emit RAW result to frontend
