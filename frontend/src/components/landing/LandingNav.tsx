@@ -44,6 +44,14 @@ export default function LandingNav() {
     }
   }, [open])
 
+  // iPad rotate: crossing into lg hides the sheet via CSS but left the page
+  // scroll-locked. Close it explicitly so the body-overflow lock clears.
+  useEffect(() => {
+    const onResize = () => { if (window.matchMedia('(min-width: 1024px)').matches) setOpen(false) }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   return (
     <header
       className="fixed top-0 inset-x-0 z-50 transition-colors duration-300"
