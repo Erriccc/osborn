@@ -415,6 +415,11 @@ function stripProvenance(text: string): string {
       if (/^\[[^\]]*\bL\d+\b[^\]]*·[^\]]*\]/.test(t)) return false
       if (/^L\d+\s*:/.test(t)) return false
       if (/^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$/.test(t)) return false
+      // Transport/echo lines that leak raw into chat: tagged osborn echoes like
+      // '[feat brazil (jstbae)] (osborn): ...' and '[Fast Brain] [123hz] [osborn]: ...'
+      // (internal provenance the user must never see; observed on phone + desktop)
+      if (/^\[[^\]]*\]\s*\(osborn\)\s*:/i.test(t)) return false
+      if (/^\[Fast Brain\]/i.test(t)) return false
       return true
     })
     .join('\n')

@@ -5406,7 +5406,7 @@ async function main() {
         // No sessions at all (or new session chosen) — greet as new user
         try {
           console.log('👋 Sending greeting...')
-          await greetViaVoice("Hey! I'm Osborn, your AI research assistant. What are you working on today?")
+          await greetViaVoice("Hey! I'm Osborn, your AI engineer — I write, run, and ship code while you talk. What should we build today?")
           console.log('✅ Greeting sent')
         } catch (err) {
           console.log('⚠️ Greeting failed:', err)
