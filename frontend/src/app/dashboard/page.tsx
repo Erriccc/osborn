@@ -13,6 +13,7 @@ const FLY_REGION_CITIES: Record<string, string> = {
   nrt: 'Tokyo', sin: 'Singapore', syd: 'Sydney', bom: 'Mumbai', jnb: 'Johannesburg',
 }
 import LiveClock from '@/components/LiveClock'
+import NotesCard from '@/components/NotesCard'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import type { User } from '@supabase/supabase-js'
@@ -1457,6 +1458,9 @@ export default function Dashboard() {
             </svg>
             New conversation
           </button>
+
+          {/* Quick voice notes — record → transcribe → saved to the account */}
+          <NotesCard />
 
           {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary
               actions visible: the amber CTA above + these two. Each is a single
