@@ -119,6 +119,11 @@ export async function GET() {
 // Prevents two concurrent `create` calls from provisioning two machines in the
 // window before the first one writes instances.sandbox_id.
 const inflightCreates = new Map<string, Promise<Awaited<ReturnType<typeof createSandbox>>>>()
+// COST-LEAK GUARD: per-user create cooldown. If a create attempt ran recently
+// and recorded a sandbox, rapid dashboard reloads must NOT provision another
+// paid machine — they should reuse/restart the recorded one.
+const CREATE_COOLDOWN_MS = 30_000
+const createCooldownUntil = new Map<string, number>()
 
 /**
  * POST /api/sandbox — create, start, stop, or keepalive a sandbox
@@ -211,6 +216,24 @@ export async function POST(request: Request) {
         const info = await inflight
         return NextResponse.json(info, { status: info.status === 'error' ? 500 : 200 })
       }
+      // Cooldown: a create attempt within the last CREATE_COOLDOWN_MS that already
+      // recorded a sandbox means the machine exists (possibly unhealthy/stopped)
+      // — return the recorded state instead of provisioning again. Orphaned
+      // machines from repeated creates are pure cost.
+      const cooldownUntil = createCooldownUntil.get(user.id)
+      if (cooldownUntil && Date.now() < cooldownUntil) {
+        const known = await getKnownSandboxId()
+        if (known) {
+          try {
+            const existing = await findUserSandbox(user.id, known)
+            if (existing) return NextResponse.json(existing)
+          } catch { /* lookup failed below — still refuse to machine-gun */ }
+          return NextResponse.json(
+            { error: 'A sandbox was just created for you and is still settling — retry in a few seconds' },
+            { status: 429 },
+          )
+        }
+      }
       const syncToken = await getSyncToken()
       // Provider-dispatched call: sprites' createSandbox expects (userId, syncToken: string),
       // machines' expects (userId, options: { sourceSnapshotId?, autostopMode? }).
@@ -244,19 +267,27 @@ export async function POST(request: Request) {
         inflightCreates.delete(user.id)
       }
 
-      if (info.status === 'running' && info.previewUrl) {
-        // Save to DB — this becomes the user's agent URL
+      // COST-LEAK GUARD: record the machine as soon as it EXISTS (info.id),
+      // whatever its health. Previously only a fully-running sandbox wrote the
+      // row — a machine created but failing health-wait was orphaned with no
+      // record, so every dashboard reload provisioned another paid machine.
+      if (info.id) {
+        createCooldownUntil.set(user.id, Date.now() + CREATE_COOLDOWN_MS)
         await supabase.from('instances').upsert({
           user_id: user.id,
-          server_url: info.previewUrl,
+          server_url: info.previewUrl ?? null,
           instance_type: 'cloud',
-          status: 'running',
+          status: info.status,
           sandbox_id: info.id,
-          sandbox_url: info.previewUrl,
-          sandbox_status: 'running',
+          sandbox_url: info.previewUrl ?? null,
+          sandbox_status: info.status,
           livekit_room: `osborn-${user.id.substring(0, 8)}`,
           last_seen: new Date().toISOString(),
         }, { onConflict: 'user_id' })
+      } else {
+        // No machine came back at all — still set a short cooldown so a burst
+        // of reloads can't machine-gun the provider.
+        createCooldownUntil.set(user.id, Date.now() + CREATE_COOLDOWN_MS)
       }
 
       return NextResponse.json(info, {
