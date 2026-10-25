@@ -141,7 +141,7 @@ async function main() {
     ok(hit, 'no effect combines `available` check with create trigger')
   })
   await t('dashboard: guard against double-firing (ref)', () => {
-    const refs = [...dash.matchAll(/const (\w+)\s*=\s*useRef/g)].map(m => m[1])
+    const refs = Array.from(dash.matchAll(/const (\w+)\s*=\s*useRef/g)).map(m => m[1])
     const guard = refs.filter(n => /provision|auto|attempt|fired|tried|creat|started|once/i.test(n))
     ok(guard.length > 0, `no guard-like useRef (refs: ${refs.join(',')})`)
     const used = guard.some(n => effects.some(e => new RegExp(`\\b${n}\\.current`).test(e)))

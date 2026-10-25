@@ -64,7 +64,7 @@ export default function LandingNav() {
         </Link>
 
         {/* Center links (desktop) */}
-        <ul className="hidden md:flex items-center gap-8">
+        <ul className="hidden lg:flex items-center gap-8">
           {LINKS.map((l) => (
             <li key={l.href}>
               <a
@@ -78,7 +78,7 @@ export default function LandingNav() {
         </ul>
 
         {/* Right actions (desktop) */}
-        <div className="hidden md:flex items-center gap-4">
+        <div className="hidden lg:flex items-center gap-4 whitespace-nowrap shrink-0">
           {authed ? (
             <Link
               href="/dashboard"
@@ -118,7 +118,7 @@ export default function LandingNav() {
         {/* Hamburger (mobile) */}
         <button
           type="button"
-          className="md:hidden w-10 h-10 -mr-2 flex flex-col items-center justify-center gap-[5px]"
+          className="lg:hidden w-10 h-10 -mr-2 flex flex-col items-center justify-center gap-[5px]"
           aria-label={open ? 'Close menu' : 'Open menu'}
           aria-expanded={open}
           onClick={() => setOpen((o) => !o)}
@@ -141,7 +141,7 @@ export default function LandingNav() {
       {/* Mobile sheet */}
       {open && (
         <div
-          className="md:hidden fixed inset-0 top-16 z-40"
+          className="lg:hidden fixed inset-0 top-16 z-40"
           style={{ background: 'var(--background)' }}
         >
           <div className="px-6 py-8 flex flex-col gap-6 border-t border-[var(--border-subtle)]">
