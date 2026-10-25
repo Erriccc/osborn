@@ -27,6 +27,7 @@ export default function NotesCard() {
   const [notes, setNotes] = useState<Note[]>([])
   const [error, setError] = useState<string | null>(null)
   const [seconds, setSeconds] = useState(0)
+  const [paused, setPaused] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -68,6 +69,7 @@ export default function NotesCard() {
 
   const onStopped = async () => {
     cleanupRecording()
+    setPaused(false)
     if (cancelledRef.current) { setPhase('idle'); return }
     setPhase('transcribing')
     try {
@@ -86,6 +88,14 @@ export default function NotesCard() {
       setError(e instanceof Error ? e.message : 'Transcription failed')
       setPhase('idle')
     }
+  }
+
+  const togglePause = () => {
+    const rec = recorderRef.current
+    if (!rec) return
+    if (rec.state === 'recording') { rec.pause(); if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null } }
+    else if (rec.state === 'paused') { rec.resume(); timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000) }
+    setPaused(rec.state !== 'recording')
   }
 
   const stop = (discard = false) => {
@@ -149,6 +159,10 @@ export default function NotesCard() {
           <span className="text-[13.5px] text-[var(--text-primary)] tabular-nums">
             {String(Math.floor(seconds / 60)).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}
           </span>
+          <button onClick={togglePause}
+            className="min-h-[44px] px-4 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
+            {paused ? 'Resume' : 'Pause'}
+          </button>
           <button onClick={() => stop(true)}
             className="ml-auto min-h-[44px] px-4 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
             Discard

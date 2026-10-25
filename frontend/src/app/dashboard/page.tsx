@@ -1400,7 +1400,7 @@ export default function Dashboard() {
             `order-*` restores the original top-to-bottom flow
             (greeting → continue → new conversation → projects). Same data,
             same handlers — layout only. */}
-        <div className="flex-1 w-full max-w-3xl lg:max-w-6xl mx-auto px-4 py-6 lg:grid lg:grid-cols-[320px_minmax(0,1fr)] lg:gap-8 lg:items-start lg:py-8">
+        <div className="flex-1 w-full max-w-3xl lg:max-w-6xl mx-auto px-4 py-6 lg:grid lg:grid-cols-[360px_minmax(0,1fr)] lg:gap-8 lg:items-start lg:py-8">
 
           {/* ── MAIN column (desktop) / primary stack (mobile) ── */}
           <div className="order-1 lg:order-2 w-full lg:max-w-3xl lg:mx-auto">
@@ -1446,7 +1446,7 @@ export default function Dashboard() {
 
           {/* New chat button — primary amber CTA (both mobile + desktop) */}
           <button onClick={() => startChat()}
-            className="w-full h-11 rounded-lg font-semibold text-[14px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.99] mb-5 flex items-center justify-center gap-2"
+            className="w-full sm:w-auto sm:self-start h-11 rounded-lg font-semibold text-[14px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.99] mb-5 flex items-center justify-center gap-2"
             style={{
               background: 'var(--accent)',
               color: 'var(--background)',
