@@ -42,6 +42,13 @@ export default function NotesCard() {
   }, [])
   useEffect(() => { loadNotes() }, [loadNotes])
 
+  // UnifiedCreate "New note" → start recording immediately.
+  useEffect(() => {
+    const onStart = () => { if (phase === 'idle') start() }
+    window.addEventListener('vn:new-note', onStart)
+    return () => window.removeEventListener('vn:new-note', onStart)
+  }, [phase])
+
   const cleanupRecording = () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
     recorderRef.current?.stream.getTracks().forEach(t => t.stop())
@@ -202,7 +209,7 @@ export default function NotesCard() {
 
       {/* Saved notes — newest first, copy + delete per note */}
       {notes.length > 0 && (
-        <ul className={phase === 'idle' ? 'mt-3 space-y-1.5' : 'hidden'}>
+        <ul className={phase === 'idle' ? 'mt-3 space-y-1.5 max-h-[24dvh] overflow-y-auto' : 'hidden'}>
           {notes.slice(0, 5).map(n => (
             <li key={n.id} className="group flex items-start gap-2 rounded-lg px-2 py-2 -mx-2 hover:bg-[var(--surface-2)]/40 transition-colors">
               <p className="flex-1 min-w-0 text-[13px] text-[var(--text-secondary)] leading-relaxed line-clamp-2 whitespace-pre-wrap">{n.text}</p>
