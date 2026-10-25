@@ -36,11 +36,13 @@ export async function POST(req: NextRequest) {
     if (!u.user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     const body = await req.json().catch(() => null)
     const text = typeof body?.text === 'string' ? body.text.trim().slice(0, MAX_TEXT) : ''
+    const rawAtt = Array.isArray(body?.attachments) ? body.attachments : []
+    const attachments = rawAtt.filter((u: unknown) => typeof u === 'string' && u.startsWith('http')).slice(0, 5)
     if (!text) return NextResponse.json({ error: '`text` is required' }, { status: 400 })
     const { data, error } = await supabase
       .from('notes')
-      .insert({ user_id: u.user.id, text })
-      .select('id, text, created_at')
+      .insert({ user_id: u.user.id, text, attachments })
+      .select('id, text, created_at, attachments')
       .single()
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
     return NextResponse.json({ note: data })

@@ -1,62 +1,47 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /**
- * NotesCard — quick voice NOTES on the dashboard. One prominent mic button:
- * tap → record → stop → transcribe (speech-to-text only, no model reply) →
- * the text lands in your notes (saved to the account, synced across devices).
- * Each note is copyable and deletable. Follows the existing card idiom.
+ * NotesRecorder — the dashboard's note CAPTURE control (record-only).
+ * Founder consolidation (10-24): the saved-notes list was redundant with the
+ * Recent Activity shelf — this section is now JUST the recorder. Record →
+ * (pause/resume) → stop → transcribe → confirm (edit + ATTACH files via the
+ * same /api/upload pipeline chat uses → stored URLs ride the note) → save →
+ * the note lands in Recent Activity. Model: Apple Voice Memos record bar.
  */
 
-interface Note { id: string; text: string; created_at: string }
-
 type Phase = 'idle' | 'recording' | 'transcribing' | 'confirm'
-
-function fmtAgo(iso: string): string {
-  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
-  if (s < 60) return 'just now'
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
 
 export default function NotesCard() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [draft, setDraft] = useState('')
-  const [notes, setNotes] = useState<Note[]>([])
+  const [attachments, setAttachments] = useState<string[]>([])
+  const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [savedFlash, setSavedFlash] = useState(false)
   const [seconds, setSeconds] = useState(0)
   const [paused, setPaused] = useState(false)
-  const [copiedId, setCopiedId] = useState<string | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const cancelledRef = useRef(false)
+  const fileRef = useRef<HTMLInputElement>(null)
 
-  const loadNotes = useCallback(() => {
-    fetch('/api/notes')
-      .then(r => (r.ok ? r.json() : { notes: [] }))
-      .then(j => setNotes(j.notes || []))
-      .catch(() => {})
-  }, [])
-  useEffect(() => { loadNotes() }, [loadNotes])
-
-  // UnifiedCreate "New note" → start recording immediately.
   useEffect(() => {
     const onStart = () => { if (phase === 'idle') start() }
     window.addEventListener('vn:new-note', onStart)
     return () => window.removeEventListener('vn:new-note', onStart)
   }, [phase])
 
-  const cleanupRecording = () => {
+  const cleanup = () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
     recorderRef.current?.stream.getTracks().forEach(t => t.stop())
     recorderRef.current = null
   }
 
   const start = async () => {
-    setError(null); setDraft(''); cancelledRef.current = false
+    setError(null); setDraft(''); setAttachments([]); cancelledRef.current = false; setSavedFlash(false)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const rec = new MediaRecorder(stream)
@@ -65,35 +50,29 @@ export default function NotesCard() {
       rec.onstop = onStopped
       recorderRef.current = rec
       rec.start()
-      setSeconds(0)
+      setSeconds(0); setPaused(false)
       timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000)
       setPhase('recording')
     } catch {
       setError('Microphone unavailable — check browser permissions.')
-      setPhase('idle')
     }
   }
 
   const onStopped = async () => {
-    cleanupRecording()
-    setPaused(false)
+    cleanup(); setPaused(false)
     if (cancelledRef.current) { setPhase('idle'); return }
     setPhase('transcribing')
     try {
-      const type = recorderRef.current?.mimeType || chunksRef.current[0]?.type || 'audio/webm'
+      const type = chunksRef.current[0]?.type || 'audio/webm'
       const blob = new Blob(chunksRef.current, { type })
       const res = await fetch('/api/notes/transcribe', {
-        method: 'POST',
-        headers: { 'Content-Type': blob.type || type },
-        body: blob,
+        method: 'POST', headers: { 'Content-Type': blob.type || type }, body: blob,
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Transcription failed')
-      setDraft(j.text)
-      setPhase('confirm')
+      setDraft(j.text); setPhase('confirm')
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Transcription failed')
-      setPhase('idle')
+      setError(e instanceof Error ? e.message : 'Transcription failed'); setPhase('idle')
     }
   }
 
@@ -105,9 +84,20 @@ export default function NotesCard() {
     setPaused(rec.state !== 'recording')
   }
 
-  const stop = (discard = false) => {
-    cancelledRef.current = discard
-    recorderRef.current?.stop()
+  const stop = (discard: boolean) => { cancelledRef.current = discard; recorderRef.current?.stop() }
+
+  const attach = async (file: File) => {
+    setUploading(true); setError(null)
+    try {
+      const fd = new FormData(); fd.append('file', file)
+      const res = await fetch('/api/upload', { method: 'POST', body: fd })
+      const j = await res.json().catch(() => ({}))
+      const url = j.url || j.path || j.publicUrl
+      if (!res.ok || !url) throw new Error(j?.error || 'Upload failed')
+      setAttachments(prev => [...prev, url].slice(0, 5))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Upload failed')
+    } finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
   }
 
   const save = async () => {
@@ -116,120 +106,93 @@ export default function NotesCard() {
     setPhase('idle')
     try {
       const res = await fetch('/api/notes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, attachments }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Could not save')
-      setNotes(prev => [j.note, ...prev])
-      setDraft('')
+      setSavedFlash(true); setDraft(''); setAttachments([])
+      setTimeout(() => setSavedFlash(false), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save')
     }
   }
 
-  const copy = (n: Note) => {
-    navigator.clipboard.writeText(n.text).catch(() => {})
-    setCopiedId(n.id)
-    setTimeout(() => setCopiedId(null), 1500)
-  }
-
-  const remove = async (id: string) => {
-    setNotes(prev => prev.filter(n => n.id !== id))
-    fetch(`/api/notes?id=${id}`, { method: 'DELETE' }).catch(() => loadNotes())
-  }
-
   return (
-    <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-4" style={{ animation: 'fadeSlideIn .5s ease both' }}>
-      <div className="flex items-center gap-2 mb-3">
-        <svg className="w-4 h-4 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-        <h2 className="text-[var(--text-primary)] text-sm font-semibold">Notes</h2>
-        <span className="text-[11px] text-[var(--text-muted)]">Speak → text, saved to your account</span>
-      </div>
-
-      {/* Record control — one clear primary action (3-6-9 rule) */}
+    <section className="mb-6" style={{ animation: 'fadeSlideIn .45s ease both' }}>
       {phase === 'idle' && (
         <button onClick={start}
-          className="w-full min-h-[44px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] flex items-center justify-center gap-2 text-[13.5px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 transition-all active:scale-[0.99]">
+          className="w-full sm:w-auto min-h-[44px] px-5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] flex items-center justify-center gap-2 text-[13.5px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--accent-dim)]/60 transition-all active:scale-[0.99]">
           <svg className="w-4 h-4 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-          Record a note
+          {savedFlash ? 'Saved — see Recent activity ✓' : 'Record a note'}
         </button>
       )}
 
       {phase === 'recording' && (
-        <div className="flex items-center gap-3">
-          <span className="relative flex items-center justify-center w-10 h-10 shrink-0">
+        <div className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-2">
+          <span className="relative flex items-center justify-center w-9 h-9 shrink-0 ml-1">
             <span className="absolute inset-0 rounded-full bg-red-500/20 animate-ping" />
-            <span className="w-3 h-3 rounded-full bg-red-500" />
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
           </span>
           <span className="text-[13.5px] text-[var(--text-primary)] tabular-nums">
             {String(Math.floor(seconds / 60)).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}
           </span>
           <button onClick={togglePause}
-            className="min-h-[44px] px-4 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
+            className="min-h-[40px] px-3.5 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
             {paused ? 'Resume' : 'Pause'}
           </button>
           <button onClick={() => stop(true)}
-            className="ml-auto min-h-[44px] px-4 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
+            className="min-h-[40px] px-3.5 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
             Discard
           </button>
           <button onClick={() => stop(false)}
-            className="min-h-[44px] px-4 rounded-lg bg-[var(--accent)] text-[13px] font-semibold text-[var(--background)] hover:opacity-90 transition-opacity">
+            className="ml-auto min-h-[40px] px-4 rounded-lg bg-[var(--accent)] text-[13px] font-semibold text-[var(--background)] hover:opacity-90 transition-opacity">
             Stop
           </button>
         </div>
       )}
 
       {phase === 'transcribing' && (
-        <div className="flex items-center gap-2 min-h-[44px] text-[13px] text-[var(--text-secondary)]">
+        <div className="flex items-center gap-2 min-h-[44px] px-1 text-[13px] text-[var(--text-secondary)]">
           <span className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
           Transcribing…
         </div>
       )}
 
       {phase === 'confirm' && (
-        <div>
+        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-3">
           <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={3} autoFocus
             className="w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--background)] p-3 text-[13.5px] text-[var(--text-primary)] leading-relaxed focus:outline-none focus:border-[var(--accent)] resize-y" />
-          <div className="flex gap-2 mt-2">
-            <button onClick={save}
-              className="min-h-[44px] px-4 rounded-lg bg-[var(--accent)] text-[13px] font-semibold text-[var(--background)] hover:opacity-90 transition-opacity">
-              Save note
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {attachments.map(u => (
+                <span key={u} className="inline-flex items-center gap-1.5 max-w-full rounded-full bg-[var(--surface-2)] px-2.5 py-1 text-[11px] text-[var(--text-secondary)]">
+                  <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                  <span className="truncate">{u.split('/').pop()}</span>
+                  <button onClick={() => setAttachments(p => p.filter(x => x !== u))} className="shrink-0 text-[var(--text-muted)] hover:text-red-400">✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <input ref={fileRef} type="file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) attach(f) }} />
+            <button onClick={() => fileRef.current?.click()} disabled={uploading || attachments.length >= 5}
+              className="min-h-[40px] px-3.5 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50">
+              {uploading ? 'Uploading…' : '📎 Attach'}
             </button>
-            <button onClick={() => { setDraft(''); setPhase('idle') }}
-              className="min-h-[44px] px-4 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
+            <button onClick={() => { setDraft(''); setAttachments([]); setPhase('idle') }}
+              className="min-h-[40px] px-3.5 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
               Discard
+            </button>
+            <button onClick={save}
+              className="ml-auto min-h-[40px] px-4 rounded-lg bg-[var(--accent)] text-[13px] font-semibold text-[var(--background)] hover:opacity-90 transition-opacity">
+              Save note
             </button>
           </div>
         </div>
       )}
 
       {error && <p className="mt-2 text-[12.5px] text-red-400">{error}</p>}
-
-      {/* Saved notes — newest first, copy + delete per note */}
-      {notes.length > 0 && (
-        <ul className={phase === 'idle' ? 'mt-3 space-y-1.5 max-h-[24dvh] overflow-y-auto' : 'hidden'}>
-          {notes.slice(0, 5).map(n => (
-            <li key={n.id} className="group flex items-start gap-2 rounded-lg px-2 py-2 -mx-2 hover:bg-[var(--surface-2)]/40 transition-colors">
-              <p className="flex-1 min-w-0 text-[13px] text-[var(--text-secondary)] leading-relaxed line-clamp-2 whitespace-pre-wrap">{n.text}</p>
-              <span className="shrink-0 text-[10.5px] text-[var(--text-muted)] mt-0.5">{fmtAgo(n.created_at)}</span>
-              <button onClick={() => copy(n)} title="Copy"
-                className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--surface-2)] transition-colors">
-                {copiedId === n.id ? (
-                  <svg className="w-3.5 h-3.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
-                ) : (
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                )}
-              </button>
-              <button onClick={() => remove(n.id)} title="Delete"
-                className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-red-400 hover:bg-[var(--surface-2)] transition-colors">
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
     </section>
   )
 }
