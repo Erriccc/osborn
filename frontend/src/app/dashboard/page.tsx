@@ -16,6 +16,7 @@ import LiveClock from '@/components/LiveClock'
 import NotesCard from '@/components/NotesCard'
 import UnifiedCreate from '@/components/dashboard/UnifiedCreate'
 import ActivityFeed from '@/components/dashboard/ActivityFeed'
+import LibraryBriefs from '@/components/dashboard/LibraryBriefs'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import type { User } from '@supabase/supabase-js'
@@ -1457,6 +1458,9 @@ export default function Dashboard() {
 
           {/* Notes + previous sessions — one bounded chronological feed */}
           <ActivityFeed sessions={sessions} onResume={(id, cwd) => startChat(id, cwd)} />
+
+          {/* Briefs from sessions — desktop/landscape only (Google Drive Recent model) */}
+          <LibraryBriefs />
 
           {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary
               actions visible: the amber CTA above + these two. Each is a single
