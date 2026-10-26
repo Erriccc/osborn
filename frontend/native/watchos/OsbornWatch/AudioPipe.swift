@@ -144,7 +144,7 @@ final class AudioPipe {
 /// single reader (render thread); a torn frame worst-case drops to silence —
 /// acceptable for voice.
 private final class DownRing {
-  private let buffer: [Int16]
+  private var buffer: [Int16]
   private var writeIdx = 0
   private var readIdx = 0
   private let lock = NSLock()

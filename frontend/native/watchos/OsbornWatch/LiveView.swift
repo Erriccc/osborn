@@ -48,7 +48,6 @@ struct LiveView: View {
       }
     }
     .navigationTitle("Osborn")
-    .navigationBarBackHidden(true)
     .sheet(item: $link.question) { question in
       QuestionView(question: question)
         .environmentObject(link)

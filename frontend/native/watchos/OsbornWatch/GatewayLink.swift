@@ -133,9 +133,8 @@ final class GatewayLink: ObservableObject {
     sendWS(data, opcode: .binary, on: connection)
   }
 
-  private func sendWS(_ data: Data, opcode: NWProtocolWebSocket.Metadata.Opcode, on connection: NWConnection) {
-    let meta = NWProtocolWebSocket.Metadata()
-    meta.opcode = opcode
+  private func sendWS(_ data: Data, opcode: NWProtocolWebSocket.Opcode, on connection: NWConnection) {
+    let meta = NWProtocolWebSocket.Metadata(opcode: opcode)
     let context = NWConnection.ContentContext(identifier: opcode == .text ? "json" : "pcm", metadata: [meta])
     connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
   }
