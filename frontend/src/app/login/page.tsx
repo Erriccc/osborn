@@ -6,6 +6,7 @@ import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import SessionBrowser from '@/components/SessionBrowser'
 import SetupWizard from '@/components/SetupWizard'
+import EmailOtpLogin from '@/components/EmailOtpLogin'
 
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'realtime' | 'pipelined' | 'direct' | 'pipeline'
@@ -318,6 +319,16 @@ export default function Home() {
                   </div>
                 ) : (
                   <>
+                    {/* Primary: email OTP — no OAuth provider, no redirect, same
+                        path the native app uses (web + mobile share one auth). */}
+                    <EmailOtpLogin supabase={supabase} />
+
+                    <div className="flex items-center gap-3 py-1">
+                      <div className="flex-1 h-px bg-[var(--border)]" />
+                      <span className="text-[var(--text-muted)] text-[11px] uppercase tracking-widest">or</span>
+                      <div className="flex-1 h-px bg-[var(--border)]" />
+                    </div>
+
                     <button onClick={() => signInWithProvider('google')}
                       className="flex items-center justify-center gap-2.5 w-full h-11 bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[15px] font-medium hover:bg-[var(--surface-raised)] transition-colors cursor-pointer">
                       <svg width="18" height="18" viewBox="0 0 18 18">

@@ -37,10 +37,10 @@ export default function Login() {
     else setStep('code')
   }
 
-  async function verify() {
-    if (code.length < 6) return
+  async function verify(c: string = code) {
+    if (c.length < 6 || busy === 'verify') return
     setError(null); setBusy('verify')
-    const { error } = await verifyEmailCode(email, code)
+    const { error } = await verifyEmailCode(email, c)
     setBusy(null)
     if (error) setError(error)
     else Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
@@ -101,7 +101,11 @@ export default function Login() {
           <Text style={styles.codeLabel}>Enter the 6-digit code sent to{'\n'}<Text style={styles.codeEmail}>{email}</Text></Text>
           <TextInput
             value={code}
-            onChangeText={(t) => setCode(t.replace(/[^0-9]/g, '').slice(0, 6))}
+            onChangeText={(t) => {
+              const v = t.replace(/[^0-9]/g, '').slice(0, 6)
+              setCode(v)
+              if (v.length === 6) verify(v) // auto-submit on autofill / 6th digit
+            }}
             placeholder="______"
             placeholderTextColor="rgba(255,255,255,0.25)"
             keyboardType="number-pad"
