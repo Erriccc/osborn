@@ -13,6 +13,10 @@ const FLY_REGION_CITIES: Record<string, string> = {
   nrt: 'Tokyo', sin: 'Singapore', syd: 'Sydney', bom: 'Mumbai', jnb: 'Johannesburg',
 }
 import LiveClock from '@/components/LiveClock'
+import NotesCard from '@/components/NotesCard'
+import UnifiedCreate from '@/components/dashboard/UnifiedCreate'
+import ActivityFeed from '@/components/dashboard/ActivityFeed'
+import LibraryBriefs from '@/components/dashboard/LibraryBriefs'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import type { User } from '@supabase/supabase-js'
@@ -181,7 +185,15 @@ export default function Dashboard() {
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [showProfileMenu, setShowProfileMenu] = useState(false) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
+  const [showProfileMenu, setShowProfileMenu] = useState(false)
+  // Admin discoverability: /admin is standalone; surface a link only when the
+  // SERVER confirms this user is in ADMIN_EMAILS (probe once on load).
+  const [isAdmin, setIsAdmin] = useState(false)
+  useEffect(() => {
+    fetch('/api/admin/users')
+      .then(r => { if (r.ok) setIsAdmin(true) })
+      .catch(() => {})
+  }, []) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
 
   // Session sharing (0.9.123) — Share modal + "Shared with me".
   const [shareTarget, setShareTarget] = useState<{ sessionId: string; title: string } | null>(null)
@@ -521,11 +533,39 @@ export default function Dashboard() {
   // One-time sandbox discovery on mount: if the user has a saved cloud
   // preference AND a sandbox already exists, adopt its previewUrl as the
   // agentUrl so the polling loop picks up the right target.
+  //
+  // AUTO-PROVISION: a fresh account (cloud available, no sandbox yet) gets a
+  // machine assigned automatically (warm pool first, cold create fallback) —
+  // unless the user explicitly chose Local. autoProvisionFiredRef guards
+  // strict-mode double effects; the server's create is idempotent per user
+  // (returns the existing sandbox / joins an in-flight create) for re-mounts
+  // and multiple tabs.
+  const autoProvisionFiredRef = useRef(false)
   useEffect(() => {
     if (loading || !user) return
-    fetch('/api/sandbox').then(r => r.json())
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    const discover = (attempt: number) => {
+      fetch('/api/sandbox').then(async r => {
+        // Right after signup the auth cookie can lag the client session —
+        // retry the first 401 once instead of leaving a blank dashboard.
+        if (r.status === 401 && attempt === 0) {
+          if (!cancelled) retryTimer = setTimeout(() => discover(1), 1500)
+          return null
+        }
+        return r.json()
+      })
       .then(d => {
+        if (!d || cancelled) return
         setSandboxAvailable(d.available || false)
+        if (d.available && !d.sandbox) {
+          let explicitLocal = false
+          try { explicitLocal = localStorage.getItem('osborn-connection-mode') === 'local' } catch {}
+          if (!explicitLocal && !autoProvisionFiredRef.current) {
+            autoProvisionFiredRef.current = true
+            handleProvisionSandbox()
+          }
+        }
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
           setSandboxStatus(d.sandbox.status)
@@ -554,7 +594,9 @@ export default function Dashboard() {
           }
         }
       })
-      .catch(() => setSandboxAvailable(false))
+      .catch(() => { if (!cancelled) setSandboxAvailable(false) })
+    }
+    discover(0)
     fetch('/api/instance')
       .then(r => r.json())
       .then(d => {
@@ -562,6 +604,11 @@ export default function Dashboard() {
         if (typeof d.instance?.turbo === 'boolean') setTurbo(d.instance.turbo)
       })
       .catch(() => {})
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, loading])
 
   const isCloud = connectionMode === 'cloud'
@@ -590,6 +637,9 @@ export default function Dashboard() {
     if (!user) return
     setProvisioning(true)
     setSandboxStatus('creating')
+    // A sandbox is being created → the dashboard targets the cloud, not the
+    // localhost default (shows the "Setting up your cloud workspace" spinner).
+    setConnectionMode('cloud')
     try {
       const r = await fetch('/api/sandbox', {
         method: 'POST',
@@ -602,6 +652,21 @@ export default function Dashboard() {
         setSandboxStatus('running')
         setAgentUrl(data.previewUrl)
         setConnectionMode('cloud')
+      } else if (data.id && data.status && data.status !== 'error') {
+        // Idempotent create returned an existing, not-running machine — start it.
+        setSandboxId(data.id)
+        setSandboxStatus(data.status)
+        if (data.previewUrl) setAgentUrl(data.previewUrl)
+        const sr = await fetch('/api/sandbox', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'start', sandboxId: data.id }),
+        })
+        const started = await sr.json().catch(() => null)
+        if (started?.previewUrl) {
+          setSandboxStatus('running')
+          setAgentUrl(started.previewUrl)
+        }
       } else {
         setSandboxStatus('error')
       }
@@ -1309,7 +1374,14 @@ export default function Dashboard() {
                         <p className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">{user?.email ? 'Signed in' : 'Guest session'}</p>
                         <p className="text-sm text-[var(--text-primary)] truncate">{user?.email || 'No account connected'}</p>
                       </div>
-                      <button role="menuitem"
+                                              {isAdmin && (
+                          <button onClick={() => { setShowProfileMenu(false); router.push('/admin') }}
+                            className="w-full text-left px-3 py-2 rounded-lg text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)]/50 transition-colors flex items-center gap-2.5">
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                            Admin
+                          </button>
+                        )}
+<button role="menuitem"
                         onClick={() => { setShowProfileMenu(false); router.push('/settings') }}
                         className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] transition-colors">
                         <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
@@ -1346,7 +1418,7 @@ export default function Dashboard() {
             `order-*` restores the original top-to-bottom flow
             (greeting → continue → new conversation → projects). Same data,
             same handlers — layout only. */}
-        <div className="flex-1 w-full max-w-3xl lg:max-w-6xl mx-auto px-4 py-6 lg:grid lg:grid-cols-[320px_minmax(0,1fr)] lg:gap-8 lg:items-start lg:py-8">
+        <div className="flex-1 w-full max-w-3xl lg:max-w-6xl mx-auto px-4 py-6 lg:grid lg:grid-cols-[360px_minmax(0,1fr)] lg:gap-8 lg:items-start lg:py-8">
 
           {/* ── MAIN column (desktop) / primary stack (mobile) ── */}
           <div className="order-1 lg:order-2 w-full lg:max-w-3xl lg:mx-auto">
@@ -1390,20 +1462,20 @@ export default function Dashboard() {
             )
           })()}
 
-          {/* New chat button — primary amber CTA (both mobile + desktop) */}
-          <button onClick={() => startChat()}
-            className="w-full h-11 rounded-lg font-semibold text-[14px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.99] mb-5 flex items-center justify-center gap-2"
-            style={{
-              background: 'var(--accent)',
-              color: 'var(--background)',
-            }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-              <line x1="12" y1="19" x2="12" y2="23"/>
-            </svg>
-            New conversation
-          </button>
+          {/* Unified create — Notion "+ New ▾" model: session / note / project */}
+          <UnifiedCreate
+            onNewSession={() => startChat()}
+            onNewProject={() => setShowNewProject(true)}
+          />
+
+          {/* Quick voice notes — record → transcribe → saved to the account */}
+          <NotesCard />
+
+          {/* Notes + previous sessions — one bounded chronological feed */}
+          <ActivityFeed sessions={sessions} onResume={(id, cwd) => startChat(id, cwd)} />
+
+          {/* Briefs from sessions — desktop/landscape only (Google Drive Recent model) */}
+          <LibraryBriefs />
 
           {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary
               actions visible: the amber CTA above + these two. Each is a single

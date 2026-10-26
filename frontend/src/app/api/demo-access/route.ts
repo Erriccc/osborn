@@ -59,6 +59,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Enter a valid email address.' }, { status: 400 })
   }
 
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error('[demo-access] SUPABASE_SERVICE_ROLE_KEY / NEXT_PUBLIC_SUPABASE_URL not configured')
+    return NextResponse.json({ ok: false, error: 'Server not configured.' }, { status: 500 })
+  }
+
   // Upsert keeping earliest created_at: on conflict, only bump last_seen_at.
   const sb = serviceClient()
   const { data: existing } = await sb

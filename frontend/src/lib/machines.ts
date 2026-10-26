@@ -20,7 +20,7 @@
  *   FLY_SANDBOX_IMAGE=registry.fly.io/osborn-sandbox/agent:latest
  */
 
-import { forwardHostEnv, livekitRoom } from './platform-env'
+import { forwardHostEnv, livekitRoom, stripDeniedMachineEnv } from './platform-env'
 
 // ─────────────────────────────────────────
 // Types
@@ -743,6 +743,9 @@ export async function repointAndStartSandbox(
     }
     delete cleanedEnv.HOME
     delete cleanedEnv.OSBORN_CWD
+    // Strip host-only secrets (SUPABASE_SERVICE_ROLE_KEY, FLY_API_TOKEN, ...)
+    // that older provisioning baked into the existing env — see MACHINE_ENV_DENYLIST.
+    stripDeniedMachineEnv(cleanedEnv)
     await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, {
       config: { ...existingConfig, env: cleanedEnv },
     })
@@ -1161,6 +1164,14 @@ async function updateOsbornImpl(
   }
   delete cleanedEnv.HOME
   delete cleanedEnv.OSBORN_CWD
+  // Exception to "dropped keys are left as-is": host-only secrets must never
+  // live on a user machine. Machines provisioned while SUPABASE_SERVICE_ROLE_KEY
+  // was forwarded still carry it in their env; strip it (and the rest of
+  // MACHINE_ENV_DENYLIST) on every update.
+  const deniedRemoved = stripDeniedMachineEnv(cleanedEnv)
+  if (deniedRemoved.length) {
+    console.log(`[machines] updateOsborn: stripped host-only env keys from ${appName}: ${deniedRemoved.join(', ')}`)
+  }
   console.log(`[machines] updateOsborn: patching machine config image=${newImage} (re-forwarded platform env; stripped stale HOME/OSBORN_CWD)`)
   try {
     await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, {

@@ -115,6 +115,16 @@ export async function GET() {
   return NextResponse.json({ available: true, sandbox: null })
 }
 
+// Per-user in-flight create promises (module scope = per server process).
+// Prevents two concurrent `create` calls from provisioning two machines in the
+// window before the first one writes instances.sandbox_id.
+const inflightCreates = new Map<string, Promise<Awaited<ReturnType<typeof createSandbox>>>>()
+// COST-LEAK GUARD: per-user create cooldown. If a create attempt ran recently
+// and recorded a sandbox, rapid dashboard reloads must NOT provision another
+// paid machine — they should reuse/restart the recorded one.
+const CREATE_COOLDOWN_MS = 30_000
+const createCooldownUntil = new Map<string, number>()
+
 /**
  * POST /api/sandbox — create, start, stop, or keepalive a sandbox
  *
@@ -148,6 +158,20 @@ export async function POST(request: Request) {
     return data?.sandbox_id ?? undefined
   }
 
+  // Ownership guard for actions that take a client-supplied sandboxId. The
+  // caller's own instances row (RLS-scoped, filtered by user_id) is the source
+  // of truth; any other id is rejected so one user can't start/stop/delete
+  // another user's machine. Same check + response shape as restart-service /
+  // update-osborn / version. GET /api/sandbox syncs a fallback-found sandbox
+  // id into instances before returning it, so legit callers always match.
+  const rejectIfNotOwned = async (id: string): Promise<NextResponse | null> => {
+    const ownedId = await getKnownSandboxId()
+    if (!ownedId || ownedId !== id) {
+      return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
+    }
+    return null
+  }
+
   // Helper: read the user's sync_token for forwarding to sprites as OSBORN_SYNC_TOKEN.
   // If no token exists yet, generate one, persist it, and return the new value.
   const getSyncToken = async (): Promise<string | undefined> => {
@@ -171,6 +195,45 @@ export async function POST(request: Request) {
 
   switch (action) {
     case 'create': {
+      // Idempotency (auto-provision on dashboard mount can fire from several
+      // tabs / re-mounts): if this user's instances row already points at a
+      // sandbox that still exists, return it instead of creating a second one.
+      // The client then runs its normal start/connect flow if it isn't running.
+      const existingId = await getKnownSandboxId()
+      if (existingId) {
+        try {
+          const existing = await findUserSandbox(user.id, existingId)
+          if (existing) return NextResponse.json(existing)
+          // null = confirmed gone (404) — fall through and create a fresh one.
+        } catch {
+          // Transient lookup failure: don't risk a duplicate machine.
+          return NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
+        }
+      }
+      // Same-process de-dupe for concurrent creates before the DB row lands.
+      const inflight = inflightCreates.get(user.id)
+      if (inflight) {
+        const info = await inflight
+        return NextResponse.json(info, { status: info.status === 'error' ? 500 : 200 })
+      }
+      // Cooldown: a create attempt within the last CREATE_COOLDOWN_MS that already
+      // recorded a sandbox means the machine exists (possibly unhealthy/stopped)
+      // — return the recorded state instead of provisioning again. Orphaned
+      // machines from repeated creates are pure cost.
+      const cooldownUntil = createCooldownUntil.get(user.id)
+      if (cooldownUntil && Date.now() < cooldownUntil) {
+        const known = await getKnownSandboxId()
+        if (known) {
+          try {
+            const existing = await findUserSandbox(user.id, known)
+            if (existing) return NextResponse.json(existing)
+          } catch { /* lookup failed below — still refuse to machine-gun */ }
+          return NextResponse.json(
+            { error: 'A sandbox was just created for you and is still settling — retry in a few seconds' },
+            { status: 429 },
+          )
+        }
+      }
       const syncToken = await getSyncToken()
       // Provider-dispatched call: sprites' createSandbox expects (userId, syncToken: string),
       // machines' expects (userId, options: { sourceSnapshotId?, autostopMode? }).
@@ -181,7 +244,7 @@ export async function POST(request: Request) {
       // user's volume from that snapshot → first boot drops from ~60-90s to ~15-20s.
       // When unset, the volume is created empty (existing behavior).
       const provider = process.env.CLOUD_PROVIDER === 'machines' ? 'machines' : 'sprites'
-      const info = provider === 'machines'
+      const createPromise = (async () => provider === 'machines'
         // Pool-first: try claiming a warm pre-provisioned machine (fast path);
         // internally falls back to legacy createSandbox when the pool is empty
         // or the claim fails. Passes the golden-snapshot + sync token through
@@ -195,21 +258,36 @@ export async function POST(request: Request) {
             user.id,
             { sourceSnapshotId: process.env.FLY_GOLDEN_SNAPSHOT_ID || undefined, syncToken },
           )
-        : await createSandbox(user.id, syncToken)
+        : await createSandbox(user.id, syncToken))()
+      inflightCreates.set(user.id, createPromise)
+      let info: Awaited<typeof createPromise>
+      try {
+        info = await createPromise
+      } finally {
+        inflightCreates.delete(user.id)
+      }
 
-      if (info.status === 'running' && info.previewUrl) {
-        // Save to DB — this becomes the user's agent URL
+      // COST-LEAK GUARD: record the machine as soon as it EXISTS (info.id),
+      // whatever its health. Previously only a fully-running sandbox wrote the
+      // row — a machine created but failing health-wait was orphaned with no
+      // record, so every dashboard reload provisioned another paid machine.
+      if (info.id) {
+        createCooldownUntil.set(user.id, Date.now() + CREATE_COOLDOWN_MS)
         await supabase.from('instances').upsert({
           user_id: user.id,
-          server_url: info.previewUrl,
+          server_url: info.previewUrl ?? null,
           instance_type: 'cloud',
-          status: 'running',
+          status: info.status,
           sandbox_id: info.id,
-          sandbox_url: info.previewUrl,
-          sandbox_status: 'running',
+          sandbox_url: info.previewUrl ?? null,
+          sandbox_status: info.status,
           livekit_room: `osborn-${user.id.substring(0, 8)}`,
           last_seen: new Date().toISOString(),
         }, { onConflict: 'user_id' })
+      } else {
+        // No machine came back at all — still set a short cooldown so a burst
+        // of reloads can't machine-gun the provider.
+        createCooldownUntil.set(user.id, Date.now() + CREATE_COOLDOWN_MS)
       }
 
       return NextResponse.json(info, {
@@ -221,6 +299,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
+      const startDenied = await rejectIfNotOwned(sandboxId)
+      if (startDenied) return startDenied
       const startSyncToken = await getSyncToken()
       const info = await startSandbox(sandboxId, user.id, startSyncToken)
       if (info?.previewUrl) {
@@ -241,6 +321,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
+      const stopDenied = await rejectIfNotOwned(sandboxId)
+      if (stopDenied) return stopDenied
       const ok = await stopSandbox(sandboxId)
       if (ok) {
         await supabase.from('instances').update({
@@ -255,6 +337,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
+      const keepaliveDenied = await rejectIfNotOwned(sandboxId)
+      if (keepaliveDenied) return keepaliveDenied
       const ok = await keepAliveSandbox(sandboxId)
       return NextResponse.json({ success: ok })
     }
@@ -263,6 +347,8 @@ export async function POST(request: Request) {
       if (!sandboxId) {
         return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
       }
+      const deleteDenied = await rejectIfNotOwned(sandboxId)
+      if (deleteDenied) return deleteDenied
       // Delete the sprite, then clear DB record
       await deleteSandbox(sandboxId).catch(() => {})
       await supabase.from('instances').update({

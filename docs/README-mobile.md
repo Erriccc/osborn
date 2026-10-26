@@ -60,6 +60,38 @@ that patch first (or `brew install cocoapods` just for the generation step).
 4. **Real devices — after the $99 Apple account:** TestFlight (90-day expiry
    per build). Watch needs the account too.
 
+## Pre-$99: the actual native-app-on-hardware options
+You do NOT need the $99 for most of this. Tiers, cheapest first:
+
+| Tier | On hardware? | Cost | What | Catch |
+|---|---|---|---|---|
+| PWA | iPhone | $0 | Add to Home Screen — live NOW | no push/haptics; is ~95% of the app |
+| Pushover | **Watch** | $0 trial → $5 once | real wrist notifications + tap-to-approve (Track 1) | needs branch→publish→machine rebuild + keys; answers only, no voice |
+| Free-Apple-ID sideload | iPhone | $0 | the ACTUAL Capacitor app on your phone via Sideloadly/AltStore | 7-day expiry, 3-app limit, needs 1 CI artifact + Mac |
+| Simulator | Mac only | $0 | both apps in Xcode 15.2 sims | not hardware |
+| Appetize.io | browser | ~free tier | CI sim artifact runs in a hosted simulator you can share as a link | minutes-limited; no mic |
+| TestFlight | iPhone + Watch | $99/yr | real distribution, push, the watch voice app | the fee |
+
+**Sideload steps (Tier 3, after one ios-build run):**
+1. Actions run → download artifact → unzip → `VoiceNative-unsigned.app`
+   (device build).
+2. Zip it: `zip -r VoiceNative.app.zip VoiceNative-unsigned.app` — Sideloadly
+   accepts .app-in-zip or .ipa; rename to match its prompt.
+3. Install [Sideloadly](https://sideloadly.io) on the Mac, drag the zip in,
+   sign with your everyday Apple ID (free personal team — NOT the $99
+   program), connect iPhone by cable, Start.
+4. On the phone: Settings → General → VPN & Device Management → trust your
+   Apple ID. App appears on the home screen.
+5. Refresh every 7 days (re-run Sideloadly; AltStore does it over WiFi
+   automatically if you prefer).
+   Limits: 3 sideloaded apps at a time, no push notifications (APNs needs the
+   paid account), expires in 7 days.
+
+**Watch, pre-$99, bluntly:** a native watch app on the WATCH itself is not
+sideloadable with a free Apple ID — that road goes through the $99
+(TestFlight). Pre-$99 you get: Pushover on the wrist (real hardware, real
+taps) and the full watch app in the Mac's watch simulator.
+
 ## Signed flip (when the Apple Developer account is bought)
 1. App Store Connect → Users & Access → Integrations → **Keys** → generate
    (App Manager). Download `.8`, note Key ID + Issuer ID.

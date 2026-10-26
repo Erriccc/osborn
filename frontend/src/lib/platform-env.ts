@@ -70,7 +70,6 @@ export const PLATFORM_ENV_SPEC: EnvKeySpec[] = [
   { key: 'RECALL_REGION', source: 'host-env', scope: 'user', required: false, secret: false, description: 'Recall.ai regional endpoint selector (default us-west-2).' },
   { key: 'SMITHERY_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Smithery hosted-MCP catalog key.' },
   { key: 'OSBORN_HOUSEKEEPING_DRYRUN', source: 'host-env', scope: 'platform', required: false, secret: false, description: 'Housekeeping deletion switch forwarded to every machine: "0" enables live deletion of stale sub-agent transcripts + empty slug dirs; any other value / unset = dry-run (log only). Set on the host to flip the fleet.' },
-  { key: 'SUPABASE_SERVICE_ROLE_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Supabase service-role key — server-route-only writes that bypass RLS (e.g. demo_leads email gate). NEVER exposed to the client.' },
   { key: 'WATCH_ACK_SECRET', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'HMAC secret verifying Pushover watch-ack callback links (/api/watch/ack, mobile Track 1). Same value as the agent machines\' WATCH_ACK_SECRET. NEVER exposed to the client.' },
   // ── Platform literals (built per-backend; listed here for visibility) ──
   { key: 'OSBORN_API_PORT', source: 'literal', scope: 'platform', required: true, secret: false, description: 'Port the agent HTTP server binds (8741 on Fly, 8080 on Sprites).' },
@@ -92,6 +91,42 @@ export const PLATFORM_FORWARD_KEYS: string[] = PLATFORM_ENV_SPEC
   .map((s) => s.key)
 
 /**
+ * Frontend-host secrets that must NEVER live on a user machine. The agent and
+ * the user's Claude subprocess run with full shell access on the machine, so
+ * anything in its env is readable by the user. These keys are server-side only
+ * (e.g. SUPABASE_SERVICE_ROLE_KEY bypasses RLS on every table; FLY_API_TOKEN
+ * controls every machine in the org).
+ *
+ * Two guarantees:
+ *   1. forwardHostEnv() refuses to forward them even if a key is later added to
+ *      PLATFORM_ENV_SPEC by mistake.
+ *   2. Every path that merges a machine's EXISTING env (Fly updateOsborn,
+ *      repointAndStartSandbox) runs stripDeniedMachineEnv() so machines that
+ *      were provisioned while a key was still forwarded get it removed.
+ */
+export const MACHINE_ENV_DENYLIST: readonly string[] = [
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'SUPABASE_JWT_SECRET',
+  'SUPABASE_PERSONAL_ACCESS_TOKEN',
+  'FLY_API_TOKEN',
+  'SPRITES_API_TOKEN',
+  'DAYTONA_API_KEY',
+  'OSBORN_RAILWAY_API_KEY',
+]
+
+/** Delete every MACHINE_ENV_DENYLIST key from `env` in place; returns the keys removed. */
+export function stripDeniedMachineEnv(env: Record<string, string>): string[] {
+  const removed: string[] = []
+  for (const key of MACHINE_ENV_DENYLIST) {
+    if (key in env) {
+      delete env[key]
+      removed.push(key)
+    }
+  }
+  return removed
+}
+
+/**
  * Read the given keys (default: all host-env platform keys) from the frontend
  * host's process.env, returning only those actually set. This is the one place
  * that reads host env for machine provisioning.
@@ -99,6 +134,7 @@ export const PLATFORM_FORWARD_KEYS: string[] = PLATFORM_ENV_SPEC
 export function forwardHostEnv(keys: readonly string[] = PLATFORM_FORWARD_KEYS): Record<string, string> {
   const out: Record<string, string> = {}
   for (const key of keys) {
+    if (MACHINE_ENV_DENYLIST.includes(key)) continue
     const v = process.env[key]
     if (v) out[key] = v
   }

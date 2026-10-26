@@ -415,6 +415,11 @@ function stripProvenance(text: string): string {
       if (/^\[[^\]]*\bL\d+\b[^\]]*·[^\]]*\]/.test(t)) return false
       if (/^L\d+\s*:/.test(t)) return false
       if (/^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$/.test(t)) return false
+      // Transport/echo lines that leak raw into chat: tagged osborn echoes like
+      // '[feat brazil (jstbae)] (osborn): ...' and '[Fast Brain] [123hz] [osborn]: ...'
+      // (internal provenance the user must never see; observed on phone + desktop)
+      if (/^\[[^\]]*\]\s*\(osborn\)\s*:/i.test(t)) return false
+      if (/^\[Fast Brain\]/i.test(t)) return false
       return true
     })
     .join('\n')
@@ -1536,7 +1541,7 @@ function ControlMenu({
 
       {/* Dropdown menu */}
       {isOpen && (
-        <div className="absolute top-10 left-0 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] overflow-hidden">
+        <div className="absolute top-10 left-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] overflow-hidden">
           {/* Tabs */}
           <div className="flex border-b border-gray-700">
             <button
@@ -5159,7 +5164,7 @@ function VoiceRoomInner({
                     </svg>
                   </button>
                   {showMeetingInput && (
-                    <div className="absolute top-11 right-0 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
+                    <div className="absolute top-11 right-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
                       <label className="block text-[11px] font-semibold text-gray-400 mb-1.5">Join a meeting</label>
                       <input
                         type="url"
