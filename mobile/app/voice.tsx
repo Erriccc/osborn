@@ -1,4 +1,4 @@
-import { AudioSession, LiveKitRoom, useDataChannel, useLocalParticipant } from '@livekit/react-native'
+import { AudioSession, LiveKitRoom, registerGlobals, useDataChannel, useLocalParticipant } from '@livekit/react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import * as Haptics from 'expo-haptics'
 import { useEffect, useRef, useState } from 'react'
@@ -6,6 +6,14 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { connectVoice, getServerUrl } from '../lib/agent'
 import { LIVEKIT_URL } from '../lib/config'
+
+// Install WebRTC globals here (voice is a lazy route) rather than at app launch,
+// so opening the app never loads the native WebRTC module. Guarded + idempotent.
+let globalsReady = false
+function ensureGlobals() {
+  if (globalsReady) return
+  try { registerGlobals(); globalsReady = true } catch { /* already registered */ }
+}
 
 /**
  * Voice screen (Phase 3 core). Resolves the agent, starts a room via
@@ -23,6 +31,7 @@ export default function VoiceScreen() {
     let active = true
     ;(async () => {
       try {
+        ensureGlobals()
         await AudioSession.startAudioSession()
         const url = await getServerUrl()
         if (!url) { if (active) setError('No agent machine — start a session on the web first.'); return }

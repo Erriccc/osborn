@@ -1,12 +1,13 @@
-import { registerGlobals } from '@livekit/react-native'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect } from 'react'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { AuthProvider, useAuth } from '../lib/auth'
 
-// Required once before any LiveKit/WebRTC use — installs the WebRTC globals.
-registerGlobals()
+// NOTE: registerGlobals() is NOT called here. Importing @livekit/react-native at
+// the root pulls the WebRTC native module into the app-LAUNCH path, which
+// crashed on open. It's deferred to the voice screen (lazy route) so launch
+// never touches WebRTC — login/dashboard/library/settings don't need it.
 
 /**
  * Root layout — wraps the app in the AuthProvider and gates on the session:
