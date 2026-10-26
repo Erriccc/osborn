@@ -39,11 +39,15 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install JS deps
+      - name: Install JS deps (core pinned to SDK 57)
         run: npm install --legacy-peer-deps
 
-      - name: Align deps to the Expo SDK
-        run: npx expo install --fix
+      - name: Add SDK-aligned Expo modules
+        # Let Expo's resolver pick the exact SDK-57-correct version of each
+        # peripheral (avoids the hand-guessed version mismatch that broke the
+        # first build). Core (expo/react/react-native/expo-router) is pinned
+        # in package.json.
+        run: npx expo install expo-constants expo-linking expo-status-bar expo-haptics react-native-safe-area-context react-native-screens
 
       - name: Prebuild native iOS project
         run: npx expo prebuild --platform ios --no-install
