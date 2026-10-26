@@ -55,6 +55,7 @@ function RoomView() {
   const [lines, setLines] = useState<Line[]>([])
   const [agentState, setAgentState] = useState('connecting')
   const [micOn, setMicOn] = useState(true)
+  const [perm, setPerm] = useState<{ toolName: string; description: string } | null>(null)
   const scroll = useRef<ScrollView>(null)
 
   // Parse the agent's data-channel messages (same protocol the web uses).
@@ -68,9 +69,18 @@ function RoomView() {
         setLines((l) => upsert(l, d.messageId ?? `u-${Date.now()}`, 'user', String(d.text)))
       } else if (d.type === 'agent_state' || d.type === 'state') {
         setAgentState(String(d.state ?? d.agent ?? 'idle'))
+      } else if (d.type === 'permission_request') {
+        setPerm({ toolName: String(d.toolName ?? 'tool'), description: String(d.description ?? `Use ${d.toolName}?`) })
       }
     } catch { /* non-JSON data */ }
   }, [message])
+
+  function respondPerm(response: 'allow' | 'deny' | 'always_allow') {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    const payload = JSON.stringify({ type: 'permission_response', response })
+    localParticipant?.publishData(new TextEncoder().encode(payload), { reliable: true })
+    setPerm(null)
+  }
 
   useEffect(() => { scroll.current?.scrollToEnd({ animated: true }) }, [lines])
 
@@ -111,6 +121,26 @@ function RoomView() {
           <Text style={styles.endText}>End</Text>
         </Pressable>
       </View>
+
+      {perm ? (
+        <View style={styles.permOverlay}>
+          <View style={styles.permCard}>
+            <Text style={styles.permTool}>{perm.toolName}</Text>
+            <Text style={styles.permDesc}>{perm.description}</Text>
+            <View style={styles.permRow}>
+              <Pressable onPress={() => respondPerm('deny')} style={({ pressed }) => [styles.permDeny, pressed && styles.pressed]}>
+                <Text style={styles.permDenyText}>Deny</Text>
+              </Pressable>
+              <Pressable onPress={() => respondPerm('allow')} style={({ pressed }) => [styles.permAllow, pressed && styles.pressed]}>
+                <Text style={styles.permAllowText}>Allow</Text>
+              </Pressable>
+            </View>
+            <Pressable onPress={() => respondPerm('always_allow')} style={styles.permAlways}>
+              <Text style={styles.permAlwaysText}>Always allow this</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
     </View>
   )
 }
@@ -160,4 +190,16 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.85 },
   backBtn: { marginTop: 8, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)' },
   backText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  permOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  permCard: { width: '100%', backgroundColor: '#1c1b19', borderRadius: 20, padding: 20, gap: 12 },
+  permTool: { color: '#eab308', fontSize: 13, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
+  permDesc: { color: '#fff', fontSize: 17, lineHeight: 24 },
+  permRow: { flexDirection: 'row', gap: 12, marginTop: 4 },
+  permDeny: { flex: 1, height: 50, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center' },
+  permDenyText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  permAllow: { flex: 1, height: 50, borderRadius: 14, backgroundColor: '#22c55e', alignItems: 'center', justifyContent: 'center' },
+  permAllowText: { color: '#0c0b09', fontSize: 16, fontWeight: '700' },
+  permAlways: { alignItems: 'center', paddingVertical: 8 },
+  permAlwaysText: { color: 'rgba(255,255,255,0.5)', fontSize: 14 },
 })
+

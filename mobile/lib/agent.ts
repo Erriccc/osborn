@@ -48,14 +48,34 @@ export async function listSessions(serverUrl: string): Promise<AgentSession[]> {
  * no-auth /api/token. Native fetch is CORS-exempt so both calls go direct.
  */
 export async function connectVoice(serverUrl: string, sessionId?: string): Promise<{ token: string; url: string }> {
-  // 1) connect-room → authoritative roomName (osborn-<code>-<ts>)
-  const cr = await fetch(`${serverUrl}/connect-room`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
-    signal: AbortSignal.timeout(60_000),
-  }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
-  const roomName: string | undefined = cr?.roomName
+  // 1) connect-room → authoritative roomName. Prefer the frontend's /api/sandbox
+  //    connect-room: it WAKES an idle machine server-side (native has no Fly
+  //    token) and returns the roomName. Falls back to hitting the agent directly
+  //    if the machine is already awake / the wake call fails.
+  const { data: { session } } = await supabase.auth.getSession()
+  const bearer = session?.access_token
+  let roomName: string | undefined
+
+  if (bearer) {
+    const woken = await fetch(`${FRONTEND_URL}/api/sandbox`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bearer}` },
+      body: JSON.stringify({ action: 'connect-room' }),
+      signal: AbortSignal.timeout(90_000),
+    }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+    if (woken?.roomName) roomName = woken.roomName
+  }
+
+  if (!roomName) {
+    const cr = await fetch(`${serverUrl}/connect-room`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(60_000),
+    }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+    roomName = cr?.roomName
+  }
+
   const roomCode = roomName ? roomName.replace(/^osborn-/, '') : undefined
 
   // 2) mint a LiveKit token for that room
