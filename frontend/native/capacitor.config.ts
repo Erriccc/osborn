@@ -18,7 +18,11 @@ const config: CapacitorConfig = {
   appName: 'Voice Native',
   webDir: 'www',
   server: {
-    url: 'https://www.voice-native.com',
+    // Cold-launch straight into the APP, not the desktop-first marketing
+    // homepage (/). /dashboard is the post-login home; an unauthenticated
+    // WKWebView redirects it to /login. Either way the shell never shows the
+    // marketing page, which is where the "it's just a bookmark" feel came from.
+    url: 'https://www.voice-native.com/dashboard',
     // Allow Supabase OAuth redirects + LiveKit ICE to open in external
     // Safari until the deep-link flow (G-OAUTH) replaces them.
     allowNavigation: [
@@ -33,10 +37,14 @@ const config: CapacitorConfig = {
     ],
   },
   ios: {
-    // WKWebView servlets scroll like native — the app itself doesn't scroll
-    // (the web content manages its own panes).
-    scrollEnabled: false,
-    contentInset: 'always',
+    // MUST be true: the web pages rely on normal page scroll. scrollEnabled:
+    // false froze the whole UI (unscrollable + taps swallowed). Rubber-band is
+    // tamed in CSS (overscroll-behavior: none, globals.css standalone block).
+    scrollEnabled: true,
+    // 'never' — the web content owns its safe-area insets via env(safe-area-*)
+    // padding, so the webview must NOT also inset (double-padding / status-bar
+    // collision came from the webview and CSS fighting over the same space).
+    contentInset: 'never',
   },
 }
 
