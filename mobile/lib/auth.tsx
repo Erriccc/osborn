@@ -16,6 +16,8 @@ type AuthState = {
   loading: boolean
   signInWithGoogle: () => Promise<{ error?: string }>
   signInWithEmail: (email: string, password: string) => Promise<{ error?: string }>
+  sendEmailCode: (email: string) => Promise<{ error?: string }>
+  verifyEmailCode: (email: string, code: string) => Promise<{ error?: string }>
   signOut: () => Promise<void>
 }
 
@@ -63,12 +65,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return error ? { error: error.message } : {}
   }
 
+  // Email OTP — fully native, no browser/redirect. Sends a 6-digit code
+  // (requires the Supabase magic-link template to include {{ .Token }}).
+  async function sendEmailCode(email: string): Promise<{ error?: string }> {
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: { shouldCreateUser: true },
+    })
+    return error ? { error: error.message } : {}
+  }
+
+  async function verifyEmailCode(email: string, code: string): Promise<{ error?: string }> {
+    const { error } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token: code.trim(),
+      type: 'email',
+    })
+    return error ? { error: error.message } : {}
+  }
+
   async function signOut() {
     await supabase.auth.signOut()
   }
 
   return (
-    <AuthContext.Provider value={{ session, loading, signInWithGoogle, signInWithEmail, signOut }}>
+    <AuthContext.Provider value={{ session, loading, signInWithGoogle, signInWithEmail, sendEmailCode, verifyEmailCode, signOut }}>
       {children}
     </AuthContext.Provider>
   )
