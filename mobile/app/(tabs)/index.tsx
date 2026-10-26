@@ -1,4 +1,5 @@
 import * as Haptics from 'expo-haptics'
+import { useRouter } from 'expo-router'
 import { useCallback, useEffect, useState } from 'react'
 import {
   ActivityIndicator,
@@ -63,9 +64,10 @@ export default function Dashboard() {
 }
 
 function NewSessionButton() {
+  const router = useRouter()
   return (
     <Pressable
-      onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
+      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); router.push('/voice') }}
       style={({ pressed }) => [styles.newBtn, pressed && styles.newBtnPressed]}
     >
       <Text style={styles.newBtnText}>＋  New Session</Text>
@@ -74,11 +76,12 @@ function NewSessionButton() {
 }
 
 function Row({ session }: { session: AgentSession }) {
+  const router = useRouter()
   const title = (session.lastMessage || 'New conversation').replace(/\s+/g, ' ').trim()
   const where = session.projectSlug || session.cwd.split('/').pop() || 'workspace'
   return (
     <Pressable
-      onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}
+      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push({ pathname: '/voice', params: { sessionId: session.sessionId } }) }}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
       <Text style={styles.glyph}>💬</Text>

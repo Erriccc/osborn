@@ -47,7 +47,7 @@ jobs:
         # peripheral (avoids the hand-guessed version mismatch that broke the
         # first build). Core (expo/react/react-native/expo-router) is pinned
         # in package.json.
-        run: npx expo install expo-router expo-constants expo-linking expo-status-bar expo-haptics react-native-safe-area-context react-native-screens @react-native-async-storage/async-storage expo-web-browser expo-auth-session expo-crypto expo-secure-store
+        run: npx expo install expo-router expo-constants expo-linking expo-status-bar expo-haptics react-native-safe-area-context react-native-screens @react-native-async-storage/async-storage expo-web-browser expo-auth-session expo-crypto expo-secure-store @livekit/react-native-expo-plugin @config-plugins/react-native-webrtc
 
       - name: Prebuild native iOS project
         run: npx expo prebuild --platform ios --no-install

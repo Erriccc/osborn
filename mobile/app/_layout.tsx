@@ -1,8 +1,12 @@
+import { registerGlobals } from '@livekit/react-native'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect } from 'react'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { AuthProvider, useAuth } from '../lib/auth'
+
+// Required once before any LiveKit/WebRTC use — installs the WebRTC globals.
+registerGlobals()
 
 /**
  * Root layout — wraps the app in the AuthProvider and gates on the session:
@@ -36,6 +40,7 @@ function RootNavigator() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="login" />
+      <Stack.Screen name="voice" options={{ presentation: 'fullScreenModal' }} />
     </Stack>
   )
 }
