@@ -22,6 +22,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>WKApplication</key>
 	<true/>
+	<key>WKRunsIndependentlyOfCompanionApp</key>
+	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Osborn is a voice-first coding agent — the microphone is how you talk to your agent from the wrist.</string>
 </dict>

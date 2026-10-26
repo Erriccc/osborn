@@ -51,7 +51,7 @@ function verify(qid: string): { agentUrl: string } | null {
   }
 }
 
-async function handle(qid: string, receipt: string | null): Promise<NextResponse> {
+async function handle(qid: string, receipt: string | null, ans: string | null): Promise<NextResponse> {
   const verified = qid ? verify(qid) : null
   if (!verified) {
     // Bad signature / stale / not configured — 200 so Pushover stops retrying,
@@ -59,11 +59,14 @@ async function handle(qid: string, receipt: string | null): Promise<NextResponse
     return NextResponse.json({ ok: false, reason: 'invalid-token' })
   }
 
+  // ans: ntfy Approve/Deny buttons (?ans=1|0). Absent = Pushover ack = approve.
+  const allow = ans === null ? true : ans !== '0' && ans !== 'false'
+
   try {
     const res = await fetch(`${verified.agentUrl}/watch/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ qid, receipt: receipt ?? undefined }),
+      body: JSON.stringify({ qid, receipt: receipt ?? undefined, allow }),
       signal: AbortSignal.timeout(10_000),
     })
     return NextResponse.json({ ok: res.ok, forwarded: res.ok }, { status: res.ok ? 200 : 200 })
@@ -75,21 +78,25 @@ async function handle(qid: string, receipt: string | null): Promise<NextResponse
 }
 
 export async function GET(req: NextRequest, { params }: { params: { qid: string } }): Promise<NextResponse> {
-  // Pushover delivers callbacks with parameters in the query string.
+  // Pushover delivers callbacks with `receipt` in the query string; the ntfy
+  // Approve/Deny buttons hit the same path with `ans=1|0`.
   const receipt = req.nextUrl.searchParams.get('receipt')
-  return handle(params.qid, receipt)
+  const ans = req.nextUrl.searchParams.get('ans')
+  return handle(params.qid, receipt, ans)
 }
 
 export async function POST(req: NextRequest, { params }: { params: { qid: string } }): Promise<NextResponse> {
   // Also accept form-encoded POST bodies (Pushover's documented fallback).
   let receipt = req.nextUrl.searchParams.get('receipt')
-  if (!receipt) {
+  let ans = req.nextUrl.searchParams.get('ans')
+  if (!receipt || !ans) {
     try {
       const form = await req.formData()
-      receipt = form.get('receipt') as string | null
+      receipt = receipt || (form.get('receipt') as string | null)
+      ans = ans || (form.get('ans') as string | null)
     } catch {
-      // not form data — treat as no receipt (agent matches on qid alone)
+      // not form data — treat as absent (agent matches on qid alone; ack = approve)
     }
   }
-  return handle(params.qid, receipt)
+  return handle(params.qid, receipt, ans)
 }

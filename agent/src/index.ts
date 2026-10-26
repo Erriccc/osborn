@@ -1018,19 +1018,20 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
-    // POST /watch/ack — landing for the Pushover wrist bridge (mobile Track 1).
-    // The frontend /api/watch/ack/[qid] route verifies the HMAC signature and
-    // forwards here; pushover.ts re-verifies against its pending map before
-    // resolving the blocking permission (ack = approve). Dormant unless
-    // PUSHOVER_* + WATCH_ACK_SECRET are configured.
+    // POST /watch/ack — landing for the Track 1 wrist bridge (Pushover ack OR
+    // ntfy Approve/Deny buttons). The frontend /api/watch/ack/[qid] route
+    // verifies the HMAC signature and forwards here; pushover.ts re-verifies
+    // against its pending map before resolving the blocking permission.
+    // Dormant unless a provider (PUSHOVER_*/NTFY_*) + WATCH_ACK_SECRET are set.
     if (req.method === 'POST' && url.pathname === '/watch/ack') {
       let body = ''
       req.on('data', (c) => { body += c })
       req.on('end', () => {
         try {
-          const { qid, receipt } = JSON.parse(body || '{}') as { qid?: string; receipt?: string }
+          const { qid, receipt, allow } = JSON.parse(body || '{}') as { qid?: string; receipt?: string; allow?: boolean }
           if (!qid) throw new Error('qid required')
-          const ok = handleWatchAck(qid, receipt)
+          // allow defaults to true (Pushover ack = approve); ntfy's Deny button sends false.
+          const ok = handleWatchAck(qid, receipt, allow !== false)
           res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok }))
         } catch (e) {

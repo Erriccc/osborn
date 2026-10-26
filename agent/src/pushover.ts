@@ -12,9 +12,12 @@
  *
  * Settled semantics (mobile plan, 2026-10-24): ack = yes · expiry = no.
  *
- * Env (all optional — the bridge is dormant unless the first three are set):
+ * Env (all optional — the bridge is dormant unless a provider is configured):
  *   PUSHOVER_TOKEN      app token from pushover.net ($5 one-time)
  *   PUSHOVER_USER_KEY   user (or group) key to push to
+ *   NTFY_URL            ntfy server base (https://ntfy.sh or self-hosted)
+ *   NTFY_TOPIC          topic to publish permission asks to (Approve/Deny buttons)
+ *   NTFY_TOKEN          optional access token for protected ntfy topics
  *   WATCH_ACK_SECRET    HMAC secret, shared with the frontend ack route
  *   OSBORN_PUBLIC_URL   this machine's public base URL — embedded in the signed
  *                       token so the frontend route knows where to forward
@@ -81,7 +84,7 @@ export function pushoverConfig(): PushoverConfig | null {
 }
 
 export function isWatchBridgeEnabled(): boolean {
-  return pushoverConfig() !== null
+  return pushoverConfig() !== null || ntfyConfig() !== null
 }
 
 // --- token helpers ---------------------------------------------------------
@@ -122,13 +125,39 @@ export function verifyAckToken(qid: string, secret: string): AckPayload | null {
 // --- bridge ----------------------------------------------------------------
 
 /**
+ * ntfy (self-hostable, free) — second Track 1 provider. Where Pushover offers
+ * one tap (ack = approve, expiry = deny), ntfy notifications carry REAL
+ * Approve/Deny action buttons (http actions hitting the same ack route with
+ * ?ans=1|0). Configure NTFY_URL (server base — ntfy.sh or your own), NTFY_TOPIC,
+ * optional NTFY_TOKEN (access token for protected topics). Phone notifications
+ * only — the watch still gets it via phone mirroring (same as Pushover).
+ */
+interface NtfyConfig {
+  url: string
+  topic: string
+  token?: string
+}
+
+export function ntfyConfig(): NtfyConfig | null {
+  const url = (process.env.NTFY_URL || '').replace(/\/+$/, '')
+  const topic = process.env.NTFY_TOPIC
+  if (!url || !topic) return null
+  return { url, topic, token: process.env.NTFY_TOKEN || undefined }
+}
+
+export function isNtfyEnabled(): boolean {
+  return ntfyConfig() !== null
+}
+
+/**
  * Mirror a blocking permission request to the wrist. Fire-and-forget: any
  * failure (network, Pushover 4xx, missing env) just logs — the web UI remains
  * the source of truth and the request still waits for it.
  */
 export async function armPermissionPush(opts: { toolName: string; description: string }): Promise<void> {
   const cfg = pushoverConfig()
-  if (!cfg) return
+  const ntfy = ntfyConfig()
+  if (!cfg && !ntfy) return
 
   // Single-slot guard: never stack pushes (the SDK won't fire a second
   // permission until the first resolves, but be defensive).
@@ -139,67 +168,113 @@ export async function armPermissionPush(opts: { toolName: string; description: s
     }
   }
 
+  const secret = process.env.WATCH_ACK_SECRET || ''
+  const publicUrl = (process.env.OSBORN_PUBLIC_URL || '').replace(/\/+$/, '')
+  const frontendUrl = (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/+$/, '')
+  if (!secret || !publicUrl) return
+
   const now = Date.now()
   const qid = signAckToken(
-    { n: randomBytes(12).toString('hex'), a: cfg.publicUrl, t: now, e: now + EXPIRE_S * 1000 },
-    cfg.secret,
+    { n: randomBytes(12).toString('hex'), a: publicUrl, t: now, e: now + EXPIRE_S * 1000 },
+    secret,
   )
-  const callback = `${cfg.frontendUrl}${ACK_PATH}/${qid}`
 
-  const message =
-    `${opts.description}\n\nTap to approve · ignore to deny`.slice(0, 1000)
-
-  try {
-    const res = await fetch(`${PUSH_API}/messages.json`, {
-      method: 'POST',
-      body: new URLSearchParams({
-        token: cfg.token,
-        user: cfg.userKey,
-        title: 'Voice Native',
-        message,
-        priority: '2',
-        retry: String(RETRY_S),
-        expire: String(EXPIRE_S),
-        callback,
-      }),
-    })
-    const body = (await res.json().catch(() => ({}))) as { receipt?: string; errors?: string[] }
-    if (!res.ok || !body.receipt) {
-      console.log(`⌚️ Watch bridge: pushover rejected (${res.status})`, body.errors || '')
-      return
-    }
-
-    const record: PendingPush = {
-      qid,
-      receipt: body.receipt,
-      toolName: opts.toolName,
-      description: opts.description,
-      expiresAt: now + EXPIRE_S * 1000,
-      settled: false,
-    }
-    record.expiryTimer = setTimeout(() => void settleExpired(record), EXPIRE_S * 1000 + EXPIRY_GRACE_MS)
-    pending.set(qid, record)
-    console.log(`⌚️ Watch bridge: armed push for ${opts.toolName} (receipt ${body.receipt.slice(0, 8)}…, expires in ${EXPIRE_S}s)`)
-  } catch (e) {
-    console.log('⌚️ Watch bridge: push send failed:', e instanceof Error ? e.message : e)
+  // One record serves both providers: whichever ack lands first settles it.
+  const record: PendingPush = {
+    qid,
+    receipt: '',
+    toolName: opts.toolName,
+    description: opts.description,
+    expiresAt: now + EXPIRE_S * 1000,
+    settled: false,
   }
+
+  if (cfg) {
+    try {
+      const res = await fetch(`${PUSH_API}/messages.json`, {
+        method: 'POST',
+        body: new URLSearchParams({
+          token: cfg.token,
+          user: cfg.userKey,
+          title: 'Voice Native',
+          message: `${opts.description}\n\nTap to approve · ignore to deny`.slice(0, 1000),
+          priority: '2',
+          retry: String(RETRY_S),
+          expire: String(EXPIRE_S),
+          callback: `${frontendUrl}${ACK_PATH}/${qid}`,
+        }),
+      })
+      const body = (await res.json().catch(() => ({}))) as { receipt?: string; errors?: string[] }
+      if (!res.ok || !body.receipt) {
+        console.log(`⌚️ Watch bridge: pushover rejected (${res.status})`, body.errors || '')
+      } else {
+        record.receipt = body.receipt
+      }
+    } catch (e) {
+      console.log('⌚️ Watch bridge: pushover send failed:', e instanceof Error ? e.message : e)
+    }
+  }
+
+  if (ntfy) {
+    // Approve/Deny buttons hit the SAME signed ack route with ?ans=1|0.
+    try {
+      const res = await fetch(ntfy.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(ntfy.token ? { Authorization: `Bearer ${ntfy.token}` } : {}),
+        },
+        body: JSON.stringify({
+          topic: ntfy.topic,
+          title: 'Voice Native',
+          message: opts.description.slice(0, 1000),
+          priority: 4,
+          tags: ['computer'],
+          click: `${frontendUrl}/dashboard`,
+          actions: [
+            {
+              action: 'http',
+              label: 'Approve',
+              method: 'GET',
+              url: `${frontendUrl}${ACK_PATH}/${qid}?ans=1`,
+            },
+            {
+              action: 'http',
+              label: 'Deny',
+              method: 'GET',
+              url: `${frontendUrl}${ACK_PATH}/${qid}?ans=0`,
+            },
+          ],
+        }),
+      })
+      if (!res.ok) console.log(`⌚️ Watch bridge: ntfy rejected (${res.status})`)
+    } catch (e) {
+      console.log('⌚️ Watch bridge: ntfy send failed:', e instanceof Error ? e.message : e)
+    }
+  }
+
+  if (!record.receipt && !ntfy) return // nothing actually sent
+  record.expiryTimer = setTimeout(() => void settleExpired(record), EXPIRE_S * 1000 + EXPIRY_GRACE_MS)
+  pending.set(qid, record)
+  console.log(`⌚️ Watch bridge: armed for ${opts.toolName} (pushover=${cfg ? 'on' : 'off'} ntfy=${ntfy ? 'on' : 'off'}, expires in ${EXPIRE_S}s)`)
 }
 
 /**
  * Landing for the frontend ack route. Returns true when a pending push was
- * settled as acknowledged (= approve). Idempotent: a replayed callback or a
- * late ack after another path answered just returns false.
+ * settled. `allow` defaults to true (Pushover ack semantics = approve); the
+ * ntfy Deny button passes false explicitly. Idempotent: a replayed callback
+ * or a late ack after another path answered just returns false.
  */
-export function handleWatchAck(qid: string, receipt?: string): boolean {
-  const cfg = pushoverConfig()
-  if (!cfg) return false
-  if (!verifyAckToken(qid, cfg.secret)) {
+export function handleWatchAck(qid: string, receipt?: string, allow = true): boolean {
+  const secret = process.env.WATCH_ACK_SECRET
+  if (!secret) return false
+  if (!verifyAckToken(qid, secret)) {
     console.log('⌚️ Watch bridge: ack token failed HMAC verification')
     return false
   }
   const record = pending.get(qid)
   if (!record || record.settled) return false
-  if (receipt && receipt !== record.receipt) {
+  if (receipt && record.receipt && receipt !== record.receipt) {
     console.log('⌚️ Watch bridge: receipt mismatch — ignoring ack')
     return false
   }
@@ -207,8 +282,8 @@ export function handleWatchAck(qid: string, receipt?: string): boolean {
   record.settled = true
   if (record.expiryTimer) clearTimeout(record.expiryTimer)
   pending.delete(qid)
-  console.log(`⌚️ Watch bridge: ACKED on wrist → approve ${record.toolName}`)
-  resultHandler?.(true, record.toolName)
+  console.log(`⌚️ Watch bridge: ACKED → ${allow ? 'approve' : 'deny'} ${record.toolName}`)
+  resultHandler?.(allow, record.toolName)
   return true
 }
 
@@ -216,12 +291,20 @@ export function handleWatchAck(qid: string, receipt?: string): boolean {
  * Expiry path: if Pushover says the notification was never acknowledged,
  * settle as deny and cancel further retries (stops the watch buzzing). If it
  * WAS acknowledged but our callback never landed (delivery hiccup), recover
- * by treating it as approve.
+ * by treating it as approve. ntfy-only records (no receipt) just settle deny.
  */
 async function settleExpired(record: PendingPush): Promise<void> {
   if (record.settled) return
   const cfg = pushoverConfig()
-  if (!cfg) return
+
+  // ntfy-only, or pushover send failed earlier: no receipts API — deny.
+  if (!cfg || !record.receipt) {
+    record.settled = true
+    pending.delete(record.qid)
+    console.log(`⌚️ Watch bridge: unacknowledged at expiry → deny ${record.toolName}`)
+    resultHandler?.(false, record.toolName)
+    return
+  }
 
   try {
     const res = await fetch(`${PUSH_API}/receipts/${record.receipt}.json?token=${encodeURIComponent(cfg.token)}`)
@@ -243,8 +326,7 @@ async function settleExpired(record: PendingPush): Promise<void> {
       }).catch(() => {})
     }
   } catch (e) {
-    // Poll failed — leave un-settled so a later settle path can still run,
-    // but don't loop: the record will be dropped when the next push overwrites.
+    // Poll failed — settle deny; the record is dropped either way.
     console.log('⌚️ Watch bridge: receipts poll failed:', e instanceof Error ? e.message : e)
     record.settled = true
     pending.delete(record.qid)

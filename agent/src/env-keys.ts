@@ -44,6 +44,9 @@ export const AGENT_ENV_KEYS: AgentEnvKey[] = [
   // Watch bridge (Track 1 — Pushover wrist yes/no)
   { key: 'PUSHOVER_TOKEN', required: false, explicit: true, description: 'Pushover app token — emergency permission pushes to the wrist (pushover.ts).' },
   { key: 'PUSHOVER_USER_KEY', required: false, explicit: true, description: 'Pushover user/group key receiving permission pushes.' },
+  { key: 'NTFY_URL', required: false, explicit: true, description: 'ntfy server base (https://ntfy.sh or self-hosted) — second Track 1 provider with Approve/Deny buttons.' },
+  { key: 'NTFY_TOPIC', required: false, explicit: true, description: 'ntfy topic permission asks are published to.' },
+  { key: 'NTFY_TOKEN', required: false, explicit: true, description: 'Optional ntfy access token for protected topics.' },
   { key: 'WATCH_ACK_SECRET', required: false, explicit: true, description: 'HMAC secret signing watch-ack links; shared with the frontend /api/watch/ack route.' },
   { key: 'OSBORN_PUBLIC_URL', required: false, explicit: true, description: 'This machine\'s public base URL, embedded in signed watch-ack links so the callback knows where to forward.' },
   { key: 'WATCH_GATEWAY', required: false, explicit: true, description: 'Set "1" to start the Track 2 watchOS WS gateway (watch-gateway.ts) bridging the native watch app into the LiveKit room.' },
