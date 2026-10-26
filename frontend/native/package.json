@@ -22,6 +22,6 @@
   "devDependencies": {
     "@capacitor/cli": "^7.0.1",
     "@capacitor/ios": "^7.0.1",
-    "typescript": "^7.0.2"
+    "typescript": "^5.9.3"
   }
 }
