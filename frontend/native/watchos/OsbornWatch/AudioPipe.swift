@@ -37,7 +37,9 @@ final class AudioPipe {
 
   private func activateSession() throws {
     let session = AVAudioSession.sharedInstance()
-    try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
+    // NOTE: .defaultToSpeaker is unavailable on watchOS — the watch speaker
+    // is the only output route anyway.
+    try session.setCategory(.playAndRecord, mode: .voiceChat, options: [])
     // NOTE: setPreferredSampleRate / setPreferredIOBufferDuration are
     // unavailable on watchOS — the AVAudioConverter handles rate, and buffer
     // sizing is whatever the watch audio session grants.

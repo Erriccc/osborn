@@ -40,5 +40,6 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
-      - name: Lint
-        run: npm run lint --if-present
+      # NOTE: no `next lint` here — the repo has no ESLint config and next lint
+      # drops into its interactive setup prompt on CI (kills the job). tsc is
+      # the gate. Wiring a real eslintrc is a separate cleanup for main.
