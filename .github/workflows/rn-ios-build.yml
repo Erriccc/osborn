@@ -1,0 +1,107 @@
+# React Native (Expo) iOS — unsigned cloud build (Phase 0).
+#
+# Mirrors the Capacitor ios-build pipeline but for the Expo app in mobile/:
+# `expo prebuild` regenerates the native ios/ project (not committed), then
+# xcodebuild produces an unsigned .app. Device slices sideload to the iPhone
+# via Sideloadly (free Apple ID); simulator slices run in any Mac's Xcode.
+#
+# macos-26 (Xcode 26) matches Expo SDK 57 (built for iOS 26). SDK 58 would need
+# Xcode 27 — that's why the app pins ~57.
+#
+# SIGNED FLIP (when the $99 account lands): same as ios-build.yml — App Store
+# Connect API key secrets, swap the unsigned flags for signing + TestFlight.
+
+name: rn-ios-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/rn-ios-build.yml'
+
+concurrency:
+  group: rn-ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install JS deps
+        run: npm install --legacy-peer-deps
+
+      - name: Align deps to the Expo SDK
+        run: npx expo install --fix
+
+      - name: Prebuild native iOS project
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: CocoaPods
+        working-directory: mobile/ios
+        run: pod install
+
+      - name: Discover workspace + scheme
+        id: xc
+        working-directory: mobile/ios
+        run: |
+          WS=$(ls -d *.xcworkspace | head -1)
+          SCHEME=$(basename "$WS" .xcworkspace)
+          echo "workspace=$WS" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Using workspace=$WS scheme=$SCHEME"
+
+      - name: Build (unsigned, device)
+        working-directory: mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace "${{ steps.xc.outputs.workspace }}" \
+            -scheme "${{ steps.xc.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DD \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS="" build | tail -60
+
+      - name: Build (unsigned, simulator)
+        working-directory: mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace "${{ steps.xc.outputs.workspace }}" \
+            -scheme "${{ steps.xc.outputs.scheme }}" \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DD \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS="" build | tail -60
+
+      - name: Package .app bundles
+        working-directory: mobile/ios
+        run: |
+          mkdir -p artifact
+          DEV=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          SIM=$(find build/DD/Build/Products/Release-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
+          cp -R "$DEV" artifact/VoiceNativeRN-unsigned.app
+          cp -R "$SIM" artifact/VoiceNativeRN-sim.app
+          echo "Packaged: $DEV + $SIM"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoiceNativeRN-unsigned-${{ github.sha }}
+          path: mobile/ios/artifact/
+          retention-days: 14
+          if-no-files-found: error
