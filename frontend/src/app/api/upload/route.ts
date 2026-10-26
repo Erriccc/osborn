@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { createSupabaseServer } from '@/lib/supabase-server'
 
 /**
  * POST /api/upload — server-side Supabase Storage upload for agent workspace files.
@@ -29,13 +29,8 @@ import { createClient } from '@supabase/supabase-js'
  */
 export async function POST(req: Request) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-  if (!supabaseUrl || !supabaseAnonKey) {
-    return NextResponse.json(
-      { success: false, error: 'Supabase not configured' },
-      { status: 503 },
-    )
+  if (!supabaseUrl) {
+    return NextResponse.json({ success: false, error: 'Supabase not configured' }, { status: 503 })
   }
 
   let file: File
@@ -65,7 +60,14 @@ export async function POST(req: Request) {
     )
   }
 
-  const supabase = createClient(supabaseUrl, supabaseAnonKey)
+  // USER-TOKEN upload (founder 10-26): the anon key was being rejected by the
+  // storage bucket's RLS (403 "new row violates row-level security policy") —
+  // uploads now ride the signed-in user's session cookie, same as every other
+  // user-scoped write (notes, library, instances).
+  const supabase = await createSupabaseServer()
+  if (!supabase) {
+    return NextResponse.json({ success: false, error: 'Not signed in' }, { status: 401 })
+  }
 
   // Build an ownership-scoped storage path.
   //
