@@ -69,7 +69,6 @@ jobs:
       - name: Build (unsigned, device)
         working-directory: mobile/ios
         run: |
-          set -o pipefail
           xcodebuild \
             -workspace "${{ steps.xc.outputs.workspace }}" \
             -scheme "${{ steps.xc.outputs.scheme }}" \
@@ -78,7 +77,12 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DD \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS="" build | tail -60
+            CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS="" build > xcodebuild-device.log 2>&1 || {
+              echo "::group::compiler errors"; grep -nE "error:|fatal error:|The following build commands failed" xcodebuild-device.log | head -60; echo "::endgroup::";
+              echo "::group::last 100 lines"; tail -100 xcodebuild-device.log; echo "::endgroup::";
+              exit 1;
+            }
+          tail -5 xcodebuild-device.log
 
       - name: Build (unsigned, simulator)
         working-directory: mobile/ios
