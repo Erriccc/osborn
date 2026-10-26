@@ -5,7 +5,7 @@
 # ever get Xcode locally: brew install xcodegen && xcodegen generate.
 name: OsbornWatch
 options:
-  bundleIdPrefix: com.audos
+  bundleIdPrefix: com.voicenative
   deploymentTarget:
     watchOS: "9.0"
   createIntermediateGroups: true
@@ -22,7 +22,7 @@ targets:
       - path: OsbornWatch
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.audos.voicenative.watchkitapp
+        PRODUCT_BUNDLE_IDENTIFIER: com.voicenative.watchkitapp
         PRODUCT_NAME: OsbornWatch
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"

@@ -51,7 +51,7 @@ that patch first (or `brew install cocoapods` just for the generation step).
    sim on Intel builds).
 2. **iOS shell in simulator — needs one CI run:** download `VoiceNative-sim.app`
    from the Actions artifact → `xcrun simctl install booted VoiceNative-sim.app
-   && xcrun simctl launch booted com.audos.voicenative`. Xcode 15.2's iOS 17.2
+   && xcrun simctl launch booted com.voicenative.app`. Xcode 15.2's iOS 17.2
    runtime is fine (deployment target 14.0). If the runtime ever rejects a
    newer-SDK binary, fall back to the PWA-in-Simulator route.
 3. **watch app in simulator:** `watchos-build` artifact `OsbornWatch-unsigned-<sha>`

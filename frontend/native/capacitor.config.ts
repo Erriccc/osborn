@@ -14,7 +14,7 @@ import type { CapacitorConfig } from '@capacitor/cli'
  * APP_STORE_CONNECT_* secrets documented in docs/README-mobile.md.
  */
 const config: CapacitorConfig = {
-  appId: 'com.audos.voicenative',
+  appId: 'com.voicenative.app',
   appName: 'Voice Native',
   webDir: 'www',
   server: {
