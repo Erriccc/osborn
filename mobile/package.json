@@ -8,6 +8,7 @@
     "ios": "expo run:ios"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.58.0",
     "expo": "57.0.17",
     "react": "19.2.3",
     "react-native": "0.86.3"

@@ -1,18 +1,41 @@
-import { Stack } from 'expo-router'
+import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
+import { useEffect } from 'react'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
+import { AuthProvider, useAuth } from '../lib/auth'
 
 /**
- * Root layout — a native stack. Everything lives under the (tabs) group, which
- * renders a native iOS tab bar. The dark status bar matches the app's #0c0b09.
+ * Root layout — wraps the app in the AuthProvider and gates on the session:
+ * no session → /login, session → the (tabs) app. The native stack transitions
+ * between them are real iOS pushes.
  */
 export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-      </Stack>
+      <AuthProvider>
+        <RootNavigator />
+      </AuthProvider>
     </SafeAreaProvider>
+  )
+}
+
+function RootNavigator() {
+  const { session, loading } = useAuth()
+  const segments = useSegments()
+  const router = useRouter()
+
+  useEffect(() => {
+    if (loading) return
+    const onLogin = segments[0] === 'login'
+    if (!session && !onLogin) router.replace('/login')
+    else if (session && onLogin) router.replace('/')
+  }, [session, loading, segments, router])
+
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="login" />
+    </Stack>
   )
 }
