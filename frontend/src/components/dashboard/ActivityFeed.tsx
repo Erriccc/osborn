@@ -31,7 +31,7 @@ export default function ActivityFeed({
   onResume: (sessionId: string, cwd?: string) => void
 }) {
   const [notes, setNotes] = useState<FeedNote[]>([])
-  const [filter, setFilter] = useState<Filter>('all')
+  const [filter, setFilter] = useState<Filter>('note') // founder: default to Notes
 
   useEffect(() => {
     const load = () => fetch('/api/notes')
@@ -40,8 +40,10 @@ export default function ActivityFeed({
       .catch(() => {})
     load()
     const onNewNote = () => setTimeout(load, 1500)
+    const onSaved = () => load() // note saved → refresh immediately, no page reload
     window.addEventListener('vn:new-note', onNewNote)
-    return () => window.removeEventListener('vn:new-note', onNewNote)
+    window.addEventListener('vn:note-saved', onSaved)
+    return () => { window.removeEventListener('vn:new-note', onNewNote); window.removeEventListener('vn:note-saved', onSaved) }
   }, [])
 
   const rows = [
@@ -71,7 +73,8 @@ export default function ActivityFeed({
                 (filter === c.k
                   ? 'bg-[var(--accent)] text-[var(--background)]'
                   : 'text-[var(--text-secondary)] bg-[var(--surface)] border border-[var(--border-subtle)] hover:text-[var(--text-primary)]')}>
-              {c.label}
+              {c.label}{' '}
+              <span className={'text-[10px] ' + (filter === c.k ? 'opacity-80' : 'opacity-60')}>{c.count}</span>
             </button>
           ))}
         </div>

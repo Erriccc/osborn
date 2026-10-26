@@ -718,6 +718,14 @@ export default function SettingsPage() {
     } catch { setHandleMsg('Could not save') }
     finally { setHandleBusy(false) }
   }, [handleValue])
+  /** Admin board discoverability: show the row only when the SERVER confirms
+   *  this email is in ADMIN_EMAILS (same probe as the dashboard menu). */
+  const [isAdminUser, setIsAdminUser] = useState(false)
+  useEffect(() => {
+    fetch('/api/admin/users')
+      .then(r => { if (r.ok) setIsAdminUser(true) })
+      .catch(() => {})
+  }, [])
 
   if (loading) {
     return (
@@ -742,6 +750,16 @@ export default function SettingsPage() {
   const AccountSection = (
     <SettingsSection title="Account" description="Your Voice Native identity and session.">
       <SettingsRow label="Signed in as" sublabel={user?.email || 'No account connected'} />
+      {isAdminUser && (
+        <SettingsRow label="Admin board" sublabel="All users, machines, and sign-in activity">
+          <Link
+            href="/admin"
+            className="inline-flex min-h-[44px] items-center rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 text-[13px] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          >
+            Open admin
+          </Link>
+        </SettingsRow>
+      )}
       {user && (
         <SettingsRow label="Public handle" sublabel={handleMsg || (handleValue ? `voice-native.com/p/${handleValue}` : 'Your public pages URL — lowercase letters, numbers, hyphens')}>
           {handleEdit ? (

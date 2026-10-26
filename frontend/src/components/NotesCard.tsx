@@ -112,6 +112,7 @@ export default function NotesCard() {
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Could not save')
       setSavedFlash(true); setDraft(''); setAttachments([])
+      window.dispatchEvent(new CustomEvent('vn:note-saved'))
       setTimeout(() => setSavedFlash(false), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save')
