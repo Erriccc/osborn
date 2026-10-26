@@ -18,12 +18,12 @@ final class AudioPipe {
   var onUplinkFrame: ((Data) -> Void)?
 
   private let engine = AVAudioEngine()
-  private let wireFormat = AVAudioFormat(
+  private let wireFormat: AVAudioFormat = AVAudioFormat(
     commonFormat: .pcmFormatInt16,
     sampleRate: AudioPipe.wireRate,
     channels: 1,
     interleaved: true
-  )
+  )!
   private var converter: AVAudioConverter?
   private var downRing = DownRing(capacityFrames: 24_000 * 2) // 2s at wire rate
   private var downNode: AVAudioSourceNode?
@@ -38,8 +38,9 @@ final class AudioPipe {
   private func activateSession() throws {
     let session = AVAudioSession.sharedInstance()
     try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker])
-    try session.setPreferredSampleRate(AudioPipe.wireRate)
-    try session.setPreferredIOBufferDuration(0.02)
+    // NOTE: setPreferredSampleRate / setPreferredIOBufferDuration are
+    // unavailable on watchOS — the AVAudioConverter handles rate, and buffer
+    // sizing is whatever the watch audio session grants.
     try session.setActive(true)
   }
 
@@ -51,7 +52,7 @@ final class AudioPipe {
       try activateSession()
       let input = engine.inputNode
       let inFormat = input.outputFormat(forBus: 0)
-      converter = AVAudioConverter(from: inFormat, to: wireFormat!)
+      converter = AVAudioConverter(from: inFormat, to: wireFormat)
 
       input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { [weak self] buffer, _ in
         self?.convertAndSend(buffer)
@@ -70,7 +71,7 @@ final class AudioPipe {
   }
 
   private func convertAndSend(_ buffer: AVAudioPCMBuffer) {
-    guard let converter, let wireFormat else { return }
+    guard let converter else { return }
     let capacity = AVAudioFrameCount(Double(buffer.frameLength) * AudioPipe.wireRate / buffer.format.sampleRate) + 32
     guard let out = AVAudioPCMBuffer(pcmFormat: wireFormat, frameCapacity: capacity) else { return }
 
@@ -91,8 +92,9 @@ final class AudioPipe {
     }
     guard out.frameLength > 0, let channel = out.int16ChannelData?[0] else { return }
     let count = Int(out.frameLength)
-    var data = Data(capacity: count * 2)
-    data.append(contentsOf: UnsafeBufferPointer(start: channel, count: count))
+    let byteCount = count * MemoryLayout<Int16>.size
+    var data = Data(capacity: byteCount)
+    data.append(contentsOf: UnsafeRawBufferPointer(start: channel, count: byteCount))
     onUplinkFrame?(data)
   }
 
