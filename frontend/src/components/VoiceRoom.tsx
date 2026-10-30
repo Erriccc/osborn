@@ -3599,8 +3599,10 @@ function VoiceRoomInner({
       } else if (data.type === 'fast_brain_response') {
         // Pipeline mode: Gemini fast brain parallel response — show in main chat for monitoring
         if (data.text && data.text.trim()) {
-          const tools = data.toolsUsed?.length ? ` [${data.toolsUsed.join(',')}]` : ''
-          const label = `\u26A1 Fast Brain (${data.elapsedMs}ms) [${data.responseType}]${tools}`
+          // User-facing label only \u2014 the millisecond timing, responseType and
+          // toolsUsed were developer telemetry that read as a bug in the chat.
+          // They still arrive on `data` for logging below; keep the human marker.
+          const label = '\u26A1 Quick answer'
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
           addMessageRef.current?.('assistant', `${label}\n${data.text}`, 'fast-brain', 'chat')
         }

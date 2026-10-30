@@ -359,6 +359,9 @@ export default function Home() {
                           onChange={(e) => { setGuestEmail(e.target.value); if (gateError) setGateError(null) }}
                           className="w-full h-11 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[15px] px-3 outline-none focus:border-[var(--accent)]"
                         />
+                        <p className="text-[var(--text-muted)] text-[11px] leading-relaxed">
+                          No account needed — your email just saves this session so you can pick it back up later.
+                        </p>
                         <button type="submit" disabled={gateBusy}
                           className="w-full h-11 rounded-xl font-semibold text-[15px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.98] disabled:opacity-60"
                           style={{
@@ -382,6 +385,13 @@ export default function Home() {
                     {connectError && (
                       <p className="text-red-400 text-xs text-center">{connectError}</p>
                     )}
+
+                    <p className="text-[var(--text-muted)] text-[11px] text-center leading-relaxed pt-1">
+                      By continuing you agree to our{' '}
+                      <a href="/terms" className="underline underline-offset-2 hover:text-[var(--text-secondary)]">Terms</a>
+                      {' '}and{' '}
+                      <a href="/privacy" className="underline underline-offset-2 hover:text-[var(--text-secondary)]">Privacy</a>.
+                    </p>
                   </>
                 )}
               </>
