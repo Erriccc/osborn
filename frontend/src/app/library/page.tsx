@@ -91,6 +91,10 @@ export default function LibraryPage() {
   // The rendition currently shown in the editable draft area (create/iterate).
   const [draft, setDraft] = useState<ContentItem | null>(null)
   const [rendPublishingId, setRendPublishingId] = useState<string | null>(null)
+  const [savingDraft, setSavingDraft] = useState(false)
+  // Delete: id currently being deleted (spinner) + id awaiting two-click confirm.
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   // Load the open source's existing renditions.
   const loadRenditions = useCallback(async (sourceId: string) => {
@@ -113,6 +117,7 @@ export default function LibraryPage() {
     setInstruction('')
     setDraft(null)
     setRenditions([])
+    setConfirmDeleteId(null)
     // A rendition can itself be opened in the modal; refine against its source.
     const sourceId = reading.parent_source_id ?? reading.id
     void loadRenditions(sourceId)
@@ -185,6 +190,64 @@ export default function LibraryPage() {
       setRefineErr(e instanceof Error ? e.message : 'Publish failed')
     } finally {
       setRendPublishingId(null)
+    }
+  }
+
+  // Save hand-typed edits to the open draft rendition. WITHOUT this the inline
+  // editor only mutated local React state, so manual title/hook/body edits were
+  // silently dropped on publish. content_update_rendition (migration 009) is
+  // owner- + draft- + rendition-checked server-side.
+  async function saveDraft() {
+    if (!draft || savingDraft) return
+    setSavingDraft(true)
+    setRefineErr(null)
+    try {
+      const res = await fetch('/api/content/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemId: draft.id, title: draft.title ?? '', hook: draft.hook ?? '', body: draft.body ?? '' }),
+      })
+      const json = await res.json()
+      if (!res.ok || !json.success) throw new Error(json.error || 'Save failed')
+      const saved = (json.item as ContentItem | null) ?? null
+      // Reflect the saved values into the rendition list so its Publish button
+      // (which publishes the stored row) uses the edited version, not a stale one.
+      const merge = (x: ContentItem): ContentItem =>
+        x.id === draft.id ? { ...x, title: draft.title, hook: draft.hook, body: draft.body, ...(saved ?? {}) } : x
+      setRenditions(prev => prev.map(merge))
+      if (saved) setDraft(prev => (prev && prev.id === saved.id ? saved : prev))
+    } catch (e) {
+      setRefineErr(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setSavingDraft(false)
+    }
+  }
+
+  // Permanently delete one of the caller's content items (draft page or
+  // rendition). Owner-scoped by RLS; deleting a source keeps its renditions
+  // (ON DELETE SET NULL), it does not cascade.
+  async function deleteItem(id: string) {
+    if (deletingId) return
+    setDeletingId(id)
+    setError(null)
+    setRefineErr(null)
+    try {
+      const res = await fetch('/api/content/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemId: id }),
+      })
+      const json = await res.json()
+      if (!res.ok || !json.success) throw new Error(json.error || 'Delete failed')
+      setItems(prev => prev.filter(i => i.id !== id))
+      setRenditions(prev => prev.filter(r => r.id !== id))
+      if (draft?.id === id) setDraft(null)
+      if (reading?.id === id) setReading(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete failed')
+    } finally {
+      setDeletingId(null)
+      setConfirmDeleteId(null)
     }
   }
 
@@ -598,6 +661,16 @@ export default function LibraryPage() {
                         </button>
                       </div>
                     </div>
+
+                    {/* Save hand-typed edits — without this, manual title/hook/body
+                        changes were dropped because Publish uses the stored row. */}
+                    <div className="flex items-center gap-2 border-t border-[var(--border-subtle)] pt-3">
+                      <button onClick={saveDraft} disabled={savingDraft}
+                        className="rounded-lg bg-[var(--accent)] text-[var(--background)] px-3 py-2 text-[12.5px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
+                        {savingDraft ? 'Saving…' : 'Save changes'}
+                      </button>
+                      <span className="text-[11px] text-[var(--text-muted)]">Saves your edits so Publish uses this version.</span>
+                    </div>
                   </div>
                 )}
 
@@ -686,6 +759,32 @@ export default function LibraryPage() {
               )}
             </div>
             )}
+
+            {/* Delete — the only destructive control. Two-click confirm,
+                owner-scoped via RLS (migration 007 content_items_owner_delete). */}
+            <div className="shrink-0 border-t border-[var(--border-subtle)] px-5 py-2.5 flex items-center justify-end">
+              {confirmDeleteId === reading.id ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-[11.5px] text-[var(--text-muted)]">
+                    {reading.status === 'published'
+                      ? 'Delete permanently? Its public link will stop working.'
+                      : 'Delete this page permanently?'}
+                  </span>
+                  <button onClick={() => deleteItem(reading.id)} disabled={deletingId === reading.id}
+                    className="rounded-lg border border-red-500/40 bg-red-500/15 px-2.5 py-1.5 text-[11.5px] font-medium text-red-300 hover:bg-red-500/25 disabled:opacity-50 transition-colors">
+                    {deletingId === reading.id ? 'Deleting…' : 'Delete'}
+                  </button>
+                  <button onClick={() => setConfirmDeleteId(null)}
+                    className="text-[11.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]">Cancel</button>
+                </div>
+              ) : (
+                <button onClick={() => setConfirmDeleteId(reading.id)}
+                  className="inline-flex items-center gap-1.5 text-[11.5px] text-[var(--text-muted)] transition-colors hover:text-red-400">
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  Delete
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
