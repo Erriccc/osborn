@@ -51,7 +51,7 @@ export default function ActivityFeed({
     ...sessions.map(s => ({ kind: 'session' as const, at: s.timestamp, text: s.lastMessage || 'Session', id: s.sessionId, cwd: s.cwd })),
   ]
     .filter(r => filter === 'all' || r.kind === filter)
-    .sort((a, b) => new Date(b.at).getTime() - new Date(b.at).getTime())
+    .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
     .slice(0, 12)
 
   const CHIPS: { k: Filter; label: string; count: number }[] = [

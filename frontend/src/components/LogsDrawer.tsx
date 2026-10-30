@@ -481,7 +481,9 @@ const TIER_TEXT_CLASS: Record<HealthTier, string> = {
 function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: number }) {
   const tier = ramTier(ramPct)
   return (
-    <span className={`inline-flex items-center gap-1 ml-1 px-1.5 py-0.5 rounded-full bg-gray-800 border border-gray-700/70 text-[9px] font-semibold leading-none tabular-nums ${TIER_TEXT_CLASS[tier]}`}>
+    <span
+      title={`${ramPct}% of the machine's RAM in use · ${procCount} processes running`}
+      className={`inline-flex items-center gap-1 ml-1 px-1.5 py-0.5 rounded-full bg-gray-800 border border-gray-700/70 text-[9px] font-semibold leading-none tabular-nums ${TIER_TEXT_CLASS[tier]}`}>
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${TIER_DOT_CLASS[tier]}`} />
       {ramPct}%
       <span className="text-gray-500 font-normal">·</span>

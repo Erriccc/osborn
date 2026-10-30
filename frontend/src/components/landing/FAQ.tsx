@@ -23,6 +23,10 @@ const QA = [
     q: 'How is this different from a coding chatbot?',
     a: 'A chatbot hands you text to copy and paste. Voice Native is a voice-native engineer that actually runs on your machine — editing files, running tests, and hitting your services — while dispatching a team of specialist sub-agents you watch work in real time.',
   },
+  {
+    q: 'What if my microphone doesn’t work?',
+    a: 'You can always type instead — the message box is always there and Voice Native works the same by text. To fix voice: click the lock or site-info icon next to the address bar, set Microphone to Allow for voice-native.com, then reload the page. Also check your device’s own microphone permission and that the right input device is selected.',
+  },
 ]
 
 export default function FAQ() {

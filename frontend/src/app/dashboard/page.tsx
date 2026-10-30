@@ -612,6 +612,13 @@ export default function Dashboard() {
   }, [user, loading])
 
   const isCloud = connectionMode === 'cloud'
+  // Human words for the cloud machine state — "running" is server jargon; a
+  // stranger reads "ready" (audit B1). The status dot still carries the nuance.
+  const cloudStateWord = sandboxStatus === 'running' || sandboxStatus === 'warm' ? 'ready'
+    : sandboxStatus === 'cold' ? 'waking'
+    : sandboxStatus === 'creating' ? 'starting'
+    : sandboxStatus === 'stopped' ? 'asleep'
+    : sandboxStatus || ''
 
   // Check installed vs latest osborn version whenever we have a cloud sandbox.
   // The new check-version handler reads:
@@ -1317,7 +1324,7 @@ export default function Dashboard() {
                   <span className="sm:hidden">{isCloud ? (machineRegion || 'Cloud') : 'Local'}</span>
                   <span className="hidden sm:inline">
                     {isCloud
-                      ? `${sandboxStatus ? `Cloud (${sandboxStatus})` : 'Cloud'}${machineRegion ? ` · ${machineRegion}` : ''}`
+                      ? `${cloudStateWord ? `Cloud agent ${cloudStateWord}` : 'Cloud agent'}${machineRegion ? ` · ${machineRegion}` : ''}`
                       : agentOnline ? 'Local' : agentOnline === false ? 'Local (offline)' : 'Local'
                     }
                   </span>

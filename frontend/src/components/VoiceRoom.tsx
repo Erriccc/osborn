@@ -18,6 +18,116 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
+import { useSearchParams } from 'next/navigation'
+
+// ── Header-panel mutual exclusion ────────────────────────────────────────
+// Each header dropdown (History, Agents, Skills, Instances, More, Meeting) owns
+// its own open-state. Without coordination they STACK and overlap, and once
+// stacked a backdrop sits over the triggers so re-click and Escape can't close
+// them (recovery only by reload) — the overlay bug in the audit §13.3 and the
+// user's screenshot. This tiny event bus makes them mutually exclusive: opening
+// one announces itself and every other panel closes.
+const HEADER_PANEL_EVT = 'vn:header-panel-open'
+function usePanelExclusive(id: string, open: boolean, setOpen: (v: boolean) => void) {
+  const setOpenRef = useRef(setOpen)
+  setOpenRef.current = setOpen
+  useEffect(() => {
+    const onOther = (e: Event) => {
+      if ((e as CustomEvent).detail !== id) setOpenRef.current(false)
+    }
+    window.addEventListener(HEADER_PANEL_EVT, onOther)
+    return () => window.removeEventListener(HEADER_PANEL_EVT, onOther)
+  }, [id])
+  useEffect(() => {
+    if (open) { try { window.dispatchEvent(new CustomEvent(HEADER_PANEL_EVT, { detail: id })) } catch { /* no-op */ } }
+  }, [open, id])
+}
+
+// ── Audio settings panel (Phase C) ───────────────────────────────────────
+// The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
+// browser's mic dialog; this was the genuinely-missing piece. Mic + speaker
+// pickers (live-switched via LiveKit's room.switchActiveDevice) and a speaker
+// test tone. Device labels only populate once the user has allowed mic access.
+function AudioPopover({ disabled }: { disabled?: boolean }) {
+  const room = useRoomContext()
+  const [open, setOpen] = useState(false)
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([])
+  const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([])
+  usePanelExclusive('audio', open, setOpen)
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    navigator.mediaDevices?.enumerateDevices?.().then((ds) => {
+      setMics(ds.filter((d) => d.kind === 'audioinput'))
+      setSpeakers(ds.filter((d) => d.kind === 'audiooutput'))
+    }).catch(() => { /* enumeration blocked */ })
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  const pick = async (kind: 'audioinput' | 'audiooutput', id: string) => {
+    try { await room?.switchActiveDevice(kind, id) } catch { /* device unavailable */ }
+  }
+  const testSpeaker = () => {
+    try {
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      const ctx = new Ctx()
+      const osc = ctx.createOscillator(); const gain = ctx.createGain()
+      osc.frequency.value = 440; gain.gain.value = 0.07
+      osc.connect(gain); gain.connect(ctx.destination); osc.start()
+      setTimeout(() => { try { osc.stop(); void ctx.close() } catch { /* already closed */ } }, 600)
+    } catch { /* no AudioContext */ }
+  }
+
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((v) => !v)} disabled={disabled}
+        aria-label="Audio settings" title="Audio (mic & speaker)"
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
+          disabled ? 'text-gray-600 cursor-not-allowed'
+            : open ? 'bg-amber-500/20 text-amber-300' : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
+        }`}>
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+        </svg>
+        <span className="hidden sm:inline">Audio</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(22rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
+            <div className="px-3 py-2 border-b border-gray-800">
+              <span className="text-xs font-semibold text-gray-200">🎧 Audio</span>
+            </div>
+            <div className="p-3 flex flex-col gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] uppercase tracking-wide text-gray-500">Microphone</span>
+                <select defaultValue="" onChange={(e) => pick('audioinput', e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2 text-[13px] text-gray-200 outline-none focus:border-amber-500/50">
+                  <option value="">Default microphone</option>
+                  {mics.map((d, i) => <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] uppercase tracking-wide text-gray-500">Speaker</span>
+                <select defaultValue="" onChange={(e) => pick('audiooutput', e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2 text-[13px] text-gray-200 outline-none focus:border-amber-500/50">
+                  <option value="">Default speaker</option>
+                  {speakers.map((d, i) => <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Speaker ${i + 1}`}</option>)}
+                </select>
+              </label>
+              <button onClick={testSpeaker}
+                className="self-start rounded-lg bg-gray-800 border border-gray-700 px-3 py-1.5 text-[12.5px] text-gray-200 hover:border-amber-500/40 transition-colors">
+                Test speaker (plays a tone)
+              </button>
+              <p className="text-[11px] text-gray-500 leading-relaxed">Device names appear once you&rsquo;ve allowed mic access. Picks apply live to this session.</p>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Time-awareness helpers (no imports needed — pure Date math)
@@ -1135,6 +1245,14 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, 
   const [editing, setEditing] = useState<UserAgentDraft | null>(null)
   const [deleteArm, setDeleteArm] = useState<string | null>(null)
   const count = agents?.length ?? 0
+  // Esc closes the popover (outside-click already closes via the backdrop).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+  usePanelExclusive('agents', open, setOpen)
   useEffect(() => {
     if (requestOpen && !disabled) setOpen(true)
   }, [requestOpen, disabled])
@@ -1173,7 +1291,7 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, 
           {/* Mobile: viewport-anchored (button-anchored panels jut off-screen
               when the trigger sits mid-header — user screenshot 2026-08-01);
               sm+: anchored under the button as before. */}
-          <div className="fixed left-3 right-3 top-[56px] sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
+          <div className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">🤖 Named Agents</span>
               <div className="flex items-center gap-2">
@@ -1400,6 +1518,14 @@ function SkillsPanel({
 function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean; requestOpen?: number; hideTrigger?: boolean }) {
   const [open, setOpen] = useState(false)
   const count = props.skills?.length ?? 0
+  // Esc closes the popover (outside-click already closes via the backdrop).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+  usePanelExclusive('skills', open, setOpen)
   useEffect(() => {
     if (props.requestOpen && !props.disabled) setOpen(true)
   }, [props.requestOpen, props.disabled])
@@ -1438,7 +1564,7 @@ function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean; requestOp
           {/* Mobile: viewport-anchored (button-anchored panels jut off-screen
               when the trigger sits mid-header — user screenshot 2026-08-01);
               sm+: anchored under the button as before. */}
-          <div className="fixed left-3 right-3 top-[56px] sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl overflow-hidden">
+          <div className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">✨ Skills</span>
               <span className="text-[10px] text-gray-500">{count} installed</span>
@@ -1507,6 +1633,7 @@ function ControlMenu({
   const [activeTab, setActiveTab] = useState<'history' | 'tools'>('history')
   const [showSwitchConfirm, setShowSwitchConfirm] = useState(false)
   const [pendingSwitchSessionId, setPendingSwitchSessionId] = useState<string | null>(null)
+  usePanelExclusive('history', isOpen, setIsOpen)
 
   const enabledMcpCount = (mcpServers || []).filter(s => s.enabled).length
   const skillCount = (skills || []).length
@@ -1946,14 +2073,20 @@ function PermissionModal({
 // violet shimmer · speaking = sage rhythmic ripple. Label is quiet serif —
 // the orb does the talking. Same props/name as the old pill (call sites
 // untouched).
-function StatusIndicator({ state, isMuted }: { state: string; isMuted: boolean }) {
+function StatusIndicator({ state, isMuted, micBlocked }: { state: string; isMuted: boolean; micBlocked?: boolean }) {
   const config: Record<string, { color: string; anim: string; label: string }> = {
     listening: { color: 'var(--voice-listening)', anim: 'orbPulse 1.6s ease-in-out infinite', label: 'Listening' },
     thinking:  { color: 'var(--voice-thinking)',  anim: 'orbShimmer 2.4s linear infinite',    label: 'Thinking' },
     speaking:  { color: 'var(--voice-speaking)',  anim: 'orbRipple 1.1s ease-out infinite',   label: 'Speaking' },
     idle:      { color: 'var(--voice-idle)',      anim: 'orbBreathe 3.5s ease-in-out infinite', label: 'Ready' },
   }
-  const { color, anim, label } = config[state] || config.idle
+  // Truthfulness: when the mic is confirmed off (not merely muted) the orb must
+  // NOT keep claiming "Listening" — show "Mic off" instead, so a stranger isn't
+  // told the agent is hearing them when it cannot.
+  const micOff = micBlocked && state === 'listening'
+  const { color, anim, label } = micOff
+    ? { color: 'var(--voice-error)', anim: 'orbBreathe 3.5s ease-in-out infinite', label: 'Mic off' }
+    : (config[state] || config.idle)
 
   return (
     <div className="flex items-center gap-2 sm:gap-2.5 pl-1 pr-2 py-1 select-none shrink-0">
@@ -2271,6 +2404,17 @@ function VoiceRoomInner({
   seedPrompt?: string | null
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  // Project/workspace context for this session (from the chat URL via the
+  // provider) — surfaced as a header chip so a stranger can see WHICH repo /
+  // project the session is attached to (audit C1/P1-7; §12 found it invisible,
+  // and a project session even opened in an empty placeholder dir).
+  const sessionCwd = useSearchParams()?.get('workingDirectory') || ''
+  const projectName = (() => {
+    if (!sessionCwd) return null
+    const segs = sessionCwd.replace(/\/+$/, '').split('/').filter(Boolean)
+    const leaf = segs[segs.length - 1] || ''
+    return !leaf || leaf.toLowerCase() === 'workspace' ? 'Workspace' : leaf
+  })()
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   // iOS recovery surfaces (2026-10-24 mobile branch, P1.6/P1.7). audioBlocked →
   // "tap to enable sound" bar when the room's AudioContext started suspended
@@ -2313,6 +2457,11 @@ function VoiceRoomInner({
   const [agentState, setAgentState] = useState<string>('idle')
   const [speakingChunk, setSpeakingChunk] = useState<SpeakingChunk | null>(null)
   const [isMuted, setIsMuted] = useState(false)
+  // Honesty guard: true only after the mic has been confirmed OFF (not merely
+  // muted) for a grace period while the agent says it's listening — so the orb
+  // never claims "Listening" when input is actually impossible (permission
+  // denied / no device), without flickering during the normal connect gap.
+  const [micConfirmedOff, setMicConfirmedOff] = useState(false)
   // Noise-cancellation (noise gate): agent-side transcript triage. State is
   // authoritative from the agent (noise_cancel_state) — meeting mode can
   // auto-engage it without a click here.
@@ -2502,6 +2651,10 @@ function VoiceRoomInner({
   }>>([])
   // Meeting state (Recall.ai)
   const [showMeetingInput, setShowMeetingInput] = useState(false)
+  // Keep the header dropdowns mutually exclusive (no stacking/overlap).
+  usePanelExclusive('instances', showInstancesPanel, setShowInstancesPanel)
+  usePanelExclusive('more', showHeaderMore, setShowHeaderMore)
+  usePanelExclusive('meeting', showMeetingInput, setShowMeetingInput)
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
   const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
@@ -2622,7 +2775,7 @@ function VoiceRoomInner({
     return () => { cancelled = true }
   }, [selectedFile])
 
-  const { localParticipant } = useLocalParticipant()
+  const { localParticipant, isMicrophoneEnabled: micEnabled } = useLocalParticipant()
 
   const toggleMute = useCallback(async () => {
     if (localParticipant) {
@@ -3042,6 +3195,17 @@ function VoiceRoomInner({
     }
     console.log('[FE-AUDIO] LocalParticipantSnapshot', JSON.stringify(summary))
   }, [localParticipant, (localParticipant as any)?.isMicrophoneEnabled])
+
+  // Debounced mic-off truth signal for the orb (drives micConfirmedOff). Only
+  // fires when the agent says "listening" but the mic is actually off and it's
+  // not an intentional mute — after a 1.5s grace so the connect gap is quiet.
+  useEffect(() => {
+    const effectiveState = agentState !== 'idle' ? agentState : state
+    const looksBlocked = effectiveState === 'listening' && micEnabled === false && !isMuted
+    if (!looksBlocked) { setMicConfirmedOff(false); return }
+    const t = setTimeout(() => setMicConfirmedOff(true), 1500)
+    return () => clearTimeout(t)
+  }, [agentState, state, micEnabled, isMuted])
 
   const { send: sendToAgent } = useDataChannel('user-input')
 
@@ -3664,8 +3828,10 @@ function VoiceRoomInner({
       } else if (data.type === 'fast_brain_response') {
         // Pipeline mode: Gemini fast brain parallel response — show in main chat for monitoring
         if (data.text && data.text.trim()) {
-          const tools = data.toolsUsed?.length ? ` [${data.toolsUsed.join(',')}]` : ''
-          const label = `\u26A1 Fast Brain (${data.elapsedMs}ms) [${data.responseType}]${tools}`
+          // User-facing label only \u2014 the millisecond timing, responseType and
+          // toolsUsed were developer telemetry that read as a bug in the chat.
+          // They still arrive on `data` for logging below; keep the human marker.
+          const label = '\u26A1 Quick answer'
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
           addMessageRef.current?.('assistant', `${label}\n${data.text}`, 'fast-brain', 'chat')
         }
@@ -5020,7 +5186,16 @@ function VoiceRoomInner({
             {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
 
             {/* Status */}
-            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} />
+            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} />
+
+            {/* Project/workspace chip — which repo this session is attached to. */}
+            {projectName && (
+              <span title={sessionCwd || projectName}
+                className="hidden sm:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
+                <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                <span className="truncate">{projectName}</span>
+              </span>
+            )}
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
@@ -5119,6 +5294,7 @@ function VoiceRoomInner({
                 newSkillContent={newSkillContent}
                 setNewSkillContent={setNewSkillContent}
               />
+              <AudioPopover disabled={!agentConnected} />
             </div>
 
             {/* Compact Controls — meeting/files/copy hidden on mobile */}

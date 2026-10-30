@@ -117,7 +117,7 @@ export default function LandingNav() {
                   boxShadow: '0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12)',
                 }}
               >
-                Start talking
+                Start talking — free
               </Link>
             </>
           )}
