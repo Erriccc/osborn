@@ -736,10 +736,10 @@ export default function SettingsPage() {
   }
 
   // Secret-field metadata (label + placeholder) — shared by desktop + mobile.
-  const SECRET_META: Record<string, { label: string; placeholder: string }> = {
-    ANTHROPIC_API_KEY: { label: 'Anthropic', placeholder: 'sk-ant-…' },
-    OPENROUTER_API_KEY: { label: 'OpenRouter', placeholder: 'sk-or-…' },
-    RECALL_API_KEY: { label: 'Recall.ai', placeholder: 'API key' },
+  const SECRET_META: Record<string, { label: string; placeholder: string; help?: string }> = {
+    ANTHROPIC_API_KEY: { label: 'Anthropic', placeholder: 'sk-ant-…', help: 'https://console.anthropic.com/settings/keys' },
+    OPENROUTER_API_KEY: { label: 'OpenRouter', placeholder: 'sk-or-…', help: 'https://openrouter.ai/keys' },
+    RECALL_API_KEY: { label: 'Recall.ai', placeholder: 'API key', help: 'https://www.recall.ai' },
     RECALL_REGION: { label: 'Recall region', placeholder: 'us-west-2' },
   }
 
@@ -936,7 +936,7 @@ export default function SettingsPage() {
         )}
 
         {/* Local / Cloud segment */}
-        <SettingsRow stacked label="Connection" sublabel="Run the agent on your machine (Local) or in the cloud.">
+        <SettingsRow stacked label="Connection" sublabel="Run the agent in the cloud (recommended — ready instantly, nothing to install) or on your own machine.">
           <div className="flex gap-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)] p-1">
             <button
               onClick={() => { setConnectionMode('local'); setAgentUrl(localAgentUrl) }}
@@ -1121,31 +1121,41 @@ export default function SettingsPage() {
                 )}
               </span>
             }>
-              <div className="flex items-center gap-2">
-                <input
-                  type={s.secret ? 'password' : 'text'}
-                  value={draft}
-                  placeholder={m.placeholder}
-                  autoComplete="off"
-                  onChange={(e) => setSecretDrafts((prev) => ({ ...prev, [s.key]: e.target.value }))}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) handleSaveSecret(s.key) }}
-                  className="min-w-0 flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2.5 py-2.5 font-mono text-[16px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent-dim)] focus:outline-none"
-                />
-                <button
-                  onClick={() => handleSaveSecret(s.key)}
-                  disabled={busy || !draft.trim()}
-                  className="shrink-0 rounded-lg border border-[var(--accent-dim)]/25 bg-[var(--accent-dim)]/15 px-2.5 py-2.5 text-[12px] text-[var(--accent)] transition-colors hover:bg-[var(--accent-dim)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {busy ? '…' : 'Save'}
-                </button>
-                {s.set && s.source !== 'env' && (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  <input
+                    type={s.secret ? 'password' : 'text'}
+                    value={draft}
+                    placeholder={m.placeholder}
+                    autoComplete="off"
+                    onChange={(e) => setSecretDrafts((prev) => ({ ...prev, [s.key]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) handleSaveSecret(s.key) }}
+                    className="min-w-0 flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2.5 py-2.5 font-mono text-[16px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent-dim)] focus:outline-none"
+                  />
                   <button
-                    onClick={() => handleDeleteSecret(s.key)}
-                    disabled={busy}
-                    className="shrink-0 rounded-lg bg-[var(--surface-raised)] px-2.5 py-2.5 text-[12px] text-[var(--text-muted)] transition-colors hover:bg-[var(--border)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-40"
+                    onClick={() => handleSaveSecret(s.key)}
+                    disabled={busy || !draft.trim()}
+                    className="shrink-0 rounded-lg border border-[var(--accent-dim)]/25 bg-[var(--accent-dim)]/15 px-2.5 py-2.5 text-[12px] text-[var(--accent)] transition-colors hover:bg-[var(--accent-dim)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    Remove
+                    {busy ? '…' : 'Save'}
                   </button>
+                  {s.set && s.source !== 'env' && (
+                    <button
+                      onClick={() => handleDeleteSecret(s.key)}
+                      disabled={busy}
+                      className="shrink-0 rounded-lg bg-[var(--surface-raised)] px-2.5 py-2.5 text-[12px] text-[var(--text-muted)] transition-colors hover:bg-[var(--border)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:opacity-40"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                {/* "Where do I get a key?" — removes the dead-end a stranger hits
+                    at a NOT SET provider with no idea where to obtain the key. */}
+                {m.help && !s.set && (
+                  <a href={m.help} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex w-fit items-center gap-1 text-[11px] text-[var(--text-muted)] transition-colors hover:text-[var(--accent)]">
+                    Where do I get a {m.label} key? ↗
+                  </a>
                 )}
               </div>
             </SettingsRow>

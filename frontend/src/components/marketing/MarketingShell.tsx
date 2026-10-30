@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
+import MarketingNavAuth from './MarketingNavAuth'
 
 /**
  * Shared chrome for the marketing routes (/compare, /use-cases/*).
@@ -47,12 +48,7 @@ export default function MarketingShell({ children }: { children: ReactNode }) {
             >
               Use cases
             </Link>
-            <Link
-              href="/login"
-              className="rounded-full border border-[var(--border)] px-4 py-1.5 text-[var(--text-primary)] transition-colors hover:border-[var(--accent)]"
-            >
-              Log in
-            </Link>
+            <MarketingNavAuth />
           </div>
         </nav>
       </header>
