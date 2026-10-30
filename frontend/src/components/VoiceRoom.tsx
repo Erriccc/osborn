@@ -1928,14 +1928,20 @@ function PermissionModal({
 // violet shimmer · speaking = sage rhythmic ripple. Label is quiet serif —
 // the orb does the talking. Same props/name as the old pill (call sites
 // untouched).
-function StatusIndicator({ state, isMuted }: { state: string; isMuted: boolean }) {
+function StatusIndicator({ state, isMuted, micBlocked }: { state: string; isMuted: boolean; micBlocked?: boolean }) {
   const config: Record<string, { color: string; anim: string; label: string }> = {
     listening: { color: 'var(--voice-listening)', anim: 'orbPulse 1.6s ease-in-out infinite', label: 'Listening' },
     thinking:  { color: 'var(--voice-thinking)',  anim: 'orbShimmer 2.4s linear infinite',    label: 'Thinking' },
     speaking:  { color: 'var(--voice-speaking)',  anim: 'orbRipple 1.1s ease-out infinite',   label: 'Speaking' },
     idle:      { color: 'var(--voice-idle)',      anim: 'orbBreathe 3.5s ease-in-out infinite', label: 'Ready' },
   }
-  const { color, anim, label } = config[state] || config.idle
+  // Truthfulness: when the mic is confirmed off (not merely muted) the orb must
+  // NOT keep claiming "Listening" — show "Mic off" instead, so a stranger isn't
+  // told the agent is hearing them when it cannot.
+  const micOff = micBlocked && state === 'listening'
+  const { color, anim, label } = micOff
+    ? { color: 'var(--voice-error)', anim: 'orbBreathe 3.5s ease-in-out infinite', label: 'Mic off' }
+    : (config[state] || config.idle)
 
   return (
     <div className="flex items-center gap-2 sm:gap-2.5 pl-1 pr-2 py-1 select-none shrink-0">
@@ -2288,6 +2294,11 @@ function VoiceRoomInner({
   const [agentState, setAgentState] = useState<string>('idle')
   const [speakingChunk, setSpeakingChunk] = useState<SpeakingChunk | null>(null)
   const [isMuted, setIsMuted] = useState(false)
+  // Honesty guard: true only after the mic has been confirmed OFF (not merely
+  // muted) for a grace period while the agent says it's listening — so the orb
+  // never claims "Listening" when input is actually impossible (permission
+  // denied / no device), without flickering during the normal connect gap.
+  const [micConfirmedOff, setMicConfirmedOff] = useState(false)
   // Noise-cancellation (noise gate): agent-side transcript triage. State is
   // authoritative from the agent (noise_cancel_state) — meeting mode can
   // auto-engage it without a click here.
@@ -2592,7 +2603,7 @@ function VoiceRoomInner({
     return () => { cancelled = true }
   }, [selectedFile])
 
-  const { localParticipant } = useLocalParticipant()
+  const { localParticipant, isMicrophoneEnabled: micEnabled } = useLocalParticipant()
 
   const toggleMute = useCallback(async () => {
     if (localParticipant) {
@@ -2999,6 +3010,17 @@ function VoiceRoomInner({
     }
     console.log('[FE-AUDIO] LocalParticipantSnapshot', JSON.stringify(summary))
   }, [localParticipant, (localParticipant as any)?.isMicrophoneEnabled])
+
+  // Debounced mic-off truth signal for the orb (drives micConfirmedOff). Only
+  // fires when the agent says "listening" but the mic is actually off and it's
+  // not an intentional mute — after a 1.5s grace so the connect gap is quiet.
+  useEffect(() => {
+    const effectiveState = agentState !== 'idle' ? agentState : state
+    const looksBlocked = effectiveState === 'listening' && micEnabled === false && !isMuted
+    if (!looksBlocked) { setMicConfirmedOff(false); return }
+    const t = setTimeout(() => setMicConfirmedOff(true), 1500)
+    return () => clearTimeout(t)
+  }, [agentState, state, micEnabled, isMuted])
 
   const { send: sendToAgent } = useDataChannel('user-input')
 
@@ -4892,7 +4914,7 @@ function VoiceRoomInner({
             {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
 
             {/* Status */}
-            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} />
+            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} />
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
