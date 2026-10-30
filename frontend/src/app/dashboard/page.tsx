@@ -1486,7 +1486,7 @@ export default function Dashboard() {
           <NotesCard />
 
           {/* Notes + previous sessions — one bounded chronological feed */}
-          <ActivityFeed sessions={sessions} onResume={(id, cwd) => startChat(id, cwd)} />
+          <ActivityFeed sessions={sessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} />
 
           {/* Briefs from sessions — desktop/landscape only (Google Drive Recent model) */}
           <LibraryBriefs />
