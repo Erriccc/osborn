@@ -25,9 +25,11 @@ function ago(iso: string): string {
 
 export default function ActivityFeed({
   sessions,
+  sessionsLoading,
   onResume,
 }: {
   sessions: FeedSession[]
+  sessionsLoading?: boolean
   onResume: (sessionId: string, cwd?: string) => void
 }) {
   const [notes, setNotes] = useState<FeedNote[]>([])
@@ -54,10 +56,13 @@ export default function ActivityFeed({
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
     .slice(0, 12)
 
-  const CHIPS: { k: Filter; label: string; count: number }[] = [
-    { k: 'all', label: 'All', count: notes.length + sessions.length },
+  // Sessions load async (and the count is the real, live session total, which
+  // grows as sessions are created) — show '…' until the first load lands so the
+  // Sessions/All counts don't visibly flash 0 → N (audit §16 count concern).
+  const CHIPS: { k: Filter; label: string; count: number | string }[] = [
+    { k: 'all', label: 'All', count: sessionsLoading ? '…' : notes.length + sessions.length },
     { k: 'note', label: 'Notes', count: notes.length },
-    { k: 'session', label: 'Sessions', count: sessions.length },
+    { k: 'session', label: 'Sessions', count: sessionsLoading ? '…' : sessions.length },
   ]
 
   return (

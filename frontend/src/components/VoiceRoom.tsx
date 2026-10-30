@@ -2627,6 +2627,13 @@ function VoiceRoomInner({
   const [skills, setSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
   const [namedAgents, setNamedAgents] = useState<NamedAgent[]>([])
   const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
+  // Esc closes the skill viewer (× and backdrop-click already close it).
+  useEffect(() => {
+    if (!viewedSkill) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setViewedSkill(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [viewedSkill])
   const [skillRemoveArm, setSkillRemoveArm] = useState<string | null>(null)
   const [showAddSkill, setShowAddSkill] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
@@ -2700,18 +2707,30 @@ function VoiceRoomInner({
     const base = agentUrl.replace(/\/$/, '')
     let cancelled = false
     ;(async () => {
-      try {
-        const r = await fetch(
-          `${base}/session-messages?session=${encodeURIComponent(preSelectedSessionId)}&limit=50`,
-          { signal: AbortSignal.timeout(8000) },
-        )
-        if (cancelled || !r.ok) return
-        const d = await r.json()
-        if (cancelled || !Array.isArray(d?.messages) || d.messages.length === 0) return
-        console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length}`)
-        const priorItems = buildPriorItems(preSelectedSessionId, d.messages)
-        setMessages(prev => (prev.some(m => m.id.startsWith('prior-')) ? prev : [...priorItems, ...prev]))
-      } catch { /* older agent build or network — the data-channel push covers it */ }
+      // A reloaded/resumed session often hits a COLD machine (idle-stopped), so
+      // the first fetch can time out or return empty before the agent is up —
+      // leaving only a fresh greeting in the pane (audit §16.4 reload quirk).
+      // Retry with backoff until the prior messages actually paint.
+      const delays = [0, 2000, 4000, 7000, 12000]
+      for (const wait of delays) {
+        if (cancelled) return
+        if (wait) await new Promise(res => setTimeout(res, wait))
+        if (cancelled) return
+        try {
+          const r = await fetch(
+            `${base}/session-messages?session=${encodeURIComponent(preSelectedSessionId)}&limit=50`,
+            { signal: AbortSignal.timeout(8000) },
+          )
+          if (cancelled || !r.ok) continue
+          const d = await r.json()
+          if (cancelled) return
+          if (!Array.isArray(d?.messages) || d.messages.length === 0) continue
+          console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length}`)
+          const priorItems = buildPriorItems(preSelectedSessionId, d.messages)
+          setMessages(prev => (prev.some(m => m.id.startsWith('prior-')) ? prev : [...priorItems, ...prev]))
+          return // painted — stop retrying
+        } catch { /* cold machine / network — retry */ }
+      }
     })()
     return () => { cancelled = true }
   }, [agentUrl, preSelectedSessionId])
@@ -3831,7 +3850,7 @@ function VoiceRoomInner({
           // User-facing label only \u2014 the millisecond timing, responseType and
           // toolsUsed were developer telemetry that read as a bug in the chat.
           // They still arrive on `data` for logging below; keep the human marker.
-          const label = '\u26A1 Quick answer'
+          const label = '\u26A1 Quick take (provisional \u2014 the full answer follows)'
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
           addMessageRef.current?.('assistant', `${label}\n${data.text}`, 'fast-brain', 'chat')
         }
@@ -5326,7 +5345,7 @@ function VoiceRoomInner({
                     disabled={!agentConnected}
                     aria-label="Join a meeting"
                     data-testid="join-meeting"
-                    className={`p-2 rounded-lg transition-all ${
+                    className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all ${
                       !agentConnected
                         ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
                         : showMeetingInput
@@ -5335,9 +5354,10 @@ function VoiceRoomInner({
                     }`}
                     title={meetingError || 'Join a meeting'}
                   >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
+                    <span className="hidden lg:inline text-xs font-medium">Meeting</span>
                   </button>
                   {showMeetingInput && (
                     <div className="absolute top-11 right-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
@@ -5401,6 +5421,7 @@ function VoiceRoomInner({
                           ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
                           : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                   }`}
+                  aria-label="Claude instances"
                   title="Claude instances"
                 >
                   {/* Two overlapping circles = multi-instance */}
