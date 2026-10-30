@@ -18,6 +18,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
+import { useSearchParams } from 'next/navigation'
 
 // ---------------------------------------------------------------------------
 // Time-awareness helpers (no imports needed — pure Date math)
@@ -2273,6 +2274,17 @@ function VoiceRoomInner({
   seedPrompt?: string | null
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  // Project/workspace context for this session (from the chat URL via the
+  // provider) — surfaced as a header chip so a stranger can see WHICH repo /
+  // project the session is attached to (audit C1/P1-7; §12 found it invisible,
+  // and a project session even opened in an empty placeholder dir).
+  const sessionCwd = useSearchParams()?.get('workingDirectory') || ''
+  const projectName = (() => {
+    if (!sessionCwd) return null
+    const segs = sessionCwd.replace(/\/+$/, '').split('/').filter(Boolean)
+    const leaf = segs[segs.length - 1] || ''
+    return !leaf || leaf.toLowerCase() === 'workspace' ? 'Workspace' : leaf
+  })()
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   // YOLO toggle: when enabled, the frontend intercepts every incoming
   // permission_request and sends back an immediate allow without showing
@@ -4929,6 +4941,15 @@ function VoiceRoomInner({
 
             {/* Status */}
             <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} />
+
+            {/* Project/workspace chip — which repo this session is attached to. */}
+            {projectName && (
+              <span title={sessionCwd || projectName}
+                className="hidden sm:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
+                <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                <span className="truncate">{projectName}</span>
+              </span>
+            )}
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
