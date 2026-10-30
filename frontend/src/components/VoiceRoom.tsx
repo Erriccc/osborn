@@ -20,6 +20,18 @@ import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessi
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 
+// Plain-language, user-facing one-liners for the built-in sub-agents. The raw
+// `description` is a system-prompt instruction full of jargon ("GROUNDED",
+// recall store, "tool calls") — a stranger needs the job, not the config.
+const AGENT_BLURBS: Record<string, string> = {
+  researcher: 'Digs through your code and the web to gather facts and examples.',
+  reasoner: 'Thinks through hard problems and writes a plan — it doesn’t edit files.',
+  writer: 'Makes the actual code changes — edits files and runs commands.',
+  tester: 'Runs the tests and checks that the work holds up.',
+  planner: 'Breaks a task into clear, ordered steps.',
+  reviewer: 'Reviews the changes for problems before they ship.',
+}
+
 // ── Header-panel mutual exclusion ────────────────────────────────────────
 // Each header dropdown (History, Agents, Skills, Instances, More, Meeting) owns
 // its own open-state. Without coordination they STACK and overlap, and once
@@ -1357,7 +1369,7 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, 
                       )}
                     </div>
                   </div>
-                  <p className="text-[11px] text-gray-500 mt-0.5 leading-snug">{a.description}</p>
+                  <p title={a.description} className="text-[11px] text-gray-500 mt-0.5 leading-snug">{AGENT_BLURBS[a.name?.toLowerCase()] ?? a.description}</p>
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     {a.tools?.map((t) => (
                       <span key={t} className="px-1.5 py-0.5 text-[9px] rounded bg-gray-900/80 text-gray-400 border border-gray-700/40">{t}</span>
@@ -1749,7 +1761,7 @@ function ControlMenu({
                           <span className="text-gray-500">{session.messageCount} msgs</span>
                         </div>
                         <p className="text-gray-300 truncate">
-                          {session.lastMessage || 'No preview'}
+                          {deriveSessionTitle(session.lastMessage)}
                         </p>
                       </button>
                     ))}
@@ -2220,7 +2232,7 @@ function InstancesPanel({
     <div className="absolute top-12 right-0 w-72 max-w-[calc(100vw-1rem)] bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
-        <span className="text-xs font-semibold text-gray-300">Claude Instances</span>
+        <span className="text-xs font-semibold text-gray-300">Background agents</span>
         <button
           onClick={onClose}
           className="p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors"
@@ -2332,7 +2344,7 @@ function InstancesPanel({
             {/* Session picker — spawn a specific session by title (no IDs to remember) */}
             {eligibleSessions.length > 0 && (
               <div className="mb-1.5">
-                <p className="text-[10px] uppercase tracking-wide text-gray-500 px-1 mb-1">Spawn from a session</p>
+                <p className="text-[10px] uppercase tracking-wide text-gray-500 px-1 mb-1">Start one from a past session</p>
                 <div className="max-h-40 overflow-y-auto space-y-0.5 pr-0.5">
                   {eligibleSessions.slice(0, 20).map((s) => (
                     <button
@@ -2372,7 +2384,7 @@ function InstancesPanel({
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                   </svg>
-                  {eligibleSessions.length > 0 ? 'Spawn most recent' : 'Spawn second instance'}
+                  {eligibleSessions.length > 0 ? 'Start from the latest' : 'Start another agent'}
                 </>
               )}
             </button>
@@ -5172,7 +5184,7 @@ function VoiceRoomInner({
                             <span className="text-xs text-gray-500">{session.messageCount} msgs</span>
                           </div>
                           {session.lastMessage && (
-                            <p className="text-xs text-gray-400 mt-1 truncate">{session.lastMessage}</p>
+                            <p className="text-xs text-gray-400 mt-1 truncate">{deriveSessionTitle(session.lastMessage)}</p>
                           )}
                         </button>
                       ))}
@@ -5421,8 +5433,8 @@ function VoiceRoomInner({
                           ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
                           : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                   }`}
-                  aria-label="Claude instances"
-                  title="Claude instances"
+                  aria-label="Background agents"
+                  title="Background agents — run extra agents in parallel"
                 >
                   {/* Two overlapping circles = multi-instance */}
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>

@@ -29,6 +29,18 @@ export function deriveSessionTitle(text: string | undefined): string {
   if (!text || !text.trim()) return 'Untitled session'
   // Normalize whitespace
   let t = text.trim().replace(/\s+/g, ' ')
+  // Strip internal protocol markup that leaks into the first message — tool/task
+  // envelopes, their ids and command-output tags — none of it is user-meaningful
+  // (e.g. "<task-notification> <task-id>a599aaee…</task-id>").
+  t = t
+    .replace(/<(task-id|tool-use-id|command-name|command-args|command-message|session-id|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<\/?[a-z][a-z0-9-]{0,40}[^>]*>/gi, ' ')
+    .replace(/\b[0-9a-f]{12,}\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  // Compaction/continuation boilerplate → a friendly label instead of the blurb.
+  if (/^this session is being continued from a previous conversation/i.test(t)) return 'Continued session'
+  if (t.length < 2) return 'Untitled session'
   // Strip leading filler (up to 2 passes to handle chained phrases)
   for (let i = 0; i < 2; i++) {
     const stripped = t.replace(TITLE_FILLER_RE, '').trim()
