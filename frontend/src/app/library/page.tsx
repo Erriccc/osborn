@@ -17,6 +17,8 @@ import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { REFINE_PLATFORMS, buildSeededChatUrl, refineSeed } from '@/lib/seed-chat'
 import type { User } from '@supabase/supabase-js'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 interface ContentItem {
   id: string
@@ -566,41 +568,23 @@ export default function LibraryPage() {
             {tab === 'source' ? (
               <div className="overflow-y-auto px-5 py-4">
                 {reading.hook && <p className="text-[13px] text-[var(--text-secondary)] italic mb-3">{reading.hook}</p>}
-                {reading.body
-                  ? <pre className="whitespace-pre-wrap break-words font-sans text-[13.5px] text-[var(--text-secondary)] leading-relaxed">{(reading.body || '').replace(/<!--[\s\S]*?-->/g, '').trim()}</pre>
+                {(reading.body || '').replace(/<!--[\s\S]*?-->/g, '').trim()
+                  ? <div className="prose-osborn text-[13.5px] text-[var(--text-secondary)] leading-relaxed break-words">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {(reading.body || '').replace(/<!--[\s\S]*?-->/g, '').trim()}
+                      </ReactMarkdown>
+                    </div>
                   : <p className="text-[12px] text-[var(--text-muted)] italic">No body content.</p>}
               </div>
             ) : (
               <div className="overflow-y-auto px-5 py-4 flex flex-col gap-5">
-                {/* Chat-based refine (primary) — open a voice session seeded
-                    with this draft + a platform instruction. Reuses /chat, no
-                    new API. Refine by talking, then publish. */}
+                {/* ONE format picker drives BOTH paths. Pick the format once,
+                    then choose HOW to make it — generate inline, or talk it
+                    through in a seeded voice session. (Was two near-identical
+                    format grids — "Refine in chat" + "Target format" — which
+                    read as duplicated: the founder's "huh?".) */}
                 <div>
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Refine in chat</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {REFINE_PLATFORMS.map(p => (
-                      <button key={p.id}
-                        onClick={() => router.push(buildSeededChatUrl(refineSeed(p, reading)))}
-                        className="flex items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)]/40 px-3 py-2.5 text-left text-[13px] text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)] transition-all">
-                        <span>{p.label}</span>
-                        <svg className="w-4 h-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-                      </button>
-                    ))}
-                  </div>
-                  <p className="mt-2 text-[11px] text-[var(--text-muted)]">Opens a session seeded with this draft — refine by talking, then publish the result.</p>
-                </div>
-
-                <div className="h-px bg-[var(--border-subtle)]" />
-
-                <details className="group">
-                  <summary className="cursor-pointer list-none text-[11px] uppercase tracking-wide text-[var(--text-muted)] hover:text-[var(--text-secondary)] flex items-center gap-1.5">
-                    <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-                    Or edit inline
-                  </summary>
-                  <div className="mt-4 flex flex-col gap-5">
-                {/* Platform chips */}
-                <div>
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Target format</p>
+                  <p className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Turn this into</p>
                   <div className="flex flex-wrap gap-1.5">
                     {PLATFORMS.map(p => (
                       <button key={p.id} onClick={() => setPlatform(p.id)}
@@ -613,12 +597,26 @@ export default function LibraryPage() {
                       </button>
                     ))}
                   </div>
-                  <div className="mt-3">
-                    <button disabled={generating} onClick={() => runRefine({ iterate: false })}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2 text-[13px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
-                      {generating && !instruction ? 'Generating…' : `Generate ${PLATFORMS.find(p => p.id === platform)?.label}`}
-                    </button>
-                  </div>
+                </div>
+
+                {/* Two ways to make it — the format chosen above feeds both. */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button disabled={generating} onClick={() => runRefine({ iterate: false })}
+                    className="flex flex-col items-start gap-0.5 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-3 text-left hover:opacity-90 disabled:opacity-50 transition-opacity">
+                    <span className="text-[13px] font-semibold">
+                      {generating && !instruction ? 'Generating…' : `Generate ${PLATFORMS.find(p => p.id === platform)?.label} here`}
+                    </span>
+                    <span className="text-[11px] opacity-80">A draft appears below — edit it, then publish.</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      const rp = REFINE_PLATFORMS.find(p => p.id === platform)
+                      if (rp) router.push(buildSeededChatUrl(refineSeed(rp, reading)))
+                    }}
+                    className="flex flex-col items-start gap-0.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)]/40 px-4 py-3 text-left text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)] transition-all">
+                    <span className="text-[13px] font-semibold">Refine by talking →</span>
+                    <span className="text-[11px] text-[var(--text-muted)]">Opens a voice session seeded with this draft.</span>
+                  </button>
                 </div>
 
                 {refineErr && (
@@ -715,8 +713,6 @@ export default function LibraryPage() {
                     </div>
                   )}
                 </div>
-                  </div>
-                </details>
               </div>
             )}
 
