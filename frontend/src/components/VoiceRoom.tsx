@@ -43,6 +43,92 @@ function usePanelExclusive(id: string, open: boolean, setOpen: (v: boolean) => v
   }, [open, id])
 }
 
+// ── Audio settings panel (Phase C) ───────────────────────────────────────
+// The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
+// browser's mic dialog; this was the genuinely-missing piece. Mic + speaker
+// pickers (live-switched via LiveKit's room.switchActiveDevice) and a speaker
+// test tone. Device labels only populate once the user has allowed mic access.
+function AudioPopover({ disabled }: { disabled?: boolean }) {
+  const room = useRoomContext()
+  const [open, setOpen] = useState(false)
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([])
+  const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([])
+  usePanelExclusive('audio', open, setOpen)
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    navigator.mediaDevices?.enumerateDevices?.().then((ds) => {
+      setMics(ds.filter((d) => d.kind === 'audioinput'))
+      setSpeakers(ds.filter((d) => d.kind === 'audiooutput'))
+    }).catch(() => { /* enumeration blocked */ })
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  const pick = async (kind: 'audioinput' | 'audiooutput', id: string) => {
+    try { await room?.switchActiveDevice(kind, id) } catch { /* device unavailable */ }
+  }
+  const testSpeaker = () => {
+    try {
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      const ctx = new Ctx()
+      const osc = ctx.createOscillator(); const gain = ctx.createGain()
+      osc.frequency.value = 440; gain.gain.value = 0.07
+      osc.connect(gain); gain.connect(ctx.destination); osc.start()
+      setTimeout(() => { try { osc.stop(); void ctx.close() } catch { /* already closed */ } }, 600)
+    } catch { /* no AudioContext */ }
+  }
+
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((v) => !v)} disabled={disabled}
+        aria-label="Audio settings" title="Audio (mic & speaker)"
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
+          disabled ? 'text-gray-600 cursor-not-allowed'
+            : open ? 'bg-amber-500/20 text-amber-300' : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
+        }`}>
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+        </svg>
+        <span className="hidden sm:inline">Audio</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(22rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
+            <div className="px-3 py-2 border-b border-gray-800">
+              <span className="text-xs font-semibold text-gray-200">🎧 Audio</span>
+            </div>
+            <div className="p-3 flex flex-col gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] uppercase tracking-wide text-gray-500">Microphone</span>
+                <select defaultValue="" onChange={(e) => pick('audioinput', e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2 text-[13px] text-gray-200 outline-none focus:border-amber-500/50">
+                  <option value="">Default microphone</option>
+                  {mics.map((d, i) => <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] uppercase tracking-wide text-gray-500">Speaker</span>
+                <select defaultValue="" onChange={(e) => pick('audiooutput', e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2 text-[13px] text-gray-200 outline-none focus:border-amber-500/50">
+                  <option value="">Default speaker</option>
+                  {speakers.map((d, i) => <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Speaker ${i + 1}`}</option>)}
+                </select>
+              </label>
+              <button onClick={testSpeaker}
+                className="self-start rounded-lg bg-gray-800 border border-gray-700 px-3 py-1.5 text-[12.5px] text-gray-200 hover:border-amber-500/40 transition-colors">
+                Test speaker (plays a tone)
+              </button>
+              <p className="text-[11px] text-gray-500 leading-relaxed">Device names appear once you&rsquo;ve allowed mic access. Picks apply live to this session.</p>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Time-awareness helpers (no imports needed — pure Date math)
 // ---------------------------------------------------------------------------
@@ -5078,6 +5164,7 @@ function VoiceRoomInner({
                 newSkillContent={newSkillContent}
                 setNewSkillContent={setNewSkillContent}
               />
+              <AudioPopover disabled={!agentConnected} />
             </div>
 
             {/* Compact Controls — meeting/files/copy hidden on mobile */}
@@ -5486,6 +5573,8 @@ function VoiceRoomInner({
             newSkillContent={newSkillContent}
             setNewSkillContent={setNewSkillContent}
           />
+
+          <AudioPopover disabled={!agentConnected} />
 
           {/* Mic / mute — pinned right (ml-auto opens the gap) */}
           <button
