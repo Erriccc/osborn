@@ -1,0 +1,11 @@
+# Expo / RN — generated native projects + build output are NOT committed
+# (CI runs `expo prebuild` to regenerate ios/ each build).
+node_modules/
+.expo/
+dist/
+web-build/
+ios/
+android/
+*.log
+.DS_Store
+expo-env.d.ts

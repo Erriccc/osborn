@@ -26,6 +26,12 @@ Every **mobile** screen exposes at most:
 Everything else lives in popups, nav, or a separate page. Each deep-map section below
 carries an **IA (3-6-9)** row assigning every control a tier + overflow destination.
 
+**Counting exemption (founder, 2026-10-24):** persistent navigation chrome — nav bars,
+tab bars, menus/burger sheets, and footers — does **not** count against a screen's 3-6-9
+tally. The rule measures the screen's *content* actionables (the screen's job); the nav
+that gets you between screens is infrastructure. A burger sheet may therefore hold any
+number of overflow entries regardless of the host screen's tier.
+
 ### 0.3 Completeness guarantee
 - Routes enumerated from `frontend/src/app` — 20 user routes + 1 bot route + 1 redirect.
 - API endpoints enumerated from `frontend/src/app/api` — 18 handlers.
@@ -105,13 +111,18 @@ Wrapper states (`chat/page.tsx`): (1) pre-token orb spinner + **Cancel**; (2) er
 | Jump-to-latest pill, speaking pill | — | — | — | — | ✅ | passive |
 | More menu (viewport-cut fallback @5707) | 5707 | — | — | — | ✅ | **technical page (≤9)** |
 
-#### IA (3-6-9) — voice screen
-- **Primary 3:** mic · composer (incl. attach) · End session
+#### IA (3-6-9) — voice screen (✅ shipped P1.e, commit series Oct 2026)
+- **Primary 3:** mic · composer (incl. attach) · End session — the mobile composer strip
+  now carries exactly Mic + End (Auto/Ask, Agents, Skills, Filter were removed from it)
 - **Extended (≤6, only while relevant):** resume-prompt modal, permission modal, OAuth
-  modal, reconnect overlay — all *event-driven*, never ambient
-- **Technical 9:** More menu — Sessions, Files, Skills, Agents, Sub-agents, Instances,
-  Meetings, Noise-cancel, Settings-shortcuts (exactly 9)
-- **Overflow destination:** existing More menu + per-feature panels/modals
+  modal, reconnect overlay, autoplay-unlock bar, mic-denied dialog — all *event-driven*,
+  never ambient
+- **Overflow destination:** the mobile **burger sheet** (nav chrome — counting-exempt,
+  §0.2): Auto-approve, Noise filter (with send-anyway count chip), Agents, Skills, Files
+  Explorer, Copy all, Meeting join/leave, Session History = 8 rows. Agents/Skills rows
+  bridge to the header-less popover panels (`requestOpen`/`hideTrigger`). The sheet's old
+  Disconnect row was removed — End is a permanent primary, never cut.
+- Desktop header (status/clock/popovers/More) is untouched by the restructure.
 
 #### Subsystems owned here
 See §3 (audio pipeline, connection lifecycle, data-channel protocol, idle timer).
@@ -140,6 +151,12 @@ See §3 (audio pipeline, connection lifecycle, data-channel protocol, idle timer
 
 **IA:** Primary 3 = Resume · New chat · Projects. **Machine subpage** (technical, ≤9):
 sandbox lifecycle, version, secrets, skills, agents, logs, region, turbo, sync-token.
+**✅ Verified P1.e (Oct 2026):** already compliant as-rendered — mobile stack = Continue
+card (P1) + New conversation CTA (P2) + Projects stack with per-project ⋯ overflow menus
+(P3); agenda cards are already `hidden lg:flex`; header (logo/clock/badge/avatar menu) is
+nav chrome (counting-exempt). No edit required. The "Machine subpage" rows above actually
+render in **/settings** sections (dashboard only reads status for its badge), which
+satisfies the subpage tier via settings' drill-in.
 
 ### 2.3 `/settings` (1,259 lines) — technical page (9 max per section)
 Sections (sidebar on desktop / back-button nav on mobile): Voice-mode toggles ·
@@ -147,6 +164,9 @@ Connection (local/cloud radio, agent-URL input) · Sandbox (Start/Stop, Update,
 Restart, Delete → `DeleteSandboxDialog`) · Sync (copy tokens) · Secrets manager ·
 Skills/Agents. Network: `/api/sandbox`, `/api/instance`, `${agent}/skills|agents|secrets|health`.
 **IA:** already sectioned; enforce ≤9 rows per section + 44pt targets (P1.10).
+**✅ Verified P1.e:** mobile is already iOS-Settings style — grouped root list → drill-in
+section, back button pops section → list → dashboard. Root list = nav chrome
+(counting-exempt); each section body is its own technical page. No IA edit required.
 
 ### 2.4 `/library` (689 lines)
 Filter pills · search · card grid · featured · reading modal (fullscreen on mobile) ·
@@ -155,6 +175,9 @@ platform renditions (Blog/X/LinkedIn/Short/Newsletter) · Generate rendition
 · Copy public link · Refine-in-chat (→ seeded `/chat`).
 **IA:** Primary 3 = Search · Filter · Open item. All studio actions inside the reading
 modal (technical ≤9).
+**✅ Verified P1.e:** page = filter + search + card grid (+ featured Copy) — within 3–6;
+reading modal is already a fullscreen mobile sheet with Read/Refine tabs chunking the
+studio controls per tab. No IA edit required.
 
 ### 2.5 `/login`
 Google OAuth · GitHub OAuth (top-level redirect, `signInWithOAuth`) · legacy local-mode
@@ -287,11 +310,15 @@ the native app itself.
 - **G-WATCH** ⛔ LiveKit Swift has no watchOS target (#288) → WS gateway (Track 2)
 
 ## 6. Watch parity (from docs/watch-app-research-2026-10.md)
-- **Track 1 (answers-only):** permission prompts + blocking questions push to the
-  wrist via Pushover priority=2; ack (tap) = yes, expiry (10 min) = no. Maps the
-  `permission_request` DC event and agent blocking-question paths → push →
-  `/api/watch/ack/[qid]` (HMAC) → agent `permission_response`. No other controls.
-  **3-6-9: watch = 1 action (the tap).**
+- **Track 1 (answers-only) — ✅ SHIPPED 2026-10-24 (c040625), live when keys
+  land:** permission prompts push to the wrist via Pushover priority=2
+  (retry 30s, expire 600s); ack (tap) = yes, expiry (10 min) = no. Flow:
+  `permission_request` DC event → `agent/src/pushover.ts` emergency push with
+  HMAC-signed callback token → `/api/watch/ack/[qid]` (frontend verifies HMAC +
+  expiry, forwards) → agent `POST /watch/ack` → `respondToPermission(true)`.
+  Expiry receipts-poll denies + cancels buzzing; late-ack recovery approves.
+  Web-UI answers always win; dormant until PUSHOVER_* keys set (README-mobile
+  §Watch has the setup). No other controls. **3-6-9: watch = 1 action (the tap).**
 - **Track 2 (full voice):** watch app streams 24kHz PCM over WS to a gateway on the
   user's Fly machine bridging into LiveKit; reuses §3.3 protocol as WS JSON. Glance
   (agent state) + tap-to-talk + question sheet. **3-6-9: 3 (glance/talk/answer).**

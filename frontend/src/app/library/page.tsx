@@ -422,7 +422,7 @@ export default function LibraryPage() {
           <div className="inline-flex rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] p-1 gap-1">
             {(['all', 'published', 'draft'] as StatusFilter[]).map(f => (
               <button key={f} onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 rounded-lg text-[12.5px] font-medium capitalize transition-all ${
+                className={`px-3 py-1.5 max-sm:min-h-9 max-sm:px-3.5 rounded-lg text-[12.5px] font-medium capitalize transition-all ${
                   filter === f
                     ? 'bg-[var(--accent)] text-[var(--background)] shadow-sm'
                     : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
@@ -437,7 +437,7 @@ export default function LibraryPage() {
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search library…"
-              className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-xl pl-9 pr-3 py-2 text-[13px] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]/50"
+              className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-xl pl-9 pr-3 py-2 max-sm:py-2.5 text-[13px] max-sm:text-base text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]/50"
             />
           </div>
         </div>
@@ -634,12 +634,12 @@ export default function LibraryPage() {
                     <label className="flex flex-col gap-1">
                       <span className="text-[11px] text-[var(--text-muted)]">Title</span>
                       <input value={draft.title ?? ''} onChange={e => patchDraft('title', e.target.value)}
-                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]/50" />
+                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]/50" />
                     </label>
                     <label className="flex flex-col gap-1">
                       <span className="text-[11px] text-[var(--text-muted)]">Hook</span>
                       <input value={draft.hook ?? ''} onChange={e => patchDraft('hook', e.target.value)}
-                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]/50" />
+                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]/50" />
                     </label>
                     <label className="flex flex-col gap-1">
                       <span className="text-[11px] text-[var(--text-muted)]">Body</span>
@@ -654,7 +654,7 @@ export default function LibraryPage() {
                         <input value={instruction} onChange={e => setInstruction(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter' && instruction.trim()) runRefine({ iterate: true }) }}
                           placeholder="make it punchier · target enterprise CTOs · shorten"
-                          className="flex-1 bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]/50" />
+                          className="flex-1 bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]/50" />
                         <button disabled={generating || !instruction.trim()} onClick={() => runRefine({ iterate: true })}
                           className="shrink-0 rounded-lg bg-[var(--surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)] px-3 py-2 text-[12.5px] font-medium hover:text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 disabled:opacity-50 transition-all">
                           {generating && instruction ? 'Refining…' : 'Refine'}

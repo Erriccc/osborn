@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Voice Native",
+    "slug": "voice-native",
+    "scheme": "voicenative",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0c0b09",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.voicenative.rn",
+      "supportsTablet": false,
+      "infoPlist": {
+        "UIBackgroundModes": ["audio"],
+        "NSMicrophoneUsageDescription": "Voice Native is a voice-first coding agent — the microphone is how you talk to your agent.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {}
+      ],
+      "@livekit/react-native-expo-plugin",
+      "@config-plugins/react-native-webrtc"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

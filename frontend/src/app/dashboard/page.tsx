@@ -1716,7 +1716,7 @@ export default function Dashboard() {
                           <button
                             onClick={() => startChat(undefined, project.cwd)}
                             title="New conversation in this project"
-                            className="p-2 rounded-lg hover:bg-[var(--surface-2)] active:scale-95 transition-all text-[var(--muted)] hover:text-[var(--accent)]"
+                            className="p-2 max-sm:min-h-11 max-sm:min-w-11 flex items-center justify-center rounded-lg hover:bg-[var(--surface-2)] active:scale-95 transition-all text-[var(--muted)] hover:text-[var(--accent)]"
                           >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -1793,7 +1793,7 @@ export default function Dashboard() {
                             <button
                               onClick={() => setOpenProjectMenu(openProjectMenu === project.cwd ? null : project.cwd)}
                               title="Project actions"
-                              className={`p-2 rounded-lg transition-colors ${openProjectMenu === project.cwd ? 'bg-[var(--surface-2)] text-[var(--text)]' : 'text-[var(--muted)] hover:bg-[var(--surface-2)]'}`}
+                              className={`p-2 max-sm:min-h-11 max-sm:min-w-11 flex items-center justify-center rounded-lg transition-colors ${openProjectMenu === project.cwd ? 'bg-[var(--surface-2)] text-[var(--text)]' : 'text-[var(--muted)] hover:bg-[var(--surface-2)]'}`}
                             >
                               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                                 <circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" />
@@ -1804,21 +1804,21 @@ export default function Dashboard() {
                                 <div className="fixed inset-0 z-40" onClick={() => setOpenProjectMenu(null)} />
                                 <div className="absolute right-0 top-full mt-1 z-50 w-44 rounded-xl bg-[var(--surface-2)] border border-[var(--border-subtle)] shadow-2xl overflow-hidden py-1">
                                   <button onClick={() => { handleDownload(project.cwd); setOpenProjectMenu(null) }}
-                                    className="w-full px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors">
+                                    className="w-full min-h-11 px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors">
                                     Export project
                                   </button>
-                                  <label className="block w-full px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors cursor-pointer">
+                                  <label className="block w-full min-h-11 px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors cursor-pointer">
                                     {importingProject === project.cwd ? 'Importing…' : 'Import sessions'}
                                     <input type="file" accept=".tar.gz,.tgz" className="hidden"
                                       onChange={e => { const f = e.target.files?.[0]; if (f) handleImport(project.cwd, f); e.target.value = ''; setOpenProjectMenu(null) }} />
                                   </label>
                                   <button onClick={() => { handleCopySyncInfo(project); setOpenProjectMenu(null) }}
-                                    className="w-full px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors">
+                                    className="w-full min-h-11 px-3 py-2.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--surface)] transition-colors">
                                     Copy sync info
                                   </button>
                                   <div className="h-px bg-[var(--border-subtle)] mx-2 my-1" />
                                   <button onClick={() => handleDeleteProject(project)}
-                                    className={`w-full px-3 py-2.5 text-left text-[13px] transition-colors ${armedProjectDelete === project.cwd ? 'text-red-400 font-semibold bg-red-500/10' : 'text-red-400/80 hover:bg-[var(--surface)]'}`}>
+                                    className={`w-full min-h-11 px-3 py-2.5 text-left text-[13px] transition-colors ${armedProjectDelete === project.cwd ? 'text-red-400 font-semibold bg-red-500/10' : 'text-red-400/80 hover:bg-[var(--surface)]'}`}>
                                     {armedProjectDelete === project.cwd ? 'Tap again to confirm' : 'Delete project'}
                                   </button>
                                 </div>

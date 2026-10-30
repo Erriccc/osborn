@@ -1,0 +1,23 @@
+{
+  "name": "voice-native-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "@livekit/react-native": "^2.9.2",
+    "@livekit/react-native-webrtc": "^137.0.1",
+    "@supabase/supabase-js": "^2.58.0",
+    "livekit-client": "^2.15.7",
+    "expo": "57.0.17",
+    "react": "19.2.3",
+    "react-native": "0.86.3"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.0",
+    "typescript": "~5.9.2"
+  }
+}

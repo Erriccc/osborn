@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Voice Native</title>
+  <style>
+    /* Matches the web app's dark surface (#0c0b09) so a cold-launch flash
+       reads as the same product. Shown only when the remote URL is
+       unreachable — remote-url mode loads the Railway site directly. */
+    html, body { margin: 0; height: 100%; background: #0c0b09; }
+    body {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 14px; color: #d6cfc2; font-family: -apple-system, system-ui, sans-serif;
+      padding: 2rem; text-align: center;
+    }
+    .orb {
+      width: 56px; height: 56px; border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #f5b544, #b97e1d);
+      animation: breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes breathe { 0%, 100% { transform: scale(1); opacity: .8; } 50% { transform: scale(1.12); opacity: 1; } }
+    h1 { font-size: 17px; font-weight: 600; margin: 0; }
+    p { font-size: 13px; opacity: .7; margin: 0; line-height: 1.5; }
+    button {
+      margin-top: 6px; min-height: 44px; padding: 0 22px; border: none; border-radius: 999px;
+      background: #f5b544; color: #0c0b09; font-size: 14px; font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="orb"></div>
+  <h1>Voice Native</h1>
+  <p>Can't reach the server right now.<br />Check your connection and try again.</p>
+  <button onclick="location.reload()">Retry</button>
+</body>
+</html>

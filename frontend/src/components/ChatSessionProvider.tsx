@@ -173,23 +173,47 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       ping()
     }
 
-    const sseUrl = `${agentUrl}/events`
-    console.log(`[sprite-keepalive] opening SSE to ${sseUrl}`)
-    try {
-      es = new EventSource(sseUrl)
-      es.onopen = () => console.log('[sprite-keepalive] SSE connected')
-      es.onerror = () => {
-        if (es && es.readyState === EventSource.CLOSED) {
-          startFallback('SSE closed permanently (likely 404 — old osborn version)')
-          es = null
+    const openSse = () => {
+      const sseUrl = `${agentUrl}/events`
+      console.log(`[sprite-keepalive] opening SSE to ${sseUrl}`)
+      try {
+        const s = new EventSource(sseUrl)
+        s.onopen = () => console.log('[sprite-keepalive] SSE connected')
+        s.onerror = () => {
+          if (s.readyState === EventSource.CLOSED) {
+            startFallback('SSE closed permanently (likely 404 — old osborn version)')
+            if (es === s) es = null
+          }
         }
+        es = s
+      } catch (err) {
+        startFallback(`SSE init failed: ${(err as Error).message}`)
       }
-    } catch (err) {
-      startFallback(`SSE init failed: ${(err as Error).message}`)
     }
+    openSse()
+
+    // P1.8 (2026-10-24): iOS suspends this EventSource the moment the tab
+    // backgrounds. On foreground it can come back CLOSED (or zombie-CONNECTING
+    // against a dead socket) while the sprite still believes the keepalive is
+    // held — the exact recipe for a mid-session idle-stop. Re-open on visible;
+    // bridge the suspend window with one keepalive fetch on hidden.
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        if (!usingFallback && (!es || es.readyState === EventSource.CLOSED)) {
+          if (es) es.close()
+          openSse()
+        }
+      } else {
+        // Best-effort bridge while suspended; `keepalive` lets the request
+        // outlive the imminent page freeze.
+        fetch(`${agentUrl}/health`, { keepalive: true, signal: AbortSignal.timeout(5000) }).catch(() => {})
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
       console.log('[sprite-keepalive] cleanup')
+      document.removeEventListener('visibilitychange', onVisibility)
       if (es) es.close()
       if (pingInterval) clearInterval(pingInterval)
     }
@@ -599,6 +623,75 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const markVoiceActivity = useCallback(() => {
     setLastActivityAt(Date.now())
   }, [])
+
+  // ── P1.8 (2026-10-24): foreground fast-rejoin + screen wake lock ──────────
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
+  const idleStoppedRef = useRef(idleStopped)
+  idleStoppedRef.current = idleStopped
+  // Set once a session has been live at least once — gates foreground rejoins
+  // so a cold tab merely brought to focus never tries to connect.
+  const everConnectedRef = useRef(false)
+  useEffect(() => {
+    if (connected) everConnectedRef.current = true
+  }, [connected])
+
+  // Foreground fast-rejoin: iOS suspends JS while backgrounded, so a drop
+  // that happened mid-background may never have fired its auto-rejoin — and
+  // LiveKit can surface a zombie `connected` after resume. If the session was
+  // live before hiding and is now dead (and not idle-stopped), rejoin
+  // immediately instead of waiting for the user to notice the silence.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      if (!everConnectedRef.current) return
+      if (connectedRef.current || idleStoppedRef.current) return
+      if (reconnectAttemptsRef.current >= MAX_AUTO_RECONNECTS) return
+      reconnectAttemptsRef.current += 1
+      console.log(
+        `🔁 [foreground] session dropped while backgrounded — rejoin attempt ${reconnectAttemptsRef.current}/${MAX_AUTO_RECONNECTS}`,
+      )
+      setStatusMsg('Reconnecting…')
+      void connect()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [connect])
+
+  // Screen wake lock while a session is live: a phone that sleeps mid-voice-
+  // session suspends WebRTC + SSE and burns a full reconnect cycle. Held for
+  // the live session, released on disconnect/idle-stop, re-acquired on
+  // foreground (browsers release the lock every time the page hides).
+  // Feature-detected — silently absent where unsupported.
+  useEffect(() => {
+    if (!connected || idleStopped) return
+    let sentinel: { release: () => Promise<void>; addEventListener?: (t: string, l: () => void) => void } | null = null
+    let cancelled = false
+    const acquire = async () => {
+      if (cancelled || document.visibilityState !== 'visible') return
+      const wl = (navigator as unknown as { wakeLock?: { request: (t: 'screen') => Promise<typeof sentinel> } }).wakeLock
+      if (!wl) return
+      try {
+        const s = await wl.request('screen')
+        if (cancelled) {
+          try { await s?.release() } catch { /* already gone */ }
+          return
+        }
+        sentinel = s
+        sentinel?.addEventListener?.('release', () => { sentinel = null })
+      } catch { /* denied/unavailable — no-op */ }
+    }
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void acquire()
+    }
+    void acquire()
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVis)
+      try { void sentinel?.release() } catch { /* already released */ }
+    }
+  }, [connected, idleStopped])
 
   const value: ChatSessionContextValue = {
     token,

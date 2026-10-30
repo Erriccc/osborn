@@ -1,0 +1,38 @@
+# Codemagic overflow for the iOS build (documented, not primary).
+#
+# GitHub Actions macos-15 gives ~200 real macOS minutes/month free on private
+# repos (~5–10 builds). Codemagic's free tier is 500 M2 (arm64) minutes/month
+# and arm64 builds this project ~2× faster than the x86 GHA runner — so if GHA
+# quota binds, duplicate the last step here:
+#   1. codemagic.io → add this repo (GitHub app) → the workflow below appears
+#   2. Start build manually (workflow_dispatch equivalent: codemagic UI/API)
+# No Apple account needed for CODE_SIGNING_ALLOWED=NO builds.
+# Signed flip mirrors .github/workflows/ios-build.yml's comments.
+
+workflows:
+  ios-unsigned:
+    name: iOS unsigned (overflow)
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      node: 20
+      xcode: latest
+    scripts:
+      - name: Install native deps
+        working_directory: frontend/native
+        script: npm ci
+      - name: Capacitor sync (SPM)
+        working_directory: frontend/native
+        script: npx cap sync ios
+      - name: xcodebuild unsigned
+        working_directory: frontend/native/ios
+        script: |
+          set -o pipefail
+          xcodebuild -project App/App.xcodeproj -scheme App \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ../build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS="" build | tail -40
+    artifacts:
+      - frontend/native/build/DerivedData/Build/Products/Release-iphoneos/App.app

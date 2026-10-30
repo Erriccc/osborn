@@ -6,6 +6,7 @@ import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import SessionBrowser from '@/components/SessionBrowser'
 import SetupWizard from '@/components/SetupWizard'
+import EmailOtpLogin from '@/components/EmailOtpLogin'
 
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'realtime' | 'pipelined' | 'direct' | 'pipeline'
@@ -318,6 +319,16 @@ export default function Home() {
                   </div>
                 ) : (
                   <>
+                    {/* Primary: email OTP — no OAuth provider, no redirect, same
+                        path the native app uses (web + mobile share one auth). */}
+                    <EmailOtpLogin supabase={supabase} />
+
+                    <div className="flex items-center gap-3 py-1">
+                      <div className="flex-1 h-px bg-[var(--border)]" />
+                      <span className="text-[var(--text-muted)] text-[11px] uppercase tracking-widest">or</span>
+                      <div className="flex-1 h-px bg-[var(--border)]" />
+                    </div>
+
                     <button onClick={() => signInWithProvider('google')}
                       className="flex items-center justify-center gap-2.5 w-full h-11 bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[15px] font-medium hover:bg-[var(--surface-raised)] transition-colors cursor-pointer">
                       <svg width="18" height="18" viewBox="0 0 18 18">
@@ -406,7 +417,7 @@ export default function Home() {
                   <span className="text-[var(--text-secondary)] text-[11px] uppercase tracking-wider">Agent URL</span>
                   <input type="text" value={agentUrl}
                     onChange={e => { setAgentUrl(e.target.value); localStorage.setItem('osborn-agent-url', e.target.value) }}
-                    className="w-full h-9 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[13px] px-3 font-mono outline-none focus:border-[var(--accent)]" />
+                    className="w-full h-9 max-sm:h-11 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[13px] max-sm:text-base px-3 font-mono outline-none focus:border-[var(--accent)]" />
                 </label>
 
                 {/* Toggle rows */}
@@ -451,7 +462,7 @@ function ToggleRow({ label, options, value, onChange }: {
       <div className="inline-flex rounded-full border border-[var(--border)] overflow-hidden">
         {options.map(([v, l]) => (
           <button key={v} onClick={() => onChange(v)}
-            className="px-3 py-1 text-[12px] border-none cursor-pointer transition-all duration-150"
+            className="px-3 py-1 max-sm:min-h-9 max-sm:px-3.5 text-[12px] border-none cursor-pointer transition-all duration-150"
             style={{
               background: value === v ? 'var(--accent)' : 'transparent',
               color: value === v ? 'var(--background)' : 'var(--text-secondary)',

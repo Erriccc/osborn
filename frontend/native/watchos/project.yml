@@ -1,0 +1,45 @@
+# XcodeGen spec for the OsbornWatch scaffold — the SOURCE OF TRUTH for the
+# .xcodeproj. xcodegen requires full Xcode (the founder Mac has only CLT), so
+# CI GENERATES the project at build time (.github/workflows/watchos-build.yml
+# runs `brew install xcodegen && xcodegen generate` before xcodebuild). If you
+# ever get Xcode locally: brew install xcodegen && xcodegen generate.
+name: OsbornWatch
+options:
+  bundleIdPrefix: com.voicenative
+  deploymentTarget:
+    watchOS: "9.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    ENABLE_PREVIEWS: NO
+    CODE_SIGN_STYLE: Manual
+targets:
+  OsbornWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: OsbornWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.voicenative.watchkitapp
+        PRODUCT_NAME: OsbornWatch
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: OsbornWatch/Info.plist
+        TARGETED_DEVICE_FAMILY: "4"
+        SUPPORTS_MACCATALYST: NO
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        ENABLE_TESTING_SEARCH_PATHS: YES
+schemes:
+  OsbornWatch:
+    build:
+      targets:
+        OsbornWatch: all
+    run:
+      config: Debug
+    archive:
+      config: Release
