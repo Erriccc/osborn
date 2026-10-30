@@ -17,6 +17,8 @@ import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { REFINE_PLATFORMS, buildSeededChatUrl, refineSeed } from '@/lib/seed-chat'
 import type { User } from '@supabase/supabase-js'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 interface ContentItem {
   id: string
@@ -566,8 +568,12 @@ export default function LibraryPage() {
             {tab === 'source' ? (
               <div className="overflow-y-auto px-5 py-4">
                 {reading.hook && <p className="text-[13px] text-[var(--text-secondary)] italic mb-3">{reading.hook}</p>}
-                {reading.body
-                  ? <pre className="whitespace-pre-wrap break-words font-sans text-[13.5px] text-[var(--text-secondary)] leading-relaxed">{(reading.body || '').replace(/<!--[\s\S]*?-->/g, '').trim()}</pre>
+                {(reading.body || '').replace(/<!--[\s\S]*?-->/g, '').trim()
+                  ? <div className="prose-osborn text-[13.5px] text-[var(--text-secondary)] leading-relaxed break-words">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {(reading.body || '').replace(/<!--[\s\S]*?-->/g, '').trim()}
+                      </ReactMarkdown>
+                    </div>
                   : <p className="text-[12px] text-[var(--text-muted)] italic">No body content.</p>}
               </div>
             ) : (

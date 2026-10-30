@@ -141,3 +141,52 @@ button, [role="button"], a, label, summary {
     -webkit-user-select: text;
   }
 }
+
+/* ── Markdown content: Library, /p/ public pages, privacy/terms ───────────
+   `prose-osborn` was referenced but never defined, so react-markdown output
+   rendered with raw browser defaults (unstyled tables, off-theme headings,
+   and in the Library the body showed literal "##" / "**" markers). This styles
+   it to the app's dark theme — clean, scannable content like a feed card. */
+.prose-osborn { color: var(--text-secondary); word-break: break-word; }
+.prose-osborn > :first-child { margin-top: 0; }
+.prose-osborn h1, .prose-osborn h2, .prose-osborn h3, .prose-osborn h4 {
+  color: var(--text-primary); font-family: var(--font-display);
+  font-weight: 600; line-height: 1.25; margin: 1.4em 0 0.5em;
+}
+.prose-osborn h1 { font-size: 1.6em; }
+.prose-osborn h2 { font-size: 1.3em; }
+.prose-osborn h3 { font-size: 1.12em; }
+.prose-osborn h4 { font-size: 1em; }
+.prose-osborn p { margin: 0.75em 0; line-height: 1.7; }
+.prose-osborn a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose-osborn a:hover { color: var(--accent-dim); }
+.prose-osborn strong { color: var(--text-primary); font-weight: 600; }
+.prose-osborn em { font-style: italic; }
+.prose-osborn ul, .prose-osborn ol { margin: 0.75em 0; padding-left: 1.4em; }
+.prose-osborn ul { list-style: disc; }
+.prose-osborn ol { list-style: decimal; }
+.prose-osborn li { margin: 0.3em 0; }
+.prose-osborn li::marker { color: var(--text-muted); }
+.prose-osborn blockquote {
+  border-left: 3px solid var(--accent-dim); margin: 1em 0;
+  padding: 0.2em 0 0.2em 1em; color: var(--text-muted); font-style: italic;
+}
+.prose-osborn code {
+  font-family: var(--font-mono); font-size: 0.88em; background: var(--surface-2);
+  border: 1px solid var(--border-subtle); border-radius: 4px; padding: 0.1em 0.35em;
+}
+.prose-osborn pre {
+  background: var(--surface-2); border: 1px solid var(--border-subtle);
+  border-radius: 8px; padding: 0.9em 1em; overflow-x: auto; margin: 1em 0;
+}
+.prose-osborn pre code { background: none; border: none; padding: 0; font-size: 0.85em; }
+.prose-osborn hr { border: none; border-top: 1px solid var(--border-subtle); margin: 1.5em 0; }
+.prose-osborn table {
+  width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 0.95em;
+  display: block; overflow-x: auto;
+}
+.prose-osborn th, .prose-osborn td {
+  border: 1px solid var(--border-subtle); padding: 0.5em 0.75em; text-align: left;
+}
+.prose-osborn th { color: var(--text-primary); font-weight: 600; background: var(--surface); }
+.prose-osborn img { max-width: 100%; border-radius: 8px; margin: 1em 0; }
