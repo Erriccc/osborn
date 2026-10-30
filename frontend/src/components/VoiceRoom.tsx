@@ -20,6 +20,29 @@ import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessi
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 
+// ── Header-panel mutual exclusion ────────────────────────────────────────
+// Each header dropdown (History, Agents, Skills, Instances, More, Meeting) owns
+// its own open-state. Without coordination they STACK and overlap, and once
+// stacked a backdrop sits over the triggers so re-click and Escape can't close
+// them (recovery only by reload) — the overlay bug in the audit §13.3 and the
+// user's screenshot. This tiny event bus makes them mutually exclusive: opening
+// one announces itself and every other panel closes.
+const HEADER_PANEL_EVT = 'vn:header-panel-open'
+function usePanelExclusive(id: string, open: boolean, setOpen: (v: boolean) => void) {
+  const setOpenRef = useRef(setOpen)
+  setOpenRef.current = setOpen
+  useEffect(() => {
+    const onOther = (e: Event) => {
+      if ((e as CustomEvent).detail !== id) setOpenRef.current(false)
+    }
+    window.addEventListener(HEADER_PANEL_EVT, onOther)
+    return () => window.removeEventListener(HEADER_PANEL_EVT, onOther)
+  }, [id])
+  useEffect(() => {
+    if (open) { try { window.dispatchEvent(new CustomEvent(HEADER_PANEL_EVT, { detail: id })) } catch { /* no-op */ } }
+  }, [open, id])
+}
+
 // ---------------------------------------------------------------------------
 // Time-awareness helpers (no imports needed — pure Date math)
 // ---------------------------------------------------------------------------
@@ -1135,6 +1158,7 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
+  usePanelExclusive('agents', open, setOpen)
   return (
     <div className="relative">
       <button
@@ -1402,6 +1426,7 @@ function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
+  usePanelExclusive('skills', open, setOpen)
   return (
     <div className="relative">
       <button
@@ -1504,6 +1529,7 @@ function ControlMenu({
   const [activeTab, setActiveTab] = useState<'history' | 'tools'>('history')
   const [showSwitchConfirm, setShowSwitchConfirm] = useState(false)
   const [pendingSwitchSessionId, setPendingSwitchSessionId] = useState<string | null>(null)
+  usePanelExclusive('history', isOpen, setIsOpen)
 
   const enabledMcpCount = (mcpServers || []).filter(s => s.enabled).length
   const skillCount = (skills || []).length
@@ -2509,6 +2535,10 @@ function VoiceRoomInner({
   }>>([])
   // Meeting state (Recall.ai)
   const [showMeetingInput, setShowMeetingInput] = useState(false)
+  // Keep the header dropdowns mutually exclusive (no stacking/overlap).
+  usePanelExclusive('instances', showInstancesPanel, setShowInstancesPanel)
+  usePanelExclusive('more', showHeaderMore, setShowHeaderMore)
+  usePanelExclusive('meeting', showMeetingInput, setShowMeetingInput)
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
   const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
