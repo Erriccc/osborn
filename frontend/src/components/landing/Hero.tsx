@@ -44,10 +44,10 @@ export default function Hero() {
                 Start talking — free
               </Link>
               <a
-                href="#features"
+                href="#how-it-works"
                 className="h-12 px-6 inline-flex items-center justify-center rounded-xl text-[15px] font-medium text-[var(--text-primary)] border border-[var(--border)] hover:bg-[var(--surface)] transition-colors"
               >
-                Watch a 90-second demo
+                See how it works
               </a>
             </div>
 

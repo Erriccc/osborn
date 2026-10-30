@@ -1127,6 +1127,13 @@ function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, 
   const [editing, setEditing] = useState<UserAgentDraft | null>(null)
   const [deleteArm, setDeleteArm] = useState<string | null>(null)
   const count = agents?.length ?? 0
+  // Esc closes the popover (outside-click already closes via the backdrop).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
   return (
     <div className="relative">
       <button
@@ -1387,6 +1394,13 @@ function SkillsPanel({
 function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean }) {
   const [open, setOpen] = useState(false)
   const count = props.skills?.length ?? 0
+  // Esc closes the popover (outside-click already closes via the backdrop).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
   return (
     <div className="relative">
       <button
