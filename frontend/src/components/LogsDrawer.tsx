@@ -703,7 +703,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                 style={{ height: drawerHeight }}
               >
                 {messages.length === 0 ? (
-                  <p className="text-xs text-gray-500 text-center py-2">No activity yet</p>
+                  <p className="text-xs text-gray-500 text-center py-2">No activity yet — tool calls, file edits and searches show up here as the agent works.</p>
                 ) : (
                   messages.map((msg) =>
                     msg.toolMeta ? (
@@ -734,7 +734,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
               {(() => {
                 const flows = backgroundFlows ?? []
                 if (flows.length === 0) {
-                  return <p className="text-xs text-gray-500 text-center py-2">No background flows</p>
+                  return <p className="text-xs text-gray-500 text-center py-2">No background flows — dispatched agents and parallel tasks appear here while they run.</p>
                 }
                 // Sort: running flows first, completed after
                 const sorted = [...flows].sort((a, b) => {

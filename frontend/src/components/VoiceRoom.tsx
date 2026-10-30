@@ -5326,7 +5326,7 @@ function VoiceRoomInner({
                     disabled={!agentConnected}
                     aria-label="Join a meeting"
                     data-testid="join-meeting"
-                    className={`p-2 rounded-lg transition-all ${
+                    className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all ${
                       !agentConnected
                         ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
                         : showMeetingInput
@@ -5335,9 +5335,10 @@ function VoiceRoomInner({
                     }`}
                     title={meetingError || 'Join a meeting'}
                   >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
+                    <span className="hidden lg:inline text-xs font-medium">Meeting</span>
                   </button>
                   {showMeetingInput && (
                     <div className="absolute top-11 right-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
@@ -5401,6 +5402,7 @@ function VoiceRoomInner({
                           ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
                           : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                   }`}
+                  aria-label="Claude instances"
                   title="Claude instances"
                 >
                   {/* Two overlapping circles = multi-instance */}
