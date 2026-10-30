@@ -159,6 +159,24 @@ function toolVisual(tool: string): { verb: string; icon: React.ReactNode } {
 
 // Render a unified diff (createPatch output) with red/green line coloring,
 // like Claude's Edit review. Header lines are dropped; @@ hunks are dimmed.
+// Mask secret-looking substrings before anything reaches the UI or the clipboard.
+// A tool command or ingest script can embed a token (provider API key, Bearer,
+// Supabase PAT, GitHub PAT, JWT, or a sensitive env assignment); the Activity
+// log must never surface it. (Audit §16 flagged a credential-like string shown
+// inside a temporary ingest script.)
+function redactSecrets(s: string | undefined | null): string {
+  if (!s) return s ?? ''
+  return s
+    .replace(/sk-ant-[A-Za-z0-9_-]{6,}/g, 'sk-ant-••••')
+    .replace(/sk-or-[A-Za-z0-9_-]{6,}/g, 'sk-or-••••')
+    .replace(/sk-[A-Za-z0-9]{20,}/g, 'sk-••••')
+    .replace(/sbp_[A-Za-z0-9]{10,}/g, 'sbp_••••')
+    .replace(/ghp_[A-Za-z0-9]{10,}/g, 'ghp_••••')
+    .replace(/eyJ[A-Za-z0-9._-]{18,}\.[A-Za-z0-9._-]{10,}/g, 'eyJ••••')
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]{8,}/gi, '$1••••')
+    .replace(/((?:[A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY))["'\s]*[=:]\s*["']?)([^\s"']{6,})/gi, '$1••••')
+}
+
 function DiffView({ diff }: { diff: string }) {
   const lines = diff.split('\n').filter((l) => {
     return !(l.startsWith('Index:') || l.startsWith('===') || l.startsWith('--- ') || l.startsWith('+++ '))
@@ -217,7 +235,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   if (meta.filePath) bodyLines.push(meta.filePath)
   if (meta.command && meta.command !== meta.filePath) bodyLines.push(meta.command)
   else if (!meta.command && displayName && displayName !== meta.filePath) bodyLines.push(displayName)
-  const bodyText = bodyLines.join('\n')
+  const bodyText = redactSecrets(bodyLines.join('\n'))
 
   // Decide if we need a "show more" affordance for the body text.
   // We use a simple heuristic: line count or character count exceeds thresholds.
@@ -241,7 +259,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         const rawDetail = meta.command || meta.filePath || meta.description || meta.pattern || meta.url || '(no further detail)'
         const detail = rawDetail.length > 200 ? rawDetail.slice(0, 200) + ' …' : rawDetail
         const noteText = `[liked] The user liked this step: ${verb} ${displayName ?? '(unknown)'}. Details: ${detail}. Positive signal — keep doing this kind of thing.`
-        onLike(noteText)
+        onLike(redactSecrets(noteText))
       }
     }
   }
@@ -259,7 +277,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         if (meta.diff) detail.push(meta.diff.substring(0, 500))
         const detailStr = detail.length > 0 ? detail.join(' | ') : '(no further detail)'
         const noteText = `[disliked] The user flagged this step as not what they wanted: ${verb} ${displayName ?? '(unknown)'}. Details: ${detailStr}. Acknowledge this naturally, and if it was an edit, OFFER to undo/revert it and ask before doing so — do NOT auto-revert.`
-        onDislike(noteText)
+        onDislike(redactSecrets(noteText))
       }
     }
   }
@@ -276,7 +294,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
       if (meta.url) detail.push(`URL: ${meta.url}`)
       const detailStr = detail.length > 0 ? detail.join(' | ') : '(no further detail)'
       const noteText = `[circle-back] The user flagged this step to revisit after the current main objectives: ${verb} ${displayName ?? '(unknown)'}. Details: ${detailStr}. Acknowledge this naturally in conversation and try to reflect on WHY they might want to revisit it — don't just log it.`
-      onCircleBack(noteText)
+      onCircleBack(redactSecrets(noteText))
     }
   }
 
@@ -290,7 +308,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
     if (meta.url && meta.url !== displayName) body.push(`URL: ${meta.url}`)
     if (meta.diff) body.push(meta.diff)
     const text = body.length > 0 ? `${header}\n\n${body.join('\n\n')}` : header
-    navigator.clipboard.writeText(text).then(() => {
+    navigator.clipboard.writeText(redactSecrets(text)).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     }).catch(() => {})
@@ -333,7 +351,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         {/* Primary display name (filename, URL, description) shown as a label if it differs from the body */}
         {displayName && displayName !== meta.command && displayName !== meta.filePath && (
           <div className="text-[11px] text-amber-300/90 font-medium mb-1 break-all leading-snug">
-            {displayName}
+            {redactSecrets(displayName)}
           </div>
         )}
 
@@ -376,7 +394,7 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
           {meta.filePath && !bodyText.includes(meta.filePath) && (
             <div className="text-[10px] font-mono text-gray-500 break-all mb-1">{meta.filePath}</div>
           )}
-          {meta.diff && <DiffView diff={meta.diff} />}
+          {meta.diff && <DiffView diff={redactSecrets(meta.diff)} />}
         </div>
       )}
 

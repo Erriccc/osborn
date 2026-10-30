@@ -5341,7 +5341,8 @@ function VoiceRoomInner({
                   </button>
                   {showMeetingInput && (
                     <div className="absolute top-11 right-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
-                      <label className="block text-[11px] font-semibold text-gray-400 mb-1.5">Join a meeting</label>
+                      <label className="block text-[11px] font-semibold text-gray-400 mb-1">Join a meeting</label>
+                      <p className="text-[10.5px] text-gray-500 leading-snug mb-2">Sends a bot into the Zoom/Meet call to listen and take notes you can act on. It won&rsquo;t speak or share your screen.</p>
                       <input
                         type="url"
                         autoFocus

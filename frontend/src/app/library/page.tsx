@@ -79,6 +79,7 @@ export default function LibraryPage() {
   const [reading, setReading] = useState<ContentItem | null>(null)
   const [handle, setHandle] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
+  const [confirmPublish, setConfirmPublish] = useState(false)
   const [copied, setCopied] = useState(false)
 
   // --- Refine studio state (scoped to the open reading modal's source) ------
@@ -118,6 +119,7 @@ export default function LibraryPage() {
     setDraft(null)
     setRenditions([])
     setConfirmDeleteId(null)
+    setConfirmPublish(false)
     // A rendition can itself be opened in the modal; refine against its source.
     const sourceId = reading.parent_source_id ?? reading.id
     void loadRenditions(sourceId)
@@ -565,7 +567,7 @@ export default function LibraryPage() {
               <div className="overflow-y-auto px-5 py-4">
                 {reading.hook && <p className="text-[13px] text-[var(--text-secondary)] italic mb-3">{reading.hook}</p>}
                 {reading.body
-                  ? <pre className="whitespace-pre-wrap break-words font-sans text-[13.5px] text-[var(--text-secondary)] leading-relaxed">{reading.body}</pre>
+                  ? <pre className="whitespace-pre-wrap break-words font-sans text-[13.5px] text-[var(--text-secondary)] leading-relaxed">{(reading.body || '').replace(/<!--[\s\S]*?-->/g, '').trim()}</pre>
                   : <p className="text-[12px] text-[var(--text-muted)] italic">No body content.</p>}
               </div>
             ) : (
@@ -749,13 +751,29 @@ export default function LibraryPage() {
                   )}
                 </div>
               ) : (
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-[12px] text-[var(--text-muted)]">Publishing makes this page public and indexable.</p>
-                  <button disabled={publishing} onClick={() => togglePublish(reading, 'publish')}
-                    className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2 text-[13px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
-                    {publishing ? 'Publishing…' : 'Publish to web'}
-                  </button>
-                </div>
+                confirmPublish ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[12px] text-[var(--text-muted)]">
+                      Publish “{reading.title || reading.slug || 'this page'}” to the public web? Anyone with the link can see it, and it becomes indexable.
+                    </p>
+                    <div className="shrink-0 flex items-center gap-2">
+                      <button disabled={publishing} onClick={() => { setConfirmPublish(false); togglePublish(reading, 'publish') }}
+                        className="rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2 text-[13px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
+                        {publishing ? 'Publishing…' : 'Publish'}
+                      </button>
+                      <button onClick={() => setConfirmPublish(false)}
+                        className="text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[12px] text-[var(--text-muted)]">Publishing makes this page public and indexable.</p>
+                    <button disabled={publishing} onClick={() => setConfirmPublish(true)}
+                      className="shrink-0 inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2 text-[13px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
+                      Publish to web
+                    </button>
+                  </div>
+                )
               )}
             </div>
             )}
