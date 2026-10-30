@@ -236,6 +236,13 @@ export default function Dashboard() {
   const [savingSecret, setSavingSecret] = useState<string | null>(null)
   // Mobile ⋯ overflow menu — which project's action menu is open
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null)
+  // Esc closes the project-actions menu (outside-click already closes via the backdrop).
+  useEffect(() => {
+    if (!openProjectMenu) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpenProjectMenu(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [openProjectMenu])
   // Machine's physical location (Fly region from agent /health) — the user
   // wants to see WHERE the machine runs (city), not just their own clock.
   const [machineRegion, setMachineRegion] = useState<string | null>(() => {
