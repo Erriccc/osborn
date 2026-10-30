@@ -2627,6 +2627,13 @@ function VoiceRoomInner({
   const [skills, setSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
   const [namedAgents, setNamedAgents] = useState<NamedAgent[]>([])
   const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
+  // Esc closes the skill viewer (× and backdrop-click already close it).
+  useEffect(() => {
+    if (!viewedSkill) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setViewedSkill(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [viewedSkill])
   const [skillRemoveArm, setSkillRemoveArm] = useState<string | null>(null)
   const [showAddSkill, setShowAddSkill] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
