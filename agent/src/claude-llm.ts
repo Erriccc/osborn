@@ -2408,6 +2408,22 @@ class ClaudeLLMStream extends llm.LLMStream {
 
       const allowedTools = this.#opts.allowedTools || []
 
+      // Ensure the project working directory exists before handing it to the SDK as cwd.
+      // The dashboard "new project" flow passes {base}/{slug} (e.g. /workspace/kachi) as the
+      // working directory but nothing in the client → /api/token → agent chain ever creates
+      // the folder. A brand-new project therefore ran on a non-existent cwd: tools silently
+      // operated on the wrong path and nothing landed in the project (the "Kachi" bug —
+      // session saved, folder absent). Guarded + recursive; also recreates a folder that was
+      // recycled between resumes. Skipped when workingDirectory is unset (SDK → process.cwd()).
+      if (this.#opts.workingDirectory && !existsSync(this.#opts.workingDirectory)) {
+        try {
+          mkdirSync(this.#opts.workingDirectory, { recursive: true })
+          console.log(`📁 Created project working directory: ${this.#opts.workingDirectory}`)
+        } catch (err) {
+          console.log(`⚠️ Failed to create working directory ${this.#opts.workingDirectory}:`, err)
+        }
+      }
+
       const sdkOptions: Options = {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
