@@ -15,6 +15,7 @@ import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
+import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
@@ -1839,6 +1840,22 @@ function VoiceRoomInner({
             addMessageRef.current?.('system', data.summary, undefined, 'log')
           }
         }
+      } else if (data.type === 'bug_report') {
+        // Agent (bug-reporter skill) filed a report → the frontend owns the
+        // Supabase write (migration 003 RLS: insert as the signed-in user). The
+        // agent enriches with osborn_version / voice_mode / sandbox_id it knows.
+        const p = (data.payload || {}) as any
+        const ctx = (data.context || {}) as any
+        const sb = createSupabaseBrowser()
+        void submitBugReport(sb, {
+          type: p.type, severity: p.severity, title: p.title, description: p.description,
+          reproduction_notes: p.reproduction_notes, tags: p.tags,
+          osborn_version: ctx.osborn_version, voice_mode: ctx.voice_mode,
+          session_id: ctx.session_id, sandbox_id: ctx.sandbox_id,
+          metadata: { source: 'agent', reportId: data.reportId },
+        }).then((r) => {
+          addMessageRef.current?.('system', r.ok ? `🪲 ${p.type === 'feature' ? 'Feature request' : 'Bug report'} filed: ${p.title}` : `Report not saved: ${r.error}`, undefined, 'log')
+        })
       } else if (data.type === 'progress_update') {
         // Real-time progress updates during research
         if (data.text && data.text.trim()) {

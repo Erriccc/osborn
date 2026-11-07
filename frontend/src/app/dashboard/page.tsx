@@ -18,6 +18,7 @@ import NotesCard from '@/components/NotesCard'
 import UnifiedCreate from '@/components/dashboard/UnifiedCreate'
 import ActivityFeed from '@/components/dashboard/ActivityFeed'
 import LibraryBriefs from '@/components/dashboard/LibraryBriefs'
+import { ReportBugModal } from '@/components/ReportBugModal'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle } from '@/lib/sessions'
@@ -179,6 +180,7 @@ export default function Dashboard() {
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
+  const [showReportBug, setShowReportBug] = useState(false)
   // Admin discoverability: /admin is standalone; surface a link only when the
   // SERVER confirms this user is in ADMIN_EMAILS (probe once on load).
   const [isAdmin, setIsAdmin] = useState(false)
@@ -1416,6 +1418,12 @@ export default function Dashboard() {
                         <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
                         Library
                       </Link>
+                      <button role="menuitem"
+                        onClick={() => { setShowProfileMenu(false); setShowReportBug(true) }}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] transition-colors">
+                        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m0 3.75h.008M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
+                        Report a bug
+                      </button>
                       <div className="h-px bg-[var(--border-subtle)] mx-2 my-1" />
                       <button role="menuitem"
                         onClick={() => { setShowProfileMenu(false); signOut() }}
@@ -1923,6 +1931,7 @@ export default function Dashboard() {
           </aside>{/* ── end LEFT SIDEBAR ── */}
         </div>
       </main>
+      <ReportBugModal open={showReportBug} onClose={() => setShowReportBug(false)} supabase={supabase} />
     </>
   )
 }
