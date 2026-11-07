@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { formatTime, deriveSessionTitle } from '@/lib/sessions'
+import { formatTime, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { useViewportClamp, type SessionInfo, type SlotInfo } from './shared'
 
 // Compact live-instances panel + spawn control
@@ -57,7 +57,7 @@ export function InstancesPanel({
   // not one already running as a slot. Slot ids may be the full sessionId or an 8-char prefix,
   // so match both. Cap is 2 background slots (focused is separate).
   const runningSlotIds = new Set(slots.map((s) => s.id))
-  const eligibleSessions = sessions.filter((s) =>
+  const eligibleSessions = sortSessionsByActivity(sessions).filter((s) =>
     s.sessionId !== currentSessionId &&
     !runningSlotIds.has(s.sessionId) &&
     !runningSlotIds.has(s.sessionId.substring(0, 8))
@@ -187,11 +187,11 @@ export function InstancesPanel({
                       key={s.sessionId}
                       onClick={() => onSpawn(s.sessionId, s.cwd)}
                       disabled={spawnPending}
-                      title={deriveSessionTitle(s.lastMessage)}
+                      title={deriveSessionTitle(s)}
                       className="w-full text-left px-2 py-1.5 rounded-md hover:bg-gray-800/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors group"
                     >
-                      <div className="text-[11px] text-gray-200 truncate group-hover:text-white">{deriveSessionTitle(s.lastMessage)}</div>
-                      <div className="text-[10px] text-gray-500">{formatTime(s.timestamp)}</div>
+                      <div className="text-[11px] text-gray-200 truncate group-hover:text-white">{deriveSessionTitle(s)}</div>
+                      <div className="text-[10px] text-gray-500">{formatTime(sessionActivityTime(s))}</div>
                     </button>
                   ))}
                 </div>

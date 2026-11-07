@@ -15,7 +15,7 @@ import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
-import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessions'
+import { formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
@@ -279,6 +279,8 @@ function VoiceRoomInner({
   const [gateDropped, setGateDropped] = useState<Array<{ text: string; verdict: string; ts: number }>>([])
   // Session management state
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  // Bug c50200ef: lists order by the agent's lastActivityAt (PR #20), not mtime.
+  const sessionsByActivity = useMemo(() => sortSessionsByActivity(sessions), [sessions])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [isLoadingSessions, setIsLoadingSessions] = useState(false)
   // Auto-resume prompt state
@@ -3195,7 +3197,7 @@ function VoiceRoomInner({
                           key={session.sessionId}
                           onClick={() => {
                             handleResumeSession(session.sessionId)
-                            injectWelcomeBack(session.timestamp)
+                            injectWelcomeBack(sessionActivityTime(session))
                             completeSessionGate(session.sessionId)
                           }}
                           className={`w-full text-left p-3 rounded-lg border transition-colors ${
@@ -3206,14 +3208,12 @@ function VoiceRoomInner({
                         >
                           <div className="flex justify-between items-start">
                             <span className="text-sm font-medium text-white">
-                              {formatTime(session.timestamp)}
+                              {formatTime(sessionActivityTime(session))}
                               {group.label === 'Today' && index === 0 && <span className="ml-2 text-amber-400">(Latest)</span>}
                             </span>
                             <span className="text-xs text-gray-500">{session.messageCount} msgs</span>
                           </div>
-                          {session.lastMessage && (
-                            <p className="text-xs text-gray-400 mt-1 truncate">{deriveSessionTitle(session.lastMessage)}</p>
-                          )}
+                          <p className="text-xs text-gray-400 mt-1 truncate">{deriveSessionTitle(session)}</p>
                         </button>
                       ))}
                     </div>
@@ -3287,7 +3287,7 @@ function VoiceRoomInner({
 
             {/* Control Menu (Mode + History + Tools) — hidden on mobile */}
             <div className="hidden sm:block"><ControlMenu
-              sessions={sessions}
+              sessions={sessionsByActivity}
               currentSessionId={currentSessionId}
               onLoadSessions={handleLoadSessions}
               onResumeSession={handleResumeSession}
