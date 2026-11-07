@@ -7,7 +7,6 @@ import * as deepgram from '@livekit/agents-plugin-deepgram'
 import * as fishaudio from '@livekit/agents-plugin-fishaudio'
 import * as openai from '@livekit/agents-plugin-openai'
 import * as rime from '@livekit/agents-plugin-rime'
-import * as silero from '@livekit/agents-plugin-silero'
 import * as soniox from '@livekit/agents-plugin-soniox'
 
 export interface STTConfig {
@@ -175,22 +174,9 @@ export function createTTS(config: TTSConfig) {
   return tts
 }
 
-/**
- * Create VAD (Voice Activity Detection) for turn detection
- *
- * Tuned to prevent:
- * - "Audio file is too short" errors from STT (OpenAI requires >= 0.1s)
- * - Split sentences when user pauses briefly mid-speech
- * - False triggers from ambient noise
- */
-export async function createVAD() {
-  // VAD now only handles interruption detection — turn detection moved to Deepgram STT (server-side).
-  // Lighter settings = less local CPU from ONNX inference.
-  return silero.VAD.load({
-    minSpeechDuration: 0.4,       // 400ms — quick interruption detection
-    minSilenceDuration: 1.2,      // 1200ms — responsive
-    prefixPaddingDuration: 0.1,
-    activationThreshold: 0.85,     // default — balanced for interruptions only
-  })
-}
+// createVAD (Silero ONNX) removed 2026-11-07 — it was DEAD CODE: zero call sites.
+// The live website path uses Deepgram STT endpointing for turn detection AND
+// interruption (see index.ts: "VAD (Silero ONNX) removed — caused 2-5s inference
+// lag"); the meeting path uses the Recall speech webhook. The @livekit/agents-
+// plugin-silero dep is kept only for the runtime version snapshot in index.ts.
 
