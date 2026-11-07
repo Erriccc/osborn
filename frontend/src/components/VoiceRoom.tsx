@@ -23,6 +23,7 @@ import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
 import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
+import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { PermissionModal, getToolRiskLevel, type PermissionRequest } from './voice/PermissionModal'
@@ -148,7 +149,8 @@ function buildPriorItems(
 ): ChatMessage[] {
   const items: ChatMessage[] = []
   let lastDay = ''
-  msgs.forEach((m, i) => {
+  // Bug 14bedf48: control notices in the stored history are not You bubbles.
+  dropControlUserItems(msgs.map((m) => ({ ...m, role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content ?? '') }))).forEach((m, i) => {
     const t = m.ts ? new Date(m.ts) : new Date(0)
     const day = t.getTime() > 0 ? t.toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''
     if (day && day !== lastDay) {
@@ -1261,6 +1263,13 @@ function VoiceRoomInner({
     // Safety check - skip empty/whitespace-only messages
     if (!content || typeof content !== 'string' || !content.trim()) {
       console.log(`⏭️ addMessage: skipping empty ${role} message`)
+      return
+    }
+
+    // Bug 14bedf48: a control notice ('[SYSTEM — SILENT CONTROL MESSAGE',
+    // '[Request interrupted by user]', '[liked]', ...) is never a You bubble.
+    if (role === 'user' && isControlNotice(content)) {
+      console.log(`⏭️ addMessage: control notice kept out of the chat: "${content.substring(0, 60)}"`)
       return
     }
 
