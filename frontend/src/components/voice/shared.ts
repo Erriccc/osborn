@@ -135,6 +135,9 @@ export interface ChatMessage {
   liked?: boolean
   // Set on the in-chat card for a file the agent just wrote (renders FileCard).
   fileRef?: { filePath: string; fileName: string }
+  // Id sent with a typed message (user_text) and echoed back on its
+  // user_transcript, so the echo is deduped (bug d9bb78b2).
+  clientMsgId?: string
 }
 
 export interface SpeakingChunk {
@@ -203,26 +206,6 @@ export interface GeneratedFile {
   sessionId?: string
   createdAt?: Date
   loadError?: string
-}
-
-// Harness-internal interruption wrappers (the "[INTERRUPTED] / CONTEXT PRESERVATION"
-// blocks injected around user speech for the model) must never render in chat.
-// Extract the user's actual words when present; otherwise hide the bubble.
-const HARNESS_MARKERS = [
-  'CONTEXT PRESERVATION (READ THIS):',
-  'What the user heard before cutoff',
-  'WHAT THE USER DID NOT HEAR',
-  'Text you produced that the user did NOT hear',
-  'Text you generated while the user was speaking',
-  'RESPOND with speech first',
-]
-export function sanitizeUserTranscript(text: string): string | null {
-  const wrapped =
-    HARNESS_MARKERS.some((m) => text.includes(m)) ||
-    /^\[(INTERRUPTED|CONTEXT)\]/.test(text.trim())
-  if (!wrapped) return text
-  const m = text.match(/(?:User's message|What the user is saying now):\s*"([\s\S]*?)"\s*(?:\n|$)/)
-  return m ? m[1].trim() : null
 }
 
 /**
