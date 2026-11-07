@@ -25,6 +25,11 @@
 --      deterministic app name. Used by /api/token and /api/sandbox (fail closed).
 --   4. A partial UNIQUE index on sandbox_id.
 --
+-- Related (agent control binding, same PR): the frontend now bakes
+-- OSBORN_OWNER_USER_ID into each machine's env so the agent only lets the
+-- owner control it. EXISTING machines lack that env until their next create,
+-- update-osborn or pool repoint, and stay in newest-joiner mode until then.
+--
 -- NOT APPLIED automatically. Apply this BEFORE deploying the matching frontend
 -- (lib/sandbox-claims.ts): without these functions and without
 -- SUPABASE_SERVICE_ROLE_KEY the ownership check fails closed and users with a
@@ -75,6 +80,40 @@ create trigger guard_instances_sandbox_id
   for each row execute function public.guard_instances_sandbox_id();
 
 -- ---------------------------------------------------------------------------
+-- 1b. Is p_sandbox_id ANOTHER user's deterministic legacy app name?
+--     lib/machines.ts appNameFromUserId = 'osborn-' + first 12 chars of the
+--     user id. For a uuid those 12 chars are always 'xxxxxxxx-xxx' (lowercase
+--     hex), which the slug step leaves unchanged. So only ids matching
+--     ^osborn-[0-9a-f]{8}-[0-9a-f]{3}$ can be a legacy name, and the lookup is a
+--     uuid RANGE on auth.users' primary key (index probe, no table scan).
+--     Internal helper: not executable by client roles; the SECURITY DEFINER
+--     functions below call it as their owner.
+-- ---------------------------------------------------------------------------
+create or replace function public.sandbox_is_others_legacy_app(p_sandbox_id text, p_uid uuid)
+returns boolean
+language plpgsql
+stable
+set search_path = ''
+as $$
+declare
+  v_prefix text;
+begin
+  if p_sandbox_id is null or p_sandbox_id !~ '^osborn-[0-9a-f]{8}-[0-9a-f]{3}$' then
+    return false;
+  end if;
+  v_prefix := substr(p_sandbox_id, 8); -- 'xxxxxxxx-xxx'
+  return exists (
+    select 1 from auth.users u
+    where u.id >= (v_prefix || '0-0000-0000-000000000000')::uuid
+      and u.id <= (v_prefix || 'f-ffff-ffff-ffffffffffff')::uuid
+      and u.id is distinct from p_uid
+  );
+end;
+$$;
+
+revoke all on function public.sandbox_is_others_legacy_app(text, uuid) from public, anon, authenticated;
+
+-- ---------------------------------------------------------------------------
 -- 2. Owner-only setter (SECURITY DEFINER).
 -- ---------------------------------------------------------------------------
 create or replace function public.set_instance_sandbox(p_sandbox_id text)
@@ -103,11 +142,7 @@ begin
   end if;
 
   -- Another user's deterministic legacy app name (lib/machines.ts appNameFromUserId).
-  if exists (
-    select 1 from auth.users u
-    where u.id <> v_uid
-      and p_sandbox_id = 'osborn-' || trim(both '-' from regexp_replace(lower(left(u.id::text, 12)), '[^a-z0-9]', '-', 'g'))
-  ) then
+  if public.sandbox_is_others_legacy_app(p_sandbox_id, v_uid) then
     return false;
   end if;
 
@@ -138,11 +173,7 @@ as $$
       select 1 from public.instances
       where sandbox_id = p_sandbox_id and user_id <> auth.uid()
     )
-    or exists (
-      select 1 from auth.users u
-      where u.id <> auth.uid()
-        and p_sandbox_id = 'osborn-' || trim(both '-' from regexp_replace(lower(left(u.id::text, 12)), '[^a-z0-9]', '-', 'g'))
-    );
+    or public.sandbox_is_others_legacy_app(p_sandbox_id, auth.uid());
 $$;
 
 revoke all on function public.sandbox_claimed_by_other(text) from public, anon;
