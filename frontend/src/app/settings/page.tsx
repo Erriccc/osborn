@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useDocumentTitle } from '@/lib/use-document-title'
 import { MagnifyingGlass, Brain, PenNib, Robot } from '@phosphor-icons/react'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
@@ -46,6 +47,7 @@ const NAV_GROUPS: { group: string; items: { id: SectionId; label: string }[] }[]
 ]
 
 export default function SettingsPage() {
+  useDocumentTitle('Settings')
   const router = useRouter()
   const supabase = createSupabaseBrowser()
   const [user, setUser] = useState<User | null>(null)
