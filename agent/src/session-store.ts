@@ -234,6 +234,14 @@ function extractRecords(raw: any): ExtractedRecord[] {
   // ── user (regular text OR tool_result wrapper) ──
   if (type === 'user') {
     const content = raw.message?.content
+    // Plain-string content (CLI-typed prompts, SDK string-prompt turns, imported
+    // sessions) is a real user turn too; it used to be silently skipped, so those
+    // turns were missing from /session-messages and prior_messages (UI#11).
+    // Existing stores pick these up on their next rebuild (STORE_VERSION unchanged:
+    // a bump would wipe and re-embed every store).
+    if (typeof content === 'string') {
+      return content.trim() ? [{ msgType: 'user', model: null, toolName: null, text: content }] : []
+    }
     if (!Array.isArray(content)) return []
 
     if (content[0]?.type === 'tool_result') {
@@ -672,20 +680,43 @@ export async function recall(
 }
 
 /**
- * Return the most recent N content rows (highest id = latest, append-only order),
- * newest first, as RecallHit-shaped objects. Powers fast-brain's "recent entries"
- * path. Encapsulates decompress so callers never touch the blob/compression.
+ * Return the most recent N content rows, newest first, as RecallHit-shaped objects.
+ * Powers fast-brain's "recent entries" path and the session tail. Encapsulates
+ * decompress so callers never touch the blob/compression.
  * `msgTypes` optionally filters by msg_type IN SQL — so callers that only want
- * user/assistant rows don't decompress rows they'd discard.
+ * user/assistant rows don't decompress rows they'd discard. `opts.sources`
+ * optionally restricts to given sources (e.g. ['main'] = the session's own JSONL,
+ * no sub-agent rows).
+ *
+ * Recency is by record TIMESTAMP (ts DESC), not insertion id: a backfill/reindex
+ * or a resume can insert older rows after newer ones, and "newest by id" then
+ * surfaced weeks-old turns (UI#16). id DESC breaks ties (and orders rows with no
+ * ts last). The ordering runs in a blob-free subquery so only the N kept rows
+ * carry their blob through the sort.
  */
-export function recentRows(db: Database.Database, count: number, msgTypes?: string[]): RecallHit[] {
-  const filter = msgTypes && msgTypes.length
-    ? `WHERE msg_type IN (${msgTypes.map(() => '?').join(', ')})`
-    : ''
-  const params = msgTypes && msgTypes.length ? [...msgTypes, Math.max(1, count)] : [Math.max(1, count)]
+export function recentRows(
+  db: Database.Database,
+  count: number,
+  msgTypes?: string[],
+  opts?: { sources?: string[] },
+): RecallHit[] {
+  const where: string[] = []
+  const params: unknown[] = []
+  if (msgTypes && msgTypes.length) {
+    where.push(`msg_type IN (${msgTypes.map(() => '?').join(', ')})`)
+    params.push(...msgTypes)
+  }
+  if (opts?.sources && opts.sources.length) {
+    where.push(`source IN (${opts.sources.map(() => '?').join(', ')})`)
+    params.push(...opts.sources)
+  }
+  const filter = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  params.push(Math.max(1, count))
+  const order = `ORDER BY COALESCE(ts, '') DESC, id DESC`
   const rows = db.prepare(
     `SELECT id, source, line_num, byte_offset, ts, msg_type, model, git_branch, cwd, tool_name, blob
-     FROM content ${filter} ORDER BY id DESC LIMIT ?`
+     FROM content WHERE id IN (SELECT id FROM content ${filter} ${order} LIMIT ?)
+     ${order}`
   ).all(...params) as any[]
   return rows.map((row) => ({
     id: row.id,
