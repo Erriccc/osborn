@@ -104,26 +104,76 @@ t('index.ts: join wiring uses resolveJoin with the configured owner', () => {
   assert.match(src, /process\.env\.OSBORN_OWNER_USER_ID/)
 })
 
-// Behavioural: replay joins through resolveJoin the way participantConnectedHandler does.
-const replay = (owner: string, joins: [string, string | undefined][]) => {
+// Behavioural: replay joins/leaves the way participantConnectedHandler and
+// handleParticipantDisconnected do. A '-' prefix is a leave (controller cleared
+// if it was the leaver). `session` is who the voice session was last built for.
+type Step = [string, string | undefined]
+const replay = (owner: string, steps: Step[]) => {
   let controller: string | null = null
+  let session: string | null = null
   const sessions: string[] = []
-  for (const [identity, userId] of joins) {
+  const adopts: boolean[] = []
+  for (const [identity, userId] of steps) {
+    if (identity.startsWith('-')) {
+      const who = identity.slice(1)
+      if (who === controller) controller = null
+      session = null // handleParticipantDisconnected closes currentSession on any leave
+      continue
+    }
     const d = resolveJoin(identity, userId, owner, controller)
     controller = d.controller
-    if (d.adoptSession) sessions.push(identity)
+    adopts.push(d.adoptSession)
+    if (d.adoptSession) { sessions.push(identity); session = identity }
   }
-  return { controller, sessions }
+  return { controller, sessions, session, adopts }
 }
 for (const owner of ['uid-x', '']) {
   const mode = owner ? 'owner configured' : 'single-tenant'
-  t(`${mode}: owner user-x joins, then osborn-agent joins -> user_text from user-x still accepted`, () => {
-    const { controller } = replay(owner, [['user-x', 'uid-x'], ['osborn-agent', undefined]])
+  t(`${mode}: owner user-x joins, then osborn-agent joins -> not adopted, user-x keeps session + control`, () => {
+    const { controller, sessions, session, adopts } = replay(owner, [['user-x', 'uid-x'], ['osborn-agent', undefined]])
+    assert.deepEqual(adopts, [true, false], 'osborn-agent must not rebuild the session over the owner')
     assert.equal(controller, 'user-x')
+    assert.deepEqual(sessions, ['user-x'])
+    assert.equal(session, 'user-x')
     assert.equal(checkControlSender('user_text', 'user-x', controller).ok, true)
     assert.equal(checkControlSender('resume_session', 'user-x', controller).ok, true)
     assert.equal(checkControlSender('user_text', 'osborn-agent', controller).ok, false)
     assert.equal(checkControlSender('permission_response', 'osborn-agent', controller).ok, true)
+  })
+  t(`${mode}: osborn-agent alone is adopted (watch voice path) but is not the controller`, () => {
+    const { controller, sessions, adopts } = replay(owner, [['osborn-agent', undefined]])
+    assert.deepEqual(adopts, [true])
+    assert.deepEqual(sessions, ['osborn-agent'])
+    assert.equal(controller, null)
+    assert.equal(checkControlSender('user_text', 'osborn-agent', controller).ok, false)
+    assert.equal(checkControlSender('permission_response', 'osborn-agent', controller).ok, true)
+  })
+  t(`${mode}: osborn-agent alone, then owner joins -> owner takes session + control`, () => {
+    const { controller, session, adopts } = replay(owner, [['osborn-agent', undefined], ['user-x', 'uid-x']])
+    assert.deepEqual(adopts, [true, true])
+    assert.equal(controller, 'user-x')
+    assert.equal(session, 'user-x')
+  })
+  // Documented behaviour when the owner leaves while osborn-agent stays:
+  // the controller is cleared and the voice session is closed (the leave
+  // handler tears it down). osborn-agent fires no new join, so it is NOT
+  // re-adopted: there is no voice session until someone joins again. Gated
+  // commands are dropped (no controller); watch approvals still pass. If the
+  // gateway reconnects it is adopted (no controller); if the owner rejoins,
+  // the owner takes the session and control back.
+  t(`${mode}: owner leaves while osborn-agent remains -> no controller, no session, approvals still pass`, () => {
+    const steps: Step[] = [['user-x', 'uid-x'], ['osborn-agent', undefined], ['-user-x', undefined]]
+    const r = replay(owner, steps)
+    assert.equal(r.controller, null)
+    assert.equal(r.session, null)
+    assert.equal(checkControlSender('user_text', 'osborn-agent', r.controller).ok, false)
+    assert.equal(checkControlSender('permission_response', 'osborn-agent', r.controller).ok, true)
+    const gw = replay(owner, [...steps, ['osborn-agent', undefined]])
+    assert.equal(gw.adopts.at(-1), true, 'gateway reconnecting alone gets the watch voice session')
+    assert.equal(gw.controller, null)
+    const back = replay(owner, [...steps, ['user-x', 'uid-x']])
+    assert.equal(back.controller, 'user-x')
+    assert.equal(back.session, 'user-x')
   })
 }
 t('owner configured: non-owner user joining after the owner gets no session and no control', () => {
@@ -136,9 +186,12 @@ t('single-tenant: newest user joiner still takes control', () => {
   const { controller } = replay('', [['user-a', undefined], ['user-b', undefined]])
   assert.equal(controller, 'user-b')
 })
-t('osborn-agent alone never becomes controller', () => {
-  const { controller } = replay('uid-x', [['osborn-agent', undefined]])
-  assert.equal(controller, null)
+t('index.ts: gateway not adopted returns before the session teardown', () => {
+  const start = src.indexOf('const join = resolveJoin(')
+  const bail = src.indexOf('if (!join.adoptSession)', start)
+  const teardown = src.indexOf('currentSession.close()', start)
+  const uid = src.indexOf("currentUserId = ''", start)
+  assert.ok(start > 0 && bail > start && bail < teardown && bail < uid, 'adoptSession=false must return before teardown and currentUserId reset')
 })
 
 console.log(`\n${pass} passed${process.exitCode ? ', some FAILED' : ''}`)
