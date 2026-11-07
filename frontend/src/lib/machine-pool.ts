@@ -46,7 +46,8 @@ const WARM_POOL_MAX_DEFAULT = 2
  * Hard cap on spare machines (env WARM_POOL_MAX, default 2; 0 disables the
  * pool). ensurePool never targets more than this, whatever `min` a caller
  * passes, so a retry loop or a bad caller can't create unbounded machines.
- * Invalid values fall back to the default.
+ * Invalid values fall back to the default. The cap is enforced per process
+ * and per replica (see the ensurePool guard below), not globally.
  */
 export function warmPoolMax(): number {
   const raw = process.env.WARM_POOL_MAX
@@ -66,7 +67,15 @@ export function warmPoolMax(): number {
  * safe. Never throws — the caller's original error has already been logged
  * and must stay the reported failure.
  */
-async function destroyPoolMachine(appName: string, reason: string): Promise<void> {
+// Exactly the shape poolAppName() produces. destroyPoolMachine deletes the
+// whole Fly app, so it refuses anything else (e.g. a user's osborn-<id> app).
+const POOL_APP_NAME_RE = /^osborn-pool-[0-9a-f]{12}$/
+
+export async function destroyPoolMachine(appName: string, reason: string): Promise<void> {
+  if (!POOL_APP_NAME_RE.test(appName)) {
+    console.error(`[machine-pool] refusing to destroy ${JSON.stringify(appName)}: not a pool app name (${reason})`)
+    return
+  }
   try {
     const ok = await deleteSandbox(appName)
     if (ok) console.warn(`[machine-pool] destroyed ${appName} after failure (${reason})`)
@@ -98,6 +107,9 @@ function poolAppName(): string {
 // ensurePool — top up spares (mutex-guarded)
 // ─────────────────────────────────────────
 
+// NOTE: this guard and the WARM_POOL_MAX cap are per-process. Each Next.js
+// server process (and each deployed replica) runs its own ensurePool, so N
+// replicas racing on the same machine_pool table can briefly exceed the cap.
 let poolEnsuring = false
 
 /**
@@ -168,7 +180,19 @@ async function provisionSpare(supabase: SupabaseClient): Promise<boolean> {
 
     registered = true
 
-    await stopMachineCold(appName)
+    // A registered spare that never stops stays running (and billing) while
+    // it waits to be claimed. Retry the stop once; if it still fails, destroy
+    // the machine and mark its row dead so it is never handed out.
+    if (!(await tryStopCold(appName)) && !(await tryStopCold(appName))) {
+      console.error(`[machine-pool] spare ${appName} would not stop after retry — destroying + marking dead`)
+      await destroyPoolMachine(appName, 'cold stop failed twice')
+      await supabase
+        .from('machine_pool')
+        .update({ status: 'dead' })
+        .eq('app_name', appName)
+        .then(() => {}, () => {})
+      return false
+    }
     console.log(`[machine-pool] spare ready: ${appName}`)
     return true
   } catch (err) {
@@ -178,6 +202,16 @@ async function provisionSpare(supabase: SupabaseClient): Promise<boolean> {
     // unregistered machine is an orphan.
     if (!registered) await destroyPoolMachine(appName, `provision failed: ${msg}`)
     return registered
+  }
+}
+
+/** stopMachineCold, with a throw treated as a failed stop. */
+async function tryStopCold(appName: string): Promise<boolean> {
+  try {
+    return await stopMachineCold(appName)
+  } catch (err) {
+    console.error(`[machine-pool] stopping ${appName} threw: ${(err as Error).message}`)
+    return false
   }
 }
 

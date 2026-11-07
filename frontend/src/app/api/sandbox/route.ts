@@ -182,6 +182,23 @@ export async function POST(request: Request) {
     if (!id) return { claim: 'none' }
     return { id, claim: await checkSandboxClaim(supabase, id, user.id) }
   }
+  // True when the caller's instances row already holds `id`. The pool-claim
+  // path records sandbox_id itself (service role) before create returns, so
+  // a failed claim RPC does not always mean the machine is unrecorded. On a
+  // read failure this returns false (the stop-if-unrecorded guard applies).
+  const isRecordedForUser = async (id: string): Promise<boolean> => {
+    try {
+      const { data } = await supabase
+        .from('instances')
+        .select('sandbox_id')
+        .eq('user_id', user.id)
+        .single()
+      return (data?.sandbox_id as string | null | undefined) === id
+    } catch (err) {
+      console.error(`[sandbox] re-reading sandbox_id for ${user.id} threw: ${(err as Error).message}`)
+      return false
+    }
+  }
   const getKnownSandboxId = async (): Promise<string | undefined> => {
     const { id, claim } = await getKnownSandboxClaim()
     if (id && claim !== 'mine') {
@@ -333,7 +350,9 @@ export async function POST(request: Request) {
           livekit_room: `osborn-${user.id.substring(0, 8)}`,
           last_seen: new Date().toISOString(),
         }, { onConflict: 'user_id' })
-        if (!(await claimSandboxForUser(supabase, info.id, user.id))) {
+        // If the claim RPC fails but the row already holds this id (pool path),
+        // the machine is tracked: skip the stop and return it as before.
+        if (!(await claimSandboxForUser(supabase, info.id, user.id)) && !(await isRecordedForUser(info.id))) {
           const originalError = info.error
           console.error(`[sandbox] create: could not record sandbox ${info.id} for ${user.id} (orphan risk)${originalError ? ` — original error: ${originalError}` : ''}`)
           // Unrecorded = nothing will ever stop it. Best-effort STOP (not
