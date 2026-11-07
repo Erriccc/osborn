@@ -5,11 +5,15 @@ import { createSupabaseServer } from '@/lib/supabase-server'
  * /api/notes — the signed-in user's quick-capture NOTES (voice-memo → text).
  * GET    → latest 50 notes (desc)
  * POST   → save { text } (trimmed, 1..10_000 chars)
- * DELETE → ?id=<uuid> (owner-scoped by RLS + explicit user_id filter)
+ * DELETE → ?id=<uuid> (owner-scoped by RLS + explicit user_id filter).
+ *          Hard delete (no soft-delete / undo; the UI confirms first).
+ *          404 when no row of the signed-in user matched (another user's id or
+ *          an unknown id look the same, so ids of other users are not probed).
  */
 
 const MAX_NOTES = 50
 const MAX_TEXT = 10_000
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function GET() {
   try {
@@ -18,7 +22,7 @@ export async function GET() {
     if (!u.user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     const { data, error } = await supabase
       .from('notes')
-      .select('id, text, created_at')
+      .select('id, text, created_at, attachments')
       .eq('user_id', u.user.id)
       .order('created_at', { ascending: false })
       .limit(MAX_NOTES)
@@ -58,12 +62,15 @@ export async function DELETE(req: NextRequest) {
     if (!u.user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     const id = req.nextUrl.searchParams.get('id')
     if (!id) return NextResponse.json({ error: '`id` is required' }, { status: 400 })
-    const { error } = await supabase
+    if (!UUID_RE.test(id)) return NextResponse.json({ error: '`id` must be a uuid' }, { status: 400 })
+    const { data, error } = await supabase
       .from('notes')
       .delete()
       .eq('id', id)
       .eq('user_id', u.user.id) // belt-and-braces with RLS
+      .select('id')
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+    if (!data || data.length === 0) return NextResponse.json({ error: 'Note not found' }, { status: 404 })
     return NextResponse.json({ ok: true })
   } catch {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 })
