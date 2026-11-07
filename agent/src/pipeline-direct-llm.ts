@@ -125,6 +125,17 @@ export function withLastUserContent(chatCtx: llm.ChatContext, text: string): llm
   return chatCtx
 }
 
+/** Text of the last user message in `chatCtx` (string parts joined), or `fallback`. */
+function lastUserText(chatCtx: llm.ChatContext, fallback: string): string {
+  for (let i = chatCtx.items.length - 1; i >= 0; i--) {
+    const item = chatCtx.items[i] as any
+    if (item.type === 'message' && item.role === 'user') {
+      return Array.isArray(item.content) ? item.content.filter((c: any) => typeof c === 'string').join('\n') : fallback
+    }
+  }
+  return fallback
+}
+
 export interface InterruptionContext {
   spokenText: string       // what user heard (word-accurate from LiveKit synchronizedTranscript)
   recentMessages: string   // last 10 assistant messages from JSONL (full untruncated)
@@ -145,6 +156,8 @@ export interface PipelineDirectOptions extends ClaudeLLMOptions {
   getResearchContext?: () => string | undefined
   /** Returns pending interruption context and clears it (consumed once). null = no pending interruption. */
   getAndConsumeInterruptionContext?: () => InterruptionContext | null
+  /** Returns pending client notices as a hidden-context block and clears them ('' = none). */
+  getAndConsumeClientNotes?: () => string
 }
 
 export interface FastBrainPanelResult {
@@ -441,6 +454,15 @@ export class PipelineDirectLLM extends llm.LLM {
     } else if (sessionTailBlock && userText.trim()) {
       // No interrupt context — post-compaction session tail on a shallow copy.
       ctxForClaude = withLastUserContent(chatCtx, sessionTailBlock + '\n\n' + userText)
+    }
+
+    // Client notices (favorite_changed, L2b): UI actions that are context, not a
+    // user turn. They ride the next real user turn as a leading
+    // <system-reminder> block on the same shallow copy (the sanitizer strips
+    // that block from history and titles). Never on meeting chunks.
+    const clientNotes = (!isMeetingChunkEarly && userText.trim()) ? this.#opts.getAndConsumeClientNotes?.() : ''
+    if (clientNotes) {
+      ctxForClaude = withLastUserContent(chatCtx, clientNotes + '\n\n' + lastUserText(ctxForClaude, userText))
     }
 
     // Meeting chunks ([MEETING —]) are the silent-observer / addressed-response
