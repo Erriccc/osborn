@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { MessageBubble } from './MessageBubble'
+import { ApprovalCard, type PermissionRequest } from './PermissionModal'
 import type { ChatMessage, SpeakingChunk } from './shared'
 
 // Suggestion prompts (AI SDK style)
@@ -22,6 +23,9 @@ export function ChatPanel({
   onIgnore,
   onReplay,
   likedIds,
+  pendingPermission,
+  onPermissionRespond,
+  reviewMode,
 }: {
   messages: ChatMessage[]
   onSuggestionClick?: (text: string) => void
@@ -32,6 +36,11 @@ export function ChatPanel({
   onIgnore?: (msg: ChatMessage) => void
   onReplay?: (msg: ChatMessage) => void
   likedIds?: Set<string>
+  // A pending tool-permission request, rendered as an inline card at the bottom
+  // of the transcript (replaces the old blocking full-screen modal).
+  pendingPermission?: PermissionRequest | null
+  onPermissionRespond?: (response: 'allow' | 'deny' | 'always_allow') => void
+  reviewMode?: boolean
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
@@ -68,7 +77,9 @@ export function ChatPanel({
       // New content arrived while scrolled up — show the jump pill.
       setShowJumpPill(true)
     }
-  }, [messages, activeResearch])
+    // pendingPermission in deps: scroll the inline approval card into view when
+    // it appears so a request never surfaces off-screen below the fold.
+  }, [messages, activeResearch, pendingPermission])
 
   // Show "scroll to speaking" pill when the highlighted span is off-screen
   useEffect(() => {
@@ -217,6 +228,17 @@ export function ChatPanel({
               {activeResearch.toolCount} tool{activeResearch.toolCount !== 1 ? 's' : ''} used
             </p>
           </div>
+        </div>
+      )}
+      {/* Inline approval card — pending tool permission, in the message flow.
+          Replaces the blocking full-screen modal; the rest of the UI stays live. */}
+      {pendingPermission && onPermissionRespond && (
+        <div className="w-full lg:max-w-3xl lg:mx-auto px-1">
+          <ApprovalCard
+            permission={pendingPermission}
+            onRespond={onPermissionRespond}
+            reviewMode={reviewMode}
+          />
         </div>
       )}
     </div>
