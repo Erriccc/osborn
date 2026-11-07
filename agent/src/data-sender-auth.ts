@@ -17,7 +17,7 @@
  *     mcp_toggle, set_agents, skill_add, skill_remove, noise_cancel,
  *     gate_send_anyway, stop_dispatch, join_meeting, leave_meeting, start_ide,
  *     stop_ide, spawn_background_session, dispatch_background,
- *     stop_background_session, list_slots, list_processes
+ *     stop_background_session, list_slots, list_processes, favorite_changed
  *   Open (read-only, listed in READ_ONLY_MESSAGE_TYPES):
  *     get_current_session, get_session_artifacts, get_plan_file,
  *     get_research_artifact, get_mcp_status, get_skills, get_agents, skill_get
@@ -61,6 +61,8 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'stop_background_session',
   'list_slots',
   'list_processes',
+  // Feeds hidden context into the next turn (UI#21), so controller-only.
+  'favorite_changed',
 ])
 
 /** Read-only queries any participant may send. Everything else is gated. */
