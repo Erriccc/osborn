@@ -29,16 +29,22 @@ function Section({ title, hint, files, render }: { title: string; hint?: string;
   )
 }
 
-function useTick(ms: number) {
+/** Re-render every `ms` while `enabled` (the tab is on screen); no timer for
+ *  a hidden tab. */
+function useTick(ms: number, enabled: boolean) {
   const [, setN] = useState(0)
-  useEffect(() => { const id = setInterval(() => setN((n) => n + 1), ms); return () => clearInterval(id) }, [ms])
+  useEffect(() => {
+    if (!enabled) return
+    const id = setInterval(() => setN((n) => n + 1), ms)
+    return () => clearInterval(id)
+  }, [ms, enabled])
 }
 
 export function OutputsTab({ active }: PanelTabProps) {
   const { generatedFiles, sessionId, outputs } = usePanelData()
   const [query, setQuery] = useState('')
   const [view, setView] = useState<'recent' | 'project'>('recent')
-  useTick(15_000) // keeps "Synced 12s ago" and relative times fresh
+  useTick(15_000, active) // keeps "Synced 12s ago" and relative times fresh
 
   const files = generatedFiles as OutputFile[]
   const pinned = outputs.pinnedPaths

@@ -153,6 +153,7 @@ export function countNew(files: readonly OutputFile[], seenAt: number): number {
 function hasSearchableText(f: OutputFile): f is OutputFile & { content: string } {
   if (typeof f.content !== 'string' || f.content.length === 0) return false
   if (f.isImage || isImageName(f.fileName)) return false
+  if (isSensitivePath(f.filePath)) return false // never surface a secret's text
   return true
 }
 
@@ -411,11 +412,102 @@ export function regeneratePrompt(f: Pick<OutputFile, 'fileName' | 'filePath'>): 
   return `Please regenerate ${f.fileName}. It is one of my favorites, but its saved copy is missing (it was at ${f.filePath}). Write it again and tell me where you saved it.`
 }
 
+// ── Which paths the browser may ask the agent for ────────────────────────────
+// The agent's own check is a substring match (fixed agent-side separately), so
+// the browser must never send it a path like /x/osb/../../.env. Rules:
+//   - absolute, no backslash / NUL, no `.` or `..` segment (// is collapsed);
+//   - PREFIX match against a known root: <home>/.claude/projects/<slug>/osb/<sid>/,
+//     <home>/.osborn/sessions|research/, or (plans) <home>/.claude/plans/.
+//     <home> is one or more segments, none starting with a dot;
+//   - below the root: no dot-segment and no secret-looking name.
+
+const RESEARCH_ROOTS: RegExp[] = [
+  /^(?:\/[^/.][^/]*)+\/\.claude\/projects\/[^/]+\/osb\/[^/.][^/]*\//,
+  /^(?:\/[^/.][^/]*)+\/\.osborn\/(?:sessions|research)\//,
+]
+const PLAN_ROOTS: RegExp[] = [/^(?:\/[^/.][^/]*)+\/\.claude\/plans\//]
+
+/** Names that may hold credentials: never fetched, never previewed. */
+const SECRET_NAME_RES: RegExp[] = [
+  /^\.env/i,
+  /\.pem$/i,
+  /\.key$/i,
+  /^id_rsa/i,
+  /credentials/i,
+  /secret/i,
+  /^\.npmrc$/i,
+  /^\.netrc$/i,
+]
+
+/** Canonical absolute path (duplicate slashes collapsed), or null when it is
+ *  relative, has a `.`/`..` segment, a backslash or a NUL. */
+export function normalizeAgentPath(filePath: string): string | null {
+  if (typeof filePath !== 'string' || !filePath.startsWith('/')) return null
+  if (filePath.includes('\\') || filePath.includes('\0')) return null
+  const segs = filePath.split('/').filter((s) => s.length > 0)
+  if (segs.length === 0) return null
+  if (segs.some((s) => s === '.' || s === '..')) return null
+  return '/' + segs.join('/')
+}
+
+function isSensitiveSegment(s: string): boolean {
+  return s.startsWith('.') || SECRET_NAME_RES.some((re) => re.test(s))
+}
+
+/** The file name is a dotfile or looks like a secret (.env*, *.pem, *.key,
+ *  id_rsa*, *credentials*, *secret*, .npmrc, .netrc). Such a file is never
+ *  fetched or previewed, whatever its folder (agent path or bucket key). */
+export function isSensitivePath(filePath: string): boolean {
+  const name = String(filePath || '').split(/[\\/]/).pop() || ''
+  return isSensitiveSegment(name)
+}
+
+function servedRootMatch(norm: string, source?: string): string | null {
+  for (const re of source === 'plan' ? PLAN_ROOTS : RESEARCH_ROOTS) {
+    const m = re.exec(norm)
+    if (m) return m[0]
+  }
+  return null
+}
+
 /** Can the agent send this file's body? get_research_artifact serves only the
- *  session workspace (and legacy .osborn dirs); get_plan_file serves plans. */
+ *  session workspace (and legacy .osborn dirs); get_plan_file serves plans.
+ *  Strict prefix + traversal + secret-name rules (see above). */
 export function agentCanServe(filePath: string, source?: string): boolean {
-  if (source === 'plan') return filePath.includes('.claude/plans/')
-  return filePath.includes('/osb/') || filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')
+  const norm = normalizeAgentPath(filePath)
+  if (!norm) return false
+  const root = servedRootMatch(norm, source)
+  if (!root) return false
+  const rest = norm.slice(root.length).split('/').filter(Boolean)
+  return rest.length > 0 && !rest.some(isSensitiveSegment)
+}
+
+/** loadError marker for a path the browser refuses to request (traversal,
+ *  dotfile or secret-looking name). Shown as a plain "Preview not available". */
+export const LOAD_ERROR_DENIED = 'not-served'
+
+export type ContentRequest =
+  | { kind: 'skip' }
+  | { kind: 'deny'; loadError: string }
+  | { kind: 'send'; message: { type: 'get_plan_file' | 'get_research_artifact'; filePath: string } }
+
+/** What a body request for this file should do. Only the controlling tab asks
+ *  the agent for bodies (a standby tab must not drive the room). A traversal,
+ *  dotfile or secret-looking path is denied; any other path outside the served
+ *  roots is "outside the workspace" (the agent would silently ignore it). */
+export function contentRequestFor(f: Pick<OutputFile, 'filePath' | 'source'>, opts: { isController: boolean }): ContentRequest {
+  if (!opts.isController) return { kind: 'skip' }
+  if (agentCanServe(f.filePath, f.source)) {
+    return {
+      kind: 'send',
+      message: f.source === 'plan'
+        ? { type: 'get_plan_file', filePath: f.filePath }
+        : { type: 'get_research_artifact', filePath: f.filePath },
+    }
+  }
+  const norm = normalizeAgentPath(f.filePath)
+  if (!norm || isSensitivePath(norm) || servedRootMatch(norm, f.source)) return { kind: 'deny', loadError: LOAD_ERROR_DENIED }
+  return { kind: 'deny', loadError: LOAD_ERROR_OUTSIDE }
 }
 
 export type FavoriteSaveOutcome = 'ok' | 'local-only' | 'rollback'

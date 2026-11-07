@@ -60,6 +60,10 @@ export function takeTypedEcho(
   pending: readonly PendingTyped[],
   echo: { text: string; clientMsgId?: string | null },
   now: number,
+  /** The agent has returned a clientMsgId at least once this session. Then an
+   *  id-less user_transcript is a spoken turn, never a typed echo, so the text
+   *  fallback (meant for older agents only) must not swallow it. */
+  opts: { agentSendsIds?: boolean } = {},
 ): { duplicate: boolean; pending: PendingTyped[] } {
   const live = prune(pending, now)
   if (echo.clientMsgId) {
@@ -67,6 +71,7 @@ export function takeTypedEcho(
     if (i < 0) return { duplicate: false, pending: live }
     return { duplicate: true, pending: [...live.slice(0, i), ...live.slice(i + 1)] }
   }
+  if (opts.agentSendsIds) return { duplicate: false, pending: live }
   const key = echoMatchKey(echo.text)
   if (key === null) return { duplicate: false, pending: live }
   const i = live.findIndex((p) => p.key !== null && p.key === key)

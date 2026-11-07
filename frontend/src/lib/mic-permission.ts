@@ -71,6 +71,44 @@ export function shouldAutoEnableMic(s: { denied: boolean; muted: boolean }): boo
   return !s.denied && !s.muted
 }
 
+/** PermissionStatus.state for 'microphone' (null: no Permissions API, or the
+ *  browser does not know the 'microphone' name, e.g. older Firefox). */
+export type MicPermissionState = 'granted' | 'prompt' | 'denied'
+
+export interface MicBrowserCheck {
+  permission: MicPermissionState | null
+  /** PerformanceNavigationTiming.type of this document ('reload', 'navigate'…).
+   *  Only consulted when there is no Permissions API answer. */
+  navigationType?: string | null
+}
+
+/** Review MAJOR 1: the denial flag lives in sessionStorage, which survives a
+ *  reload, so a user who later allowed the mic in site settings stayed muted.
+ *  The browser's own answer wins: granted or prompt clears the flag, denied
+ *  keeps it. Without the Permissions API, a page reload clears it (the help
+ *  text tells the user to "reload this page" after allowing). */
+export function micDeniedAfterCheck(denied: boolean, check: MicBrowserCheck): boolean {
+  if (check.permission === 'granted' || check.permission === 'prompt') return false
+  if (check.permission === 'denied') return denied
+  if (check.navigationType === 'reload') return false
+  return denied
+}
+
+/** Apply micDeniedAfterCheck to the stored flag; returns the new value. */
+export function reconcileMicDenied(store: KV, check: MicBrowserCheck): boolean {
+  const before = isMicDenied(store)
+  const after = micDeniedAfterCheck(before, check)
+  if (after !== before) setMicDenied(store, after)
+  return after
+}
+
+/** The mute button must not claim "unmuted" while no audio is published
+ *  (denied, joined without the mic, or not yet enabled). `micPublished`
+ *  undefined = unknown (no local participant yet): trust the user's toggle. */
+export function micShownMuted(s: { muted: boolean; micPublished: boolean | undefined }): boolean {
+  return s.muted || s.micPublished === false
+}
+
 export type MicPlatform = 'ios' | 'android' | 'chrome' | 'edge' | 'safari' | 'firefox' | 'other'
 
 export function micPlatform(env: { ua: string; maxTouchPoints?: number }): MicPlatform {

@@ -6,7 +6,7 @@
 // this tab connects, the other tab drops its room (without making the agent
 // leave) and shows the mirror notice. Browsers without the Web Locks API keep
 // the old single-tab behaviour (always active).
-import { tabGuardReducer, shouldConnectOnTransition, tabGuardCopy, controlsEnabled, type TabRole } from '../src/lib/tab-guard'
+import { tabGuardReducer, shouldConnectOnTransition, tabGuardCopy, controlsEnabled, shouldRetryLockProbe, lockOutcomeAfterRestore, TAB_LOCK_RETRIES, type TabRole } from '../src/lib/tab-guard'
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -48,6 +48,19 @@ t('copy', () => {
   ok(/another tab/i.test(tabGuardCopy('taken-over')!.title), 'taken-over title')
   eq(tabGuardCopy('active'), null, 'no notice when active')
   eq(tabGuardCopy('probing'), null, 'no notice while probing')
+})
+
+t('a missed probe is retried once before standby', () => {
+  eq(TAB_LOCK_RETRIES, 1, 'one retry')
+  eq(shouldRetryLockProbe(0), true, 'first miss retries')
+  eq(shouldRetryLockProbe(1), false, 'second miss shows standby')
+})
+t('bfcache restore: re-request outcome', () => {
+  eq(lockOutcomeAfterRestore('active', true), { type: 'acquired' }, 'got it back')
+  eq(tabGuardReducer('active', lockOutcomeAfterRestore('active', false)), 'taken-over', 'another tab controls now: stop')
+  eq(tabGuardReducer('standby', lockOutcomeAfterRestore('standby', true)), 'active', 'standby tab becomes controller')
+  eq(tabGuardReducer('standby', lockOutcomeAfterRestore('standby', false)), 'standby', 'still standby')
+  eq(tabGuardReducer('taken-over', lockOutcomeAfterRestore('taken-over', false)), 'taken-over', 'still taken over')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
