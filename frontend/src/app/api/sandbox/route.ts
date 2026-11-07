@@ -937,7 +937,10 @@ export async function POST(request: Request) {
       const previewUrl = ccSandbox.previewUrl
       if (previewUrl) {
         try {
+          // /sessions is now owner-gated on the agent — send the Bearer it expects.
+          const ccSyncToken = await getSyncToken()
           const r = await fetch(`${previewUrl}/sessions?limit=200`, {
+            headers: ccSyncToken ? { Authorization: `Bearer ${ccSyncToken}` } : {},
             signal: AbortSignal.timeout(5000),
           })
           if (r.ok) {
