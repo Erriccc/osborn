@@ -122,6 +122,42 @@ export function canBecomeController(
   return !!participantUserId && participantUserId === ownerUserId
 }
 
+export interface JoinDecision {
+  /** Build the voice session for this joiner (index.ts participantConnectedHandler). */
+  adoptSession: boolean
+  /** Controlling identity after this join. */
+  controller: string | null
+}
+
+/**
+ * What a non-canvas participant joining the room changes. Pure, so the
+ * controller rules are testable without LiveKit.
+ * - `user-*` joiner allowed by canBecomeController: gets the session and
+ *   becomes the controller (newest eligible joiner wins).
+ * - `user-*` joiner that is not the owner: ignored entirely.
+ * - The agent's own identity (watch gateway): keeps its voice session as
+ *   before, but NEVER becomes the controller, so the owner's commands keep
+ *   working; it can still send permission_response (checkControlSender).
+ * - Any other identity: never the controller; gets a session only in
+ *   single-tenant mode (no owner), matching the old behavior there.
+ */
+export function resolveJoin(
+  joinerIdentity: string,
+  joinerUserId: string | undefined | null,
+  ownerUserId: string | undefined | null,
+  currentController: string | null,
+): JoinDecision {
+  if (joinerIdentity === AGENT_SELF_IDENTITY) {
+    return { adoptSession: true, controller: currentController }
+  }
+  if (joinerIdentity.startsWith(USER_IDENTITY_PREFIX)) {
+    return canBecomeController(joinerUserId, ownerUserId)
+      ? { adoptSession: true, controller: joinerIdentity }
+      : { adoptSession: false, controller: currentController }
+  }
+  return { adoptSession: !ownerUserId, controller: currentController }
+}
+
 /**
  * userId from a participant's token metadata (JSON set by /api/token and signed
  * into the JWT). Participants cannot change their own metadata unless the token
