@@ -25,12 +25,13 @@
  * gesture), and ended the voice session mid-conversation.
  */
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
 import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
 import { MIC_DENIED_EVENT, isMicDenied } from '@/lib/mic-permission'
+import { TAB_LOCK_NAME, controlsEnabled, shouldConnectOnTransition, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
 
 interface ChatSessionContextValue {
   // ── Connection state ───────────────────────
@@ -66,6 +67,9 @@ interface ChatSessionContextValue {
   // True when the session was stopped due to inactivity. VoiceRoom renders
   // a resume overlay instead of the normal UI. Cleared on reconnect.
   idleStopped: boolean
+  // True while THIS tab controls the session (bug 619af155). A second tab
+  // stays out of the room until the user takes over.
+  isController: boolean
 }
 
 const ChatSessionContext = createContext<ChatSessionContextValue | null>(null)
@@ -125,6 +129,53 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [lastActivityAt, setLastActivityAt] = useState(Date.now())
   const [authRequired, setAuthRequired] = useState(false)
   const [idleStopped, setIdleStopped] = useState(false)
+
+  // ── One controlling tab per browser (bug 619af155, frontend minimum) ──────
+  // The agent hands the session to the newest joiner and greets it, so a
+  // second tab used to steal the session. This tab holds a Web Lock while it
+  // controls the session; a tab that cannot get it does not join the room
+  // (no greeting, no mic, no send) until the user presses Take over, which
+  // steals the lock. The previous holder's lock request then rejects with
+  // AbortError and that tab drops its room (without /leave-room).
+  const [tabRole, dispatchTab] = useReducer(tabGuardReducer, 'probing' as TabRole)
+  const tabRoleRef = useRef<TabRole>(tabRole)
+  tabRoleRef.current = tabRole
+  const tabLockReleaseRef = useRef<(() => void) | null>(null)
+  const requestTabLock = useCallback((steal: boolean, isCancelled: () => boolean = () => false) => {
+    const locks = typeof navigator !== 'undefined'
+      ? (navigator as unknown as { locks?: { request: (name: string, opts: Record<string, unknown>, cb: (lock: unknown) => unknown) => Promise<unknown> } }).locks
+      : undefined
+    if (!locks?.request) { dispatchTab({ type: 'unsupported' }); return }
+    locks.request(TAB_LOCK_NAME, steal ? { steal: true } : { ifAvailable: true }, (lock) => {
+      if (isCancelled()) return undefined
+      if (!lock) { dispatchTab({ type: 'unavailable' }); return undefined }
+      dispatchTab({ type: 'acquired' })
+      // Hold the lock until this provider unmounts (or it is stolen).
+      return new Promise<void>((resolve) => { tabLockReleaseRef.current = resolve })
+    }).catch((err: { name?: string } | undefined) => {
+      if (err?.name === 'AbortError') {
+        tabLockReleaseRef.current = null
+        dispatchTab({ type: 'stolen' })
+      }
+    })
+  }, [])
+  useEffect(() => {
+    let cancelled = false
+    // Deferred one tick so a StrictMode mount/unmount/mount never makes this
+    // tab hold the lock twice (and see itself as "another tab").
+    const t = setTimeout(() => requestTabLock(false, () => cancelled), 0)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+      tabLockReleaseRef.current?.()
+      tabLockReleaseRef.current = null
+    }
+  }, [requestTabLock])
+  const takeOverTab = useCallback(() => {
+    if (tabRoleRef.current !== 'standby' && tabRoleRef.current !== 'taken-over') return
+    dispatchTab({ type: 'take-over' })
+    requestTabLock(true)
+  }, [requestTabLock])
 
   // ═══════════════════════════════════════════════════════════════════════
   // Sprites cloud sandbox keepalive.
@@ -491,13 +542,28 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     workingDirectory,
   ])
 
-  // Auto-connect on first mount. Keep the deps array empty on purpose — we
-  // only want to connect once per provider-mount, not re-trigger when the
-  // `connect` callback identity changes.
+  // Auto-connect when this tab becomes the controller (first mount, or after
+  // Take over) — never in a standby tab, so it does not join the room or
+  // trigger a greeting. Not re-triggered by `connect` identity changes.
+  // Losing control drops the room locally; the agent is NOT told to leave
+  // (the tab that took over is joining it).
+  const prevTabRoleRef = useRef<TabRole>('probing')
   useEffect(() => {
-    connect()
+    const prev = prevTabRoleRef.current
+    prevTabRoleRef.current = tabRole
+    if (shouldConnectOnTransition(prev, tabRole)) {
+      void connect()
+    } else if (tabRole === 'taken-over') {
+      setConnected(false)
+      setToken(null)
+      setRoomCode(null)
+      setStatusMsg(null)
+      setConnecting(false)
+    } else if (tabRole === 'standby') {
+      setConnecting(false)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [tabRole])
 
   // Two disconnect paths — they ONLY differ in whether they ask the agent to
   // leave its LiveKit room.
@@ -590,6 +656,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   //     back on the warm brain once the server-side grace/re-attach ships. Never
   //     call /leave-room on this path (preserves the agent's room).
   const disconnectFromLiveKitLifecycle = useCallback((reason?: DisconnectReason) => {
+    // Control moved to another tab: this drop is expected; stay on the notice.
+    if (tabRoleRef.current !== 'active') return
     if (reason === DisconnectReason.DUPLICATE_IDENTITY) {
       console.log('🔀 Session moved to another device (duplicate identity) — standing down')
       setStatusMsg('This session is now active on another device.')
@@ -657,6 +725,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return
+      if (tabRoleRef.current !== 'active') return
       if (!everConnectedRef.current) return
       if (connectedRef.current || idleStoppedRef.current) return
       if (reconnectAttemptsRef.current >= MAX_AUTO_RECONNECTS) return
@@ -727,6 +796,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     markAuthRequired,
     markVoiceActivity,
     idleStopped,
+    isController: controlsEnabled(tabRole),
   }
 
   // Bug 7cf00ae6: LiveKitRoom publishes the mic on EVERY signal (re)connect,
@@ -774,6 +844,35 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // Why not always render LiveKitRoom with a nullable token: the LiveKit
   // component requires a non-null token at mount time and logs noisy errors
   // if given null. Conditional mount is cleaner.
+  const guardCopy = tabGuardCopy(tabRole)
+  if (guardCopy) {
+    return (
+      <ChatSessionContext.Provider value={value}>
+        <main className="min-h-[100dvh] bg-[var(--background)] flex flex-col items-center justify-center p-8 gap-5" data-testid="tab-guard">
+          <div className="text-center max-w-sm">
+            <p className="text-[var(--text-primary)] text-lg font-medium">{guardCopy.title}</p>
+            <p className="text-[var(--text-muted)] text-sm mt-1.5 leading-relaxed">{guardCopy.body}</p>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={takeOverTab}
+              disabled={tabRole === 'taking'}
+              className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-60"
+            >
+              {tabRole === 'taking' ? 'Taking over…' : guardCopy.action}
+            </button>
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="px-4 py-2 rounded-lg text-[var(--text-muted)] text-sm hover:text-[var(--text-secondary)] transition-colors"
+            >
+              Back to dashboard
+            </button>
+          </div>
+        </main>
+      </ChatSessionContext.Provider>
+    )
+  }
+
   return (
     <ChatSessionContext.Provider value={value}>
       {token && roomCode && !idleStopped ? (
