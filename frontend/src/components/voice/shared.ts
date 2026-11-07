@@ -133,6 +133,8 @@ export interface ChatMessage {
   messageId?: string
   chunkIndex?: number
   liked?: boolean
+  // Set on the in-chat card for a file the agent just wrote (renders FileCard).
+  fileRef?: { filePath: string; fileName: string }
 }
 
 export interface SpeakingChunk {
@@ -195,6 +197,12 @@ export interface GeneratedFile {
   // the payload. Frontend can show a "truncated — N KB original" hint.
   truncated?: boolean
   originalSize?: number
+  // Outputs drawer (L4): session whose workspace holds the file, when this
+  // browser first saw it written, and an agent read error (replaces the old
+  // literal "Empty file" body).
+  sessionId?: string
+  createdAt?: Date
+  loadError?: string
 }
 
 // Harness-internal interruption wrappers (the "[INTERRUPTED] / CONTEXT PRESERVATION"

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { MarkdownMessage } from '../MarkdownMessage'
+import { FileCard } from '../chat/FileCard'
 import { sanitizeUserTranscript, stripProvenance, type ChatMessage, type MessagePart, type SpeakingChunk } from './shared'
 
 // Streaming indicator dots
@@ -249,6 +250,11 @@ export const MessageBubble = React.memo(function MessageBubble({
     }
     return message.parts || [{ type: 'text' as const, content: raw }]
   }, [message])
+
+  // In-chat file card (L4): the agent wrote a file; show it where the work happened.
+  if (message.fileRef) {
+    return <FileCard filePath={message.fileRef.filePath} fileName={message.fileRef.fileName} />
+  }
 
   // Date / prior-conversation dividers — centered hairline label (Slack-style),
   // not a notice box. Emitted by buildPriorItems as system rows starting with ──.
