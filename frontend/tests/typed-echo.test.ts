@@ -119,5 +119,16 @@ t('nothing left -> null (hidden), never the "Voice session" fallback', () => {
   eq(userBubbleText('<session_tail>old</session_tail>'), null, 'tail only')
 })
 
+t('text fallback only while the agent has never returned a clientMsgId', () => {
+  const pend = rememberTyped([], { clientMsgId: 'a', text: 'yes', now: 0 })
+  // Older agent (never returns ids): an id-less echo is matched by text.
+  eq(takeTypedEcho(pend, { text: 'yes' }, 10).duplicate, true, 'legacy agent text match')
+  // Agent that returns ids: an id-less user_transcript is a spoken turn.
+  const r = takeTypedEcho(pend, { text: 'yes' }, 10, { agentSendsIds: true })
+  eq(r.duplicate, false, 'spoken "yes" is kept')
+  eq(r.pending.length, 1, 'typed entry still awaits its id echo')
+  eq(takeTypedEcho(r.pending, { text: 'yes', clientMsgId: 'a' }, 20, { agentSendsIds: true }).duplicate, true, 'id echo still deduped')
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

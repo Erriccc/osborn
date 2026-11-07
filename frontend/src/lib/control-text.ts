@@ -17,6 +17,14 @@ const TIME_TAG_RE = /^\s*(?:\[time:[^\]]*\]\s*)+/
 // holds even if the shared cleaner's list changes.
 const CONTROL_PREFIXES: RegExp[] = [
   /^\[SYSTEM\s*[—–-]\s*SILENT CONTROL MESSAGE/i,
+  // Generic '[SYSTEM]' / '[SYSTEM —|:|-' is kept on purpose (review MINOR,
+  // 2026-11-07). A user who types "[SYSTEM] hi" is hidden too, but narrowing
+  // this to the known agent templates here alone would not make that text
+  // visible: the agent's shared sanitizer (agent/src/content/transcript-
+  // sanitizer.ts, DROP_PREFIXES) and the frontend cleaner (transcript-clean.ts,
+  // titles and history) drop the same generic shape, so the bubble would show
+  // live and vanish on resume. "[SYSTEM design] …" (no ], :, or dash) is not
+  // matched. Narrow all three together if this ever matters.
   /^\[SYSTEM(?:\]|\s*[—–:-])/,
   /^\[Request interrupted by user/,
   /^\[ignored:/,
