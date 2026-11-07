@@ -74,7 +74,37 @@ t('NoteSheet: shows the full text (no line clamp) and a dialog role', () => {
   ok(/role="dialog"/.test(sheet) && /aria-modal="true"/.test(sheet), 'not a modal dialog')
 })
 
-let fail = 0
-for (const [n, p, m] of results) { console.log(`${p ? 'PASS' : 'FAIL'}  ${n}${m ? '\n      ' + m : ''}`); if (!p) fail++ }
-console.log(`\n${results.length - fail}/${results.length} passed`)
-process.exit(fail ? 1 : 0)
+async function behaviour() {
+  const m: any = await import('../src/components/dashboard/NoteSheet')
+  const { safeAttachmentHref, attachmentLabel } = m
+  t('safeAttachmentHref: javascript: attachment is not a link', () => {
+    ok(safeAttachmentHref('javascript:alert(1)') === null, 'javascript: produced an href')
+    ok(safeAttachmentHref('JavaScript:alert(1)') === null, 'mixed-case javascript: produced an href')
+    ok(safeAttachmentHref('data:text/html,<script>1</script>') === null, 'data: produced an href')
+    ok(safeAttachmentHref('not a url') === null, 'unparseable string produced an href')
+  })
+  t('safeAttachmentHref: http(s) attachments stay links', () => {
+    ok(safeAttachmentHref('https://x.supabase.co/storage/a.png') === 'https://x.supabase.co/storage/a.png', 'https dropped')
+    ok(safeAttachmentHref('http://x/a.png') === 'http://x/a.png', 'http dropped')
+  })
+  t('attachmentLabel: malformed % does not throw and falls back to the raw segment', () => {
+    let out = ''
+    try { out = attachmentLabel('https://x/files/100%25%E0%A4%A.png') } catch (e: any) { throw new Error('threw: ' + e.message) }
+    ok(out === '100%25%E0%A4%A.png', `label ${out}`)
+    ok(attachmentLabel('https://x/my%20file.png') === 'my file.png', 'valid encoding not decoded')
+  })
+  t('NoteSheet: only safe hrefs are rendered as links', () => {
+    ok(!/<a href=\{u\}/.test(sheet), 'raw attachment string used as href')
+    ok(/href \? \(\s*<a href=\{href\}/.test(sheet), 'link not gated on safeAttachmentHref')
+  })
+  t('NoteSheet: focus restored to the opener on close', () => {
+    ok(/const prev = document\.activeElement/.test(sheet) && /return \(\) => \{[^}]*prev\.focus\(\)/.test(sheet), 'no save/restore of activeElement')
+  })
+}
+
+behaviour().then(() => {
+  let fail = 0
+  for (const [n, p, m] of results) { console.log(`${p ? 'PASS' : 'FAIL'}  ${n}${m ? '\n      ' + m : ''}`); if (!p) fail++ }
+  console.log(`\n${results.length - fail}/${results.length} passed`)
+  process.exit(fail ? 1 : 0)
+}, e => { console.error(e); process.exit(1) })
