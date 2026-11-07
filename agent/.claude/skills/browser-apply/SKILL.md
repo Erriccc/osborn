@@ -45,8 +45,9 @@ Secret fields (email, password, phone, address) are filled by the `fill.mjs` hel
      --user-data-dir="$HOME/.osborn/apply-profile"
    ```
 4. Point the Playwright MCP server at that browser with `--cdp-endpoint http://127.0.0.1:9222` (a `@playwright/mcp` flag) in the user's MCP config. Osborn's built-in Playwright catalog entry does not pass this flag yet; without it the MCP launches its own browser and the helper cannot see it.
-5. Optional env for the helper: `CANDIDATE_CDP_URL` (default `http://127.0.0.1:9222`; non-loopback hosts are refused) and `CANDIDATE_ALLOWED_HOSTS` (comma-separated page hosts that may receive values; default `myworkdayjobs.com`, subdomains included, https only). There are no command-line overrides for either.
-6. Verify: `node ~/.claude/skills/browser-apply/fill.mjs check` should end with `cdp: reachable`.
+5. The helper reads NO environment variables and has no path or URL options. Its only config is the optional `CANDIDATE_CDP_URL=` line inside `~/.osborn/candidate.env` (default `http://127.0.0.1:9222`; non-loopback hosts are refused). Only the user edits that file; the model cannot change it.
+6. There is no list of approved job sites. Every fill names ONE exact host that the user confirms out loud just before it (see "Filling secret fields").
+7. Verify: `node ~/.claude/skills/browser-apply/fill.mjs check` should end with `cdp: reachable`.
 
 ## Step-by-Step Execution Pattern
 
@@ -61,7 +62,7 @@ Then: `mcp__playwright__browser_take_screenshot` — show the user what loaded
 
 ### Step 1 — Create Account / Sign In
 Take a snapshot with `mcp__playwright__browser_snapshot` to see element refs.
-Fill the email and password fields with the helper (see "Filling secret fields" below), never by typing values through `mcp__playwright__browser_type` / `browser_fill_form`.
+Ask the user to confirm the host, then fill the email and password fields with the helper (see "Filling secret fields" below), never by typing values through `mcp__playwright__browser_type` / `browser_fill_form`.
 Screenshot to confirm. Then ask user before clicking Create Account / Sign In.
 
 ### Step 2 — Start Application
@@ -102,7 +103,7 @@ Screenshot the confirmation dialog. Save it.
 ## Candidate Data
 
 Personal values are NOT stored in this skill. They live in a local secret file that the model never reads:
-`~/.osborn/candidate.env` (or the path in `$CANDIDATE_ENV_FILE`), `chmod 600`. Template: `candidate.example.env` next to this file.
+`~/.osborn/candidate.env` (fixed path), `chmod 600`. Template: `candidate.example.env` next to this file.
 
 | Value | Env name |
 |---|---|
@@ -122,11 +123,16 @@ Education:
 2. B.S. Psychology
 
 ### Filling secret fields
-Use the helper `fill.mjs` next to this SKILL.md (normally `~/.claude/skills/browser-apply/fill.mjs`). It reads the secret file itself (regular file, owned by you, mode 600), attaches to the loopback CDP browser from "One-time setup", picks the most recent https page on an allowed host (`CANDIDATE_ALLOWED_HOSTS`, default `myworkdayjobs.com`) and fills the fields in its own process. It refuses if no such page is open. It prints only `filled NAME -> selector`, never a value. `--url-contains S` optionally narrows which allowed page is used.
+Use the helper `fill.mjs` next to this SKILL.md (normally `~/.claude/skills/browser-apply/fill.mjs`). It reads `~/.osborn/candidate.env` itself (regular file, owned by you, mode 600) and attaches to the loopback CDP browser from "One-time setup". It fills only on an https page whose host EXACTLY equals `--confirm-host`. Inside the page, right before each field, it checks again that the field's own frame is https on that host. The password goes only into an `<input type="password">`. It prints `about to fill NAME on HOST` before each field and `filled NAME -> selector` after, never a value.
+
+Before EVERY fill command:
+1. Read the exact hostname of the current page (from the snapshot or URL), e.g. `acme.wd1.myworkdayjobs.com`.
+2. Ask the user out loud: "Fill your password on acme.wd1.myworkdayjobs.com?" (name the fields you are about to fill). Wait for a clear yes. No yes, no fill.
+3. Run the command with that same host. The Bash call goes through Osborn's permission prompt, so the user sees the host in the command before it runs.
 
 ```bash
 node ~/.claude/skills/browser-apply/fill.mjs check
-node ~/.claude/skills/browser-apply/fill.mjs fill --url-contains myworkdayjobs \
+node ~/.claude/skills/browser-apply/fill.mjs fill --confirm-host acme.wd1.myworkdayjobs.com \
   CANDIDATE_EMAIL 'input[type="email"]' \
   CANDIDATE_PASSWORD 'input[type="password"]'
 ```
@@ -135,8 +141,9 @@ Rules:
 - NEVER `cat`, `less`, `head`, `echo`, `printenv`, `env`, `grep`, `Read` or otherwise print the secret file or the `CANDIDATE_*` variables.
 - NEVER pass a value to an MCP browser tool or put one in a command line; pass env NAMES only.
 - If `check` reports the file missing or too open, tell the user to create it from `candidate.example.env` and run `chmod 600`; do not create it with values yourself.
-- If `check` says `cdp: unreachable`, or `fill` says no browser is reachable or no allowed page is open, do not work around it: ask the user to type the secret fields themselves.
-- Never change `CANDIDATE_CDP_URL` or `CANDIDATE_ALLOWED_HOSTS` yourself; only the user sets them.
+- If `check` says `cdp: unreachable`, or `fill` refuses (no browser, wrong host, wrong field type), do not work around it: ask the user to type the secret fields themselves.
+- Never edit `~/.osborn/candidate.env`. Only the user changes its values or its `CANDIDATE_CDP_URL` line.
+- Never reuse an earlier confirmation for a different host or a later fill; ask again each time.
 
 ## Workday data-automation-id Selector Reference
 
@@ -162,7 +169,3 @@ Rules:
 - After "You already applied to this job" error — that confirms a previous submission worked
 - Use `{ force: true }` on Workday buttons — overlay click filters block normal clicks
 - Always wait for networkidle or waitForSelector after navigation before interacting
-
-## Playwright Install Location
-Run scripts from: `/Users/newupgrade/Desktop/Developer/osborn/frontend`
-(playwright is in `node_modules` there)

@@ -1,12 +1,12 @@
 // Skill secret scanner. Fails if any shipped skill markdown carries a literal password or a
-// candidate email literal, and checks the browser-apply helper refuses a loosely-permissioned
-// secret file. On failure it prints only file:line and a masked reason, never the matching text.
+// candidate email literal, and checks the browser-apply helper's guards (fixed secret file, no env
+// overrides, loopback CDP, confirmed host, field types). On failure it prints only file:line and a masked reason, never the matching text.
 // Run from repo root: npx --yes tsx agent/tests/skill-secrets.test.ts  (no npm test script exists)
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, userInfo } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -170,7 +170,7 @@ await t('every allowlist entry still matches a real line (no stale entries)', ()
   }
 })
 
-// ---- helper: mode-600 enforcement and no value echo ----------------------------------------
+// ---- helper: fixed secret file, no env overrides, loopback CDP, confirmed host, field types -----
 await t('browser-apply helper exists', () => {
   assert.ok(existsSync(HELPER), 'agent/.claude/skills/browser-apply/fill.mjs missing')
 })
@@ -180,100 +180,183 @@ if (existsSync(HELPER)) {
   const dir = mkdtempSync(join(tmpdir(), 'skill-secrets-'))
   const envFile = join(dir, 'candidate.env')
   writeFileSync(envFile, `# synthetic\nCANDIDATE_EMAIL=${SYN.email}\nCANDIDATE_PASSWORD="${SYN.password}"\nCANDIDATE_PHONE=${SYN.phone}\n`)
+  const noLeak = (out: string) => { for (const v of Object.values(SYN)) assert.ok(!out.includes(v), 'output leaked a value') }
+  const HOST = 'acme.wd1.myworkdayjobs.com'
+  const fileEnv = { CANDIDATE_EMAIL: SYN.email, CANDIDATE_PASSWORD: SYN.password, CANDIDATE_PHONE: SYN.phone }
   try {
-    await t('helper refuses a secret file readable by group/other (0644)', () => {
+    await t('helper source reads no environment variables', () => {
+      const src = readFileSync(HELPER, 'utf8')
+      assert.equal((src.match(/process\.env/g) ?? []).length, 0, 'fill.mjs must not read process.env')
+      assert.ok(!/CANDIDATE_ALLOWED_HOSTS|CANDIDATE_ENV_FILE/.test(src), 'removed override names still present')
+    })
+
+    await t('secret path is fixed under the passwd home, not $HOME', () => {
+      assert.equal(helper.secretPath(), join(userInfo().homedir, '.osborn', 'candidate.env'))
+    })
+
+    await t('inline env overrides are ignored by the CLI (file path, CDP URL, hosts, HOME)', () => {
+      chmodSync(envFile, 0o600)
+      const env = {
+        ...process.env,
+        HOME: dir,
+        CANDIDATE_ENV_FILE: envFile,
+        CANDIDATE_CDP_URL: 'http://203.0.113.5:9222',
+        CANDIDATE_ALLOWED_HOSTS: 'evil.test',
+      }
+      for (const args of [['check'], ['fill', '--confirm-host', 'evil.test', 'CANDIDATE_PASSWORD', 'input']]) {
+        const r = spawnSync(process.execPath, [HELPER, ...args], { env, encoding: 'utf8', timeout: 20_000 })
+        const out = r.stdout + r.stderr
+        noLeak(out)
+        assert.ok(out.includes(helper.secretPath()), `${args[0]}: expected the fixed secret path in output`)
+        assert.ok(!out.includes(envFile) && !out.includes(dir), `${args[0]}: honoured CANDIDATE_ENV_FILE or HOME`)
+        assert.ok(!out.includes('203.0.113.5') && !out.includes('evil.test'), `${args[0]}: honoured an env override`)
+      }
+    })
+
+    await t('loadCandidateEnv refuses 0644, loads 0600, refuses a symlink', () => {
       chmodSync(envFile, 0o644)
       assert.throws(() => helper.loadCandidateEnv(envFile), /600/)
-    })
-    await t('helper loads a 0600 secret file', () => {
       chmodSync(envFile, 0o600)
       const env = helper.loadCandidateEnv(envFile)
       assert.equal(env.CANDIDATE_EMAIL, SYN.email)
       assert.equal(env.CANDIDATE_PASSWORD, SYN.password)
-      assert.equal(env.CANDIDATE_PHONE, SYN.phone)
-    })
-    await t('helper `check` prints variable names only, never values (0600)', () => {
-      chmodSync(envFile, 0o600)
-      const r = spawnSync(process.execPath, [HELPER, 'check'], { env: { ...process.env, CANDIDATE_ENV_FILE: envFile }, encoding: 'utf8' })
-      assert.equal(r.status, 0, 'check exited non-zero')
-      const out = r.stdout + r.stderr
-      assert.ok(out.includes('CANDIDATE_PASSWORD'), 'expected variable name in output')
-      for (const v of Object.values(SYN)) assert.ok(!out.includes(v), 'helper output leaked a value')
-    })
-    await t('helper `check` exits non-zero on a 0644 file without printing values', () => {
-      chmodSync(envFile, 0o644)
-      const r = spawnSync(process.execPath, [HELPER, 'check'], { env: { ...process.env, CANDIDATE_ENV_FILE: envFile }, encoding: 'utf8' })
-      assert.notEqual(r.status, 0)
-      const out = r.stdout + r.stderr
-      for (const v of Object.values(SYN)) assert.ok(!out.includes(v), 'helper output leaked a value')
-    })
-    const runHelper = (args: string[], extra: Record<string, string> = {}) => {
-      chmodSync(envFile, 0o600)
-      const r = spawnSync(process.execPath, [HELPER, ...args], {
-        env: { ...process.env, CANDIDATE_ENV_FILE: envFile, CANDIDATE_CDP_URL: '', CANDIDATE_ALLOWED_HOSTS: '', ...extra },
-        encoding: 'utf8', timeout: 20_000,
-      })
-      const out = r.stdout + r.stderr
-      for (const v of Object.values(SYN)) assert.ok(!out.includes(v), 'helper output leaked a value')
-      return { status: r.status, out }
-    }
-    await t('helper refuses a symlinked secret file', () => {
-      chmodSync(envFile, 0o600)
       const link = join(dir, 'link.env')
       symlinkSync(envFile, link)
       assert.throws(() => helper.loadCandidateEnv(link), /symlink/)
     })
-    await t('resolveCdpUrl accepts loopback only', () => {
+
+    await t('CDP URL: loopback only, from the file or the default', () => {
       for (const ok of ['http://127.0.0.1:9222', 'http://localhost:9222', 'http://[::1]:9222', 'ws://127.0.0.1:9222/devtools/browser/x'])
         assert.doesNotThrow(() => helper.resolveCdpUrl(ok), ok)
       for (const bad of ['http://203.0.113.5:9222', 'http://localhost.evil.test:9222', 'http://127.0.0.1.evil.test:9222', 'http://user:pw@127.0.0.1:9222', 'file:///tmp/x', 'not a url'])
         assert.throws(() => helper.resolveCdpUrl(bad), undefined, bad)
+      assert.equal(helper.cdpFrom({}), 'http://127.0.0.1:9222')
+      assert.equal(helper.cdpFrom({ CANDIDATE_CDP_URL: 'http://localhost:9333' }), 'http://localhost:9333')
+      assert.throws(() => helper.cdpFrom({ CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' }), /loopback/)
     })
-    await t('`fill` with a non-loopback CDP URL exits non-zero before any connection attempt', () => {
-      // The loopback check runs before Playwright is even loaded, so the error must be the loopback
-      // refusal (not "playwright not installed" or "no browser reachable").
-      const r = runHelper(['fill', 'CANDIDATE_PASSWORD', 'input[type="password"]'], { CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' })
-      assert.notEqual(r.status, 0)
-      assert.match(r.out, /not loopback/)
-      assert.doesNotMatch(r.out, /playwright not installed|no browser reachable/)
+
+    await t('ws endpoint from /json/version must also be loopback', async () => {
+      const fake = (ws: string) => async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: ws }) })
+      assert.equal(await helper.resolveWsEndpoint('http://127.0.0.1:9222', fake('ws://127.0.0.1:9222/devtools/browser/abc')), 'ws://127.0.0.1:9222/devtools/browser/abc')
+      await assert.rejects(helper.resolveWsEndpoint('http://127.0.0.1:9222', fake('ws://203.0.113.5:9222/devtools/browser/abc')), /loopback/)
+      await assert.rejects(helper.resolveWsEndpoint('http://127.0.0.1:9222', async () => { throw new Error('ECONNREFUSED') }), /no browser reachable/)
     })
-    await t('`fill` rejects a --cdp option (CDP URL comes only from the environment)', () => {
-      const r = runHelper(['fill', '--cdp', 'http://203.0.113.5:9222', 'CANDIDATE_PASSWORD', 'input'])
-      assert.notEqual(r.status, 0)
-      assert.match(r.out, /unknown option/)
+
+    await t('check report: names and cdp status only, unreachable when the probe fails', async () => {
+      const down = async () => { throw new Error('ECONNREFUSED') }
+      const lines: string[] = await helper.checkReport('/x/candidate.env', fileEnv, down)
+      const out = lines.join('\n')
+      noLeak(out)
+      assert.match(out, /set: CANDIDATE_EMAIL, CANDIDATE_PASSWORD, CANDIDATE_PHONE/)
+      assert.match(out, /cdp: unreachable/)
+      const up = async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' }) })
+      assert.match((await helper.checkReport('/x', fileEnv, up)).join('\n'), /cdp: reachable/)
+      await assert.rejects(helper.checkReport('/x', { ...fileEnv, CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' }, up), /loopback/)
     })
-    await t('`check` refuses a non-loopback CDP URL', () => {
-      const r = runHelper(['check'], { CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' })
-      assert.notEqual(r.status, 0)
-      assert.match(r.out, /not loopback/)
+
+    await t('--confirm-host is required, must be a bare hostname, and other options are refused', () => {
+      assert.throws(() => helper.parseFillArgs(['CANDIDATE_PASSWORD', 'input']), /missing --confirm-host/)
+      for (const bad of ['https://acme.wd1.myworkdayjobs.com', 'acme.wd1.myworkdayjobs.com:443', '*.myworkdayjobs.com', 'acme.wd1.myworkdayjobs.com/x', 'localhost', ''])
+        assert.throws(() => helper.parseFillArgs(['--confirm-host', bad, 'CANDIDATE_PASSWORD', 'input']), undefined, bad)
+      assert.equal(helper.parseFillArgs(['--confirm-host', 'ACME.wd1.MyWorkdayJobs.com', 'CANDIDATE_EMAIL', 'input']).host, HOST)
+      for (const opt of ['--cdp', '--allowed-hosts', '--url-contains'])
+        assert.throws(() => helper.parseFillArgs(['--confirm-host', HOST, opt, 'x', 'CANDIDATE_EMAIL', 'input']), /unknown option/)
     })
-    await t('`check` reports cdp: unreachable for a closed loopback port', () => {
-      const r = runHelper(['check'], { CANDIDATE_CDP_URL: 'http://127.0.0.1:1' })
-      assert.equal(r.status, 0)
-      assert.match(r.out, /cdp: unreachable/)
-      assert.match(r.out, /allowed hosts: myworkdayjobs\.com/)
+
+    await t('fieldVerdict: password only into input[type=password]; exact https host from the element frame', () => {
+      const href = `https://${HOST}/en-US/apply`
+      const v = (name: string, tagName: string, type: string, h = href) => helper.fieldVerdict(name, { tagName, type, href: h }, HOST).ok
+      assert.equal(v('CANDIDATE_PASSWORD', 'INPUT', 'password'), true)
+      for (const [tag, type] of [['INPUT', 'text'], ['INPUT', 'email'], ['INPUT', 'search'], ['INPUT', 'hidden'], ['TEXTAREA', ''], ['DIV', '']])
+        assert.equal(v('CANDIDATE_PASSWORD', tag, type), false, `password into ${tag}/${type}`)
+      assert.equal(v('CANDIDATE_EMAIL', 'INPUT', 'email'), true)
+      assert.equal(v('CANDIDATE_EMAIL', 'INPUT', 'text'), true)
+      for (const [tag, type] of [['INPUT', 'password'], ['INPUT', 'hidden'], ['TEXTAREA', ''], ['INPUT', 'url']])
+        assert.equal(v('CANDIDATE_EMAIL', tag, type), false, `email into ${tag}/${type}`)
+      assert.equal(v('CANDIDATE_PHONE', 'INPUT', 'tel'), true)
+      assert.equal(v('CANDIDATE_PHONE', 'INPUT', 'hidden'), false)
+      assert.equal(v('CANDIDATE_ADDRESS_LINE1', 'TEXTAREA', ''), true)
+      // frame checks (cross-origin iframe, http, parent/sub/lookalike host)
+      for (const bad of [`http://${HOST}/`, 'https://evil.test/', 'https://myworkdayjobs.com/', `https://x.${HOST}/`, `https://${HOST}.evil.test/`, 'about:blank', ''])
+        assert.equal(v('CANDIDATE_PASSWORD', 'INPUT', 'password', bad), false, `frame ${bad}`)
     })
-    await t('page host allowlist: default myworkdayjobs.com, https only, subdomains ok, env override', () => {
-      const def = helper.allowedHosts(undefined)
-      assert.ok(helper.hostAllowed('https://acme.wd1.myworkdayjobs.com/en-US/careers/apply', def))
-      assert.ok(!helper.hostAllowed('http://acme.wd1.myworkdayjobs.com/', def), 'http must be refused')
-      assert.ok(!helper.hostAllowed('https://myworkdayjobs.com.evil.test/', def))
-      assert.ok(!helper.hostAllowed('https://evilmyworkdayjobs.com/', def))
-      assert.ok(!helper.hostAllowed('https://evil.test/?u=myworkdayjobs.com', def))
-      const custom = helper.allowedHosts(' jobs.example.test , .greenhouse.io ')
-      assert.deepEqual(custom, ['jobs.example.test', 'greenhouse.io'])
-      assert.ok(helper.hostAllowed('https://boards.greenhouse.io/x', custom))
-      assert.ok(!helper.hostAllowed('https://acme.wd1.myworkdayjobs.com/', custom))
+
+    // Fake Playwright: elements expose the same DOM surface IN_PAGE_FILL uses.
+    const fakeEl = (tagName: string, type: string, href: string) => {
+      const proto: any = {}
+      Object.defineProperty(proto, 'value', { set(this: any, x: string) { this._value = x }, get(this: any) { return this._value } })
+      class Ev { type: string; constructor(t: string) { this.type = t } }
+      const el: any = { tagName, type, _value: undefined, events: [] as string[], focus() {}, dispatchEvent(e: any) { el.events.push(e.type) } }
+      el.ownerDocument = { location: { href }, defaultView: { HTMLInputElement: { prototype: proto }, HTMLTextAreaElement: { prototype: proto }, Event: Ev } }
+      return el
+    }
+    const fakeDeps = (pages: { url: string, el: any }[]) => {
+      const calls = { fetch: 0, load: 0, connect: [] as string[], logs: [] as string[] }
+      const deps = {
+        log: (s: string) => calls.logs.push(s),
+        fetchImpl: async () => { calls.fetch++; return { ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' }) } },
+        loadChromium: async () => {
+          calls.load++
+          return {
+            connectOverCDP: async (ws: string) => {
+              calls.connect.push(ws)
+              return {
+                contexts: () => [{ pages: () => pages.map(p => ({ url: () => p.url, locator: () => ({ first: () => ({ evaluate: async (fn: any, arg: any) => fn(p.el, arg) }) }) })) }],
+                close: async () => {},
+              }
+            },
+          }
+        },
+      }
+      return { deps, calls }
+    }
+    const ARGS = ['--confirm-host', HOST, 'CANDIDATE_PASSWORD', 'input[type="password"]']
+
+    await t('runFill: non-loopback CDP URL in the file refuses before fetching, loading Playwright or connecting', async () => {
+      const { deps, calls } = fakeDeps([])
+      await assert.rejects(helper.runFill(ARGS, { ...fileEnv, CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' }, deps), /loopback/)
+      assert.deepEqual([calls.fetch, calls.load, calls.connect.length], [0, 0, 0])
     })
-    await t('selectPage refuses when no page is open or no page host matches', () => {
-      const page = (u: string) => ({ url: () => u })
-      const def = helper.allowedHosts(undefined)
-      assert.throws(() => helper.selectPage([], def), /no open page/)
-      assert.throws(() => helper.selectPage([page('https://evil.test/login'), page('about:blank')], def), /refusing to fill/)
-      assert.throws(() => helper.selectPage([page('https://acme.wd1.myworkdayjobs.com/a')], def, 'other-tenant'), /refusing to fill/)
-      const good = page('https://acme.wd1.myworkdayjobs.com/apply')
-      assert.equal(helper.selectPage([page('https://evil.test/'), good, page('https://evil.test/2')], def), good)
+
+    await t('runFill: missing or mismatched --confirm-host refuses', async () => {
+      const el = fakeEl('INPUT', 'password', `https://${HOST}/apply`)
+      for (const args of [
+        ['CANDIDATE_PASSWORD', 'input'],
+        ['--confirm-host', 'other.wd1.myworkdayjobs.com', 'CANDIDATE_PASSWORD', 'input'],
+        ['--confirm-host', 'myworkdayjobs.com', 'CANDIDATE_PASSWORD', 'input'],
+        ['--confirm-host', 'evil.test', 'CANDIDATE_PASSWORD', 'input'],
+      ]) {
+        const { deps } = fakeDeps([{ url: `https://${HOST}/apply`, el }])
+        await assert.rejects(helper.runFill(args, fileEnv, deps), /confirm-host|refusing to fill/, args.join(' '))
+      }
+      assert.equal(el._value, undefined, 'value was written despite refusal')
     })
+
+    await t('runFill: prints "about to fill" before filling, uses the loopback ws endpoint, writes via input/change', async () => {
+      const el = fakeEl('INPUT', 'password', `https://${HOST}/apply`)
+      const { deps, calls } = fakeDeps([{ url: 'https://evil.test/', el: fakeEl('INPUT', 'password', 'https://evil.test/') }, { url: `https://${HOST}/apply`, el }])
+      await helper.runFill(ARGS, fileEnv, deps)
+      assert.deepEqual(calls.logs, [`about to fill CANDIDATE_PASSWORD on ${HOST}`, 'filled CANDIDATE_PASSWORD -> input[type="password"]'])
+      assert.deepEqual(calls.connect, ['ws://127.0.0.1:9222/devtools/browser/abc'])
+      assert.ok(el._value === SYN.password, 'value not written')
+      assert.deepEqual(el.events, ['input', 'change'])
+      noLeak(calls.logs.join('\n'))
+    })
+
+    await t('runFill: element in a frame on another origin is refused in-page (TOCTOU / iframe)', async () => {
+      const el = fakeEl('INPUT', 'password', 'https://evil.test/frame')
+      const { deps } = fakeDeps([{ url: `https://${HOST}/apply`, el }])
+      await assert.rejects(helper.runFill(ARGS, fileEnv, deps), /frame host is not the confirmed host/)
+      assert.equal(el._value, undefined)
+    })
+
+    await t('runFill: password into a text input is refused in-page', async () => {
+      const el = fakeEl('INPUT', 'text', `https://${HOST}/apply`)
+      const { deps } = fakeDeps([{ url: `https://${HOST}/apply`, el }])
+      await assert.rejects(helper.runFill(ARGS, fileEnv, deps), /input type password/)
+      assert.equal(el._value, undefined)
+    })
+
     await t('mask hides raw, JSON-escaped and URL-encoded forms, and suppresses short values', () => {
       const v = 'Sy"n\\th-Pw/1'
       const msg = `a ${v} b ${JSON.stringify(v).slice(1, -1)} c ${encodeURIComponent(v)}`
@@ -281,6 +364,7 @@ if (existsSync(HELPER)) {
       assert.ok(!m.includes(v) && !m.includes(JSON.stringify(v).slice(1, -1)) && !m.includes(encodeURIComponent(v)))
       assert.match(helper.mask('field 42 failed', { CANDIDATE_ZIP: '42' }), /suppressed/)
       assert.equal(helper.mask('nothing here', { CANDIDATE_ZIP: '42' }), 'nothing here')
+      assert.equal(helper.mask('cdp http://127.0.0.1:9222', { CANDIDATE_CDP_URL: 'http://127.0.0.1:9222' }), 'cdp http://127.0.0.1:9222')
     })
   } finally {
     rmSync(dir, { recursive: true, force: true })
