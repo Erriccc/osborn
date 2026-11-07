@@ -125,15 +125,29 @@ export function withLastUserContent(chatCtx: llm.ChatContext, text: string): llm
   return chatCtx
 }
 
-/** Text of the last user message in `chatCtx` (string parts joined), or `fallback`. */
-function lastUserText(chatCtx: llm.ChatContext, fallback: string): string {
-  for (let i = chatCtx.items.length - 1; i >= 0; i--) {
-    const item = chatCtx.items[i] as any
+/**
+ * Return a SHALLOW COPY of `chatCtx` whose last user message is a clone with
+ * `note` prepended to its FIRST text part; every other part (images, etc.) is
+ * kept in place. With no text part the note becomes a new leading part. Same
+ * no-mutation guarantee as withLastUserContent. Returns the original when there
+ * is no user message.
+ */
+export function withNotePrepended(chatCtx: llm.ChatContext, note: string): llm.ChatContext {
+  const items = chatCtx.items.slice()
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i] as any
     if (item.type === 'message' && item.role === 'user') {
-      return Array.isArray(item.content) ? item.content.filter((c: any) => typeof c === 'string').join('\n') : fallback
+      const parts: any[] = Array.isArray(item.content) ? item.content.slice() : []
+      const t = parts.findIndex((c) => typeof c === 'string')
+      if (t >= 0) parts[t] = `${note}\n\n${parts[t]}`
+      else parts.unshift(note)
+      const clone = Object.assign(Object.create(Object.getPrototypeOf(item)), item)
+      clone.content = parts
+      items[i] = clone
+      return new llm.ChatContext(items)
     }
   }
-  return fallback
+  return chatCtx
 }
 
 export interface InterruptionContext {
@@ -462,7 +476,7 @@ export class PipelineDirectLLM extends llm.LLM {
     // that block from history and titles). Never on meeting chunks.
     const clientNotes = (!isMeetingChunkEarly && userText.trim()) ? this.#opts.getAndConsumeClientNotes?.() : ''
     if (clientNotes) {
-      ctxForClaude = withLastUserContent(chatCtx, clientNotes + '\n\n' + lastUserText(ctxForClaude, userText))
+      ctxForClaude = withNotePrepended(ctxForClaude, clientNotes)
     }
 
     // Meeting chunks ([MEETING —]) are the silent-observer / addressed-response
