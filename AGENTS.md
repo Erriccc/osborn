@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Project Overview
 
-Osborn is a voice AI research assistant. Users speak through a Next.js frontend; audio routes through LiveKit Cloud to a local TypeScript agent that researches topics, explores codebases, and documents findings via the Codex Agent SDK.
+Osborn is a voice AI engineer and thinking partner: you talk, it researches, writes and ships the work. Users speak through a Next.js frontend; audio routes through LiveKit Cloud to a local TypeScript agent that researches topics, explores and edits codebases, runs commands, and documents its work via the Codex Agent SDK.
 
 ## Development Commands
 

@@ -1,7 +1,7 @@
 # syntax = docker/dockerfile:1
 #
 # Osborn Agent — Fly.io Deployment
-# Self-hosted voice AI research assistant with Claude Code CLI
+# Self-hosted voice AI engineer and thinking partner with Claude Code CLI
 #
 # Build:  fly deploy
 # Local:  docker build -t osborn-agent . && docker run -p 8741:8741 --env-file .env osborn-agent
