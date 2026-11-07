@@ -61,7 +61,7 @@ import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './push
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, canBecomeController, checkControlSender, userIdFromMetadata } from './data-sender-auth.js'
+import { checkControlSender, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -2161,7 +2161,9 @@ async function main() {
   let controllingUserIdentity: string | null = null
   // Machine owner (Supabase user id), baked into machine env by the frontend
   // provisioning (platform-env.ts). Empty = single-tenant / local mode:
-  // newest joiner becomes the controller.
+  // newest joiner becomes the controller. NOTE: machines provisioned before
+  // this env existed lack it until their next create / update-osborn /
+  // pool repoint re-bakes the env, and run in newest-joiner mode until then.
   const OWNER_USER_ID = (process.env.OSBORN_OWNER_USER_ID || '').trim()
   if (OWNER_USER_ID) console.log('🔐 Control bound to machine owner (OSBORN_OWNER_USER_ID set)')
   else console.log('🔓 OSBORN_OWNER_USER_ID unset: single-tenant mode, newest joiner controls the agent')
@@ -4580,20 +4582,21 @@ async function main() {
       console.log('📽️🔊 meeting-canvas joined the LiveKit room — native session.say relays to the meeting')
       return // not a user; skip session setup for it
     }
-    // Owner binding: with OSBORN_OWNER_USER_ID set (cloud machines), only a
-    // participant whose SIGNED token metadata userId is the owner may take
-    // the session and become the controller; anyone else is ignored (no voice
-    // session, every gated data message dropped). With no owner configured
-    // (single-tenant / local), the newest joiner wins, as before. The agent's
-    // own identity (watch gateway, minted with our API secret) stays eligible;
-    // data-sender-auth still limits it to permission_response.
+    // Owner binding (data-sender-auth.ts resolveJoin): with OSBORN_OWNER_USER_ID
+    // set (cloud machines), only a `user-*` participant whose SIGNED token
+    // metadata userId is the owner takes the session and becomes the
+    // controller; other users are ignored (no voice session, gated data
+    // dropped). With no owner configured (single-tenant / local), the newest
+    // `user-*` joiner wins, as before. The watch gateway (our own identity)
+    // keeps its voice session as before but never becomes the controller, so
+    // the owner's commands keep working; it may still send permission_response.
     const joinerUserId = userIdFromMetadata(participant.metadata)
-    if (participant.identity !== AGENT_SELF_IDENTITY && !canBecomeController(joinerUserId, OWNER_USER_ID)) {
+    const join = resolveJoin(participant.identity, joinerUserId, OWNER_USER_ID, controllingUserIdentity)
+    controllingUserIdentity = join.controller
+    if (!join.adoptSession) {
       console.warn(`🚫 ${participant.identity} is not the machine owner (token userId=${joinerUserId ?? 'none'}); not adopting it as the voice user`)
       return
     }
-    // The newest eligible joiner gets the session below, so it becomes the controller.
-    controllingUserIdentity = participant.identity
     // A user (re)arriving cancels the meeting leave-grace — the bot stays.
     cancelMeetingLeaveGrace()
 
