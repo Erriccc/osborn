@@ -27,7 +27,7 @@ export default function FinalCTA() {
 
             <Link
               href="/login"
-              className="mt-10 h-13 px-8 py-3.5 inline-flex items-center justify-center rounded-xl text-[16px] font-semibold tracking-[-0.01em] transition-all duration-150 active:scale-[0.98]"
+              className="mt-10 h-13 px-8 py-3.5 inline-flex items-center justify-center whitespace-nowrap rounded-xl text-[16px] font-semibold tracking-[-0.01em] transition-all duration-150 active:scale-[0.98]"
               style={{
                 background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)',
                 color: 'var(--background)',
