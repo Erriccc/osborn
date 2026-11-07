@@ -16,7 +16,7 @@ const DESCRIPTION =
   'Real case studies of what Voice Native has actually done by voice: Google Ads automation, a LinkedIn launch model, an automated content pipeline, and meeting-to-action.'
 
 export const metadata: Metadata = {
-  title: TITLE,
+  title: { absolute: TITLE },
   description: DESCRIPTION,
   alternates: { canonical: CANONICAL },
   openGraph: {

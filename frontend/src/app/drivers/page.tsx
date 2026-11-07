@@ -15,7 +15,7 @@ import { SITE_URL } from '@/lib/supabase-anon'
 const S = getScenario('drivers')!
 
 export const metadata: Metadata = {
-  title: 'Voice Native for drivers — be productive while you drive, hands-free',
+  title: { absolute: 'Voice Native for drivers — be productive while you drive, hands-free' },
   description:
     'Turn drive time into productive time. Talk to Voice Native and it writes, runs, and ships work on your machine while your hands stay on the wheel. Hands-free and legal in all 50 states.',
   alternates: { canonical: `${SITE_URL}/drivers` },

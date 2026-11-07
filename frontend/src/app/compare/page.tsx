@@ -18,7 +18,7 @@ const DESCRIPTION =
   'A fair, feature-by-feature comparison of Voice Native against the main AI coding agents. Voice-native, runs on your own machine, a team of Claude sub-agents, persistent memory, meeting-aware, your keys.'
 
 export const metadata: Metadata = {
-  title: TITLE,
+  title: { absolute: TITLE },
   description: DESCRIPTION,
   alternates: { canonical: CANONICAL },
   openGraph: {
