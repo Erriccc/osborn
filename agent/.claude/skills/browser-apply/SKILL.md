@@ -7,7 +7,7 @@ description: Interactively automate Workday and other multi-step JS-heavy job ap
 
 Automate Workday job applications interactively, one step at a time. Each step takes a screenshot, confirms what's on screen, fills the current page, and waits before proceeding.
 
-**This skill uses the Playwright MCP tools** (`mcp__playwright__browser_*`) for direct browser control — no scripts needed.
+**This skill uses the Playwright MCP tools** (`mcp__playwright__browser_*`) for direct browser control. The only script is the `fill.mjs` helper, used for secret fields (see "One-time setup").
 
 ## When to Use
 - Any Workday ATS application (`*.wd1.myworkdayjobs.com`)
@@ -27,9 +27,34 @@ Do NOT write a monolithic automation script. Instead:
 
 This approach catches rendering issues, unexpected fields, and errors before they cascade.
 
+## One-time setup (user does this once per machine)
+
+Secret fields (email, password, phone, address) are filled by the `fill.mjs` helper, not by the MCP tools. The helper and the Playwright MCP must drive the SAME browser, which means both attach to one Chrome over CDP on loopback.
+
+1. Secret file. The user creates it and types the values in their own editor (never ask for the values in chat, never write them yourself):
+   ```bash
+   mkdir -p ~/.osborn
+   cp ~/.claude/skills/browser-apply/candidate.example.env ~/.osborn/candidate.env
+   chmod 600 ~/.osborn/candidate.env
+   ```
+   The helper refuses the file if it is a symlink, not owned by the current user, or not mode 600.
+2. Playwright for the helper: `npm i -g playwright-core` (no browser download needed; it only attaches over CDP).
+3. One headed browser with CDP on loopback:
+   ```bash
+   google-chrome --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+     --user-data-dir="$HOME/.osborn/apply-profile"
+   ```
+4. Point the Playwright MCP server at that browser with `--cdp-endpoint http://127.0.0.1:9222` (a `@playwright/mcp` flag) in the user's MCP config. Osborn's built-in Playwright catalog entry does not pass this flag yet; without it the MCP launches its own browser and the helper cannot see it.
+5. Optional env for the helper: `CANDIDATE_CDP_URL` (default `http://127.0.0.1:9222`; non-loopback hosts are refused) and `CANDIDATE_ALLOWED_HOSTS` (comma-separated page hosts that may receive values; default `myworkdayjobs.com`, subdomains included, https only). There are no command-line overrides for either.
+6. Verify: `node ~/.claude/skills/browser-apply/fill.mjs check` should end with `cdp: reachable`.
+
 ## Step-by-Step Execution Pattern
 
-### Step 0 — Open the browser
+### Step 0 — Check the helper, then open the browser
+Run `node ~/.claude/skills/browser-apply/fill.mjs check` first. It prints variable names and `cdp: reachable` or `cdp: unreachable`, never values.
+- File missing / refused: point the user at "One-time setup" step 1 and wait.
+- `cdp: unreachable`: you can still navigate and fill the non-secret fields with the MCP tools, but for every secret field (email, password, phone, address) ask the user to type it into the browser themselves.
+
 Use: `mcp__playwright__browser_navigate` with the applyManually URL
 
 Then: `mcp__playwright__browser_take_screenshot` — show the user what loaded
@@ -97,7 +122,7 @@ Education:
 2. B.S. Psychology
 
 ### Filling secret fields
-Use the helper `fill.mjs` next to this SKILL.md (normally `~/.claude/skills/browser-apply/fill.mjs`). It reads the secret file itself, refuses to run unless the file is mode 600, connects to the open browser over CDP (`$CANDIDATE_CDP_URL`, default `http://127.0.0.1:9222`) and fills the fields in its own process. It prints only `filled NAME -> selector`, never a value.
+Use the helper `fill.mjs` next to this SKILL.md (normally `~/.claude/skills/browser-apply/fill.mjs`). It reads the secret file itself (regular file, owned by you, mode 600), attaches to the loopback CDP browser from "One-time setup", picks the most recent https page on an allowed host (`CANDIDATE_ALLOWED_HOSTS`, default `myworkdayjobs.com`) and fills the fields in its own process. It refuses if no such page is open. It prints only `filled NAME -> selector`, never a value. `--url-contains S` optionally narrows which allowed page is used.
 
 ```bash
 node ~/.claude/skills/browser-apply/fill.mjs check
@@ -110,7 +135,8 @@ Rules:
 - NEVER `cat`, `less`, `head`, `echo`, `printenv`, `env`, `grep`, `Read` or otherwise print the secret file or the `CANDIDATE_*` variables.
 - NEVER pass a value to an MCP browser tool or put one in a command line; pass env NAMES only.
 - If `check` reports the file missing or too open, tell the user to create it from `candidate.example.env` and run `chmod 600`; do not create it with values yourself.
-- If no browser is reachable over CDP (the Playwright MCP must be attached to a CDP browser, e.g. `--cdp-endpoint`), stop and ask the user to type the secret fields themselves.
+- If `check` says `cdp: unreachable`, or `fill` says no browser is reachable or no allowed page is open, do not work around it: ask the user to type the secret fields themselves.
+- Never change `CANDIDATE_CDP_URL` or `CANDIDATE_ALLOWED_HOSTS` yourself; only the user sets them.
 
 ## Workday data-automation-id Selector Reference
 

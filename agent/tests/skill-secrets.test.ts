@@ -1,11 +1,11 @@
 // Skill secret scanner. Fails if any shipped skill markdown carries a literal password or a
 // candidate email literal, and checks the browser-apply helper refuses a loosely-permissioned
 // secret file. On failure it prints only file:line and a masked reason, never the matching text.
-// Run from repo root: npx tsx agent/tests/skill-secrets.test.ts
+// Run from repo root: npx --yes tsx agent/tests/skill-secrets.test.ts  (no npm test script exists)
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,9 +14,14 @@ const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..')
 const HELPER = join(ROOT, 'agent/.claude/skills/browser-apply/fill.mjs')
 
 // ---- scanner -------------------------------------------------------------------------------
-const PASSWORD_RE = /(password|passwd|pwd)\s*[:=]\s*(\S{6,})/i
+// Key (optionally quoted), then `:`, `=` or a table pipe, then an optionally quoted value of 6+ chars.
+// Covers `password: x`, `"password": "x"`, `PASSWORD='x'`, `pwd = x`, `| Password | x |`.
+const PASSWORD_RE = /(password|passwd|pwd)["'`]?\s*(?:[:=]|\|)\s*["'`]?([^\s"'`|]{6,})/i
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
-const PLACEHOLDER_RE = /^[`'"]*(<[^>]*>|\$\{?[A-Za-z_]\w*\}?)|process\.env\.|YOUR_|example/i
+// Anchored: the WHOLE value (trailing , ; stripped) must be a placeholder or an env reference.
+const PLACEHOLDER_RE = /^(<[^<>]*>|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\}|process\.env\.[A-Za-z_]\w*|YOUR_[A-Z0-9_]*|(example|placeholder|changeme)[\w.-]*)$/i
+const isPlaceholder = (v: string): boolean => PLACEHOLDER_RE.test(v.replace(/[,;]+$/, ''))
+const SCAN_EXT = /\.(md|env|mjs)$/i
 
 export const lineHash = (line: string): string => createHash('sha256').update(line.trim()).digest('hex').slice(0, 16)
 
@@ -24,9 +29,14 @@ export const lineHash = (line: string): string => createHash('sha256').update(li
 // agent/.claude/skills/shadcn/SKILL.md: zod schema `password: z.string().min(8, ...)` and the
 // form `defaultValues: { email: "", password: "" }` example. Only the zod line currently trips the
 // pattern (the empty-string default is too short to match); it is listed by hash.
+// agent/.claude/skills/browser-apply/SKILL.md: the Workday selector-table row whose value cell is the
+// CSS selector `input[type="password"]` (matches the pipe form; it is a selector, not a secret).
 const ALLOWLIST: Record<string, Set<string>> = {
   'agent/.claude/skills/shadcn/SKILL.md': new Set<string>([
     '4912c70f1070647d', // password: z.string().min(8, "Password must be at least 8 characters"),
+  ]),
+  'agent/.claude/skills/browser-apply/SKILL.md': new Set<string>([
+    '3506b78dee8bfa17', // | Password | `input[type="password"]` | `CANDIDATE_PASSWORD` (helper) |
   ]),
 }
 
@@ -34,7 +44,8 @@ export interface Finding { file: string; line: number; reason: string; hash: str
 
 export function scanText(file: string, text: string, allow: Record<string, Set<string>> = ALLOWLIST): Finding[] {
   const out: Finding[] = []
-  let inCandidate = false
+  // .env files are treated as one Candidate Data block (any non-example email is flagged).
+  let inCandidate = /\.env$/i.test(file)
   const lines = text.split('\n')
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
@@ -42,7 +53,7 @@ export function scanText(file: string, text: string, allow: Record<string, Set<s
     const hash = lineHash(line)
     if (allow[file]?.has(hash)) continue
     const pm = PASSWORD_RE.exec(line)
-    if (pm && !PLACEHOLDER_RE.test(pm[2])) out.push({ file, line: i + 1, reason: 'password-like literal (value masked)', hash })
+    if (pm && !isPlaceholder(pm[2])) out.push({ file, line: i + 1, reason: 'password-like literal (value masked)', hash })
     if (inCandidate) {
       const em = EMAIL_RE.exec(line)
       if (em && !/example\.(com|org|net)$/i.test(em[0])) out.push({ file, line: i + 1, reason: 'email literal in Candidate Data block (value masked)', hash })
@@ -51,19 +62,19 @@ export function scanText(file: string, text: string, allow: Record<string, Set<s
   return out
 }
 
-function walkMd(dir: string, acc: string[] = []): string[] {
+function walkSkills(dir: string, acc: string[] = []): string[] {
   if (!existsSync(dir)) return acc
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
     const st = statSync(p)
-    if (st.isDirectory()) walkMd(p, acc)
-    else if (name.endsWith('.md')) acc.push(p)
+    if (st.isDirectory()) walkSkills(p, acc)
+    else if (SCAN_EXT.test(name)) acc.push(p)
   }
   return acc
 }
 
 export function skillFiles(): string[] {
-  const files = [...walkMd(join(ROOT, 'agent/.claude/skills')), ...walkMd(join(ROOT, '.claude/skills'))]
+  const files = [...walkSkills(join(ROOT, 'agent/.claude/skills')), ...walkSkills(join(ROOT, '.claude/skills'))]
   const pub = join(ROOT, 'frontend/public')
   if (existsSync(pub)) for (const n of readdirSync(pub)) if (/skill.*\.md$/i.test(n)) files.push(join(pub, n))
   return files
@@ -92,6 +103,33 @@ await t('scanner flags a synthetic password literal and a candidate email litera
   for (const x of f) assert.ok(!x.reason.includes(SYN.password) && !x.reason.includes(SYN.email))
 })
 
+await t('scanner flags quoted, assignment and table forms', () => {
+  const doc = [
+    `"password": "${SYN.password}"`,
+    `PASSWORD='${SYN.password}'`,
+    `pwd = ${SYN.password}`,
+    `| Password | ${SYN.password} |`,
+    `password: \`${SYN.password}\``,
+  ].join('\n')
+  assert.deepEqual(scanText('synthetic.md', doc, {}).map(x => x.line), [1, 2, 3, 4, 5])
+})
+
+await t('placeholder check is anchored (a placeholder prefix does not excuse a real value)', () => {
+  const doc = [
+    `password: <x>${SYN.password}`,
+    `password: $X${SYN.password}`,
+    `password: YOUR_${SYN.password}`,
+    `password: process.env.X+${SYN.password}`,
+    `password: ${SYN.password}example`,
+  ].join('\n')
+  assert.deepEqual(scanText('synthetic.md', doc, {}).map(x => x.line), [1, 2, 3, 4, 5])
+})
+
+await t('.env files are scanned as a candidate block', () => {
+  const f = scanText('x/candidate.example.env', `CANDIDATE_EMAIL=${SYN.email}\nCANDIDATE_PASSWORD=${SYN.password}\nOK=you@example.com\nCANDIDATE_PASSWORD=YOUR_PASSWORD\n`, {})
+  assert.deepEqual(f.map(x => x.line), [1, 2])
+})
+
 await t('scanner accepts placeholders and env references', () => {
   const doc = [
     '## Candidate Data',
@@ -101,6 +139,8 @@ await t('scanner accepts placeholders and env references', () => {
     'password = process.env.CANDIDATE_PASSWORD',
     'PASSWORD=YOUR_PASSWORD_HERE',
     'pwd: example-password',
+    '"password": "${CANDIDATE_PASSWORD}",',
+    '| Password | `$CANDIDATE_PASSWORD` |',
     '- Email: someone@example.com',
   ].join('\n')
   assert.deepEqual(scanText('synthetic.md', doc, {}), [])
@@ -115,7 +155,8 @@ await t('allowlist suppresses by file + line hash only', () => {
 
 await t('no shipped skill markdown contains a password literal or candidate email literal', () => {
   const files = skillFiles()
-  assert.ok(files.some(f => f.endsWith('browser-apply/SKILL.md')), 'browser-apply skill not found in scan set')
+  for (const want of ['browser-apply/SKILL.md', 'browser-apply/fill.mjs', 'browser-apply/candidate.example.env'])
+    assert.ok(files.some(f => f.endsWith(want)), `${want} not found in scan set`)
   const findings = files.flatMap(f => scanText(relative(ROOT, f), readFileSync(f, 'utf8')))
   assert.equal(findings.length, 0, findings.map(x => `${x.file}:${x.line} ${x.reason} [hash ${x.hash}]`).join('\n'))
 })
@@ -165,6 +206,81 @@ if (existsSync(HELPER)) {
       assert.notEqual(r.status, 0)
       const out = r.stdout + r.stderr
       for (const v of Object.values(SYN)) assert.ok(!out.includes(v), 'helper output leaked a value')
+    })
+    const runHelper = (args: string[], extra: Record<string, string> = {}) => {
+      chmodSync(envFile, 0o600)
+      const r = spawnSync(process.execPath, [HELPER, ...args], {
+        env: { ...process.env, CANDIDATE_ENV_FILE: envFile, CANDIDATE_CDP_URL: '', CANDIDATE_ALLOWED_HOSTS: '', ...extra },
+        encoding: 'utf8', timeout: 20_000,
+      })
+      const out = r.stdout + r.stderr
+      for (const v of Object.values(SYN)) assert.ok(!out.includes(v), 'helper output leaked a value')
+      return { status: r.status, out }
+    }
+    await t('helper refuses a symlinked secret file', () => {
+      chmodSync(envFile, 0o600)
+      const link = join(dir, 'link.env')
+      symlinkSync(envFile, link)
+      assert.throws(() => helper.loadCandidateEnv(link), /symlink/)
+    })
+    await t('resolveCdpUrl accepts loopback only', () => {
+      for (const ok of ['http://127.0.0.1:9222', 'http://localhost:9222', 'http://[::1]:9222', 'ws://127.0.0.1:9222/devtools/browser/x'])
+        assert.doesNotThrow(() => helper.resolveCdpUrl(ok), ok)
+      for (const bad of ['http://203.0.113.5:9222', 'http://localhost.evil.test:9222', 'http://127.0.0.1.evil.test:9222', 'http://user:pw@127.0.0.1:9222', 'file:///tmp/x', 'not a url'])
+        assert.throws(() => helper.resolveCdpUrl(bad), undefined, bad)
+    })
+    await t('`fill` with a non-loopback CDP URL exits non-zero before any connection attempt', () => {
+      // The loopback check runs before Playwright is even loaded, so the error must be the loopback
+      // refusal (not "playwright not installed" or "no browser reachable").
+      const r = runHelper(['fill', 'CANDIDATE_PASSWORD', 'input[type="password"]'], { CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' })
+      assert.notEqual(r.status, 0)
+      assert.match(r.out, /not loopback/)
+      assert.doesNotMatch(r.out, /playwright not installed|no browser reachable/)
+    })
+    await t('`fill` rejects a --cdp option (CDP URL comes only from the environment)', () => {
+      const r = runHelper(['fill', '--cdp', 'http://203.0.113.5:9222', 'CANDIDATE_PASSWORD', 'input'])
+      assert.notEqual(r.status, 0)
+      assert.match(r.out, /unknown option/)
+    })
+    await t('`check` refuses a non-loopback CDP URL', () => {
+      const r = runHelper(['check'], { CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' })
+      assert.notEqual(r.status, 0)
+      assert.match(r.out, /not loopback/)
+    })
+    await t('`check` reports cdp: unreachable for a closed loopback port', () => {
+      const r = runHelper(['check'], { CANDIDATE_CDP_URL: 'http://127.0.0.1:1' })
+      assert.equal(r.status, 0)
+      assert.match(r.out, /cdp: unreachable/)
+      assert.match(r.out, /allowed hosts: myworkdayjobs\.com/)
+    })
+    await t('page host allowlist: default myworkdayjobs.com, https only, subdomains ok, env override', () => {
+      const def = helper.allowedHosts(undefined)
+      assert.ok(helper.hostAllowed('https://acme.wd1.myworkdayjobs.com/en-US/careers/apply', def))
+      assert.ok(!helper.hostAllowed('http://acme.wd1.myworkdayjobs.com/', def), 'http must be refused')
+      assert.ok(!helper.hostAllowed('https://myworkdayjobs.com.evil.test/', def))
+      assert.ok(!helper.hostAllowed('https://evilmyworkdayjobs.com/', def))
+      assert.ok(!helper.hostAllowed('https://evil.test/?u=myworkdayjobs.com', def))
+      const custom = helper.allowedHosts(' jobs.example.test , .greenhouse.io ')
+      assert.deepEqual(custom, ['jobs.example.test', 'greenhouse.io'])
+      assert.ok(helper.hostAllowed('https://boards.greenhouse.io/x', custom))
+      assert.ok(!helper.hostAllowed('https://acme.wd1.myworkdayjobs.com/', custom))
+    })
+    await t('selectPage refuses when no page is open or no page host matches', () => {
+      const page = (u: string) => ({ url: () => u })
+      const def = helper.allowedHosts(undefined)
+      assert.throws(() => helper.selectPage([], def), /no open page/)
+      assert.throws(() => helper.selectPage([page('https://evil.test/login'), page('about:blank')], def), /refusing to fill/)
+      assert.throws(() => helper.selectPage([page('https://acme.wd1.myworkdayjobs.com/a')], def, 'other-tenant'), /refusing to fill/)
+      const good = page('https://acme.wd1.myworkdayjobs.com/apply')
+      assert.equal(helper.selectPage([page('https://evil.test/'), good, page('https://evil.test/2')], def), good)
+    })
+    await t('mask hides raw, JSON-escaped and URL-encoded forms, and suppresses short values', () => {
+      const v = 'Sy"n\\th-Pw/1'
+      const msg = `a ${v} b ${JSON.stringify(v).slice(1, -1)} c ${encodeURIComponent(v)}`
+      const m = helper.mask(msg, { CANDIDATE_PASSWORD: v })
+      assert.ok(!m.includes(v) && !m.includes(JSON.stringify(v).slice(1, -1)) && !m.includes(encodeURIComponent(v)))
+      assert.match(helper.mask('field 42 failed', { CANDIDATE_ZIP: '42' }), /suppressed/)
+      assert.equal(helper.mask('nothing here', { CANDIDATE_ZIP: '42' }), 'nothing here')
     })
   } finally {
     rmSync(dir, { recursive: true, force: true })
