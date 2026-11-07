@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { formatTime, deriveSessionTitle } from '@/lib/sessions'
-import { usePanelExclusive, type SessionInfo, type McpServerStatus } from './shared'
+import { usePanelExclusive, useViewportClamp, type SessionInfo, type McpServerStatus } from './shared'
 import { SkillsPanel } from './SkillsPanel'
 
 // Unified Control Menu - Combines mode toggle, session history, tools, and settings
@@ -60,6 +60,7 @@ export function ControlMenu({
   const [showSwitchConfirm, setShowSwitchConfirm] = useState(false)
   const [pendingSwitchSessionId, setPendingSwitchSessionId] = useState<string | null>(null)
   usePanelExclusive('history', isOpen, setIsOpen)
+  const menuRef = useViewportClamp(isOpen)
 
   const enabledMcpCount = (mcpServers || []).filter(s => s.enabled).length
   const skillCount = (skills || []).length
@@ -94,7 +95,7 @@ export function ControlMenu({
 
       {/* Dropdown menu */}
       {isOpen && (
-        <div className="absolute top-10 left-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] overflow-hidden">
+        <div ref={menuRef} className="absolute top-10 left-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] overflow-hidden">
           {/* Tabs */}
           <div className="flex border-b border-gray-700">
             <button
