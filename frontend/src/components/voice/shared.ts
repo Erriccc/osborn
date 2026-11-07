@@ -1,4 +1,39 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
+import { clampPopoverShift } from '@/lib/popover-clamp'
+
+const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect
+
+// ── Viewport clamp for anchored header popovers ───────────────────────────
+// Width caps (max-w-[calc(100vw-…)]) alone don't stop a popover from opening
+// off-screen: a right-anchored menu whose trigger wraps to the LEFT of the
+// toolbar (iPad portrait) runs off the left edge. Attach the returned ref to
+// the popover; while open it measures the natural box and applies a
+// translateX that keeps it inside the viewport. Full-width mobile sheets
+// (inset-x-0) measure as already fitting and are left untouched.
+export function useViewportClamp<T extends HTMLElement = HTMLDivElement>(open: boolean, margin = 8) {
+  const ref = useRef<T>(null)
+  useIsoLayoutEffect(() => {
+    if (!open) return
+    const el = ref.current
+    if (!el) return
+    const apply = () => {
+      el.style.transform = ''
+      const r = el.getBoundingClientRect()
+      const vw = document.documentElement.clientWidth || window.innerWidth
+      const dx = clampPopoverShift(r.left, r.width, vw, margin)
+      el.style.transform = dx ? `translateX(${dx}px)` : ''
+    }
+    apply()
+    window.addEventListener('resize', apply)
+    window.visualViewport?.addEventListener('resize', apply)
+    return () => {
+      window.removeEventListener('resize', apply)
+      window.visualViewport?.removeEventListener('resize', apply)
+      el.style.transform = ''
+    }
+  }, [open, margin])
+  return ref
+}
 
 // ── Header-panel mutual exclusion ────────────────────────────────────────
 // Each header dropdown (History, Agents, Skills, Instances, More, Meeting) owns

@@ -93,7 +93,7 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
           // Tables
           table({ children }) {
             return (
-              <div className="overflow-x-auto my-2">
+              <div className="overflow-x-auto max-w-full my-2">
                 <table className="min-w-full border-collapse border border-gray-700">
                   {children}
                 </table>
@@ -102,14 +102,14 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
           },
           th({ children }) {
             return (
-              <th className="border border-gray-700 px-3 py-2 bg-gray-800 text-left text-gray-200 font-semibold">
+              <th className={`border border-gray-700 px-3 py-2 bg-gray-800 text-left text-gray-200 font-semibold${longTokenCell(children)}`}>
                 {children}
               </th>
             )
           },
           td({ children }) {
             return (
-              <td className="border border-gray-700 px-3 py-2 text-gray-300">
+              <td className={`border border-gray-700 px-3 py-2 text-gray-300${longTokenCell(children)}`}>
                 {children}
               </td>
             )
@@ -141,6 +141,14 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
 }
 
 // Extract plain text from React children tree (for copy button)
+// Table cells holding one long unbroken token (commit SHAs, URLs, paths) may
+// break anywhere so the column can shrink to fit the message width instead of
+// clipping. Cells with ordinary words keep normal wrapping (no mid-word breaks).
+function longTokenCell(children: React.ReactNode): string {
+  const text = extractText(children).trim()
+  return /\S{20,}/.test(text) ? ' [overflow-wrap:anywhere]' : ''
+}
+
 function extractText(node: React.ReactNode): string {
   if (typeof node === 'string') return node
   if (typeof node === 'number') return String(node)
