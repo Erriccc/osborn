@@ -288,6 +288,104 @@ export function replaceArtifacts<T extends OutputFile>(prev: readonly T[], incom
   return out
 }
 
+// ── Live agent writes (bugs 34808f72 / 59bb7e8d) ─────────────────────────────
+// The agent's research_artifact_updated / plan_file_updated events only cover
+// the session workspace and plans folder. A file it writes anywhere else (e.g.
+// /workspace/report.txt) arrives only as a completed Write/Edit tool event, so
+// that event is the source of truth for "Osborn just made this".
+
+/** Tools whose completion means a file on disk was created or changed. */
+export const AGENT_WRITE_TOOLS: ReadonlySet<string> = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+
+/** Agent bookkeeping that is never a user-facing output. */
+const INTERNAL_PATH_RES: RegExp[] = [
+  /\/\.claude\/projects\/[^/]+\/[^/]+\.jsonl$/,
+  /\/osb\/[^/]+\/(?:spec\.md|search-index\.txt|search-index-meta\.json)$/,
+  /\/node_modules\//,
+  /\/\.git\//,
+]
+
+export type OutputFileType = 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'html' | 'other'
+
+/** File type badge from the name (same rules as the artifact event handler). */
+export function fileTypeOf(fileName: string): OutputFileType {
+  const ext = fileExt(fileName)
+  if (fileName.includes('plan')) return 'plan'
+  if (ext === 'mmd' || ext === 'mermaid' || ext === 'svg') return 'diagram'
+  if (ext === 'html' || ext === 'htm') return 'html'
+  if (ext === 'md') return 'notes'
+  if (IMAGE_EXTS.has(ext)) return 'image'
+  if (fileName.includes('summary')) return 'summary'
+  return 'other'
+}
+
+export interface ToolFileEvent {
+  tool?: unknown
+  status?: unknown
+  filePath?: unknown
+  fileName?: unknown
+}
+
+/** An output row for a COMPLETED agent write, or null when the event is not one. */
+export function fileFromToolEvent(
+  ev: ToolFileEvent,
+  ctx: { sessionId: string | null | undefined; now: number },
+): (OutputFile & { type: OutputFileType; source: 'plan' | 'research'; createdAt: Date; updatedAt: Date }) | null {
+  if (ev.status !== 'completed' || typeof ev.tool !== 'string' || !AGENT_WRITE_TOOLS.has(ev.tool)) return null
+  if (typeof ev.filePath !== 'string' || !ev.filePath.startsWith('/')) return null
+  const filePath = ev.filePath
+  if (INTERNAL_PATH_RES.some((re) => re.test(filePath))) return null
+  const fileName = (typeof ev.fileName === 'string' && ev.fileName) || filePath.split('/').pop() || filePath
+  const at = new Date(ctx.now)
+  const isPlan = filePath.includes('/.claude/plans/')
+  return {
+    filePath, fileName,
+    type: isPlan ? 'plan' : fileTypeOf(fileName),
+    source: isPlan ? 'plan' : 'research',
+    updatedAt: at, createdAt: at,
+    sessionId: ctx.sessionId || undefined,
+    isImage: isImageName(fileName) || undefined,
+  }
+}
+
+/** Insert a freshly written file (newest first) or refresh the existing row:
+ *  first-seen time kept, cached body dropped so the next open refetches. */
+export function upsertAgentFile<T extends OutputFile>(prev: readonly T[], file: T): T[] {
+  const i = prev.findIndex((f) => f.filePath === file.filePath)
+  if (i < 0) return [file, ...prev]
+  const old = prev[i]
+  const merged = {
+    ...old, ...file,
+    createdAt: old.createdAt ?? file.createdAt,
+    sessionId: old.sessionId ?? file.sessionId,
+    content: undefined, url: undefined, truncated: undefined, originalSize: undefined, loadError: undefined,
+  } as T
+  const next = [...prev]
+  next[i] = merged
+  return next
+}
+
+/** The ONE unread count: distinct agent-written paths not yet seen. Only agent
+ *  file events feed it (never re-lists, favorites or bucket listings), so it
+ *  moves by one per new file and cannot jump. Returns the same set when
+ *  unchanged. Nothing is added while Outputs is on screen. */
+export function markUnread(unread: ReadonlySet<string>, filePath: string, outputsVisible: boolean): ReadonlySet<string> {
+  if (outputsVisible || unread.has(filePath)) return unread
+  const next = new Set(unread)
+  next.add(filePath)
+  return next
+}
+
+/** loadError marker for a file the agent wrote outside the folders it serves. */
+export const LOAD_ERROR_OUTSIDE = 'outside-workspace'
+
+/** Can the agent send this file's body? get_research_artifact serves only the
+ *  session workspace (and legacy .osborn dirs); get_plan_file serves plans. */
+export function agentCanServe(filePath: string, source?: string): boolean {
+  if (source === 'plan') return filePath.includes('.claude/plans/')
+  return filePath.includes('/osb/') || filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')
+}
+
 export type FavoriteSaveOutcome = 'ok' | 'local-only' | 'rollback'
 
 /** UI#21: decide what a POST /api/favorites result means for the optimistic star.
