@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
-import { randomUUID, randomBytes } from 'node:crypto'
+import { randomUUID, randomBytes, createHmac, timingSafeEqual } from 'node:crypto'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
 
@@ -378,6 +378,39 @@ wsProxy.on('error', (err, _req, socket) => {
 // valid cookie are forwarded, so a forgotten agent route can never be silently
 // swallowed by the IDE proxy. Cleared in stopIde().
 let ideSessionToken: string | null = null
+
+// ── /editor access token (closes the unauthenticated-RCE hole) ──────────────
+// The agent's HTTP server is public (0.0.0.0:8741 via fly.toml). GET /editor
+// used to mint the osborn_ide cookie with NO auth, and code-server runs
+// --auth none — so anyone who knew a machine's fly.dev address could open the
+// IDE/terminal = remote code execution on the paying owner's machine.
+//
+// Fix: /editor now requires a short-lived HMAC token. The token is minted with
+// OSBORN_SYNC_TOKEN (the per-machine owner secret) and embedded in the ideUrl
+// the agent hands back over the LiveKit data channel — which is already
+// owner-gated (control commands bound to OSBORN_OWNER_USER_ID). So only the
+// owner ever receives a valid token; a direct hit to /editor without it is
+// refused. Local dev (no FLY_APP_NAME) is localhost-only and skips the gate.
+const EDITOR_TOKEN_TTL_MS = 24 * 60 * 60 * 1000 // long-lived: the URL is owner-only; avoids breaking "open editor later"
+function mintEditorToken(): string {
+  const secret = process.env.OSBORN_SYNC_TOKEN
+  if (!secret) return ''
+  const exp = Date.now() + EDITOR_TOKEN_TTL_MS
+  const sig = createHmac('sha256', secret).update(`editor:${exp}`).digest('base64url')
+  return `${exp}.${sig}`
+}
+function verifyEditorToken(tok: string | null | undefined): boolean {
+  const secret = process.env.OSBORN_SYNC_TOKEN
+  if (!secret || !tok) return false // cloud with no secret → fail CLOSED
+  const dot = tok.indexOf('.')
+  if (dot < 0) return false
+  const exp = Number(tok.slice(0, dot))
+  if (!Number.isFinite(exp) || exp < Date.now()) return false
+  const expected = createHmac('sha256', secret).update(`editor:${exp}`).digest('base64url')
+  const got = tok.slice(dot + 1)
+  if (got.length !== expected.length) return false
+  try { return timingSafeEqual(Buffer.from(got), Buffer.from(expected)) } catch { return false }
+}
 
 // Cancellation-generation guard for startCodeServer(). Incremented by stopIde()
 // every time the IDE is torn down. startCodeServer() captures myGen at entry;
@@ -1700,7 +1733,16 @@ function startApiServer(workingDir: string, port: number): void {
     // self-refreshing "Starting…" page so the user naturally re-hits /editor every
     // 3 s until ready.
     if (url.pathname === '/editor' && req.method === 'GET') {
-      // AUTH GATE (future): validate key / signed session before minting the cookie
+      // AUTH GATE: the editor URL is minted with an owner-only signed token (see
+      // mintEditorToken) and delivered over the authenticated data channel. A
+      // direct hit without a valid token is refused — this is what closes the
+      // unauthenticated-RCE hole. Local dev (no FLY_APP_NAME) is localhost-only.
+      const editorToken = url.searchParams.get('t')
+      if (process.env.FLY_APP_NAME && !verifyEditorToken(editorToken)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' })
+        res.end('Forbidden — open the editor from inside your Voice Native session.')
+        return
+      }
 
       // Optional ?folder= param: must be an absolute path under /workspace with no
       // directory-traversal sequences. If absent or invalid, fall back to bare '/'.
@@ -1736,9 +1778,12 @@ function startApiServer(workingDir: string, port: number): void {
             console.error('❌ startCodeServer() from /editor failed:', err)
           })
         }
-        const refreshTarget = folderParam
-          ? `/editor?folder=${encodeURIComponent(folderParam)}`
-          : '/editor'
+        // Preserve BOTH folder and the access token across the 3s self-refresh,
+        // or the poll loop would bounce to a tokenless /editor and 403.
+        const refreshQs = new URLSearchParams()
+        if (folderParam) refreshQs.set('folder', folderParam)
+        if (editorToken) refreshQs.set('t', editorToken)
+        const refreshTarget = refreshQs.toString() ? `/editor?${refreshQs.toString()}` : '/editor'
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': 'no-store, must-revalidate',
@@ -6424,10 +6469,14 @@ async function main() {
           const flyAppHost = process.env.FLY_APP_NAME
             ? `${process.env.FLY_APP_NAME}.fly.dev`
             : (process.env.OSBORN_PUBLIC_HOST || `localhost:${apiPort}`)
-          const ideUrl = process.env.FLY_APP_NAME
+          // Mint an owner-only access token into the URL. The frontend opens it
+          // verbatim; a direct hit to /editor without it is refused (RCE fix).
+          const editorTok = mintEditorToken()
+          const tokQs = editorTok ? `?t=${encodeURIComponent(editorTok)}` : ''
+          const ideUrl = (process.env.FLY_APP_NAME
             ? `https://${flyAppHost}/editor`
-            : `http://${flyAppHost}/editor`
-          console.log(`✅ IDE proxy ready: ${ideUrl}`)
+            : `http://${flyAppHost}/editor`) + tokQs
+          console.log(`✅ IDE proxy ready: ${process.env.FLY_APP_NAME ? `https://${flyAppHost}/editor` : ideUrl}${editorTok ? ' (token-gated)' : ''}`)
           await sendToFrontend({ type: 'ide_ready', url: ideUrl })
         } catch (err: any) {
           console.error('❌ start_ide error:', err)
