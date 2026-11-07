@@ -71,6 +71,13 @@ ok('user quote containing a double quote survives', cleanTurnText(interrupted('h
 ok('[favorited] notice dropped', cleanTurnText(T + '[favorited] The user favorited the file plan.md.') === null)
 ok('[welcome-back] notice dropped', cleanTurnText('[welcome-back] The user just returned after 3 hours away.') === null)
 ok('[SYSTEM] dropped', cleanTurnText('[SYSTEM] Session resumed.') === null)
+ok('[SYSTEM: x] and [SYSTEM - x] dropped', cleanTurnText('[SYSTEM: resumed]') === null && cleanTurnText('[SYSTEM - note] x') === null)
+ok('"[SYSTEM design] is cool" kept (real speech)', cleanTurnText('[SYSTEM design] is cool') === '[SYSTEM design] is cool', String(cleanTurnText('[SYSTEM design] is cool')))
+ok('tail stripped mid-text leaves no bare trailing [INTERRUPTED]', (() => {
+  const out = cleanTurnText('hello there\n' + tail + '\n\n[INTERRUPTED]')
+  return out === 'hello there'
+})(), String(cleanTurnText('hello there\n' + tail + '\n\n[INTERRUPTED]')))
+ok('mid-sentence [INTERRUPTED] mention kept', cleanTurnText('the [INTERRUPTED] tag shows up') === 'the [INTERRUPTED] tag shows up')
 ok('[SYSTEM — SILENT CONTROL] dropped', cleanTurnText('[SYSTEM — SILENT CONTROL MESSAGE] do not reply') === null)
 ok('recalled_context block stripped', cleanTurnText('<recalled_context k="5">\n[1] (main L3 · user)\nold hit\n</recalled_context>\nreal question here') === 'real question here')
 ok('system-reminder block stripped', cleanTurnText('<system-reminder>\nnoise\n</system-reminder>\nactual words') === 'actual words')

@@ -34,7 +34,7 @@ const DROP_PREFIXES: RegExp[] = [
   /^\[favorited\]/,
   /^\[welcome-back\]/,
   /^\[(?:SCRIPT|PROACTIVE|NOTIFICATION)\]/,
-  /^\[SYSTEM\b/,
+  /^\[SYSTEM(?:\]|\s*[—:-])/,
   /^This session is being continued/,
   /^Conversation compacted\b/,
   /^<system-reminder>/,
@@ -105,7 +105,9 @@ export function stripSessionWrappers(text: string | null | undefined): string | 
     out = inner.trimStart().replace(TIME_PREFIX_RE, '').trim()
     if (!out || isDropped(out)) return null
   }
-  return out
+  // A block stripped mid-text can leave a bare trailing marker behind.
+  out = out.replace(/\s*\[INTERRUPTED\]\s*$/, '').trim()
+  return out || null
 }
 
 function formatFallbackDate(date?: Date | string | number | null): string {
