@@ -108,7 +108,6 @@ export default function SettingsPage() {
   const [voiceArch, setVoiceArch] = useState<VoiceArch>('pipeline')
   const [turbo, setTurbo] = useState(false)
   const [turboSaving, setTurboSaving] = useState(false)
-  const [autoApprove, setAutoApprove] = useState(false)
 
   const [syncCopied, setSyncCopied] = useState(false)
   const [globalSyncCopied, setGlobalSyncCopied] = useState(false)
@@ -136,12 +135,10 @@ export default function SettingsPage() {
     const p = localStorage.getItem('osborn-provider') as Provider | null
     const v = localStorage.getItem('osborn-voice-arch') as VoiceArch | null
     const m = localStorage.getItem('osborn-connection-mode') as 'local' | 'cloud' | null
-    const a = localStorage.getItem('osborn-auto-approve')
     if (u) setAgentUrl(u)
     if (p) setProvider(p)
     if (v === 'pipeline') setVoiceArch(v)
     if (m) setConnectionMode(m)
-    if (a === 'true') setAutoApprove(true)
   }, [])
 
   // Fetch skills + named agents + secrets from the agent's HTTP API on load.
@@ -353,12 +350,6 @@ export default function SettingsPage() {
     } finally {
       setTurboSaving(false)
     }
-  }
-
-  const handleAutoApproveToggle = () => {
-    const next = !autoApprove
-    setAutoApprove(next)
-    try { localStorage.setItem('osborn-auto-approve', String(next)) } catch {}
   }
 
   // Delete now goes through the type-"delete" confirm dialog. The dialog
@@ -838,9 +829,10 @@ export default function SettingsPage() {
 
   const PreferencesSection = (
     <SettingsSection title="Preferences" description="Defaults applied to every conversation.">
-      <SettingsRow label="Auto-approve" sublabel="Let the agent act without per-step confirmation">
-        <Switch checked={autoApprove} onChange={handleAutoApproveToggle} label="Toggle auto-approve" />
-      </SettingsRow>
+      {/* Tool approval is controlled by the session-scoped "Approvals" picker in
+          the conversation composer (Ask me / Auto-review / Allow all) — it is
+          intentionally not persisted here, so a blanket allow can never silently
+          survive a reload. The old dead "Auto-approve" switch has been removed. */}
       {user && (
         <SettingsRow label="Turbo" sublabel="Run all agents on a faster, lighter model">
           <Switch checked={turbo} onChange={handleTurboToggle} label="Toggle turbo mode" disabled={turboSaving} />
