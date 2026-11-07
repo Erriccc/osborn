@@ -18,10 +18,11 @@ import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, sanitizeUserTranscript, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
+import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { PermissionModal, getToolRiskLevel, type PermissionRequest } from './voice/PermissionModal'
@@ -1249,10 +1250,12 @@ function VoiceRoomInner({
   // iOS and the mic stays dead for the rest of the turn.
   const ttsActiveUntilRef = useRef(0)
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number }) => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => void>()
+  // Typed messages awaiting their user_transcript echo (bug d9bb78b2).
+  const pendingTypedRef = useRef<PendingTyped[]>([])
 
   // addMessage function with duplicate detection
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number }) => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -1266,7 +1269,9 @@ function VoiceRoomInner({
 
     // Tool-call log cards are distinct events (10 reads of the same file are 10
     // real actions) — skip dedup for them so the review log stays complete.
-    if (!toolMeta) {
+    // A typed message (clientMsgId) is always the user's own new turn: a
+    // deliberate repeat must not be swallowed; its echo is deduped by id.
+    if (!toolMeta && !extra?.clientMsgId) {
       // Check if this exact content was sent recently (within last 5 messages of this role)
       const recentOfRole = recentMessagesRef.current[role]
       if (recentOfRole.includes(normalizedContent)) {
@@ -1291,6 +1296,7 @@ function VoiceRoomInner({
       toolMeta,
       messageId: extra?.messageId,
       chunkIndex: extra?.chunkIndex,
+      clientMsgId: extra?.clientMsgId,
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     if (role === 'assistant') dispatchResumeChip({ type: 'assistant' })
@@ -1395,8 +1401,19 @@ function VoiceRoomInner({
         onVoiceActivity?.()
       } else if (data.type === 'user_transcript') {
         if (data.text && data.text.trim()) {
-          console.log('👤 Adding user message:', data.text.substring(0, 50))
-          addMessageRef.current?.('user', data.text)
+          // Bug d9bb78b2: the echo of a message typed here is already on
+          // screen. Drop it by clientMsgId, else by cleaned-text match.
+          const echo = takeTypedEcho(pendingTypedRef.current, {
+            text: String(data.text),
+            clientMsgId: typeof data.clientMsgId === 'string' ? data.clientMsgId : null,
+          }, Date.now())
+          pendingTypedRef.current = echo.pending
+          if (echo.duplicate) {
+            console.log('⏭️ Typed-message echo deduped:', data.clientMsgId ?? '(text match)')
+          } else {
+            console.log('👤 Adding user message:', data.text.substring(0, 50))
+            addMessageRef.current?.('user', data.text)
+          }
           // New user turn — clear any lingering chunk highlight
           setSpeakingChunk(null)
           // User spoke — strongest activity signal, always reset idle timer
@@ -2333,7 +2350,11 @@ function VoiceRoomInner({
       setAttachedFiles([])
     }
 
-    addMessageRef.current?.('user', content)
+    // Bug d9bb78b2: one id per typed send; the agent returns it on the
+    // user_transcript echo so the optimistic bubble is never doubled.
+    const clientMsgId = newClientMsgId()
+    pendingTypedRef.current = rememberTyped(pendingTypedRef.current, { clientMsgId, text, now: Date.now() })
+    addMessageRef.current?.('user', content, undefined, undefined, undefined, { clientMsgId })
 
     // Build payload — prepend a compact local-time tag so the agent is always
     // clock-aware. The tag is NOT added to the local chat bubble (addMessageRef
@@ -2342,6 +2363,7 @@ function VoiceRoomInner({
       type: 'user_text',
       content: addTimeTag() + text,
       files: fileData.length > 0 ? fileData : undefined,
+      clientMsgId,
     }
     const payloadStr = JSON.stringify(payloadObj)
 
@@ -2359,6 +2381,7 @@ function VoiceRoomInner({
               type: 'user_text',
               content: text.substring(0, 200) + (text.length > 200 ? '...[full content in attached file]' : ''),
               files: [{ name: uploadFile_.name, type: 'text', content: '', url: result.url }],
+              clientMsgId,
             })
             const encoder = new TextEncoder()
             sendToAgent(encoder.encode(uploadedPayload), { reliable: true })
@@ -2372,7 +2395,7 @@ function VoiceRoomInner({
       // Fallback: truncate with clear error
       addMessageRef.current?.('system', `Message too large for data channel (${(payloadStr.length / 1024).toFixed(0)} KB). Configure Supabase Storage to enable large messages.`)
       const truncated = text.substring(0, 50000) + '\n...[truncated — message exceeded size limit]'
-      const smallPayload = JSON.stringify({ type: 'user_text', content: truncated })
+      const smallPayload = JSON.stringify({ type: 'user_text', content: truncated, clientMsgId })
       const encoder = new TextEncoder()
       sendToAgent(encoder.encode(smallPayload), { reliable: true })
     } else {
@@ -2385,7 +2408,7 @@ function VoiceRoomInner({
 
   const handleCopyMessage = useCallback((msg: ChatMessage) => {
     const text = msg.role === 'user'
-      ? (sanitizeUserTranscript(msg.content) ?? msg.content)
+      ? (userBubbleText(msg.content) ?? msg.content)
       : msg.content
     navigator.clipboard.writeText(text).catch(() => {})
   }, [])
@@ -2452,9 +2475,13 @@ function VoiceRoomInner({
     handleSendText(noteText)
   }, [handleSendText])
 
-  const handleFavoriteNote = useCallback((fileName: string) => {
-    handleSendText(`[favorited] The user favorited the file ${fileName}.`)
-  }, [handleSendText])
+  // Bug d9bb78b2 / UI#21: a favorite is a UI action, not something the user
+  // said. favorite_changed (agent PR #18) queues it as hidden context for the
+  // next real turn: no '[favorited]' user_text, no bubble, no reply. Sent on
+  // un-star too (favorited: false).
+  const handleFavoriteNote = useCallback((file: { filePath: string; fileName: string }, favorited: boolean) => {
+    sendJson({ type: 'favorite_changed', filePath: file.filePath, fileName: file.fileName, favorited })
+  }, [sendJson])
 
   // SEED PROMPT — auto-send a ?prompt= starter ONCE on a FRESH session (no
   // preSelectedSessionId) as soon as the agent is connected. This is the whole
@@ -2471,14 +2498,13 @@ function VoiceRoomInner({
     try { sessionStorage.removeItem('voice-native-seed') } catch {}
   }, [agentConnected, seedPrompt, preSelectedSessionId, handleSendText])
 
-  // Wraps toggleFavorite so that starring a file (toggling ON) also sends a
-  // note to the agent over the user-input data channel. Un-favoriting is silent.
+  // Wraps toggleFavorite so the agent learns about the change (on AND off).
+  // Nothing is sent when the server write rolled the star back.
   const handleToggleFavoriteWithNote = useCallback(async (file: GeneratedFile) => {
-    const currentlyFav = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
+    const before = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
     await toggleFavorite(file)
-    if (!currentlyFav) {
-      handleFavoriteNote(file.fileName)
-    }
+    const after = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
+    if (after !== before) handleFavoriteNote(file, after)
   }, [toggleFavorite, handleFavoriteNote])
 
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
@@ -2807,7 +2833,7 @@ function VoiceRoomInner({
       pinnedPaths: favoritePaths,
       previewPath: outputsPreviewPath,
       openPreview: openOutputsPreview,
-      togglePin: (f) => { void toggleFavorite(f) },
+      togglePin: (f) => { void handleToggleFavoriteWithNote(f) },
       pinError,
       dismissPinError: () => setPinError(null),
       retryPin,
@@ -2826,7 +2852,7 @@ function VoiceRoomInner({
     },
     panel: { ...panel, openFile: openFileInPanel },
   }), [messages, generatedFiles, slots, agentUrl, sendJson, currentSessionId, favoritePaths, outputsPreviewPath,
-    openOutputsPreview, toggleFavorite, pinError, retryPin, reloadFile, handleCopyFile, handleCopyAllFiles,
+    openOutputsPreview, handleToggleFavoriteWithNote, pinError, retryPin, reloadFile, handleCopyFile, handleCopyAllFiles,
     fileCopyFeedback, requestRelist, outputsSyncing, outputsSyncError, outputsSyncedAt, joinedAt, outputsSeenAt,
     unreadOutputs, panel, openFileInPanel])
 
