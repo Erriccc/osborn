@@ -301,6 +301,10 @@ function getPlatformEnvVars(userId: string, syncToken?: string): Record<string, 
   const envVars: Record<string, string> = {
     OSBORN_API_PORT: String(OSBORN_HTTP_PORT),
     LIVEKIT_ROOM: livekitRoom(userId),
+    // Machine owner: the agent only lets a participant whose signed token
+    // metadata userId matches this take control (agent data-sender-auth.ts).
+    // Pool spares carry a placeholder until repointAndStartSandbox re-bakes it.
+    OSBORN_OWNER_USER_ID: userId,
     // Wildcard subdomain dev routing: PORT-APPNAME.dev.voice-native.com → localhost:PORT
     // Empty string disables the feature on machines that predate this env var.
     DEV_DOMAIN: process.env.DEV_DOMAIN || 'dev.voice-native.com',

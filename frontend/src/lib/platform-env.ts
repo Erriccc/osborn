@@ -76,6 +76,7 @@ export const PLATFORM_ENV_SPEC: EnvKeySpec[] = [
   { key: 'LIVEKIT_ROOM', source: 'literal', scope: 'platform', required: true, secret: false, description: 'Per-user LiveKit room name (osborn-<uid8>).' },
   { key: 'DEV_DOMAIN', source: 'literal', scope: 'platform', required: false, secret: false, description: 'Wildcard dev-routing domain.' },
   { key: 'DEV_APP_NAME', source: 'literal', scope: 'platform', required: false, secret: false, description: 'This machine\'s app name (dev-router routing).' },
+  { key: 'OSBORN_OWNER_USER_ID', source: 'per-user', scope: 'platform', required: false, secret: false, description: 'Supabase user id of the machine owner. The agent only grants control to a participant whose signed token metadata userId matches; unset = single-tenant newest-joiner mode.' },
   { key: 'OSBORN_SYNC_TOKEN', source: 'per-user', scope: 'platform', required: false, secret: true, description: 'Per-user token authorizing the agent to call the frontend session export/import endpoints.' },
   { key: 'OSBORN_FRONTEND_URL', source: 'literal', scope: 'platform', required: false, secret: false, description: 'Frontend base URL the agent uploads artifacts to.' },
 ]
