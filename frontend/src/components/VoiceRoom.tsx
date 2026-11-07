@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react'
 import {
   useVoiceAssistant,
   useDataChannel,
@@ -15,11 +15,16 @@ import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
-import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessions'
+import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, sanitizeUserTranscript, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
+import { MicBanner } from './voice/MicBanner'
+import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
+import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
+import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
+import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { PermissionModal, getToolRiskLevel, type PermissionRequest } from './voice/PermissionModal'
 import { TextInput, type AttachedFile } from './voice/TextInput'
@@ -27,12 +32,22 @@ import { AgentsPopover, type NamedAgent, type UserAgentDraft } from './voice/Age
 import { SkillsPopover } from './voice/SkillsPanel'
 import { ControlMenu } from './voice/ControlMenu'
 import { ChatPanel } from './voice/ChatPanel'
+import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
+import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
+import { resolveTabId } from './panel/registry'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, contentRequestFor, favoriteRepairAction, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
 // browser's mic dialog; this was the genuinely-missing piece. Mic + speaker
 // pickers (live-switched via LiveKit's room.switchActiveDevice) and a speaker
 // test tone. Device labels only populate once the user has allowed mic access.
+const NOOP_KV: KV = { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+/** sessionStorage, or a no-op store where it is unavailable (SSR, blocked). */
+function micStore(): KV {
+  try { return typeof window !== 'undefined' && window.sessionStorage ? window.sessionStorage : NOOP_KV } catch { return NOOP_KV }
+}
+
 function AudioPopover({ disabled }: { disabled?: boolean }) {
   const room = useRoomContext()
   const [open, setOpen] = useState(false)
@@ -134,7 +149,8 @@ function buildPriorItems(
 ): ChatMessage[] {
   const items: ChatMessage[] = []
   let lastDay = ''
-  msgs.forEach((m, i) => {
+  // Bug 14bedf48: control notices in the stored history are not You bubbles.
+  dropControlUserItems(msgs.map((m) => ({ ...m, role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content ?? '') }))).forEach((m, i) => {
     const t = m.ts ? new Date(m.ts) : new Date(0)
     const day = t.getTime() > 0 ? t.toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''
     if (day && day !== lastDay) {
@@ -164,6 +180,7 @@ function VoiceRoomInner({
   preSelectedSessionId,
   agentUrl,
   seedPrompt,
+  isController = true,
 }: {
   onDisconnect?: () => void
   onAgentReady?: () => void
@@ -173,8 +190,13 @@ function VoiceRoomInner({
   preSelectedSessionId?: string | null
   agentUrl?: string
   seedPrompt?: string | null
+  /** False in a standby tab (another tab holds the room): no body fetches,
+   *  previews or favorite recovery from here. */
+  isController?: boolean
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const isControllerRef = useRef(isController)
+  isControllerRef.current = isController
   // Project/workspace context for this session (from the chat URL via the
   // provider) — surfaced as a header chip so a stranger can see WHICH repo /
   // project the session is attached to (audit C1/P1-7; §12 found it invisible,
@@ -193,7 +215,44 @@ function VoiceRoomInner({
   // silence). micError → recovery overlay when mic capture fails — previously
   // MediaDevicesError was log-only and a denied mic meant an eternal spinner.
   const [audioBlocked, setAudioBlocked] = useState(false)
-  const [micError, setMicError] = useState<'denied' | 'notfound' | 'busy' | null>(null)
+  const [micError, setMicError] = useState<MicErrorKind | null>(null)
+  // Bug 0e5479b6: transient resume status, outside the transcript (never
+  // copied or persisted); first assistant message or 30s clears it.
+  const [resumeChip, dispatchResumeChip] = useReducer(resumeChipReducer, null)
+  useEffect(() => {
+    if (!resumeChip) return
+    const left = Math.max(0, resumeChip.startedAt + RESUME_CHIP_TIMEOUT_MS - Date.now())
+    const id = setTimeout(() => dispatchResumeChip({ type: 'tick', now: Date.now() }), left + 50)
+    return () => clearTimeout(id)
+  }, [resumeChip])
+  // Bug 7cf00ae6: once the browser denied the mic, nothing re-requests it on
+  // its own (agent 'listening', session gate, LiveKit reconnect) — only the
+  // user's explicit Try again / unmute. Flag lives in sessionStorage so the
+  // provider's LiveKitRoom also stops publishing the mic on reconnect.
+  const micDeniedRef = useRef(false)
+  /** Set below: what to do when the browser lifts a denial mid-session. */
+  const micUnblockedRef = useRef<(() => void) | null>(null)
+  const micUserRetryRef = useRef(false)
+  const micBannerShownRef = useRef(new Set<MicErrorKind>())
+  useEffect(() => {
+    // The provider reconciles the stored flag with the browser's Permissions
+    // answer (granted/prompt clear it) and broadcasts; follow it here so the
+    // auto-enable paths (agent 'listening', session gate) are allowed again.
+    const read = () => {
+      const was = micDeniedRef.current
+      micDeniedRef.current = isMicDenied(micStore())
+      if (was && !micDeniedRef.current) micUnblockedRef.current?.()
+    }
+    read()
+    window.addEventListener(MIC_DENIED_EVENT, read)
+    return () => window.removeEventListener(MIC_DENIED_EVENT, read)
+  }, [])
+  const markMicDenied = useCallback((denied: boolean) => {
+    if (micDeniedRef.current === denied) return
+    micDeniedRef.current = denied
+    setMicDenied(micStore(), denied)
+    try { window.dispatchEvent(new Event(MIC_DENIED_EVENT)) } catch { /* SSR */ }
+  }, [])
   // YOLO toggle: when enabled, the frontend intercepts every incoming
   // permission_request and sends back an immediate allow without showing
   // the modal. Persisted to localStorage so it survives reloads. Default
@@ -240,6 +299,8 @@ function VoiceRoomInner({
   const [gateDropped, setGateDropped] = useState<Array<{ text: string; verdict: string; ts: number }>>([])
   // Session management state
   const [sessions, setSessions] = useState<SessionInfo[]>([])
+  // Bug c50200ef: lists order by the agent's lastActivityAt (PR #20), not mtime.
+  const sessionsByActivity = useMemo(() => sortSessionsByActivity(sessions), [sessions])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [isLoadingSessions, setIsLoadingSessions] = useState(false)
   // Auto-resume prompt state
@@ -251,7 +312,6 @@ function VoiceRoomInner({
   const [copyFeedback, setCopyFeedback] = useState(false)
   // Generated files state (plans + research artifacts)
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([])
-  const [showFilesPanel, setShowFilesPanel] = useState(false)
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
 
   // Favorited session files — a durable, user-pinned subset. Everything else in
@@ -280,50 +340,104 @@ function VoiceRoomInner({
   // sessionId scopes the server-side blob so different sessions never leak into
   // each other; when sessionId is not yet known the POST is skipped (the caller
   // will retry once the agent reports the session).
-  const persistFavorites = useCallback((next: GeneratedFile[]) => {
+  // Returns the HTTP status of the server write (null on network failure) so the
+  // caller can roll back an optimistic star (UI#21: check res.ok, not only throws).
+  const persistFavorites = useCallback(async (next: GeneratedFile[]): Promise<number | null> => {
     try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
-    fetch('/api/favorites', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ favorites: next }),
-    }).catch(() => {})
+    try {
+      const res = await fetch('/api/favorites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorites: next }),
+      })
+      return res.status
+    } catch { return null }
   }, [])
+  const setFavoritesNow = useCallback((next: GeneratedFile[]) => {
+    favoriteFilesRef.current = next
+    setFavoriteFiles(next)
+  }, [])
+  const [pinError, setPinError] = useState<string | null>(null)
+  const lastPinFailRef = useRef<GeneratedFile | null>(null)
 
+  // Point a favorite at a durable url (persisted) and graft it onto the row.
+  const setFavoriteUrl = useCallback((filePath: string, url: string) => {
+    if (!favoriteFilesRef.current.some((f) => f.filePath === filePath && !f.url)) return
+    const withUrl = favoriteFilesRef.current.map((f) => (f.filePath === filePath ? { ...f, url } : f))
+    setFavoritesNow(withUrl)
+    void persistFavorites(withUrl)
+    setGeneratedFiles((prev) => prev.map((f) => (f.filePath === filePath ? { ...f, url: f.url || url } : f)))
+  }, [persistFavorites, setFavoritesNow])
+
+  // Upload a file's FULL body (text, or base64 image) as the favorite's durable
+  // copy. Callers make sure the body is complete (never a truncated preview).
+  const saveDurableCopy = useCallback(async (file: GeneratedFile): Promise<boolean> => {
+    if (typeof file.content !== 'string' || file.content.length === 0 || file.truncated) return false
+    try {
+      const image = !!file.isImage || isImageName(file.fileName)
+      let blob: Blob
+      if (image) {
+        const bin = atob(file.content)
+        const bytes = new Uint8Array(bin.length)
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+        blob = new Blob([bytes], { type: file.mimeType || 'application/octet-stream' })
+      } else {
+        blob = new Blob([file.content], { type: 'text/plain' })
+      }
+      const fd = new FormData()
+      fd.append('file', blob, file.fileName)
+      fd.append('folder', 'favorites')
+      const res = await fetch('/api/upload', { method: 'POST', body: fd })
+      const j = res.ok ? await res.json().catch(() => null) : null
+      const url: string | undefined = j?.url
+      if (!url) return false
+      setFavoriteUrl(file.filePath, url)
+      return true
+    } catch { return false /* best effort — the pin is saved, just without a durable copy */ }
+  }, [setFavoriteUrl])
+
+  // Optimistic pin/unpin (UI#21): the star flips in the click, the server write
+  // runs in the background, and a failed write rolls back with a retryable
+  // notice. 401 = guest, whose favorites are device-local by design.
+  // Never sends anything to the agent (no `[favorited]` user_text).
   const toggleFavorite = useCallback(async (file: GeneratedFile) => {
-    const currentlyFav = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
-    if (currentlyFav) {
-      setFavoriteFiles((prev) => { const next = prev.filter((f) => f.filePath !== file.filePath); persistFavorites(next); return next })
-      return
-    }
-    // Adding — ensure a DURABLE copy so the favorite opens on ANY device/session.
-    // If the file has inline text content but no Supabase URL yet, upload it so
-    // there's a permanent URL (otherwise the content lived only in this session's
-    // memory and the star would spin on "Loading content…" elsewhere).
-    let url = file.url
-    if (!url && file.content && !file.isImage) {
-      try {
-        const blob = new Blob([file.content], { type: 'text/plain' })
-        const fd = new FormData()
-        fd.append('file', blob, file.fileName)
-        fd.append('folder', 'favorites')
-        const res = await fetch('/api/upload', { method: 'POST', body: fd })
-        const j = await res.json().catch(() => null)
-        if (j?.url) url = j.url
-      } catch { /* best effort — favorite still saves, just without a durable copy */ }
-    }
+    const before = favoriteFilesRef.current
+    const prevEntry = before.find((f) => f.filePath === file.filePath)
+    const currentlyFav = !!prevEntry
     const slim: GeneratedFile = {
-      filePath: file.filePath, fileName: file.fileName, url,
+      filePath: file.filePath, fileName: file.fileName, url: file.url,
       type: file.type, source: file.source, updatedAt: file.updatedAt,
       isImage: file.isImage, mimeType: file.mimeType,
     }
-    setFavoriteFiles((prev) => {
-      if (prev.some((f) => f.filePath === file.filePath)) return prev
-      const next = [...prev, slim]; persistFavorites(next); return next
-    })
-    // Reflect the (possibly newly-uploaded) URL on the visible file too.
-    setGeneratedFiles((prev) => prev.some((f) => f.filePath === file.filePath)
-      ? (url ? prev.map((f) => (f.filePath === file.filePath ? { ...f, url: f.url || url } : f)) : prev)
-      : [{ ...file, url: url || file.url }, ...prev])
-  }, [persistFavorites])
+    setPinError(null)
+    setFavoritesNow(currentlyFav ? before.filter((f) => f.filePath !== file.filePath) : [...before, slim])
+    if (!currentlyFav) {
+      setGeneratedFiles((prev) => prev.some((f) => f.filePath === file.filePath) ? prev : [{ ...file }, ...prev])
+    }
+    const outcome = favoriteSaveOutcome(await persistFavorites(favoriteFilesRef.current))
+    if (outcome === 'rollback') {
+      const cur = favoriteFilesRef.current
+      const rolled = currentlyFav
+        ? (cur.some((f) => f.filePath === file.filePath) ? cur : [...cur, prevEntry!])
+        : cur.filter((f) => f.filePath !== file.filePath)
+      setFavoritesNow(rolled)
+      try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(rolled)) } catch { /* ignore */ }
+      lastPinFailRef.current = file
+      setPinError(currentlyFav ? `Couldn't unpin ${file.fileName}.` : `Couldn't save pin for ${file.fileName}.`)
+      return
+    }
+    // Durable copy, in the background, so the pin opens on any device. Only
+    // when we hold the FULL text: never upload a truncated preview or an image
+    // placeholder as the permanent copy.
+    if (!currentlyFav && !file.url && typeof file.content === 'string' && file.content.length > 0
+      && !file.isImage && !isImageName(file.fileName) && !file.truncated) {
+      await saveDurableCopy(file)
+    }
+  }, [persistFavorites, setFavoritesNow, saveDurableCopy])
+  const retryPin = useCallback(() => {
+    const f = lastPinFailRef.current
+    lastPinFailRef.current = null
+    if (f) void toggleFavorite(f)
+  }, [toggleFavorite])
 
   // Surface favorites in the explorer whenever the set changes (initial load,
   // server sync, or a toggle) — so a returning user always sees their pinned
@@ -336,6 +450,23 @@ function VoiceRoomInner({
       return missing.length ? [...missing, ...prev] : prev
     })
   }, [favoriteFiles])
+
+  // Bug 55033541: repair a favorite that has no durable copy as soon as its
+  // body comes back from the agent machine (opened in Outputs / Files view):
+  // take the agent's uploaded url, or upload the full body. Once per path.
+  const repairingFavoritesRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (!isController) return // a standby tab never recovers / uploads
+    for (const fav of favoriteFiles) {
+      if (fav.url || repairingFavoritesRef.current.has(fav.filePath)) continue
+      const live = generatedFiles.find((f) => f.filePath === fav.filePath)
+      const action = favoriteRepairAction(fav, live)
+      if (!action || !live) continue
+      repairingFavoritesRef.current.add(fav.filePath)
+      if (action.kind === 'set-url') setFavoriteUrl(fav.filePath, action.url)
+      else void saveDurableCopy(live) // one attempt per page (no upload loop on failure)
+    }
+  }, [favoriteFiles, generatedFiles, setFavoriteUrl, saveDurableCopy, isController])
 
   // Cross-device favorites — SERVER IS AUTHORITATIVE. User-level (not session-level)
   // so favorites persist across sessions. Runs once per session to sync.
@@ -391,7 +522,14 @@ function VoiceRoomInner({
     return () => { cancelled = true }
   }, [currentSessionId])
   const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
-  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false) // Default closed — opens via button (desktop only)
+  // Full-screen Files view: reachable only through "Expand" in the Outputs drawer.
+  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false)
+  // Right-side living panel (L4): open/tab/width persisted in localStorage `vn-panel`.
+  const panel = usePanelState()
+  const outputsVisible = panel.open && resolveTabId(panel.tab) === 'outputs'
+  const outputsVisibleRef = useRef(outputsVisible)
+  useEffect(() => { outputsVisibleRef.current = outputsVisible }, [outputsVisible])
+  const [outputsPreviewPath, setOutputsPreviewPath] = useState<string | null>(null)
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
   // Skills state
@@ -554,7 +692,7 @@ function VoiceRoomInner({
   // would spin on "Loading content…" forever.
   useEffect(() => {
     const f = selectedFile
-    if (!f || !f.url || f.content || f.isImage) return
+    if (!f || !f.url || f.content || f.isImage || isSensitivePath(f.filePath)) return
     const ext = f.fileName.split('.').pop()?.toLowerCase() || ''
     const textLike = ['md', 'markdown', 'txt', 'html', 'htm', 'svg', 'json', 'csv', 'log', 'yaml', 'yml', 'ts', 'tsx', 'js', 'jsx', 'py', 'sh', 'css'].includes(ext)
     if (!textLike) return // binary — viewer shows an open link, no fetch
@@ -570,14 +708,18 @@ function VoiceRoomInner({
   }, [selectedFile])
 
   const { localParticipant, isMicrophoneEnabled: micEnabled } = useLocalParticipant()
+  // Honest mute UI: never show "unmuted" while no audio is published (e.g.
+  // joined without the mic after a denial). A tap then means "turn it on".
+  const shownMuted = micShownMuted({ muted: isMuted, micPublished: localParticipant ? micEnabled : undefined })
 
   const toggleMute = useCallback(async () => {
     if (localParticipant) {
-      const newMuted = !isMuted
+      const newMuted = !shownMuted
+      if (!newMuted) micUserRetryRef.current = true // explicit user unmute
       await localParticipant.setMicrophoneEnabled(!newMuted)
       setIsMuted(newMuted)
     }
-  }, [localParticipant, isMuted])
+  }, [localParticipant, shownMuted])
 
   // Copy all messages to clipboard with timestamps
   const handleCopyAllMessages = useCallback(async () => {
@@ -759,8 +901,11 @@ function VoiceRoomInner({
     const onTrackUnmuted = (pub: any, participant: any) => {
       log('TrackUnmuted', { kind: pub?.kind, participant: participant.identity, sid: pub?.trackSid, isLocal: participant.isLocal })
       // P1.7: a live local audio track means whatever mic error we surfaced
-      // (or never showed) is resolved — clear the recovery overlay.
-      if (participant.isLocal && pub?.kind === 'audio') setMicError(null)
+      // (or never showed) is resolved — clear the banner and the denial.
+      if (participant.isLocal && pub?.kind === 'audio') { setMicError(null); markMicDenied(false) }
+    }
+    const onLocalTrackPublished = (pub: any) => {
+      if (pub?.kind === 'audio') { setMicError(null); markMicDenied(false) }
     }
     const onActiveSpeakers = (speakers: any[]) =>
       log('ActiveSpeakersChanged', { count: speakers.length, identities: speakers.map(s => s.identity) })
@@ -774,10 +919,19 @@ function VoiceRoomInner({
     }
     const onMediaDevicesError = (err: Error) => {
       log('MediaDevicesError', { err: err.message })
-      // P1.7: map the DOMException to a recovery path instead of a silent log.
-      if (err?.name === 'NotAllowedError') setMicError('denied')
-      else if (err?.name === 'NotFoundError') setMicError('notfound')
-      else if (err?.name === 'NotReadableError') setMicError('busy')
+      // P1.7 / bug 7cf00ae6: map the DOMException to a small banner, once per
+      // browser session per problem (a user-initiated retry may show it again).
+      const kind = micErrorKind(err?.name)
+      if (!kind) return
+      if (kind === 'denied') markMicDenied(true)
+      const userRetry = micUserRetryRef.current
+      micUserRetryRef.current = false
+      if (!userRetry && micBannerShownRef.current.has(kind)) return
+      const store = micStore()
+      if (!shouldShowMicBanner(store, kind, { userRetry })) return
+      noteMicBannerShown(store, kind)
+      micBannerShownRef.current.add(kind)
+      setMicError(kind)
     }
     const onParticipantConnected = (p: any) =>
       log('ParticipantConnected', { identity: p.identity, isAgent: !p.isLocal })
@@ -820,6 +974,7 @@ function VoiceRoomInner({
     room.on(RoomEvent.ConnectionQualityChanged, onConnQuality)
     room.on(RoomEvent.AudioPlaybackStatusChanged, onAudioPlayback)
     room.on(RoomEvent.MediaDevicesError, onMediaDevicesError)
+    room.on(RoomEvent.LocalTrackPublished, onLocalTrackPublished)
     room.on(RoomEvent.ParticipantConnected, onParticipantConnected)
     room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
     room.on(RoomEvent.LocalAudioSilenceDetected, onLocalAudioSilence)
@@ -848,6 +1003,7 @@ function VoiceRoomInner({
       room.off(RoomEvent.ConnectionQualityChanged, onConnQuality)
       room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioPlayback)
       room.off(RoomEvent.MediaDevicesError, onMediaDevicesError)
+      room.off(RoomEvent.LocalTrackPublished, onLocalTrackPublished)
       room.off(RoomEvent.ParticipantConnected, onParticipantConnected)
       room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
       room.off(RoomEvent.LocalAudioSilenceDetected, onLocalAudioSilence)
@@ -1003,6 +1159,143 @@ function VoiceRoomInner({
 
   const { send: sendToAgent } = useDataChannel('user-input')
 
+  // ── Outputs drawer data flow (L4; UI#13/19) ──────────────────────────────
+  // Re-list the session workspace with REPLACE semantics on open, on focus and
+  // after file events; fetch a file body only when it is previewed (no storm).
+  const sendJson = useCallback((m: Record<string, unknown>) => {
+    sendToAgent(new TextEncoder().encode(JSON.stringify(m)), { reliable: true })
+  }, [sendToAgent])
+  const currentSessionIdRef = useRef(currentSessionId)
+  useEffect(() => { currentSessionIdRef.current = currentSessionId }, [currentSessionId])
+  const generatedFilesRef = useRef(generatedFiles)
+  useEffect(() => { generatedFilesRef.current = generatedFiles }, [generatedFiles])
+  const announcedFilesRef = useRef(new Set<string>())
+  const [joinedAt] = useState(() => Date.now())
+  const [outputsSeenAt, setOutputsSeenAt] = useState(joinedAt)
+  // The ONE unread count (bugs 34808f72/59bb7e8d): distinct agent-written
+  // paths not yet seen. Fed only by agent file events, so re-lists, favorites
+  // syncs and bucket listings can never make it jump. Cleared on open.
+  const [unreadOutputs, setUnreadOutputs] = useState<ReadonlySet<string>>(() => new Set())
+  const [outputsSyncing, setOutputsSyncing] = useState(false)
+  const [outputsSyncError, setOutputsSyncError] = useState(false)
+  const [outputsSyncedAt, setOutputsSyncedAt] = useState<number | null>(null)
+  const relistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const relistDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastRelistAtRef = useRef(0)
+  const requestRelist = useCallback((force = false) => {
+    const sid = currentSessionIdRef.current
+    if (!sid) return
+    const now = Date.now()
+    if (!force && now - lastRelistAtRef.current < 2000) return
+    lastRelistAtRef.current = now
+    setOutputsSyncing(true)
+    setOutputsSyncError(false)
+    sendJson({ type: 'get_session_artifacts', sessionId: sid })
+    if (relistTimeoutRef.current) clearTimeout(relistTimeoutRef.current)
+    // A list over the data-channel size cap is dropped silently: say so.
+    relistTimeoutRef.current = setTimeout(() => { setOutputsSyncing(false); setOutputsSyncError(true) }, 10_000)
+  }, [sendJson])
+  const markOutputsSynced = useCallback(() => {
+    if (relistTimeoutRef.current) clearTimeout(relistTimeoutRef.current)
+    relistTimeoutRef.current = null
+    setOutputsSyncing(false)
+    setOutputsSyncError(false)
+    setOutputsSyncedAt(Date.now())
+  }, [])
+  useEffect(() => () => {
+    if (relistTimeoutRef.current) clearTimeout(relistTimeoutRef.current)
+    if (relistDebounceRef.current) clearTimeout(relistDebounceRef.current)
+  }, [])
+  // Agent file events: one in-chat card per new file, re-list while visible,
+  // and (only if enabled) open the drawer. Called from handleDataMessage via a
+  // ref so its subscription deps stay unchanged.
+  const onAgentFileEvent = useCallback((filePath: string, fileName: string) => {
+    if (!generatedFilesRef.current.some((f) => f.filePath === filePath) && !announcedFilesRef.current.has(filePath)) {
+      announcedFilesRef.current.add(filePath)
+      setMessages((prev) => [...prev, {
+        id: `file-${filePath}`, role: 'system', content: `Saved ${fileName}`, timestamp: new Date(),
+        category: 'chat', fileRef: { filePath, fileName },
+      }])
+    }
+    setUnreadOutputs((prev) => markUnread(prev, filePath, outputsVisibleRef.current))
+    if (AUTO_OPEN_OUTPUTS_ON_WRITE) {
+      panel.openPanel('outputs')
+      setSelectedFilePath(filePath)
+      setOutputsPreviewPath(filePath)
+    }
+    if (outputsVisibleRef.current) {
+      if (relistDebounceRef.current) clearTimeout(relistDebounceRef.current)
+      relistDebounceRef.current = setTimeout(() => requestRelist(true), 1500)
+    }
+  }, [panel.openPanel, requestRelist])
+  const outputsEventsRef = useRef({ onAgentFileEvent, markOutputsSynced })
+  outputsEventsRef.current = { onAgentFileEvent, markOutputsSynced }
+  // Opening Outputs re-lists; leaving it marks everything seen (clears "New").
+  useEffect(() => {
+    if (outputsVisible) requestRelist(true)
+  }, [outputsVisible, currentSessionId, requestRelist])
+  useEffect(() => {
+    if (outputsVisible) setUnreadOutputs((prev) => (prev.size ? new Set() : prev))
+  }, [outputsVisible])
+  const outputsWasVisibleRef = useRef(false)
+  useEffect(() => {
+    if (!outputsVisible && outputsWasVisibleRef.current) setOutputsSeenAt(Date.now())
+    outputsWasVisibleRef.current = outputsVisible
+  }, [outputsVisible])
+  useEffect(() => {
+    if (!outputsVisible) return
+    const onFocus = () => { if (document.visibilityState === 'visible') requestRelist() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [outputsVisible, requestRelist])
+  // Lazy body fetch: one request per file version, only for the file on screen.
+  const contentRequestedRef = useRef(new Set<string>())
+  const requestFileContent = useCallback((f: GeneratedFile, force = false) => {
+    // Only the controlling tab asks the agent for bodies (a standby tab must
+    // not drive the room); nothing is recorded, so it fetches once it controls.
+    const req = contentRequestFor(f, { isController: isControllerRef.current })
+    if (req.kind === 'skip') return
+    const key = `${f.filePath}@${toMs(f.updatedAt)}`
+    if (!force && contentRequestedRef.current.has(key)) return
+    contentRequestedRef.current.add(key)
+    // Never ask for a traversal / dotfile / secret-looking path. A path outside
+    // the folders the agent serves (e.g. /workspace/report.txt) would otherwise
+    // spin "Loading…" forever, since the agent silently ignores it.
+    if (req.kind === 'deny') {
+      setGeneratedFiles((prev) => prev.map((x) => (x.filePath === f.filePath ? { ...x, loadError: req.loadError } : x)))
+      return
+    }
+    sendJson(req.message)
+    // No answer (agent busy/offline, or an older agent that drops the request):
+    // stop spinning, so the view can offer Retry or, for a legacy favorite,
+    // Remove / Ask agent to regenerate (bug 55033541).
+    const requestedPath = f.filePath
+    setTimeout(() => {
+      setGeneratedFiles((prev) => prev.map((x) => (
+        x.filePath === requestedPath && x.content === undefined && !x.url && !x.loadError
+          ? { ...x, loadError: LOAD_ERROR_NO_REPLY }
+          : x
+      )))
+    }, CONTENT_REPLY_TIMEOUT_MS)
+  }, [sendJson])
+  const shownFilePath = outputsVisible ? outputsPreviewPath : isFilesModalOpen ? (selectedFile?.filePath ?? null) : null
+  useEffect(() => {
+    if (!shownFilePath) return
+    const f = generatedFiles.find((x) => x.filePath === shownFilePath)
+    if (!f || f.content !== undefined || f.url || f.loadError) return
+    requestFileContent(f)
+  }, [shownFilePath, generatedFiles, requestFileContent, isController])
+  const reloadFile = useCallback((filePath: string) => {
+    const f = generatedFilesRef.current.find((x) => x.filePath === filePath)
+    if (!f) return
+    setGeneratedFiles((prev) => prev.map((x) => (x.filePath === filePath ? { ...x, loadError: undefined, content: undefined } : x)))
+    requestFileContent(f, true)
+  }, [requestFileContent])
+
   const toggleNoiseCancel = useCallback(() => {
     const next = !noiseCancelOn
     setNoiseCancelOn(next) // optimistic; agent confirms via noise_cancel_state
@@ -1032,16 +1325,27 @@ function VoiceRoomInner({
   isMutedRef.current = isMuted
   const localParticipantRef = useRef(localParticipant)
   localParticipantRef.current = localParticipant
+  // Denial lifted (site settings now allow the mic): auto-enable is allowed
+  // again, same rule as the agent 'listening' path.
+  micUnblockedRef.current = () => {
+    if (!sessionGateCompletedRef.current) return
+    if (!shouldAutoEnableMic({ denied: micDeniedRef.current, muted: isMutedRef.current })) return
+    localParticipantRef.current?.setMicrophoneEnabled(true).catch(() => { /* MediaDevicesError re-surfaces it */ })
+  }
   // P1.9 (2026-10-24): wall-clock "TTS audio may still be flushing" marker,
   // stamped on every tts_chunk_playing. The iOS AEC re-enable below refuses to
   // fire inside this window — enabling mid-flush gets the track re-muted by
   // iOS and the mic stays dead for the rest of the turn.
   const ttsActiveUntilRef = useRef(0)
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number }) => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => void>()
+  // Typed messages awaiting their user_transcript echo (bug d9bb78b2).
+  const pendingTypedRef = useRef<PendingTyped[]>([])
+  /** Set once the agent returns a clientMsgId this session (MINOR: chat-echo). */
+  const agentSendsClientIdsRef = useRef(false)
 
   // addMessage function with duplicate detection
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number }) => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -1050,12 +1354,21 @@ function VoiceRoomInner({
       return
     }
 
+    // Bug 14bedf48: a control notice ('[SYSTEM — SILENT CONTROL MESSAGE',
+    // '[Request interrupted by user]', '[liked]', ...) is never a You bubble.
+    if (role === 'user' && isControlNotice(content)) {
+      console.log(`⏭️ addMessage: control notice kept out of the chat: "${content.substring(0, 60)}"`)
+      return
+    }
+
     // Normalize content for comparison (trim, normalize whitespace)
     const normalizedContent = content.trim().replace(/\s+/g, ' ')
 
     // Tool-call log cards are distinct events (10 reads of the same file are 10
     // real actions) — skip dedup for them so the review log stays complete.
-    if (!toolMeta) {
+    // A typed message (clientMsgId) is always the user's own new turn: a
+    // deliberate repeat must not be swallowed; its echo is deduped by id.
+    if (!toolMeta && !extra?.clientMsgId) {
       // Check if this exact content was sent recently (within last 5 messages of this role)
       const recentOfRole = recentMessagesRef.current[role]
       if (recentOfRole.includes(normalizedContent)) {
@@ -1080,8 +1393,10 @@ function VoiceRoomInner({
       toolMeta,
       messageId: extra?.messageId,
       chunkIndex: extra?.chunkIndex,
+      clientMsgId: extra?.clientMsgId,
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
+    if (role === 'assistant') dispatchResumeChip({ type: 'assistant' })
     setMessages((prev) => [...prev, newMessage])
   }, [])
 
@@ -1169,9 +1484,11 @@ function VoiceRoomInner({
         // setMicrophoneEnabled can reject on detached participants; (c) one
         // delayed re-check retry in case the enable landed on the tail of the
         // audio session and was silently dropped.
-        if (data.state === 'listening' && !isMutedRef.current && sessionGateCompletedRef.current) {
+        // Bug 7cf00ae6: never after a denial — this path (every agent turn and
+        // the agent's ~60s direct-mode auto-recovery) re-raised the mic prompt.
+        if (data.state === 'listening' && shouldAutoEnableMic({ denied: micDeniedRef.current, muted: isMutedRef.current }) && sessionGateCompletedRef.current) {
           const enableMic = () => {
-            if (isMutedRef.current || Date.now() < ttsActiveUntilRef.current) return
+            if (!shouldAutoEnableMic({ denied: micDeniedRef.current, muted: isMutedRef.current }) || Date.now() < ttsActiveUntilRef.current) return
             try { void localParticipantRef.current?.setMicrophoneEnabled(true) } catch { /* detached participant */ }
           }
           enableMic()
@@ -1181,8 +1498,22 @@ function VoiceRoomInner({
         onVoiceActivity?.()
       } else if (data.type === 'user_transcript') {
         if (data.text && data.text.trim()) {
-          console.log('👤 Adding user message:', data.text.substring(0, 50))
-          addMessageRef.current?.('user', data.text)
+          // Bug d9bb78b2: the echo of a message typed here is already on
+          // screen. Drop it by clientMsgId, else by cleaned-text match.
+          // The text fallback is only for agents that never return ids.
+          const echoId = typeof data.clientMsgId === 'string' && data.clientMsgId ? data.clientMsgId : null
+          if (echoId) agentSendsClientIdsRef.current = true
+          const echo = takeTypedEcho(pendingTypedRef.current, {
+            text: String(data.text),
+            clientMsgId: echoId,
+          }, Date.now(), { agentSendsIds: agentSendsClientIdsRef.current })
+          pendingTypedRef.current = echo.pending
+          if (echo.duplicate) {
+            console.log('⏭️ Typed-message echo deduped:', data.clientMsgId ?? '(text match)')
+          } else {
+            console.log('👤 Adding user message:', data.text.substring(0, 50))
+            addMessageRef.current?.('user', data.text)
+          }
           // New user turn — clear any lingering chunk highlight
           setSpeakingChunk(null)
           // User spoke — strongest activity signal, always reset idle timer
@@ -1335,6 +1666,14 @@ function VoiceRoomInner({
           const msg = target ? `Using ${data.tool}: ${target}` : `Using ${data.tool}`
           addMessageRef.current?.('system', msg || data.tool, data.tool, 'log', toolMeta)
         }
+        // Outputs (bugs 34808f72/59bb7e8d): a completed Write/Edit is a file
+        // Osborn made, wherever it lives. Workspace files also get an artifact
+        // event; both land on the same row and the same unread entry.
+        const written = fileFromToolEvent(data, { sessionId: currentSessionIdRef.current, now: Date.now() })
+        if (written) {
+          outputsEventsRef.current.onAgentFileEvent(written.filePath, written.fileName)
+          setGeneratedFiles((prev) => upsertAgentFile(prev, written as GeneratedFile))
+        }
         // Increment research tool counter
         setActiveResearch(prev => prev ? { ...prev, toolCount: prev.toolCount + 1 } : null)
       } else if (data.type === 'task_review') {
@@ -1433,14 +1772,16 @@ function VoiceRoomInner({
         if (data.success) {
           console.log('🔄 Session resume set:', data.sessionId)
           setCurrentSessionId(data.sessionId)
-          addMessageRef.current?.('system', '🔄 Resuming session...')
+          dispatchResumeChip({ type: 'start', label: resumeChipLabel(), now: Date.now() })
         } else {
           console.log('❌ Session resume failed:', data.error)
+          dispatchResumeChip({ type: 'clear' })
           addMessageRef.current?.('system', `❌ ${data.error || 'Failed to resume session'}`)
         }
       } else if (data.type === 'session_resume_failed') {
         // SDK created a new session instead of resuming the requested one
         console.warn('⚠️ Session resume verification failed:', data)
+        dispatchResumeChip({ type: 'clear' })
         addMessageRef.current?.('system', `⚠️ Could not restore previous session. Starting fresh conversation.`)
         setCurrentSessionId(data.actualSessionId)
       } else if (data.type === 'session_switched') {
@@ -1451,6 +1792,7 @@ function VoiceRoomInner({
           // Clear previous session's files — but keep favorites pinned so the
           // user's starred files survive the switch (they're cross-session).
           setGeneratedFiles(favoriteFiles)
+          setUnreadOutputs(new Set())
           setSelectedFilePath(null)
 
           // Clear current chat messages before showing new context
@@ -1481,6 +1823,7 @@ function VoiceRoomInner({
         // Plan file was written/edited by the agent
         console.log('📋 Plan file updated:', data.fileName)
         const fileName = data.fileName || data.filePath.split('/').pop() || 'plan.md'
+        outputsEventsRef.current.onAgentFileEvent(data.filePath, fileName)
         setGeneratedFiles((prev) => {
           const existing = prev.findIndex(f => f.filePath === data.filePath)
           const entry: GeneratedFile = {
@@ -1489,10 +1832,14 @@ function VoiceRoomInner({
             type: 'plan',
             source: 'plan',
             updatedAt: new Date(),
+            sessionId: currentSessionIdRef.current ?? undefined,
+            // An edit of a file we already listed keeps its first-known time, so
+            // only files first written in this session count as "Just made".
+            createdAt: existing >= 0 ? (prev[existing].createdAt ?? prev[existing].updatedAt) : new Date(),
           }
           if (existing >= 0) {
             const updated = [...prev]
-            updated[existing] = { ...updated[existing], ...entry, content: undefined }
+            updated[existing] = { ...updated[existing], ...entry, content: undefined, loadError: undefined }
             return updated
           }
           return [...prev, entry]
@@ -1504,14 +1851,15 @@ function VoiceRoomInner({
           filePath: data.filePath,
         }))
         sendToAgent(payload, { reliable: true })
-        setIsFilesModalOpen(true)
-        setSelectedFilePath(data.filePath)
+        // No auto-open (UI#17): the Outputs badge counts it instead.
       } else if (data.type === 'plan_file_content') {
         // Plan file content received
         console.log('📋 Plan file content received:', data.fileName, data.content?.length || 0, 'chars')
         setGeneratedFiles((prev) => prev.map(f =>
           f.filePath === data.filePath
-            ? { ...f, content: data.content || data.error || 'Empty file' }
+            ? (data.error
+                ? { ...f, content: undefined, loadError: String(data.error) }
+                : { ...f, content: data.content ?? '', loadError: undefined })
             : f
         ))
       } else if (data.type === 'research_artifact_updated') {
@@ -1528,6 +1876,7 @@ function VoiceRoomInner({
         else if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) fileType = 'image'
         else if (fileName.includes('summary')) fileType = 'summary'
 
+        outputsEventsRef.current.onAgentFileEvent(data.filePath, fileName)
         setGeneratedFiles((prev) => {
           const existing = prev.findIndex(f => f.filePath === data.filePath)
           const entry: GeneratedFile = {
@@ -1536,10 +1885,12 @@ function VoiceRoomInner({
             type: fileType,
             source: 'research',
             updatedAt: new Date(),
+            sessionId: currentSessionIdRef.current ?? undefined,
+            createdAt: existing >= 0 ? (prev[existing].createdAt ?? prev[existing].updatedAt) : new Date(),
           }
           if (existing >= 0) {
             const updated = [...prev]
-            updated[existing] = { ...updated[existing], ...entry, content: undefined }
+            updated[existing] = { ...updated[existing], ...entry, content: undefined, loadError: undefined }
             return updated
           }
           return [...prev, entry]
@@ -1551,8 +1902,7 @@ function VoiceRoomInner({
           filePath: data.filePath,
         }))
         sendToAgent(payload, { reliable: true })
-        setIsFilesModalOpen(true)
-        setSelectedFilePath(data.filePath)
+        // No auto-open (UI#17): the Outputs badge counts it instead.
       } else if (data.type === 'research_artifact_content') {
         // Research artifact content received. Prefer `data.url` (agent
         // uploaded to Supabase Storage — fetch on demand, no data channel
@@ -1567,8 +1917,12 @@ function VoiceRoomInner({
             ? {
                 ...f,
                 url: data.url || undefined,
-                content: data.url ? undefined : (data.content || data.error || 'Empty file'),
-                isImage: data.isImage || false,
+                // UI#20: never turn an empty or failed payload into the text
+                // "Empty file"; the preview shows empty / unavailable / error.
+                content: data.url || data.error ? undefined : (data.content ?? ''),
+                loadError: data.error ? String(data.error) : undefined,
+                // Images go by extension too: the agent's fallback sends isImage:false.
+                isImage: !!data.isImage || isImageName(f.fileName),
                 mimeType: data.mimeType,
                 truncated: data.truncated || false,
                 originalSize: data.originalSize,
@@ -1586,38 +1940,30 @@ function VoiceRoomInner({
         // Bulk load existing session artifacts on resume/switch
         console.log('📁 Session artifacts received:', data.artifacts?.length || 0)
         if (data.artifacts && Array.isArray(data.artifacts)) {
+          const listSessionId: string | undefined = typeof data.sessionId === 'string' ? data.sessionId : undefined
           const newFiles: GeneratedFile[] = data.artifacts.map((a: any) => {
             const ext = a.fileName.split('.').pop()?.toLowerCase() || ''
-            const isImage = ['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)
+            const isImage = isImageName(a.fileName)
             return {
               filePath: a.filePath,
               fileName: a.fileName,
               type: a.type as GeneratedFile['type'],
               source: 'research' as const,
               updatedAt: new Date(a.updatedAt),
+              sessionId: listSessionId,
               isImage,
-              mimeType: isImage ? `image/${ext}` : undefined,
+              mimeType: isImage ? `image/${ext === 'jpg' ? 'jpeg' : ext}` : undefined,
             }
           })
 
-          setGeneratedFiles((prev) => {
-            const existingPaths = new Set(prev.map(f => f.filePath))
-            const uniqueNew = newFiles.filter(f => !existingPaths.has(f.filePath))
-            return [...prev, ...uniqueNew]
-          })
-
-          // Auto-select first file and request its content
-          if (newFiles.length > 0) {
-            setSelectedFilePath(newFiles[0].filePath)
-            for (const file of newFiles) {
-              const encoder = new TextEncoder()
-              const payload = encoder.encode(JSON.stringify({
-                type: 'get_research_artifact',
-                filePath: file.filePath,
-              }))
-              sendToAgent(payload, { reliable: true })
-            }
-          }
+          // UI#13/19: REPLACE this session folder's rows (vanished files go,
+          // changed ones refetch lazily). Bodies are fetched only when a file
+          // is opened: no per-file request storm at resume.
+          setGeneratedFiles((prev) => replaceArtifacts(prev, newFiles, {
+            sessionId: listSessionId,
+            pinnedPaths: new Set(favoriteFilesRef.current.map((f) => f.filePath)),
+          }))
+          outputsEventsRef.current.markOutputsSynced()
         }
       } else if (data.type === 'fast_brain_response') {
         // Pipeline mode: Gemini fast brain parallel response — show in main chat for monitoring
@@ -1955,7 +2301,7 @@ function VoiceRoomInner({
       sessionId,
     }))
     sendToAgent(payload, { reliable: true })
-    addMessageRef.current?.('system', `🔄 Resuming session ${sessionId.substring(0, 8)}...`)
+    dispatchResumeChip({ type: 'start', label: resumeChipLabel(sessionId), now: Date.now() })
   }, [sendToAgent])
 
   const handleContinueSession = useCallback(() => {
@@ -1964,7 +2310,7 @@ function VoiceRoomInner({
       type: 'continue_session',
     }))
     sendToAgent(payload, { reliable: true })
-    addMessageRef.current?.('system', '🔄 Continuing previous session...')
+    dispatchResumeChip({ type: 'start', label: resumeChipLabel(null, 'continue'), now: Date.now() })
   }, [sendToAgent])
 
   // Rehydrate the Files explorer from Supabase Storage (the DURABLE copy) for a
@@ -2104,7 +2450,11 @@ function VoiceRoomInner({
       setAttachedFiles([])
     }
 
-    addMessageRef.current?.('user', content)
+    // Bug d9bb78b2: one id per typed send; the agent returns it on the
+    // user_transcript echo so the optimistic bubble is never doubled.
+    const clientMsgId = newClientMsgId()
+    pendingTypedRef.current = rememberTyped(pendingTypedRef.current, { clientMsgId, text, now: Date.now() })
+    addMessageRef.current?.('user', content, undefined, undefined, undefined, { clientMsgId })
 
     // Build payload — prepend a compact local-time tag so the agent is always
     // clock-aware. The tag is NOT added to the local chat bubble (addMessageRef
@@ -2113,6 +2463,7 @@ function VoiceRoomInner({
       type: 'user_text',
       content: addTimeTag() + text,
       files: fileData.length > 0 ? fileData : undefined,
+      clientMsgId,
     }
     const payloadStr = JSON.stringify(payloadObj)
 
@@ -2130,6 +2481,7 @@ function VoiceRoomInner({
               type: 'user_text',
               content: text.substring(0, 200) + (text.length > 200 ? '...[full content in attached file]' : ''),
               files: [{ name: uploadFile_.name, type: 'text', content: '', url: result.url }],
+              clientMsgId,
             })
             const encoder = new TextEncoder()
             sendToAgent(encoder.encode(uploadedPayload), { reliable: true })
@@ -2143,7 +2495,7 @@ function VoiceRoomInner({
       // Fallback: truncate with clear error
       addMessageRef.current?.('system', `Message too large for data channel (${(payloadStr.length / 1024).toFixed(0)} KB). Configure Supabase Storage to enable large messages.`)
       const truncated = text.substring(0, 50000) + '\n...[truncated — message exceeded size limit]'
-      const smallPayload = JSON.stringify({ type: 'user_text', content: truncated })
+      const smallPayload = JSON.stringify({ type: 'user_text', content: truncated, clientMsgId })
       const encoder = new TextEncoder()
       sendToAgent(encoder.encode(smallPayload), { reliable: true })
     } else {
@@ -2156,7 +2508,7 @@ function VoiceRoomInner({
 
   const handleCopyMessage = useCallback((msg: ChatMessage) => {
     const text = msg.role === 'user'
-      ? (sanitizeUserTranscript(msg.content) ?? msg.content)
+      ? (userBubbleText(msg.content) ?? msg.content)
       : msg.content
     navigator.clipboard.writeText(text).catch(() => {})
   }, [])
@@ -2223,9 +2575,13 @@ function VoiceRoomInner({
     handleSendText(noteText)
   }, [handleSendText])
 
-  const handleFavoriteNote = useCallback((fileName: string) => {
-    handleSendText(`[favorited] The user favorited the file ${fileName}.`)
-  }, [handleSendText])
+  // Bug d9bb78b2 / UI#21: a favorite is a UI action, not something the user
+  // said. favorite_changed (agent PR #18) queues it as hidden context for the
+  // next real turn: no '[favorited]' user_text, no bubble, no reply. Sent on
+  // un-star too (favorited: false).
+  const handleFavoriteNote = useCallback((file: { filePath: string; fileName: string }, favorited: boolean) => {
+    sendJson({ type: 'favorite_changed', filePath: file.filePath, fileName: file.fileName, favorited })
+  }, [sendJson])
 
   // SEED PROMPT — auto-send a ?prompt= starter ONCE on a FRESH session (no
   // preSelectedSessionId) as soon as the agent is connected. This is the whole
@@ -2242,15 +2598,22 @@ function VoiceRoomInner({
     try { sessionStorage.removeItem('voice-native-seed') } catch {}
   }, [agentConnected, seedPrompt, preSelectedSessionId, handleSendText])
 
-  // Wraps toggleFavorite so that starring a file (toggling ON) also sends a
-  // note to the agent over the user-input data channel. Un-favoriting is silent.
+  // Wraps toggleFavorite so the agent learns about the change (on AND off).
+  // Nothing is sent when the server write rolled the star back.
   const handleToggleFavoriteWithNote = useCallback(async (file: GeneratedFile) => {
-    const currentlyFav = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
+    const before = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
     await toggleFavorite(file)
-    if (!currentlyFav) {
-      handleFavoriteNote(file.fileName)
-    }
+    const after = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
+    if (after !== before) handleFavoriteNote(file, after)
   }, [toggleFavorite, handleFavoriteNote])
+
+  // Bug 55033541: the two ways out for a favorite whose copy is gone.
+  const removeFavorite = useCallback((file: GeneratedFile) => {
+    if (favoriteFilesRef.current.some((f) => f.filePath === file.filePath)) void handleToggleFavoriteWithNote(file)
+  }, [handleToggleFavoriteWithNote])
+  const regenerateFile = useCallback((file: GeneratedFile) => {
+    handleSendText(regeneratePrompt(file))
+  }, [handleSendText])
 
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
     const toolName = pendingPermission?.toolName || 'tool'
@@ -2528,9 +2891,10 @@ function VoiceRoomInner({
   const completeSessionGate = useCallback((sessionId: string | null) => {
     setShowResumePrompt(false)
     setSessionGateCompleted(true)
-    // Unmute mic now that user has made their choice
+    // Unmute mic now that user has made their choice (not after a denial:
+    // only the user's own Try again re-asks the browser).
     setIsMuted(false)
-    localParticipant?.setMicrophoneEnabled(true)
+    if (!micDeniedRef.current) localParticipant?.setMicrophoneEnabled(true)
     // Notify backend of session choice so it can apply resume + send greeting
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({
@@ -2555,6 +2919,71 @@ function VoiceRoomInner({
     completeSessionGate(null)
     addMessageRef.current?.('system', '🆕 Starting a fresh session')
   }, [completeSessionGate])
+
+  // Panel data, provided once to every right-panel tab and the in-chat cards (L4).
+  const openOutputsPreview = useCallback((filePath: string | null) => {
+    setOutputsPreviewPath(filePath)
+    if (filePath) setSelectedFilePath(filePath)
+  }, [])
+  const openFileInPanel = useCallback((filePath: string) => {
+    openOutputsPreview(filePath)
+    panel.openPanel('outputs')
+  }, [openOutputsPreview, panel.openPanel])
+  // Bug ab31e017: the tab reads "<session title> · Voice Native" or
+  // "New chat · Voice Native"; the previous title is restored on leave.
+  const firstUserMessage = useMemo(() => messages.find((m) => m.role === 'user' && !m.id.startsWith('prior-'))?.content ?? null, [messages])
+  const docTitle = useMemo(() => {
+    const sid = currentSessionId || preSelectedSessionId
+    const session = sid ? sessions.find((x) => x.sessionId === sid) ?? null : null
+    return chatDocumentTitle({ session, firstUserMessage })
+  }, [sessions, currentSessionId, preSelectedSessionId, firstUserMessage])
+  // Declared first so it captures the title from before this page set one.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const previous = document.title
+    return () => { document.title = previous }
+  }, [])
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    document.title = docTitle
+  }, [docTitle])
+
+  const panelData = useMemo<PanelData>(() => ({
+    messages,
+    generatedFiles,
+    slots,
+    agentUrl,
+    sendToAgent: sendJson,
+    sessionId: currentSessionId,
+    isController,
+    outputs: {
+      pinnedPaths: favoritePaths,
+      previewPath: outputsPreviewPath,
+      openPreview: openOutputsPreview,
+      togglePin: (f) => { void handleToggleFavoriteWithNote(f) },
+      removeFavorite,
+      regenerateFile,
+      pinError,
+      dismissPinError: () => setPinError(null),
+      retryPin,
+      reloadFile,
+      copyFile: handleCopyFile,
+      copyAll: handleCopyAllFiles,
+      copyFeedback: fileCopyFeedback,
+      refresh: () => requestRelist(true),
+      syncing: outputsSyncing,
+      syncError: outputsSyncError,
+      lastSyncedAt: outputsSyncedAt,
+      joinedAt,
+      seenAt: outputsSeenAt,
+      unseenCount: unreadOutputs.size,
+      expand: () => setIsFilesModalOpen(true),
+    },
+    panel: { ...panel, openFile: openFileInPanel },
+  }), [messages, generatedFiles, slots, agentUrl, sendJson, currentSessionId, isController, favoritePaths, outputsPreviewPath,
+    openOutputsPreview, handleToggleFavoriteWithNote, removeFavorite, regenerateFile, pinError, retryPin, reloadFile, handleCopyFile, handleCopyAllFiles,
+    fileCopyFeedback, requestRelist, outputsSyncing, outputsSyncError, outputsSyncedAt, joinedAt, outputsSeenAt,
+    unreadOutputs, panel, openFileInPanel])
 
   if (waitingMode) {
     return (
@@ -2702,7 +3131,7 @@ function VoiceRoomInner({
   }
 
   return (
-    <>
+    <PanelDataProvider value={panelData}>
       {/* Claude Auth Modal — shown during first-time OAuth flow in cloud deployments */}
       {claudeAuthStatus !== 'none' && claudeAuthStatus !== 'complete' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -2843,50 +3272,6 @@ function VoiceRoomInner({
         </button>
       )}
 
-      {/* P1.7 — mic failure recovery. Maps NotAllowed/NotFound/NotReadable to
-          a path forward; "Try again" doubles as the gesture LiveKit needs to
-          re-request the mic (iOS allows re-request after a Settings flip). */}
-      {micError && (
-        <div className="fixed inset-0 z-[65] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 max-w-sm w-full shadow-2xl" role="alertdialog" aria-label="Microphone problem">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
-                <span className="text-xl">🎙️</span>
-              </div>
-              <div className="min-w-0">
-                <h3 className="text-base font-semibold text-white">
-                  {micError === 'denied' ? 'Microphone blocked' : micError === 'notfound' ? 'No microphone found' : 'Microphone busy'}
-                </h3>
-                <p className="text-sm text-gray-400 mt-1">
-                  {micError === 'denied'
-                    ? 'Allow mic access: iPhone Settings → Safari (or this app) → Microphone → Allow — then come back and tap Try again.'
-                    : micError === 'notfound'
-                      ? 'This device reports no microphone input. Connect a mic and tap Try again.'
-                      : 'Another app is using the microphone. Close it and tap Try again.'}
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-2 mt-4">
-              <button
-                onClick={async () => {
-                  setMicError(null)
-                  try { await localParticipant.setMicrophoneEnabled(true) } catch { /* MediaDevicesError re-fires and re-surfaces */ }
-                }}
-                className="flex-1 min-h-11 px-4 rounded-lg bg-amber-400 text-black text-sm font-semibold hover:bg-amber-300 transition-colors"
-              >
-                Try again
-              </button>
-              <button
-                onClick={() => setMicError(null)}
-                className="min-h-11 px-4 rounded-lg bg-gray-800 text-gray-300 text-sm hover:bg-gray-700 transition-colors"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {pendingPermission && (
         <PermissionModal
           permission={pendingPermission}
@@ -2930,7 +3315,7 @@ function VoiceRoomInner({
                           key={session.sessionId}
                           onClick={() => {
                             handleResumeSession(session.sessionId)
-                            injectWelcomeBack(session.timestamp)
+                            injectWelcomeBack(sessionActivityTime(session))
                             completeSessionGate(session.sessionId)
                           }}
                           className={`w-full text-left p-3 rounded-lg border transition-colors ${
@@ -2941,14 +3326,12 @@ function VoiceRoomInner({
                         >
                           <div className="flex justify-between items-start">
                             <span className="text-sm font-medium text-white">
-                              {formatTime(session.timestamp)}
+                              {formatTime(sessionActivityTime(session))}
                               {group.label === 'Today' && index === 0 && <span className="ml-2 text-amber-400">(Latest)</span>}
                             </span>
                             <span className="text-xs text-gray-500">{session.messageCount} msgs</span>
                           </div>
-                          {session.lastMessage && (
-                            <p className="text-xs text-gray-400 mt-1 truncate">{deriveSessionTitle(session.lastMessage)}</p>
-                          )}
+                          <p className="text-xs text-gray-400 mt-1 truncate">{deriveSessionTitle(session)}</p>
                         </button>
                       ))}
                     </div>
@@ -3022,7 +3405,7 @@ function VoiceRoomInner({
 
             {/* Control Menu (Mode + History + Tools) — hidden on mobile */}
             <div className="hidden sm:block"><ControlMenu
-              sessions={sessions}
+              sessions={sessionsByActivity}
               currentSessionId={currentSessionId}
               onLoadSessions={handleLoadSessions}
               onResumeSession={handleResumeSession}
@@ -3228,6 +3611,7 @@ function VoiceRoomInner({
               {/* More — single labeled overflow consolidating the loose icon
                   row (Files, Auto-approve, Copy all, Noise filter) into one
                   menu. Amber dot signals an active setting inside. */}
+              <PanelToggleButton className="hidden sm:flex" />
               <div className="hidden sm:block relative">
                 <button
                   onClick={() => setShowHeaderMore(v => !v)}
@@ -3238,7 +3622,7 @@ function VoiceRoomInner({
                   title="More controls"
                 >
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
-                  {(autoApprovePermissions || noiseCancelOn || generatedFiles.length > 0) && (
+                  {(autoApprovePermissions || noiseCancelOn || (!outputsVisible && unreadOutputs.size > 0)) && (
                     <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400" />
                   )}
                 </button>
@@ -3246,11 +3630,11 @@ function VoiceRoomInner({
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowHeaderMore(false)} />
                     <div ref={moreMenuRef} role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
-                      <button role="menuitem" onClick={() => { setShowHeaderMore(false); setIsFilesModalOpen(true) }}
+                      <button role="menuitem" onClick={() => { setShowHeaderMore(false); panel.openPanel('outputs') }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
                         <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
-                        <span className="flex-1">Files Explorer</span>
-                        {generatedFiles.length > 0 && <span className="text-[11px] text-gray-500">{generatedFiles.length}</span>}
+                        <span className="flex-1">Outputs</span>
+                        {!outputsVisible && unreadOutputs.size > 0 && <span className="text-[11px] font-semibold text-amber-400">{unreadOutputs.size} new</span>}
                       </button>
                       <button role="menuitem" onClick={() => setAutoApprovePermissions(v => !v)}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
@@ -3283,13 +3667,13 @@ function VoiceRoomInner({
               <button
                 onClick={toggleMute}
                 className={`hidden sm:block p-2 rounded-lg transition-all ${
-                  isMuted
+                  shownMuted
                     ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
                     : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                 }`}
-                title={isMuted ? 'Unmute' : 'Mute'}
+                title={shownMuted ? 'Unmute' : 'Mute'}
               >
-                {isMuted ? (
+                {shownMuted ? (
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
@@ -3325,10 +3709,13 @@ function VoiceRoomInner({
                 meeting, history (8 ≤ technical-9 cap). Top bar stays clean:
                 status + clock on the left, burger on the right. */}
             <button onClick={() => setShowMobileMenu(true)}
-              className="sm:hidden shrink-0 min-h-11 min-w-11 flex items-center justify-center rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
+              className="relative sm:hidden shrink-0 min-h-11 min-w-11 flex items-center justify-center rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
               </svg>
+              {!outputsVisible && panelData.outputs.unseenCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400" aria-label="New outputs" />
+              )}
             </button>
           </div>
         </div>
@@ -3459,27 +3846,55 @@ function VoiceRoomInner({
           machineChipProcCount={machineData?.totalCount ?? machineData?.processes.length}
         />
 
+        {resumeChip && (
+          <div className="mx-3 mt-1.5 flex justify-center" data-testid="resume-chip">
+            <span role="status" aria-live="polite"
+              className="inline-flex items-center gap-1.5 rounded-full border border-gray-700/70 bg-gray-800/70 px-3 py-1 text-[11px] text-gray-300">
+              <svg className="w-3 h-3 animate-spin motion-reduce:animate-none text-amber-400" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              {resumeChip.label}
+            </span>
+          </div>
+        )}
+
+        {/* Mic problem (bug 7cf00ae6): small in-flow banner above the
+            composer, once per browser session — never a blocking overlay. */}
+        {micError && (
+          <MicBanner
+            kind={micError}
+            onDismiss={() => setMicError(null)}
+            onRetry={async () => {
+              setMicError(null)
+              setIsMuted(false)
+              micUserRetryRef.current = true
+              try { await localParticipant.setMicrophoneEnabled(true) } catch { /* MediaDevicesError re-surfaces it */ }
+            }}
+          />
+        )}
+
         {/* Mobile composer control strip — 3-6-9 rule (2026-10-24): the voice
             screen's primary actionables are exactly Mic + End (+ the composer
             input itself). Everything that used to live here — Auto/Ask,
             Agents, Skills, Filter — collapsed into the burger sheet (tray
             rule), which sits at 8 rows ≤ the technical-9 cap. */}
-        <div className="sm:hidden flex items-center justify-end gap-1.5 px-3 pt-1.5">
+        <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="sm:hidden flex items-center justify-end gap-1.5 px-3 pt-1.5">
           <button
             onClick={toggleMute}
             className={`flex items-center gap-1.5 min-h-11 px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
-              isMuted
+              shownMuted
                 ? 'bg-red-500/20 text-red-400'
                 : 'text-gray-400 hover:bg-gray-800/60'
             }`}
-            title={isMuted ? 'Unmute mic' : 'Mute mic'}
+            title={shownMuted ? 'Unmute mic' : 'Mute mic'}
           >
-            {isMuted ? (
+            {shownMuted ? (
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" d="M17 14l4-4m0 4l-4-4" /></svg>
             ) : (
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
             )}
-            <span>{isMuted ? 'Muted' : 'Mic'}</span>
+            <span>{shownMuted ? 'Muted' : 'Mic'}</span>
           </button>
 
           {/* Hangup — rightmost, next to Mute (moved off the top bar). Labeled
@@ -3509,226 +3924,9 @@ function VoiceRoomInner({
         />
       </div>
 
-      {/* Inline files preview panel — hidden on mobile */}
-      {showFilesPanel && (
-        <div className="hidden sm:flex w-[28rem] shrink-0 flex-col bg-gray-900 rounded-xl overflow-hidden border border-gray-800/50">
-          {/* Panel header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700/50">
-            <div className="flex items-center gap-2">
-              <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
-              <span className="text-sm font-semibold text-white">Files</span>
-              <span className="text-xs text-gray-500">({generatedFiles.length})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              {generatedFiles.filter(f => !f.isImage).length > 1 && (
-                <button
-                  onClick={handleCopyAllFiles}
-                  className={`px-2 py-1 text-xs rounded transition-colors ${
-                    fileCopyFeedback === 'all'
-                      ? 'bg-green-500/20 text-green-400'
-                      : 'bg-gray-800 text-gray-400 hover:text-gray-200'
-                  }`}
-                >
-                  {fileCopyFeedback === 'all' ? 'Copied!' : 'Copy All'}
-                </button>
-              )}
-              <button
-                onClick={() => setIsFilesModalOpen(true)}
-                className="p-1 text-gray-400 hover:text-white rounded transition-colors"
-                title="Expand files explorer"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
-                </svg>
-              </button>
-              <button
-                onClick={() => setShowFilesPanel(false)}
-                className="p-1 text-gray-400 hover:text-white rounded transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {/* File browser - compact list */}
-          <div className="border-b border-gray-700/50 max-h-52 overflow-y-auto">
-            {(() => {
-              const sidebarTypeBadge: Record<string, { label: string; color: string }> = {
-                plan: { label: 'Plan', color: 'bg-violet-500/20 text-violet-400' },
-                diagram: { label: 'Diagram', color: 'bg-blue-500/20 text-blue-400' },
-                notes: { label: 'Notes', color: 'bg-emerald-500/20 text-emerald-400' },
-                image: { label: 'Image', color: 'bg-amber-500/20 text-amber-400' },
-                summary: { label: 'Summary', color: 'bg-cyan-500/20 text-cyan-400' },
-                html: { label: 'HTML', color: 'bg-orange-500/20 text-orange-400' },
-                other: { label: 'File', color: 'bg-gray-500/20 text-gray-400' },
-              }
-              const renderFileRow = (file: GeneratedFile) => {
-                const badge = sidebarTypeBadge[file.type] || sidebarTypeBadge.other
-                const isFav = favoritePaths.has(file.filePath)
-                return (
-                  <div
-                    key={file.filePath}
-                    className={`w-full px-3 py-2 flex items-center gap-2 transition-colors ${
-                      selectedFile?.filePath === file.filePath
-                        ? 'bg-amber-500/15 border-l-2 border-amber-400'
-                        : 'hover:bg-gray-800/50 border-l-2 border-transparent'
-                    }`}
-                  >
-                    <button
-                      onClick={() => setSelectedFilePath(file.filePath)}
-                      className="flex items-center gap-2 min-w-0 flex-1 text-left"
-                    >
-                      <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${badge.color}`}>{badge.label}</span>
-                      <span className="text-xs font-mono text-gray-300 truncate">{file.fileName}</span>
-                    </button>
-                    {!file.content && !file.url && (
-                      <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                    )}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleToggleFavoriteWithNote(file) }}
-                      className={`shrink-0 p-1 rounded transition-colors ${
-                        isFav ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-300'
-                      }`}
-                      title={isFav ? 'Unfavorite' : 'Favorite'}
-                    >
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" />
-                      </svg>
-                    </button>
-                  </div>
-                )
-              }
-              const favFiles = generatedFiles.filter(f => favoritePaths.has(f.filePath))
-              const planFiles = generatedFiles.filter(f => f.source === 'plan' && !favoritePaths.has(f.filePath))
-              const researchFiles = generatedFiles.filter(f => f.source === 'research' && !favoritePaths.has(f.filePath))
-              const otherFiles = generatedFiles.filter(f => f.source !== 'plan' && f.source !== 'research' && !favoritePaths.has(f.filePath))
-              return (
-                <>
-                  {favFiles.length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider bg-gray-800/30 flex items-center gap-1.5">
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" /></svg>
-                        Favorites
-                      </div>
-                      {favFiles.map(renderFileRow)}
-                    </div>
-                  )}
-                  {planFiles.length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
-                        Plans
-                      </div>
-                      {planFiles.map(renderFileRow)}
-                    </div>
-                  )}
-                  {researchFiles.length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
-                        Research
-                      </div>
-                      {researchFiles.map(renderFileRow)}
-                    </div>
-                  )}
-                  {otherFiles.length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
-                        Other
-                      </div>
-                      {otherFiles.map(renderFileRow)}
-                    </div>
-                  )}
-                </>
-              )
-            })()}
-          </div>
-
-          {/* Preview area */}
-          <div className="flex-1 overflow-y-auto">
-            {generatedFiles.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-3 p-6">
-                <svg className="w-10 h-10 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-                <span className="text-sm">No files yet</span>
-                <span className="text-xs text-gray-600 text-center">Research artifacts and plans will appear here as the agent works</span>
-              </div>
-            ) : selectedFile ? (
-              <div>
-                <div className="sticky top-0 flex items-center justify-between px-4 py-2 bg-gray-800/80 backdrop-blur-sm border-b border-gray-700/30 z-10">
-                  <span className="text-xs font-mono text-amber-300 truncate">{selectedFile.fileName}</span>
-                  {!selectedFile.isImage && (
-                    <button
-                      onClick={() => handleCopyFile(selectedFile.filePath)}
-                      className={`px-2 py-1 text-xs rounded transition-colors shrink-0 ml-2 ${
-                        fileCopyFeedback === selectedFile.filePath
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-gray-700 text-gray-400 hover:text-gray-200'
-                      }`}
-                    >
-                      {fileCopyFeedback === selectedFile.filePath ? 'Copied!' : 'Copy'}
-                    </button>
-                  )}
-                </div>
-                <div className="p-4">
-                  {(selectedFile.content || (selectedFile.isImage && selectedFile.url)) ? (
-                    selectedFile.isImage ? (
-                      <img
-                        src={selectedFile.url || `data:${selectedFile.mimeType || 'image/png'};base64,${selectedFile.content}`}
-                        alt={selectedFile.fileName}
-                        className="max-w-full rounded-lg border border-gray-700"
-                      />
-                    ) : selectedFile.type === 'html' || selectedFile.fileName?.endsWith('.svg') ? (
-                      <iframe
-                        srcDoc={selectedFile.fileName?.endsWith('.svg')
-                          ? `<!DOCTYPE html><html><head><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1a2e;overflow:hidden}svg{width:100%;height:100%;max-width:100vw;max-height:100vh}</style></head><body>${selectedFile.content}</body></html>`
-                          : `<!DOCTYPE html><html><head><style>html{font-size:16px}body{margin:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#e2e8f0;background:#1a1a2e}table{border-collapse:collapse;width:100%}th,td{border:1px solid #475569;padding:8px 12px;text-align:left}th{background:#334155}h1,h2,h3{color:#f1f5f9}a{color:#60a5fa}code{background:#334155;padding:2px 6px;border-radius:4px;font-size:14px}pre{background:#0f172a;padding:16px;border-radius:8px;overflow-x:auto}</style></head><body>${selectedFile.content}</body></html>`}
-                        className="w-full h-full min-h-[400px] rounded-lg border border-gray-700"
-                        sandbox="allow-scripts"
-                        title={selectedFile.fileName}
-                      />
-                    ) : (
-                      <div className="text-sm">
-                        <MarkdownMessage content={selectedFile.content || ''} />
-                      </div>
-                    )
-                  ) : selectedFile.url ? (
-                    <a
-                      href={selectedFile.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 text-xs font-medium"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                      Open {selectedFile.fileName}
-                    </a>
-                  ) : (
-                    <div className="flex items-center justify-center py-8 text-gray-500 text-xs">
-                      <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Loading content...
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                Select a file to preview
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Right-side living panel (L4): Outputs and future tabs. Replaces the
+          unreachable inline files dock; never a full-screen takeover. */}
+      <RightPanel />
       </div>
 
       {/* Mobile Menu Drawer */}
@@ -3818,15 +4016,15 @@ function VoiceRoomInner({
               </button>
 
               {/* Files */}
-              <button onClick={() => { setIsFilesModalOpen(true); setShowMobileMenu(false) }}
+              <button onClick={() => { panel.openPanel('outputs'); setShowMobileMenu(false) }}
                 className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
                 <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                 </svg>
-                <span className="text-sm text-gray-200">Files Explorer</span>
-                {generatedFiles.length > 0 && (
-                  <span className="ml-auto text-xs bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full">{generatedFiles.length}</span>
-                )}
+                <span className="text-sm text-gray-200">Outputs</span>
+                {!outputsVisible && panelData.outputs.unseenCount > 0 ? (
+                  <span className="ml-auto text-xs bg-amber-500 text-gray-900 font-semibold px-2 py-0.5 rounded-full">{panelData.outputs.unseenCount} new</span>
+                ) : null}
               </button>
 
               {/* Copy messages */}
@@ -3936,8 +4134,11 @@ function VoiceRoomInner({
         fileCopyFeedback={fileCopyFeedback}
         favoritePaths={favoritePaths}
         onToggleFavorite={handleToggleFavoriteWithNote}
+        onRemoveFavorite={removeFavorite}
+        onRegenerate={regenerateFile}
+        onReloadFile={reloadFile}
       />
-    </>
+    </PanelDataProvider>
   )
 }
 
@@ -3950,7 +4151,7 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl, seedPrompt } =
+  const { disconnect, markAgentReady, markAuthRequired, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl, seedPrompt, isController } =
     useChatSession()
 
   if (idleStopped) {
@@ -3987,6 +4188,7 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       preSelectedSessionId={preSelectedSessionId}
       agentUrl={agentUrl}
       seedPrompt={seedPrompt}
+      isController={isController}
     />
   )
 }
