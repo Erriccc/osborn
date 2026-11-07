@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import NoteSheet, { noteCopyText } from './NoteSheet'
 
 /**
  * ActivityShelf (exported as ActivityFeed) — NOTES + SESSIONS as one shelf.
@@ -8,7 +9,10 @@ import { useEffect, useState } from 'react'
  * section whose cards scroll horizontally with snap, so the page stops
  * growing downward); filtering from WhatsApp's DM chips (All / Unread /
  * Favorites) — here All / Notes / Sessions over one merged stream.
- * Session cards tap-to-resume; note cards are static previews.
+ * Session cards tap-to-resume; note cards open a NoteSheet (full text, Copy,
+ * Delete). Each card is a plain div with a full-card button behind it and the
+ * Copy button as a SIBLING on top: separate hit areas, never a button inside
+ * a button (UI item 26 gap 5).
  */
 
 interface FeedNote { id: string; text: string; created_at: string; attachments?: string[] }
@@ -34,6 +38,7 @@ export default function ActivityFeed({
 }) {
   const [notes, setNotes] = useState<FeedNote[]>([])
   const [filter, setFilter] = useState<Filter>('note') // founder: default to Notes
+  const [openNote, setOpenNote] = useState<FeedNote | null>(null)
 
   useEffect(() => {
     const load = () => fetch('/api/notes')
@@ -49,7 +54,7 @@ export default function ActivityFeed({
   }, [])
 
   const rows = [
-    ...notes.map(n => ({ kind: 'note' as const, at: n.created_at, text: n.text, id: n.id })),
+    ...notes.map(n => ({ kind: 'note' as const, at: n.created_at, text: n.text, id: n.id, attachments: n.attachments || [] })),
     ...sessions.map(s => ({ kind: 'session' as const, at: s.timestamp, text: s.lastMessage || 'Session', id: s.sessionId, cwd: s.cwd })),
   ]
     .filter(r => filter === 'all' || r.kind === filter)
@@ -91,9 +96,16 @@ export default function ActivityFeed({
         <div className="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory"
           style={{ scrollbarWidth: 'thin' }}>
           {rows.map(r => (
-            <button key={r.kind + r.id}
-              onClick={() => r.kind === 'session' && onResume(r.id, r.cwd)}
-              className="snap-start shrink-0 w-[240px] sm:w-[260px] text-left rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-3.5 hover:border-[var(--accent-dim)]/50 transition-colors group">
+            <div key={r.kind + r.id}
+              className="relative snap-start shrink-0 w-[240px] sm:w-[260px] text-left rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-3.5 hover:border-[var(--accent-dim)]/50 transition-colors group">
+              <button type="button"
+                onClick={() => {
+                  if (r.kind === 'session') onResume(r.id, r.cwd)
+                  else { const n = notes.find(x => x.id === r.id); if (n) setOpenNote(n) }
+                }}
+                aria-label={(r.kind === 'note' ? 'Open note: ' : 'Resume session: ') + r.text.slice(0, 80)}
+                className="absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]" />
+              <div className="relative pointer-events-none">
               <div className="flex items-center gap-2 mb-2">
                 <span className="w-6 h-6 rounded-lg flex items-center justify-center shrink-0"
                   style={{ background: r.kind === 'note' ? 'color-mix(in oklab, var(--accent) 14%, transparent)' : 'var(--surface-2)' }}>
@@ -112,20 +124,18 @@ export default function ActivityFeed({
                 {r.text}
               </p>
               <span className="flex items-center gap-2 mt-2.5">
-                {r.kind === 'note' && (r as { attachments?: string[] }).attachments?.length ? (
+                {r.kind === 'note' && r.attachments?.length ? (
                   <span className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
                     <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
-                    {(r as { attachments?: string[] }).attachments!.length}
+                    {r.attachments.length}
                   </span>
                 ) : null}
                 {r.kind === 'note' && (
-                  <button
-                    onClick={e => {
-                      e.stopPropagation()
-                      const atts = (r as { attachments?: string[] }).attachments || []
-                      navigator.clipboard.writeText(atts.length ? `${r.text}\n${atts.join('\n')}` : r.text).catch(() => {})
+                  <button type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(noteCopyText({ text: r.text, attachments: r.attachments })).catch(() => {})
                     }}
-                    className="text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors">
+                    className="pointer-events-auto relative z-10 min-h-[32px] -my-1.5 text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors">
                     Copy note
                   </button>
                 )}
@@ -136,10 +146,17 @@ export default function ActivityFeed({
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
                 </span>
               )}
-            </button>
+              </div>
+            </div>
           ))}
         </div>
       )}
+
+      <NoteSheet
+        note={openNote}
+        onClose={() => setOpenNote(null)}
+        onDeleted={id => { setNotes(ns => ns.filter(n => n.id !== id)); setOpenNote(null) }}
+      />
     </section>
   )
 }
