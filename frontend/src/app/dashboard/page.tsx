@@ -69,6 +69,11 @@ interface ProjectGroup {
                       // for forwarding workingDirectory on resume.
   sessions: SessionInfo[]
   lastActive: string  // timestamp of most recent session
+  // Set only when another group shares this display name (e.g. two
+  // "AudosNextJsServer" at different paths). The parent path segment,
+  // shown dimmed so duplicate cards are distinguishable. Bug: "duplicate
+  // project names with no distinguishing info."
+  distinguisher?: string
 }
 
 // Historical workspace cwds that should collapse into the current base
@@ -134,14 +139,25 @@ function groupByProject(sessions: SessionInfo[], baseCwd: string | null): Projec
     map.set(key, [...(map.get(key) || []), s])
   }
   const cleanBase = baseCwd?.replace(/\/+$/, '') ?? null
-  return Array.from(map.entries())
+  const groups = Array.from(map.entries())
     .map(([cwd, unsorted]) => {
       const sessions = sortSessionsByActivity(unsorted)
       const isBase = cleanBase !== null && cwd === cleanBase
-      const segments = cwd.replace(/\/$/, '').split('/')
+      const segments = cwd.replace(/\/$/, '').split('/').filter(Boolean)
       const name = isBase ? 'Workspace' : (segments[segments.length - 1] || 'Workspace')
-      return { name, cwd, sessions, lastActive: sessions[0] ? sessionActivityTime(sessions[0]) : '' }
+      // Parent segment, held aside in case we need it to disambiguate below.
+      const parent = segments.length >= 2 ? segments[segments.length - 2] : ''
+      return { name, cwd, sessions, lastActive: sessions[0] ? sessionActivityTime(sessions[0]) : '', parent }
     })
+  // Distinguish cards that share a display name: show the parent path segment
+  // (falling back to the full cwd) only on the ones that actually collide.
+  const nameCounts = new Map<string, number>()
+  for (const g of groups) nameCounts.set(g.name, (nameCounts.get(g.name) || 0) + 1)
+  return groups
+    .map(({ parent, ...g }) => ({
+      ...g,
+      distinguisher: (nameCounts.get(g.name) || 0) > 1 ? (parent || g.cwd) : undefined,
+    }))
     .sort((a, b) => {
       const aBase = cleanBase !== null && a.cwd === cleanBase ? 0 : 1
       const bBase = cleanBase !== null && b.cwd === cleanBase ? 0 : 1
@@ -1729,6 +1745,12 @@ export default function Dashboard() {
                             <div className="text-sm font-semibold capitalize truncate text-[var(--text-primary)]">{project.name}</div>
                             <div className="text-xs text-[var(--muted)] mt-0.5 flex items-center gap-1.5">
                               <span className="px-1.5 py-px rounded-full bg-[var(--surface-2)] text-[var(--text-secondary)] font-medium text-[10px]">{project.sessions.length} session{project.sessions.length !== 1 ? 's' : ''}</span>
+                              {project.distinguisher && (
+                                <>
+                                  <span className="opacity-40">·</span>
+                                  <span className="font-mono text-[10px] opacity-70 truncate max-w-[9rem]" title={project.cwd}>{project.distinguisher}</span>
+                                </>
+                              )}
                               <span className="opacity-40">·</span>
                               <span>{formatDate(project.lastActive)}</span>
                             </div>
