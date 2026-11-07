@@ -1,6 +1,7 @@
 'use client'
 
 import { BarVisualizer } from '@livekit/components-react'
+import { resolveOrbState } from '@/lib/orb-state'
 
 // Modern status indicator
 // ── The Voice Orb — the interface IS the state (2026-08 "Warm Oracle") ──
@@ -9,20 +10,29 @@ import { BarVisualizer } from '@livekit/components-react'
 // violet shimmer · speaking = sage rhythmic ripple. Label is quiet serif —
 // the orb does the talking. Same props/name as the old pill (call sites
 // untouched).
-export function StatusIndicator({ state, isMuted, micBlocked }: { state: string; isMuted: boolean; micBlocked?: boolean }) {
-  const config: Record<string, { color: string; anim: string; label: string }> = {
-    listening: { color: 'var(--voice-listening)', anim: 'orbPulse 1.6s ease-in-out infinite', label: 'Listening' },
-    thinking:  { color: 'var(--voice-thinking)',  anim: 'orbShimmer 2.4s linear infinite',    label: 'Thinking' },
-    speaking:  { color: 'var(--voice-speaking)',  anim: 'orbRipple 1.1s ease-out infinite',   label: 'Speaking' },
-    idle:      { color: 'var(--voice-idle)',      anim: 'orbBreathe 3.5s ease-in-out infinite', label: 'Ready' },
-  }
-  // Truthfulness: when the mic is confirmed off (not merely muted) the orb must
-  // NOT keep claiming "Listening" — show "Mic off" instead, so a stranger isn't
-  // told the agent is hearing them when it cannot.
-  const micOff = micBlocked && state === 'listening'
-  const { color, anim, label } = micOff
-    ? { color: 'var(--voice-error)', anim: 'orbBreathe 3.5s ease-in-out infinite', label: 'Mic off' }
-    : (config[state] || config.idle)
+export function StatusIndicator({ state, isMuted, micBlocked, blocked, reconnecting, error }: {
+  state: string
+  isMuted: boolean
+  /** Mic confirmed off (not merely muted) while the agent is listening. */
+  micBlocked?: boolean
+  /** Mic permission denied / no device / busy. Not passed by VoiceRoom yet (L6b). */
+  blocked?: boolean
+  /** Room transport reconnecting. Not passed by VoiceRoom yet (L6b). */
+  reconnecting?: boolean
+  /** Error known outside agent_state. Not passed by VoiceRoom yet (L6b). */
+  error?: boolean
+}) {
+  // Truthfulness lives in resolveOrbState: never "Listening" when the mic is
+  // off/muted/blocked, and agent_state 'error' shows "Error", not "Ready".
+  const view = resolveOrbState({
+    agentState: state,
+    micOff: micBlocked,
+    muted: isMuted,
+    blocked,
+    reconnecting,
+    error,
+  })
+  const { colorVar: color, anim, label } = view
 
   return (
     <div className="flex items-center gap-2 sm:gap-2.5 pl-1 pr-2 py-1 select-none shrink-0">
@@ -31,7 +41,7 @@ export function StatusIndicator({ state, isMuted, micBlocked }: { state: string;
         {/* Halo */}
         <div
           className="absolute inset-[-6px] rounded-full blur-md transition-colors duration-500"
-          style={{ background: `radial-gradient(circle, ${color}44 0%, transparent 70%)` }}
+          style={{ background: `radial-gradient(circle, color-mix(in srgb, ${color} 27%, transparent) 0%, transparent 70%)` }}
         />
         {/* Core */}
         <div
@@ -43,11 +53,14 @@ export function StatusIndicator({ state, isMuted, micBlocked }: { state: string;
         />
       </div>
       <span className="font-display italic text-[13px] sm:text-sm text-[var(--text-secondary)] transition-colors duration-500 tracking-tight"
-        style={{ color: state !== 'idle' ? color : undefined }}>
+        style={{ color: view.key !== 'idle' ? color : undefined }}>
         {label}
       </span>
-      {isMuted && (
+      {view.mutedBadge && view.key !== 'muted' && (
         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-[var(--voice-error)]/40 text-[var(--voice-error)]">muted</span>
+      )}
+      {view.blockedBadge && view.key !== 'blocked' && (
+        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-[var(--voice-error)]/40 text-[var(--voice-error)]">mic blocked</span>
       )}
     </div>
   )
