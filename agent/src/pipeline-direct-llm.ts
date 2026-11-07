@@ -125,6 +125,31 @@ export function withLastUserContent(chatCtx: llm.ChatContext, text: string): llm
   return chatCtx
 }
 
+/**
+ * Return a SHALLOW COPY of `chatCtx` whose last user message is a clone with
+ * `note` prepended to its FIRST text part; every other part (images, etc.) is
+ * kept in place. With no text part the note becomes a new leading part. Same
+ * no-mutation guarantee as withLastUserContent. Returns the original when there
+ * is no user message.
+ */
+export function withNotePrepended(chatCtx: llm.ChatContext, note: string): llm.ChatContext {
+  const items = chatCtx.items.slice()
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i] as any
+    if (item.type === 'message' && item.role === 'user') {
+      const parts: any[] = Array.isArray(item.content) ? item.content.slice() : []
+      const t = parts.findIndex((c) => typeof c === 'string')
+      if (t >= 0) parts[t] = `${note}\n\n${parts[t]}`
+      else parts.unshift(note)
+      const clone = Object.assign(Object.create(Object.getPrototypeOf(item)), item)
+      clone.content = parts
+      items[i] = clone
+      return new llm.ChatContext(items)
+    }
+  }
+  return chatCtx
+}
+
 export interface InterruptionContext {
   spokenText: string       // what user heard (word-accurate from LiveKit synchronizedTranscript)
   recentMessages: string   // last 10 assistant messages from JSONL (full untruncated)
@@ -145,6 +170,8 @@ export interface PipelineDirectOptions extends ClaudeLLMOptions {
   getResearchContext?: () => string | undefined
   /** Returns pending interruption context and clears it (consumed once). null = no pending interruption. */
   getAndConsumeInterruptionContext?: () => InterruptionContext | null
+  /** Returns pending client notices as a hidden-context block and clears them ('' = none). */
+  getAndConsumeClientNotes?: () => string
 }
 
 export interface FastBrainPanelResult {
@@ -441,6 +468,15 @@ export class PipelineDirectLLM extends llm.LLM {
     } else if (sessionTailBlock && userText.trim()) {
       // No interrupt context — post-compaction session tail on a shallow copy.
       ctxForClaude = withLastUserContent(chatCtx, sessionTailBlock + '\n\n' + userText)
+    }
+
+    // Client notices (favorite_changed, L2b): UI actions that are context, not a
+    // user turn. They ride the next real user turn as a leading
+    // <system-reminder> block on the same shallow copy (the sanitizer strips
+    // that block from history and titles). Never on meeting chunks.
+    const clientNotes = (!isMeetingChunkEarly && userText.trim()) ? this.#opts.getAndConsumeClientNotes?.() : ''
+    if (clientNotes) {
+      ctxForClaude = withNotePrepended(ctxForClaude, clientNotes)
     }
 
     // Meeting chunks ([MEETING —]) are the silent-observer / addressed-response

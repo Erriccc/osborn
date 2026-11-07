@@ -54,6 +54,7 @@ import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmithery
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
+import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, ClientNoteQueue, parseFavoriteChanged, parseLegacyFavoriteNotice } from './transcript-wiring.js'
 import { getRecallClient } from './recall-client.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
@@ -584,16 +585,9 @@ function startApiServer(workingDir: string, port: number): void {
           // hardcoded base-path list — agent self-describes its base so
           // the UI doesn't have to keep a sync'd copy.
           baseCwd: workingDir,
-          sessions: sessions.map(s => ({
-            sessionId: s.sessionId,
-            projectSlug: s.projectSlug,
-            projectPath: s.projectPath,
-            cwd: s.cwd,
-            timestamp: s.timestamp.toISOString(),
-            lastMessage: s.lastMessage,
-            messageCount: s.messageCount,
-            fileSize: s.fileSize,
-          })),
+          // sessionListEntry carries the L2a preview fields too (title, firstTs,
+          // lastActivityAt) so the dashboard can stop deriving them itself.
+          sessions: sessions.map(sessionListEntry),
           total: sessions.length,
         }
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -629,11 +623,9 @@ function startApiServer(workingDir: string, port: number): void {
         }
         const db = openStore(dbPath, { readonly: true })
         try {
-          const rows = recentRows(db, limit, ['user', 'assistant'])
-          const messages = rows
-            .reverse() // newest-first → chronological
-            .map(r => ({ role: r.msgType === 'assistant' ? 'assistant' : 'user', content: (r.text || '').slice(0, 1200), ts: r.ts || null }))
-            .filter(m => m.content.trim().length > 0)
+          // Sanitize BEFORE truncating, over-fetching so rows the sanitizer drops
+          // (notices, injected blocks) don't shrink the page (L2b).
+          const messages = cleanHistoryRows(n => recentRows(db, n, ['user', 'assistant']), limit, 1200)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ sessionId, messages }))
         } finally { try { db.close() } catch {} }
@@ -3439,6 +3431,14 @@ async function main() {
     console.log(`🤐 Suppressed text buffered (+${t.length} chars, total ${lastInterruption.suppressedText.length}): "${t.substring(0, 80)}${t.length > 80 ? '...' : ''}"`)
   }
 
+  // L2b: client notices (favorite_changed) ride the next real user turn as
+  // hidden context (PipelineDirectLLM getAndConsumeClientNotes), never as a
+  // user_text turn. typedEchoes carries a typed message's clientMsgId onto its
+  // user_transcript echo.
+  const clientNotes = new ClientNoteQueue()
+  const typedEchoes = new TypedEchoTracker()
+  const getAndConsumeClientNotes = () => clientNotes.drain()
+
   /**
    * Callback for PipelineDirectLLM — returns pending interruption context and clears it.
    * Called in chat() when user's transcribed message arrives.
@@ -4794,6 +4794,7 @@ async function main() {
           }
         },
         getAndConsumeInterruptionContext,
+        getAndConsumeClientNotes,
         onFastBrainResult: (result) => {
           console.log(`🧠⚡ [FAST_BRAIN ${result.type.toUpperCase()} +${result.elapsedMs}ms]: "${result.answer.substring(0, 60)}"`)
           sendToFrontend({
@@ -4841,16 +4842,26 @@ async function main() {
       let lastSentAgentTranscript = ''
 
       function sendUserTranscript(transcript: string, source: string) {
-        if (!transcript || transcript.length < 3) return
-        const normalized = transcript.trim().replace(/\s+/g, ' ')
-        if (normalized === lastSentUserTranscript) return
-        if (normalized === '<noise>' || normalized.toLowerCase() === 'thank you') return
-        // Filter out voice injection content that appears as user transcript
-        // (Gemini v1.0.51: userInput in generateReply creates a user conversation item)
-        if (normalized.startsWith('[SCRIPT]') || normalized.startsWith('[PROACTIVE]') || normalized.startsWith('[NOTIFICATION]')) return
+        if (!transcript) return
+        // A typed message (user_text) echoes back here with its frontend
+        // clientMsgId so the UI can dedupe its optimistic bubble (L2b).
+        const typed = typedEchoes.take(transcript)
+        const clientMsgId = typed?.clientMsgId
+        // Shared sanitizer (L2b): drops the frontend [time:] tag, injected
+        // blocks and client/voice-injection notices ([favorited],
+        // [welcome-back], [SCRIPT]/[PROACTIVE]/[NOTIFICATION] — Gemini v1.0.51:
+        // userInput in generateReply creates a user conversation item), plus
+        // <noise> / "thank you". null = nothing the user said.
+        const text = userEchoText(transcript, typed?.attachments)
+        if (!text) return
+        const normalized = text.replace(/\s+/g, ' ')
+        // A distinct typed message may repeat the previous text on purpose.
+        if (!clientMsgId && normalized === lastSentUserTranscript) return
 
         console.log(`📝 User (${source}, ${transcript.length} chars): "${transcript}"`)
-        sendToFrontend({ type: 'user_transcript', text: transcript })
+        sendToFrontend(clientMsgId
+          ? { type: 'user_transcript', text, clientMsgId }
+          : { type: 'user_transcript', text })
         lastSentUserTranscript = normalized
         if (connectTiming && !connectTiming.sawUserMsg) {
           connectTiming.sawUserMsg = true
@@ -5254,6 +5265,7 @@ async function main() {
                   }
                 },
                 getAndConsumeInterruptionContext,
+                getAndConsumeClientNotes,
                 onFastBrainResult: (r) => {
                   console.log(`🧠⚡ [FAST_BRAIN ${r.type.toUpperCase()} +${r.elapsedMs}ms]: "${r.answer.substring(0, 60)}"`)
                   sendToFrontend({
@@ -5451,11 +5463,8 @@ async function main() {
                 if (dbPath) {
                   const db = openStore(dbPath, { readonly: true })
                   try {
-                    const rows = recentRows(db, 20, ['user', 'assistant'])  // newest-first
-                    const priorMessages = rows
-                      .reverse()  // → chronological
-                      .map(r => ({ role: r.msgType === 'assistant' ? 'assistant' : 'user', content: (r.text || '').slice(0, 800), ts: r.ts || null }))
-                      .filter(m => m.content.trim().length > 0)
+                    // Sanitized before truncation, over-fetched, chronological (L2b).
+                    const priorMessages = cleanHistoryRows(n => recentRows(db, n, ['user', 'assistant']), 20, 800)
                     if (priorMessages.length > 0) {
                       await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages })
                       console.log(`💬 Sent ${priorMessages.length} prior messages from DB for optimistic UI`)
@@ -5642,7 +5651,25 @@ async function main() {
           currentLLM.respondToPermission(allow)
           console.log(`✅ Permission: ${data.response}`)
         }
+      } else if (data.type === 'favorite_changed') {
+        // L2b (UI#21): a favorite is a UI action, not something the user said.
+        // Queue it as hidden context for the next real user turn; no reply, no
+        // user_transcript echo, no JSONL user turn of its own.
+        const change = parseFavoriteChanged(data)
+        if (change) {
+          clientNotes.favoriteChanged(change)
+          console.log(`⭐ favorite_changed: ${change.fileName} → ${change.favorited ? 'on' : 'off'} (queued as context)`)
+        }
       } else if (data.type === 'user_text' && currentSession) {
+        // Backward compat: older frontends send a favorite as user_text
+        // "[time: …] [favorited] The user favorited the file X." — route it to
+        // the same context queue instead of starting a user turn.
+        const legacyFavorite = parseLegacyFavoriteNotice(String(data.content || ''))
+        if (legacyFavorite && !(Array.isArray(data.files) && data.files.length)) {
+          clientNotes.favoriteChanged(legacyFavorite)
+          console.log(`⭐ legacy [favorited] user_text → context note: ${legacyFavorite.fileName}`)
+          return
+        }
         // Build message content — include attached files (URLs, text content)
         let fullContent = String(data.content || '')
         const files = data.files as Array<{ name: string; type: string; content?: string; url?: string }> | undefined
@@ -5660,6 +5687,9 @@ async function main() {
         } else {
           console.log(`📝 Text (${fullContent.length} chars): "${fullContent}"`)
         }
+        // The session echoes this item as user_transcript; carry the frontend's
+        // clientMsgId (bubble dedupe) and the attachment blocks onto that echo.
+        typedEchoes.register(fullContent, data.clientMsgId, fullContent.slice(String(data.content || '').length))
         // Skip interrupt for Gemini — disrupts state machine (hangs in speaking state)
         if (true) {  // always non-gemini in pipeline mode
           currentSession.interrupt()
@@ -5681,16 +5711,7 @@ async function main() {
             // Sent here too so the in-chat session list grouping stays
             // consistent with the dashboard's grouping.
             baseCwd: workingDir,
-            sessions: sessions.map(s => ({
-              sessionId: s.sessionId,
-              projectSlug: s.projectSlug,
-              projectPath: s.projectPath,
-              cwd: s.cwd,
-              timestamp: s.timestamp.toISOString(),
-              lastMessage: s.lastMessage,
-              messageCount: s.messageCount,
-              fileSize: s.fileSize,
-            })),
+            sessions: sessions.map(sessionListEntry),
             count: sessions.length,
           })
         } catch (err) {
