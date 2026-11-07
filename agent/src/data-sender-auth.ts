@@ -135,9 +135,13 @@ export interface JoinDecision {
  * - `user-*` joiner allowed by canBecomeController: gets the session and
  *   becomes the controller (newest eligible joiner wins).
  * - `user-*` joiner that is not the owner: ignored entirely.
- * - The agent's own identity (watch gateway): keeps its voice session as
- *   before, but NEVER becomes the controller, so the owner's commands keep
- *   working; it can still send permission_response (checkControlSender).
+ * - The agent's own identity (watch gateway): NEVER becomes the controller,
+ *   so the owner's commands keep working; it can still send
+ *   permission_response (checkControlSender). It gets the voice session only
+ *   when it joins with no controller (the opt-in watch voice path that hears
+ *   the watch mic). When a controller already exists it is NOT adopted: the
+ *   full session rebuild would tear down the owner's live session and reset
+ *   currentUserId to '' (the gateway's token has no metadata).
  * - Any other identity: never the controller; gets a session only in
  *   single-tenant mode (no owner), matching the old behavior there.
  */
@@ -148,7 +152,7 @@ export function resolveJoin(
   currentController: string | null,
 ): JoinDecision {
   if (joinerIdentity === AGENT_SELF_IDENTITY) {
-    return { adoptSession: true, controller: currentController }
+    return { adoptSession: !currentController, controller: currentController }
   }
   if (joinerIdentity.startsWith(USER_IDENTITY_PREFIX)) {
     return canBecomeController(joinerUserId, ownerUserId)

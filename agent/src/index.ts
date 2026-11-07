@@ -61,7 +61,7 @@ import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './push
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { checkControlSender, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { AGENT_SELF_IDENTITY, checkControlSender, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -4588,13 +4588,19 @@ async function main() {
     // controller; other users are ignored (no voice session, gated data
     // dropped). With no owner configured (single-tenant / local), the newest
     // `user-*` joiner wins, as before. The watch gateway (our own identity)
-    // keeps its voice session as before but never becomes the controller, so
-    // the owner's commands keep working; it may still send permission_response.
+    // never becomes the controller, so the owner's commands keep working; it
+    // may still send permission_response. It gets the voice session only when
+    // no controller exists (watch voice alone); joining after the owner it is
+    // not adopted, so the owner's session and currentUserId stay intact.
     const joinerUserId = userIdFromMetadata(participant.metadata)
     const join = resolveJoin(participant.identity, joinerUserId, OWNER_USER_ID, controllingUserIdentity)
     controllingUserIdentity = join.controller
     if (!join.adoptSession) {
-      console.warn(`🚫 ${participant.identity} is not the machine owner (token userId=${joinerUserId ?? 'none'}); not adopting it as the voice user`)
+      if (participant.identity === AGENT_SELF_IDENTITY) {
+        console.log(`⌚ ${participant.identity} joined while ${controllingUserIdentity} controls the session; keeping the owner's voice session`)
+      } else {
+        console.warn(`🚫 ${participant.identity} is not the machine owner (token userId=${joinerUserId ?? 'none'}); not adopting it as the voice user`)
+      }
       return
     }
     // A user (re)arriving cancels the meeting leave-grace — the bot stays.
