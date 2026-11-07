@@ -133,6 +133,11 @@ export interface ChatMessage {
   messageId?: string
   chunkIndex?: number
   liked?: boolean
+  // Set on the in-chat card for a file the agent just wrote (renders FileCard).
+  fileRef?: { filePath: string; fileName: string }
+  // Id sent with a typed message (user_text) and echoed back on its
+  // user_transcript, so the echo is deduped (bug d9bb78b2).
+  clientMsgId?: string
 }
 
 export interface SpeakingChunk {
@@ -150,6 +155,12 @@ export interface SessionInfo {
   // (Claude --resume looks up by file location, so spawn must forward this as workingDir).
   cwd?: string
   projectPath?: string
+  // Agent >= PR #18/#20: cleaned title and real last-turn time. Optional for
+  // older agents; read through deriveSessionTitle(session) and
+  // sessionActivityTime(session) from lib/sessions (bug c50200ef).
+  title?: string | null
+  firstTs?: string | null
+  lastActivityAt?: string | null
 }
 
 // Slot info from background session system
@@ -195,26 +206,12 @@ export interface GeneratedFile {
   // the payload. Frontend can show a "truncated — N KB original" hint.
   truncated?: boolean
   originalSize?: number
-}
-
-// Harness-internal interruption wrappers (the "[INTERRUPTED] / CONTEXT PRESERVATION"
-// blocks injected around user speech for the model) must never render in chat.
-// Extract the user's actual words when present; otherwise hide the bubble.
-const HARNESS_MARKERS = [
-  'CONTEXT PRESERVATION (READ THIS):',
-  'What the user heard before cutoff',
-  'WHAT THE USER DID NOT HEAR',
-  'Text you produced that the user did NOT hear',
-  'Text you generated while the user was speaking',
-  'RESPOND with speech first',
-]
-export function sanitizeUserTranscript(text: string): string | null {
-  const wrapped =
-    HARNESS_MARKERS.some((m) => text.includes(m)) ||
-    /^\[(INTERRUPTED|CONTEXT)\]/.test(text.trim())
-  if (!wrapped) return text
-  const m = text.match(/(?:User's message|What the user is saying now):\s*"([\s\S]*?)"\s*(?:\n|$)/)
-  return m ? m[1].trim() : null
+  // Outputs drawer (L4): session whose workspace holds the file, when this
+  // browser first saw it written, and an agent read error (replaces the old
+  // literal "Empty file" body).
+  sessionId?: string
+  createdAt?: Date
+  loadError?: string
 }
 
 /**
