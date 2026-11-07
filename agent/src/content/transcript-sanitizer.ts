@@ -1,12 +1,14 @@
 /**
  * transcript-sanitizer.ts
  * ------------------------------------------------------------------------
- * STANDALONE, OFFLINE transcript sanitizer for the Osborn content pipeline.
- *
- * This module is NOT wired into the live voice runtime. It is a pure,
- * importable function + a CLI. It reads a saved transcript (session JSONL
- * today; arbitrary text / media later) and emits clean, per-utterance
- * USER-speech records with live credentials masked out.
+ * THE shared transcript sanitizer. Started as the offline sanitizer for the
+ * Osborn content pipeline; it is now also the ONE place the live agent cleans
+ * pipeline wrapper text before it reaches titles, chat or the dashboard
+ * (`cleanTurnText`, used by config.ts getSessionPreview and the
+ * pipeline-direct-llm.ts session tail). It reads a saved transcript (session
+ * JSONL today; arbitrary text / media later) and emits clean, per-utterance
+ * USER-speech records with live credentials masked out. The frontend keeps a
+ * display port of the same rules in frontend/src/lib/transcript-clean.ts.
  *
  * It only *references* the live agent's marker formats (read-only) to stay
  * faithful to what the runtime actually writes:
@@ -34,6 +36,7 @@
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { stripInjected } from './lens-strip.js'
 
 // ============================================================================
 // Shared types (the contract between adapters and the core)
@@ -309,7 +312,13 @@ const DROP_PREFIXES: RegExp[] = [
   /^\[EMERGENCY STOP\]/,
   /^\[BACKGROUND_INIT\]/,
   /^\[liked\]/,
-  /^\[SYSTEM\]/,
+  // Client notices sent as user_text by the frontend (VoiceRoom.tsx), never speech.
+  /^\[favorited\]/,
+  /^\[welcome-back\]/,
+  // Voice-queue injections (index.ts filters these from the echo too).
+  /^\[(?:SCRIPT|PROACTIVE|NOTIFICATION)\]/,
+  // [SYSTEM], [SYSTEM — SILENT CONTROL MESSAGE …], [SYSTEM: …]
+  /^\[SYSTEM\b/,
   /^\[MEETING —/,
   /^This session is being continued/,
   /^<system-reminder>/,
@@ -400,11 +409,14 @@ export function sanitizeRecord(raw: RawRecord): SanitizeOutcome {
   let text = raw.text ?? ''
   let wrapped = false
 
-  // A. Leading post-compaction session tail (confirmed anchor).
-  text = text.replace(SESSION_TAIL_RE, '')
-
-  // B. Leading [time: …] prefix.
-  text = text.replace(TIME_PREFIX_RE, '')
+  // A+B. Leading post-compaction session tail (confirmed anchor) and leading
+  // [time: …] prefix, in either order (the frontend tags typed text before the
+  // agent prepends the tail, but older rows can carry the tag first). Repeat
+  // until stable.
+  for (let prev = ''; prev !== text; ) {
+    prev = text
+    text = text.replace(SESSION_TAIL_RE, '').replace(TIME_PREFIX_RE, '')
+  }
 
   const lead = text.trimStart()
 
@@ -425,6 +437,15 @@ export function sanitizeRecord(raw: RawRecord): SanitizeOutcome {
     text = inner
     wrapped = true
   }
+  // The quoted user words inside a template still carry the frontend's
+  // [time: …] tag (typed turns); strip it, then re-check the drop markers
+  // (an interrupted [favorited] notice is still a notice).
+  if (wrapped) {
+    text = text.trimStart().replace(TIME_PREFIX_RE, '')
+    for (const re of DROP_PREFIXES) {
+      if (re.test(text)) return { record: null, action: 'drop' }
+    }
+  }
 
   // E. Trailing attachments.
   text = stripTrailingAttachments(text)
@@ -442,6 +463,31 @@ export function sanitizeRecord(raw: RawRecord): SanitizeOutcome {
     record: { text, timestamp: raw.timestamp, speaker, wrapped, audioAvailable: false },
     action: wrapped ? 'unwrap' : 'clean',
   }
+}
+
+/**
+ * ONE-CALL cleaner for a single turn's text, used by the live agent data path
+ * (session titles / previews, the post-compaction session tail). Composes the
+ * injected-block stripper (lens-strip.ts: <session_tail>, <recalled_context>,
+ * <system-reminder>, <task-notification>, hook context, compaction summaries,
+ * silent-control lines; user turns only) with `sanitizeRecord` ([time:] tags,
+ * drop markers, [INTERRUPTED]/[CONTEXT] unwrap, attachments, secret redaction).
+ * Returns the cleaned text, or null when nothing the person/assistant actually
+ * said remains. Pure. ALWAYS sanitize before truncating: the [INTERRUPTED]
+ * template puts the user's words last, past any short preview window.
+ */
+export function cleanTurnText(text: string, speaker: 'user' | 'assistant' = 'user'): string | null {
+  const raw = typeof text === 'string' ? text : ''
+  if (!raw.trim()) return null
+  let body: string | null = raw
+  if (speaker === 'user') {
+    // Injected blocks can sit anywhere in a user row (lens-strip tolerates a
+    // leading [time:] before a line-start block).
+    body = stripInjected(raw, 'user').text
+    if (body === null) return null
+  }
+  const { record } = sanitizeRecord({ text: body, timestamp: '', speaker })
+  return record ? record.text : null
 }
 
 /** Run the core over a record stream and return kept SanitizedRecords. Pure. */

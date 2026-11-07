@@ -3,6 +3,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { parse, stringify } from 'yaml'
 import type { McpServerConfig } from './claude-handler.js'
+import { cleanTurnText } from './content/transcript-sanitizer.js'
 
 // Config file paths
 const CONFIG_DIR = join(homedir(), '.osborn')
@@ -537,6 +538,8 @@ export interface SessionInfo {
   projectPath: string
   timestamp: Date
   lastMessage?: string
+  /** Clean session topic: Claude Code's ai-title if present, else the first real user turn. */
+  title?: string
   messageCount: number
   filePath: string
 }
@@ -600,6 +603,7 @@ export async function listSessions(projectPath?: string): Promise<SessionInfo[]>
             projectPath: targetPath,
             timestamp: stats.mtime,
             lastMessage: info.lastMessage,
+            title: info.title,
             messageCount: info.messageCount,
             filePath,
           })
@@ -616,77 +620,138 @@ export async function listSessions(projectPath?: string): Promise<SessionInfo[]>
   return sessions
 }
 
-/** Parse JSONL text for the preview fields (message count + last user text). */
-function scanPreviewLines(text: string, skipFirstPartial: boolean): { count: number; lastUser?: string } {
+/** Preview fields derived from a session JSONL (see getSessionPreview). */
+export interface SessionPreview {
+  /** Last real user turn, sanitized THEN truncated to 100 chars. */
+  lastMessage?: string
+  /** ai-title if present, else the first real user turn (sanitized, 120 chars). */
+  title?: string
+  /** Conversation turns: user turns with real text + assistant messages with text. */
+  messageCount: number
+  /** Timestamp of the first record carrying one. */
+  firstTs?: string
+  /** Timestamp of the last REAL user/assistant turn (not file mtime). */
+  lastActivityAt?: string
+}
+
+interface PreviewAcc {
+  count: number
+  lastUser?: string
+  firstUser?: string
+  aiTitle?: string
+  firstTs?: string
+  lastTs?: string
+  /** message.id of the last counted assistant record (split messages count once). */
+  lastAsstId?: string
+}
+
+const PREVIEW_LAST_CHARS = 100
+const PREVIEW_TITLE_CHARS = 120
+
+/** User-entry text: string content, or the text parts of an array that is not a tool_result. */
+function previewUserText(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return null
+  if (content[0]?.type === 'tool_result') return null
+  const texts = content.filter((p: any) => p?.type === 'text' && typeof p.text === 'string').map((p: any) => p.text)
+  return texts.length ? texts.join('\n') : null
+}
+
+/**
+ * Fold one parsed JSONL entry into the preview accumulator. ONE definition shared
+ * by the small-file and the head/tail paths (UI#1: the old counter incremented on
+ * every user/assistant record, i.e. tool round-trips and split assistant chunks).
+ * Text is sanitized by the shared transcript sanitizer BEFORE truncation, so a
+ * wrapped turn ([INTERRUPTED] puts the user's words last) still yields its words
+ * and a notice-only turn ([favorited], [SYSTEM], ...) is not a title or a turn.
+ */
+function accumulatePreviewEntry(acc: PreviewAcc, entry: any): void {
+  if (!entry || typeof entry !== 'object') return
+  if (!acc.firstTs && typeof entry.timestamp === 'string' && entry.timestamp) acc.firstTs = entry.timestamp
+  if (entry.type === 'ai-title' && typeof entry.aiTitle === 'string') {
+    const t = cleanTurnText(entry.aiTitle, 'assistant')
+    if (t) acc.aiTitle = t.substring(0, PREVIEW_TITLE_CHARS)
+    return
+  }
+  if (entry.isMeta) return
+  if (entry.type === 'user') {
+    const raw = previewUserText(entry.message?.content)
+    if (raw === null) return
+    const clean = cleanTurnText(raw, 'user')
+    if (!clean) return
+    acc.count++
+    acc.lastAsstId = undefined
+    if (acc.firstUser === undefined) acc.firstUser = clean.substring(0, PREVIEW_TITLE_CHARS)
+    acc.lastUser = clean.substring(0, PREVIEW_LAST_CHARS)
+    if (typeof entry.timestamp === 'string' && entry.timestamp) acc.lastTs = entry.timestamp
+  } else if (entry.type === 'assistant') {
+    const content = entry.message?.content
+    const hasText = typeof content === 'string'
+      ? content.trim().length > 0
+      : Array.isArray(content) && content.some((p: any) => p?.type === 'text' && typeof p.text === 'string' && p.text.trim())
+    if (!hasText) return
+    const id = typeof entry.message?.id === 'string' ? entry.message.id : undefined
+    if (!(id && id === acc.lastAsstId)) acc.count++
+    acc.lastAsstId = id
+    if (typeof entry.timestamp === 'string' && entry.timestamp) acc.lastTs = entry.timestamp
+  }
+}
+
+/** Parse JSONL text into a preview accumulator. */
+function scanPreviewLines(text: string, skipFirstPartial: boolean): PreviewAcc {
   const lines = text.split('\n')
-  let count = 0
-  let lastUser: string | undefined
+  const acc: PreviewAcc = { count: 0 }
   // A tail slice usually begins mid-line — drop that fragment so JSON.parse
   // doesn't choke on it (and never counts a half-record).
   for (let i = skipFirstPartial ? 1 : 0; i < lines.length; i++) {
     const line = lines[i].trim()
     if (!line) continue
     try {
-      const entry = JSON.parse(line)
-      if (entry.type === 'user' || entry.type === 'assistant') count++
-      if (entry.type === 'user' && entry.message?.content) {
-        const content = entry.message.content
-        if (typeof content === 'string') lastUser = content.substring(0, 100)
-        else if (Array.isArray(content)) {
-          const textPart = content.find((p: any) => p.type === 'text')
-          if (textPart?.text) lastUser = textPart.text.substring(0, 100)
-        }
-      }
+      accumulatePreviewEntry(acc, JSON.parse(line))
     } catch {
       // skip malformed / partial line
     }
   }
-  return { count, lastUser }
+  return acc
 }
 
 /**
- * Get a preview of a session (last message + count).
+ * Get a preview of a session (title, last message, turn count, first/last activity).
  *
  * PERF (sub-second-connect initiative): this used to stream and JSON.parse the
  * ENTIRE transcript — which meant the dashboard session list read a 155–323MB
  * JSONL end-to-end per cold load (the ~30s dashboard stall measured in the
  * connect video). The preview only needs (a) enough to clear the ">2 messages"
  * gate and (b) the LAST user message. So: small files are read whole (exact);
- * large files read a bounded HEAD (gate + density sample) + TAIL (last user
- * message), turning a hundreds-of-MB parse into ~192KB. messageCount becomes an
- * estimate for large files — it's display-only and gated on ">2", which any
- * large session clears from the head alone.
+ * large files read a bounded HEAD (gate + density sample + first turn/title) +
+ * TAIL (last user message, last activity), turning a hundreds-of-MB parse into
+ * ~192KB. messageCount becomes an estimate for large files — it's display-only
+ * and gated on ">2", which any large session clears from the head alone.
  */
-async function getSessionPreview(filePath: string, fileSize?: number): Promise<{ lastMessage?: string; messageCount: number }> {
+async function getSessionPreview(filePath: string, fileSize?: number): Promise<SessionPreview> {
   const HEAD = 64 * 1024
   const TAIL = 128 * 1024
   try {
     const size = fileSize ?? statSync(filePath).size
     if (size <= HEAD + TAIL) {
       // Small enough to read whole — exact count + last message (cheap).
-      const whole = await new Promise<{ count: number; lastUser?: string }>((resolve) => {
-        let count = 0
-        let lastUser: string | undefined
+      const whole = await new Promise<PreviewAcc>((resolve) => {
+        const acc: PreviewAcc = { count: 0 }
         const rl = readline.createInterface({ input: createReadStream(filePath), crlfDelay: Infinity })
         rl.on('line', (line) => {
           if (!line.trim()) return
-          try {
-            const entry = JSON.parse(line)
-            if (entry.type === 'user' || entry.type === 'assistant') count++
-            if (entry.type === 'user' && entry.message?.content) {
-              const content = entry.message.content
-              if (typeof content === 'string') lastUser = content.substring(0, 100)
-              else if (Array.isArray(content)) {
-                const textPart = content.find((p: any) => p.type === 'text')
-                if (textPart?.text) lastUser = textPart.text.substring(0, 100)
-              }
-            }
-          } catch { /* skip */ }
+          try { accumulatePreviewEntry(acc, JSON.parse(line)) } catch { /* skip */ }
         })
-        rl.on('close', () => resolve({ count, lastUser }))
+        rl.on('close', () => resolve(acc))
         rl.on('error', () => resolve({ count: 0 }))
       })
-      return { lastMessage: whole.lastUser, messageCount: whole.count }
+      return {
+        lastMessage: whole.lastUser,
+        title: whole.aiTitle ?? whole.firstUser,
+        messageCount: whole.count,
+        firstTs: whole.firstTs,
+        lastActivityAt: whole.lastTs,
+      }
     }
 
     // Large file: bounded head + tail only.
@@ -703,7 +768,13 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<{
       // by head.count alone for any real large session.
       const avg = head.count > 0 ? hn / head.count : hn
       const messageCount = head.count >= 3 ? Math.max(3, Math.round(size / avg)) : head.count
-      return { lastMessage, messageCount }
+      return {
+        lastMessage,
+        title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
+        messageCount,
+        firstTs: head.firstTs,
+        lastActivityAt: tail.lastTs ?? head.lastTs,
+      }
     } finally {
       closeSync(fd)
     }
@@ -740,8 +811,11 @@ export interface ClaudeSessionEntry {
   projectPath: string     // reverse slug → original path (best-effort)
   cwd: string             // actual cwd from JSONL first-line metadata
   timestamp: Date         // file mtime (most recent write)
-  lastMessage?: string    // last user message
-  messageCount: number    // user+assistant message count
+  lastMessage?: string    // last real user message (sanitized, 100 chars)
+  title?: string          // ai-title or first real user message (sanitized)
+  messageCount: number    // conversation turns (real user turns + assistant text messages)
+  firstTs?: string        // first record timestamp (session start)
+  lastActivityAt?: string // last real user/assistant turn timestamp (not mtime)
   filePath: string        // full path to the .jsonl file
   fileSize: number        // bytes
 }
@@ -836,9 +910,14 @@ export function invalidateSessionListCache(): void {
 // the file's mtime+size, so a cold boot serves unchanged sessions instantly and
 // only re-reads the handful that actually changed. Self-correcting: a stale
 // (mtime/size-mismatched) entry is simply re-read; deleted files are pruned.
-interface SessionManifestEntry { mtimeMs: number; size: number; lastMessage?: string; messageCount: number; cwd: string }
+interface SessionManifestEntry {
+  mtimeMs: number; size: number; lastMessage?: string; messageCount: number; cwd: string
+  title?: string; firstTs?: string; lastActivityAt?: string
+}
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
-const SESSION_MANIFEST_VERSION = 1
+// v2: sanitized lastMessage, title, firstTs, lastActivityAt, corrected turn count.
+// A v1 manifest is discarded on load (its previews carry raw wrapper text).
+const SESSION_MANIFEST_VERSION = 2
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }
@@ -930,13 +1009,18 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
       const hit = manifest.entries[c.filePath]
       if (hit && hit.mtimeMs === c.mtime.getTime() && hit.size === c.size) {
         // Unchanged since last build — reuse cached preview + cwd, skip the read.
-        return { c, preview: { lastMessage: hit.lastMessage, messageCount: hit.messageCount }, cwd: hit.cwd }
+        const preview: SessionPreview = {
+          lastMessage: hit.lastMessage, title: hit.title, messageCount: hit.messageCount,
+          firstTs: hit.firstTs, lastActivityAt: hit.lastActivityAt,
+        }
+        return { c, preview, cwd: hit.cwd }
       }
       try {
         const [preview, cwd] = await Promise.all([getSessionPreview(c.filePath, c.size), extractCwd(c.filePath)])
         manifest.entries[c.filePath] = {
           mtimeMs: c.mtime.getTime(), size: c.size,
           lastMessage: preview.lastMessage, messageCount: preview.messageCount, cwd,
+          title: preview.title, firstTs: preview.firstTs, lastActivityAt: preview.lastActivityAt,
         }
         manifestDirty = true
         return { c, preview, cwd }
@@ -999,7 +1083,10 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
         cwd: slugPath || cwd,            // resume routing (file location)
         timestamp: c.mtime,
         lastMessage: preview.lastMessage,
+        title: preview.title,
         messageCount: preview.messageCount,
+        firstTs: preview.firstTs,
+        lastActivityAt: preview.lastActivityAt,
         filePath: c.filePath,
         fileSize: c.size,
       })
