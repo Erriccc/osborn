@@ -10,7 +10,7 @@ import type { Metadata } from 'next'
 import MarketingShell from '@/components/marketing/MarketingShell'
 
 export const metadata: Metadata = {
-  title: 'Privacy Policy — Voice Native',
+  title: 'Privacy Policy',
   description:
     'How Voice Native handles your data: your code runs on your own machine, you bring your own API keys, and we never train models on your code or content.',
 }

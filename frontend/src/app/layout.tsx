@@ -45,7 +45,7 @@ export const metadata: Metadata = {
   metadataBase: new URL('https://www.voice-native.com'),
   title: {
     default: 'Voice Native — The AI Coding Agent You Talk To',
-    template: '%s — Voice Native',
+    template: '%s · Voice Native',
   },
   description: 'Talk to Voice Native and it writes, runs, and debugs code on your own machine. A team of Claude sub-agents, persistent memory, live activity.',
   manifest: '/manifest.webmanifest',

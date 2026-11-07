@@ -16,7 +16,7 @@ import { createSupabaseAnon, SITE_URL, type PublicContent } from '@/lib/supabase
 export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
-  title: 'Blog — Voice Native',
+  title: 'Blog',
   description:
     'Guides, comparisons, and pieces built with Voice Native — the AI coding agent you talk to. Explore how teams ship by voice.',
   alternates: { canonical: `${SITE_URL}/blog` },
