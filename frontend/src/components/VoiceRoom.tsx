@@ -18,7 +18,7 @@ import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { formatTime, groupSessionsByDate, deriveSessionTitle } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, addTimeTag, formatElapsed, sanitizeUserTranscript, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, sanitizeUserTranscript, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { PermissionModal, getToolRiskLevel, type PermissionRequest } from './voice/PermissionModal'
@@ -39,6 +39,7 @@ function AudioPopover({ disabled }: { disabled?: boolean }) {
   const [mics, setMics] = useState<MediaDeviceInfo[]>([])
   const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([])
   usePanelExclusive('audio', open, setOpen)
+  const popRef = useViewportClamp(open)
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
@@ -80,7 +81,7 @@ function AudioPopover({ disabled }: { disabled?: boolean }) {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(22rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
+          <div ref={popRef} className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(22rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
             <div className="px-3 py-2 border-b border-gray-800">
               <span className="text-xs font-semibold text-gray-200">🎧 Audio</span>
             </div>
@@ -432,6 +433,10 @@ function VoiceRoomInner({
   usePanelExclusive('instances', showInstancesPanel, setShowInstancesPanel)
   usePanelExclusive('more', showHeaderMore, setShowHeaderMore)
   usePanelExclusive('meeting', showMeetingInput, setShowMeetingInput)
+  // Keep the More menu / meeting popover on screen when the header wraps and
+  // their right-anchored triggers land on the left (iPad portrait).
+  const moreMenuRef = useViewportClamp(showHeaderMore)
+  const meetingPopRef = useViewportClamp(showMeetingInput)
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
   const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
@@ -3130,7 +3135,7 @@ function VoiceRoomInner({
                     <span className="hidden lg:inline text-xs font-medium">Meeting</span>
                   </button>
                   {showMeetingInput && (
-                    <div className="absolute top-11 right-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
+                    <div ref={meetingPopRef} className="absolute top-11 right-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
                       <label className="block text-[11px] font-semibold text-gray-400 mb-1">Join a meeting</label>
                       <p className="text-[10.5px] text-gray-500 leading-snug mb-2">Sends a bot into the Zoom/Meet call to listen and take notes you can act on. It won&rsquo;t speak or share your screen.</p>
                       <input
@@ -3240,7 +3245,7 @@ function VoiceRoomInner({
                 {showHeaderMore && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowHeaderMore(false)} />
-                    <div role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
+                    <div ref={moreMenuRef} role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
                       <button role="menuitem" onClick={() => { setShowHeaderMore(false); setIsFilesModalOpen(true) }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
                         <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
