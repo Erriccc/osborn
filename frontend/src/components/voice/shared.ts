@@ -26,9 +26,15 @@ export function useViewportClamp<T extends HTMLElement = HTMLDivElement>(open: b
     apply()
     window.addEventListener('resize', apply)
     window.visualViewport?.addEventListener('resize', apply)
+    // Re-measure when the popover's own box changes after opening (e.g. the
+    // skills list loads and the popover grows past the edge). translateX does
+    // not change the observed layout size, so apply() can't feed back a loop.
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => apply()) : null
+    ro?.observe(el)
     return () => {
       window.removeEventListener('resize', apply)
       window.visualViewport?.removeEventListener('resize', apply)
+      ro?.disconnect()
       el.style.transform = ''
     }
   }, [open, margin])
