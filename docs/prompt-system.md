@@ -5,7 +5,7 @@ The system has layered prompts at different levels — all centralized in `promp
 | Layer | Location | When | Content |
 |---|---|---|---|
 | **Realtime voice model** | `prompts.ts` (`getRealtimeInstructions()`) | Realtime sessions | Teleprompter rules: call `ask_fast_brain` for EVERY user message and speak the returned script verbatim. Anti-hallucination, adaptive verbosity, no gap-filling, speech pacing. |
-| **Direct voice agent** | `prompts.ts` (`DIRECT_MODE_PROMPT`) | Direct sessions | Short: "You are Osborn, a voice AI research assistant..." |
+| **Direct voice agent** | `prompts.ts` (`DIRECT_MODE_PROMPT`) | Direct sessions | Short: "You are Osborn, a voice AI assistant operating in direct mode..." |
 | **Direct mode research prompt** | `prompts.ts` (`getDirectModeResearchPrompt(workspacePath)`) | Direct mode `voiceMode === 'direct'` | Speech-optimized rules for the Claude SDK in direct/pipeline mode (no markdown, conversational tone). |
 | **Realtime research system prompt** | `prompts.ts` (`getResearchSystemPrompt(workspacePath)`) | Realtime mode | Structured research rules for the Claude SDK in realtime mode (paths, write restrictions, parallel sub-agents via Task). Agent reads `spec.md` but NEVER writes — fast brain owns it. |
 | **Fast brain** | `prompts.ts` (`FAST_BRAIN_SYSTEM_PROMPT`) | Inside `askFastBrain()` | Tool catalog, structured response markers (`RECORDED:`, `ASK_USER:`, `NEEDS_DEEPER_RESEARCH`, `PARTIAL:`), question tracking, spec.md update rules, anti-hallucination. |
