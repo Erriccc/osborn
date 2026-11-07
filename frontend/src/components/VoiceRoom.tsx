@@ -35,7 +35,7 @@ import { ChatPanel } from './voice/ChatPanel'
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
-import { AUTO_OPEN_OUTPUTS_ON_WRITE, LOAD_ERROR_OUTSIDE, agentCanServe, favoriteSaveOutcome, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LOAD_ERROR_OUTSIDE, agentCanServe, favoriteRepairAction, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
@@ -339,6 +339,42 @@ function VoiceRoomInner({
   const [pinError, setPinError] = useState<string | null>(null)
   const lastPinFailRef = useRef<GeneratedFile | null>(null)
 
+  // Point a favorite at a durable url (persisted) and graft it onto the row.
+  const setFavoriteUrl = useCallback((filePath: string, url: string) => {
+    if (!favoriteFilesRef.current.some((f) => f.filePath === filePath && !f.url)) return
+    const withUrl = favoriteFilesRef.current.map((f) => (f.filePath === filePath ? { ...f, url } : f))
+    setFavoritesNow(withUrl)
+    void persistFavorites(withUrl)
+    setGeneratedFiles((prev) => prev.map((f) => (f.filePath === filePath ? { ...f, url: f.url || url } : f)))
+  }, [persistFavorites, setFavoritesNow])
+
+  // Upload a file's FULL body (text, or base64 image) as the favorite's durable
+  // copy. Callers make sure the body is complete (never a truncated preview).
+  const saveDurableCopy = useCallback(async (file: GeneratedFile): Promise<boolean> => {
+    if (typeof file.content !== 'string' || file.content.length === 0 || file.truncated) return false
+    try {
+      const image = !!file.isImage || isImageName(file.fileName)
+      let blob: Blob
+      if (image) {
+        const bin = atob(file.content)
+        const bytes = new Uint8Array(bin.length)
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+        blob = new Blob([bytes], { type: file.mimeType || 'application/octet-stream' })
+      } else {
+        blob = new Blob([file.content], { type: 'text/plain' })
+      }
+      const fd = new FormData()
+      fd.append('file', blob, file.fileName)
+      fd.append('folder', 'favorites')
+      const res = await fetch('/api/upload', { method: 'POST', body: fd })
+      const j = res.ok ? await res.json().catch(() => null) : null
+      const url: string | undefined = j?.url
+      if (!url) return false
+      setFavoriteUrl(file.filePath, url)
+      return true
+    } catch { return false /* best effort — the pin is saved, just without a durable copy */ }
+  }, [setFavoriteUrl])
+
   // Optimistic pin/unpin (UI#21): the star flips in the click, the server write
   // runs in the background, and a failed write rolls back with a retryable
   // notice. 401 = guest, whose favorites are device-local by design.
@@ -374,22 +410,9 @@ function VoiceRoomInner({
     // placeholder as the permanent copy.
     if (!currentlyFav && !file.url && typeof file.content === 'string' && file.content.length > 0
       && !file.isImage && !isImageName(file.fileName) && !file.truncated) {
-      try {
-        const fd = new FormData()
-        fd.append('file', new Blob([file.content], { type: 'text/plain' }), file.fileName)
-        fd.append('folder', 'favorites')
-        const res = await fetch('/api/upload', { method: 'POST', body: fd })
-        const j = res.ok ? await res.json().catch(() => null) : null
-        const url: string | undefined = j?.url
-        if (url && favoriteFilesRef.current.some((f) => f.filePath === file.filePath)) {
-          const withUrl = favoriteFilesRef.current.map((f) => (f.filePath === file.filePath ? { ...f, url } : f))
-          setFavoritesNow(withUrl)
-          void persistFavorites(withUrl)
-          setGeneratedFiles((prev) => prev.map((f) => (f.filePath === file.filePath ? { ...f, url: f.url || url } : f)))
-        }
-      } catch { /* best effort — the pin is saved, just without a durable copy */ }
+      await saveDurableCopy(file)
     }
-  }, [persistFavorites, setFavoritesNow])
+  }, [persistFavorites, setFavoritesNow, saveDurableCopy])
   const retryPin = useCallback(() => {
     const f = lastPinFailRef.current
     lastPinFailRef.current = null
@@ -407,6 +430,22 @@ function VoiceRoomInner({
       return missing.length ? [...missing, ...prev] : prev
     })
   }, [favoriteFiles])
+
+  // Bug 55033541: repair a favorite that has no durable copy as soon as its
+  // body comes back from the agent machine (opened in Outputs / Files view):
+  // take the agent's uploaded url, or upload the full body. Once per path.
+  const repairingFavoritesRef = useRef(new Set<string>())
+  useEffect(() => {
+    for (const fav of favoriteFiles) {
+      if (fav.url || repairingFavoritesRef.current.has(fav.filePath)) continue
+      const live = generatedFiles.find((f) => f.filePath === fav.filePath)
+      const action = favoriteRepairAction(fav, live)
+      if (!action || !live) continue
+      repairingFavoritesRef.current.add(fav.filePath)
+      if (action.kind === 'set-url') setFavoriteUrl(fav.filePath, action.url)
+      else void saveDurableCopy(live) // one attempt per page (no upload loop on failure)
+    }
+  }, [favoriteFiles, generatedFiles, setFavoriteUrl, saveDurableCopy])
 
   // Cross-device favorites — SERVER IS AUTHORITATIVE. User-level (not session-level)
   // so favorites persist across sessions. Runs once per session to sync.
@@ -1204,6 +1243,17 @@ function VoiceRoomInner({
     sendJson(f.source === 'plan'
       ? { type: 'get_plan_file', filePath: f.filePath }
       : { type: 'get_research_artifact', filePath: f.filePath })
+    // No answer (agent busy/offline, or an older agent that drops the request):
+    // stop spinning, so the view can offer Retry or, for a legacy favorite,
+    // Remove / Ask agent to regenerate (bug 55033541).
+    const requestedPath = f.filePath
+    setTimeout(() => {
+      setGeneratedFiles((prev) => prev.map((x) => (
+        x.filePath === requestedPath && x.content === undefined && !x.url && !x.loadError
+          ? { ...x, loadError: LOAD_ERROR_NO_REPLY }
+          : x
+      )))
+    }, CONTENT_REPLY_TIMEOUT_MS)
   }, [sendJson])
   const shownFilePath = outputsVisible ? outputsPreviewPath : isFilesModalOpen ? (selectedFile?.filePath ?? null) : null
   useEffect(() => {
@@ -2518,6 +2568,14 @@ function VoiceRoomInner({
     if (after !== before) handleFavoriteNote(file, after)
   }, [toggleFavorite, handleFavoriteNote])
 
+  // Bug 55033541: the two ways out for a favorite whose copy is gone.
+  const removeFavorite = useCallback((file: GeneratedFile) => {
+    if (favoriteFilesRef.current.some((f) => f.filePath === file.filePath)) void handleToggleFavoriteWithNote(file)
+  }, [handleToggleFavoriteWithNote])
+  const regenerateFile = useCallback((file: GeneratedFile) => {
+    handleSendText(regeneratePrompt(file))
+  }, [handleSendText])
+
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
     const toolName = pendingPermission?.toolName || 'tool'
     const filePath = pendingPermission?.input?.file_path
@@ -2864,6 +2922,8 @@ function VoiceRoomInner({
       previewPath: outputsPreviewPath,
       openPreview: openOutputsPreview,
       togglePin: (f) => { void handleToggleFavoriteWithNote(f) },
+      removeFavorite,
+      regenerateFile,
       pinError,
       dismissPinError: () => setPinError(null),
       retryPin,
@@ -2882,7 +2942,7 @@ function VoiceRoomInner({
     },
     panel: { ...panel, openFile: openFileInPanel },
   }), [messages, generatedFiles, slots, agentUrl, sendJson, currentSessionId, favoritePaths, outputsPreviewPath,
-    openOutputsPreview, handleToggleFavoriteWithNote, pinError, retryPin, reloadFile, handleCopyFile, handleCopyAllFiles,
+    openOutputsPreview, handleToggleFavoriteWithNote, removeFavorite, regenerateFile, pinError, retryPin, reloadFile, handleCopyFile, handleCopyAllFiles,
     fileCopyFeedback, requestRelist, outputsSyncing, outputsSyncError, outputsSyncedAt, joinedAt, outputsSeenAt,
     unreadOutputs, panel, openFileInPanel])
 
@@ -4035,6 +4095,9 @@ function VoiceRoomInner({
         fileCopyFeedback={fileCopyFeedback}
         favoritePaths={favoritePaths}
         onToggleFavorite={handleToggleFavoriteWithNote}
+        onRemoveFavorite={removeFavorite}
+        onRegenerate={regenerateFile}
+        onReloadFile={reloadFile}
       />
     </PanelDataProvider>
   )

@@ -3,6 +3,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { MarkdownMessage, MermaidBlock } from './MarkdownMessage'
 import type { GeneratedFile } from './voice/shared'
+import { FilePreview } from './panel/outputs/FilePreview'
+import { FavoriteRecovery } from './panel/outputs/FavoriteRecovery'
 
 // Compact relative time for a file row: "2h", "Yesterday", "Oct 18".
 // Voice product — rows are glanceable, so keep it short and right-aligned.
@@ -53,6 +55,11 @@ interface FilesExplorerModalProps {
   // still works if a caller doesn't wire favorites.
   favoritePaths?: Set<string>
   onToggleFavorite?: (file: GeneratedFile) => void
+  // Bug 55033541: a favorite with no saved copy is fetched from the agent;
+  // when that fails these are the ways out. onReloadFile retries a body.
+  onRemoveFavorite?: (file: GeneratedFile) => void
+  onRegenerate?: (file: GeneratedFile) => void
+  onReloadFile?: (filePath: string) => void
 }
 
 const typeBadge: Record<string, { label: string; color: string }> = {
@@ -76,6 +83,9 @@ export function FilesExplorerModal({
   fileCopyFeedback,
   favoritePaths,
   onToggleFavorite,
+  onRemoveFavorite,
+  onRegenerate,
+  onReloadFile,
 }: FilesExplorerModalProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [isMaximized, setIsMaximized] = useState(false)
@@ -541,17 +551,19 @@ export function FilesExplorerModal({
                         </div>
                       )
                     }
-                    // No URL and no content — nothing to fetch (e.g. an older
-                    // favorite saved before a durable copy existed). Don't spin
-                    // forever; say so clearly.
+                    // No URL and no body yet. VoiceRoom asks the agent machine
+                    // for it (bug 55033541: a legacy favorite is repaired with a
+                    // durable copy when it comes back). Show that honestly, and
+                    // for a favorite that cannot be recovered offer Remove /
+                    // Ask agent to regenerate instead of a dead page.
+                    const pinned = isFav(selectedFile.filePath)
                     return (
-                      <div className="flex flex-col items-center justify-center py-12 text-center text-gray-500 text-xs gap-2 px-6">
-                        <svg className="w-6 h-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                        </svg>
-                        <div className="font-medium text-gray-400">No saved copy for this file</div>
-                        <div className="max-w-xs leading-relaxed">This was favorited before a durable copy was stored, so its content isn&apos;t available here. Re-favorite it from the session that has it, and it&apos;ll sync everywhere.</div>
-                      </div>
+                      <>
+                        <FavoriteRecovery file={selectedFile} pinned={pinned}
+                          onRemove={onRemoveFavorite ? () => onRemoveFavorite(selectedFile) : undefined}
+                          onRegenerate={onRegenerate ? () => onRegenerate(selectedFile) : undefined} />
+                        <FilePreview file={selectedFile} onRetry={onReloadFile ? () => onReloadFile(selectedFile.filePath) : undefined} />
+                      </>
                     )
                   })()}
                 </div>
