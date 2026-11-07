@@ -1,14 +1,33 @@
 import type { Metadata, Viewport } from 'next'
-import { Fraunces, Instrument_Sans, JetBrains_Mono } from 'next/font/google'
+import localFont from 'next/font/local'
 import './globals.css'
 
 // "Warm Oracle" type system (2026-08 redesign): Fraunces — a wonky old-style
 // variable serif — is the VOICE (display, greetings, assistant identity);
 // Instrument Sans is the quiet UI body; JetBrains Mono handles machine truth
 // (timestamps, tokens, tool names).
-const display = Fraunces({ subsets: ['latin'], variable: '--font-display-loaded', weight: ['400', '500', '600', '700'], style: ['normal', 'italic'] })
-const sans = Instrument_Sans({ subsets: ['latin'], variable: '--font-sans-loaded', weight: ['400', '500', '600', '700'] })
-const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono-loaded', weight: ['400', '500'] })
+// Self-hosted (src/app/fonts, OFL — see README there): next/font/google fetched
+// fonts.googleapis.com at build time and broke a Railway build when Google
+// returned an unexpected URL. Same latin subset, weights, styles and variables.
+const display = localFont({
+  src: [
+    { path: './fonts/Fraunces-latin-wght.woff2', weight: '400 700', style: 'normal' },
+    { path: './fonts/Fraunces-Italic-latin-wght.woff2', weight: '400 700', style: 'italic' },
+  ],
+  variable: '--font-display-loaded',
+  display: 'swap',
+  adjustFontFallback: 'Times New Roman',
+})
+const sans = localFont({
+  src: [{ path: './fonts/InstrumentSans-latin-wght.woff2', weight: '400 700', style: 'normal' }],
+  variable: '--font-sans-loaded',
+  display: 'swap',
+})
+const mono = localFont({
+  src: [{ path: './fonts/JetBrainsMono-latin-wght.woff2', weight: '400 500', style: 'normal' }],
+  variable: '--font-mono-loaded',
+  display: 'swap',
+})
 
 // Mobile/PWA (2026-10-24 mobile branch): viewportFit=cover is the unlock for
 // env(safe-area-inset-*) on notched iPhones — the chat composer's bottom inset
