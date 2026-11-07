@@ -20,6 +20,8 @@ import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, sanitizeUserTranscript, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
+import { MicBanner } from './voice/MicBanner'
+import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { PermissionModal, getToolRiskLevel, type PermissionRequest } from './voice/PermissionModal'
 import { TextInput, type AttachedFile } from './voice/TextInput'
@@ -37,6 +39,12 @@ import { AUTO_OPEN_OUTPUTS_ON_WRITE, LOAD_ERROR_OUTSIDE, agentCanServe, favorite
 // browser's mic dialog; this was the genuinely-missing piece. Mic + speaker
 // pickers (live-switched via LiveKit's room.switchActiveDevice) and a speaker
 // test tone. Device labels only populate once the user has allowed mic access.
+const NOOP_KV: KV = { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+/** sessionStorage, or a no-op store where it is unavailable (SSR, blocked). */
+function micStore(): KV {
+  try { return typeof window !== 'undefined' && window.sessionStorage ? window.sessionStorage : NOOP_KV } catch { return NOOP_KV }
+}
+
 function AudioPopover({ disabled }: { disabled?: boolean }) {
   const room = useRoomContext()
   const [open, setOpen] = useState(false)
@@ -197,7 +205,21 @@ function VoiceRoomInner({
   // silence). micError → recovery overlay when mic capture fails — previously
   // MediaDevicesError was log-only and a denied mic meant an eternal spinner.
   const [audioBlocked, setAudioBlocked] = useState(false)
-  const [micError, setMicError] = useState<'denied' | 'notfound' | 'busy' | null>(null)
+  const [micError, setMicError] = useState<MicErrorKind | null>(null)
+  // Bug 7cf00ae6: once the browser denied the mic, nothing re-requests it on
+  // its own (agent 'listening', session gate, LiveKit reconnect) — only the
+  // user's explicit Try again / unmute. Flag lives in sessionStorage so the
+  // provider's LiveKitRoom also stops publishing the mic on reconnect.
+  const micDeniedRef = useRef(false)
+  const micUserRetryRef = useRef(false)
+  const micBannerShownRef = useRef(new Set<MicErrorKind>())
+  useEffect(() => { micDeniedRef.current = isMicDenied(micStore()) }, [])
+  const markMicDenied = useCallback((denied: boolean) => {
+    if (micDeniedRef.current === denied) return
+    micDeniedRef.current = denied
+    setMicDenied(micStore(), denied)
+    try { window.dispatchEvent(new Event(MIC_DENIED_EVENT)) } catch { /* SSR */ }
+  }, [])
   // YOLO toggle: when enabled, the frontend intercepts every incoming
   // permission_request and sends back an immediate allow without showing
   // the modal. Persisted to localStorage so it survives reloads. Default
@@ -615,6 +637,7 @@ function VoiceRoomInner({
   const toggleMute = useCallback(async () => {
     if (localParticipant) {
       const newMuted = !isMuted
+      if (!newMuted) micUserRetryRef.current = true // explicit user unmute
       await localParticipant.setMicrophoneEnabled(!newMuted)
       setIsMuted(newMuted)
     }
@@ -800,8 +823,11 @@ function VoiceRoomInner({
     const onTrackUnmuted = (pub: any, participant: any) => {
       log('TrackUnmuted', { kind: pub?.kind, participant: participant.identity, sid: pub?.trackSid, isLocal: participant.isLocal })
       // P1.7: a live local audio track means whatever mic error we surfaced
-      // (or never showed) is resolved — clear the recovery overlay.
-      if (participant.isLocal && pub?.kind === 'audio') setMicError(null)
+      // (or never showed) is resolved — clear the banner and the denial.
+      if (participant.isLocal && pub?.kind === 'audio') { setMicError(null); markMicDenied(false) }
+    }
+    const onLocalTrackPublished = (pub: any) => {
+      if (pub?.kind === 'audio') { setMicError(null); markMicDenied(false) }
     }
     const onActiveSpeakers = (speakers: any[]) =>
       log('ActiveSpeakersChanged', { count: speakers.length, identities: speakers.map(s => s.identity) })
@@ -815,10 +841,19 @@ function VoiceRoomInner({
     }
     const onMediaDevicesError = (err: Error) => {
       log('MediaDevicesError', { err: err.message })
-      // P1.7: map the DOMException to a recovery path instead of a silent log.
-      if (err?.name === 'NotAllowedError') setMicError('denied')
-      else if (err?.name === 'NotFoundError') setMicError('notfound')
-      else if (err?.name === 'NotReadableError') setMicError('busy')
+      // P1.7 / bug 7cf00ae6: map the DOMException to a small banner, once per
+      // browser session per problem (a user-initiated retry may show it again).
+      const kind = micErrorKind(err?.name)
+      if (!kind) return
+      if (kind === 'denied') markMicDenied(true)
+      const userRetry = micUserRetryRef.current
+      micUserRetryRef.current = false
+      if (!userRetry && micBannerShownRef.current.has(kind)) return
+      const store = micStore()
+      if (!shouldShowMicBanner(store, kind, { userRetry })) return
+      noteMicBannerShown(store, kind)
+      micBannerShownRef.current.add(kind)
+      setMicError(kind)
     }
     const onParticipantConnected = (p: any) =>
       log('ParticipantConnected', { identity: p.identity, isAgent: !p.isLocal })
@@ -861,6 +896,7 @@ function VoiceRoomInner({
     room.on(RoomEvent.ConnectionQualityChanged, onConnQuality)
     room.on(RoomEvent.AudioPlaybackStatusChanged, onAudioPlayback)
     room.on(RoomEvent.MediaDevicesError, onMediaDevicesError)
+    room.on(RoomEvent.LocalTrackPublished, onLocalTrackPublished)
     room.on(RoomEvent.ParticipantConnected, onParticipantConnected)
     room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
     room.on(RoomEvent.LocalAudioSilenceDetected, onLocalAudioSilence)
@@ -889,6 +925,7 @@ function VoiceRoomInner({
       room.off(RoomEvent.ConnectionQualityChanged, onConnQuality)
       room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioPlayback)
       room.off(RoomEvent.MediaDevicesError, onMediaDevicesError)
+      room.off(RoomEvent.LocalTrackPublished, onLocalTrackPublished)
       room.off(RoomEvent.ParticipantConnected, onParticipantConnected)
       room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected)
       room.off(RoomEvent.LocalAudioSilenceDetected, onLocalAudioSilence)
@@ -1333,9 +1370,11 @@ function VoiceRoomInner({
         // setMicrophoneEnabled can reject on detached participants; (c) one
         // delayed re-check retry in case the enable landed on the tail of the
         // audio session and was silently dropped.
-        if (data.state === 'listening' && !isMutedRef.current && sessionGateCompletedRef.current) {
+        // Bug 7cf00ae6: never after a denial — this path (every agent turn and
+        // the agent's ~60s direct-mode auto-recovery) re-raised the mic prompt.
+        if (data.state === 'listening' && shouldAutoEnableMic({ denied: micDeniedRef.current, muted: isMutedRef.current }) && sessionGateCompletedRef.current) {
           const enableMic = () => {
-            if (isMutedRef.current || Date.now() < ttsActiveUntilRef.current) return
+            if (!shouldAutoEnableMic({ denied: micDeniedRef.current, muted: isMutedRef.current }) || Date.now() < ttsActiveUntilRef.current) return
             try { void localParticipantRef.current?.setMicrophoneEnabled(true) } catch { /* detached participant */ }
           }
           enableMic()
@@ -2705,9 +2744,10 @@ function VoiceRoomInner({
   const completeSessionGate = useCallback((sessionId: string | null) => {
     setShowResumePrompt(false)
     setSessionGateCompleted(true)
-    // Unmute mic now that user has made their choice
+    // Unmute mic now that user has made their choice (not after a denial:
+    // only the user's own Try again re-asks the browser).
     setIsMuted(false)
-    localParticipant?.setMicrophoneEnabled(true)
+    if (!micDeniedRef.current) localParticipant?.setMicrophoneEnabled(true)
     // Notify backend of session choice so it can apply resume + send greeting
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({
@@ -3062,50 +3102,6 @@ function VoiceRoomInner({
         >
           🔊 Tap to enable sound
         </button>
-      )}
-
-      {/* P1.7 — mic failure recovery. Maps NotAllowed/NotFound/NotReadable to
-          a path forward; "Try again" doubles as the gesture LiveKit needs to
-          re-request the mic (iOS allows re-request after a Settings flip). */}
-      {micError && (
-        <div className="fixed inset-0 z-[65] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 max-w-sm w-full shadow-2xl" role="alertdialog" aria-label="Microphone problem">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
-                <span className="text-xl">🎙️</span>
-              </div>
-              <div className="min-w-0">
-                <h3 className="text-base font-semibold text-white">
-                  {micError === 'denied' ? 'Microphone blocked' : micError === 'notfound' ? 'No microphone found' : 'Microphone busy'}
-                </h3>
-                <p className="text-sm text-gray-400 mt-1">
-                  {micError === 'denied'
-                    ? 'Allow mic access: iPhone Settings → Safari (or this app) → Microphone → Allow — then come back and tap Try again.'
-                    : micError === 'notfound'
-                      ? 'This device reports no microphone input. Connect a mic and tap Try again.'
-                      : 'Another app is using the microphone. Close it and tap Try again.'}
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-2 mt-4">
-              <button
-                onClick={async () => {
-                  setMicError(null)
-                  try { await localParticipant.setMicrophoneEnabled(true) } catch { /* MediaDevicesError re-fires and re-surfaces */ }
-                }}
-                className="flex-1 min-h-11 px-4 rounded-lg bg-amber-400 text-black text-sm font-semibold hover:bg-amber-300 transition-colors"
-              >
-                Try again
-              </button>
-              <button
-                onClick={() => setMicError(null)}
-                className="min-h-11 px-4 rounded-lg bg-gray-800 text-gray-300 text-sm hover:bg-gray-700 transition-colors"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {pendingPermission && (
@@ -3683,6 +3679,21 @@ function VoiceRoomInner({
           }
           machineChipProcCount={machineData?.totalCount ?? machineData?.processes.length}
         />
+
+        {/* Mic problem (bug 7cf00ae6): small in-flow banner above the
+            composer, once per browser session — never a blocking overlay. */}
+        {micError && (
+          <MicBanner
+            kind={micError}
+            onDismiss={() => setMicError(null)}
+            onRetry={async () => {
+              setMicError(null)
+              setIsMuted(false)
+              micUserRetryRef.current = true
+              try { await localParticipant.setMicrophoneEnabled(true) } catch { /* MediaDevicesError re-surfaces it */ }
+            }}
+          />
+        )}
 
         {/* Mobile composer control strip — 3-6-9 rule (2026-10-24): the voice
             screen's primary actionables are exactly Mic + End (+ the composer
