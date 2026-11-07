@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { MarkdownMessage } from '../MarkdownMessage'
 import { FileCard } from '../chat/FileCard'
-import { sanitizeUserTranscript, stripProvenance, type ChatMessage, type MessagePart, type SpeakingChunk } from './shared'
+import { userBubbleText } from '@/lib/chat-echo'
+import { stripProvenance, type ChatMessage, type MessagePart, type SpeakingChunk } from './shared'
 
 // Streaming indicator dots
 function StreamingDots() {
@@ -226,12 +227,12 @@ export const MessageBubble = React.memo(function MessageBubble({
 }) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
-  const userText = isUser ? sanitizeUserTranscript(message.content) : message.content
-  if (isUser && userText === null) return null
-
-  // Display text: user transcripts get their own sanitizer; agent/system text
-  // gets provenance stripped so echoed recall citations never clutter the UI.
-  const displayContent = isUser ? (userText as string) : stripProvenance(message.content)
+  // Display text: user turns go through the shared transcript cleaner
+  // (lib/transcript-clean via userBubbleText; null = nothing the user said, so
+  // the bubble is hidden); agent/system text gets provenance stripped so echoed
+  // recall citations never clutter the UI.
+  const userText = isUser ? userBubbleText(message.content) : null
+  const displayContent = isUser ? (userText ?? '') : stripProvenance(message.content)
 
   const [copyDone, setCopyDone] = useState(false)
 
@@ -250,6 +251,10 @@ export const MessageBubble = React.memo(function MessageBubble({
     }
     return message.parts || [{ type: 'text' as const, content: raw }]
   }, [message])
+
+  // Nothing the user actually said (notice / wrapper only): no "You" bubble.
+  // Returned after the hooks so hook order never depends on the content.
+  if (isUser && userText === null) return null
 
   // In-chat file card (L4): the agent wrote a file; show it where the work happened.
   if (message.fileRef) {
