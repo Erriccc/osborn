@@ -22,6 +22,7 @@ import { ReportBugModal } from '@/components/ReportBugModal'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle } from '@/lib/sessions'
+import { agentReadUrl } from '@/lib/agent-read'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -456,7 +457,7 @@ export default function Dashboard() {
 
     setSessionsLoading(true)
     try {
-      const r = await fetch(`${agentUrl}/sessions`)
+      const r = await fetch(agentReadUrl(agentUrl, 'sessions'))
       const data = await r.json()
       setSessions(data.sessions || [])
       // baseCwd is included by 0.9.25+. Older agents omit it; null fallback

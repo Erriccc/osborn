@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sessionDisplayTitle, sortSessionsByActivity, type SessionInfo } from '@/lib/sessions'
+import { agentReadUrl } from '@/lib/agent-read'
 import { stripSessionWrappers } from '@/lib/transcript-clean'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 
@@ -99,7 +100,7 @@ export default function SessionBrowser({
     setIsLoading(true)
     try {
       const baseUrl = url.replace(/\/+$/, '')
-      const res = await fetch(`${baseUrl}/sessions`, { signal: AbortSignal.timeout(5000) })
+      const res = await fetch(agentReadUrl(baseUrl, 'sessions'), { signal: AbortSignal.timeout(5000) })
       const data = await res.json()
       setSessions(sortSessionsByActivity<SessionInfo>(data.sessions || []))
       setAgentConnected(true)
