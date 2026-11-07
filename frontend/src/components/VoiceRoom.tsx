@@ -15,7 +15,7 @@ import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
-import { formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
+import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
@@ -2832,6 +2832,25 @@ function VoiceRoomInner({
     openOutputsPreview(filePath)
     panel.openPanel('outputs')
   }, [openOutputsPreview, panel.openPanel])
+  // Bug ab31e017: the tab reads "<session title> · Voice Native" or
+  // "New chat · Voice Native"; the previous title is restored on leave.
+  const firstUserMessage = useMemo(() => messages.find((m) => m.role === 'user' && !m.id.startsWith('prior-'))?.content ?? null, [messages])
+  const docTitle = useMemo(() => {
+    const sid = currentSessionId || preSelectedSessionId
+    const session = sid ? sessions.find((x) => x.sessionId === sid) ?? null : null
+    return chatDocumentTitle({ session, firstUserMessage })
+  }, [sessions, currentSessionId, preSelectedSessionId, firstUserMessage])
+  // Declared first so it captures the title from before this page set one.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const previous = document.title
+    return () => { document.title = previous }
+  }, [])
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    document.title = docTitle
+  }, [docTitle])
+
   const panelData = useMemo<PanelData>(() => ({
     messages,
     generatedFiles,
