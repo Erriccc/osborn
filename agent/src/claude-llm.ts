@@ -116,13 +116,36 @@ function logCacheUsage(usage: any): void {
   } catch { /* observability only */ }
 }
 
-// ≤5 direct tool call budget per turn. Reset on every UserPromptSubmit (new user message).
-// Enforced mechanically in PreToolUse — the model CANNOT exceed this regardless of JSONL history.
-// Task/Agent delegations are exempt (delegation is what we WANT). Sub-agent tool calls
-// (agent_type !== null) are exempt (they're inside a delegation). Only the main orchestrator
-// agent's direct tool calls count against the budget.
+// Spoken-progress CADENCE (not a work cap). The main orchestrator agent may run as many direct
+// tool calls as a turn genuinely needs — we no longer STOP its work. Instead, every
+// SPEAK_CADENCE_N main-agent tool calls we inject a NON-BLOCKING note (PreToolUse
+// additionalContext) nudging it to say ONE short spoken progress line before its next call, then
+// keep going (do it itself or delegate — its choice). Reset on every UserPromptSubmit (new user
+// message). Task/Agent delegations and sub-agent calls (agent_type !== null) do NOT count.
+//
+// TOOL_HARD_CEILING is a pure runaway/crash backstop (heap-OOM history on pathological deep
+// turns), NOT a workflow cap — a healthy turn never approaches it. Env-tunable; set
+// OSBORN_TOOL_HARD_CEILING=0 to disable the backstop entirely.
 let turnToolCallCount = 0
-const TOOL_CALL_BUDGET = 5
+const SPEAK_CADENCE_N = 6
+const TOOL_HARD_CEILING = Number(process.env.OSBORN_TOOL_HARD_CEILING ?? 60)
+
+// Armed when a cadence boundary is crossed; consumed at the PreToolUse allow/fall-through tail so
+// the spoken-progress note rides the next ACTUALLY-allowed main-agent tool call (even if the exact
+// cadence call was a deferred/denied write).
+let pendingSpeakNudge = false
+
+// The cadence nudge text. Framed as a system note so the model never mistakes it for a user turn;
+// asks for exactly ONE short spoken sentence (→ one text block → one tts_say → session.say), says
+// "keep going, your call to do it yourself or delegate" and "do not stop" so it is never read as a
+// turn-ender. Auto-suppressed if the user is mid-utterance (index.ts output gate) and routed
+// correctly into meetings.
+const speakProgressNudge = (n: number) =>
+  `[SPOKEN PROGRESS CADENCE — system note, not from the user] You've run ${n} tool calls on this ` +
+  `turn without checking in. Before your next tool call, say ONE short spoken sentence to the ` +
+  `user: plainly, what you just found or did and what you're doing next (~15 words, no question, ` +
+  `no menu). Then keep working — do it yourself or delegate via Task, your call. Do not stop, ` +
+  `wait, or ask permission; this is a nudge to stay audible, not to end the turn.`
 
 // Writer PROVENANCE REMINDER (Chesterton's Fence): before the writer mutates a
 // version-controlled file it should review that file's git history so the edit is
@@ -2541,21 +2564,28 @@ class ClaudeLLMStream extends llm.LLMStream {
               const agentType = input?.agent_type || null
               console.log(`🔍 PreToolUse: toolName=${toolName} agent_type=${agentType} agent_id=${(input as any)?.agent_id || 'none'} all_keys=[${Object.keys(input || {}).join(', ')}]`)
 
-              // ≤3 direct tool call budget enforcement.
-              // Only counts calls from the MAIN orchestrator agent (agent_type === null).
-              // Task/Agent delegations are exempt — delegation is the desired behavior.
-              // Sub-agent tool calls are exempt — they're inside a delegation.
+              // Spoken-progress cadence + runaway backstop (main orchestrator only).
+              // Only the MAIN agent's direct tool calls count (agent_type === null).
+              // Task/Agent delegations and sub-agent calls are exempt.
               if (!agentType && toolName !== 'Task' && toolName !== 'Agent') {
                 turnToolCallCount++
-                if (turnToolCallCount > TOOL_CALL_BUDGET) {
-                  console.log(`🛑 Tool budget exceeded (${turnToolCallCount}/${TOOL_CALL_BUDGET}) — DENYING ${toolName}. Must delegate via Task.`)
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Tool call budget exceeded (${turnToolCallCount}/${TOOL_CALL_BUDGET}). Delegate via Task.` })
+                // Runaway/crash backstop ONLY (not a workflow cap) — a healthy turn never
+                // reaches it. Disabled when OSBORN_TOOL_HARD_CEILING=0.
+                if (TOOL_HARD_CEILING > 0 && turnToolCallCount > TOOL_HARD_CEILING) {
+                  console.log(`🛑 Runaway safety limit (${turnToolCallCount}/${TOOL_HARD_CEILING}) — DENYING ${toolName}.`)
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Runaway safety limit (${turnToolCallCount} tool calls this turn). Wrap up or delegate remaining work via Task.` })
                   return {
                     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' },
-                    reason: `Hard limit: maximum ${TOOL_CALL_BUDGET} direct tool calls per turn (you are at ${turnToolCallCount}). Delegate the remaining work to a sub-agent via Task(subagent_type=\'researcher\'|\'writer\'|\'reasoner\', run_in_background: true). This is a system-enforced limit.`,
+                    reason: `Runaway safety limit reached (${turnToolCallCount} direct tool calls this turn). This is a crash-safety backstop, not a normal cap — finish the current thread of work, summarize to the user, or push remaining work into a Task sub-agent.`,
                   }
                 }
-                console.log(`🔧 Tool call ${turnToolCallCount}/${TOOL_CALL_BUDGET}: ${toolName}`)
+                // At each Nth main-agent tool call, arm a non-blocking spoken-progress nudge
+                // (consumed at the allow tail below) so the agent stays audible without ever
+                // having its work stopped.
+                if (turnToolCallCount % SPEAK_CADENCE_N === 0) {
+                  pendingSpeakNudge = true
+                }
+                console.log(`🔧 Tool call ${turnToolCallCount} (speak-cadence ${SPEAK_CADENCE_N}, ceiling ${TOOL_HARD_CEILING || 'off'}): ${toolName}`)
               }
 
               // Write/Edit/MultiEdit access control — plain WRITE_RULES lookup
@@ -2616,6 +2646,13 @@ class ClaudeLLMStream extends llm.LLMStream {
                 this.#llmRef.noteTaskDispatch((input as any)?.tool_use_id, st || undefined)
               }
               this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main', agentId: input?.agent_id })
+              // Consume an armed spoken-progress nudge on this allowed main-agent tool call:
+              // inject it as NON-BLOCKING additionalContext (the model reads it; the tool still
+              // runs). Riding the allow tail guarantees one clean, non-deny injection site.
+              if (pendingSpeakNudge && !agentType) {
+                pendingSpeakNudge = false
+                return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: speakProgressNudge(turnToolCallCount) } }
+              }
               return {}
             }]
           }],
@@ -2658,6 +2695,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                 turnToolCallCount = 0
                 // Reset the writer provenance-reminder flag for the new turn.
                 writerHistoryReminded = false
+                // Re-arm the spoken-progress cadence for the new turn.
+                pendingSpeakNudge = false
 
                 const reminder = readFileSync(TURN_SHAPE_REMINDER_PATH, 'utf-8')
                 const promptPreview = String(input?.prompt || '').substring(0, 60).replace(/\n/g, ' ')
@@ -2703,7 +2742,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // prefix, but ordering volatile content last keeps any future
                 // cache_control breakpoint inside this block useful too.
                 const additionalContext = [reminder, recalled, machineNudge].filter(Boolean).join('\n\n')
-                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [tool budget reset to 0/${TOOL_CALL_BUDGET}]`)
+                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)
                 return {
                   hookSpecificOutput: {
                     hookEventName: 'UserPromptSubmit',
