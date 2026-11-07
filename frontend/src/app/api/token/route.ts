@@ -1,6 +1,61 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { AccessToken } from 'livekit-server-sdk'
 import { createSupabaseServer } from '@/lib/supabase-server'
+import { deterministicAppName, isValidRoomCode, roomBelongsToSandbox } from '@/lib/room-ownership'
+import { sandboxClaimedByAnotherUser } from '@/lib/sandbox-claims'
+
+function supabaseConfigured(): boolean {
+  return !!(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+}
+
+let warnedSingleTenant = false
+function warnSingleTenantOnce() {
+  if (warnedSingleTenant) return
+  warnedSingleTenant = true
+  console.warn('[token] Supabase not configured: single-tenant mode, /api/token is not auth-gated')
+}
+
+/**
+ * Local-dev escape hatch for an agent on your own machine (its room prefix is a
+ * random persisted code the server cannot tie to a user). Never active in a
+ * production build.
+ */
+function devAllowAnyRoom(): boolean {
+  return process.env.NODE_ENV !== 'production' && process.env.OSBORN_DEV_ALLOW_ANY_ROOM === '1'
+}
+
+/**
+ * Same ownership source as /api/sandbox (the caller's own instances row), plus
+ * the user-id-derived app name for legacy users with no sandbox_id recorded.
+ * A recorded sandbox_id only counts when no other user also claims it; that
+ * check FAILS CLOSED (lookup error / no RPC and no service key -> refused),
+ * see lib/sandbox-claims.ts.
+ */
+async function userOwnsRoom(
+  supabase: Awaited<ReturnType<typeof createSupabaseServer>>,
+  userId: string,
+  roomName: string,
+): Promise<boolean> {
+  if (roomBelongsToSandbox(roomName, deterministicAppName(userId))) return true
+  const { data: instance } = await supabase
+    .from('instances')
+    .select('sandbox_id')
+    .eq('user_id', userId)
+    .maybeSingle()
+  const ownedId = (instance as { sandbox_id?: string | null } | null)?.sandbox_id ?? null
+  if (ownedId && roomBelongsToSandbox(roomName, ownedId)) {
+    if (await sandboxClaimedByAnotherUser(supabase, ownedId, userId)) {
+      console.warn(`[token] sandbox ${ownedId} is disputed or unverifiable; refusing token for ${userId}`)
+      return false
+    }
+    return true
+  }
+  if (devAllowAnyRoom()) {
+    console.warn(`[token] OSBORN_DEV_ALLOW_ANY_ROOM=1: minting unverified room ${roomName} (dev only)`)
+    return true
+  }
+  return false
+}
 
 // Generate a short, user-friendly room code
 function generateRoomCode(): string {
@@ -35,9 +90,46 @@ export async function GET(request: NextRequest) {
   // cross-log clock skew. Empty for flows that don't stamp it.
   const clickTs = request.nextUrl.searchParams.get('clickTs') || ''
 
-  // Get or generate room code
-  // If provided, use it (for reconnection); otherwise generate new
-  const roomCode = request.nextUrl.searchParams.get('roomCode') || generateRoomCode()
+  // AUTH + ROOM OWNERSHIP (UI review item 22). This route mints a
+  // publish-capable token (data included), so it must only do that for the
+  // signed-in owner of the room's machine. Middleware skips /api/, so the
+  // check lives here.
+  const requestedRoomCode = request.nextUrl.searchParams.get('roomCode') || ''
+  let userId = ''
+  if (supabaseConfigured()) {
+    let supabase: Awaited<ReturnType<typeof createSupabaseServer>> | null = null
+    let user: { id: string } | null = null
+    try {
+      supabase = await createSupabaseServer()
+      const { data } = await supabase.auth.getUser()
+      user = data.user ?? null
+    } catch {
+      user = null
+    }
+    if (!supabase || !user) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+    userId = user.id
+
+    if (requestedRoomCode) {
+      if (!isValidRoomCode(requestedRoomCode)) {
+        return NextResponse.json({ error: 'Invalid room code' }, { status: 400 })
+      }
+      const owned = await userOwnsRoom(supabase, user.id, `osborn-${requestedRoomCode}`)
+      if (!owned) {
+        console.warn(`[token] room ownership mismatch: user=${user.id} room=osborn-${requestedRoomCode}`)
+        return NextResponse.json({ error: 'Room not found' }, { status: 404 })
+      }
+    }
+  } else {
+    // Self-hosted single-tenant deployment with no Supabase configured: there
+    // is no user system to scope rooms to, so keep the legacy behavior.
+    warnSingleTenantOnce()
+  }
+
+  // No roomCode → a fresh random room. Random codes contain no "-", so they
+  // can never collide with an agent room (osborn-<prefix>-<ts>).
+  const roomCode = requestedRoomCode || generateRoomCode()
   const roomName = `osborn-${roomCode}`
 
   // STABLE per-session identity (reconnect-survival Phase 0): key the participant
@@ -51,19 +143,8 @@ export async function GET(request: NextRequest) {
   const sessionKey = sessionId || roomCode
   const participantName = `user-${sessionKey}`
 
-  // Resolve the authenticated Supabase user so the agent can scope workspace
-  // artifact uploads (and any future per-user data) to the right owner. This
-  // is optional — guest/unauthenticated users still get a token but userId
-  // will be empty, and the agent will fall back to session-scoped paths only.
-  let userId = ''
-  try {
-    const supabase = await createSupabaseServer()
-    const { data } = await supabase.auth.getUser()
-    if (data.user) userId = data.user.id
-  } catch {
-    // Not authenticated / no Supabase session cookie — proceed without userId
-  }
-
+  // userId (resolved above) lets the agent scope workspace artifact uploads
+  // to the right owner. It is empty only in single-tenant (no Supabase) mode.
   const at = new AccessToken(apiKey, apiSecret, {
     identity: participantName,
     // Include provider, voice architecture, coding agent, sessionId,
@@ -79,6 +160,9 @@ export async function GET(request: NextRequest) {
     room: roomName,
     canPublish: true,
     canSubscribe: true,
+    // The agent binds control to metadata.userId (== machine owner, agent
+    // data-sender-auth.ts), so the participant must not be able to rewrite it.
+    canUpdateOwnMetadata: false,
   })
 
   const token = await at.toJwt()

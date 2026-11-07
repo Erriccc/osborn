@@ -456,6 +456,18 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         url += `&workingDirectory=${encodeURIComponent(workingDirectory)}`
 
       const res = await fetch(url)
+      if (!res.ok) {
+        // /api/token requires a signed-in owner of the room's machine.
+        setError(
+          res.status === 401
+            ? 'Sign in to connect to your agent.'
+            : res.status === 404
+              ? 'This session room is not available to your account.'
+              : 'Failed to connect to agent',
+        )
+        setStatusMsg(null)
+        return
+      }
       const data = await res.json()
 
       ctMark('token minted — handing off to LiveKit room join')

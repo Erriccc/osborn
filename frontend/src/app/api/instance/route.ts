@@ -29,7 +29,10 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json()
-  const { serverUrl, instanceType = 'local', sandboxId, sandboxUrl, sandboxStatus } = body
+  // sandbox_id is NOT accepted here: it decides machine ownership and is
+  // server-only (written by /api/sandbox via set_instance_sandbox, migration
+  // 012). A client-supplied sandboxId / sandbox_id is ignored.
+  const { serverUrl, instanceType = 'local', sandboxUrl, sandboxStatus } = body
 
   if (!serverUrl) {
     return NextResponse.json({ error: 'serverUrl is required' }, { status: 400 })
@@ -47,8 +50,7 @@ export async function POST(request: Request) {
     livekit_room: livekitRoom,
     last_seen: new Date().toISOString(),
   }
-  // Include sandbox fields if provided (cloud provisioning)
-  if (sandboxId !== undefined) upsertData.sandbox_id = sandboxId
+  // Include sandbox display fields if provided (never sandbox_id, see above)
   if (sandboxUrl !== undefined) upsertData.sandbox_url = sandboxUrl
   if (sandboxStatus !== undefined) upsertData.sandbox_status = sandboxStatus
 

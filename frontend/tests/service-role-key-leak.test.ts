@@ -72,6 +72,9 @@ async function main() {
     '@/lib/supabase-server': {
       createSupabaseServer: async () => ({
         auth: { getUser: async () => ({ data: { user: { id: 'user-A' } } }) },
+        // Migration 012 RPCs as the real user client exposes them: OWN is
+        // claimed by user-A alone, so the ownership check verifies it.
+        rpc: async (fn: string) => ({ data: fn === 'sandbox_claimed_by_other' ? false : true, error: null }),
         from: () => {
           const b: any = {
             select: () => b, eq: () => b, update: () => b, insert: () => b,
