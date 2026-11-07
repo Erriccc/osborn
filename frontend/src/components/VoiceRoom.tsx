@@ -17,6 +17,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
+import { agentReadUrl } from '@/lib/agent-read'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
@@ -632,7 +633,7 @@ function VoiceRoomInner({
         if (cancelled) return
         try {
           const r = await fetch(
-            `${base}/session-messages?session=${encodeURIComponent(preSelectedSessionId)}&limit=50`,
+            `${agentReadUrl(base, 'session-messages')}?session=${encodeURIComponent(preSelectedSessionId)}&limit=50`,
             { signal: AbortSignal.timeout(8000) },
           )
           if (cancelled || !r.ok) continue
