@@ -17,6 +17,26 @@ export function noteCopyText(note: { text: string; attachments?: string[] }): st
   return atts.length ? `${note.text}\n${atts.join('\n')}` : note.text
 }
 
+/** href for an attachment only when it parses as an http(s) URL; else null (render as text). */
+export function safeAttachmentHref(u: string): string | null {
+  try {
+    const url = new URL(u)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+/** Display label: last path segment, URL-decoded; raw string if decoding fails (malformed %). */
+export function attachmentLabel(u: string): string {
+  const raw = u.split('/').pop() || u
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
 export default function NoteSheet({
   note,
   onClose,
@@ -34,6 +54,13 @@ export default function NoteSheet({
   const cancelRef = useRef<HTMLButtonElement | null>(null)
   const sheetRef = useRef<HTMLDivElement | null>(null)
   const open = !!note
+
+  // Save the element that opened the sheet; restore focus to it on close.
+  useEffect(() => {
+    if (!open) return
+    const prev = document.activeElement as HTMLElement | null
+    return () => { if (prev && typeof prev.focus === 'function' && prev.isConnected) prev.focus() }
+  }, [open])
 
   // Reset per note; focus Close first.
   useEffect(() => {
@@ -131,14 +158,22 @@ export default function NoteSheet({
           <p className="text-[14px] leading-relaxed text-[var(--text-primary)] whitespace-pre-wrap break-words">{note.text}</p>
           {atts.length > 0 && (
             <ul className="mt-4 space-y-1.5" aria-label="Attachments">
-              {atts.map(u => (
-                <li key={u}>
-                  <a href={u} target="_blank" rel="noopener noreferrer"
-                    className="text-[12px] text-[var(--accent)] hover:underline break-all">
-                    {decodeURIComponent(u.split('/').pop() || u)}
-                  </a>
-                </li>
-              ))}
+              {atts.map(u => {
+                const href = safeAttachmentHref(u)
+                const label = attachmentLabel(u)
+                return (
+                  <li key={u}>
+                    {href ? (
+                      <a href={href} target="_blank" rel="noopener noreferrer"
+                        className="text-[12px] text-[var(--accent)] hover:underline break-all">
+                        {label}
+                      </a>
+                    ) : (
+                      <span className="text-[12px] text-[var(--text-secondary)] break-all">{label}</span>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           )}
         </div>
