@@ -33,6 +33,8 @@ const fly = {
   repoint: async (appName: string, userId: string): Promise<any> =>
     ({ id: appName, status: 'running', previewUrl: `https://${appName}.fly.dev`, userId, createdAt: '' }),
   deleteThrows: false,
+  // Per-call stopMachineCold outcomes: true/false, or 'throw'. Empty = true.
+  stopOutcomes: [] as (boolean | 'throw')[],
 }
 const machinesMock = {
   __esModule: true,
@@ -41,7 +43,12 @@ const machinesMock = {
     calls.push({ fn: 'createSandboxRaw', args: [appName, userId, ...rest] })
     return fly.createResult(appName, userId)
   },
-  stopMachineCold: async (id: string) => { calls.push({ fn: 'stopMachineCold', args: [id] }); return true },
+  stopMachineCold: async (id: string) => {
+    calls.push({ fn: 'stopMachineCold', args: [id] })
+    const o = fly.stopOutcomes.shift() ?? true
+    if (o === 'throw') throw new Error('fly stop exploded')
+    return o
+  },
   deleteSandbox: async (id: string) => {
     calls.push({ fn: 'deleteSandbox', args: [id] })
     if (fly.deleteThrows) throw new Error('fly delete exploded')
@@ -91,6 +98,7 @@ const route = {
   assignResult: (userId: string): any => ({ id: `osborn-${userId}`, status: 'running', previewUrl: 'http://new', userId }),
   claimedByOther: false,
   setSandboxOk: true,
+  recordedSandboxId: null as string | null,
 }
 const routeCloudMock = new Proxy({}, {
   get: (_t, k: string) => {
@@ -116,7 +124,7 @@ const routeSupabase = () => ({
     const b: any = {
       select: () => b, eq: () => b, update: () => b, insert: () => b, upsert: () => b,
       maybeSingle: async () => ({ data: null, error: null }),
-      single: async () => ({ data: null, error: null }),
+      single: async () => ({ data: route.recordedSandboxId ? { sandbox_id: route.recordedSandboxId } : null, error: null }),
       then: (res: any) => res({ data: null, error: null }),
     }
     return b
@@ -136,6 +144,7 @@ function reset() {
   fly.createResult = (appName, userId) => ({ id: appName, status: 'running', previewUrl: `https://${appName}.fly.dev`, userId, createdAt: '' })
   fly.repoint = async (appName, userId) => ({ id: appName, status: 'running', previewUrl: `https://${appName}.fly.dev`, userId, createdAt: '' })
   fly.deleteThrows = false
+  fly.stopOutcomes = []
   db.spareCount = 0; db.insertError = null; db.claimRows = []
   delete process.env.WARM_POOL_MAX
 }
@@ -198,6 +207,39 @@ async function main() {
     ok(called('stopMachineCold').length === 1, 'spare not cold-stopped')
   })
 
+  await t('pool: registered spare whose first cold stop fails is retried once and kept', async () => {
+    reset()
+    db.spareCount = 1
+    fly.stopOutcomes = [false, true]
+    await pool.ensurePool(2)
+    ok(called('stopMachineCold').length === 2, `stop calls: ${called('stopMachineCold').length}`)
+    ok(called('deleteSandbox').length === 0, 'spare destroyed although the retry stopped it')
+    ok(!called('db.machine_pool.update').some(c => c.args[0]?.status === 'dead'), 'row marked dead although the retry stopped it')
+  })
+
+  await t('pool: registered spare that will not stop after retry is destroyed + row marked dead', async () => {
+    reset()
+    db.spareCount = 0
+    fly.stopOutcomes = ['throw', false]
+    await pool.ensurePool(2)
+    const app = called('createSandboxRaw')[0]?.args[0]
+    ok(app, 'no create')
+    ok(called('createSandboxRaw').length === 1, `pass continued after failure: ${called('createSandboxRaw').length} creates`)
+    ok(called('stopMachineCold').length === 2, `stop calls: ${called('stopMachineCold').length}`)
+    ok(called('deleteSandbox').some(c => c.args[0] === app), 'unstoppable spare not destroyed')
+    ok(called('db.machine_pool.update').some(c => c.args[0]?.status === 'dead' && c.args[1]?.app_name === app), 'row not marked dead')
+  })
+
+  await t('pool: destroyPoolMachine refuses non-pool app names', async () => {
+    reset()
+    await pool.destroyPoolMachine('osborn-1b9d70e5-v2', 'test')
+    await pool.destroyPoolMachine('osborn-pool-xyz', 'test')
+    await pool.destroyPoolMachine('osborn-pool-0123456789ab-x', 'test')
+    ok(called('deleteSandbox').length === 0, `deleteSandbox called: ${JSON.stringify(called('deleteSandbox'))}`)
+    await pool.destroyPoolMachine('osborn-pool-0123456789ab', 'test')
+    ok(called('deleteSandbox').length === 1, 'valid pool app not destroyed')
+  })
+
   // ───────── WARM_POOL_MAX cap ─────────
   await t('pool cap: default WARM_POOL_MAX=2 caps an oversized request', async () => {
     reset()
@@ -245,18 +287,18 @@ async function main() {
   // ───────── takeSpareFromPool cleanup ─────────
   await t('pool claim: repoint error -> machine destroyed, row marked dead, null', async () => {
     reset()
-    db.claimRows = [{ id: 'row-1', app_name: 'osborn-pool-aaa' }]
+    db.claimRows = [{ id: 'row-1', app_name: 'osborn-pool-aaaaaaaaaaaa' }]
     fly.repoint = async (appName, userId) => ({ id: appName, status: 'error', userId, createdAt: '', error: 'repoint health failed' })
     const r = await pool.takeSpareFromPool('user-X')
     ok(r === null, 'expected null')
-    ok(called('deleteSandbox').some(c => c.args[0] === 'osborn-pool-aaa'), 'failed claim left machine running')
+    ok(called('deleteSandbox').some(c => c.args[0] === 'osborn-pool-aaaaaaaaaaaa'), 'failed claim left machine running')
     ok(called('db.machine_pool.update').some(c => c.args[0]?.status === 'dead' && c.args[1]?.id === 'row-1'), 'row not marked dead')
     ok(logs.some(l => l.includes('repoint health failed')), 'original claim error not logged')
   })
 
   await t('pool claim: repoint throws + destroy throws -> still null, no throw', async () => {
     reset()
-    db.claimRows = [{ id: 'row-2', app_name: 'osborn-pool-bbb' }]
+    db.claimRows = [{ id: 'row-2', app_name: 'osborn-pool-bbbbbbbbbbbb' }]
     fly.repoint = async () => { throw new Error('fly 500 original') }
     fly.deleteThrows = true
     const r = await pool.takeSpareFromPool('user-Y')
@@ -268,7 +310,7 @@ async function main() {
 
   await t('pool claim: successful claim is not destroyed (no regression)', async () => {
     reset()
-    db.claimRows = [{ id: 'row-3', app_name: 'osborn-pool-ccc' }]
+    db.claimRows = [{ id: 'row-3', app_name: 'osborn-pool-cccccccccccc' }]
     const r = await pool.takeSpareFromPool('user-Z')
     ok(r && r.status === 'running', 'claim failed')
     ok(called('deleteSandbox').length === 0, 'healthy claimed machine destroyed')
@@ -284,6 +326,7 @@ async function main() {
     route.user = { id: uid }
     route.claimedByOther = false
     route.setSandboxOk = true
+    route.recordedSandboxId = null
     route.assignResult = (userId: string) => ({ id: `osborn-${userId}`, status: 'running', previewUrl: 'http://new', userId })
   }
 
@@ -321,6 +364,26 @@ async function main() {
     await post({ action: 'create' })
     ok(called('stopSandbox').length === 0, 'stopped a machine another user claims')
     ok(called('route.deleteSandbox').length === 0, 'deleted a machine another user claims')
+  })
+
+  await t('route: claim RPC fails but row already holds the pool id -> not stopped, 200', async () => {
+    routeReset('user-cg-6')
+    route.setSandboxOk = false
+    route.assignResult = () => ({ id: 'osborn-pool-0123456789ab', status: 'running', previewUrl: 'http://pool', userId: 'user-cg-6' })
+    route.recordedSandboxId = 'osborn-pool-0123456789ab'
+    const r = await post({ action: 'create' })
+    ok(called('stopSandbox').length === 0, 'stopped the recorded pool machine')
+    ok(r.status === 200, `status ${r.status}`)
+    ok(r.body?.id === 'osborn-pool-0123456789ab' && r.body?.status === 'running', `body ${JSON.stringify(r.body)}`)
+  })
+
+  await t('route: claim RPC fails and row holds a DIFFERENT id -> still stopped', async () => {
+    routeReset('user-cg-7')
+    route.setSandboxOk = false
+    route.recordedSandboxId = 'osborn-something-else'
+    const r = await post({ action: 'create' })
+    ok(called('stopSandbox').some(c => c.args[0] === 'osborn-user-cg-7'), 'unrecorded machine left running')
+    ok(r.status >= 500, `status ${r.status}`)
   })
 
   await t('route: successful create+record is not stopped (no regression)', async () => {
