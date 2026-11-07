@@ -12,6 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useDocumentTitle } from '@/lib/use-document-title'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
@@ -69,6 +70,7 @@ function DocIcon({ className }: { className?: string }) {
 }
 
 export default function LibraryPage() {
+  useDocumentTitle('Library')
   const router = useRouter()
   const supabase = useMemo(() => createSupabaseBrowser(), [])
   const [user, setUser] = useState<User | null>(null)

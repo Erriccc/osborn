@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useDocumentTitle } from '@/lib/use-document-title'
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
 // fall back to the uppercased code (still tells you WHERE-ish).
@@ -162,6 +163,7 @@ function machineIssueText(status: number): string {
 }
 
 export default function Dashboard() {
+  useDocumentTitle('Dashboard')
   const router = useRouter()
   const supabase = createSupabaseBrowser()
   const [user, setUser] = useState<User | null>(null)

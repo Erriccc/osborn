@@ -13,7 +13,7 @@ import FooterV2 from '@/components/landing-v2/FooterV2'
  * search while it's a preview.
  */
 export const metadata: Metadata = {
-  title: 'Voice Native — The Hands-Free Business OS (preview)',
+  title: { absolute: 'Voice Native — The Hands-Free Business OS (preview)' },
   description:
     'Talk, and Voice Native drives the work — a team of agents writing, running, and shipping on your machine while you stay in the conversation.',
   robots: { index: false, follow: false },

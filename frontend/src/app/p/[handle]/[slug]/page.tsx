@@ -59,7 +59,7 @@ function fmtDate(iso: string | null): string {
 
 export async function generateMetadata({ params }: PageParams): Promise<Metadata> {
   const item = await getItem(params.handle, params.slug)
-  if (!item) return { title: 'Not found — Voice Native' }
+  if (!item) return { title: 'Not found' }
 
   const title = item.title || item.slug || 'Untitled'
   const description = item.hook || undefined
@@ -67,7 +67,7 @@ export async function generateMetadata({ params }: PageParams): Promise<Metadata
   const image = absPosterUrl(item.poster_path)
 
   return {
-    title: `${title} — Voice Native`,
+    title,
     description,
     alternates: { canonical },
     openGraph: {
