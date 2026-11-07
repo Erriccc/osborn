@@ -8,7 +8,8 @@
 import {
   AUTO_OPEN_OUTPUTS_ON_WRITE,
   fileFromToolEvent, upsertAgentFile, markUnread, agentCanServe, fileTypeOf,
-  replaceArtifacts,
+  replaceArtifacts, contentRequestFor, isSensitivePath, normalizeAgentPath, summarize, searchOutputs,
+  LOAD_ERROR_DENIED, LOAD_ERROR_OUTSIDE,
   type OutputFile,
 } from '../src/lib/outputs-model'
 
@@ -127,6 +128,64 @@ t('agentCanServe: workspace/plan paths yes, arbitrary paths no', () => {
   ok(agentCanServe('/root/.claude/plans/p.md', 'plan'), 'plan file')
   ok(!agentCanServe('/workspace/test.txt'), 'outside')
   ok(!agentCanServe('/workspace/.claude/plans/p.md'), 'plan path without plan source goes via get_research_artifact, which refuses it')
+})
+
+// Review MAJOR 2: the agent's check is a substring match, so the browser must
+// never send it a traversal, an unknown root, or a secret-looking name.
+const OSB = `/workspace/.claude/projects/-workspace/osb/${SID}`
+t('agentCanServe: traversal is refused', () => {
+  ok(!agentCanServe('/x/osb/../../.env'), '/x/osb/../../.env')
+  ok(!agentCanServe(`${OSB}/../../../../.env`), 'osb/../..')
+  ok(!agentCanServe(`${OSB}/./notes.md`), 'dot segment')
+  ok(!agentCanServe('/root/.claude/plans/../../.ssh/id_rsa', 'plan'), 'plan traversal')
+  ok(!agentCanServe(`${OSB}\\..\\x.md`), 'backslash')
+  eq(normalizeAgentPath('/a//b/c.md'), '/a/b/c.md', 'double slash collapsed')
+  eq(normalizeAgentPath('a/b.md'), null, 'relative')
+})
+t('agentCanServe: prefix match on a known root, not includes', () => {
+  ok(!agentCanServe('/x/osb/notes.md'), 'bare /osb/ is not a root')
+  ok(!agentCanServe('/etc/osb/passwd'), '/etc/osb')
+  ok(!agentCanServe('/tmp/x/.osborn/sessions'), 'root itself, no file')
+  ok(!agentCanServe('/root/.ssh/.claude/projects/s/osb/x/a.md'), 'dot-segment in the home part')
+  ok(agentCanServe(`${OSB}/notes.md`), 'normal osb .md path')
+  ok(agentCanServe(`${OSB}/sub/dir/report.html`), 'nested osb path')
+  ok(agentCanServe(`/home/sprite/.claude/projects/-home-sprite-workspace/osb/${SID}/a.md`), 'sprite home')
+})
+t('agentCanServe: dotfiles and secret-looking names are refused', () => {
+  ok(!agentCanServe(`${OSB}/.env`), '.env')
+  for (const n of ['.env.local', 'server.pem', 'tls.key', 'id_rsa', 'id_rsa.pub', 'aws-credentials.json', 'client_secret.txt', 'MY_SECRETS.md', '.npmrc', '.netrc', '.bashrc']) {
+    ok(!agentCanServe(`${OSB}/${n}`), n)
+  }
+  ok(!agentCanServe(`${OSB}/.git/config`), 'dot directory below the root')
+  ok(!agentCanServe(`${OSB}/secrets/notes.md`), 'secret-looking directory')
+  ok(!agentCanServe('/root/.claude/plans/.env', 'plan'), 'plan dotfile')
+  ok(isSensitivePath('user-1/abc/artifacts/.env.production'), 'bucket key')
+  ok(!isSensitivePath(`${OSB}/notes.md`), 'normal file is not sensitive')
+})
+t('contentRequestFor: send / deny / outside', () => {
+  eq(contentRequestFor({ filePath: `${OSB}/notes.md` }, { isController: true }),
+    { kind: 'send', message: { type: 'get_research_artifact', filePath: `${OSB}/notes.md` } }, 'osb')
+  eq(contentRequestFor({ filePath: '/root/.claude/plans/p.md', source: 'plan' }, { isController: true }),
+    { kind: 'send', message: { type: 'get_plan_file', filePath: '/root/.claude/plans/p.md' } }, 'plan')
+  eq(contentRequestFor({ filePath: '/x/osb/../../.env' }, { isController: true }), { kind: 'deny', loadError: LOAD_ERROR_DENIED }, 'traversal')
+  eq(contentRequestFor({ filePath: `${OSB}/.env` }, { isController: true }), { kind: 'deny', loadError: LOAD_ERROR_DENIED }, 'secret in root')
+  eq(contentRequestFor({ filePath: '/workspace/.env' }, { isController: true }), { kind: 'deny', loadError: LOAD_ERROR_DENIED }, 'secret outside')
+  eq(contentRequestFor({ filePath: '/workspace/report.txt' }, { isController: true }), { kind: 'deny', loadError: LOAD_ERROR_OUTSIDE }, 'plain outside')
+})
+// Review MAJOR 3: a standby tab (isController=false) never asks the agent.
+t('contentRequestFor: isController=false sends no get_research_artifact', () => {
+  const sent: unknown[] = []
+  for (const filePath of [`${OSB}/notes.md`, '/root/.claude/plans/p.md', '/workspace/report.txt']) {
+    const r = contentRequestFor({ filePath, source: filePath.includes('plans') ? 'plan' : 'research' }, { isController: false })
+    eq(r, { kind: 'skip' }, filePath)
+    if (r.kind === 'send') sent.push(r.message)
+  }
+  eq(sent.length, 0, 'no messages')
+})
+t('secret-looking files never show a summary or a content match', () => {
+  const env: OutputFile = { filePath: `${OSB}/.env`, fileName: '.env', type: 'other', updatedAt: NOW, content: 'API_KEY=sk-live-123' }
+  eq(summarize(env), null, 'summary')
+  eq(searchOutputs([env], 'sk-live').byContent.length, 0, 'content search')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

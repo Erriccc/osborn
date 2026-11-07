@@ -24,7 +24,7 @@ import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
 import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
-import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
+import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { PermissionModal, getToolRiskLevel, type PermissionRequest } from './voice/PermissionModal'
 import { TextInput, type AttachedFile } from './voice/TextInput'
@@ -35,7 +35,7 @@ import { ChatPanel } from './voice/ChatPanel'
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
-import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LOAD_ERROR_OUTSIDE, agentCanServe, favoriteRepairAction, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, contentRequestFor, favoriteRepairAction, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
@@ -180,6 +180,7 @@ function VoiceRoomInner({
   preSelectedSessionId,
   agentUrl,
   seedPrompt,
+  isController = true,
 }: {
   onDisconnect?: () => void
   onAgentReady?: () => void
@@ -189,8 +190,13 @@ function VoiceRoomInner({
   preSelectedSessionId?: string | null
   agentUrl?: string
   seedPrompt?: string | null
+  /** False in a standby tab (another tab holds the room): no body fetches,
+   *  previews or favorite recovery from here. */
+  isController?: boolean
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const isControllerRef = useRef(isController)
+  isControllerRef.current = isController
   // Project/workspace context for this session (from the chat URL via the
   // provider) — surfaced as a header chip so a stranger can see WHICH repo /
   // project the session is attached to (audit C1/P1-7; §12 found it invisible,
@@ -224,9 +230,23 @@ function VoiceRoomInner({
   // user's explicit Try again / unmute. Flag lives in sessionStorage so the
   // provider's LiveKitRoom also stops publishing the mic on reconnect.
   const micDeniedRef = useRef(false)
+  /** Set below: what to do when the browser lifts a denial mid-session. */
+  const micUnblockedRef = useRef<(() => void) | null>(null)
   const micUserRetryRef = useRef(false)
   const micBannerShownRef = useRef(new Set<MicErrorKind>())
-  useEffect(() => { micDeniedRef.current = isMicDenied(micStore()) }, [])
+  useEffect(() => {
+    // The provider reconciles the stored flag with the browser's Permissions
+    // answer (granted/prompt clear it) and broadcasts; follow it here so the
+    // auto-enable paths (agent 'listening', session gate) are allowed again.
+    const read = () => {
+      const was = micDeniedRef.current
+      micDeniedRef.current = isMicDenied(micStore())
+      if (was && !micDeniedRef.current) micUnblockedRef.current?.()
+    }
+    read()
+    window.addEventListener(MIC_DENIED_EVENT, read)
+    return () => window.removeEventListener(MIC_DENIED_EVENT, read)
+  }, [])
   const markMicDenied = useCallback((denied: boolean) => {
     if (micDeniedRef.current === denied) return
     micDeniedRef.current = denied
@@ -436,6 +456,7 @@ function VoiceRoomInner({
   // take the agent's uploaded url, or upload the full body. Once per path.
   const repairingFavoritesRef = useRef(new Set<string>())
   useEffect(() => {
+    if (!isController) return // a standby tab never recovers / uploads
     for (const fav of favoriteFiles) {
       if (fav.url || repairingFavoritesRef.current.has(fav.filePath)) continue
       const live = generatedFiles.find((f) => f.filePath === fav.filePath)
@@ -445,7 +466,7 @@ function VoiceRoomInner({
       if (action.kind === 'set-url') setFavoriteUrl(fav.filePath, action.url)
       else void saveDurableCopy(live) // one attempt per page (no upload loop on failure)
     }
-  }, [favoriteFiles, generatedFiles, setFavoriteUrl, saveDurableCopy])
+  }, [favoriteFiles, generatedFiles, setFavoriteUrl, saveDurableCopy, isController])
 
   // Cross-device favorites — SERVER IS AUTHORITATIVE. User-level (not session-level)
   // so favorites persist across sessions. Runs once per session to sync.
@@ -671,7 +692,7 @@ function VoiceRoomInner({
   // would spin on "Loading content…" forever.
   useEffect(() => {
     const f = selectedFile
-    if (!f || !f.url || f.content || f.isImage) return
+    if (!f || !f.url || f.content || f.isImage || isSensitivePath(f.filePath)) return
     const ext = f.fileName.split('.').pop()?.toLowerCase() || ''
     const textLike = ['md', 'markdown', 'txt', 'html', 'htm', 'svg', 'json', 'csv', 'log', 'yaml', 'yml', 'ts', 'tsx', 'js', 'jsx', 'py', 'sh', 'css'].includes(ext)
     if (!textLike) return // binary — viewer shows an open link, no fetch
@@ -687,15 +708,18 @@ function VoiceRoomInner({
   }, [selectedFile])
 
   const { localParticipant, isMicrophoneEnabled: micEnabled } = useLocalParticipant()
+  // Honest mute UI: never show "unmuted" while no audio is published (e.g.
+  // joined without the mic after a denial). A tap then means "turn it on".
+  const shownMuted = micShownMuted({ muted: isMuted, micPublished: localParticipant ? micEnabled : undefined })
 
   const toggleMute = useCallback(async () => {
     if (localParticipant) {
-      const newMuted = !isMuted
+      const newMuted = !shownMuted
       if (!newMuted) micUserRetryRef.current = true // explicit user unmute
       await localParticipant.setMicrophoneEnabled(!newMuted)
       setIsMuted(newMuted)
     }
-  }, [localParticipant, isMuted])
+  }, [localParticipant, shownMuted])
 
   // Copy all messages to clipboard with timestamps
   const handleCopyAllMessages = useCallback(async () => {
@@ -1231,18 +1255,21 @@ function VoiceRoomInner({
   // Lazy body fetch: one request per file version, only for the file on screen.
   const contentRequestedRef = useRef(new Set<string>())
   const requestFileContent = useCallback((f: GeneratedFile, force = false) => {
+    // Only the controlling tab asks the agent for bodies (a standby tab must
+    // not drive the room); nothing is recorded, so it fetches once it controls.
+    const req = contentRequestFor(f, { isController: isControllerRef.current })
+    if (req.kind === 'skip') return
     const key = `${f.filePath}@${toMs(f.updatedAt)}`
     if (!force && contentRequestedRef.current.has(key)) return
     contentRequestedRef.current.add(key)
-    // The agent silently ignores a body request outside the folders it serves
-    // (e.g. /workspace/report.txt), which would spin "Loading…" forever.
-    if (!agentCanServe(f.filePath, f.source)) {
-      setGeneratedFiles((prev) => prev.map((x) => (x.filePath === f.filePath ? { ...x, loadError: LOAD_ERROR_OUTSIDE } : x)))
+    // Never ask for a traversal / dotfile / secret-looking path. A path outside
+    // the folders the agent serves (e.g. /workspace/report.txt) would otherwise
+    // spin "Loading…" forever, since the agent silently ignores it.
+    if (req.kind === 'deny') {
+      setGeneratedFiles((prev) => prev.map((x) => (x.filePath === f.filePath ? { ...x, loadError: req.loadError } : x)))
       return
     }
-    sendJson(f.source === 'plan'
-      ? { type: 'get_plan_file', filePath: f.filePath }
-      : { type: 'get_research_artifact', filePath: f.filePath })
+    sendJson(req.message)
     // No answer (agent busy/offline, or an older agent that drops the request):
     // stop spinning, so the view can offer Retry or, for a legacy favorite,
     // Remove / Ask agent to regenerate (bug 55033541).
@@ -1261,7 +1288,7 @@ function VoiceRoomInner({
     const f = generatedFiles.find((x) => x.filePath === shownFilePath)
     if (!f || f.content !== undefined || f.url || f.loadError) return
     requestFileContent(f)
-  }, [shownFilePath, generatedFiles, requestFileContent])
+  }, [shownFilePath, generatedFiles, requestFileContent, isController])
   const reloadFile = useCallback((filePath: string) => {
     const f = generatedFilesRef.current.find((x) => x.filePath === filePath)
     if (!f) return
@@ -1298,6 +1325,13 @@ function VoiceRoomInner({
   isMutedRef.current = isMuted
   const localParticipantRef = useRef(localParticipant)
   localParticipantRef.current = localParticipant
+  // Denial lifted (site settings now allow the mic): auto-enable is allowed
+  // again, same rule as the agent 'listening' path.
+  micUnblockedRef.current = () => {
+    if (!sessionGateCompletedRef.current) return
+    if (!shouldAutoEnableMic({ denied: micDeniedRef.current, muted: isMutedRef.current })) return
+    localParticipantRef.current?.setMicrophoneEnabled(true).catch(() => { /* MediaDevicesError re-surfaces it */ })
+  }
   // P1.9 (2026-10-24): wall-clock "TTS audio may still be flushing" marker,
   // stamped on every tts_chunk_playing. The iOS AEC re-enable below refuses to
   // fire inside this window — enabling mid-flush gets the track re-muted by
@@ -1307,6 +1341,8 @@ function VoiceRoomInner({
   const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => void>()
   // Typed messages awaiting their user_transcript echo (bug d9bb78b2).
   const pendingTypedRef = useRef<PendingTyped[]>([])
+  /** Set once the agent returns a clientMsgId this session (MINOR: chat-echo). */
+  const agentSendsClientIdsRef = useRef(false)
 
   // addMessage function with duplicate detection
   addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => {
@@ -1464,10 +1500,13 @@ function VoiceRoomInner({
         if (data.text && data.text.trim()) {
           // Bug d9bb78b2: the echo of a message typed here is already on
           // screen. Drop it by clientMsgId, else by cleaned-text match.
+          // The text fallback is only for agents that never return ids.
+          const echoId = typeof data.clientMsgId === 'string' && data.clientMsgId ? data.clientMsgId : null
+          if (echoId) agentSendsClientIdsRef.current = true
           const echo = takeTypedEcho(pendingTypedRef.current, {
             text: String(data.text),
-            clientMsgId: typeof data.clientMsgId === 'string' ? data.clientMsgId : null,
-          }, Date.now())
+            clientMsgId: echoId,
+          }, Date.now(), { agentSendsIds: agentSendsClientIdsRef.current })
           pendingTypedRef.current = echo.pending
           if (echo.duplicate) {
             console.log('⏭️ Typed-message echo deduped:', data.clientMsgId ?? '(text match)')
@@ -2916,7 +2955,7 @@ function VoiceRoomInner({
     agentUrl,
     sendToAgent: sendJson,
     sessionId: currentSessionId,
-    isController: true,
+    isController,
     outputs: {
       pinnedPaths: favoritePaths,
       previewPath: outputsPreviewPath,
@@ -2941,7 +2980,7 @@ function VoiceRoomInner({
       expand: () => setIsFilesModalOpen(true),
     },
     panel: { ...panel, openFile: openFileInPanel },
-  }), [messages, generatedFiles, slots, agentUrl, sendJson, currentSessionId, favoritePaths, outputsPreviewPath,
+  }), [messages, generatedFiles, slots, agentUrl, sendJson, currentSessionId, isController, favoritePaths, outputsPreviewPath,
     openOutputsPreview, handleToggleFavoriteWithNote, removeFavorite, regenerateFile, pinError, retryPin, reloadFile, handleCopyFile, handleCopyAllFiles,
     fileCopyFeedback, requestRelist, outputsSyncing, outputsSyncError, outputsSyncedAt, joinedAt, outputsSeenAt,
     unreadOutputs, panel, openFileInPanel])
@@ -3628,13 +3667,13 @@ function VoiceRoomInner({
               <button
                 onClick={toggleMute}
                 className={`hidden sm:block p-2 rounded-lg transition-all ${
-                  isMuted
+                  shownMuted
                     ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
                     : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
                 }`}
-                title={isMuted ? 'Unmute' : 'Mute'}
+                title={shownMuted ? 'Unmute' : 'Mute'}
               >
-                {isMuted ? (
+                {shownMuted ? (
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
@@ -3844,18 +3883,18 @@ function VoiceRoomInner({
           <button
             onClick={toggleMute}
             className={`flex items-center gap-1.5 min-h-11 px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
-              isMuted
+              shownMuted
                 ? 'bg-red-500/20 text-red-400'
                 : 'text-gray-400 hover:bg-gray-800/60'
             }`}
-            title={isMuted ? 'Unmute mic' : 'Mute mic'}
+            title={shownMuted ? 'Unmute mic' : 'Mute mic'}
           >
-            {isMuted ? (
+            {shownMuted ? (
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" d="M17 14l4-4m0 4l-4-4" /></svg>
             ) : (
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
             )}
-            <span>{isMuted ? 'Muted' : 'Mic'}</span>
+            <span>{shownMuted ? 'Muted' : 'Mic'}</span>
           </button>
 
           {/* Hangup — rightmost, next to Mute (moved off the top bar). Labeled
@@ -4112,7 +4151,7 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl, seedPrompt } =
+  const { disconnect, markAgentReady, markAuthRequired, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl, seedPrompt, isController } =
     useChatSession()
 
   if (idleStopped) {
@@ -4149,6 +4188,7 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       preSelectedSessionId={preSelectedSessionId}
       agentUrl={agentUrl}
       seedPrompt={seedPrompt}
+      isController={isController}
     />
   )
 }

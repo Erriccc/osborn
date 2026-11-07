@@ -30,8 +30,8 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
 import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
-import { MIC_DENIED_EVENT, isMicDenied } from '@/lib/mic-permission'
-import { TAB_LOCK_NAME, controlsEnabled, shouldConnectOnTransition, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
+import { MIC_DENIED_EVENT, isMicDenied, reconcileMicDenied, type MicPermissionState } from '@/lib/mic-permission'
+import { TAB_LOCK_NAME, TAB_LOCK_RETRY_MS, controlsEnabled, lockOutcomeAfterRestore, shouldConnectOnTransition, shouldRetryLockProbe, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
 
 interface ChatSessionContextValue {
   // ── Connection state ───────────────────────
@@ -84,6 +84,23 @@ export function useChatSession(): ChatSessionContextValue {
     )
   }
   return ctx
+}
+
+// Mic permission helpers (review MAJOR 1). The reload rule runs at most once
+// per document, so an in-app remount does not clear a fresh denial again.
+let micReloadRuleApplied = false
+function asMicState(state: string | undefined): MicPermissionState | null {
+  return state === 'granted' || state === 'prompt' || state === 'denied' ? state : null
+}
+function currentNavigationType(): string | null {
+  try {
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+    if (nav?.type) return nav.type
+    // Legacy API: 1 = TYPE_RELOAD.
+    const legacy = (performance as unknown as { navigation?: { type?: number } }).navigation
+    if (legacy?.type === 1) return 'reload'
+  } catch { /* no Performance API */ }
+  return null
 }
 
 export function ChatSessionProvider({ children }: { children: React.ReactNode }) {
@@ -141,14 +158,24 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const tabRoleRef = useRef<TabRole>(tabRole)
   tabRoleRef.current = tabRole
   const tabLockReleaseRef = useRef<(() => void) | null>(null)
-  const requestTabLock = useCallback((steal: boolean, isCancelled: () => boolean = () => false) => {
+  const requestTabLock = useCallback((steal: boolean, isCancelled: () => boolean = () => false, opts: { attempt?: number; restored?: boolean } = {}) => {
     const locks = typeof navigator !== 'undefined'
       ? (navigator as unknown as { locks?: { request: (name: string, opts: Record<string, unknown>, cb: (lock: unknown) => unknown) => Promise<unknown> } }).locks
       : undefined
     if (!locks?.request) { dispatchTab({ type: 'unsupported' }); return }
+    const attempt = opts.attempt ?? 0
     locks.request(TAB_LOCK_NAME, steal ? { steal: true } : { ifAvailable: true }, (lock) => {
       if (isCancelled()) return undefined
-      if (!lock) { dispatchTab({ type: 'unavailable' }); return undefined }
+      if (!lock) {
+        // The previous document (reload, bfcache, quick tab switch) may still
+        // be letting go: retry once before showing standby.
+        if (!steal && shouldRetryLockProbe(attempt)) {
+          setTimeout(() => { if (!isCancelled()) requestTabLock(false, isCancelled, { ...opts, attempt: attempt + 1 }) }, TAB_LOCK_RETRY_MS)
+          return undefined
+        }
+        dispatchTab(opts.restored ? lockOutcomeAfterRestore(tabRoleRef.current, false) : { type: 'unavailable' })
+        return undefined
+      }
       dispatchTab({ type: 'acquired' })
       // Hold the lock until this provider unmounts (or it is stolen).
       return new Promise<void>((resolve) => { tabLockReleaseRef.current = resolve })
@@ -169,6 +196,29 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       clearTimeout(t)
       tabLockReleaseRef.current?.()
       tabLockReleaseRef.current = null
+    }
+  }, [requestTabLock])
+  // Back/forward cache: a page going into the cache lets go of the lock (so
+  // another tab can control meanwhile); when it is restored it re-requests it
+  // (ifAvailable, one retry). Missing it while "active" = another tab took the
+  // session, so this one stops as if stolen.
+  useEffect(() => {
+    let cancelled = false
+    const onPageHide = (e: PageTransitionEvent) => {
+      if (!e.persisted) return
+      tabLockReleaseRef.current?.()
+      tabLockReleaseRef.current = null
+    }
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (!e.persisted || tabLockReleaseRef.current) return
+      requestTabLock(false, () => cancelled, { restored: true })
+    }
+    window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('pageshow', onPageShow)
+    return () => {
+      cancelled = true
+      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pageshow', onPageShow)
     }
   }, [requestTabLock])
   const takeOverTab = useCallback(() => {
@@ -812,6 +862,47 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     read()
     window.addEventListener(MIC_DENIED_EVENT, read)
     return () => window.removeEventListener(MIC_DENIED_EVENT, read)
+  }, [])
+  // The stored denial must not outlive the browser's own answer (review MAJOR
+  // 1): on mount and on every PermissionStatus change, granted/prompt clears
+  // it and denied keeps it. Without the Permissions API, a page reload clears
+  // it (once per document). Changes are broadcast so VoiceRoom's ref follows.
+  useEffect(() => {
+    let cancelled = false
+    let status: PermissionStatus | null = null
+    const apply = (permission: MicPermissionState | null) => {
+      if (cancelled) return
+      let store: Storage
+      try { store = window.sessionStorage } catch { return }
+      const before = isMicDenied(store)
+      let navigationType: string | null = null
+      if (permission === null && !micReloadRuleApplied) {
+        micReloadRuleApplied = true
+        navigationType = currentNavigationType()
+      }
+      const after = reconcileMicDenied(store, { permission, navigationType })
+      if (after !== before) {
+        try { window.dispatchEvent(new Event(MIC_DENIED_EVENT)) } catch { /* ignore */ }
+      }
+    }
+    const onChange = () => apply(asMicState(status?.state))
+    const perms = typeof navigator !== 'undefined' ? navigator.permissions : undefined
+    if (perms && typeof perms.query === 'function') {
+      perms.query({ name: 'microphone' as PermissionName })
+        .then((s) => {
+          if (cancelled) return
+          status = s
+          apply(asMicState(s.state))
+          s.addEventListener('change', onChange)
+        })
+        .catch(() => apply(null)) // 'microphone' unknown to this browser
+    } else {
+      apply(null)
+    }
+    return () => {
+      cancelled = true
+      status?.removeEventListener('change', onChange)
+    }
   }, [])
   const audioCapture = useMemo(
     // AEC rationale (moved from the LiveKitRoom prop):

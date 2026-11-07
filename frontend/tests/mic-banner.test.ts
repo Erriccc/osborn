@@ -8,6 +8,7 @@
 import {
   micErrorKind, shouldShowMicBanner, noteMicBannerShown, isMicDenied, setMicDenied,
   shouldAutoEnableMic, micPlatform, micHelp, MIC_BANNER_KEY_PREFIX, MIC_DENIED_KEY,
+  micDeniedAfterCheck, reconcileMicDenied, micShownMuted,
   type KV,
 } from '../src/lib/mic-permission'
 
@@ -126,6 +127,44 @@ t('not-found and busy have their own copy', () => {
 
 t('every message says you can keep typing', () => {
   for (const k of ['denied', 'notfound', 'busy'] as const) ok(/typ/i.test(micHelp(k, { ua: UA.chromeMac }).body), k)
+})
+
+// Review MAJOR 1: the stored denial must not outlive the browser's answer.
+t('deny, then grant, then reload: flag cleared and auto-enable allowed', () => {
+  const s = mem()
+  setMicDenied(s, true) // LiveKit MediaDevicesError NotAllowedError
+  eq(reconcileMicDenied(s, { permission: 'denied', navigationType: 'navigate' }), true, 'denied keeps it')
+  ok(!shouldAutoEnableMic({ denied: isMicDenied(s), muted: false }), 'no auto-enable while denied')
+  // User allows the mic in site settings: PermissionStatus 'change' -> granted.
+  eq(reconcileMicDenied(s, { permission: 'granted' }), false, 'granted clears it')
+  eq(s.data.has(MIC_DENIED_KEY), false, 'storage key removed')
+  // Reload in the same tab (sessionStorage survives): mount check, still granted.
+  eq(reconcileMicDenied(s, { permission: 'granted', navigationType: 'reload' }), false, 'stays clear after reload')
+  ok(shouldAutoEnableMic({ denied: isMicDenied(s), muted: false }), 'auto-enable allowed')
+})
+t('Permissions API answers: granted/prompt clear, denied keeps', () => {
+  eq(micDeniedAfterCheck(true, { permission: 'granted' }), false, 'granted')
+  eq(micDeniedAfterCheck(true, { permission: 'prompt' }), false, 'prompt (reset to ask)')
+  eq(micDeniedAfterCheck(true, { permission: 'denied', navigationType: 'reload' }), true, 'denied wins over reload')
+  eq(micDeniedAfterCheck(false, { permission: 'denied' }), false, 'denied does not invent a flag')
+})
+t('no Permissions API: only a page reload clears the flag', () => {
+  eq(micDeniedAfterCheck(true, { permission: null, navigationType: 'reload' }), false, 'reload')
+  eq(micDeniedAfterCheck(true, { permission: null, navigationType: 'navigate' }), true, 'navigate keeps')
+  eq(micDeniedAfterCheck(true, { permission: null, navigationType: 'back_forward' }), true, 'bfcache keeps')
+  eq(micDeniedAfterCheck(true, { permission: null }), true, 'unknown keeps')
+  const s = mem(); setMicDenied(s, true)
+  eq(reconcileMicDenied(s, { permission: null, navigationType: 'reload' }), false, 'store cleared')
+  eq(isMicDenied(s), false, 'read back')
+})
+t('reconcile survives blocked storage', () => {
+  eq(reconcileMicDenied(throwing, { permission: 'granted' }), false, 'no throw')
+})
+t('mute UI is honest: unpublished audio never shows unmuted', () => {
+  eq(micShownMuted({ muted: false, micPublished: false }), true, 'joined without the mic')
+  eq(micShownMuted({ muted: false, micPublished: true }), false, 'live mic')
+  eq(micShownMuted({ muted: true, micPublished: true }), true, 'user muted')
+  eq(micShownMuted({ muted: false, micPublished: undefined }), false, 'unknown: trust the toggle')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

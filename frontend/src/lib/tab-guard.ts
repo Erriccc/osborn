@@ -38,6 +38,25 @@ export function tabGuardReducer(role: TabRole, ev: TabGuardEvent): TabRole {
   }
 }
 
+/** One quick retry before showing standby: on a reload or a fast tab switch
+ *  the previous document may still be releasing the lock. */
+export const TAB_LOCK_RETRIES = 1
+export const TAB_LOCK_RETRY_MS = 400
+
+/** Retry a failed ifAvailable probe? `attempt` counts from 0. */
+export function shouldRetryLockProbe(attempt: number): boolean {
+  return attempt < TAB_LOCK_RETRIES
+}
+
+/** Outcome of the ifAvailable re-request made when a page is restored from
+ *  the back/forward cache (pageshow, persisted). Got it: this tab controls.
+ *  Missed it while it thought it was active: another tab holds the session,
+ *  so stop as if stolen. Otherwise stay in standby / taken-over. */
+export function lockOutcomeAfterRestore(role: TabRole, gotLock: boolean): TabGuardEvent {
+  if (gotLock) return { type: 'acquired' }
+  return role === 'active' ? { type: 'stolen' } : { type: 'unavailable' }
+}
+
 /** Connect to the room exactly when this tab becomes the controller. */
 export function shouldConnectOnTransition(prev: TabRole, next: TabRole): boolean {
   return next === 'active' && prev !== 'active'
