@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useDocumentTitle } from '@/lib/use-document-title'
 
 const AGENT_MESSAGE = `Install the Browser Screen Recorder skill — give it a web app + what you want done, and it drives the app in a real browser and records proof it worked (per-action screenshots + video clips, transcribed audio, DevTools diagnostics, metrics). It can speak into the page's mic, hear and verify replies, and click via natural language.
 
@@ -12,6 +13,7 @@ const AGENT_MESSAGE = `Install the Browser Screen Recorder skill — give it a w
 Then run a first smoke test against a site I give you and show me the replay video.`
 
 export default function BrowserScreenRecorderLanding() {
+  useDocumentTitle('Browser Screen Recorder')
   const [copied, setCopied] = useState(false)
   const copy = async () => {
     await navigator.clipboard.writeText(AGENT_MESSAGE)

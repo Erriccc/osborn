@@ -13,7 +13,7 @@ import { SCENARIOS, type Scenario } from '@/lib/scenarios'
 import { SITE_URL } from '@/lib/supabase-anon'
 
 export const metadata: Metadata = {
-  title: 'Industries — Voice Native hands-free, everywhere work happens',
+  title: { absolute: 'Industries — Voice Native hands-free, everywhere work happens' },
   description:
     'From the driver’s seat to the boardroom: see Voice Native make work ship hands-free across industries — drivers, meeting rooms, onboarding, remote calls, and multi-speaker rooms.',
   alternates: { canonical: `${SITE_URL}/industries` },

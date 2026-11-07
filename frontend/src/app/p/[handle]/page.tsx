@@ -40,7 +40,7 @@ export async function generateMetadata({ params }: PageParams): Promise<Metadata
   const handle = decodeURIComponent(params.handle)
   const canonical = `${SITE_URL}/p/${encodeURIComponent(params.handle)}`
   return {
-    title: `${handle} — Voice Native`,
+    title: handle,
     description: `Pages published by ${handle} on Voice Native.`,
     alternates: { canonical },
     openGraph: {

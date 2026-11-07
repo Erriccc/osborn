@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useDocumentTitle } from '@/lib/use-document-title'
 import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
@@ -13,6 +14,7 @@ type VoiceArch = 'realtime' | 'pipelined' | 'direct' | 'pipeline'
 type CodingAgent = 'claude' | 'codex'
 
 export default function Home() {
+  useDocumentTitle('Sign in')
   const router = useRouter()
   const [provider, setProvider] = useState<Provider>('gemini')
   const [voiceArch, setVoiceArch] = useState<VoiceArch>('pipeline')
