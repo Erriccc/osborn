@@ -244,7 +244,7 @@ const brief = `# Osborn Prompt Review
 
 ## Raw session log
 
-The following is the full untruncated terminal output from an \`npm run dev:logged\` session with Osborn, a voice AI research assistant. Pattern guide:
+The following is the full untruncated terminal output from an \`npm run dev:logged\` session with Osborn, a voice AI engineer and thinking partner. Pattern guide:
 
 - \`📝 User (conv_item, N chars): "..."\` / \`📝 Text (N chars): "..."\` — what the user said (voice) or typed (data channel)
 - \`📥 [pipeline] chat() call #N (chars): "..."\` — pipeline-mode user turn entering the Claude SDK
