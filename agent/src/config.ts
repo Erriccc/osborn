@@ -1120,7 +1120,7 @@ export async function getSessionSummary(
 
   // Parse JSONL to extract last messages
   const lastMessages: string[] = []
-  let messageCount = 0
+  const acc: PreviewAcc = { count: 0 }
 
   return new Promise((resolve) => {
     const fileStream = createReadStream(filePath)
@@ -1133,23 +1133,14 @@ export async function getSessionSummary(
       if (!line.trim()) return
 
       try {
+        // Shared accumulator (L2b): real turns only (no tool round-trips, split
+        // assistant messages once) and user text sanitized BEFORE truncation,
+        // so notices / injected blocks are neither counted nor summarized.
         const entry = JSON.parse(line)
-        if (entry.type === 'user' || entry.type === 'assistant') {
-          messageCount++
-        }
-        // Collect user messages for context summary
-        if (entry.type === 'user' && entry.message?.content) {
-          const content = entry.message.content
-          let text: string | undefined
-          if (typeof content === 'string') {
-            text = content
-          } else if (Array.isArray(content)) {
-            const textPart = content.find((p: any) => p.type === 'text')
-            text = textPart?.text
-          }
-          if (text) {
-            lastMessages.push(text.substring(0, 100))
-          }
+        const before = acc.count
+        accumulatePreviewEntry(acc, entry)
+        if (entry?.type === 'user' && acc.count > before && acc.lastUser !== undefined) {
+          lastMessages.push(acc.lastUser)
         }
       } catch {
         // Skip malformed lines
@@ -1159,7 +1150,7 @@ export async function getSessionSummary(
     rl.on('close', () => {
       resolve({
         sessionId,
-        messageCount,
+        messageCount: acc.count,
         lastMessages: lastMessages.slice(-5),  // Last 5 user messages
       })
     })
@@ -1230,10 +1221,14 @@ export async function getConversationHistory(
     for (const line of lines) {
       try {
         const msg = JSON.parse(line)
+        if (msg.isMeta) continue
 
-        // Extract user messages
+        // Shared sanitizer (L2b): clean BEFORE truncating, and drop rows with
+        // nothing real left (notices, injected blocks, tool_result-only user
+        // rows), so they never take one of the `limit` slots.
         if (msg.type === 'user' && msg.message?.content) {
-          const text = extractTextContent(msg.message.content)
+          const raw = previewUserText(msg.message.content)
+          const text = raw === null ? null : cleanTurnText(raw, 'user')
           if (text) {
             exchanges.push({
               role: 'user',
@@ -1242,9 +1237,9 @@ export async function getConversationHistory(
           }
         }
 
-        // Extract assistant messages
         if (msg.type === 'assistant' && msg.message?.content) {
-          const text = extractTextContent(msg.message.content)
+          const raw = extractTextContent(msg.message.content)
+          const text = raw === null ? null : cleanTurnText(raw, 'assistant')
           if (text) {
             exchanges.push({
               role: 'assistant',
