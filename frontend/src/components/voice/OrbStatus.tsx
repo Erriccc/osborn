@@ -41,7 +41,7 @@ export function StatusIndicator({ state, isMuted, micBlocked, blocked, reconnect
         {/* Halo */}
         <div
           className="absolute inset-[-6px] rounded-full blur-md transition-colors duration-500"
-          style={{ background: `radial-gradient(circle, ${color}44 0%, transparent 70%)` }}
+          style={{ background: `radial-gradient(circle, color-mix(in srgb, ${color} 27%, transparent) 0%, transparent 70%)` }}
         />
         {/* Core */}
         <div
@@ -58,6 +58,9 @@ export function StatusIndicator({ state, isMuted, micBlocked, blocked, reconnect
       </span>
       {view.mutedBadge && view.key !== 'muted' && (
         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-[var(--voice-error)]/40 text-[var(--voice-error)]">muted</span>
+      )}
+      {view.blockedBadge && view.key !== 'blocked' && (
+        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-[var(--voice-error)]/40 text-[var(--voice-error)]">mic blocked</span>
       )}
     </div>
   )
