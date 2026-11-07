@@ -61,6 +61,7 @@ import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './push
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
+import { AGENT_SELF_IDENTITY, canBecomeController, checkControlSender, userIdFromMetadata } from './data-sender-auth.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -2155,6 +2156,15 @@ async function main() {
   let currentSession: voice.AgentSession | null = null
   // 0.9.81: callable handler reference — see registration site for why.
   let participantConnectedHandler: ((p: RemoteParticipant) => Promise<void>) | null = null
+  // Identity of the user participant the voice session was last built for.
+  // Only it may send state-changing data messages (data-sender-auth.ts).
+  let controllingUserIdentity: string | null = null
+  // Machine owner (Supabase user id), baked into machine env by the frontend
+  // provisioning (platform-env.ts). Empty = single-tenant / local mode:
+  // newest joiner becomes the controller.
+  const OWNER_USER_ID = (process.env.OSBORN_OWNER_USER_ID || '').trim()
+  if (OWNER_USER_ID) console.log('🔐 Control bound to machine owner (OSBORN_OWNER_USER_ID set)')
+  else console.log('🔓 OSBORN_OWNER_USER_ID unset: single-tenant mode, newest joiner controls the agent')
   let currentAgent: voice.Agent | null = null  // For updateChatCtx() context injection
   let currentLLM: ReturnType<typeof createClaudeLLM> | null = null
 
@@ -4570,6 +4580,20 @@ async function main() {
       console.log('📽️🔊 meeting-canvas joined the LiveKit room — native session.say relays to the meeting')
       return // not a user; skip session setup for it
     }
+    // Owner binding: with OSBORN_OWNER_USER_ID set (cloud machines), only a
+    // participant whose SIGNED token metadata userId is the owner may take
+    // the session and become the controller; anyone else is ignored (no voice
+    // session, every gated data message dropped). With no owner configured
+    // (single-tenant / local), the newest joiner wins, as before. The agent's
+    // own identity (watch gateway, minted with our API secret) stays eligible;
+    // data-sender-auth still limits it to permission_response.
+    const joinerUserId = userIdFromMetadata(participant.metadata)
+    if (participant.identity !== AGENT_SELF_IDENTITY && !canBecomeController(joinerUserId, OWNER_USER_ID)) {
+      console.warn(`🚫 ${participant.identity} is not the machine owner (token userId=${joinerUserId ?? 'none'}); not adopting it as the voice user`)
+      return
+    }
+    // The newest eligible joiner gets the session below, so it becomes the controller.
+    controllingUserIdentity = participant.identity
     // A user (re)arriving cancels the meeting leave-grace — the bot stays.
     cancelMeetingLeaveGrace()
 
@@ -5482,6 +5506,7 @@ async function main() {
 
   const handleParticipantDisconnected = (participant: RemoteParticipant) => {
     console.log(`👋 User left: ${participant.identity}`)
+    if (participant.identity === controllingUserIdentity) controllingUserIdentity = null
 
     // Full cleanup — stop all background work to avoid accumulating API usage
     voiceQueue.length = 0
@@ -5585,6 +5610,12 @@ async function main() {
     try {
       const data = JSON.parse(new TextDecoder().decode(payload))
       console.log('📨 Data:', data.type)
+
+      const senderCheck = checkControlSender(String(data.type), participant?.identity, controllingUserIdentity)
+      if (!senderCheck.ok) {
+        console.warn(`🚫 Dropped ${data.type}: ${senderCheck.reason}`)
+        return
+      }
 
       if (data.type === 'claude_auth_code' && pendingAuthSubmitCode) {
         console.log('🔑 Received auth code from frontend')

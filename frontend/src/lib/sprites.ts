@@ -215,6 +215,9 @@ function getPlatformEnvVars(userId: string, syncToken?: string): Record<string, 
     HOME: '/home/sprite',
     // LiveKit room scoped to user for isolation
     LIVEKIT_ROOM: livekitRoom(userId),
+    // Machine owner: the agent only lets a participant whose signed token
+    // metadata userId matches this take control (agent data-sender-auth.ts).
+    OSBORN_OWNER_USER_ID: userId,
     ...forwardHostEnv(),
   }
 
