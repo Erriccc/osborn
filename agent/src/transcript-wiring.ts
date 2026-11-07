@@ -90,6 +90,35 @@ export function cleanHistoryRows(
 
 // ── user_transcript echo ───────────────────────────────────────────────────
 
+/** Injected-block tags whose UNCLOSED open tag must not reach the echo. */
+const ECHO_INJECTED_TAGS = ['system-reminder', 'session_tail', 'task-notification', 'recalled_context', 'user-prompt-submit-hook']
+
+/**
+ * Echo-only guard: an injected open tag with no matching close after it is cut,
+ * together with everything after it to the end of the string. The shared
+ * sanitizer deliberately keeps an inline unterminated tag (a person can say
+ * "the <system-reminder> tag is noisy"), so this lives here, not in
+ * cleanTurnText: the echo is shown to everyone in the room and must never carry
+ * a half-injected block. Closed blocks are left for cleanTurnText.
+ */
+export function cutUnclosedInjected(text: string): string {
+  let out = text
+  for (let changed = true; changed; ) {
+    changed = false
+    for (const tag of ECHO_INJECTED_TAGS) {
+      const open = new RegExp(`<${tag}\\b[^>]*>`, 'gi')
+      let last: RegExpExecArray | null = null
+      for (let m = open.exec(out); m; m = open.exec(out)) last = m
+      if (!last) continue
+      const rest = out.slice(last.index + last[0].length)
+      if (new RegExp(`</${tag}\\s*>`, 'i').test(rest)) continue
+      out = out.slice(0, last.index)
+      changed = true
+    }
+  }
+  return out
+}
+
 /**
  * The text to echo as `user_transcript`, or null to send nothing. Runs the
  * shared sanitizer (drops [time:] tags, <session_tail>, [favorited] /
@@ -98,7 +127,7 @@ export function cleanHistoryRows(
  */
 export function userEchoText(raw: string, attachments = ''): string | null {
   if (!raw || typeof raw !== 'string') return null
-  let clean = cleanTurnText(raw, 'user')
+  let clean = cleanTurnText(cutUnclosedInjected(raw), 'user')
   if (clean) {
     const normalized = clean.replace(/\s+/g, ' ')
     if (clean.length < 3 || normalized === '<noise>' || normalized.toLowerCase() === 'thank you') clean = null
@@ -196,6 +225,11 @@ export function parseLegacyFavoriteNotice(content: string): FavoriteChange | nul
   return { filePath: name, fileName: name, favorited: true }
 }
 
+/** A client string made safe to sit inside a <system-reminder> line: no `<`, `>`, CR or LF. */
+function noteSafe(s: unknown): string {
+  return typeof s === 'string' ? s.replace(/[<>\r\n]/g, '').trim() : ''
+}
+
 /**
  * Pending client notices for the agent, delivered as hidden context on the next
  * real user turn (never as a user turn). Keyed by file path so a favorite then
@@ -207,7 +241,13 @@ export class ClientNoteQueue {
   #favorites = new Map<string, FavoriteChange>()
   constructor(private max = 20) {}
 
-  favoriteChanged(change: FavoriteChange): void {
+  favoriteChanged(raw: FavoriteChange): void {
+    // Client-supplied names land inside a <system-reminder> block: strip
+    // anything that could close/open a tag or start a new line.
+    const fileName = noteSafe(raw.fileName)
+    const filePath = noteSafe(raw.filePath) || fileName
+    if (!filePath) return
+    const change: FavoriteChange = { filePath, fileName: fileName || filePath, favorited: raw.favorited }
     this.#favorites.delete(change.filePath)
     // Un-favoriting stays silent (as before): it only cancels a pending note.
     if (!change.favorited) return
