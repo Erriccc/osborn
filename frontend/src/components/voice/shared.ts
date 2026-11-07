@@ -155,6 +155,12 @@ export interface SessionInfo {
   // (Claude --resume looks up by file location, so spawn must forward this as workingDir).
   cwd?: string
   projectPath?: string
+  // Agent >= PR #18/#20: cleaned title and real last-turn time. Optional for
+  // older agents; read through deriveSessionTitle(session) and
+  // sessionActivityTime(session) from lib/sessions (bug c50200ef).
+  title?: string | null
+  firstTs?: string | null
+  lastActivityAt?: string | null
 }
 
 // Slot info from background session system
