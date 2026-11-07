@@ -19,6 +19,7 @@ import ActivityFeed from '@/components/dashboard/ActivityFeed'
 import LibraryBriefs from '@/components/dashboard/LibraryBriefs'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
+import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle } from '@/lib/sessions'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -28,6 +29,11 @@ interface SessionInfo {
   timestamp: string
   lastMessage?: string
   messageCount?: number
+  // L2b agent fields (optional; older agents omit them): cleaned title, first
+  // record time, and the real last-activity time used for recency/sorting.
+  title?: string | null
+  firstTs?: string | null
+  lastActivityAt?: string | null
   // SLUG-DERIVED cwd → resume routing. Forwarded to the agent as
   // `workingDirectory` so Claude Code's `--resume` finds the JSONL file
   // in the matching slug folder. Always points at the real on-disk
@@ -127,11 +133,12 @@ function groupByProject(sessions: SessionInfo[], baseCwd: string | null): Projec
   }
   const cleanBase = baseCwd?.replace(/\/+$/, '') ?? null
   return Array.from(map.entries())
-    .map(([cwd, sessions]) => {
+    .map(([cwd, unsorted]) => {
+      const sessions = sortSessionsByActivity(unsorted)
       const isBase = cleanBase !== null && cwd === cleanBase
       const segments = cwd.replace(/\/$/, '').split('/')
       const name = isBase ? 'Workspace' : (segments[segments.length - 1] || 'Workspace')
-      return { name, cwd, sessions, lastActive: sessions[0]?.timestamp || '' }
+      return { name, cwd, sessions, lastActive: sessions[0] ? sessionActivityTime(sessions[0]) : '' }
     })
     .sort((a, b) => {
       const aBase = cleanBase !== null && a.cwd === cleanBase ? 0 : 1
@@ -141,31 +148,8 @@ function groupByProject(sessions: SessionInfo[], baseCwd: string | null): Projec
     })
 }
 
-// Turn a raw session preview into something presentable. The JSONL first line
-// is frequently a `[MEETING — <botId>]:` transcript dump or a
-// `<task-notification>` blob — both read as gibberish in a list. Classify it
-// and return a clean label + text so the card can show a badge instead.
-type SessionKind = 'meeting' | 'task' | 'chat'
-function prettySessionPreview(raw?: string): { kind: SessionKind; label: string; text: string } {
-  const s = (raw || '').trim()
-  if (!s) return { kind: 'chat', label: 'Chat', text: 'New conversation' }
-  const mt = s.match(/^\[MEETING[^\]]*\]:?\s*([\s\S]*)$/i)
-  if (mt) {
-    const body = mt[1].replace(/^\s*[\w .'-]+:\s*/, '').replace(/\s+/g, ' ').trim()
-    return { kind: 'meeting', label: 'Meeting', text: body || 'Meeting notes' }
-  }
-  // [SYSTEM] "You are now in a meeting (Recall bot ID: …)" is a meeting session;
-  // other [SYSTEM] lines are plumbing — strip the tag rather than show it raw.
-  const sys = s.match(/^\[SYSTEM\]\s*([\s\S]*)$/i)
-  if (sys) {
-    if (/in a meeting/i.test(sys[1])) return { kind: 'meeting', label: 'Meeting', text: 'Meeting started' }
-    return { kind: 'chat', label: 'Chat', text: sys[1].replace(/\(Recall bot ID:[^)]*\)/i, '').replace(/\s+/g, ' ').trim() || 'Session' }
-  }
-  if (/^<task-notification>/i.test(s) || /<task-id>/i.test(s)) {
-    return { kind: 'task', label: 'Task', text: 'Background task run' }
-  }
-  return { kind: 'chat', label: 'Chat', text: s.replace(/\s+/g, ' ').trim() }
-}
+// Session row label/text (meeting / task / chat, agent title preferred, cleaned
+// fallback, never a raw `[`/`<` wrapper) lives in lib/sessions prettySessionPreview.
 
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'pipeline'
@@ -1484,9 +1468,9 @@ export default function Dashboard() {
               session (agenda-card idiom: one clear primary action using real
               data, surfaced above the full list). */}
           {agentOnline !== false && sessions.length > 0 && (() => {
-            const recent = [...sessions].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
+            const recent = sortSessionsByActivity(sessions)[0]
             if (!recent) return null
-            const pv = prettySessionPreview(recent.lastMessage)
+            const pv = prettySessionPreview(recent)
             return (
               <button onClick={() => startChat(recent.sessionId, recent.cwd)}
                 className="w-full mb-3 flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)]/40 transition-all group"
@@ -1497,7 +1481,7 @@ export default function Dashboard() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--accent)]">Continue</span>
-                    <span className="text-[11px] text-[var(--text-muted)]">{formatDate(recent.timestamp)}</span>
+                    <span className="text-[11px] text-[var(--text-muted)]">{formatDate(sessionActivityTime(recent))}</span>
                   </div>
                   <div className="text-sm font-medium text-[var(--text-primary)] truncate mt-0.5">{pv.text}</div>
                 </div>
@@ -1531,7 +1515,7 @@ export default function Dashboard() {
                   if one exists; otherwise falls back to a fresh conversation. */}
               <button
                 onClick={() => {
-                  const recent = [...sessions].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
+                  const recent = sortSessionsByActivity(sessions)[0]
                   if (recent) startChat(recent.sessionId, recent.cwd)
                   else startChat()
                 }}
@@ -1871,7 +1855,7 @@ export default function Dashboard() {
                           {(expandedSessionLists.has(project.cwd)
                             ? project.sessions
                             : project.sessions.slice(0, 15)
-                          ).map((s) => { const pv = prettySessionPreview(s.lastMessage); return (
+                          ).map((s) => { const pv = prettySessionPreview(s); return (
                             <div
                               key={s.sessionId}
                               className="relative hover:bg-[var(--surface-2)]/50 transition-colors group/sess"
@@ -1898,7 +1882,7 @@ export default function Dashboard() {
                                       {pv.kind !== 'chat' && (
                                         <span className={`px-1.5 py-px rounded-full text-[10px] font-medium ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : 'bg-[var(--surface)] text-[var(--text-muted)]'}`}>{pv.label}</span>
                                       )}
-                                      <span>{formatDate(s.timestamp)}</span>
+                                      <span>{formatDate(sessionActivityTime(s))}</span>
                                       {s.messageCount ? (
                                         <>
                                           <span className="opacity-40">·</span>
@@ -1910,7 +1894,7 @@ export default function Dashboard() {
                                 </div>
                               </button>
                               <button
-                                onClick={(e) => { e.stopPropagation(); setShareTarget({ sessionId: s.sessionId, title: s.lastMessage || 'Shared session' }); setShareEmail(''); setShareMsg(null) }}
+                                onClick={(e) => { e.stopPropagation(); setShareTarget({ sessionId: s.sessionId, title: sessionDisplayTitle(s) }); setShareEmail(''); setShareMsg(null) }}
                                 title="Share this session with another user"
                                 className="absolute top-1/2 -translate-y-1/2 right-2 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--surface)] transition-all"
                               >
