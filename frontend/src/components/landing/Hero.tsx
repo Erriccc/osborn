@@ -31,10 +31,10 @@ export default function Hero() {
               specialist sub-agents while you watch every move in real time.
             </p>
 
-            <div className="mt-8 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <div className="mt-8 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
               <Link
                 href="/login"
-                className="h-12 px-6 inline-flex items-center justify-center rounded-xl text-[15px] font-semibold tracking-[-0.01em] transition-all duration-150 active:scale-[0.98]"
+                className="h-12 px-6 inline-flex items-center justify-center whitespace-nowrap shrink-0 rounded-xl text-[15px] font-semibold tracking-[-0.01em] transition-all duration-150 active:scale-[0.98]"
                 style={{
                   background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)',
                   color: 'var(--background)',
@@ -45,7 +45,7 @@ export default function Hero() {
               </Link>
               <a
                 href="#how-it-works"
-                className="h-12 px-6 inline-flex items-center justify-center rounded-xl text-[15px] font-medium text-[var(--text-primary)] border border-[var(--border)] hover:bg-[var(--surface)] transition-colors"
+                className="h-12 px-6 inline-flex items-center justify-center whitespace-nowrap shrink-0 rounded-xl text-[15px] font-medium text-[var(--text-primary)] border border-[var(--border)] hover:bg-[var(--surface)] transition-colors"
               >
                 See how it works
               </a>
