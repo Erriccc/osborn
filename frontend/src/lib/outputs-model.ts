@@ -373,9 +373,9 @@ export function groupByProject<T extends OutputFile>(files: readonly T[]): Proje
   }
   // Map preserves insertion order and files were visited newest first, so the
   // first-seen project/session is the one with the newest file.
-  return [...projects.entries()].map(([project, sessions]) => ({
+  return Array.from(projects.entries()).map(([project, sessions]) => ({
     project,
-    sessions: [...sessions.entries()].map(([session, list]) => ({ session, files: list })),
+    sessions: Array.from(sessions.entries()).map(([session, list]) => ({ session, files: list })),
   }))
 }
 
