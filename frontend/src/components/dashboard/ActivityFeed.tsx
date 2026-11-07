@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import NoteSheet, { noteCopyText } from './NoteSheet'
+import { sessionActivityTime, sessionDisplayTitle } from '@/lib/sessions'
 
 /**
  * ActivityShelf (exported as ActivityFeed) — NOTES + SESSIONS as one shelf.
@@ -16,7 +17,8 @@ import NoteSheet, { noteCopyText } from './NoteSheet'
  */
 
 interface FeedNote { id: string; text: string; created_at: string; attachments?: string[] }
-interface FeedSession { sessionId: string; timestamp: string; lastMessage?: string; cwd?: string }
+// title / lastActivityAt come from agents with PR #18+; older agents omit them.
+interface FeedSession { sessionId: string; timestamp: string; lastMessage?: string; cwd?: string; title?: string | null; lastActivityAt?: string | null }
 type Filter = 'all' | 'note' | 'session'
 
 function ago(iso: string): string {
@@ -55,7 +57,7 @@ export default function ActivityFeed({
 
   const rows = [
     ...notes.map(n => ({ kind: 'note' as const, at: n.created_at, text: n.text, id: n.id, attachments: n.attachments || [] })),
-    ...sessions.map(s => ({ kind: 'session' as const, at: s.timestamp, text: s.lastMessage || 'Session', id: s.sessionId, cwd: s.cwd })),
+    ...sessions.map(s => ({ kind: 'session' as const, at: sessionActivityTime(s), text: sessionDisplayTitle(s), id: s.sessionId, cwd: s.cwd })),
   ]
     .filter(r => filter === 'all' || r.kind === filter)
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
