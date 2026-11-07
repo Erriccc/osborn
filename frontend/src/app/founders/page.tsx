@@ -11,7 +11,7 @@ import MarketingShell from '@/components/marketing/MarketingShell'
 import { SITE_URL } from '@/lib/supabase-anon'
 
 export const metadata: Metadata = {
-  title: 'Voice Native for solo founders — ship your idea hands-free',
+  title: { absolute: 'Voice Native for solo founders — ship your idea hands-free' },
   description:
     'You are the whole team. Voice Native gives you an AI engineering crew you talk to — it writes, runs, and debugs on your machine while you keep everything else moving. Bring your own keys. No lock-in.',
   alternates: { canonical: `${SITE_URL}/founders` },

@@ -1,9 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { formatTime, deriveSessionTitle } from '@/lib/sessions'
 import { usePanelExclusive, useViewportClamp, type SessionInfo, type McpServerStatus } from './shared'
 import { SkillsPanel } from './SkillsPanel'
+import { useMenuDismiss } from '@/lib/use-menu-dismiss'
+import type { DismissReason } from '@/lib/menu-dismiss'
 
 // Unified Control Menu - Combines mode toggle, session history, tools, and settings
 export function ControlMenu({
@@ -61,6 +63,18 @@ export function ControlMenu({
   const [pendingSwitchSessionId, setPendingSwitchSessionId] = useState<string | null>(null)
   usePanelExclusive('history', isOpen, setIsOpen)
   const menuRef = useViewportClamp(isOpen)
+  // Bug 1ae9496a: Escape / outside-pointerdown close the menu, and the toggle
+  // closes it again (it lives inside wrapRef, so its pointerdown is "inside"
+  // and its onClick toggles). No backdrop: nothing sits above the toggle.
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  const onDismiss = useCallback((reason: DismissReason) => {
+    // Escape backs out of the nested switch confirm first.
+    if (reason === 'escape' && showSwitchConfirm) { setShowSwitchConfirm(false); return }
+    setShowSwitchConfirm(false)
+    setIsOpen(false)
+  }, [showSwitchConfirm])
+  useMenuDismiss(isOpen, onDismiss, [wrapRef], toggleRef)
 
   const enabledMcpCount = (mcpServers || []).filter(s => s.enabled).length
   const skillCount = (skills || []).length
@@ -78,11 +92,14 @@ export function ControlMenu({
   }
 
   return (
-    <div className="relative flex items-center gap-2">
+    <div ref={wrapRef} className="relative flex items-center gap-2">
       {/* Session menu — history + tools. (Was mislabeled "Research".) */}
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        ref={toggleRef}
+        onClick={() => { if (isOpen) setShowSwitchConfirm(false); setIsOpen(!isOpen) }}
         disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
         className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-all text-xs ${isOpen ? 'bg-gray-800/60 text-gray-200' : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
         title="Session history & tools"
       >

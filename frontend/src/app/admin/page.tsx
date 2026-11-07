@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { useDocumentTitle } from '@/lib/use-document-title'
 import Link from 'next/link'
 
 /**
@@ -74,6 +75,7 @@ function StatusPill({ status }: { status: string | null }) {
 // ── Page ────────────────────────────────────────────────────────
 
 export default function AdminPage() {
+  useDocumentTitle('Admin')
   const [users, setUsers] = useState<AdminUser[] | null>(null)
   const [denied, setDenied] = useState(false)
   const [failed, setFailed] = useState(false)
