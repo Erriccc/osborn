@@ -9,6 +9,7 @@ import {
   READ_ONLY_MESSAGE_TYPES,
   canBecomeController,
   checkControlSender,
+  resolveJoin,
   userIdFromMetadata,
 } from '../src/data-sender-auth.js'
 
@@ -94,15 +95,50 @@ t('index.ts: handleDataReceived checks the sender before claude_auth_code', () =
   assert.ok(check > 0 && auth > 0 && check < auth, 'checkControlSender must run before the claude_auth_code branch')
   assert.match(body, /participant\?\.identity/)
 })
-t('index.ts: controller set on join and cleared on leave', () => {
-  assert.match(src, /controllingUserIdentity = participant\.identity/)
+t('index.ts: controller cleared on leave', () => {
   assert.match(src, /if \(participant\.identity === controllingUserIdentity\) controllingUserIdentity = null/)
 })
-t('index.ts: owner check runs before the joiner becomes controller', () => {
-  const owner = src.indexOf('canBecomeController(joinerUserId, OWNER_USER_ID)')
-  const assign = src.indexOf('controllingUserIdentity = participant.identity')
-  assert.ok(owner > 0 && assign > owner, 'canBecomeController must gate the controller assignment')
+t('index.ts: join wiring uses resolveJoin with the configured owner', () => {
+  assert.match(src, /resolveJoin\(participant\.identity, joinerUserId, OWNER_USER_ID, controllingUserIdentity\)/)
+  assert.match(src, /controllingUserIdentity = join\.controller/)
   assert.match(src, /process\.env\.OSBORN_OWNER_USER_ID/)
+})
+
+// Behavioural: replay joins through resolveJoin the way participantConnectedHandler does.
+const replay = (owner: string, joins: [string, string | undefined][]) => {
+  let controller: string | null = null
+  const sessions: string[] = []
+  for (const [identity, userId] of joins) {
+    const d = resolveJoin(identity, userId, owner, controller)
+    controller = d.controller
+    if (d.adoptSession) sessions.push(identity)
+  }
+  return { controller, sessions }
+}
+for (const owner of ['uid-x', '']) {
+  const mode = owner ? 'owner configured' : 'single-tenant'
+  t(`${mode}: owner user-x joins, then osborn-agent joins -> user_text from user-x still accepted`, () => {
+    const { controller } = replay(owner, [['user-x', 'uid-x'], ['osborn-agent', undefined]])
+    assert.equal(controller, 'user-x')
+    assert.equal(checkControlSender('user_text', 'user-x', controller).ok, true)
+    assert.equal(checkControlSender('resume_session', 'user-x', controller).ok, true)
+    assert.equal(checkControlSender('user_text', 'osborn-agent', controller).ok, false)
+    assert.equal(checkControlSender('permission_response', 'osborn-agent', controller).ok, true)
+  })
+}
+t('owner configured: non-owner user joining after the owner gets no session and no control', () => {
+  const { controller, sessions } = replay('uid-x', [['user-x', 'uid-x'], ['user-evil', 'uid-evil']])
+  assert.equal(controller, 'user-x')
+  assert.deepEqual(sessions, ['user-x'])
+  assert.equal(checkControlSender('user_text', 'user-evil', controller).ok, false)
+})
+t('single-tenant: newest user joiner still takes control', () => {
+  const { controller } = replay('', [['user-a', undefined], ['user-b', undefined]])
+  assert.equal(controller, 'user-b')
+})
+t('osborn-agent alone never becomes controller', () => {
+  const { controller } = replay('uid-x', [['osborn-agent', undefined]])
+  assert.equal(controller, null)
 })
 
 console.log(`\n${pass} passed${process.exitCode ? ', some FAILED' : ''}`)
