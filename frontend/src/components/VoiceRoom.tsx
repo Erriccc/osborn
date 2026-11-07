@@ -7,7 +7,7 @@ import {
   useLocalParticipant,
   useRoomContext,
 } from '@livekit/components-react'
-import { RoomEvent, ConnectionState, Track } from 'livekit-client'
+import { RoomEvent, ConnectionState, Track, createAudioAnalyser } from 'livekit-client'
 import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
 import LiveClock from './LiveClock'
@@ -846,6 +846,93 @@ function VoiceRoomInner({
       }
     }
   }, [state, agentConnected, onAgentReady])
+
+  // ── Early TTS volume-duck on user speech (website path only) ───────────────
+  // The MOMENT your own mic shows voice while the agent is speaking, drop the
+  // agent's TTS volume to DUCK_LEVEL — WITHOUT waiting for the server-side STT
+  // interrupt to confirm. That confirmed barge-in still fully STOPS the TTS
+  // exactly as before (agent index.ts: Deepgram STT endpointing →
+  // user_state_changed='speaking' → SDK interrupt); this only lowers volume
+  // earlier. The local mic level is the earliest possible signal (~tens of ms,
+  // no network) and is INDEPENDENT of the server VAD/STT path — the dead Silero
+  // VAD and the Recall meeting webhook are untouched. Purely additive: it reads
+  // your own mic and sets the agent's own RemoteAudioTrack volume, nothing else.
+  // Meeting (Recall) path can't duck (pre-rendered MP3) — it stays stop-only.
+  const DUCK_LEVEL = 0.25
+  const agentStateRef = useRef(state)
+  agentStateRef.current = state
+  const agentAudioTrackRef = useRef<unknown>(null)
+  agentAudioTrackRef.current = (audioTrack?.publication?.track as unknown) || null
+
+  useEffect(() => {
+    if (!localParticipant) return
+    const lp = localParticipant as any
+    const micPub = lp.getTrackPublication?.(Track.Source.Microphone) || lp.getTrack?.(Track.Source.Microphone)
+    const micTrack = micPub?.audioTrack || micPub?.track
+    if (!micTrack) return
+
+    let analyser: { calculateVolume: () => number; analyser: AnalyserNode; cleanup: () => Promise<void> } | null = null
+    try {
+      // smoothingTimeConstant low so onset isn't laggy; small fft for a cheap RMS read.
+      analyser = createAudioAnalyser(micTrack, { smoothingTimeConstant: 0.2, fftSize: 512 })
+      // iOS: the analyser owns its own AudioContext which can start suspended —
+      // nudge it (a user gesture has already happened by the time audio plays).
+      try { void (analyser.analyser.context as AudioContext).resume() } catch { /* already running */ }
+    } catch { return }
+
+    const ONSET = 0.04        // above the residual-echo floor (AEC is on); ducking is cheap, err low
+    const ONSET_HOLD_MS = 50  // sustained over onset before ducking (ignore single clicks/pops)
+    const QUIET_HOLD_MS = 250 // quiet this long while ducked ⇒ false trigger ⇒ restore
+    const RAMP = 0.18         // per-frame lerp toward target → click-free ramp (~tens of ms)
+
+    let curVol = 1
+    let targetVol = 1
+    let aboveSince = 0
+    let belowSince = 0
+    let raf = 0
+
+    const applyVolume = (v: number) => {
+      const t = agentAudioTrackRef.current as { setVolume?: (v: number) => void } | null
+      try { t?.setVolume?.(v) } catch { /* track detached */ }
+    }
+
+    const loop = () => {
+      raf = requestAnimationFrame(loop)
+      const speaking = agentStateRef.current === 'speaking'
+      if (!speaking) {
+        // Nothing playing to duck — glide back to full for the next utterance.
+        targetVol = 1
+        aboveSince = 0; belowSince = 0
+      } else {
+        const vol = analyser!.calculateVolume() // instant 0..1 RMS of YOUR mic
+        const now = performance.now()
+        if (vol > ONSET) {
+          belowSince = 0
+          if (!aboveSince) aboveSince = now
+          if (targetVol === 1 && now - aboveSince >= ONSET_HOLD_MS) targetVol = DUCK_LEVEL
+        } else {
+          aboveSince = 0
+          if (!belowSince) belowSince = now
+          if (targetVol !== 1 && now - belowSince >= QUIET_HOLD_MS) targetVol = 1
+        }
+      }
+      // Smooth ramp toward target; only touch the track while it's actually changing.
+      if (Math.abs(curVol - targetVol) > 0.01) {
+        curVol += (targetVol - curVol) * RAMP
+        applyVolume(Number(curVol.toFixed(3)))
+      } else if (curVol !== targetVol) {
+        curVol = targetVol
+        applyVolume(curVol)
+      }
+    }
+    raf = requestAnimationFrame(loop)
+
+    return () => {
+      cancelAnimationFrame(raf)
+      try { void analyser?.cleanup() } catch { /* already closed */ }
+      applyVolume(1) // never leave a track ducked on teardown
+    }
+  }, [localParticipant, micEnabled])
 
   // ============================================================
   // 0.9.68 — Audio + room instrumentation
