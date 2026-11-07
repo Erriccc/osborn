@@ -70,12 +70,17 @@ t('no destructive or rewriting statements', () => {
   }
 })
 
-t('columns: id uuid pk, user_id -> auth.users on delete cascade, text, attachments text[] default {}, created_at timestamptz default now()', () => {
+t('columns: id uuid pk, user_id -> auth.users on delete cascade, text, attachments jsonb default [], created_at timestamptz default now()', () => {
   ok(/id uuid primary key default gen_random_uuid\(\)/.test(sql), 'id')
   ok(/user_id uuid not null references auth\.users ?\(id\) on delete cascade/.test(sql), 'user_id')
   ok(/ text text not null/.test(sql), 'text')
-  ok(/attachments text\[\] not null default '\{\}'/.test(sql), 'attachments')
+  ok(/attachments jsonb not null default '\[\]'::jsonb,/.test(sql), 'attachments (create table) must be jsonb not null default [] to match prod')
   ok(/created_at timestamptz not null default now\(\)/.test(sql), 'created_at')
+})
+
+t('attachments is jsonb everywhere (prod is jsonb, not text[])', () => {
+  ok(!/text\[\]/.test(sql), 'text[] still declared')
+  ok(/add column if not exists attachments jsonb not null default '\[\]'::jsonb;/.test(sql), 'add column path must be jsonb not null default []')
 })
 
 t('RLS enabled', () => ok(/alter table public\.notes enable row level security/.test(sql), 'rls'))

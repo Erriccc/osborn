@@ -46,13 +46,17 @@ create table if not exists public.notes (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   text text not null,
-  attachments text[] not null default '{}',
+  attachments jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now()
 );
 
 -- The first hand-made version (commit 3c0e053) had no attachments column;
 -- 680b91a started writing it. Harmless no-op where it already exists.
-alter table public.notes add column if not exists attachments text[] not null default '{}';
+-- jsonb (a JSON array of URL strings), matching live prod: prod's column is
+-- `attachments jsonb default '[]'` and every row holds an array of strings.
+-- supabase-js returns it as a JS string[], which the API route and NoteSheet
+-- already expect. On prod the column exists, so IF NOT EXISTS skips this.
+alter table public.notes add column if not exists attachments jsonb not null default '[]'::jsonb;
 
 alter table public.notes enable row level security;
 
