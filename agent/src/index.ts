@@ -605,6 +605,23 @@ function startApiServer(workingDir: string, port: number): void {
 
     const syncToken = process.env.OSBORN_SYNC_TOKEN
 
+    // Fail-closed auth for the sensitive session/ops routes. Requires
+    // `Authorization: Bearer <OSBORN_SYNC_TOKEN>` whenever we're on a cloud
+    // machine (FLY_APP_NAME set) OR a sync token is configured. Local dev with
+    // no token stays open. Writes 401 and returns true when NOT authorized, so
+    // a caller does `if (unauthorized()) return`. This replaces the old
+    // fail-OPEN `if (syncToken) { ... }` pattern (which left these routes wide
+    // open on any machine that hadn't set a token).
+    const unauthorized = (): boolean => {
+      const requireAuth = !!process.env.FLY_APP_NAME || !!syncToken
+      if (requireAuth && req.headers['authorization'] !== `Bearer ${syncToken}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized' }))
+        return true
+      }
+      return false
+    }
+
     if (req.method === 'GET' && url.pathname === '/sessions') {
       // Fail-closed in cloud: session lists reach only the owner (via the
       // authenticated /api/agent proxy, which forwards Bearer OSBORN_SYNC_TOKEN).
@@ -907,6 +924,7 @@ function startApiServer(workingDir: string, port: number): void {
 
     // POST /restart — graceful process restart (process manager will restart)
     if (req.method === 'POST' && url.pathname === '/restart') {
+      if (unauthorized()) return // was unauthenticated: anyone with the address could kill the agent
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true, message: 'Agent restarting...' }))
       console.log('🔄 Restart requested via HTTP — exiting for process manager restart')
@@ -1087,14 +1105,7 @@ function startApiServer(workingDir: string, port: number): void {
     // Optional ?workDir= query param accepted for backwards compat but ignored
     // (full export is always returned).
     if (req.method === 'GET' && url.pathname === '/sessions/export') {
-      if (syncToken) {
-        const authHeader = req.headers['authorization'] ?? ''
-        if (authHeader !== `Bearer ${syncToken}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'Unauthorized' }))
-          return
-        }
-      }
+      if (unauthorized()) return // fail-closed (was fail-open: no token set → open)
       const claudeDir = join(homedir(), '.claude')
       const projectsDir = join(claudeDir, 'projects')
       const skillsDir = join(claudeDir, 'skills')
@@ -1345,6 +1356,7 @@ function startApiServer(workingDir: string, port: number): void {
     }
 
     if (req.method === 'GET' && url.pathname === '/sessions/manifest') {
+      if (unauthorized()) return // was public/no-auth: leaked the full session+skill file tree
       // Walks BOTH ~/.claude/projects/ AND ~/.claude/skills/ — full tree per
       // top-level directory.
       //   - projects/<slug>/<...> → session JSONLs, sub-agent transcripts, tool-results, osb/
@@ -1401,14 +1413,7 @@ function startApiServer(workingDir: string, port: number): void {
 
     // POST /sessions/import — accept a gzipped tar and extract into ~/.claude/projects/
     if (req.method === 'POST' && url.pathname === '/sessions/import') {
-      if (syncToken) {
-        const authHeader = req.headers['authorization'] ?? ''
-        if (authHeader !== `Bearer ${syncToken}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'Unauthorized' }))
-          return
-        }
-      }
+      if (unauthorized()) return // fail-closed (was fail-open)
       // 0.9.74: default targetWorkDir to this machine's own working directory.
       // Stale sync clients that omit the param used to get source slugs written
       // verbatim — those sessions LIST fine (the scanner walks all slugs) but
@@ -1486,14 +1491,7 @@ function startApiServer(workingDir: string, port: number): void {
 
     // POST /sessions/import-chunk — accept a single chunk of a multi-part upload
     if (req.method === 'POST' && url.pathname === '/sessions/import-chunk') {
-      if (syncToken) {
-        const authHeader = req.headers['authorization'] ?? ''
-        if (authHeader !== `Bearer ${syncToken}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'Unauthorized' }))
-          return
-        }
-      }
+      if (unauthorized()) return // fail-closed (was fail-open)
 
       const uploadId = url.searchParams.get('uploadId')
       const chunkIndex = parseInt(url.searchParams.get('chunk') || '0')
@@ -1529,14 +1527,7 @@ function startApiServer(workingDir: string, port: number): void {
 
     // POST /sessions/import-finalize — reassemble chunks, extract, apply slug merge
     if (req.method === 'POST' && url.pathname === '/sessions/import-finalize') {
-      if (syncToken) {
-        const authHeader = req.headers['authorization'] ?? ''
-        if (authHeader !== `Bearer ${syncToken}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'Unauthorized' }))
-          return
-        }
-      }
+      if (unauthorized()) return // fail-closed (was fail-open)
 
       const uploadId = url.searchParams.get('uploadId')
       const total = parseInt(url.searchParams.get('total') || '0')
@@ -1626,14 +1617,7 @@ function startApiServer(workingDir: string, port: number): void {
     // Deletes ~/.claude/projects/<slug>/ and ~/.claude/projects/osb/<slug>/
     // Used by the dashboard "delete project" button.
     if (req.method === 'DELETE' && url.pathname === '/sessions/project') {
-      if (syncToken) {
-        const authHeader = req.headers['authorization'] ?? ''
-        if (authHeader !== `Bearer ${syncToken}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'Unauthorized' }))
-          return
-        }
-      }
+      if (unauthorized()) return // fail-closed (was fail-open) — this DELETES a project's sessions
       const slug = url.searchParams.get('slug')
       if (!slug || slug.includes('..') || slug.includes('/')) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
