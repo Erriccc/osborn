@@ -22,6 +22,7 @@ import {
   checkSessionLayerConsistency,
   getLastUpdateResult,
 } from '@/lib/cloud'
+import { checkSandboxClaim, claimSandboxForUser, type SandboxClaim } from '@/lib/sandbox-claims'
 
 /**
  * GET /api/sandbox — get current user's sandbox status
@@ -50,6 +51,20 @@ export async function GET() {
     .eq('user_id', user.id)
     .single()
 
+  // The recorded id only counts if no other user claims it too (fail closed).
+  // Error out rather than return sandbox:null, which would make the dashboard
+  // auto-provision a second machine.
+  if (instance?.sandbox_id) {
+    const claim = await checkSandboxClaim(supabase, instance.sandbox_id, user.id)
+    if (claim === 'disputed') {
+      console.warn(`[sandbox] GET: ${instance.sandbox_id} is claimed by another user too; refusing for ${user.id}`)
+      return NextResponse.json({ error: 'Sandbox ownership conflict' }, { status: 409 })
+    }
+    if (claim === 'unknown') {
+      return NextResponse.json({ error: 'Sandbox ownership check unavailable' }, { status: 503 })
+    }
+  }
+
   // Source of truth for the user's current sprite name is Supabase
   // (instance.sandbox_id), since each createSandbox now generates a unique
   // timestamped name (see generateUniqueSpriteName). Fall back to deterministic
@@ -69,17 +84,21 @@ export async function GET() {
   if (sandbox) {
     // Sync DB if it differs (handles label-found-but-DB-stale case)
     if (instance?.sandbox_id !== sandbox.id) {
+      // sandbox_id is server-only (migration 012): upsert everything else with
+      // the user client, then record the id through set_instance_sandbox.
       await supabase.from('instances').upsert({
         user_id: user.id,
         server_url: sandbox.previewUrl || 'http://localhost:8741',
         instance_type: 'cloud',
         status: sandbox.status,
-        sandbox_id: sandbox.id,
         sandbox_url: sandbox.previewUrl,
         sandbox_status: sandbox.status,
         livekit_room: `osborn-${user.id.substring(0, 8)}`,
         last_seen: new Date().toISOString(),
       }, { onConflict: 'user_id' })
+      if (!(await claimSandboxForUser(supabase, sandbox.id, user.id))) {
+        console.warn(`[sandbox] GET: could not record sandbox ${sandbox.id} for ${user.id}`)
+      }
     }
     return NextResponse.json({ available: true, sandbox })
   }
@@ -149,13 +168,27 @@ export async function POST(request: Request) {
   // since `generateUniqueSpriteName` makes each new sprite get a fresh
   // timestamped name. findUserSandbox falls back to deterministic name when
   // this returns null (legacy users provisioned before the naming change).
-  const getKnownSandboxId = async (): Promise<string | undefined> => {
+  //
+  // The row's sandbox_id only counts when no OTHER user's row claims the same
+  // id (checkSandboxClaim, fail closed): before migration 012 the column was
+  // client-writable, so a row alone does not prove ownership.
+  const getKnownSandboxClaim = async (): Promise<{ id?: string; claim: SandboxClaim | 'none' }> => {
     const { data } = await supabase
       .from('instances')
       .select('sandbox_id')
       .eq('user_id', user.id)
       .single()
-    return data?.sandbox_id ?? undefined
+    const id = (data?.sandbox_id as string | null | undefined) ?? undefined
+    if (!id) return { claim: 'none' }
+    return { id, claim: await checkSandboxClaim(supabase, id, user.id) }
+  }
+  const getKnownSandboxId = async (): Promise<string | undefined> => {
+    const { id, claim } = await getKnownSandboxClaim()
+    if (id && claim !== 'mine') {
+      console.warn(`[sandbox] ignoring recorded sandbox ${id} for ${user.id}: claim=${claim}`)
+      return undefined
+    }
+    return id
   }
 
   // Ownership guard for actions that take a client-supplied sandboxId. The
@@ -164,6 +197,9 @@ export async function POST(request: Request) {
   // another user's machine. Same check + response shape as restart-service /
   // update-osborn / version. GET /api/sandbox syncs a fallback-found sandbox
   // id into instances before returning it, so legit callers always match.
+  const claimedByOthers = async (id: string): Promise<boolean> =>
+    (await checkSandboxClaim(supabase, id, user.id)) !== 'mine'
+
   const rejectIfNotOwned = async (id: string): Promise<NextResponse | null> => {
     const ownedId = await getKnownSandboxId()
     if (!ownedId || ownedId !== id) {
@@ -199,7 +235,16 @@ export async function POST(request: Request) {
       // tabs / re-mounts): if this user's instances row already points at a
       // sandbox that still exists, return it instead of creating a second one.
       // The client then runs its normal start/connect flow if it isn't running.
-      const existingId = await getKnownSandboxId()
+      const known = await getKnownSandboxClaim()
+      // A recorded id we cannot verify (or that someone else also claims) must
+      // not fall through to provisioning a second paid machine.
+      if (known.claim === 'unknown') {
+        return NextResponse.json({ error: 'Sandbox ownership check unavailable, try again' }, { status: 503 })
+      }
+      if (known.claim === 'disputed') {
+        return NextResponse.json({ error: 'Sandbox ownership conflict' }, { status: 409 })
+      }
+      const existingId = known.id
       if (existingId) {
         try {
           const existing = await findUserSandbox(user.id, existingId)
@@ -273,17 +318,24 @@ export async function POST(request: Request) {
       // record, so every dashboard reload provisioned another paid machine.
       if (info.id) {
         createCooldownUntil.set(user.id, Date.now() + CREATE_COOLDOWN_MS)
+        // sandbox_id is server-only (migration 012): upsert the other fields
+        // with the user client, then record the provider-issued id through the
+        // SECURITY DEFINER set_instance_sandbox RPC.
+        // NOTE: server_url is NOT NULL; the previous null write only ever
+        // succeeded on an existing row, so fall back to the local default.
         await supabase.from('instances').upsert({
           user_id: user.id,
-          server_url: info.previewUrl ?? null,
+          server_url: info.previewUrl ?? 'http://localhost:8741',
           instance_type: 'cloud',
           status: info.status,
-          sandbox_id: info.id,
           sandbox_url: info.previewUrl ?? null,
           sandbox_status: info.status,
           livekit_room: `osborn-${user.id.substring(0, 8)}`,
           last_seen: new Date().toISOString(),
         }, { onConflict: 'user_id' })
+        if (!(await claimSandboxForUser(supabase, info.id, user.id))) {
+          console.error(`[sandbox] create: could not record sandbox ${info.id} for ${user.id} (orphan risk)`)
+        }
       } else {
         // No machine came back at all — still set a short cooldown so a burst
         // of reloads can't machine-gun the provider.
@@ -556,7 +608,7 @@ export async function POST(request: Request) {
         .select('sandbox_id, sandbox_url')
         .eq('user_id', user.id)
         .single()
-      if (!instance?.sandbox_id || instance.sandbox_id !== sandboxId) {
+      if (!instance?.sandbox_id || instance.sandbox_id !== sandboxId || await claimedByOthers(sandboxId)) {
         return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
       }
       const restartOk = await restartService(sandboxId)
@@ -578,7 +630,7 @@ export async function POST(request: Request) {
         .select('sandbox_id, sandbox_url')
         .eq('user_id', user.id)
         .single()
-      if (!updateInstance?.sandbox_id || updateInstance.sandbox_id !== sandboxId) {
+      if (!updateInstance?.sandbox_id || updateInstance.sandbox_id !== sandboxId || await claimedByOthers(sandboxId)) {
         return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
       }
       // updateOsborn now handles the full upgrade flow internally:
@@ -608,7 +660,7 @@ export async function POST(request: Request) {
       }
       // Use sandboxId from body if provided, otherwise fall back to the DB record
       const targetId = (sandboxId as string | undefined) || fetchLogInstance.sandbox_id
-      if (targetId !== fetchLogInstance.sandbox_id) {
+      if (targetId !== fetchLogInstance.sandbox_id || await claimedByOthers(targetId)) {
         return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
       }
       const logResult = await execInSprite(
@@ -635,7 +687,7 @@ export async function POST(request: Request) {
         .select('sandbox_id')
         .eq('user_id', user.id)
         .single()
-      if (!saveLogInstance?.sandbox_id || saveLogInstance.sandbox_id !== spriteName) {
+      if (!saveLogInstance?.sandbox_id || saveLogInstance.sandbox_id !== spriteName || await claimedByOthers(spriteName)) {
         return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
       }
       const timestamp = new Date().toISOString().replace(/:/g, '-')
@@ -684,13 +736,10 @@ export async function POST(request: Request) {
         )
       }
 
-      // Find the user's sandbox so we can pull the log tail from the right machine
-      const { data: bugInstance } = await supabase
-        .from('instances')
-        .select('sandbox_id')
-        .eq('user_id', user.id)
-        .single()
-      const targetSandboxId = bugInstance?.sandbox_id || context?.sandbox_id || null
+      // Find the user's sandbox so we can pull the log tail from the right machine.
+      // Only the caller's own, undisputed id: never context.sandbox_id from the
+      // request body, which would let a caller exec into any machine.
+      const targetSandboxId = (await getKnownSandboxId()) ?? null
 
       // Pull log tail (best-effort — bug report still files if exec fails)
       let logUrl: string | null = null
@@ -804,7 +853,7 @@ export async function POST(request: Request) {
         .select('sandbox_id')
         .eq('user_id', user.id)
         .single()
-      if (!vuInstance?.sandbox_id || vuInstance.sandbox_id !== sandboxId) {
+      if (!vuInstance?.sandbox_id || vuInstance.sandbox_id !== sandboxId || await claimedByOthers(sandboxId)) {
         return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
       }
 
@@ -897,8 +946,18 @@ export async function DELETE() {
     .eq('user_id', user.id)
     .single()
 
+  // Only delete a machine this user alone claims (fail closed). The row is
+  // cleared below either way, which only drops the caller's own claim.
   if (instance?.sandbox_id) {
-    await deleteSandbox(instance.sandbox_id).catch(() => {})
+    const claim = await checkSandboxClaim(supabase, instance.sandbox_id, user.id)
+    if (claim === 'unknown') {
+      return NextResponse.json({ error: 'Sandbox ownership check unavailable, try again' }, { status: 503 })
+    }
+    if (claim === 'mine') {
+      await deleteSandbox(instance.sandbox_id).catch(() => {})
+    } else {
+      console.warn(`[sandbox] DELETE: not deleting ${instance.sandbox_id} for ${user.id} (claim=${claim})`)
+    }
   }
 
   // Clear sandbox fields in DB
