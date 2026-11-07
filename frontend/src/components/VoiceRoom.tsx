@@ -27,6 +27,10 @@ import { AgentsPopover, type NamedAgent, type UserAgentDraft } from './voice/Age
 import { SkillsPopover } from './voice/SkillsPanel'
 import { ControlMenu } from './voice/ControlMenu'
 import { ChatPanel } from './voice/ChatPanel'
+import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
+import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
+import { resolveTabId } from './panel/registry'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, countNew, favoriteSaveOutcome, isImageName, replaceArtifacts, toMs } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
@@ -251,7 +255,6 @@ function VoiceRoomInner({
   const [copyFeedback, setCopyFeedback] = useState(false)
   // Generated files state (plans + research artifacts)
   const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([])
-  const [showFilesPanel, setShowFilesPanel] = useState(false)
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
 
   // Favorited session files — a durable, user-pinned subset. Everything else in
@@ -280,50 +283,81 @@ function VoiceRoomInner({
   // sessionId scopes the server-side blob so different sessions never leak into
   // each other; when sessionId is not yet known the POST is skipped (the caller
   // will retry once the agent reports the session).
-  const persistFavorites = useCallback((next: GeneratedFile[]) => {
+  // Returns the HTTP status of the server write (null on network failure) so the
+  // caller can roll back an optimistic star (UI#21: check res.ok, not only throws).
+  const persistFavorites = useCallback(async (next: GeneratedFile[]): Promise<number | null> => {
     try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
-    fetch('/api/favorites', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ favorites: next }),
-    }).catch(() => {})
+    try {
+      const res = await fetch('/api/favorites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorites: next }),
+      })
+      return res.status
+    } catch { return null }
   }, [])
+  const setFavoritesNow = useCallback((next: GeneratedFile[]) => {
+    favoriteFilesRef.current = next
+    setFavoriteFiles(next)
+  }, [])
+  const [pinError, setPinError] = useState<string | null>(null)
+  const lastPinFailRef = useRef<GeneratedFile | null>(null)
 
+  // Optimistic pin/unpin (UI#21): the star flips in the click, the server write
+  // runs in the background, and a failed write rolls back with a retryable
+  // notice. 401 = guest, whose favorites are device-local by design.
+  // Never sends anything to the agent (no `[favorited]` user_text).
   const toggleFavorite = useCallback(async (file: GeneratedFile) => {
-    const currentlyFav = favoriteFilesRef.current.some((f) => f.filePath === file.filePath)
-    if (currentlyFav) {
-      setFavoriteFiles((prev) => { const next = prev.filter((f) => f.filePath !== file.filePath); persistFavorites(next); return next })
-      return
-    }
-    // Adding — ensure a DURABLE copy so the favorite opens on ANY device/session.
-    // If the file has inline text content but no Supabase URL yet, upload it so
-    // there's a permanent URL (otherwise the content lived only in this session's
-    // memory and the star would spin on "Loading content…" elsewhere).
-    let url = file.url
-    if (!url && file.content && !file.isImage) {
-      try {
-        const blob = new Blob([file.content], { type: 'text/plain' })
-        const fd = new FormData()
-        fd.append('file', blob, file.fileName)
-        fd.append('folder', 'favorites')
-        const res = await fetch('/api/upload', { method: 'POST', body: fd })
-        const j = await res.json().catch(() => null)
-        if (j?.url) url = j.url
-      } catch { /* best effort — favorite still saves, just without a durable copy */ }
-    }
+    const before = favoriteFilesRef.current
+    const prevEntry = before.find((f) => f.filePath === file.filePath)
+    const currentlyFav = !!prevEntry
     const slim: GeneratedFile = {
-      filePath: file.filePath, fileName: file.fileName, url,
+      filePath: file.filePath, fileName: file.fileName, url: file.url,
       type: file.type, source: file.source, updatedAt: file.updatedAt,
       isImage: file.isImage, mimeType: file.mimeType,
     }
-    setFavoriteFiles((prev) => {
-      if (prev.some((f) => f.filePath === file.filePath)) return prev
-      const next = [...prev, slim]; persistFavorites(next); return next
-    })
-    // Reflect the (possibly newly-uploaded) URL on the visible file too.
-    setGeneratedFiles((prev) => prev.some((f) => f.filePath === file.filePath)
-      ? (url ? prev.map((f) => (f.filePath === file.filePath ? { ...f, url: f.url || url } : f)) : prev)
-      : [{ ...file, url: url || file.url }, ...prev])
-  }, [persistFavorites])
+    setPinError(null)
+    setFavoritesNow(currentlyFav ? before.filter((f) => f.filePath !== file.filePath) : [...before, slim])
+    if (!currentlyFav) {
+      setGeneratedFiles((prev) => prev.some((f) => f.filePath === file.filePath) ? prev : [{ ...file }, ...prev])
+    }
+    const outcome = favoriteSaveOutcome(await persistFavorites(favoriteFilesRef.current))
+    if (outcome === 'rollback') {
+      const cur = favoriteFilesRef.current
+      const rolled = currentlyFav
+        ? (cur.some((f) => f.filePath === file.filePath) ? cur : [...cur, prevEntry!])
+        : cur.filter((f) => f.filePath !== file.filePath)
+      setFavoritesNow(rolled)
+      try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(rolled)) } catch { /* ignore */ }
+      lastPinFailRef.current = file
+      setPinError(currentlyFav ? `Couldn't unpin ${file.fileName}.` : `Couldn't save pin for ${file.fileName}.`)
+      return
+    }
+    // Durable copy, in the background, so the pin opens on any device. Only
+    // when we hold the FULL text: never upload a truncated preview or an image
+    // placeholder as the permanent copy.
+    if (!currentlyFav && !file.url && typeof file.content === 'string' && file.content.length > 0
+      && !file.isImage && !isImageName(file.fileName) && !file.truncated) {
+      try {
+        const fd = new FormData()
+        fd.append('file', new Blob([file.content], { type: 'text/plain' }), file.fileName)
+        fd.append('folder', 'favorites')
+        const res = await fetch('/api/upload', { method: 'POST', body: fd })
+        const j = res.ok ? await res.json().catch(() => null) : null
+        const url: string | undefined = j?.url
+        if (url && favoriteFilesRef.current.some((f) => f.filePath === file.filePath)) {
+          const withUrl = favoriteFilesRef.current.map((f) => (f.filePath === file.filePath ? { ...f, url } : f))
+          setFavoritesNow(withUrl)
+          void persistFavorites(withUrl)
+          setGeneratedFiles((prev) => prev.map((f) => (f.filePath === file.filePath ? { ...f, url: f.url || url } : f)))
+        }
+      } catch { /* best effort — the pin is saved, just without a durable copy */ }
+    }
+  }, [persistFavorites, setFavoritesNow])
+  const retryPin = useCallback(() => {
+    const f = lastPinFailRef.current
+    lastPinFailRef.current = null
+    if (f) void toggleFavorite(f)
+  }, [toggleFavorite])
 
   // Surface favorites in the explorer whenever the set changes (initial load,
   // server sync, or a toggle) — so a returning user always sees their pinned
@@ -391,7 +425,14 @@ function VoiceRoomInner({
     return () => { cancelled = true }
   }, [currentSessionId])
   const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
-  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false) // Default closed — opens via button (desktop only)
+  // Full-screen Files view: reachable only through "Expand" in the Outputs drawer.
+  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false)
+  // Right-side living panel (L4): open/tab/width persisted in localStorage `vn-panel`.
+  const panel = usePanelState()
+  const outputsVisible = panel.open && resolveTabId(panel.tab) === 'outputs'
+  const outputsVisibleRef = useRef(outputsVisible)
+  useEffect(() => { outputsVisibleRef.current = outputsVisible }, [outputsVisible])
+  const [outputsPreviewPath, setOutputsPreviewPath] = useState<string | null>(null)
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
   // Skills state
@@ -1003,6 +1044,115 @@ function VoiceRoomInner({
 
   const { send: sendToAgent } = useDataChannel('user-input')
 
+  // ── Outputs drawer data flow (L4; UI#13/19) ──────────────────────────────
+  // Re-list the session workspace with REPLACE semantics on open, on focus and
+  // after file events; fetch a file body only when it is previewed (no storm).
+  const sendJson = useCallback((m: Record<string, unknown>) => {
+    sendToAgent(new TextEncoder().encode(JSON.stringify(m)), { reliable: true })
+  }, [sendToAgent])
+  const currentSessionIdRef = useRef(currentSessionId)
+  useEffect(() => { currentSessionIdRef.current = currentSessionId }, [currentSessionId])
+  const generatedFilesRef = useRef(generatedFiles)
+  useEffect(() => { generatedFilesRef.current = generatedFiles }, [generatedFiles])
+  const announcedFilesRef = useRef(new Set<string>())
+  const [joinedAt] = useState(() => Date.now())
+  const [outputsSeenAt, setOutputsSeenAt] = useState(joinedAt)
+  const [outputsSyncing, setOutputsSyncing] = useState(false)
+  const [outputsSyncError, setOutputsSyncError] = useState(false)
+  const [outputsSyncedAt, setOutputsSyncedAt] = useState<number | null>(null)
+  const relistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const relistDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastRelistAtRef = useRef(0)
+  const requestRelist = useCallback((force = false) => {
+    const sid = currentSessionIdRef.current
+    if (!sid) return
+    const now = Date.now()
+    if (!force && now - lastRelistAtRef.current < 2000) return
+    lastRelistAtRef.current = now
+    setOutputsSyncing(true)
+    setOutputsSyncError(false)
+    sendJson({ type: 'get_session_artifacts', sessionId: sid })
+    if (relistTimeoutRef.current) clearTimeout(relistTimeoutRef.current)
+    // A list over the data-channel size cap is dropped silently: say so.
+    relistTimeoutRef.current = setTimeout(() => { setOutputsSyncing(false); setOutputsSyncError(true) }, 10_000)
+  }, [sendJson])
+  const markOutputsSynced = useCallback(() => {
+    if (relistTimeoutRef.current) clearTimeout(relistTimeoutRef.current)
+    relistTimeoutRef.current = null
+    setOutputsSyncing(false)
+    setOutputsSyncError(false)
+    setOutputsSyncedAt(Date.now())
+  }, [])
+  useEffect(() => () => {
+    if (relistTimeoutRef.current) clearTimeout(relistTimeoutRef.current)
+    if (relistDebounceRef.current) clearTimeout(relistDebounceRef.current)
+  }, [])
+  // Agent file events: one in-chat card per new file, re-list while visible,
+  // and (only if enabled) open the drawer. Called from handleDataMessage via a
+  // ref so its subscription deps stay unchanged.
+  const onAgentFileEvent = useCallback((filePath: string, fileName: string) => {
+    if (!generatedFilesRef.current.some((f) => f.filePath === filePath) && !announcedFilesRef.current.has(filePath)) {
+      announcedFilesRef.current.add(filePath)
+      setMessages((prev) => [...prev, {
+        id: `file-${filePath}`, role: 'system', content: `Saved ${fileName}`, timestamp: new Date(),
+        category: 'chat', fileRef: { filePath, fileName },
+      }])
+    }
+    if (AUTO_OPEN_OUTPUTS_ON_WRITE) {
+      panel.openPanel('outputs')
+      setSelectedFilePath(filePath)
+      setOutputsPreviewPath(filePath)
+    }
+    if (outputsVisibleRef.current) {
+      if (relistDebounceRef.current) clearTimeout(relistDebounceRef.current)
+      relistDebounceRef.current = setTimeout(() => requestRelist(true), 1500)
+    }
+  }, [panel.openPanel, requestRelist])
+  const outputsEventsRef = useRef({ onAgentFileEvent, markOutputsSynced })
+  outputsEventsRef.current = { onAgentFileEvent, markOutputsSynced }
+  // Opening Outputs re-lists; leaving it marks everything seen (clears "New").
+  useEffect(() => {
+    if (outputsVisible) requestRelist(true)
+  }, [outputsVisible, currentSessionId, requestRelist])
+  const outputsWasVisibleRef = useRef(false)
+  useEffect(() => {
+    if (!outputsVisible && outputsWasVisibleRef.current) setOutputsSeenAt(Date.now())
+    outputsWasVisibleRef.current = outputsVisible
+  }, [outputsVisible])
+  useEffect(() => {
+    if (!outputsVisible) return
+    const onFocus = () => { if (document.visibilityState === 'visible') requestRelist() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [outputsVisible, requestRelist])
+  // Lazy body fetch: one request per file version, only for the file on screen.
+  const contentRequestedRef = useRef(new Set<string>())
+  const requestFileContent = useCallback((f: GeneratedFile, force = false) => {
+    const key = `${f.filePath}@${toMs(f.updatedAt)}`
+    if (!force && contentRequestedRef.current.has(key)) return
+    contentRequestedRef.current.add(key)
+    sendJson(f.source === 'plan'
+      ? { type: 'get_plan_file', filePath: f.filePath }
+      : { type: 'get_research_artifact', filePath: f.filePath })
+  }, [sendJson])
+  const shownFilePath = outputsVisible ? outputsPreviewPath : isFilesModalOpen ? (selectedFile?.filePath ?? null) : null
+  useEffect(() => {
+    if (!shownFilePath) return
+    const f = generatedFiles.find((x) => x.filePath === shownFilePath)
+    if (!f || f.content !== undefined || f.url || f.loadError) return
+    requestFileContent(f)
+  }, [shownFilePath, generatedFiles, requestFileContent])
+  const reloadFile = useCallback((filePath: string) => {
+    const f = generatedFilesRef.current.find((x) => x.filePath === filePath)
+    if (!f) return
+    setGeneratedFiles((prev) => prev.map((x) => (x.filePath === filePath ? { ...x, loadError: undefined, content: undefined } : x)))
+    requestFileContent(f, true)
+  }, [requestFileContent])
+
   const toggleNoiseCancel = useCallback(() => {
     const next = !noiseCancelOn
     setNoiseCancelOn(next) // optimistic; agent confirms via noise_cancel_state
@@ -1481,6 +1631,7 @@ function VoiceRoomInner({
         // Plan file was written/edited by the agent
         console.log('📋 Plan file updated:', data.fileName)
         const fileName = data.fileName || data.filePath.split('/').pop() || 'plan.md'
+        outputsEventsRef.current.onAgentFileEvent(data.filePath, fileName)
         setGeneratedFiles((prev) => {
           const existing = prev.findIndex(f => f.filePath === data.filePath)
           const entry: GeneratedFile = {
@@ -1489,10 +1640,14 @@ function VoiceRoomInner({
             type: 'plan',
             source: 'plan',
             updatedAt: new Date(),
+            sessionId: currentSessionIdRef.current ?? undefined,
+            // An edit of a file we already listed keeps its first-known time, so
+            // only files first written in this session count as "Just made".
+            createdAt: existing >= 0 ? (prev[existing].createdAt ?? prev[existing].updatedAt) : new Date(),
           }
           if (existing >= 0) {
             const updated = [...prev]
-            updated[existing] = { ...updated[existing], ...entry, content: undefined }
+            updated[existing] = { ...updated[existing], ...entry, content: undefined, loadError: undefined }
             return updated
           }
           return [...prev, entry]
@@ -1504,14 +1659,15 @@ function VoiceRoomInner({
           filePath: data.filePath,
         }))
         sendToAgent(payload, { reliable: true })
-        setIsFilesModalOpen(true)
-        setSelectedFilePath(data.filePath)
+        // No auto-open (UI#17): the Outputs badge counts it instead.
       } else if (data.type === 'plan_file_content') {
         // Plan file content received
         console.log('📋 Plan file content received:', data.fileName, data.content?.length || 0, 'chars')
         setGeneratedFiles((prev) => prev.map(f =>
           f.filePath === data.filePath
-            ? { ...f, content: data.content || data.error || 'Empty file' }
+            ? (data.error
+                ? { ...f, content: undefined, loadError: String(data.error) }
+                : { ...f, content: data.content ?? '', loadError: undefined })
             : f
         ))
       } else if (data.type === 'research_artifact_updated') {
@@ -1528,6 +1684,7 @@ function VoiceRoomInner({
         else if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) fileType = 'image'
         else if (fileName.includes('summary')) fileType = 'summary'
 
+        outputsEventsRef.current.onAgentFileEvent(data.filePath, fileName)
         setGeneratedFiles((prev) => {
           const existing = prev.findIndex(f => f.filePath === data.filePath)
           const entry: GeneratedFile = {
@@ -1536,10 +1693,12 @@ function VoiceRoomInner({
             type: fileType,
             source: 'research',
             updatedAt: new Date(),
+            sessionId: currentSessionIdRef.current ?? undefined,
+            createdAt: existing >= 0 ? (prev[existing].createdAt ?? prev[existing].updatedAt) : new Date(),
           }
           if (existing >= 0) {
             const updated = [...prev]
-            updated[existing] = { ...updated[existing], ...entry, content: undefined }
+            updated[existing] = { ...updated[existing], ...entry, content: undefined, loadError: undefined }
             return updated
           }
           return [...prev, entry]
@@ -1551,8 +1710,7 @@ function VoiceRoomInner({
           filePath: data.filePath,
         }))
         sendToAgent(payload, { reliable: true })
-        setIsFilesModalOpen(true)
-        setSelectedFilePath(data.filePath)
+        // No auto-open (UI#17): the Outputs badge counts it instead.
       } else if (data.type === 'research_artifact_content') {
         // Research artifact content received. Prefer `data.url` (agent
         // uploaded to Supabase Storage — fetch on demand, no data channel
@@ -1567,8 +1725,12 @@ function VoiceRoomInner({
             ? {
                 ...f,
                 url: data.url || undefined,
-                content: data.url ? undefined : (data.content || data.error || 'Empty file'),
-                isImage: data.isImage || false,
+                // UI#20: never turn an empty or failed payload into the text
+                // "Empty file"; the preview shows empty / unavailable / error.
+                content: data.url || data.error ? undefined : (data.content ?? ''),
+                loadError: data.error ? String(data.error) : undefined,
+                // Images go by extension too: the agent's fallback sends isImage:false.
+                isImage: !!data.isImage || isImageName(f.fileName),
                 mimeType: data.mimeType,
                 truncated: data.truncated || false,
                 originalSize: data.originalSize,
@@ -1586,38 +1748,30 @@ function VoiceRoomInner({
         // Bulk load existing session artifacts on resume/switch
         console.log('📁 Session artifacts received:', data.artifacts?.length || 0)
         if (data.artifacts && Array.isArray(data.artifacts)) {
+          const listSessionId: string | undefined = typeof data.sessionId === 'string' ? data.sessionId : undefined
           const newFiles: GeneratedFile[] = data.artifacts.map((a: any) => {
             const ext = a.fileName.split('.').pop()?.toLowerCase() || ''
-            const isImage = ['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)
+            const isImage = isImageName(a.fileName)
             return {
               filePath: a.filePath,
               fileName: a.fileName,
               type: a.type as GeneratedFile['type'],
               source: 'research' as const,
               updatedAt: new Date(a.updatedAt),
+              sessionId: listSessionId,
               isImage,
-              mimeType: isImage ? `image/${ext}` : undefined,
+              mimeType: isImage ? `image/${ext === 'jpg' ? 'jpeg' : ext}` : undefined,
             }
           })
 
-          setGeneratedFiles((prev) => {
-            const existingPaths = new Set(prev.map(f => f.filePath))
-            const uniqueNew = newFiles.filter(f => !existingPaths.has(f.filePath))
-            return [...prev, ...uniqueNew]
-          })
-
-          // Auto-select first file and request its content
-          if (newFiles.length > 0) {
-            setSelectedFilePath(newFiles[0].filePath)
-            for (const file of newFiles) {
-              const encoder = new TextEncoder()
-              const payload = encoder.encode(JSON.stringify({
-                type: 'get_research_artifact',
-                filePath: file.filePath,
-              }))
-              sendToAgent(payload, { reliable: true })
-            }
-          }
+          // UI#13/19: REPLACE this session folder's rows (vanished files go,
+          // changed ones refetch lazily). Bodies are fetched only when a file
+          // is opened: no per-file request storm at resume.
+          setGeneratedFiles((prev) => replaceArtifacts(prev, newFiles, {
+            sessionId: listSessionId,
+            pinnedPaths: new Set(favoriteFilesRef.current.map((f) => f.filePath)),
+          }))
+          outputsEventsRef.current.markOutputsSynced()
         }
       } else if (data.type === 'fast_brain_response') {
         // Pipeline mode: Gemini fast brain parallel response — show in main chat for monitoring
@@ -2556,6 +2710,50 @@ function VoiceRoomInner({
     addMessageRef.current?.('system', '🆕 Starting a fresh session')
   }, [completeSessionGate])
 
+  // Panel data, provided once to every right-panel tab and the in-chat cards (L4).
+  const openOutputsPreview = useCallback((filePath: string | null) => {
+    setOutputsPreviewPath(filePath)
+    if (filePath) setSelectedFilePath(filePath)
+  }, [])
+  const openFileInPanel = useCallback((filePath: string) => {
+    openOutputsPreview(filePath)
+    panel.openPanel('outputs')
+  }, [openOutputsPreview, panel.openPanel])
+  const panelData = useMemo<PanelData>(() => ({
+    messages,
+    generatedFiles,
+    slots,
+    agentUrl,
+    sendToAgent: sendJson,
+    sessionId: currentSessionId,
+    isController: true,
+    outputs: {
+      pinnedPaths: favoritePaths,
+      previewPath: outputsPreviewPath,
+      openPreview: openOutputsPreview,
+      togglePin: (f) => { void toggleFavorite(f) },
+      pinError,
+      dismissPinError: () => setPinError(null),
+      retryPin,
+      reloadFile,
+      copyFile: handleCopyFile,
+      copyAll: handleCopyAllFiles,
+      copyFeedback: fileCopyFeedback,
+      refresh: () => requestRelist(true),
+      syncing: outputsSyncing,
+      syncError: outputsSyncError,
+      lastSyncedAt: outputsSyncedAt,
+      joinedAt,
+      seenAt: outputsSeenAt,
+      unseenCount: countNew(generatedFiles, outputsSeenAt),
+      expand: () => setIsFilesModalOpen(true),
+    },
+    panel: { ...panel, openFile: openFileInPanel },
+  }), [messages, generatedFiles, slots, agentUrl, sendJson, currentSessionId, favoritePaths, outputsPreviewPath,
+    openOutputsPreview, toggleFavorite, pinError, retryPin, reloadFile, handleCopyFile, handleCopyAllFiles,
+    fileCopyFeedback, requestRelist, outputsSyncing, outputsSyncError, outputsSyncedAt, joinedAt, outputsSeenAt,
+    panel, openFileInPanel])
+
   if (waitingMode) {
     return (
       <>
@@ -2702,7 +2900,7 @@ function VoiceRoomInner({
   }
 
   return (
-    <>
+    <PanelDataProvider value={panelData}>
       {/* Claude Auth Modal — shown during first-time OAuth flow in cloud deployments */}
       {claudeAuthStatus !== 'none' && claudeAuthStatus !== 'complete' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -3228,6 +3426,7 @@ function VoiceRoomInner({
               {/* More — single labeled overflow consolidating the loose icon
                   row (Files, Auto-approve, Copy all, Noise filter) into one
                   menu. Amber dot signals an active setting inside. */}
+              <PanelToggleButton className="hidden sm:flex" />
               <div className="hidden sm:block relative">
                 <button
                   onClick={() => setShowHeaderMore(v => !v)}
@@ -3246,10 +3445,10 @@ function VoiceRoomInner({
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowHeaderMore(false)} />
                     <div ref={moreMenuRef} role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
-                      <button role="menuitem" onClick={() => { setShowHeaderMore(false); setIsFilesModalOpen(true) }}
+                      <button role="menuitem" onClick={() => { setShowHeaderMore(false); panel.openPanel('outputs') }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
                         <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
-                        <span className="flex-1">Files Explorer</span>
+                        <span className="flex-1">Outputs</span>
                         {generatedFiles.length > 0 && <span className="text-[11px] text-gray-500">{generatedFiles.length}</span>}
                       </button>
                       <button role="menuitem" onClick={() => setAutoApprovePermissions(v => !v)}
@@ -3325,10 +3524,13 @@ function VoiceRoomInner({
                 meeting, history (8 ≤ technical-9 cap). Top bar stays clean:
                 status + clock on the left, burger on the right. */}
             <button onClick={() => setShowMobileMenu(true)}
-              className="sm:hidden shrink-0 min-h-11 min-w-11 flex items-center justify-center rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
+              className="relative sm:hidden shrink-0 min-h-11 min-w-11 flex items-center justify-center rounded-lg bg-gray-800/50 text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-all">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
               </svg>
+              {!outputsVisible && panelData.outputs.unseenCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400" aria-label="New outputs" />
+              )}
             </button>
           </div>
         </div>
@@ -3464,7 +3666,7 @@ function VoiceRoomInner({
             input itself). Everything that used to live here — Auto/Ask,
             Agents, Skills, Filter — collapsed into the burger sheet (tray
             rule), which sits at 8 rows ≤ the technical-9 cap. */}
-        <div className="sm:hidden flex items-center justify-end gap-1.5 px-3 pt-1.5">
+        <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="sm:hidden flex items-center justify-end gap-1.5 px-3 pt-1.5">
           <button
             onClick={toggleMute}
             className={`flex items-center gap-1.5 min-h-11 px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
@@ -3509,226 +3711,9 @@ function VoiceRoomInner({
         />
       </div>
 
-      {/* Inline files preview panel — hidden on mobile */}
-      {showFilesPanel && (
-        <div className="hidden sm:flex w-[28rem] shrink-0 flex-col bg-gray-900 rounded-xl overflow-hidden border border-gray-800/50">
-          {/* Panel header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700/50">
-            <div className="flex items-center gap-2">
-              <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
-              <span className="text-sm font-semibold text-white">Files</span>
-              <span className="text-xs text-gray-500">({generatedFiles.length})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              {generatedFiles.filter(f => !f.isImage).length > 1 && (
-                <button
-                  onClick={handleCopyAllFiles}
-                  className={`px-2 py-1 text-xs rounded transition-colors ${
-                    fileCopyFeedback === 'all'
-                      ? 'bg-green-500/20 text-green-400'
-                      : 'bg-gray-800 text-gray-400 hover:text-gray-200'
-                  }`}
-                >
-                  {fileCopyFeedback === 'all' ? 'Copied!' : 'Copy All'}
-                </button>
-              )}
-              <button
-                onClick={() => setIsFilesModalOpen(true)}
-                className="p-1 text-gray-400 hover:text-white rounded transition-colors"
-                title="Expand files explorer"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
-                </svg>
-              </button>
-              <button
-                onClick={() => setShowFilesPanel(false)}
-                className="p-1 text-gray-400 hover:text-white rounded transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {/* File browser - compact list */}
-          <div className="border-b border-gray-700/50 max-h-52 overflow-y-auto">
-            {(() => {
-              const sidebarTypeBadge: Record<string, { label: string; color: string }> = {
-                plan: { label: 'Plan', color: 'bg-violet-500/20 text-violet-400' },
-                diagram: { label: 'Diagram', color: 'bg-blue-500/20 text-blue-400' },
-                notes: { label: 'Notes', color: 'bg-emerald-500/20 text-emerald-400' },
-                image: { label: 'Image', color: 'bg-amber-500/20 text-amber-400' },
-                summary: { label: 'Summary', color: 'bg-cyan-500/20 text-cyan-400' },
-                html: { label: 'HTML', color: 'bg-orange-500/20 text-orange-400' },
-                other: { label: 'File', color: 'bg-gray-500/20 text-gray-400' },
-              }
-              const renderFileRow = (file: GeneratedFile) => {
-                const badge = sidebarTypeBadge[file.type] || sidebarTypeBadge.other
-                const isFav = favoritePaths.has(file.filePath)
-                return (
-                  <div
-                    key={file.filePath}
-                    className={`w-full px-3 py-2 flex items-center gap-2 transition-colors ${
-                      selectedFile?.filePath === file.filePath
-                        ? 'bg-amber-500/15 border-l-2 border-amber-400'
-                        : 'hover:bg-gray-800/50 border-l-2 border-transparent'
-                    }`}
-                  >
-                    <button
-                      onClick={() => setSelectedFilePath(file.filePath)}
-                      className="flex items-center gap-2 min-w-0 flex-1 text-left"
-                    >
-                      <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded shrink-0 ${badge.color}`}>{badge.label}</span>
-                      <span className="text-xs font-mono text-gray-300 truncate">{file.fileName}</span>
-                    </button>
-                    {!file.content && !file.url && (
-                      <svg className="w-3 h-3 animate-spin text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                    )}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleToggleFavoriteWithNote(file) }}
-                      className={`shrink-0 p-1 rounded transition-colors ${
-                        isFav ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-300'
-                      }`}
-                      title={isFav ? 'Unfavorite' : 'Favorite'}
-                    >
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" />
-                      </svg>
-                    </button>
-                  </div>
-                )
-              }
-              const favFiles = generatedFiles.filter(f => favoritePaths.has(f.filePath))
-              const planFiles = generatedFiles.filter(f => f.source === 'plan' && !favoritePaths.has(f.filePath))
-              const researchFiles = generatedFiles.filter(f => f.source === 'research' && !favoritePaths.has(f.filePath))
-              const otherFiles = generatedFiles.filter(f => f.source !== 'plan' && f.source !== 'research' && !favoritePaths.has(f.filePath))
-              return (
-                <>
-                  {favFiles.length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider bg-gray-800/30 flex items-center gap-1.5">
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.9 7.1.6-5.4 4.7 1.6 7L12 17.8 5.8 21.2l1.6-7L2 9.5l7.1-.6L12 2z" /></svg>
-                        Favorites
-                      </div>
-                      {favFiles.map(renderFileRow)}
-                    </div>
-                  )}
-                  {planFiles.length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
-                        Plans
-                      </div>
-                      {planFiles.map(renderFileRow)}
-                    </div>
-                  )}
-                  {researchFiles.length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
-                        Research
-                      </div>
-                      {researchFiles.map(renderFileRow)}
-                    </div>
-                  )}
-                  {otherFiles.length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/30">
-                        Other
-                      </div>
-                      {otherFiles.map(renderFileRow)}
-                    </div>
-                  )}
-                </>
-              )
-            })()}
-          </div>
-
-          {/* Preview area */}
-          <div className="flex-1 overflow-y-auto">
-            {generatedFiles.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-3 p-6">
-                <svg className="w-10 h-10 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-                <span className="text-sm">No files yet</span>
-                <span className="text-xs text-gray-600 text-center">Research artifacts and plans will appear here as the agent works</span>
-              </div>
-            ) : selectedFile ? (
-              <div>
-                <div className="sticky top-0 flex items-center justify-between px-4 py-2 bg-gray-800/80 backdrop-blur-sm border-b border-gray-700/30 z-10">
-                  <span className="text-xs font-mono text-amber-300 truncate">{selectedFile.fileName}</span>
-                  {!selectedFile.isImage && (
-                    <button
-                      onClick={() => handleCopyFile(selectedFile.filePath)}
-                      className={`px-2 py-1 text-xs rounded transition-colors shrink-0 ml-2 ${
-                        fileCopyFeedback === selectedFile.filePath
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-gray-700 text-gray-400 hover:text-gray-200'
-                      }`}
-                    >
-                      {fileCopyFeedback === selectedFile.filePath ? 'Copied!' : 'Copy'}
-                    </button>
-                  )}
-                </div>
-                <div className="p-4">
-                  {(selectedFile.content || (selectedFile.isImage && selectedFile.url)) ? (
-                    selectedFile.isImage ? (
-                      <img
-                        src={selectedFile.url || `data:${selectedFile.mimeType || 'image/png'};base64,${selectedFile.content}`}
-                        alt={selectedFile.fileName}
-                        className="max-w-full rounded-lg border border-gray-700"
-                      />
-                    ) : selectedFile.type === 'html' || selectedFile.fileName?.endsWith('.svg') ? (
-                      <iframe
-                        srcDoc={selectedFile.fileName?.endsWith('.svg')
-                          ? `<!DOCTYPE html><html><head><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1a2e;overflow:hidden}svg{width:100%;height:100%;max-width:100vw;max-height:100vh}</style></head><body>${selectedFile.content}</body></html>`
-                          : `<!DOCTYPE html><html><head><style>html{font-size:16px}body{margin:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#e2e8f0;background:#1a1a2e}table{border-collapse:collapse;width:100%}th,td{border:1px solid #475569;padding:8px 12px;text-align:left}th{background:#334155}h1,h2,h3{color:#f1f5f9}a{color:#60a5fa}code{background:#334155;padding:2px 6px;border-radius:4px;font-size:14px}pre{background:#0f172a;padding:16px;border-radius:8px;overflow-x:auto}</style></head><body>${selectedFile.content}</body></html>`}
-                        className="w-full h-full min-h-[400px] rounded-lg border border-gray-700"
-                        sandbox="allow-scripts"
-                        title={selectedFile.fileName}
-                      />
-                    ) : (
-                      <div className="text-sm">
-                        <MarkdownMessage content={selectedFile.content || ''} />
-                      </div>
-                    )
-                  ) : selectedFile.url ? (
-                    <a
-                      href={selectedFile.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30 text-xs font-medium"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                      Open {selectedFile.fileName}
-                    </a>
-                  ) : (
-                    <div className="flex items-center justify-center py-8 text-gray-500 text-xs">
-                      <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Loading content...
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-                Select a file to preview
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Right-side living panel (L4): Outputs and future tabs. Replaces the
+          unreachable inline files dock; never a full-screen takeover. */}
+      <RightPanel />
       </div>
 
       {/* Mobile Menu Drawer */}
@@ -3818,13 +3803,15 @@ function VoiceRoomInner({
               </button>
 
               {/* Files */}
-              <button onClick={() => { setIsFilesModalOpen(true); setShowMobileMenu(false) }}
+              <button onClick={() => { panel.openPanel('outputs'); setShowMobileMenu(false) }}
                 className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
                 <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                 </svg>
-                <span className="text-sm text-gray-200">Files Explorer</span>
-                {generatedFiles.length > 0 && (
+                <span className="text-sm text-gray-200">Outputs</span>
+                {!outputsVisible && panelData.outputs.unseenCount > 0 ? (
+                  <span className="ml-auto text-xs bg-amber-500 text-gray-900 font-semibold px-2 py-0.5 rounded-full">{panelData.outputs.unseenCount} new</span>
+                ) : generatedFiles.length > 0 && (
                   <span className="ml-auto text-xs bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full">{generatedFiles.length}</span>
                 )}
               </button>
@@ -3937,7 +3924,7 @@ function VoiceRoomInner({
         favoritePaths={favoritePaths}
         onToggleFavorite={handleToggleFavoriteWithNote}
       />
-    </>
+    </PanelDataProvider>
   )
 }
 
