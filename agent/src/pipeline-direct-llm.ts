@@ -15,6 +15,7 @@ import { askPipelineFastBrain, type PipelineFastBrainResult } from './pipeline-f
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { statusManager } from './status-manager.js'
 import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
+import { cleanTurnText, redactSecrets } from './content/transcript-sanitizer.js'
 import { EventEmitter } from 'events'
 
 // Bypass marker for gate-approved contexts: the deferred gate stream re-enters
@@ -23,48 +24,105 @@ import { EventEmitter } from 'events'
 const gateApproved = new WeakSet<llm.ChatContext>()
 
 // ============================================================
-// SESSION TAIL — compact recent-conversation block prepended to every user turn
-// so the orchestrator never loses the thread across context compaction.
+// SESSION TAIL — compact recent-conversation block prepended to the first real
+// user turn after a compaction so the orchestrator never loses the thread.
 // Controlled by:
-//   OSBORN_SESSION_TAIL        — set to "0" to disable (default ON)
-//   OSBORN_SESSION_TAIL_COUNT  — max user+assistant lines to keep (default 200)
+//   OSBORN_SESSION_TAIL            — set to "0" to disable (default ON)
+//   OSBORN_SESSION_TAIL_COUNT      — max user+assistant lines to keep (default 200)
+//   OSBORN_SESSION_TAIL_MAX_CHARS  — hard cap on the whole block, tags included
+//                                    (default 16000)
+// Source rules (UI#16): the CURRENT session's store only, its main JSONL only
+// (no sub-agent rows), newest by timestamp; every line goes through the shared
+// sanitizer (wrappers, earlier tails, notices dropped; secrets redacted) BEFORE
+// it is truncated to 150 chars.
 // ============================================================
 
-function buildSessionTail(sessionId: string | null, workingDir: string): string {
+export const SESSION_TAIL_DEFAULT_ROWS = 200
+export const SESSION_TAIL_DEFAULT_MAX_CHARS = 16000
+const SESSION_TAIL_LINE_CHARS = 150
+
+function envInt(name: string, fallback: number): number {
+  const n = parseInt(process.env[name] || '', 10)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+export function buildSessionTail(
+  sessionId: string | null,
+  workingDir: string,
+  opts?: { maxRows?: number; maxChars?: number },
+): string {
   if (process.env.OSBORN_SESSION_TAIL === '0') return ''
   if (!sessionId) return ''
 
-  const maxLines = parseInt(process.env.OSBORN_SESSION_TAIL_COUNT || '3000', 10)
+  const maxRows = opts?.maxRows ?? envInt('OSBORN_SESSION_TAIL_COUNT', SESSION_TAIL_DEFAULT_ROWS)
+  const maxChars = opts?.maxChars ?? envInt('OSBORN_SESSION_TAIL_MAX_CHARS', SESSION_TAIL_DEFAULT_MAX_CHARS)
+  const OPEN = '<session_tail>'
+  const CLOSE = '</session_tail>'
 
   try {
+    // Store resolved by THIS session's id → only this conversation's rows.
     const dbPath = storeExists(sessionId, workingDir)
     if (!dbPath) return '' // no store → prior empty-index behavior
 
     const db = openStore(dbPath, { readonly: true })
     try {
-      // Pull the most recent user+assistant rows (filtered in SQL, so we only
-      // decompress rows we keep), newest-first, then reverse to chronological.
-      const rows = recentRows(db, maxLines, ['user', 'assistant'])
-      const convLines: string[] = []
+      // Over-fetch: sanitizing drops notice/wrapper-only rows, so the limit
+      // should count kept lines, not raw rows.
+      const rows = recentRows(db, maxRows * 2, ['user', 'assistant'], { sources: ['main'] })
+      const kept: string[] = [] // newest-first while filling
+      let used = OPEN.length + CLOSE.length + 2 // tags + their newlines
       for (const row of rows) {
+        if (kept.length >= maxRows) break
         if (row.msgType !== 'user' && row.msgType !== 'assistant') continue
+        const clean = cleanTurnText(row.text, row.msgType === 'user' ? 'user' : 'assistant')
+        if (!clean) continue
+        const summary = redactSecrets(
+          clean
+            .replace(/<\/?session_tail>/g, '') // an inner tag would close the block early
+            .replace(/[\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+            .substring(0, SESSION_TAIL_LINE_CHARS),
+        )
+        if (!summary) continue
         const timestamp = (row.ts || '').substring(0, 19)
         const speaker = row.msgType === 'user' ? 'User' : 'Assistant'
-        const summary = row.text.replace(/[\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 150)
-        convLines.push(`${timestamp}  ${speaker}: ${summary}`)
+        const line = `${timestamp}  ${speaker}: ${summary}`
+        if (used + line.length + 1 > maxChars) break
+        used += line.length + 1
+        kept.push(line)
       }
-      // recentRows is newest-first — reverse to chronological, then keep the tail.
-      convLines.reverse()
-      const kept = convLines.slice(-maxLines)
       if (kept.length === 0) return ''
-
-      return ['<session_tail>', ...kept, '</session_tail>'].join('\n')
+      kept.reverse() // chronological
+      return [OPEN, ...kept, CLOSE].join('\n')
     } finally {
       db.close()
     }
   } catch {
     return ''
   }
+}
+
+/**
+ * Return a SHALLOW COPY of `chatCtx` whose last user message is a clone carrying
+ * `text`. The original context, its items array and every item object stay
+ * untouched — the LiveKit session echoes the ORIGINAL user item to the frontend
+ * (conversation_item_added → user_transcript), so mutating it leaked the
+ * [INTERRUPTED]/[CONTEXT]/<session_tail> enrichment into chat (UI#16). Earlier
+ * items are shared by reference; the clone keeps the item's id/role/prototype.
+ * Synchronous by design (chat() must stay sync). Returns the original when there
+ * is no user message.
+ */
+export function withLastUserContent(chatCtx: llm.ChatContext, text: string): llm.ChatContext {
+  const items = chatCtx.items.slice()
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i] as any
+    if (item.type === 'message' && item.role === 'user') {
+      const clone = Object.assign(Object.create(Object.getPrototypeOf(item)), item)
+      clone.content = [text]
+      items[i] = clone
+      return new llm.ChatContext(items)
+    }
+  }
+  return chatCtx
 }
 
 export interface InterruptionContext {
@@ -276,6 +334,9 @@ export class PipelineDirectLLM extends llm.LLM {
     // interruptQuery() for a transcript chunk, aborting working turns nonstop.
     // Leave the pending context for the next REAL user message.
     const isMeetingChunkEarly = userText.startsWith('[MEETING')
+    // What the inner ClaudeLLM receives: the original chatCtx, or an enriched
+    // shallow copy of it (see withLastUserContent).
+    let ctxForClaude: llm.ChatContext = chatCtx
     const interruptCtx = isMeetingChunkEarly ? null : this.#opts.getAndConsumeInterruptionContext?.()
     if (interruptCtx && userText.trim()) {
       const hasInterrupt = !!interruptCtx.spokenText
@@ -370,29 +431,16 @@ export class PipelineDirectLLM extends llm.LLM {
         enrichedMessage = userText
       }
 
-      // Modify the last user message in chatCtx
+      // Enrich a SHALLOW COPY — never the original item (the session echoes it).
+      // Built here, after the noise-gate block, so gateApproved stays keyed on
+      // the ORIGINAL chatCtx (the gate re-enters chat() with that object).
       const finalMessage = sessionTailBlock
         ? sessionTailBlock + '\n\n' + enrichedMessage
         : enrichedMessage
-      for (let i = chatCtx.items.length - 1; i >= 0; i--) {
-        const item = chatCtx.items[i] as any
-        if (item.type === 'message' && item.role === 'user') {
-          item.content = [finalMessage]
-          break
-        }
-      }
+      if (finalMessage !== userText) ctxForClaude = withLastUserContent(chatCtx, finalMessage)
     } else if (sessionTailBlock && userText.trim()) {
-      // No interrupt context — inject post-compaction session tail into the user message
-      for (let i = chatCtx.items.length - 1; i >= 0; i--) {
-        const item = chatCtx.items[i] as any
-        if (item.type === 'message' && item.role === 'user') {
-          const original = Array.isArray(item.content)
-            ? item.content.filter((c: any) => typeof c === 'string').join('\n')
-            : String(item.content ?? '')
-          item.content = [sessionTailBlock + '\n\n' + original]
-          break
-        }
-      }
+      // No interrupt context — post-compaction session tail on a shallow copy.
+      ctxForClaude = withLastUserContent(chatCtx, sessionTailBlock + '\n\n' + userText)
     }
 
     // Meeting chunks ([MEETING —]) are the silent-observer / addressed-response
@@ -413,8 +461,9 @@ export class PipelineDirectLLM extends llm.LLM {
       noiseGate.noteActivity()
     }
 
-    // Fire Claude
-    const claudeStream = this.#claudeLLM.chat({ chatCtx, toolCtx, connOptions, abortController })
+    // Fire Claude with the (possibly enriched) copy; the original stays as the
+    // user said it.
+    const claudeStream = this.#claudeLLM.chat({ chatCtx: ctxForClaude, toolCtx, connOptions, abortController })
 
     // Fire pipeline fast brain in background — no await, no blocking. Skip for
     // meeting chunks (silent observer / meeting-response path, not a user turn).
