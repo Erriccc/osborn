@@ -16,6 +16,11 @@ export type AgentSession = {
   timestamp: string
   lastMessage: string | null
   messageCount: number
+  // Agent PR #18+: cleaned title, first record time, real last-activity time.
+  // Optional — older agents omit them.
+  title?: string | null
+  firstTs?: string | null
+  lastActivityAt?: string | null
 }
 
 /** The signed-in user's agent base URL (null if no machine provisioned yet). */
