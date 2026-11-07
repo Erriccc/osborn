@@ -317,8 +317,9 @@ const DROP_PREFIXES: RegExp[] = [
   /^\[welcome-back\]/,
   // Voice-queue injections (index.ts filters these from the echo too).
   /^\[(?:SCRIPT|PROACTIVE|NOTIFICATION)\]/,
-  // [SYSTEM], [SYSTEM — SILENT CONTROL MESSAGE …], [SYSTEM: …]
-  /^\[SYSTEM\b/,
+  // [SYSTEM], [SYSTEM — SILENT CONTROL MESSAGE …], [SYSTEM: …], [SYSTEM - …];
+  // NOT a real message that merely starts with "[SYSTEM design] …".
+  /^\[SYSTEM(?:\]|\s*[—:-])/,
   /^\[MEETING —/,
   /^This session is being continued/,
   /^<system-reminder>/,
@@ -487,7 +488,11 @@ export function cleanTurnText(text: string, speaker: 'user' | 'assistant' = 'use
     if (body === null) return null
   }
   const { record } = sanitizeRecord({ text: body, timestamp: '', speaker })
-  return record ? record.text : null
+  if (!record) return null
+  // A tail stripped mid-text can leave the next template's bare marker behind
+  // ("words\n\n[INTERRUPTED]"); it is never the person's words.
+  const out = record.text.replace(/\s*\[INTERRUPTED\]\s*$/, '').trim()
+  return out || null
 }
 
 /** Run the core over a record stream and return kept SanitizedRecords. Pure. */

@@ -45,6 +45,8 @@ const cases: [string, string, string][] = [
   ['system-reminder', '<system-reminder>\nnoise\n</system-reminder>\nactual words', 'actual words'],
   ['plain text unchanged', 'um, can we ship it?', 'um, can we ship it?'],
   ['inline tag mention kept', 'the <system-reminder> tag is noisy', 'the <system-reminder> tag is noisy'],
+  ['[SYSTEM design] kept', '[SYSTEM design] is cool', '[SYSTEM design] is cool'],
+  ['tail mid-text, bare trailing [INTERRUPTED]', 'hello there\n' + tail + '\n\n[INTERRUPTED]', 'hello there'],
   ['MEETING prefix kept readable', '[MEETING — bot1]: Alice: hi', '[MEETING — bot1]: Alice: hi'],
 ]
 for (const [name, input, want] of cases) {

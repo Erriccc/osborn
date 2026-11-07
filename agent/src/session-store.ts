@@ -182,6 +182,7 @@ export function openStore(dbPath: string, opts?: { readonly?: boolean }): Databa
     );
     CREATE INDEX IF NOT EXISTS idx_content_source ON content(source);
     CREATE INDEX IF NOT EXISTS idx_content_type   ON content(msg_type);
+    CREATE INDEX IF NOT EXISTS idx_content_ts     ON content(ts, id);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(text, content='');
 
@@ -690,8 +691,8 @@ export async function recall(
  *
  * Recency is by record TIMESTAMP (ts DESC), not insertion id: a backfill/reindex
  * or a resume can insert older rows after newer ones, and "newest by id" then
- * surfaced weeks-old turns (UI#16). id DESC breaks ties (and orders rows with no
- * ts last). The ordering runs in a blob-free subquery so only the N kept rows
+ * surfaced weeks-old turns (UI#16). id DESC breaks ties; rows with no ts sort
+ * last (SQLite NULLs are smallest). idx_content_ts(ts, id) serves the order. The ordering runs in a blob-free subquery so only the N kept rows
  * carry their blob through the sort.
  */
 export function recentRows(
@@ -712,7 +713,7 @@ export function recentRows(
   }
   const filter = where.length ? `WHERE ${where.join(' AND ')}` : ''
   params.push(Math.max(1, count))
-  const order = `ORDER BY COALESCE(ts, '') DESC, id DESC`
+  const order = `ORDER BY ts DESC, id DESC`
   const rows = db.prepare(
     `SELECT id, source, line_num, byte_offset, ts, msg_type, model, git_branch, cwd, tool_name, blob
      FROM content WHERE id IN (SELECT id FROM content ${filter} ${order} LIMIT ?)
