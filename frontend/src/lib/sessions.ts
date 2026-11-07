@@ -152,6 +152,24 @@ export function deriveSessionTitle(input: string | null | undefined | SessionLis
   return capWords(t)
 }
 
+export const APP_TITLE = 'Voice Native'
+
+/**
+ * Browser tab title for a chat page (bug ab31e017): "<session title> · Voice
+ * Native", else "New chat · Voice Native". The listed session's title wins;
+ * before the session is listed, the first real user message stands in.
+ */
+export function chatDocumentTitle(input: {
+  session?: SessionListFields | null
+  firstUserMessage?: string | null
+}): string {
+  const fromSession = input.session ? deriveSessionTitle(input.session) : UNTITLED_SESSION
+  const title = fromSession !== UNTITLED_SESSION
+    ? fromSession
+    : (input.firstUserMessage ? deriveSessionTitle(input.firstUserMessage) : UNTITLED_SESSION)
+  return `${title === UNTITLED_SESSION ? 'New chat' : title} · ${APP_TITLE}`
+}
+
 /** Cap a normalized title at 6 words: capitalize the first, add an ellipsis
  * only when words were dropped. */
 function capWords(t: string): string {
