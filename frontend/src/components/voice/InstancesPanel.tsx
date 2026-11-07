@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { formatTime, deriveSessionTitle } from '@/lib/sessions'
-import type { SessionInfo, SlotInfo } from './shared'
+import { useViewportClamp, type SessionInfo, type SlotInfo } from './shared'
 
 // Compact live-instances panel + spawn control
 export function InstancesPanel({
@@ -26,6 +26,8 @@ export function InstancesPanel({
   onStopInstance: (sessionId: string) => void
   onClose: () => void
 }) {
+  // Mounted only while open — clamp it into the viewport when the header wraps.
+  const panelRef = useViewportClamp(true)
   // Build a synthetic "focused" card from the existing session if the agent's
   // slots_list doesn't include a focused slot (older agent build or no slots yet).
   const hasFocused = slots.some((s) => s.isFocused)
@@ -63,7 +65,7 @@ export function InstancesPanel({
   const atSpawnCap = slots.filter((s) => !s.isFocused).length >= 2
 
   return (
-    <div className="absolute top-12 right-0 w-72 max-w-[calc(100vw-1rem)] bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
+    <div ref={panelRef} className="absolute top-12 right-0 w-72 max-w-[calc(100vw-1rem)] bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
         <span className="text-xs font-semibold text-gray-300">Background agents</span>
