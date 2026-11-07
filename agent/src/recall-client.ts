@@ -2,6 +2,23 @@ import { EventEmitter } from 'node:events'
 
 const RECALL_REGION = process.env.RECALL_REGION ?? 'us-west-2'
 const RECALL_BASE_URL = `https://${RECALL_REGION}.recall.ai/api/v1`
+const RECALL_REGION_EXPLICIT = !!process.env.RECALL_REGION
+
+// Recall API keys are REGION-SCOPED. A key present but pointed at the wrong
+// region makes EVERY call (join / output_audio / transcript) 401 — and it used
+// to fail silently (no base-URL log, generic error), which is why the meeting
+// bot looked "half-wired". Log the resolved base URL once so the target region
+// is visible, and turn 401/403 into a loud, actionable message.
+let recallBaseLogged = false
+function logRecallBaseOnce(): void {
+  if (recallBaseLogged) return
+  recallBaseLogged = true
+  console.log(`🎥 Recall base URL: ${RECALL_BASE_URL}${RECALL_REGION_EXPLICIT ? '' : ' (RECALL_REGION unset → defaulted us-west-2; set it if your key is in another region)'}`)
+}
+function recallRegionHint(status: number): string {
+  if (status !== 401 && status !== 403) return ''
+  return ` — Recall API keys are region-scoped; RECALL_REGION=${RECALL_REGION}${RECALL_REGION_EXPLICIT ? '' : ' (DEFAULTED, not set)'} may not match your account's region. Set RECALL_REGION to your account's region and roll the machine.`
+}
 
 export interface RecallBot {
   id: string
@@ -126,6 +143,7 @@ export class RecallClient extends EventEmitter {
     //   We DO keep `recording_config.transcript.provider.recallai_streaming` so
     //   Recall actually transcribes the meeting — the REST endpoint we poll
     //   requires this to be configured, otherwise transcripts are empty.
+    logRecallBaseOnce()
     const res = await fetch(`${RECALL_BASE_URL}/bot`, {
       method: 'POST',
       headers: {
@@ -152,7 +170,7 @@ export class RecallClient extends EventEmitter {
 
     if (!res.ok) {
       const err = await res.text()
-      throw new Error(`Recall.ai join failed: ${res.status} ${err}`)
+      throw new Error(`Recall.ai join failed: ${res.status} ${err.slice(0, 200)}${recallRegionHint(res.status)}`)
     }
 
     const bot = (await res.json()) as RecallBot
@@ -231,7 +249,7 @@ export class RecallClient extends EventEmitter {
     })
     if (!res.ok) {
       const e = await res.text().catch(() => '')
-      console.warn(`⚠️ Recall output_audio ${res.status}: ${e.slice(0, 160)}`)
+      console.warn(`⚠️ Recall output_audio ${res.status}: ${e.slice(0, 160)}${recallRegionHint(res.status)}`)
       return false
     }
     return true
