@@ -378,6 +378,38 @@ export function markUnread(unread: ReadonlySet<string>, filePath: string, output
 
 /** loadError marker for a file the agent wrote outside the folders it serves. */
 export const LOAD_ERROR_OUTSIDE = 'outside-workspace'
+/** loadError marker when the agent did not answer a body request in time. */
+export const LOAD_ERROR_NO_REPLY = 'no-reply'
+/** How long a body request may stay unanswered before the view stops spinning. */
+export const CONTENT_REPLY_TIMEOUT_MS = 15_000
+
+// ── Legacy favorites without a durable copy (bug 55033541) ─────────────────
+export type FavoriteCopyState = 'ok' | 'recovering' | 'repairable' | 'dead'
+
+/** Where a pinned file stands: has a durable copy, is being fetched from the
+ *  agent, came back whole (store a copy), or cannot be recovered. */
+export function favoriteCopyState(f: OutputFile, pinned: boolean): FavoriteCopyState {
+  if (!pinned || f.url) return 'ok'
+  if (f.loadError) return 'dead'
+  if (typeof f.content === 'string') {
+    return f.content.length > 0 && !f.truncated ? 'repairable' : 'dead'
+  }
+  return 'recovering'
+}
+
+export type FavoriteRepair = { kind: 'set-url'; url: string } | { kind: 'upload' }
+
+/** What to do for a favorite without a durable url, given the live row. */
+export function favoriteRepairAction(fav: OutputFile, live: OutputFile | null | undefined): FavoriteRepair | null {
+  if (fav.url || !live) return null
+  if (live.url) return { kind: 'set-url', url: live.url }
+  return favoriteCopyState(live, true) === 'repairable' ? { kind: 'upload' } : null
+}
+
+/** The message "Ask agent to regenerate" sends (an ordinary user request). */
+export function regeneratePrompt(f: Pick<OutputFile, 'fileName' | 'filePath'>): string {
+  return `Please regenerate ${f.fileName}. It is one of my favorites, but its saved copy is missing (it was at ${f.filePath}). Write it again and tell me where you saved it.`
+}
 
 /** Can the agent send this file's body? get_research_artifact serves only the
  *  session workspace (and legacy .osborn dirs); get_plan_file serves plans. */

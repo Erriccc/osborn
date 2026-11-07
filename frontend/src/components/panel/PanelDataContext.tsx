@@ -19,6 +19,10 @@ export interface OutputsData {
   /** Select a file and show its preview (null returns to the list). */
   openPreview: (filePath: string | null) => void
   togglePin: (file: GeneratedFile) => void
+  /** Unpin a favorite whose saved copy is gone (bug 55033541). */
+  removeFavorite: (file: GeneratedFile) => void
+  /** Ask the agent to write the file again (an ordinary user message). */
+  regenerateFile: (file: GeneratedFile) => void
   pinError: string | null
   dismissPinError: () => void
   retryPin: () => void
