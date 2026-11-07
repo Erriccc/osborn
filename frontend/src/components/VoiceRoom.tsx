@@ -30,7 +30,7 @@ import { ChatPanel } from './voice/ChatPanel'
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
-import { AUTO_OPEN_OUTPUTS_ON_WRITE, countNew, favoriteSaveOutcome, isImageName, replaceArtifacts, toMs } from '@/lib/outputs-model'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, LOAD_ERROR_OUTSIDE, agentCanServe, favoriteSaveOutcome, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
@@ -1057,6 +1057,10 @@ function VoiceRoomInner({
   const announcedFilesRef = useRef(new Set<string>())
   const [joinedAt] = useState(() => Date.now())
   const [outputsSeenAt, setOutputsSeenAt] = useState(joinedAt)
+  // The ONE unread count (bugs 34808f72/59bb7e8d): distinct agent-written
+  // paths not yet seen. Fed only by agent file events, so re-lists, favorites
+  // syncs and bucket listings can never make it jump. Cleared on open.
+  const [unreadOutputs, setUnreadOutputs] = useState<ReadonlySet<string>>(() => new Set())
   const [outputsSyncing, setOutputsSyncing] = useState(false)
   const [outputsSyncError, setOutputsSyncError] = useState(false)
   const [outputsSyncedAt, setOutputsSyncedAt] = useState<number | null>(null)
@@ -1098,6 +1102,7 @@ function VoiceRoomInner({
         category: 'chat', fileRef: { filePath, fileName },
       }])
     }
+    setUnreadOutputs((prev) => markUnread(prev, filePath, outputsVisibleRef.current))
     if (AUTO_OPEN_OUTPUTS_ON_WRITE) {
       panel.openPanel('outputs')
       setSelectedFilePath(filePath)
@@ -1114,6 +1119,9 @@ function VoiceRoomInner({
   useEffect(() => {
     if (outputsVisible) requestRelist(true)
   }, [outputsVisible, currentSessionId, requestRelist])
+  useEffect(() => {
+    if (outputsVisible) setUnreadOutputs((prev) => (prev.size ? new Set() : prev))
+  }, [outputsVisible])
   const outputsWasVisibleRef = useRef(false)
   useEffect(() => {
     if (!outputsVisible && outputsWasVisibleRef.current) setOutputsSeenAt(Date.now())
@@ -1135,6 +1143,12 @@ function VoiceRoomInner({
     const key = `${f.filePath}@${toMs(f.updatedAt)}`
     if (!force && contentRequestedRef.current.has(key)) return
     contentRequestedRef.current.add(key)
+    // The agent silently ignores a body request outside the folders it serves
+    // (e.g. /workspace/report.txt), which would spin "Loading…" forever.
+    if (!agentCanServe(f.filePath, f.source)) {
+      setGeneratedFiles((prev) => prev.map((x) => (x.filePath === f.filePath ? { ...x, loadError: LOAD_ERROR_OUTSIDE } : x)))
+      return
+    }
     sendJson(f.source === 'plan'
       ? { type: 'get_plan_file', filePath: f.filePath }
       : { type: 'get_research_artifact', filePath: f.filePath })
@@ -1485,6 +1499,14 @@ function VoiceRoomInner({
           const msg = target ? `Using ${data.tool}: ${target}` : `Using ${data.tool}`
           addMessageRef.current?.('system', msg || data.tool, data.tool, 'log', toolMeta)
         }
+        // Outputs (bugs 34808f72/59bb7e8d): a completed Write/Edit is a file
+        // Osborn made, wherever it lives. Workspace files also get an artifact
+        // event; both land on the same row and the same unread entry.
+        const written = fileFromToolEvent(data, { sessionId: currentSessionIdRef.current, now: Date.now() })
+        if (written) {
+          outputsEventsRef.current.onAgentFileEvent(written.filePath, written.fileName)
+          setGeneratedFiles((prev) => upsertAgentFile(prev, written as GeneratedFile))
+        }
         // Increment research tool counter
         setActiveResearch(prev => prev ? { ...prev, toolCount: prev.toolCount + 1 } : null)
       } else if (data.type === 'task_review') {
@@ -1601,6 +1623,7 @@ function VoiceRoomInner({
           // Clear previous session's files — but keep favorites pinned so the
           // user's starred files survive the switch (they're cross-session).
           setGeneratedFiles(favoriteFiles)
+          setUnreadOutputs(new Set())
           setSelectedFilePath(null)
 
           // Clear current chat messages before showing new context
@@ -2745,14 +2768,14 @@ function VoiceRoomInner({
       lastSyncedAt: outputsSyncedAt,
       joinedAt,
       seenAt: outputsSeenAt,
-      unseenCount: countNew(generatedFiles, outputsSeenAt),
+      unseenCount: unreadOutputs.size,
       expand: () => setIsFilesModalOpen(true),
     },
     panel: { ...panel, openFile: openFileInPanel },
   }), [messages, generatedFiles, slots, agentUrl, sendJson, currentSessionId, favoritePaths, outputsPreviewPath,
     openOutputsPreview, toggleFavorite, pinError, retryPin, reloadFile, handleCopyFile, handleCopyAllFiles,
     fileCopyFeedback, requestRelist, outputsSyncing, outputsSyncError, outputsSyncedAt, joinedAt, outputsSeenAt,
-    panel, openFileInPanel])
+    unreadOutputs, panel, openFileInPanel])
 
   if (waitingMode) {
     return (
@@ -3437,7 +3460,7 @@ function VoiceRoomInner({
                   title="More controls"
                 >
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
-                  {(autoApprovePermissions || noiseCancelOn || generatedFiles.length > 0) && (
+                  {(autoApprovePermissions || noiseCancelOn || (!outputsVisible && unreadOutputs.size > 0)) && (
                     <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400" />
                   )}
                 </button>
@@ -3449,7 +3472,7 @@ function VoiceRoomInner({
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
                         <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
                         <span className="flex-1">Outputs</span>
-                        {generatedFiles.length > 0 && <span className="text-[11px] text-gray-500">{generatedFiles.length}</span>}
+                        {!outputsVisible && unreadOutputs.size > 0 && <span className="text-[11px] font-semibold text-amber-400">{unreadOutputs.size} new</span>}
                       </button>
                       <button role="menuitem" onClick={() => setAutoApprovePermissions(v => !v)}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
@@ -3811,9 +3834,7 @@ function VoiceRoomInner({
                 <span className="text-sm text-gray-200">Outputs</span>
                 {!outputsVisible && panelData.outputs.unseenCount > 0 ? (
                   <span className="ml-auto text-xs bg-amber-500 text-gray-900 font-semibold px-2 py-0.5 rounded-full">{panelData.outputs.unseenCount} new</span>
-                ) : generatedFiles.length > 0 && (
-                  <span className="ml-auto text-xs bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full">{generatedFiles.length}</span>
-                )}
+                ) : null}
               </button>
 
               {/* Copy messages */}
