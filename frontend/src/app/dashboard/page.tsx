@@ -170,6 +170,13 @@ function prettySessionPreview(raw?: string): { kind: SessionKind; label: string;
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'pipeline'
 
+/** User-facing text for /api/sandbox ownership failures (409 conflict / 503 unverifiable). */
+function machineIssueText(status: number): string {
+  return status === 409
+    ? 'This machine is claimed by another account. Please contact support.'
+    : "We couldn't verify your machine right now. Please retry in a moment."
+}
+
 export default function Dashboard() {
   const router = useRouter()
   const supabase = createSupabaseBrowser()
@@ -300,6 +307,10 @@ export default function Dashboard() {
   const [sandboxAvailable, setSandboxAvailable] = useState(false)
   const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
+  // Visible reason the cloud machine can't be used: /api/sandbox returns 409
+  // (sandbox_id claimed by another account) or 503 (ownership check could not
+  // run). Never auto-provision in either case.
+  const [machineIssue, setMachineIssue] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState(false)
   const [localAgentUrl] = useState('http://localhost:8741')
   // Cloud is the DEFAULT (2026-07-31): most users run the hosted machine; local
@@ -560,6 +571,13 @@ export default function Dashboard() {
           if (!cancelled) retryTimer = setTimeout(() => discover(1), 1500)
           return null
         }
+        // Ownership conflict / unverifiable: say so, and return null so the
+        // auto-provision branch below never runs.
+        if (r.status === 409 || r.status === 503) {
+          if (!cancelled) setMachineIssue(machineIssueText(r.status))
+          return null
+        }
+        if (!cancelled) setMachineIssue(null)
         return r.json()
       })
       .then(d => {
@@ -660,6 +678,11 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'create' }),
       })
+      if (r.status === 409 || r.status === 503) {
+        setMachineIssue(machineIssueText(r.status))
+        setSandboxStatus('error')
+        return
+      }
       const data = await r.json()
       if (data.status === 'running' && data.previewUrl) {
         setSandboxId(data.id)
@@ -1422,6 +1445,13 @@ export default function Dashboard() {
           </div>
         </header>
 
+        {machineIssue && (
+          <div role="alert" className="mx-auto mt-3 w-full max-w-3xl px-4">
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+              {machineIssue}
+            </div>
+          </div>
+        )}
 
         {/* ── Content ──────────────────────────────────
             Desktop (lg+): a two-region workspace — a sticky LEFT SIDEBAR nav
