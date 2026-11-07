@@ -25,11 +25,12 @@
  * gesture), and ended the voice session mid-conversation.
  */
 
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
 import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
+import { MIC_DENIED_EVENT, isMicDenied } from '@/lib/mic-permission'
 
 interface ChatSessionContextValue {
   // ── Connection state ───────────────────────
@@ -728,6 +729,36 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     idleStopped,
   }
 
+  // Bug 7cf00ae6: LiveKitRoom publishes the mic on EVERY signal (re)connect,
+  // so after the browser denied it each reconnect re-asked and re-raised the
+  // warning. VoiceRoom records the denial in sessionStorage; while it stands
+  // the room joins without the mic, and only the user's Try again / unmute
+  // re-asks. Options object is memoized so its identity is stable.
+  const [micDenied, setMicDeniedState] = useState(false)
+  useEffect(() => {
+    const read = () => {
+      try { setMicDeniedState(isMicDenied(window.sessionStorage)) } catch { /* storage blocked */ }
+    }
+    read()
+    window.addEventListener(MIC_DENIED_EVENT, read)
+    return () => window.removeEventListener(MIC_DENIED_EVENT, read)
+  }, [])
+  const audioCapture = useMemo(
+    // AEC rationale (moved from the LiveKitRoom prop):
+    // Browser-side Acoustic Echo Cancellation (AEC) — strips the agent's
+    // TTS audio out of the mic capture BEFORE it gets published to
+    // LiveKit. Root-cause fix for the "agent interrupts itself" loop:
+    // without AEC, TTS plays through device speakers → mic captures the
+    // echo → LiveKit publishes it as user audio → Deepgram classifies it
+    // as speech → agent's user_state_changed handler interrupts its own
+    // TTS. WebRTC supports these as MediaTrackConstraints in all modern
+    // browsers, including iPad Safari. Echo cancellation is the primary
+    // defense; noiseSuppression filters fan/HVAC; autoGainControl
+    // smooths mic level so soft speech still triggers turn detection.
+    () => (micDenied ? false : { echoCancellation: true, noiseSuppression: true, autoGainControl: true }),
+    [micDenied],
+  )
+
   // LiveKit config is stable per session
   const livekitUrl =
     process.env.NEXT_PUBLIC_LIVEKIT_URL || 'wss://your-project.livekit.cloud'
@@ -750,21 +781,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           token={token}
           serverUrl={livekitUrl}
           connect={true}
-          audio={{
-            // Browser-side Acoustic Echo Cancellation (AEC) — strips the agent's
-            // TTS audio out of the mic capture BEFORE it gets published to
-            // LiveKit. Root-cause fix for the "agent interrupts itself" loop:
-            // without AEC, TTS plays through device speakers → mic captures the
-            // echo → LiveKit publishes it as user audio → Deepgram classifies it
-            // as speech → agent's user_state_changed handler interrupts its own
-            // TTS. WebRTC supports these as MediaTrackConstraints in all modern
-            // browsers, including iPad Safari. Echo cancellation is the primary
-            // defense; noiseSuppression filters fan/HVAC; autoGainControl
-            // smooths mic level so soft speech still triggers turn detection.
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          }}
+          audio={audioCapture}
           video={enableVideo}
           onDisconnected={disconnectFromLiveKitLifecycle}
           className="w-full flex justify-center"
