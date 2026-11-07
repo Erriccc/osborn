@@ -4,7 +4,7 @@
 // both render the same honest states (UI#20): images by extension, no literal
 // "Empty file", no infrastructure text, and a retry on errors.
 import { MarkdownMessage, MermaidBlock } from '../../MarkdownMessage'
-import { previewKind, imageSrc, type OutputFile } from '@/lib/outputs-model'
+import { previewKind, imageSrc, LOAD_ERROR_OUTSIDE, type OutputFile } from '@/lib/outputs-model'
 
 const HTML_DOC = (body: string) => `<!DOCTYPE html><html><head><style>html{font-size:16px}body{margin:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#e2e8f0;background:#1a1a2e}table{border-collapse:collapse;width:100%}th,td{border:1px solid #475569;padding:8px 12px;text-align:left}th{background:#334155}h1,h2,h3{color:#f1f5f9}a{color:#60a5fa}code{background:#334155;padding:2px 6px;border-radius:4px;font-size:14px}pre{background:#0f172a;padding:16px;border-radius:8px;overflow-x:auto}</style></head><body>${body}</body></html>`
 const SVG_DOC = (body: string) => `<!DOCTYPE html><html><head><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1a2e;overflow:hidden}svg{width:100%;height:100%;max-width:100vw;max-height:100vh}</style></head><body>${body}</body></html>`
@@ -45,6 +45,15 @@ export function FilePreview({ file, onRetry, compact }: { file: OutputFile; onRe
         </div>
       )
     case 'error':
+      if (file.loadError === LOAD_ERROR_OUTSIDE) {
+        return (
+          <Notice title="Preview not available yet">
+            <div className="max-w-xs leading-relaxed">
+              Osborn saved this file outside the session folder, at <span className="font-mono break-all text-gray-400">{file.filePath}</span>. Ask Osborn to show it, or open it on the machine.
+            </div>
+          </Notice>
+        )
+      }
       return (
         <Notice title="Couldn't load this file">
           {onRetry && (
