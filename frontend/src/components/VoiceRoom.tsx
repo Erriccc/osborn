@@ -28,7 +28,7 @@ import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type Pend
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
-import { PermissionModal, getToolRiskLevel, type PermissionRequest } from './voice/PermissionModal'
+import { getToolRiskLevel, type PermissionRequest, type ApprovalMode } from './voice/PermissionModal'
 import { TextInput, type AttachedFile } from './voice/TextInput'
 import { AgentsPopover, type NamedAgent, type UserAgentDraft } from './voice/AgentsPopover'
 import { SkillsPopover } from './voice/SkillsPanel'
@@ -255,26 +255,29 @@ function VoiceRoomInner({
     setMicDenied(micStore(), denied)
     try { window.dispatchEvent(new Event(MIC_DENIED_EVENT)) } catch { /* SSR */ }
   }, [])
-  // YOLO toggle: when enabled, the frontend intercepts every incoming
-  // permission_request and sends back an immediate allow without showing
-  // the modal. Persisted to localStorage so it survives reloads. Default
-  // OFF. Applied at the data-channel handler in handleDataMessage (see the
-  // permission_request branch below) — the agent still emits requests, we
-  // just auto-respond.
-  const [autoApprovePermissions, setAutoApprovePermissions] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false
-    return localStorage.getItem('osborn-auto-approve-permissions') === 'true'
-  })
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    localStorage.setItem('osborn-auto-approve-permissions', String(autoApprovePermissions))
-  }, [autoApprovePermissions])
-  // Mirror the toggle into a ref so the data-channel handler can read the
-  // latest value without listing autoApprovePermissions in its dependency
-  // array (which would re-subscribe the room on every toggle flip and
-  // momentarily drop incoming messages).
-  const autoApprovePermissionsRef = useRef(autoApprovePermissions)
-  useEffect(() => { autoApprovePermissionsRef.current = autoApprovePermissions }, [autoApprovePermissions])
+  // Session-scoped tool-approval mode — the single visible control (rendered in
+  // the composer) that replaces the three old auto-approve toggles. It is
+  // deliberately NOT persisted to localStorage: it resets to 'ask' on every
+  // reload/new session, which is the fix for the old 'osborn-auto-approve-
+  // permissions' toggle — an unbounded, invisible "Allow all" that survived
+  // every reload.
+  //
+  //   'ask'         → default; every request surfaces the inline approval card.
+  //   'auto-review' → still shows the card (NO auto-approve) but with the full
+  //                   diff/details expanded up front for a fast decision.
+  //   'allow-all'   → auto-approves every request this session (warns once).
+  //
+  // SECURITY: this only auto-answers the *frontend* permission_request. It NEVER
+  // disables the agent-side PreToolUse hook / canUseTool gate. A tool the agent
+  // denies stays denied in every mode — DENY always wins.
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
+  // Mirror the mode into a ref so the data-channel handler reads the latest
+  // value without listing approvalMode in its dependency array (which would
+  // re-subscribe the room on every change and momentarily drop messages).
+  const approvalModeRef = useRef(approvalMode)
+  useEffect(() => { approvalModeRef.current = approvalMode }, [approvalMode])
+  // One-time warning the first time "Allow all" auto-approves this session.
+  const allowAllWarnedRef = useRef(false)
   const [claudeAuthUrl, setClaudeAuthUrl] = useState<string | null>(null)
   const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'waiting_code' | 'submitting' | 'complete' | 'error'>('none')
   const [claudeAuthCode, setClaudeAuthCode] = useState('')
@@ -1805,12 +1808,17 @@ function VoiceRoomInner({
           addMessageRef.current?.('assistant', data.text, undefined, category, undefined, data.messageId != null ? { messageId: data.messageId, chunkIndex: data.chunkIndex } : undefined)
         }
       } else if (data.type === 'permission_request') {
-        // YOLO intercept: if the user has turned on auto-approve, respond
-        // immediately with `allow` and skip the modal entirely. The agent
-        // still sends requests (we don't want to teach it to stop asking —
-        // server-side write safety lives in its PreToolUse hook) we just
-        // answer them instantly here.
-        if (autoApprovePermissionsRef.current) {
+        // Session mode 'allow-all' is the ONLY mode that auto-approves: respond
+        // immediately with `allow` and skip the card. The agent still sends
+        // requests (we don't teach it to stop asking — server-side write safety
+        // lives in its PreToolUse hook); we just answer them instantly here.
+        // 'ask' and 'auto-review' both fall through to the inline card and
+        // require an explicit human decision — DENY still wins server-side.
+        if (approvalModeRef.current === 'allow-all') {
+          if (!allowAllWarnedRef.current) {
+            allowAllWarnedRef.current = true
+            addMessageRef.current?.('system', '⚡ Allow all is on for this session — every tool request is approved automatically until you switch back. This resets when you reload.', undefined, 'log')
+          }
           const filePath = data.input?.file_path
           const payload = new TextEncoder().encode(JSON.stringify({
             type: 'permission_response',
@@ -1818,8 +1826,8 @@ function VoiceRoomInner({
             ...(filePath ? { filePath: String(filePath) } : {}),
           }))
           sendToAgent(payload, { reliable: true })
-          console.log(`⚡ [perm] auto-approved (YOLO on): ${data.toolName}`)
-          addMessageRef.current?.('system', `Auto-approved: ${data.toolName}`, undefined, 'log')
+          console.log(`⚡ [perm] auto-approved (allow-all): ${data.toolName}`)
+          addMessageRef.current?.('system', `Auto-approved (allow all): ${data.toolName}`, undefined, 'log')
           return
         }
         setPendingPermission({
@@ -3377,12 +3385,9 @@ function VoiceRoomInner({
         </button>
       )}
 
-      {pendingPermission && (
-        <PermissionModal
-          permission={pendingPermission}
-          onRespond={handlePermissionResponse}
-        />
-      )}
+      {/* Tool-permission approval is no longer a blocking full-screen modal —
+          it renders as an inline ApprovalCard inside the transcript (ChatPanel
+          below), so the agent pauses one task, not the whole UI. */}
 
       {/* Session browser modal - shows list of previous sessions */}
       {showResumePrompt && (
@@ -3727,7 +3732,7 @@ function VoiceRoomInner({
                   title="More controls"
                 >
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
-                  {(autoApprovePermissions || noiseCancelOn || (!outputsVisible && unreadOutputs.size > 0)) && (
+                  {(approvalMode !== 'ask' || noiseCancelOn || (!outputsVisible && unreadOutputs.size > 0)) && (
                     <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400" />
                   )}
                 </button>
@@ -3741,12 +3746,9 @@ function VoiceRoomInner({
                         <span className="flex-1">Outputs</span>
                         {!outputsVisible && unreadOutputs.size > 0 && <span className="text-[11px] font-semibold text-amber-400">{unreadOutputs.size} new</span>}
                       </button>
-                      <button role="menuitem" onClick={() => setAutoApprovePermissions(v => !v)}
-                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
-                        <svg className={`w-4 h-4 shrink-0 ${autoApprovePermissions ? 'text-amber-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                        <span className="flex-1">Auto-approve tools</span>
-                        <span className={`text-[11px] font-medium ${autoApprovePermissions ? 'text-amber-400' : 'text-gray-500'}`}>{autoApprovePermissions ? 'ON' : 'OFF'}</span>
-                      </button>
+                      {/* Auto-approve is no longer a hidden toggle — the single,
+                          visible, session-scoped "Approvals" mode picker lives in
+                          the composer (see TextInput). */}
                       <button role="menuitem" onClick={() => { setShowHeaderMore(false); toggleNoiseCancel() }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
                         <svg className={`w-4 h-4 shrink-0 ${noiseCancelOn ? 'text-amber-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 18v-6a9 9 0 0118 0v6M3 18a2 2 0 002 2h1a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3zm18 0a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h1a2 2 0 012 2v3z" /></svg>
@@ -3916,6 +3918,9 @@ function VoiceRoomInner({
           onIgnore={handleIgnoreMessage}
           onReplay={handleReplayMessage}
           likedIds={likedMessageIds}
+          pendingPermission={pendingPermission}
+          onPermissionRespond={handlePermissionResponse}
+          reviewMode={approvalMode === 'auto-review'}
         />
 
         {/* Logs drawer */}
@@ -4026,6 +4031,8 @@ function VoiceRoomInner({
           attachedFiles={attachedFiles}
           onAttachFile={handleAttachFile}
           onRemoveFile={handleRemoveFile}
+          approvalMode={approvalMode}
+          onApprovalModeChange={setApprovalMode}
         />
       </div>
 
@@ -4047,17 +4054,9 @@ function VoiceRoomInner({
                   COLLAPSE here — the menu is the backup for every viewport-cut
                   control, nothing just disappears. */}
 
-              {/* Auto-approve toggle — hidden from mobile header (sm+ only) */}
-              <button onClick={() => setAutoApprovePermissions(v => !v)}
-                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
-                <svg className={`w-5 h-5 ${autoApprovePermissions ? 'text-amber-400' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                <span className="text-sm text-gray-200">Auto-approve tools</span>
-                <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${autoApprovePermissions ? 'bg-amber-500/25 text-amber-300 border border-amber-500/30' : 'bg-gray-800 text-gray-500 border border-gray-700'}`}>
-                  {autoApprovePermissions ? 'ON' : 'OFF'}
-                </span>
-              </button>
+              {/* Auto-approve is no longer a hidden toggle — the single, visible,
+                  session-scoped "Approvals" mode picker lives in the composer
+                  (see TextInput), so there's nothing to mirror here. */}
 
               {/* Noise filter — moved here from the composer strip (3-6-9).
                   The count chip is the send-anyway recovery for the latest
