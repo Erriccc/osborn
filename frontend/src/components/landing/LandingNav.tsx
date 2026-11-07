@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
+import { LANDING_DESKTOP_QUERY, shouldLockBodyScroll } from '@/lib/nav-scroll-lock'
 
 const LINKS = [
   { href: '#how-it-works', label: 'How it works' },
@@ -16,6 +17,7 @@ export default function LandingNav() {
   const [scrolled, setScrolled] = useState(false)
   const [open, setOpen] = useState(false)
   const [authed, setAuthed] = useState(false)
+  const [isDesktop, setIsDesktop] = useState(false)
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 12)
@@ -35,22 +37,40 @@ export default function LandingNav() {
     return () => sub.subscription.unsubscribe()
   }, [])
 
-  // Lock body scroll while the mobile sheet is open
+  // Track the lg breakpoint. iPad rotate (834 -> 1194) crosses it: CSS hides
+  // the sheet AND the hamburger, so the menu must close and the scroll lock
+  // must release. Listen to the media query (breakpoint change) plus resize and
+  // orientationchange (iOS Safari doesn't always fire `change` on rotate).
   useEffect(() => {
-    if (open) {
-      const prev = document.body.style.overflow
-      document.body.style.overflow = 'hidden'
-      return () => { document.body.style.overflow = prev }
+    const mq = window.matchMedia(LANDING_DESKTOP_QUERY)
+    const sync = () => {
+      const desktop = mq.matches
+      setIsDesktop(desktop)
+      if (desktop) setOpen(false)
     }
-  }, [open])
-
-  // iPad rotate: crossing into lg hides the sheet via CSS but left the page
-  // scroll-locked. Close it explicitly so the body-overflow lock clears.
-  useEffect(() => {
-    const onResize = () => { if (window.matchMedia('(min-width: 1024px)').matches) setOpen(false) }
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    sync()
+    if (mq.addEventListener) mq.addEventListener('change', sync)
+    else mq.addListener(sync) // Safari < 14
+    window.addEventListener('resize', sync)
+    window.addEventListener('orientationchange', sync)
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', sync)
+      else mq.removeListener(sync)
+      window.removeEventListener('resize', sync)
+      window.removeEventListener('orientationchange', sync)
+    }
   }, [])
+
+  // Lock body scroll only while the mobile sheet is open below lg. The cleanup
+  // restores the previous value when the sheet closes, the breakpoint flips to
+  // desktop, or the nav unmounts (route change).
+  const lockScroll = shouldLockBodyScroll(open, isDesktop)
+  useEffect(() => {
+    if (!lockScroll) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [lockScroll])
 
   return (
     <header
@@ -64,7 +84,7 @@ export default function LandingNav() {
     >
       <nav className="mx-auto max-w-[1200px] px-6 h-16 flex items-center justify-between">
         {/* Brand */}
-        <Link href="/" className="flex items-center gap-2.5 group" aria-label="Voice Native home">
+        <Link href="/" className="flex items-center gap-2.5 group shrink-0 whitespace-nowrap" aria-label="Voice Native home">
           <OrbMark size={28} />
           <span className="font-display text-[var(--text-primary)] text-[20px] font-semibold tracking-[-0.02em]">
             Voice Native
@@ -72,7 +92,7 @@ export default function LandingNav() {
         </Link>
 
         {/* Center links (desktop) */}
-        <ul className="hidden lg:flex items-center gap-8">
+        <ul className="hidden lg:flex items-center gap-6 xl:gap-8 whitespace-nowrap min-w-0">
           {LINKS.map((l) => (
             <li key={l.href}>
               <a
@@ -126,7 +146,7 @@ export default function LandingNav() {
         {/* Hamburger (mobile) */}
         <button
           type="button"
-          className="lg:hidden w-10 h-10 -mr-2 flex flex-col items-center justify-center gap-[5px]"
+          className="lg:hidden w-11 h-11 -mr-2 shrink-0 flex flex-col items-center justify-center gap-[5px]"
           aria-label={open ? 'Close menu' : 'Open menu'}
           aria-expanded={open}
           onClick={() => setOpen((o) => !o)}
@@ -149,21 +169,21 @@ export default function LandingNav() {
       {/* Mobile sheet */}
       {open && (
         <div
-          className="lg:hidden fixed inset-0 top-16 z-40"
+          className="lg:hidden fixed inset-0 top-16 z-40 overflow-y-auto overscroll-contain"
           style={{ background: 'var(--background)' }}
         >
-          <div className="px-6 py-8 flex flex-col gap-6 border-t border-[var(--border-subtle)]">
+          <div className="mx-auto w-full max-w-[560px] px-6 py-8 flex flex-col gap-2 border-t border-[var(--border-subtle)]">
             {LINKS.map((l) => (
               <a
                 key={l.href}
                 href={l.href}
                 onClick={() => setOpen(false)}
-                className="font-mono text-[14px] uppercase tracking-[0.08em] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                className="min-h-[44px] flex items-center font-mono text-[14px] uppercase tracking-[0.08em] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
               >
                 {l.label}
               </a>
             ))}
-            <div className="h-px bg-[var(--border-subtle)] my-2" />
+            <div className="h-px bg-[var(--border-subtle)] my-3" />
             {authed ? (
               <Link
                 href="/dashboard"
@@ -183,7 +203,7 @@ export default function LandingNav() {
                 <Link
                   href="/login"
                   onClick={() => setOpen(false)}
-                  className="font-mono text-[14px] uppercase tracking-[0.08em] text-[var(--text-secondary)]"
+                  className="min-h-[44px] flex items-center font-mono text-[14px] uppercase tracking-[0.08em] text-[var(--text-secondary)]"
                 >
                   Sign in
                 </Link>
