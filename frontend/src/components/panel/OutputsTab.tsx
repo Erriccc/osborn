@@ -10,6 +10,7 @@ import { usePanelData, type PanelData } from './PanelDataContext'
 import { JustMade } from './outputs/JustMade'
 import { OutputRow } from './outputs/OutputRow'
 import { FilePreview } from './outputs/FilePreview'
+import { FavoriteRecovery } from './outputs/FavoriteRecovery'
 import {
   groupOutputs, groupByProject, searchOutputs, summarize, isNew, fmtSynced, projectOf,
   type OutputFile,
@@ -131,6 +132,9 @@ export function OutputsTab({ active }: PanelTabProps) {
           )}
         </div>
         <div className="flex-1 overflow-y-auto p-4">
+          <FavoriteRecovery file={previewFile} pinned={pinned.has(previewFile.filePath)}
+            onRemove={() => outputs.removeFavorite(previewFile as GeneratedFile)}
+            onRegenerate={() => outputs.regenerateFile(previewFile as GeneratedFile)} />
           <FilePreview file={previewFile} compact onRetry={() => outputs.reloadFile(previewFile.filePath)} />
         </div>
       </div>
