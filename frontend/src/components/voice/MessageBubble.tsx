@@ -286,7 +286,7 @@ export const MessageBubble = React.memo(function MessageBubble({
       )}
 
       <div
-        className={`max-w-[92%] sm:max-w-[85%] transition-all ${
+        className={`min-w-0 max-w-[92%] sm:max-w-[85%] transition-all ${
           isSystem
             ? 'bg-amber-500/10 text-amber-200/90 border border-amber-500/20 rounded-lg px-3 py-1.5'
             : message.toolName === 'fast-brain'
