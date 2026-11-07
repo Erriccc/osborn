@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { formatTime, groupSessionsByDate, deriveSessionTitle, type SessionInfo } from '@/lib/sessions'
+import { formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sessionDisplayTitle, sortSessionsByActivity, type SessionInfo } from '@/lib/sessions'
+import { stripSessionWrappers } from '@/lib/transcript-clean'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 
 type Provider = 'gemini' | 'openai'
@@ -100,7 +101,7 @@ export default function SessionBrowser({
       const baseUrl = url.replace(/\/+$/, '')
       const res = await fetch(`${baseUrl}/sessions`, { signal: AbortSignal.timeout(5000) })
       const data = await res.json()
-      setSessions(data.sessions || [])
+      setSessions(sortSessionsByActivity<SessionInfo>(data.sessions || []))
       setAgentConnected(true)
       setHasFetched(true)
     } catch {
@@ -124,6 +125,7 @@ export default function SessionBrowser({
     if (!searchQuery.trim()) return sessions
     const q = searchQuery.toLowerCase()
     return sessions.filter(s =>
+      s.title?.toLowerCase().includes(q) ||
       s.lastMessage?.toLowerCase().includes(q) ||
       s.sessionId.toLowerCase().includes(q)
     )
@@ -505,38 +507,38 @@ export default function SessionBrowser({
                 <span className="text-sm font-medium text-gray-500 uppercase tracking-wider">{group.label}</span>
               </div>
               <div className="space-y-1.5 px-1">
-                {group.sessions.map((session) => (
+                {group.sessions.map((session) => { const preview = stripSessionWrappers(session.lastMessage); return (
                   <div
                     key={session.sessionId}
                     className="relative rounded-xl border border-gray-800/50 bg-gray-800/50 hover:border-violet-500/30 hover:bg-gray-800/70 transition-all group"
                   >
                     <button
                       onClick={() => handleJoin(session.sessionId, session.cwd)}
-                      title={session.lastMessage || undefined}
+                      title={sessionDisplayTitle(session)}
                       className="w-full text-left p-4"
                     >
                       <div className="flex items-start justify-between gap-3 pr-8">
                         <p className="text-sm font-semibold text-gray-100 group-hover:text-white transition-colors truncate flex-1">
-                          {deriveSessionTitle(session.lastMessage)}
+                          {deriveSessionTitle(session)}
                         </p>
                         <span className="text-xs text-gray-500 shrink-0 mt-0.5">{session.messageCount} msgs</span>
                       </div>
-                      {session.lastMessage && (
+                      {preview && (
                         <p className="text-xs text-gray-500 mt-0.5 truncate pr-1">
-                          {session.lastMessage}
+                          {preview}
                         </p>
                       )}
-                      <p className="text-xs text-gray-500 mt-1.5">{formatTime(session.timestamp)}</p>
+                      <p className="text-xs text-gray-500 mt-1.5">{formatTime(sessionActivityTime(session))}</p>
                     </button>
                     <button
-                      onClick={(e) => { e.stopPropagation(); setShareTarget({ sessionId: session.sessionId, title: session.lastMessage || 'Shared session' }); setShareEmail(''); setShareMsg(null) }}
+                      onClick={(e) => { e.stopPropagation(); setShareTarget({ sessionId: session.sessionId, title: sessionDisplayTitle(session) }); setShareEmail(''); setShareMsg(null) }}
                       title="Share this session with another user"
                       className="absolute top-2.5 right-2.5 p-1.5 rounded-lg text-gray-500 hover:text-violet-400 hover:bg-gray-700/60 opacity-60 sm:opacity-0 group-hover:opacity-100 transition-all"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
                     </button>
                   </div>
-                ))}
+                )})}
               </div>
             </div>
           ))
