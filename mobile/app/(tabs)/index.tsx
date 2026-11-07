@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native'
 import { type AgentSession, getServerUrl, listSessions, relativeTime } from '../../lib/agent'
+import { mobileSessionActivityTime, mobileSessionTitle, sortMobileSessions } from '../../lib/session-title'
 
 /**
  * Dashboard (Sessions) — Phase 2: REAL data. Resolves the user's agent URL
@@ -28,7 +29,7 @@ export default function Dashboard() {
       const url = await getServerUrl()
       if (!url) { setState('no-machine'); return }
       const list = await listSessions(url)
-      setSessions(list)
+      setSessions(sortMobileSessions(list))
       setState('ready')
     } catch {
       setState('error')
@@ -77,7 +78,7 @@ function NewSessionButton() {
 
 function Row({ session }: { session: AgentSession }) {
   const router = useRouter()
-  const title = (session.lastMessage || 'New conversation').replace(/\s+/g, ' ').trim()
+  const title = mobileSessionTitle(session)
   const where = session.projectSlug || session.cwd.split('/').pop() || 'workspace'
   return (
     <Pressable
@@ -88,7 +89,7 @@ function Row({ session }: { session: AgentSession }) {
       <View style={styles.rowText}>
         <Text style={styles.rowTitle} numberOfLines={1}>{title}</Text>
         <Text style={styles.rowSub} numberOfLines={1}>
-          {where} · {relativeTime(session.timestamp)} · {session.messageCount} msg
+          {where} · {relativeTime(mobileSessionActivityTime(session))} · {session.messageCount} msg
         </Text>
       </View>
       <Text style={styles.chevron}>›</Text>
