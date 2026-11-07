@@ -10,6 +10,7 @@
  * tab's pending typed messages. Pure; the caller holds the pending list.
  */
 import { cleanSessionText, stripSessionWrappers } from './transcript-clean'
+import { isControlNotice } from './control-text'
 
 export const TYPED_ECHO_WINDOW_MS = 2 * 60 * 1000
 const MAX_PENDING = 20
@@ -74,8 +75,9 @@ export function takeTypedEcho(
 }
 
 /** Text for a "You" bubble: the shared display cleaner, or null to hide the
- *  bubble when nothing the user actually said remains. */
+ *  bubble when nothing the user actually said remains (control notices
+ *  included, bug 14bedf48). */
 export function userBubbleText(text: string | null | undefined): string | null {
-  if (stripSessionWrappers(text) === null) return null
+  if (isControlNotice(text)) return null
   return cleanSessionText(text)
 }
