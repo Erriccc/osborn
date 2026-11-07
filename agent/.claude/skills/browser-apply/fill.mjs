@@ -1,25 +1,27 @@
 #!/usr/bin/env node
-// browser-apply secret filler. Reads candidate values from a mode-600 env file and types them into
+// browser-apply secret filler. Reads candidate values from a mode-600 file and types them into
 // the browser in THIS process, so the values never appear in tool output or model context.
 //
 //   node fill.mjs check
 //       Verifies the secret file (regular file, not a symlink, owned by you, chmod 600), prints
-//       variable NAMES only, and reports whether the loopback CDP browser is reachable.
-//   node fill.mjs fill [--url-contains S] NAME SELECTOR [NAME SELECTOR ...]
-//       Connects to the already-open browser over CDP and fills each SELECTOR with the value of NAME,
-//       on the most recent page whose host is allowlisted (and whose URL contains S, if given).
-//       Example: node fill.mjs fill CANDIDATE_EMAIL 'input[type="email"]'
+//       variable NAMES only, and whether the loopback CDP browser is reachable.
+//   node fill.mjs fill --confirm-host HOST NAME SELECTOR [NAME SELECTOR ...]
+//       Attaches to the already-open browser over loopback CDP and fills each SELECTOR with the
+//       value of NAME on the most recent https page whose host is EXACTLY HOST. HOST is the host the
+//       user just confirmed out loud; it is visible in the command the user approves.
+//       Example: node fill.mjs fill --confirm-host acme.wd1.myworkdayjobs.com CANDIDATE_EMAIL 'input[type="email"]'
 //
-// Environment (no CLI overrides, so the target cannot be redirected from a command line):
-//   CANDIDATE_ENV_FILE      secret file, default ~/.osborn/candidate.env (KEY=VALUE lines, # comments)
-//   CANDIDATE_CDP_URL       CDP endpoint, default http://127.0.0.1:9222; must be loopback
-//   CANDIDATE_ALLOWED_HOSTS comma-separated page hosts that may receive values, default myworkdayjobs.com
-//                           (a host matches itself and its subdomains); pages must be https
+// Config comes from ONE place the model cannot redirect: the fixed file
+// <passwd home>/.osborn/candidate.env (home from the OS user database, not $HOME). The helper reads
+// NO environment variables and has no path or URL options. Besides the CANDIDATE_* values, that file
+// may set CANDIDATE_CDP_URL (loopback only, default http://127.0.0.1:9222), edited only by the user.
+// Each value is written inside the page in one synchronous step that first checks the element type
+// (password only into <input type=password>) and that the element's own frame is https on HOST.
 // The helper never prints a value.
 import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
+import { userInfo } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -34,13 +36,13 @@ export const EXPECTED_VARS = [
   'CANDIDATE_STATE',
   'CANDIDATE_ZIP',
 ]
-
+export const CONFIG_KEYS = ['CANDIDATE_CDP_URL']
 export const DEFAULT_CDP_URL = 'http://127.0.0.1:9222'
-export const DEFAULT_ALLOWED_HOSTS = ['myworkdayjobs.com']
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
 
-export function defaultEnvPath() {
-  return process.env.CANDIDATE_ENV_FILE || join(homedir(), '.osborn', 'candidate.env')
+/** Fixed secret-file path. Uses the passwd home directory so $HOME cannot redirect it. */
+export function secretPath() {
+  return join(userInfo().homedir, '.osborn', 'candidate.env')
 }
 
 export function parseEnv(text) {
@@ -57,7 +59,8 @@ export function parseEnv(text) {
   return out
 }
 
-export function loadCandidateEnv(path = defaultEnvPath()) {
+/** Reads and validates a secret file. The CLI only ever calls this with secretPath(). */
+export function loadCandidateEnv(path) {
   let st
   try { st = lstatSync(path) } catch { throw new Error(`secret file not found: ${path} (copy candidate.example.env there and chmod 600)`) }
   if (st.isSymbolicLink()) throw new Error(`refusing to read ${path}: it is a symlink; use a regular file`)
@@ -71,41 +74,98 @@ export function loadCandidateEnv(path = defaultEnvPath()) {
   return parseEnv(readFileSync(path, 'utf8'))
 }
 
-/** Returns the CDP URL from the environment, or throws if it is not a loopback http(s)/ws(s) URL. */
-export function resolveCdpUrl(raw = process.env.CANDIDATE_CDP_URL || DEFAULT_CDP_URL) {
+/** Validates a CDP URL (from the secret file or the default). Throws unless loopback http(s)/ws(s). */
+export function resolveCdpUrl(raw) {
   let u
-  try { u = new URL(raw) } catch { throw new Error('CANDIDATE_CDP_URL is not a valid URL') }
+  try { u = new URL(raw || DEFAULT_CDP_URL) } catch { throw new Error('CANDIDATE_CDP_URL is not a valid URL') }
   if (!['http:', 'https:', 'ws:', 'wss:'].includes(u.protocol)) throw new Error('CANDIDATE_CDP_URL must be http(s) or ws(s)')
   if (u.username || u.password) throw new Error('CANDIDATE_CDP_URL must not carry credentials')
-  if (!LOOPBACK_HOSTS.has(u.hostname)) throw new Error('refusing CANDIDATE_CDP_URL: host is not loopback (127.0.0.1, localhost or ::1)')
+  if (!LOOPBACK_HOSTS.has(u.hostname)) throw new Error('refusing CDP URL: host is not loopback (127.0.0.1, localhost or ::1)')
   return u.href.replace(/\/$/, '')
 }
 
-export function allowedHosts(raw = process.env.CANDIDATE_ALLOWED_HOSTS) {
-  const list = (raw ?? '').split(',').map(s => s.trim().toLowerCase().replace(/^\.+/, '')).filter(Boolean)
-  return list.length ? list : DEFAULT_ALLOWED_HOSTS
+/** CDP URL comes only from the validated secret file, falling back to the hardcoded default. */
+export function cdpFrom(fileEnv) {
+  return resolveCdpUrl(fileEnv.CANDIDATE_CDP_URL)
 }
 
-export function hostAllowed(pageUrl, hosts = allowedHosts()) {
+/** Validates the --confirm-host value: a bare hostname (no scheme, port, path or wildcard). */
+export function normalizeConfirmHost(raw) {
+  const h = String(raw ?? '').trim().toLowerCase()
+  if (!h) throw new Error('missing --confirm-host HOST (ask the user to confirm the site first)')
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)) {
+    throw new Error('--confirm-host must be a bare hostname like acme.wd1.myworkdayjobs.com')
+  }
+  return h
+}
+
+/** True only for an https URL whose hostname is EXACTLY host. */
+export function hostMatches(pageUrl, host) {
   let u
   try { u = new URL(pageUrl) } catch { return false }
-  if (u.protocol !== 'https:') return false
-  const h = u.hostname.toLowerCase()
-  return hosts.some(a => h === a || h.endsWith('.' + a))
+  return u.protocol === 'https:' && u.hostname.toLowerCase() === host
 }
 
-/** Picks the most recent page whose host is allowlisted (and URL contains urlContains, if set). Throws otherwise. */
-export function selectPage(pages, hosts = allowedHosts(), urlContains = '') {
+/**
+ * Decides whether value NAME may be written into an element, from facts gathered in the element's
+ * own frame. Pure and self-contained (no outer references): it is also serialized into the page.
+ * facts: { tagName, type, href } where href is el.ownerDocument.location.href.
+ */
+export function fieldVerdict(name, facts, host) {
+  let u
+  try { u = new URL(facts.href) } catch { return { ok: false, reason: 'frame has no valid URL' } }
+  if (u.protocol !== 'https:') return { ok: false, reason: 'frame is not https' }
+  if (u.hostname.toLowerCase() !== host) return { ok: false, reason: 'frame host is not the confirmed host' }
+  const tag = String(facts.tagName || '').toUpperCase()
+  const type = String(facts.type || '').toLowerCase()
+  const allow = {
+    CANDIDATE_PASSWORD: ['password'],
+    CANDIDATE_EMAIL: ['email', 'text'],
+    CANDIDATE_PHONE: ['tel', 'text'],
+    CANDIDATE_ZIP: ['text', 'number'],
+  }
+  const types = allow[name] || ['text']
+  if (tag === 'TEXTAREA' && name !== 'CANDIDATE_PASSWORD' && name !== 'CANDIDATE_EMAIL') return { ok: true }
+  if (tag !== 'INPUT') return { ok: false, reason: `target is <${tag.toLowerCase() || '?'}>, not <input>` }
+  if (!types.includes(type)) return { ok: false, reason: `${name} may only go into input type ${types.join('|')}, target is type ${type || '?'}` }
+  return { ok: true }
+}
+
+// Runs inside the page via locator.evaluate: gathers facts from the element's own frame, applies
+// fieldVerdict, and only then sets the value and fires input/change. One synchronous call, so the
+// frame cannot navigate between the check and the write.
+export const IN_PAGE_FILL = new Function('el', 'arg', `
+  const fieldVerdict = ${fieldVerdict.toString()};
+  const doc = el && el.ownerDocument;
+  const view = doc && doc.defaultView;
+  const facts = {
+    tagName: el && el.tagName,
+    type: el && el.tagName === 'INPUT' ? String(el.type || '').toLowerCase() : '',
+    href: doc && doc.location ? String(doc.location.href) : '',
+  };
+  const v = fieldVerdict(arg.name, facts, arg.host);
+  if (!v.ok) return { ok: false, reason: v.reason };
+  const proto = el.tagName === 'TEXTAREA' ? view.HTMLTextAreaElement.prototype : view.HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+  if (typeof el.focus === 'function') el.focus();
+  setter.call(el, arg.value);
+  el.dispatchEvent(new view.Event('input', { bubbles: true }));
+  el.dispatchEvent(new view.Event('change', { bubbles: true }));
+  return { ok: true };
+`)
+
+/** Picks the most recent https page whose host is exactly host. Throws otherwise. */
+export function selectPage(pages, host) {
   if (!pages.length) throw new Error('no open page in the CDP browser')
-  const ok = pages.filter(p => hostAllowed(p.url(), hosts) && (!urlContains || p.url().includes(urlContains)))
-  if (!ok.length) throw new Error(`refusing to fill: no open https page on an allowed host (${hosts.join(', ')})${urlContains ? ` containing "${urlContains}"` : ''}`)
+  const ok = pages.filter(p => hostMatches(p.url(), host))
+  if (!ok.length) throw new Error(`refusing to fill: no open https page on ${host}`)
   return ok.at(-1)
 }
 
 export function mask(msg, env) {
   let s = String(msg)
-  for (const v of Object.values(env)) {
-    if (!v) continue
+  for (const [k, v] of Object.entries(env)) {
+    if (!v || CONFIG_KEYS.includes(k)) continue
     const forms = new Set([v, JSON.stringify(v).slice(1, -1), encodeURIComponent(v)])
     for (const f of forms) {
       if (!f || !s.includes(f)) continue
@@ -117,12 +177,28 @@ export function mask(msg, env) {
   return s
 }
 
-export async function probeCdp(cdp, timeoutMs = 1500) {
-  const httpBase = cdp.replace(/^ws(s?):/, 'http$1:')
+/**
+ * Resolves the browser WebSocket endpoint ourselves and requires it to be loopback too, so a
+ * /json/version response cannot point Playwright at a remote host. Playwright's CDP-connected
+ * Browser does not expose the endpoint it used, so this is checked before connecting, and the
+ * validated ws:// URL is what we hand to connectOverCDP.
+ */
+export async function resolveWsEndpoint(cdp, fetchImpl = fetch, timeoutMs = 1500) {
+  if (/^wss?:/.test(cdp)) return resolveCdpUrl(cdp)
+  let ws
   try {
-    const r = await fetch(`${httpBase}/json/version`, { signal: AbortSignal.timeout(timeoutMs) })
-    return r.ok
-  } catch { return false }
+    const r = await fetchImpl(`${cdp}/json/version`, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error' })
+    if (!r.ok) throw new Error('bad status')
+    ws = (await r.json()).webSocketDebuggerUrl
+  } catch {
+    throw new Error(`no browser reachable over CDP at ${cdp}; ask the user to type the secret fields themselves`)
+  }
+  if (typeof ws !== 'string' || !/^wss?:/.test(ws)) throw new Error('CDP /json/version returned no WebSocket endpoint')
+  return resolveCdpUrl(ws)
+}
+
+export async function probeCdp(cdp, fetchImpl = fetch) {
+  try { await resolveWsEndpoint(cdp, fetchImpl); return true } catch { return false }
 }
 
 async function loadChromium() {
@@ -130,7 +206,7 @@ async function loadChromium() {
   const require = createRequire(import.meta.url)
   let globalRoot = ''
   try { globalRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { /* npm missing */ }
-  for (const mod of ['playwright', 'playwright-core']) {
+  for (const mod of ['playwright-core', 'playwright']) {
     try { const m = await import(mod); if (m.chromium) return m.chromium } catch { /* try next */ }
     try {
       const resolved = require.resolve(mod, { paths: [process.cwd(), globalRoot].filter(Boolean) })
@@ -139,40 +215,48 @@ async function loadChromium() {
       if (chromium) return chromium
     } catch { /* try next */ }
   }
-  throw new Error('playwright not installed: run `npm i -g playwright` (or install it in the current directory)')
+  throw new Error('playwright-core not installed: run `npm i -g playwright-core`')
 }
 
-async function fill(args, env) {
-  let urlContains = ''
+export function parseFillArgs(args) {
+  let confirmHost
   const pairs = []
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
-    if (a === '--url-contains') { urlContains = args[++i] ?? ''; continue }
-    if (a.startsWith('--')) throw new Error(`unknown option ${a.slice(0, 40)} (the CDP URL comes only from CANDIDATE_CDP_URL)`)
+    if (a === '--confirm-host') { confirmHost = args[++i]; continue }
+    if (a.startsWith('--')) throw new Error(`unknown option ${a.slice(0, 40)}`)
     const selector = args[++i]
     if (!selector) throw new Error(`missing selector after ${a.slice(0, 40)} (want NAME SELECTOR pairs)`)
     pairs.push([a, selector])
   }
+  const host = normalizeConfirmHost(confirmHost)
   if (!pairs.length) throw new Error('nothing to fill: pass NAME SELECTOR pairs')
+  return { host, pairs }
+}
+
+/** fill command. fileEnv is the parsed secret file; deps are injectable for tests only. */
+export async function runFill(args, fileEnv, deps = {}) {
+  const log = deps.log ?? console.log
+  const { host, pairs } = parseFillArgs(args)
   for (const [name] of pairs) {
-    if (!/^CANDIDATE_[A-Z0-9_]+$/.test(name)) throw new Error(`only CANDIDATE_* names may be filled: ${name.slice(0, 40)}`)
-    if (!env[name]) throw new Error(`${name} is not set in the secret file`)
+    if (!/^CANDIDATE_[A-Z0-9_]+$/.test(name) || CONFIG_KEYS.includes(name)) throw new Error(`only CANDIDATE_* values may be filled: ${name.slice(0, 40)}`)
+    if (!fileEnv[name]) throw new Error(`${name} is not set in the secret file`)
   }
   // Validate the target before loading Playwright or opening any connection.
-  const cdp = resolveCdpUrl()
-  const hosts = allowedHosts()
-  const chromium = await loadChromium()
+  const cdp = cdpFrom(fileEnv)
+  const ws = await resolveWsEndpoint(cdp, deps.fetchImpl ?? fetch)
+  const chromium = await (deps.loadChromium ?? loadChromium)()
   let browser
-  try { browser = await chromium.connectOverCDP(cdp) } catch {
+  try { browser = await chromium.connectOverCDP(ws) } catch {
     throw new Error(`no browser reachable over CDP at ${cdp}; ask the user to type the secret fields themselves`)
   }
   try {
-    const page = selectPage(browser.contexts().flatMap(c => c.pages()), hosts, urlContains)
+    const page = selectPage(browser.contexts().flatMap(c => c.pages()), host)
     for (const [name, selector] of pairs) {
-      // Re-check right before each fill in case the page navigated away.
-      if (!hostAllowed(page.url(), hosts)) throw new Error('refusing to fill: page navigated off the allowed host')
-      await page.locator(selector).first().fill(env[name], { timeout: 10_000 })
-      console.log(`filled ${name} -> ${selector}`)
+      log(`about to fill ${name} on ${host}`)
+      const res = await page.locator(selector).first().evaluate(IN_PAGE_FILL, { name, value: fileEnv[name], host }, { timeout: 10_000 })
+      if (!res || !res.ok) throw new Error(`refusing to fill ${name} -> ${selector}: ${res?.reason ?? 'no result'}`)
+      log(`filled ${name} -> ${selector}`)
     }
   } finally {
     // connectOverCDP: close() detaches this client only; the user's browser stays open.
@@ -180,28 +264,29 @@ async function fill(args, env) {
   }
 }
 
+/** check command output lines (names and config only, never values). */
+export async function checkReport(path, fileEnv, fetchImpl = fetch) {
+  const set = EXPECTED_VARS.filter(k => fileEnv[k])
+  const missing = EXPECTED_VARS.filter(k => !fileEnv[k])
+  const cdp = cdpFrom(fileEnv)
+  const lines = [`ok: ${path} is a regular file owned by you, mode 600`, `set: ${set.join(', ') || '(none)'}`]
+  if (missing.length) lines.push(`missing: ${missing.join(', ')}`)
+  lines.push(`cdp: ${(await probeCdp(cdp, fetchImpl)) ? 'reachable' : 'unreachable'} (${cdp})`)
+  return lines
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2)
-  const path = defaultEnvPath()
-  let env = {}
+  const path = secretPath()
+  let fileEnv = {}
   try {
-    env = loadCandidateEnv(path)
-    if (cmd === 'check') {
-      const set = EXPECTED_VARS.filter(k => env[k])
-      const missing = EXPECTED_VARS.filter(k => !env[k])
-      console.log(`ok: ${path} is a regular file owned by you, mode 600`)
-      console.log(`set: ${set.join(', ') || '(none)'}`)
-      if (missing.length) console.log(`missing: ${missing.join(', ')}`)
-      console.log(`allowed hosts: ${allowedHosts().join(', ')}`)
-      const cdp = resolveCdpUrl()
-      console.log(`cdp: ${(await probeCdp(cdp)) ? 'reachable' : 'unreachable'} (${cdp})`)
-      return
-    }
-    if (cmd === 'fill') return await fill(rest, env)
-    console.error('usage: node fill.mjs check | fill [--url-contains S] NAME SELECTOR [NAME SELECTOR ...]')
+    fileEnv = loadCandidateEnv(path)
+    if (cmd === 'check') { for (const l of await checkReport(path, fileEnv)) console.log(l); return }
+    if (cmd === 'fill') return await runFill(rest, fileEnv)
+    console.error('usage: node fill.mjs check | fill --confirm-host HOST NAME SELECTOR [NAME SELECTOR ...]')
     process.exitCode = 2
   } catch (e) {
-    console.error(`browser-apply fill: ${mask(e?.message ?? e, env)}`)
+    console.error(`browser-apply fill: ${mask(e?.message ?? e, fileEnv)}`)
     process.exitCode = 1
   }
 }
