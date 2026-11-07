@@ -17,7 +17,7 @@ import LiveClock from '@/components/LiveClock'
 import NotesCard from '@/components/NotesCard'
 import UnifiedCreate from '@/components/dashboard/UnifiedCreate'
 import ActivityFeed from '@/components/dashboard/ActivityFeed'
-import LibraryBriefs from '@/components/dashboard/LibraryBriefs'
+import FeedStream from '@/components/dashboard/FeedStream'
 import { ReportBugModal } from '@/components/ReportBugModal'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
@@ -1529,8 +1529,10 @@ export default function Dashboard() {
           {/* Notes + previous sessions — one bounded chronological feed */}
           <ActivityFeed sessions={sessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} />
 
-          {/* Briefs from sessions — desktop/landscape only (Google Drive Recent model) */}
-          <LibraryBriefs />
+          {/* COMPLETIONS stream (dashboard-as-feed, phase 1) — finished work with
+              proof: content_items briefs + finished sessions as passive cards,
+              newest first. Desktop/landscape only. Replaces the old <LibraryBriefs/>. */}
+          <FeedStream kind="completions" sessions={sessions} onResume={(id, cwd) => startChat(id, cwd)} />
 
           {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary
               actions visible: the amber CTA above + these two. Each is a single
