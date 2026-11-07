@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react'
 import {
   useVoiceAssistant,
   useDataChannel,
@@ -21,6 +21,7 @@ import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, sanitizeUserTranscript, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
+import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { PermissionModal, getToolRiskLevel, type PermissionRequest } from './voice/PermissionModal'
@@ -206,6 +207,15 @@ function VoiceRoomInner({
   // MediaDevicesError was log-only and a denied mic meant an eternal spinner.
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [micError, setMicError] = useState<MicErrorKind | null>(null)
+  // Bug 0e5479b6: transient resume status, outside the transcript (never
+  // copied or persisted); first assistant message or 30s clears it.
+  const [resumeChip, dispatchResumeChip] = useReducer(resumeChipReducer, null)
+  useEffect(() => {
+    if (!resumeChip) return
+    const left = Math.max(0, resumeChip.startedAt + RESUME_CHIP_TIMEOUT_MS - Date.now())
+    const id = setTimeout(() => dispatchResumeChip({ type: 'tick', now: Date.now() }), left + 50)
+    return () => clearTimeout(id)
+  }, [resumeChip])
   // Bug 7cf00ae6: once the browser denied the mic, nothing re-requests it on
   // its own (agent 'listening', session gate, LiveKit reconnect) — only the
   // user's explicit Try again / unmute. Flag lives in sessionStorage so the
@@ -1283,6 +1293,7 @@ function VoiceRoomInner({
       chunkIndex: extra?.chunkIndex,
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
+    if (role === 'assistant') dispatchResumeChip({ type: 'assistant' })
     setMessages((prev) => [...prev, newMessage])
   }, [])
 
@@ -1644,14 +1655,16 @@ function VoiceRoomInner({
         if (data.success) {
           console.log('🔄 Session resume set:', data.sessionId)
           setCurrentSessionId(data.sessionId)
-          addMessageRef.current?.('system', '🔄 Resuming session...')
+          dispatchResumeChip({ type: 'start', label: resumeChipLabel(), now: Date.now() })
         } else {
           console.log('❌ Session resume failed:', data.error)
+          dispatchResumeChip({ type: 'clear' })
           addMessageRef.current?.('system', `❌ ${data.error || 'Failed to resume session'}`)
         }
       } else if (data.type === 'session_resume_failed') {
         // SDK created a new session instead of resuming the requested one
         console.warn('⚠️ Session resume verification failed:', data)
+        dispatchResumeChip({ type: 'clear' })
         addMessageRef.current?.('system', `⚠️ Could not restore previous session. Starting fresh conversation.`)
         setCurrentSessionId(data.actualSessionId)
       } else if (data.type === 'session_switched') {
@@ -2171,7 +2184,7 @@ function VoiceRoomInner({
       sessionId,
     }))
     sendToAgent(payload, { reliable: true })
-    addMessageRef.current?.('system', `🔄 Resuming session ${sessionId.substring(0, 8)}...`)
+    dispatchResumeChip({ type: 'start', label: resumeChipLabel(sessionId), now: Date.now() })
   }, [sendToAgent])
 
   const handleContinueSession = useCallback(() => {
@@ -2180,7 +2193,7 @@ function VoiceRoomInner({
       type: 'continue_session',
     }))
     sendToAgent(payload, { reliable: true })
-    addMessageRef.current?.('system', '🔄 Continuing previous session...')
+    dispatchResumeChip({ type: 'start', label: resumeChipLabel(null, 'continue'), now: Date.now() })
   }, [sendToAgent])
 
   // Rehydrate the Files explorer from Supabase Storage (the DURABLE copy) for a
@@ -3679,6 +3692,19 @@ function VoiceRoomInner({
           }
           machineChipProcCount={machineData?.totalCount ?? machineData?.processes.length}
         />
+
+        {resumeChip && (
+          <div className="mx-3 mt-1.5 flex justify-center" data-testid="resume-chip">
+            <span role="status" aria-live="polite"
+              className="inline-flex items-center gap-1.5 rounded-full border border-gray-700/70 bg-gray-800/70 px-3 py-1 text-[11px] text-gray-300">
+              <svg className="w-3 h-3 animate-spin motion-reduce:animate-none text-amber-400" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              {resumeChip.label}
+            </span>
+          </div>
+        )}
 
         {/* Mic problem (bug 7cf00ae6): small in-flow banner above the
             composer, once per browser session — never a blocking overlay. */}
