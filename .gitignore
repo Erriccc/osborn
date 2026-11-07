@@ -12,6 +12,8 @@ out/
 .env.local
 .env.*.local
 agent/.env
+# browser-apply candidate secrets (only candidate.example.env is versioned)
+candidate.env
 
 # IDE
 .vscode/

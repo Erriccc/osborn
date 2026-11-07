@@ -36,7 +36,7 @@ Then: `mcp__playwright__browser_take_screenshot` — show the user what loaded
 
 ### Step 1 — Create Account / Sign In
 Take a snapshot with `mcp__playwright__browser_snapshot` to see element refs.
-Fill fields using `mcp__playwright__browser_fill_form` or individual `mcp__playwright__browser_type` calls.
+Fill the email and password fields with the helper (see "Filling secret fields" below), never by typing values through `mcp__playwright__browser_type` / `browser_fill_form`.
 Screenshot to confirm. Then ask user before clicking Create Account / Sign In.
 
 ### Step 2 — Start Application
@@ -48,8 +48,9 @@ Screenshot after.
 Snapshot → fill each field → screenshot → ask user before clicking Next.
 
 Fields to fill:
-- First Name, Last Name, Phone
-- Address, City, State (dropdown), Zip
+- First Name, Last Name, Phone (via the helper)
+- Address, City, Zip (via the helper)
+- State (dropdown): ask the user which option to pick; do not read `$CANDIDATE_STATE` out
 - Work authorization: Yes
 - Sponsorship: No
 
@@ -73,13 +74,19 @@ Screenshot the full review page. Confirm with user before clicking Submit.
 ### Step 9 — Confirm submission
 Screenshot the confirmation dialog. Save it.
 
-## Candidate Data (Osborn Ojure)
+## Candidate Data
 
-- Email: osbornojure@gmail.com
-- Password: Workday2026!
-- First: Osborn, Last: Ojure
-- Phone: 3127185561
-- Address: 1234 N Michigan Ave, Chicago, IL 60601
+Personal values are NOT stored in this skill. They live in a local secret file that the model never reads:
+`~/.osborn/candidate.env` (or the path in `$CANDIDATE_ENV_FILE`), `chmod 600`. Template: `candidate.example.env` next to this file.
+
+| Value | Env name |
+|---|---|
+| Email | `$CANDIDATE_EMAIL` |
+| Password | `$CANDIDATE_PASSWORD` |
+| First / Last name | `$CANDIDATE_FIRST_NAME` / `$CANDIDATE_LAST_NAME` |
+| Phone | `$CANDIDATE_PHONE` |
+| Address line 1 | `$CANDIDATE_ADDRESS_LINE1` |
+| City / State / Zip | `$CANDIDATE_CITY` / `$CANDIDATE_STATE` / `$CANDIDATE_ZIP` |
 
 Jobs:
 1. Meta API Consultant at Prehype / Audos — April 2024 to Present
@@ -89,23 +96,39 @@ Education:
 1. A.S. Information Systems
 2. B.S. Psychology
 
+### Filling secret fields
+Use the helper `fill.mjs` next to this SKILL.md (normally `~/.claude/skills/browser-apply/fill.mjs`). It reads the secret file itself, refuses to run unless the file is mode 600, connects to the open browser over CDP (`$CANDIDATE_CDP_URL`, default `http://127.0.0.1:9222`) and fills the fields in its own process. It prints only `filled NAME -> selector`, never a value.
+
+```bash
+node ~/.claude/skills/browser-apply/fill.mjs check
+node ~/.claude/skills/browser-apply/fill.mjs fill --url-contains myworkdayjobs \
+  CANDIDATE_EMAIL 'input[type="email"]' \
+  CANDIDATE_PASSWORD 'input[type="password"]'
+```
+
+Rules:
+- NEVER `cat`, `less`, `head`, `echo`, `printenv`, `env`, `grep`, `Read` or otherwise print the secret file or the `CANDIDATE_*` variables.
+- NEVER pass a value to an MCP browser tool or put one in a command line; pass env NAMES only.
+- If `check` reports the file missing or too open, tell the user to create it from `candidate.example.env` and run `chmod 600`; do not create it with values yourself.
+- If no browser is reachable over CDP (the Playwright MCP must be attached to a CDP browser, e.g. `--cdp-endpoint`), stop and ask the user to type the secret fields themselves.
+
 ## Workday data-automation-id Selector Reference
 
-| Field | Selector |
-|---|---|
-| Email | `input[type="email"]` |
-| Password | `input[type="password"]` |
-| First name | `[data-automation-id="legalNameSection_firstName"]` |
-| Last name | `[data-automation-id="legalNameSection_lastName"]` |
-| Phone | `[data-automation-id="phone-number"]` |
-| Address | `[data-automation-id="addressSection_addressLine1"]` |
-| City | `[data-automation-id="addressSection_city"]` |
-| Zip | `[data-automation-id="addressSection_postalCode"]` |
-| Job title | `[data-automation-id="jobTitle"]` |
-| Company | `[data-automation-id="company"]` |
-| Description | `[data-automation-id="description"]` |
-| Next button | `[data-automation-id="bottom-navigation-next-btn"]` |
-| Create Account | `[data-automation-id="click_filter"][aria-label="Create Account"]` |
+| Field | Selector | Value from |
+|---|---|---|
+| Email | `input[type="email"]` | `CANDIDATE_EMAIL` (helper) |
+| Password | `input[type="password"]` | `CANDIDATE_PASSWORD` (helper) |
+| First name | `[data-automation-id="legalNameSection_firstName"]` | `CANDIDATE_FIRST_NAME` (helper) |
+| Last name | `[data-automation-id="legalNameSection_lastName"]` | `CANDIDATE_LAST_NAME` (helper) |
+| Phone | `[data-automation-id="phone-number"]` | `CANDIDATE_PHONE` (helper) |
+| Address | `[data-automation-id="addressSection_addressLine1"]` | `CANDIDATE_ADDRESS_LINE1` (helper) |
+| City | `[data-automation-id="addressSection_city"]` | `CANDIDATE_CITY` (helper) |
+| Zip | `[data-automation-id="addressSection_postalCode"]` | `CANDIDATE_ZIP` (helper) |
+| Job title | `[data-automation-id="jobTitle"]` | Jobs list above |
+| Company | `[data-automation-id="company"]` | Jobs list above |
+| Description | `[data-automation-id="description"]` | Jobs list above |
+| Next button | `[data-automation-id="bottom-navigation-next-btn"]` | - |
+| Create Account | `[data-automation-id="click_filter"][aria-label="Create Account"]` | - |
 
 ## Critical Rules
 - headless: false always (Workday renders blank in headless)
