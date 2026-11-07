@@ -45,7 +45,7 @@ export async function listSessions(serverUrl: string): Promise<AgentSession[]> {
  * Start (or resume) a voice session and return everything needed to join the
  * LiveKit room. POSTs the agent's open /connect-room (wakes + joins the room,
  * returns the authoritative roomName), then mints a token from the frontend's
- * no-auth /api/token. Native fetch is CORS-exempt so both calls go direct.
+ * /api/token with the user's bearer. Native fetch is CORS-exempt so both calls go direct.
  */
 export async function connectVoice(serverUrl: string, sessionId?: string): Promise<{ token: string; url: string }> {
   // 1) connect-room → authoritative roomName. Prefer the frontend's /api/sandbox
@@ -87,7 +87,12 @@ export async function connectVoice(serverUrl: string, sessionId?: string): Promi
   })
   if (roomCode) q.set('roomCode', roomCode)
   if (sessionId) q.set('sessionId', sessionId)
-  const res = await fetch(`${FRONTEND_URL}/api/token?${q.toString()}`, { signal: AbortSignal.timeout(20_000) })
+  // /api/token requires the signed-in owner of the room's machine (UI review
+  // item 22). Native has no cookies, so send the Supabase access token.
+  const res = await fetch(`${FRONTEND_URL}/api/token?${q.toString()}`, {
+    headers: bearer ? { Authorization: `Bearer ${bearer}` } : undefined,
+    signal: AbortSignal.timeout(20_000),
+  })
   if (!res.ok) throw new Error(`token ${res.status}`)
   const data = (await res.json()) as { token?: string }
   if (!data.token) throw new Error('no token')
