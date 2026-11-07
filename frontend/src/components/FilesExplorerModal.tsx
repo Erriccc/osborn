@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { MarkdownMessage, MermaidBlock } from './MarkdownMessage'
+import type { GeneratedFile } from './voice/shared'
 
 // Compact relative time for a file row: "2h", "Yesterday", "Oct 18".
 // Voice product — rows are glanceable, so keep it short and right-aligned.
@@ -36,24 +37,6 @@ function prettyTitle(fileName: string): string | null {
   const pretty = base.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
   if (!pretty || pretty === fileName || pretty === base) return null
   return pretty
-}
-
-// Matches GeneratedFile from VoiceRoom.tsx
-interface GeneratedFile {
-  filePath: string
-  fileName: string
-  content?: string
-  // Supabase Storage URL — when present, fetch from here instead of rendering
-  // inline content. Agent uploads large artifacts (PDFs, big text files) to
-  // Supabase and passes just the URL through the data channel.
-  url?: string
-  type: 'plan' | 'diagram' | 'notes' | 'image' | 'summary' | 'html' | 'other'
-  source: 'plan' | 'research'
-  updatedAt: Date
-  isImage?: boolean
-  mimeType?: string
-  truncated?: boolean
-  originalSize?: number
 }
 
 interface FilesExplorerModalProps {
