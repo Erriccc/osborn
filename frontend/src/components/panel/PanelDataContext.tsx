@@ -4,7 +4,7 @@
 // L4), so a tab never needs VoiceRoom props threaded to it and new tabs do not
 // require VoiceRoom edits. Also hosts the panel open/tab/width state hook,
 // persisted in localStorage under `vn-panel`.
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ChatMessage, GeneratedFile, SlotInfo } from '../voice/shared'
 import {
   PANEL_STORAGE_KEY, DEFAULT_PANEL_STATE, clampPanelWidth, parsePanelState, serializePanelState,
@@ -107,5 +107,8 @@ export function usePanelState() {
     const w = clampPanelWidth(pct)
     return w === s.widthPct ? s : { ...s, widthPct: w }
   }), [])
-  return { ...state, openPanel, closePanel, togglePanel, setTab, setWidthPct }
+  return useMemo(
+    () => ({ ...state, openPanel, closePanel, togglePanel, setTab, setWidthPct }),
+    [state, openPanel, closePanel, togglePanel, setTab, setWidthPct],
+  )
 }
