@@ -61,6 +61,10 @@ const m1 = JSON.parse(readFileSync(manifestPath, 'utf-8'))
 const aKey = join(projDir, `${sA}.jsonl`)
 check('M1c', !!m1.entries?.[aKey] && m1.entries[aKey].lastMessage === 'A-LAST-MSG' && typeof m1.entries[aKey].mtimeMs === 'number' && typeof m1.entries[aKey].size === 'number',
   'manifest entry carries lastMessage + mtimeMs + size')
+// L2a: ONE version bump (v2) for sanitized lastMessage + title/firstTs/lastActivityAt
+// + corrected turn count; a v1 manifest is discarded on load.
+check('M1d', m1.v === 2, `manifest version is 2 (got ${m1.v})`)
+check('M1e', m1.entries?.[aKey]?.title === 'q1', `manifest entry carries the clean title (got ${JSON.stringify(m1.entries?.[aKey]?.title)})`)
 
 // ── M2: cold boot (in-memory cache wiped) → same results from the manifest ──
 invalidateSessionListCache()
