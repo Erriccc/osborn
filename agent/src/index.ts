@@ -606,6 +606,13 @@ function startApiServer(workingDir: string, port: number): void {
     const syncToken = process.env.OSBORN_SYNC_TOKEN
 
     if (req.method === 'GET' && url.pathname === '/sessions') {
+      // Fail-closed in cloud: session lists reach only the owner (via the
+      // authenticated /api/agent proxy, which forwards Bearer OSBORN_SYNC_TOKEN).
+      // A direct hit to the public fly.dev address is rejected. Local dev
+      // (no FLY_APP_NAME) is localhost-only and stays open.
+      if (process.env.FLY_APP_NAME && (!syncToken || req.headers['authorization'] !== `Bearer ${syncToken}`)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Unauthorized' })); return
+      }
       try {
         const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10), 1000)
         const sessions = await listAllClaudeSessions(limit)
@@ -640,6 +647,10 @@ function startApiServer(workingDir: string, port: number): void {
       // store directly (readonly, no JSONL replay) — same source as the
       // data-channel prior_messages push, which remains the fallback for older
       // frontends. Rows carry real timestamps so the UI can date-stamp them.
+      // Fail-closed in cloud (real transcript content; owner-only via proxy).
+      if (process.env.FLY_APP_NAME && (!syncToken || req.headers['authorization'] !== `Bearer ${syncToken}`)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Unauthorized' })); return
+      }
       try {
         const sessionId = url.searchParams.get('session') || ''
         const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
