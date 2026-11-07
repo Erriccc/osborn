@@ -334,7 +334,27 @@ export async function POST(request: Request) {
           last_seen: new Date().toISOString(),
         }, { onConflict: 'user_id' })
         if (!(await claimSandboxForUser(supabase, info.id, user.id))) {
-          console.error(`[sandbox] create: could not record sandbox ${info.id} for ${user.id} (orphan risk)`)
+          const originalError = info.error
+          console.error(`[sandbox] create: could not record sandbox ${info.id} for ${user.id} (orphan risk)${originalError ? ` — original error: ${originalError}` : ''}`)
+          // Unrecorded = nothing will ever stop it. Best-effort STOP (not
+          // delete: a deterministic app name may hold this user's existing
+          // volume), and only when no other user claims the id, so we never
+          // touch someone else's machine.
+          let stopped = false
+          try {
+            if ((await checkSandboxClaim(supabase, info.id, user.id)) === 'mine') {
+              stopped = await stopSandbox(info.id)
+            }
+          } catch (err) {
+            console.error(`[sandbox] create: stopping unrecorded ${info.id} threw: ${(err as Error).message}`)
+          }
+          if (stopped) console.warn(`[sandbox] create: stopped unrecorded sandbox ${info.id} to avoid a cost leak`)
+          else console.error(`[sandbox] create: COST LEAK RISK, unrecorded sandbox ${info.id} may still be running; clean up manually`)
+          const recordError = `Could not record your new sandbox${stopped ? ' (it was stopped)' : ''}, try again`
+          return NextResponse.json(
+            { ...info, status: 'error', error: originalError ? `${originalError}; ${recordError}` : recordError },
+            { status: 500 },
+          )
         }
       } else {
         // No machine came back at all — still set a short cooldown so a burst
