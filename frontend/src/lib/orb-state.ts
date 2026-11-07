@@ -6,7 +6,9 @@
 // `agent_state:'error'` fell back to "Ready").
 //
 // Precedence (highest first):
-//   error > reconnecting > blocked > micOff(listening) > muted(listening) > agentState
+//   error > reconnecting > blocked* > micOff(listening|idle) > muted(listening|idle) > agentState
+// * While the agent is speaking or thinking, `blocked` does not replace the
+//   main state; it shows as a "mic blocked" badge instead (blockedBadge).
 // The muted badge is independent of the resolved state.
 
 export type OrbKey =
@@ -46,6 +48,9 @@ export interface OrbView {
   anim: string
   /** True whenever the user is muted, regardless of the resolved state. */
   mutedBadge: boolean
+  /** True when the mic is blocked but the main label shows the agent's
+   *  speaking/thinking state instead of "Mic blocked". */
+  blockedBadge: boolean
 }
 
 const BREATHE = 'orbBreathe 3.5s ease-in-out infinite'
@@ -56,7 +61,7 @@ const RIPPLE = 'orbRipple 1.1s ease-out infinite'
 
 // --voice-blocked / --voice-reconnecting / --voice-connecting are not defined
 // in globals.css yet; the fallbacks keep them distinct until they are.
-export const ORB_VIEWS: Record<OrbKey, Omit<OrbView, 'mutedBadge'>> = {
+export const ORB_VIEWS: Record<OrbKey, Omit<OrbView, 'mutedBadge' | 'blockedBadge'>> = {
   error:        { key: 'error',        label: 'Error',        colorVar: 'var(--voice-error)',                       anim: 'none' },
   reconnecting: { key: 'reconnecting', label: 'Reconnecting', colorVar: 'var(--voice-reconnecting, #b89b5e)',       anim: SLOW_BREATHE },
   blocked:      { key: 'blocked',      label: 'Mic blocked',  colorVar: 'var(--voice-blocked, #c4756b)',            anim: BREATHE },
@@ -91,13 +96,17 @@ export function baseOrbKey(agentState: string | null | undefined): OrbKey {
 
 export function resolveOrbState(input: OrbInput): OrbView {
   const muted = !!input.muted
+  const blocked = !!input.blocked
   const base = baseOrbKey(input.agentState)
+  const agentBusy = base === 'speaking' || base === 'thinking'
+  const micGated = base === 'listening' || base === 'idle'
   let key: OrbKey
   if (input.error || base === 'error') key = 'error'
   else if (input.reconnecting) key = 'reconnecting'
-  else if (input.blocked) key = 'blocked'
-  else if (base === 'listening' && input.micOff) key = 'micOff'
-  else if (base === 'listening' && muted) key = 'muted'
+  else if (blocked && !agentBusy) key = 'blocked'
+  else if (micGated && input.micOff) key = 'micOff'
+  else if (micGated && muted) key = 'muted'
   else key = base
-  return { ...ORB_VIEWS[key], mutedBadge: muted }
+  const blockedBadge = blocked && (key === 'speaking' || key === 'thinking')
+  return { ...ORB_VIEWS[key], mutedBadge: muted, blockedBadge }
 }
