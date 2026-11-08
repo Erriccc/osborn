@@ -108,9 +108,20 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const params = useSearchParams()
 
   // ── URL-derived, stable for the life of the session ──
-  const provider = params.get('provider') || 'gemini'
-  const voiceArch = params.get('voiceArch') || 'pipeline'
-  const codingAgent = params.get('agent') || 'claude'
+  // provider / voiceArch / agent / agentUrl used to ride the /chat URL as query
+  // params, which exposed the provider, voice arch, coding-agent name and the
+  // agent's fly.dev URL in the visible address bar. The dashboard now launches a
+  // clean URL (only ?session= / ?workingDirectory=); these settings fall back to
+  // the same localStorage keys the dashboard already writes, so function is
+  // unchanged while the URL stays tidy. A query param still wins when present
+  // (guest/test lanes, shared links).
+  const lsGet = (k: string): string | null => {
+    if (typeof window === 'undefined') return null
+    try { return localStorage.getItem(k) } catch { return null }
+  }
+  const provider = params.get('provider') || lsGet('osborn-provider') || 'gemini'
+  const voiceArch = params.get('voiceArch') || 'pipeline' // only 'pipeline' is supported now
+  const codingAgent = params.get('agent') || lsGet('osborn-coding-agent') || 'claude'
   const preSelectedSessionId = params.get('session') || null
   // Optional: cwd the selected session was originally created with. Forwarded to the
   // token API so the agent boots with the matching directory and the session lookup
@@ -392,8 +403,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // and the page hung on "Connecting...". When the sandbox is unavailable
       // for this caller but an explicit agentUrl exists (guest/test lane),
       // downgrade the REST of the flow to the direct lane.
+      // Guest/direct-lane trigger. agentUrl no longer rides the visible URL for
+      // dashboard launches, so fall back to the localStorage value the dashboard
+      // writes — the guest/test lanes still pass ?agentUrl= and win here.
       const urlAgentParam = typeof window !== 'undefined'
-        ? new URLSearchParams(window.location.search).get('agentUrl')
+        ? (new URLSearchParams(window.location.search).get('agentUrl')
+            || (() => { try { return localStorage.getItem('osborn-agent-url') } catch { return null } })())
         : null
       let effectiveMode: string = connectionMode
 
@@ -443,18 +458,17 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
                 if (startData.previewUrl) {
                   resolvedUrl = startData.previewUrl
                   setAgentUrl(resolvedUrl)
-                  // Update URL bar to show the actual cloud agent URL, not localhost
-                  const url = new URL(window.location.href)
-                  url.searchParams.set('agentUrl', resolvedUrl)
-                  window.history.replaceState({}, '', url.toString())
+                  // Keep the resolved cloud agent URL for a refresh WITHOUT putting
+                  // the fly.dev URL in the visible address bar (it used to be
+                  // written back as ?agentUrl=). localStorage is where initialAgentUrl
+                  // and the guest/direct lane now read it from.
+                  try { localStorage.setItem('osborn-agent-url', resolvedUrl) } catch { /* ignore */ }
                 }
               }
             } else if (sb.status === 'running' && sb.previewUrl) {
               resolvedUrl = sb.previewUrl
               setAgentUrl(resolvedUrl)
-              const url = new URL(window.location.href)
-              url.searchParams.set('agentUrl', resolvedUrl)
-              window.history.replaceState({}, '', url.toString())
+              try { localStorage.setItem('osborn-agent-url', resolvedUrl) } catch { /* ignore */ }
             }
           }
         } catch {

@@ -325,6 +325,9 @@ export default function Dashboard() {
   const [expandedSessionLists, setExpandedSessionLists] = useState<Set<string>>(new Set())
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
+  // "New session" project picker (bug B15): a fresh session used to jump
+  // straight to /chat with no chance to say WHICH project it belongs to.
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [importingProject, setImportingProject] = useState<string | null>(null)
   const [deletingProject, setDeletingProject] = useState<string | null>(null)   // cwd being deleted
   const [armedProjectDelete, setArmedProjectDelete] = useState<string | null>(null) // cwd armed for delete
@@ -1111,13 +1114,27 @@ export default function Dashboard() {
   }
 
   const startChat = (sessionId?: string, sessionCwd?: string) => {
-    const params = new URLSearchParams({ provider, voiceArch, agent: 'claude', agentUrl })
+    // Keep the visible /chat URL clean: only the session identity rides it.
+    // provider / voiceArch / coding-agent / the agent's fly.dev URL used to be
+    // query params (exposed in the address bar) — they're persisted to the same
+    // localStorage keys the ChatSessionProvider now reads, and the cloud connect
+    // flow resolves the real agent URL server-side, so none are needed here.
+    const params = new URLSearchParams()
     if (sessionId) params.set('session', sessionId)
     // Forward the session's original cwd so the agent boots with the matching directory.
     // Without this the agent falls through to OSBORN_CWD or process.cwd(), which produces
     // the wrong project slug and a "Session not found" error on resume.
     if (sessionCwd) params.set('workingDirectory', sessionCwd)
-    router.push(`/chat?${params.toString()}`)
+    const qs = params.toString()
+    router.push(qs ? `/chat?${qs}` : '/chat')
+  }
+
+  // "New session" entry point. When the user already has projects, ask WHICH one
+  // the new session belongs to (bug B15 — it used to jump straight to /chat with
+  // no picker). With nothing to pick from yet, start in the default workspace.
+  const handleNewSession = () => {
+    if (groupByProject(sessions, baseCwd).length > 1) setShowSessionPicker(true)
+    else startChat()
   }
 
   const formatDate = (ts: string) => {
@@ -1519,7 +1536,7 @@ export default function Dashboard() {
 
           {/* Unified create — Notion "+ New ▾" model: session / note / project */}
           <UnifiedCreate
-            onNewSession={() => startChat()}
+            onNewSession={handleNewSession}
             onNewProject={() => setShowNewProject(true)}
           />
 
@@ -1957,6 +1974,64 @@ export default function Dashboard() {
         </div>
       </main>
       <ReportBugModal open={showReportBug} onClose={() => setShowReportBug(false)} supabase={supabase} />
+
+      {/* New-session project picker (bug B15). Lightweight: reuses the same
+          project grouping as the sidebar list. Pick a project to start the
+          session in it, or start in the default workspace. */}
+      {showSessionPicker && (
+        <div className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-0 sm:p-4" onClick={() => setShowSessionPicker(false)}>
+          <div className="w-full sm:max-w-md bg-[var(--surface)] border border-[var(--border)] rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-[var(--border-subtle)] shrink-0">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-[var(--text-primary)]">Start a session in…</h3>
+                <p className="text-[12px] text-[var(--text-muted)] mt-0.5">Pick where this conversation lives.</p>
+              </div>
+              <button onClick={() => setShowSessionPicker(false)} aria-label="Close"
+                className="shrink-0 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)] transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="overflow-y-auto p-2.5">
+              <button
+                onClick={() => { setShowSessionPicker(false); startChat() }}
+                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-[var(--surface-2)]/60 transition-colors">
+                <div className="w-8 h-8 rounded-lg bg-[var(--accent-dim)]/20 flex items-center justify-center shrink-0 text-[var(--accent)]">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" /></svg>
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">Default workspace</div>
+                  <div className="text-[11px] text-[var(--text-muted)]">Start fresh, unfiled</div>
+                </div>
+              </button>
+              {groupByProject(sessions, baseCwd).map(project => (
+                <button key={project.cwd}
+                  onClick={() => { setShowSessionPicker(false); startChat(undefined, project.cwd) }}
+                  className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-[var(--surface-2)]/60 transition-colors">
+                  <div className="w-8 h-8 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-sm">
+                    {project.name === 'General' ? '📁' : '🗂️'}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium capitalize truncate text-[var(--text-primary)]">{project.name}</div>
+                    <div className="text-[11px] text-[var(--text-muted)] truncate">
+                      {project.distinguisher ? `${project.distinguisher} · ` : ''}{project.sessions.length} session{project.sessions.length === 1 ? '' : 's'}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="shrink-0 border-t border-[var(--border-subtle)] px-3 py-2.5">
+              <button
+                onClick={() => { setShowSessionPicker(false); setShowNewProject(true) }}
+                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--surface-2)]/60 hover:text-[var(--text-primary)] transition-colors">
+                <div className="w-8 h-8 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-[var(--text-muted)]">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" /></svg>
+                </div>
+                <span className="text-sm font-medium">New project…</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }
