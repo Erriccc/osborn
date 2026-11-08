@@ -12,6 +12,7 @@
 // sides act only against THEIR OWN machine; Supabase Storage bridges the gap.
 
 import { createSupabaseBrowser } from './supabase-browser'
+import { agentReadUrl } from './agent-read'
 
 const BUCKET = 'session-shares'
 const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 30 // 30 days
@@ -31,8 +32,6 @@ export interface SharedSession {
 }
 
 type Result = { ok: true } | { ok: false; error: string }
-
-const trimUrl = (u: string) => u.replace(/\/+$/, '')
 
 /** A shares one session with B (by email). Exports from A's machine → Storage → row. */
 export async function shareSession(opts: {
@@ -55,7 +54,7 @@ export async function shareSession(opts: {
   // 1. Export the single session from A's machine.
   let blob: Blob
   try {
-    const res = await fetch(`${trimUrl(opts.agentUrl)}/sessions/export-one?sessionId=${encodeURIComponent(opts.sessionId)}`)
+    const res = await fetch(`${agentReadUrl(opts.agentUrl, 'sessions/export-one')}?sessionId=${encodeURIComponent(opts.sessionId)}`)
     if (!res.ok) return { ok: false, error: `Couldn't export the session (${res.status}).` }
     blob = await res.blob()
     if (!blob.size) return { ok: false, error: 'Exported session was empty.' }
@@ -129,7 +128,7 @@ export async function importSharedSession(opts: {
   }
   // 2. Import onto B's machine (slug-remaps into B's own workspace).
   try {
-    const res = await fetch(`${trimUrl(opts.agentUrl)}/sessions/import`, { method: 'POST', body: blob })
+    const res = await fetch(agentReadUrl(opts.agentUrl, 'sessions/import'), { method: 'POST', body: blob })
     if (!res.ok) return { ok: false, error: `Import failed (${res.status}).` }
   } catch (e) {
     return { ok: false, error: `Couldn't reach your machine to import: ${(e as Error).message}` }
