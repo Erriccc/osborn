@@ -2187,9 +2187,11 @@ function VoiceRoomInner({
         // review the final TODO list. Cleared on next join.
       } else if (data.type === 'meeting_error') {
         console.log('❌ Meeting error:', data.message)
-        setMeetingError(data.message)
+        setMeetingError(data.message || 'The meeting bot could not join.')
         setMeetingStatus('error')
-        setTimeout(() => { setMeetingStatus('idle'); setMeetingError(null) }, 5000)
+        // No auto-dismiss: the message carries an actionable Recall region hint
+        // (agent fail-loud fix). It persists in the error banner below until the
+        // user dismisses it or starts a new join (meeting_joining clears it).
       } else if (data.type === 'ide_status') {
         console.log('[IDE] status:', data.status)
         setIdeStatus('starting')
@@ -2843,6 +2845,15 @@ function VoiceRoomInner({
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, meetingBotId])
+
+  // Dismiss the meeting-error banner and return the Join entry to its idle
+  // state. The error message itself carries the actionable Recall region hint
+  // (agent fail-loud fix), so it stays until the user dismisses it or starts a
+  // new join — it is not auto-hidden.
+  const handleDismissMeetingError = useCallback(() => {
+    setMeetingStatus('idle')
+    setMeetingError(null)
+  }, [])
 
   const handleOpenEditor = useCallback(() => {
     if (ideStatus === 'ready' && ideUrl) {
@@ -3630,7 +3641,7 @@ function VoiceRoomInner({
                   {showMeetingInput && (
                     <div ref={meetingPopRef} className="absolute top-11 right-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
                       <label className="block text-[11px] font-semibold text-gray-400 mb-1">Join a meeting</label>
-                      <p className="text-[10.5px] text-gray-500 leading-snug mb-2">Sends a bot into the Zoom/Meet call to listen and take notes you can act on. It won&rsquo;t speak or share your screen.</p>
+                      <p className="text-[10.5px] text-gray-500 leading-snug mb-2">Sends a bot into the Zoom/Meet call to listen, take notes you can act on, and speak when you address it by name.</p>
                       <input
                         type="url"
                         autoFocus
@@ -3872,6 +3883,36 @@ function VoiceRoomInner({
                 : `${bgNotice.sessionId.slice(0, 8)} finished · ${bgNotice.text.slice(0, 80)}`}
             </span>
             <button onClick={() => setBgNotice(null)} className="ml-auto shrink-0 p-0.5 rounded text-gray-500 hover:text-gray-200" title="Dismiss">✕</button>
+          </div>
+        )}
+
+        {/* Meeting error — surfaces the agent's meeting_error event, which now
+            carries the Recall region hint from the fail-loud fix. Previously
+            this only lived in a header button tooltip and auto-hid after 5s;
+            here it is a persistent, dismissible banner so the actionable hint
+            isn't lost. Lives in the main content column so it shows on both
+            desktop and mobile without a header/menu being open. */}
+        {meetingStatus === 'error' && meetingError && (
+          <div className="px-3 sm:px-4 py-2.5 border-b bg-red-500/10 border-red-500/30">
+            <div className="max-w-3xl mx-auto flex items-start gap-2.5">
+              <svg className="w-4 h-4 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              <div className="flex-1 min-w-0">
+                <div className="text-red-300 text-sm font-semibold">Couldn&rsquo;t join the meeting</div>
+                <div className="text-xs text-red-200/80 mt-0.5 break-words">{meetingError}</div>
+              </div>
+              <button
+                onClick={handleDismissMeetingError}
+                data-testid="meeting-error-dismiss"
+                aria-label="Dismiss meeting error"
+                className="shrink-0 p-1 -m-1 text-red-300/70 hover:text-red-200"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
         )}
 
