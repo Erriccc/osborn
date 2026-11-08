@@ -1143,6 +1143,7 @@ function startApiServer(workingDir: string, port: number): void {
     // for the MVP — a per-share access token is a follow-up (tracked in
     // shared_sessions). sessionId is regex-validated to block path traversal.
     if (req.method === 'GET' && url.pathname === '/sessions/export-one') {
+      if (unauthorized()) return // fail-closed; the sharing export leg now goes through the authed /api/agent proxy
       const sessionId = (url.searchParams.get('sessionId') || '').trim()
       if (!sessionId || !/^[a-zA-Z0-9._-]+$/.test(sessionId)) {
         res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'bad or missing sessionId' })); return
