@@ -5,7 +5,7 @@ import type { ApprovalMode } from './PermissionModal'
 
 const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
   { value: 'ask', label: 'Ask me', hint: 'Pause and ask before each tool action (default)' },
-  { value: 'auto-review', label: 'Auto-review', hint: 'Show full details up front for a fast decision — still asks before each action' },
+  { value: 'auto-review', label: 'Auto-review', hint: 'Auto-approve low-risk actions (reading files, in-workspace edits); still ask before anything risky' },
   { value: 'allow-all', label: 'Allow all', hint: 'Approve every tool action for this session (resets on reload)' },
 ]
 
