@@ -15,9 +15,10 @@
  *     user_text, claude_auth_code, permission_response, list_sessions,
  *     resume_session, continue_session, switch_session, session_selected,
  *     mcp_toggle, set_agents, skill_add, skill_remove, noise_cancel,
- *     gate_send_anyway, stop_dispatch, join_meeting, leave_meeting, start_ide,
- *     stop_ide, spawn_background_session, dispatch_background,
- *     stop_background_session, list_slots, list_processes, favorite_changed
+ *     gate_send_anyway, stop_dispatch, join_meeting, leave_meeting,
+ *     mute_participant, start_ide, stop_ide, spawn_background_session,
+ *     dispatch_background, stop_background_session, list_slots, list_processes,
+ *     favorite_changed
  *   Open (read-only, listed in READ_ONLY_MESSAGE_TYPES):
  *     get_current_session, get_session_artifacts, get_plan_file,
  *     get_research_artifact, get_mcp_status, get_skills, get_agents, skill_get
@@ -54,6 +55,7 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'stop_dispatch',
   'join_meeting',
   'leave_meeting',
+  'mute_participant',
   'start_ide',
   'stop_ide',
   'spawn_background_session',

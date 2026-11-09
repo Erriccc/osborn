@@ -15,6 +15,8 @@ const {
   MuteRegistry,
   meetingAddressing,
   DEFAULT_AGENT_NAMES,
+  isRoutableTarget,
+  ORCHESTRATOR_ID,
 } = await import('../src/meeting-addressing.js')
 
 let pass = 0
@@ -163,6 +165,93 @@ t('enabled → parses addressing and honours mute drop', () => {
   assert.deepEqual(v3.muteChanged, { action: 'unmute', who: 'daniel' })
 
   delete process.env.OSBORN_MEETING_ADDRESSING
+  meetingAddressing.reset()
+})
+
+// ── Phase C — routing-target resolution ──────────────────────────────────────
+t('isRoutableTarget: a worker routes, the orchestrator does NOT', () => {
+  assert.equal(isRoutableTarget('researcher'), true)
+  assert.equal(isRoutableTarget('Reasoner'), true)
+  assert.equal(isRoutableTarget(ORCHESTRATOR_ID), false) // 'osborn' = the orchestrator itself
+  assert.equal(isRoutableTarget('osborn'), false)
+})
+t('isRoutableTarget: null / empty / whitespace are not routable (fail-safe)', () => {
+  assert.equal(isRoutableTarget(null), false)
+  assert.equal(isRoutableTarget(undefined), false)
+  assert.equal(isRoutableTarget(''), false)
+  assert.equal(isRoutableTarget('   '), false)
+})
+t('enabled processUtterance yields a routable target for @worker addressing', () => {
+  process.env.OSBORN_MEETING_ADDRESSING = 'on'
+  meetingAddressing.reset()
+  const v = meetingAddressing.processUtterance('Daniel', '@researcher dig into pricing')
+  assert.equal(v.target, 'researcher')
+  assert.equal(isRoutableTarget(v.target), true) // flushMeetingBuffer would inject a Task directive
+  assert.equal(v.cleanedText, 'dig into pricing')
+  delete process.env.OSBORN_MEETING_ADDRESSING
+  meetingAddressing.reset()
+})
+t('addressing the orchestrator by name is NOT routed to a worker', () => {
+  process.env.OSBORN_MEETING_ADDRESSING = 'on'
+  meetingAddressing.reset()
+  const v = meetingAddressing.processUtterance('Daniel', 'osborn, summarize the call')
+  assert.equal(v.target, 'osborn')
+  assert.equal(isRoutableTarget(v.target), false) // orchestrator handles it directly, no Task dispatch
+  delete process.env.OSBORN_MEETING_ADDRESSING
+  meetingAddressing.reset()
+})
+t('an un-addressed turn produces no routing target', () => {
+  process.env.OSBORN_MEETING_ADDRESSING = 'on'
+  meetingAddressing.reset()
+  const v = meetingAddressing.processUtterance('Daniel', 'can we push the deadline to Friday')
+  assert.equal(v.target, null)
+  assert.equal(isRoutableTarget(v.target), false)
+  delete process.env.OSBORN_MEETING_ADDRESSING
+  meetingAddressing.reset()
+})
+
+// ── Phase B — mute_participant control + state snapshot ───────────────────────
+t('applyMuteControl mutes and unmutes a named participant', () => {
+  meetingAddressing.reset()
+  const a = meetingAddressing.applyMuteControl('mute', 'Daniel')
+  assert.deepEqual(a, { action: 'mute', who: 'daniel' })
+  assert.equal(meetingAddressing.mutes.isMuted('Daniel'), true)
+  const b = meetingAddressing.applyMuteControl('unmute', 'DANIEL')
+  assert.deepEqual(b, { action: 'unmute', who: 'daniel' })
+  assert.equal(meetingAddressing.mutes.isMuted('Daniel'), false)
+  meetingAddressing.reset()
+})
+t('applyMuteControl normalizes everyone/all → wildcard, rejects blanks', () => {
+  meetingAddressing.reset()
+  const a = meetingAddressing.applyMuteControl('mute', 'everyone')
+  assert.deepEqual(a, { action: 'mute', who: '*' })
+  assert.equal(meetingAddressing.mutes.isMuted('anyone'), true)
+  assert.equal(meetingAddressing.applyMuteControl('mute', '   '), null) // no-op on blank
+  meetingAddressing.reset()
+})
+t('a mute_participant control gates the muted speaker out (end-to-end via processUtterance)', () => {
+  process.env.OSBORN_MEETING_ADDRESSING = 'on'
+  meetingAddressing.reset()
+  meetingAddressing.applyMuteControl('mute', 'Sara') // frontend mute button → MuteRegistry
+  const v = meetingAddressing.processUtterance('Sara', 'this should be dropped')
+  assert.equal(v.drop, true)
+  meetingAddressing.applyMuteControl('unmute', 'Sara')
+  const v2 = meetingAddressing.processUtterance('Sara', 'now this gets through')
+  assert.equal(v2.drop, false)
+  delete process.env.OSBORN_MEETING_ADDRESSING
+  meetingAddressing.reset()
+})
+t('state() snapshot reflects enabled flag, roster ids, and muted list', () => {
+  process.env.OSBORN_MEETING_ADDRESSING = 'on'
+  meetingAddressing.setRoster(['osborn', 'researcher', 'writer'])
+  meetingAddressing.reset() // clears mutes, keeps roster
+  meetingAddressing.applyMuteControl('mute', 'Ada')
+  const st = meetingAddressing.state()
+  assert.equal(st.enabled, true)
+  assert.deepEqual(st.roster, ['osborn', 'researcher', 'writer'])
+  assert.deepEqual(st.muted, ['ada'])
+  delete process.env.OSBORN_MEETING_ADDRESSING
+  meetingAddressing.setRoster(DEFAULT_AGENT_NAMES)
   meetingAddressing.reset()
 })
 

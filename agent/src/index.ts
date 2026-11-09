@@ -61,7 +61,7 @@ import { missingRequiredEnv } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
-import { meetingAddressing } from './meeting-addressing.js'
+import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, checkControlSender, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { llm } from '@livekit/agents'
@@ -2833,6 +2833,11 @@ async function main() {
 
   // LIVE meeting transcript → LLM (buffered webhook finals). See recall.on('transcript').
   const meetingTranscriptBuffer: string[] = []
+  // Phase C routing target: the Tier-2 worker the most recent addressed turn
+  // named (@researcher …). Captured in recall.on('transcript') when addressing
+  // is enabled, consumed (and cleared) by the next addressed flushMeetingBuffer,
+  // which injects a Task-dispatch directive for it. Null = no pending routing.
+  let meetingAddressedTarget: string | null = null
   let meetingFlushTimer: ReturnType<typeof setInterval> | null = null
   // Flush the buffered meeting turns to the LLM. `addressed=true` (the agent was
   // called by name / asked directly) tags the message so the agent RESPONDS by
@@ -2867,9 +2872,35 @@ async function main() {
     // Prepend + consume any interruption context (bot was cut off mid-sentence).
     const interrupt = meetingInterruptContext ? `${meetingInterruptContext}\n` : ''
     meetingInterruptContext = ''
+    // Phase C — route an addressed turn to a specific Tier-2 worker. When the
+    // addressing layer is on and the last addressed utterance named a routable
+    // worker (not the orchestrator), STEER THE SINGLE SDK SESSION by injecting a
+    // directive so the orchestrator dispatches that named agent via its Task
+    // tool (the existing noteTaskDispatch/claimTaskDispatch/statusManager
+    // plumbing in claude-llm.ts handles the rest). No parallel query() is
+    // spawned — currentLLM.chat() feeds the one persistent session. Gated on
+    // live dispatch headroom (statusManager) so a busy room can't fan out
+    // unboundedly. The directive goes AFTER the `[MEETING` prefix so the ambient
+    // non-interrupting + suppressMeetingTTS keying on that prefix still hold.
+    let routingDirective = ''
+    const pendingTarget = meetingAddressedTarget
+    meetingAddressedTarget = null
+    if (addressed && meetingAddressing.enabled && isRoutableTarget(pendingTarget)) {
+      const active = statusManager.getActiveDispatchIds().length
+      const cap = Math.max(1, Number(process.env.OSBORN_MEETING_MAX_DISPATCH) || 3)
+      if (active < cap) {
+        routingDirective =
+          `[ROUTING] A participant addressed @${pendingTarget}. Dispatch the "${pendingTarget}" ` +
+          `agent via the Task tool (subagent_type "${pendingTarget}") to handle this turn instead of ` +
+          `answering yourself, then relay its result into the meeting.\n`
+        console.log(`🎯 [meeting-addr] routing addressed turn → @${pendingTarget} via Task directive (dispatches ${active}/${cap})`)
+      } else {
+        console.log(`🎯 [meeting-addr] @${pendingTarget} routing skipped — at concurrency cap (${active}/${cap}); orchestrator handles it`)
+      }
+    }
     try {
       const ctx = new llm.ChatContext()
-      ctx.addMessage({ role: 'user', content: `${interrupt}${header}\n${turns.join('\n')}` })
+      ctx.addMessage({ role: 'user', content: `${interrupt}${header}\n${routingDirective}${turns.join('\n')}` })
       currentLLM.chat({ chatCtx: ctx })
       console.log(`📓 Flushed ${turns.length} meeting turn(s) to LLM${addressed ? ' (ADDRESSED — respond)' : ''}`)
     } catch (err) {
@@ -2928,6 +2959,7 @@ async function main() {
     activeMeetingBotId = null
     meetingAddressedUntil = 0
     meetingSpeakers.clear()
+    meetingAddressedTarget = null
     meetingAddressing.reset() // inert when OSBORN_MEETING_ADDRESSING is unset (empty registry)
     // leaveBot=false when Recall itself reported the meeting over (bot already gone).
     if (opts.leaveBot !== false) {
@@ -3306,28 +3338,38 @@ async function main() {
         // Multi-agent meeting addressing/mute (OFF by default — set
         // OSBORN_MEETING_ADDRESSING=on to engage). When the flag is unset this
         // whole block is skipped: processUtterance() short-circuits and the
-        // meeting path below behaves EXACTLY as before. Scaffolding — `target`
-        // is logged only; routing a turn to a specific worker is future work
-        // (docs/multiagent-runtime-plan.md).
+        // meeting path below behaves EXACTLY as before. When ON: a muted speaker
+        // is dropped, a mute/unmute command updates the registry (and notifies
+        // the frontend), and an addressed worker is captured for Phase-C routing
+        // in the next addressed flush (see flushMeetingBuffer).
         if (meetingAddressing.enabled) {
           const verdict = meetingAddressing.processUtterance(speaker, text)
           if (verdict.muteChanged) {
             console.log(`🎛️ [meeting-addr] ${verdict.muteChanged.action} "${verdict.muteChanged.who}" — muted now: ${meetingAddressing.mutes.list().join(', ') || 'none'}`)
+            emitMuteChanged(verdict.muteChanged.action, verdict.muteChanged.who)
           }
           if (verdict.drop) {
             console.log(`🔇 [meeting-addr] dropped utterance from muted speaker "${speaker}"`)
             return // muted participant — do not buffer or forward to the LLM
           }
           if (verdict.target) {
-            console.log(`🎯 [meeting-addr] "${speaker}" addresses @${verdict.target} (routing not yet wired — logged only)`)
+            // Remember the addressed worker so the next addressed flush routes to
+            // it (Phase C). Store regardless of routability so the UI can show the
+            // chip; flushMeetingBuffer gates actual Task dispatch on isRoutableTarget.
+            meetingAddressedTarget = verdict.target
+            console.log(`🎯 [meeting-addr] "${speaker}" addresses @${verdict.target}${isRoutableTarget(verdict.target) ? ' (will route to worker)' : ' (orchestrator — no worker dispatch)'}`)
+            emitMeetingState(verdict.target)
           }
         }
+        const isNewSpeaker = !meetingSpeakers.has(speaker)
         meetingTranscriptBuffer.push(`${speaker}: ${text.trim()}`)
         // Addressed by name → flush NOW (don't wait the 20s batch) and tag it so
         // the agent replies out loud into the meeting. This is the chat-mode path:
         // named/asked → prompt response. Un-addressed chunks stay in the silent
         // 20s batch for note-taking. That's the two-mode seam, mechanically.
         meetingSpeakers.add(speaker)
+        // New participant → refresh the frontend's mute roster (flag-gated no-op).
+        if (isNewSpeaker) emitMeetingState()
         // Fuzzy name match: meeting STT routinely mangles "Osborn" — observed
         // live 2026-08-01: "Osborn can you hear me" → "i was born can you hear
         // me" (name trigger missed, bot stayed silent). Accept common
@@ -3760,6 +3802,30 @@ async function main() {
     } catch (err) {
       console.error('❌ sendToFrontend error:', err)
     }
+  }
+
+  // ── Phase B — meeting addressing/mute state → frontend (over the EXISTING
+  // 'osborn-updates' data channel). Both are NO-OPS when the flag is unset, so
+  // an un-flagged meeting emits nothing new (zero behavior change). `meeting_state`
+  // is the full snapshot (roster, known speakers, muted set, who was addressed);
+  // `mute_changed` is the lightweight per-change delta. Function declarations so
+  // they're reachable from the transcript handler + handleDataReceived above.
+  function emitMeetingState(addressed: string | null = null): void {
+    if (!meetingAddressing.enabled) return
+    const st = meetingAddressing.state()
+    void sendToFrontend({
+      type: 'meeting_state',
+      enabled: st.enabled,
+      roster: st.roster,
+      speakers: [...meetingSpeakers],
+      muted: st.muted,
+      addressed,
+    })
+  }
+  function emitMuteChanged(action: 'mute' | 'unmute', who: string): void {
+    if (!meetingAddressing.enabled) return
+    void sendToFrontend({ type: 'mute_changed', action, who, muted: meetingAddressing.mutes.list() })
+    emitMeetingState()
   }
 
   async function announceViaVoice(text: string) {
@@ -6405,6 +6471,20 @@ async function main() {
               activeMeetingBotId = botId
               await sendToFrontend({ type: 'meeting_joined', botId, message: 'Osborn has joined the meeting' })
 
+              // Phase B — point the addressable roster at the REAL effective
+              // agent set (built-ins minus user-removed, plus per-user agents),
+              // same effective set get_agents/set_agents compute, with the
+              // orchestrator ('osborn') first. Flag-gated: a no-op (no roster
+              // change, no emit) when OSBORN_MEETING_ADDRESSING is unset.
+              if (meetingAddressing.enabled) {
+                const base: Record<string, unknown> = { ...NAMED_AGENTS }
+                for (const r of userRemovedAgents) delete base[r]
+                const effective = { ...base, ...(userNamedAgents || {}) }
+                meetingAddressing.setRoster(['osborn', ...Object.keys(effective)])
+                console.log(`🎛️ [meeting-addr] roster → [${meetingAddressing.rosterIds.join(', ')}]`)
+                emitMeetingState()
+              }
+
               // Minimal awareness injection (user directive 2026-08-04): tell the
               // LLM it's in a meeting and how transcripts are tagged — nothing
               // more. NO "do NOT speak / silent observer" coaching (that fought
@@ -6476,6 +6556,22 @@ async function main() {
         } catch (err: any) {
           console.error('❌ Recall.ai leave error:', err)
           await sendToFrontend({ type: 'meeting_error', message: err.message })
+        }
+      }
+      // Phase B — authenticated frontend mute/unmute of a meeting participant.
+      // Controller-only: checkControlSender fails CLOSED for any type not on the
+      // read-only list, so this gated type already requires the controlling user.
+      // Flag-gated: ignored entirely unless OSBORN_MEETING_ADDRESSING is on (the
+      // MuteRegistry is only consulted by processUtterance when enabled anyway).
+      else if (data.type === 'mute_participant') {
+        if (meetingAddressing.enabled) {
+          const action = data.action === 'unmute' ? 'unmute' : 'mute'
+          const who = String(data.who || '').trim()
+          const applied = who ? meetingAddressing.applyMuteControl(action, who) : null
+          if (applied) {
+            console.log(`🎛️ [meeting-addr] ${applied.action} "${applied.who}" via control — muted now: ${meetingAddressing.mutes.list().join(', ') || 'none'}`)
+            emitMuteChanged(applied.action, applied.who)
+          }
         }
       }
       // ── IDE (code-server) handlers ──────────────────────────────────────
