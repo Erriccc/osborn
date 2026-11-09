@@ -74,7 +74,18 @@ function unwrapTemplate(text: string): string | null {
   if (context) return context[1]
   // Fallbacks (template cut short): quote closed at end of a line / the text.
   const loose = text.match(/(?:User's message|What the user is saying now):\s*"([\s\S]*?)"\s*(?:\n|$)/)
-  return loose ? loose[1] : null
+  if (loose) return loose[1]
+  // Truncated wrapper: the closing quote (and the trailing CONTEXT/"Text you
+  // produced" anchor) was cut off mid-turn — a LONG user turn served over a
+  // path that truncates the raw enriched message before the words finish.
+  // Without this the whole bubble is dropped (bug: "long spoken turns missing —
+  // cut before the words"). Recover whatever user words survive after the
+  // opening quote so the partial turn still renders. Only reached once `wrapped`
+  // is set, so it never touches a normal turn. Mirrors the agent sanitizer's
+  // open-ended `User's message: "…"$` fallback (transcript-sanitizer.ts).
+  const openEnded = text.match(/(?:User's message|What the user is saying now):[ \t]*\n?[ \t]*"([\s\S]+)$/)
+  if (openEnded) return openEnded[1].replace(/"\s*$/, '')
+  return null
 }
 
 function isDropped(text: string): boolean {
