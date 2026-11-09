@@ -17,10 +17,10 @@ export default function NavV2() {
 
         <div className="flex items-center gap-5">
           <a
-            href="#assemble"
+            href="#scenes"
             className="hidden sm:inline font-mono text-[12px] uppercase tracking-[0.14em] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
           >
-            How it drives
+            In the wild
           </a>
           <Link
             href="/login"
