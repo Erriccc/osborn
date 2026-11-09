@@ -1,4 +1,4 @@
-# Osborn - Voice AI Research & Development Assistant
+# Osborn - Voice AI Research & Development Assistant.
 
 Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SDK. Talk to your code, research deeply, and build plans before executing.
 
