@@ -29,6 +29,7 @@ import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { getToolRiskLevel, type PermissionRequest, type ApprovalMode } from './voice/PermissionModal'
+import { classifyRisk } from '@/lib/riskTier'
 import { TextInput, type AttachedFile } from './voice/TextInput'
 import { AgentsPopover, type NamedAgent, type UserAgentDraft } from './voice/AgentsPopover'
 import { SkillsPopover } from './voice/SkillsPanel'
@@ -274,13 +275,19 @@ function VoiceRoomInner({
   // every reload.
   //
   //   'ask'         → default; every request surfaces the inline approval card.
-  //   'auto-review' → still shows the card (NO auto-approve) but with the full
-  //                   diff/details expanded up front for a fast decision.
+  //   'auto-review' → auto-approves ONLY low-risk requests (read-only tools and
+  //                   in-workspace file writes, per classifyRisk) — still shows
+  //                   the card, marked auto-approved, with a one-time notice.
+  //                   Anything risky (shell, network/exfil, out-of-workspace,
+  //                   deletes, sub-agents, unknown tools) still waits for a
+  //                   manual Deny/Allow, with the diff/details expanded up front.
   //   'allow-all'   → auto-approves every request this session (warns once).
   //
   // SECURITY: this only auto-answers the *frontend* permission_request. It NEVER
   // disables the agent-side PreToolUse hook / canUseTool gate. A tool the agent
-  // denies stays denied in every mode — DENY always wins.
+  // denies stays denied in every mode — DENY always wins. 'auto-review' NEVER
+  // auto-approves a high-risk request; the risk tier is derived conservatively
+  // (when in doubt → high) in @/lib/riskTier.
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   // Mirror the mode into a ref so the data-channel handler reads the latest
   // value without listing approvalMode in its dependency array (which would
@@ -289,6 +296,11 @@ function VoiceRoomInner({
   useEffect(() => { approvalModeRef.current = approvalMode }, [approvalMode])
   // One-time warning the first time "Allow all" auto-approves this session.
   const allowAllWarnedRef = useRef(false)
+  // One-time notice the first time "Auto-review" auto-approves a low-risk request.
+  const autoReviewNoticedRef = useRef(false)
+  // Monotonic token so a transient auto-approved card auto-dismisses itself
+  // without ever clearing a newer (possibly real, pending) card.
+  const autoApprovedTokenRef = useRef(0)
   const [claudeAuthUrl, setClaudeAuthUrl] = useState<string | null>(null)
   const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'waiting_code' | 'submitting' | 'complete' | 'error'>('none')
   const [claudeAuthCode, setClaudeAuthCode] = useState('')
@@ -1831,16 +1843,27 @@ function VoiceRoomInner({
           addMessageRef.current?.('assistant', data.text, undefined, category, undefined, data.messageId != null ? { messageId: data.messageId, chunkIndex: data.chunkIndex } : undefined)
         }
       } else if (data.type === 'permission_request') {
-        // Session mode 'allow-all' is the ONLY mode that auto-approves: respond
-        // immediately with `allow` and skip the card. The agent still sends
-        // requests (we don't teach it to stop asking — server-side write safety
-        // lives in its PreToolUse hook); we just answer them instantly here.
-        // 'ask' and 'auto-review' both fall through to the inline card and
-        // require an explicit human decision — DENY still wins server-side.
-        if (approvalModeRef.current === 'allow-all') {
-          if (!allowAllWarnedRef.current) {
+        // Which session modes auto-approve THIS request?
+        //   'allow-all'   → every request (the whole-session blanket).
+        //   'auto-review' → ONLY low-risk requests; the tier is derived here,
+        //                   conservatively, from the tool name + its target
+        //                   (when in doubt → high). Anything risky still waits.
+        //   'ask'         → nothing; always the card.
+        // The agent still SENDS every request — we don't teach it to stop asking;
+        // server-side safety lives in its PreToolUse hook / canUseTool gate. We
+        // only answer here. DENY always wins server-side, and 'auto-review'
+        // NEVER auto-approves a high-risk request.
+        const mode = approvalModeRef.current
+        const tier = classifyRisk(data.toolName, data.input)
+        const autoApprove = mode === 'allow-all' || (mode === 'auto-review' && tier === 'low')
+
+        if (autoApprove) {
+          if (mode === 'allow-all' && !allowAllWarnedRef.current) {
             allowAllWarnedRef.current = true
             addMessageRef.current?.('system', '⚡ Allow all is on for this session — every tool request is approved automatically until you switch back. This resets when you reload.', undefined, 'log')
+          } else if (mode === 'auto-review' && !autoReviewNoticedRef.current) {
+            autoReviewNoticedRef.current = true
+            addMessageRef.current?.('system', '⚡ Auto-review is on — low-risk actions (reading files, in-workspace edits) are approved automatically for this session. Anything risky still asks you first. Resets on reload.', undefined, 'log')
           }
           const filePath = data.input?.file_path
           const payload = new TextEncoder().encode(JSON.stringify({
@@ -1849,8 +1872,27 @@ function VoiceRoomInner({
             ...(filePath ? { filePath: String(filePath) } : {}),
           }))
           sendToAgent(payload, { reliable: true })
-          console.log(`⚡ [perm] auto-approved (allow-all): ${data.toolName}`)
-          addMessageRef.current?.('system', `Auto-approved (allow all): ${data.toolName}`, undefined, 'log')
+          console.log(`⚡ [perm] auto-approved (${mode}, ${tier}): ${data.toolName}`)
+          addMessageRef.current?.('system', `Auto-approved (${mode === 'allow-all' ? 'allow all' : 'low risk'}): ${data.toolName}`, undefined, 'log')
+          // 'auto-review' still SHOWS the inline card, marked auto-approved, so
+          // the user sees what ran (with the diff). It is transient: a monotonic
+          // token lets it auto-dismiss without ever clearing a newer card.
+          if (mode === 'auto-review') {
+            const token = ++autoApprovedTokenRef.current
+            setPendingPermission({
+              toolName: data.toolName,
+              description: data.description,
+              input: data.input,
+              riskLevel: 'low',
+              diff: data.diff,
+              autoApproved: true,
+            })
+            setTimeout(() => {
+              setPendingPermission((prev) =>
+                prev?.autoApproved && autoApprovedTokenRef.current === token ? null : prev
+              )
+            }, 6000)
+          }
           return
         }
         setPendingPermission({
@@ -1860,7 +1902,7 @@ function VoiceRoomInner({
           riskLevel: getToolRiskLevel(data.toolName),
           diff: data.diff,
         })
-        console.log(`🔍 [perm] received permission_request: diff=${data.diff ? `✅ ${data.diff.length} chars` : '❌ NONE'} toolName=${data.toolName}`)
+        console.log(`🔍 [perm] received permission_request: diff=${data.diff ? `✅ ${data.diff.length} chars` : '❌ NONE'} toolName=${data.toolName} tier=${tier}`)
       } else if (data.type === 'permission_response') {
         setPendingPermission(null)
       } else if (data.type === 'status_update') {
