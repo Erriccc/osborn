@@ -8,6 +8,10 @@ export interface PermissionRequest {
   input?: Record<string, unknown>
   riskLevel?: 'low' | 'medium' | 'high'
   diff?: string
+  // Set when 'auto-review' mode already auto-approved this LOW-risk request. The
+  // card is then purely informational — it shows what ran (with the diff) and a
+  // green "Auto-approved" status in place of the Deny/Allow/Always buttons.
+  autoApproved?: boolean
 }
 
 // Session approval modes, surfaced as the visible picker in the composer.
@@ -113,7 +117,7 @@ export function ApprovalCard({
           </svg>
         </div>
         <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-white">Permission requested</h3>
+          <h3 className="text-sm font-semibold text-white">{permission.autoApproved ? 'Auto-approved' : 'Permission requested'}</h3>
           <div className="flex items-center gap-2 mt-0.5">
             <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 text-xs font-mono rounded">
               {permission.toolName}
@@ -188,26 +192,39 @@ export function ApprovalCard({
           )
         })()}
 
-        {/* Action buttons */}
-        <div className="space-y-2">
-          <div className="flex gap-2">
-            <button onClick={() => onRespond('deny')}
-              className="flex-1 min-h-11 px-3 py-2.5 bg-gray-800 hover:bg-gray-700 rounded-xl transition-colors text-gray-300 text-sm font-medium border border-gray-700">
-              Deny
-            </button>
-            <button onClick={() => onRespond('allow')}
-              className="flex-1 min-h-11 px-3 py-2.5 bg-green-600 hover:bg-green-500 rounded-xl transition-colors text-white text-sm font-medium shadow-lg shadow-green-500/20">
-              Allow
-            </button>
-            <button onClick={() => onRespond('always_allow')}
-              className="flex-1 min-h-11 px-3 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 rounded-xl transition-all text-white text-sm font-medium shadow-lg shadow-amber-500/20">
-              Always
-            </button>
+        {/* Action row — auto-approved requests (auto-review + low risk) are
+            already allowed, so the card is informational: a green status, no
+            live Deny/Allow (clicking them server-side would be a no-op — the
+            tool already ran). High-risk / 'ask' requests keep the full buttons,
+            and DENY always wins. */}
+        {permission.autoApproved ? (
+          <div className="flex items-center justify-center gap-2 min-h-11 px-3 py-2.5 rounded-xl bg-green-500/10 border border-green-500/30 text-green-400 text-sm font-medium">
+            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            Auto-approved · low risk
           </div>
-          <p className="text-gray-600 text-[10px] text-center">
-            Or say &quot;allow&quot;, &quot;deny&quot;, or &quot;always allow&quot;
-          </p>
-        </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <button onClick={() => onRespond('deny')}
+                className="flex-1 min-h-11 px-3 py-2.5 bg-gray-800 hover:bg-gray-700 rounded-xl transition-colors text-gray-300 text-sm font-medium border border-gray-700">
+                Deny
+              </button>
+              <button onClick={() => onRespond('allow')}
+                className="flex-1 min-h-11 px-3 py-2.5 bg-green-600 hover:bg-green-500 rounded-xl transition-colors text-white text-sm font-medium shadow-lg shadow-green-500/20">
+                Allow
+              </button>
+              <button onClick={() => onRespond('always_allow')}
+                className="flex-1 min-h-11 px-3 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 rounded-xl transition-all text-white text-sm font-medium shadow-lg shadow-amber-500/20">
+                Always
+              </button>
+            </div>
+            <p className="text-gray-600 text-[10px] text-center">
+              Or say &quot;allow&quot;, &quot;deny&quot;, or &quot;always allow&quot;
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )
