@@ -120,6 +120,19 @@ export interface ToolMeta {
   agentRole?: string
 }
 
+// Payload for a persistent, expandable "Conversation compacted" transcript
+// marker (phase 1 of compaction integrity / visible memory). Driven entirely by
+// the already-flowing compaction_* data-channel events — it is pure surface and
+// does NOT change what gets compacted or how. `skillNames` are the durable
+// memories/skills the compaction wrote (what was kept); `skillsWritten` is their
+// count (may be 0 — a compaction with no new memory is still worth marking).
+export interface CompactionMarker {
+  trigger?: string
+  skillNames: string[]
+  skillsWritten: number
+  at: number
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -130,6 +143,9 @@ export interface ChatMessage {
   isStreaming?: boolean
   category?: 'chat' | 'log'
   toolMeta?: ToolMeta
+  // Present only on a compaction-marker row; renders CompactionMarkerCard in
+  // place of a normal bubble (see MessageBubble).
+  compaction?: CompactionMarker
   messageId?: string
   chunkIndex?: number
   liked?: boolean

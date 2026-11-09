@@ -4,7 +4,71 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { MarkdownMessage } from '../MarkdownMessage'
 import { FileCard } from '../chat/FileCard'
 import { userBubbleText } from '@/lib/chat-echo'
-import { stripProvenance, type ChatMessage, type MessagePart, type SpeakingChunk } from './shared'
+import { stripProvenance, type ChatMessage, type CompactionMarker, type MessagePart, type SpeakingChunk } from './shared'
+
+// Phase 1 of "compaction integrity / visible memory": a persistent, expandable
+// marker that makes an otherwise-invisible context compaction VISIBLE in the
+// transcript. Collapsed, it reads as a quiet Slack-style divider; expanded, it
+// shows what Osborn kept (the durable memories/skills it wrote) so compaction is
+// no longer silent. Pure surface — it renders data carried on the message and
+// never changes what gets compacted.
+function CompactionMarkerCard({ data }: { data: CompactionMarker }) {
+  const [expanded, setExpanded] = useState(false)
+  const count = typeof data.skillsWritten === 'number' ? data.skillsWritten : (data.skillNames?.length ?? 0)
+  const when = data.at ? new Date(data.at) : null
+  const summary = count > 0 ? `${count} ${count === 1 ? 'memory' : 'memories'} saved` : 'no new memories'
+  return (
+    <div className="w-full py-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        aria-expanded={expanded}
+        className="flex items-center gap-2 w-full text-left"
+      >
+        <div className="flex-1 h-px bg-amber-500/20" />
+        <span className="flex items-center gap-1.5 text-[11px] font-medium text-amber-300/80 whitespace-nowrap">
+          <svg className="w-3.5 h-3.5 text-amber-400/80 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 3a4 4 0 00-4 4 3 3 0 00-1 5.83V15a3 3 0 006 0m-1-12a4 4 0 014 4 3 3 0 011 5.83V15a3 3 0 01-3 3" />
+          </svg>
+          Conversation compacted
+          <span className="text-gray-500">· {summary}</span>
+          <svg className={`w-3 h-3 text-gray-500 transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </span>
+        <div className="flex-1 h-px bg-amber-500/20" />
+      </button>
+      {expanded && (
+        <div className="mt-2 mx-auto max-w-md rounded-lg border border-amber-500/20 bg-amber-500/[0.04] px-3.5 py-3 text-xs leading-relaxed text-gray-300 space-y-2">
+          <p>
+            Osborn condensed the earlier part of this conversation so it stays within its
+            context window. Your messages above remain in the transcript.
+          </p>
+          {data.trigger && (
+            <p className="text-gray-400">
+              Trigger: <span className="text-gray-300">{data.trigger}</span>
+              {when ? ` · ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+            </p>
+          )}
+          <div>
+            <p className="text-gray-400 mb-1">
+              {count > 0 ? `Durable memories kept (${count}):` : 'No new durable memories were written.'}
+            </p>
+            {data.skillNames && data.skillNames.length > 0 && (
+              <ul className="flex flex-wrap gap-1.5">
+                {data.skillNames.map((name, i) => (
+                  <li key={i} className="px-2 py-0.5 rounded-md bg-gray-800/70 border border-gray-700/50 text-gray-200 font-mono text-[11px]">
+                    {name}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 // Streaming indicator dots
 function StreamingDots() {
@@ -259,6 +323,13 @@ export const MessageBubble = React.memo(function MessageBubble({
   // In-chat file card (L4): the agent wrote a file; show it where the work happened.
   if (message.fileRef) {
     return <FileCard filePath={message.fileRef.filePath} fileName={message.fileRef.fileName} />
+  }
+
+  // Compaction marker (phase 1, compaction integrity): persistent, expandable
+  // "Conversation compacted" row so the user SEES that Osborn condensed its
+  // working memory and WHAT durable memories it kept. Surface-only.
+  if (message.compaction) {
+    return <CompactionMarkerCard data={message.compaction} />
   }
 
   // Date / prior-conversation dividers — centered hairline label (Slack-style),
