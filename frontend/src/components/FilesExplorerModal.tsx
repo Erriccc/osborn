@@ -157,18 +157,21 @@ export function FilesExplorerModal({
   )
 
   // The explicitly selected file, if any. Used for the highlight so no row is
-  // falsely marked selected before the user actually picks one.
+  // falsely marked selected before the user actually picks one. Scoped to the
+  // FILTERED set (bug: filter list/detail mismatch) — a selection the active
+  // filter hides must not keep driving the detail pane while its row is gone
+  // from the list, so the two panes always show the same file.
   const explicitlySelected = useMemo(
-    () => files.find(f => f.filePath === selectedFilePath) || null,
-    [files, selectedFilePath]
+    () => filteredFiles.find(f => f.filePath === selectedFilePath) || null,
+    [filteredFiles, selectedFilePath]
   )
 
   // What the content pane previews. On the desktop two-pane layout we fall back
-  // to the most-recent file so the pane is never empty; on mobile the content
-  // pane is hidden (mobileView === 'list') until the user taps a row, so we do
-  // NOT auto-select files[0] there — that would fire a default into a pane the
-  // user can't see. Once mobileView is 'content' the explicit selection drives it.
-  const previewFallback = useMemo(() => byRecent(files)[0] || null, [files, byRecent])
+  // to the first VISIBLE row (filtered + in display order) so the preview never
+  // shows a file absent from the filtered list; on mobile the content pane is
+  // hidden (mobileView === 'list') until the user taps a row, so we do NOT
+  // auto-select there. Once mobileView is 'content' the explicit selection drives it.
+  const previewFallback = useMemo(() => orderedVisible[0] || null, [orderedVisible])
   const selectedFile = useMemo(
     () => explicitlySelected || (mobileView === 'content' ? null : previewFallback),
     [explicitlySelected, previewFallback, mobileView]
