@@ -18,10 +18,6 @@ export default function FinalCTAV2() {
         <h2 className="font-display mt-10 text-[var(--text-primary)] text-[clamp(2.2rem,6vw,3.6rem)] leading-[1.02] tracking-[-0.02em] font-semibold">
           Get in. <span className="italic text-[var(--accent)]">Say where to.</span>
         </h2>
-        <p className="mt-6 max-w-[32rem] text-[var(--text-secondary)] text-[17px] leading-[1.6]">
-          Your hands-free business OS is waiting. Start a voice session and let it
-          drive the first task — free.
-        </p>
         <Link
           href="/login"
           className="mt-9 h-13 px-8 inline-flex items-center justify-center rounded-xl text-[16px] font-semibold tracking-[-0.01em] transition-all duration-150 active:scale-[0.98]"
