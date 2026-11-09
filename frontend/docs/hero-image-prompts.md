@@ -32,6 +32,14 @@ Prefer a different tool? The per-scene prompts are below.
 
 ---
 
+## hero-cabin  → `public/industries/hero-cabin.jpg`  (full-bleed hero / cabin POV)
+For the `/v2` landing hero (full-bleed, orb-centered). OPTIONAL — until this
+exists the hero reuses `drivers.jpg`, so generate this only if you want a
+dedicated wider plate. Shoot it with room at the top-center for the glowing voice
+orb and headline to sit over (keep that area dark/clean), and frame it so both a
+wide (desktop) and tall (phone) crop still read.
+Cinematic first-person POV from inside a premium vehicle cabin at dusk, in motion, the road and a soft horizon glowing ahead through the windshield, warm amber ambient dashboard lighting, dark premium interior, hands resting easy, a large subtle dashboard screen softly displaying streaming code far to one side, a faint luminous voice waveform drifting across the glass, deep clean negative space in the upper center of the frame, shallow depth of field, moody high-contrast, calm and in-control mood, photorealistic, no on-screen text, no logos, no watermark.
+
 ## drivers  → `public/industries/drivers.jpg`  (cabin / POV)
 Cinematic first-person POV from a driver's seat at dusk, warm amber ambient cabin lighting, dark premium interior, hands relaxed on a steering wheel, a large glowing dashboard screen ahead softly displaying streaming code and a merged pull request, a subtle luminous voice waveform reflected on the windshield, shallow depth of field, moody high-contrast, calm and in-control mood, photorealistic, 16:9.
 
