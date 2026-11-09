@@ -141,6 +141,17 @@ interface VoiceRoomProps {
   waitingMode?: boolean
 }
 
+// True for the agent's two ephemeral compaction `claude_output` bubbles
+// ("Teaching Osborn …" on start, "Osborn learned …" on complete — see
+// agent/src/index.ts buildOnCompactionEvent). Phase 1 renders compaction as a
+// dedicated, persistent, expandable marker from the raw compaction_* events, so
+// these bubbles are suppressed to avoid showing the same event twice. Loose
+// contains-match: a bigger agent copy rewrite just falls back to a plain bubble
+// rather than breaking.
+function isCompactionBubbleText(text: unknown): boolean {
+  return typeof text === 'string' && /Teaching Osborn|Osborn learned/.test(text)
+}
+
 // Build the prior-conversation block for a resumed session: real timestamps plus
 // Slack-style date dividers wherever the calendar day changes. Shared by the HTTP
 // hydration path (mount-time fetch) and the data-channel prior_messages fallback —
@@ -676,6 +687,9 @@ function VoiceRoomInner({
   const [compactionStages, setCompactionStages] = useState<Array<{ stage: string; detail?: string; ts: number }>>([])
   const [compactionSkills, setCompactionSkills] = useState<string[]>([])
   const [compactionStartedAt, setCompactionStartedAt] = useState<number | null>(null)
+  // Captured on compaction_started so the persistent completion marker can show
+  // what kicked compaction off (the trigger rides the start event, not complete).
+  const compactionTriggerRef = useRef<string | undefined>(undefined)
   // Machine memory — polled from agent /health every 15s.
   // Shape: { totalMb, usedMb, availableMb, usedPct, processRssMb } (all integers).
   // May be undefined when the agent hasn't published the field yet — render nothing.
@@ -1795,6 +1809,15 @@ function VoiceRoomInner({
           preview: data.text?.substring(0, 100)
         })
         if (data.text && data.text.trim()) {
+          // Compaction progress/complete now render as a dedicated, persistent,
+          // expandable marker (see the compaction_complete handler below +
+          // CompactionMarkerCard). Skip the agent's ephemeral ✨ "Teaching
+          // Osborn" / "Osborn learned" claude_output bubbles so the same event
+          // isn't shown twice. Surface-only.
+          if (isCompactionBubbleText(data.text)) {
+            console.log('[COMPACT-FRONTEND] suppressing ephemeral compaction bubble (rendered as transcript marker instead)')
+            return
+          }
           // Direct mode: show as main chat message (visible immediately)
           // Realtime mode: show as log (research agent output, not primary chat)
           const category = data.agentRole === 'direct' ? 'chat' : 'log'
@@ -2218,6 +2241,7 @@ function VoiceRoomInner({
         // a 🧠 emoji to add the inline bubble (see agent/src/index.ts
         // buildOnCompactionEvent). Both events should fire in the same tick.
         console.log('[COMPACT-FRONTEND-RX] compaction_started trigger=', data.trigger, 'full=', JSON.stringify(data).substring(0, 200))
+        compactionTriggerRef.current = typeof data.trigger === 'string' ? data.trigger : undefined
         setCompactionStatus('compacting')
         setCompactionStartedAt(Date.now())
         setCompactionStages([{ stage: 'Compaction triggered', detail: data.trigger ?? 'auto', ts: Date.now() }])
@@ -2252,6 +2276,30 @@ function VoiceRoomInner({
           detail: `${data.skillsWritten ?? 0} skill${data.skillsWritten === 1 ? '' : 's'} updated`,
           ts: Date.now(),
         }])
+        // Persistent, expandable transcript marker (phase 1 of compaction
+        // integrity). The banner above is transient; this row stays in the log so
+        // the user can always see that a compaction happened here and expand it to
+        // see what durable memories were kept. Surface-only — inserted straight
+        // into the transcript (bypasses addMessage's dedup, which is text-based).
+        {
+          const skillNames = Array.isArray(data.skillNames)
+            ? data.skillNames.filter((s: unknown): s is string => typeof s === 'string')
+            : []
+          const skillsWritten = typeof data.skillsWritten === 'number' ? data.skillsWritten : skillNames.length
+          setMessages(prev => [...prev, {
+            id: `compaction-${Date.now()}-${Math.random()}`,
+            role: 'system' as const,
+            content: 'Conversation compacted',
+            timestamp: new Date(),
+            category: 'chat' as const,
+            compaction: {
+              trigger: compactionTriggerRef.current,
+              skillNames,
+              skillsWritten,
+              at: Date.now(),
+            },
+          }])
+        }
         // Keep the success panel visible for 10s so the user has time to read it
         // (was 3s — far too brief on mobile where compaction announcements arrive
         // mid-voice-response and the user is listening, not staring at the screen).
