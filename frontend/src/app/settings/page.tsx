@@ -728,6 +728,19 @@ export default function SettingsPage() {
     )
   }
 
+  // SECURITY: never paint the protected settings (Danger Zone, API keys, machine
+  // controls) to a signed-out visitor. The auth effect above redirects to
+  // /login once getUser resolves with no user; render nothing until then so no
+  // protected content flashes before the navigation. Also covers the 3s
+  // loading-timeout fallback, where loading can clear before user is known.
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-[var(--background)] flex items-center justify-center">
+        <div className="w-5 h-5 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
+      </main>
+    )
+  }
+
   // Secret-field metadata (label + placeholder) — shared by desktop + mobile.
   const SECRET_META: Record<string, { label: string; placeholder: string; help?: string }> = {
     ANTHROPIC_API_KEY: { label: 'Anthropic', placeholder: 'sk-ant-…', help: 'https://console.anthropic.com/settings/keys' },

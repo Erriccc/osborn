@@ -39,7 +39,10 @@ export default function ActivityFeed({
   onResume: (sessionId: string, cwd?: string) => void
 }) {
   const [notes, setNotes] = useState<FeedNote[]>([])
-  const [filter, setFilter] = useState<Filter>('note') // founder: default to Notes
+  // Default to 'all' — "Recent activity" shows everything until the user picks
+  // a chip. Defaulting to 'note' made the shelf look like it auto-switched
+  // All → Notes on its own (and stuck there), which read as a bug.
+  const [filter, setFilter] = useState<Filter>('all')
   const [openNote, setOpenNote] = useState<FeedNote | null>(null)
 
   useEffect(() => {

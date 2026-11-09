@@ -539,7 +539,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           const isMixed =
             window.location.protocol === 'https:' && resolvedUrl.startsWith('http:')
           if (!isMixed) {
-            const deadline = Date.now() + 30_000
+            // Shortened from 30s: this is only the FALLBACK poll (connect-room
+            // didn't confirm the room). 30s meant a user who actually needs to
+            // sign in sat on the connecting spinner for ~30s before /api/token
+            // 401'd and the "Sign in to connect" prompt appeared. The modern
+            // path skips this entirely, and an already-up agent joins its room
+            // well within 8s, so cap the wait so the gate surfaces fast.
+            const deadline = Date.now() + 8_000
             while (Date.now() < deadline) {
               const h = await fetch(`${resolvedUrl}/health`, {
                 signal: AbortSignal.timeout(3000),

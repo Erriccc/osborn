@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
+import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
@@ -23,6 +24,9 @@ export default function Home() {
   const [agentUrl, setAgentUrl] = useState<string>('http://localhost:8741')
   const [showWizard, setShowWizard] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const authCardRef = useRef<HTMLDivElement>(null)
+  // Settings accordion: Esc + click-outside-the-card to close (it had neither).
+  useHeaderPanel('login-settings', showSettings, setShowSettings, authCardRef)
   const [showSessionBrowser, setShowSessionBrowser] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
 
@@ -262,7 +266,7 @@ export default function Home() {
           </a>
 
           {/* ── Auth card ──────────────────────────────────── */}
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 flex flex-col gap-3"
+          <div ref={authCardRef} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 flex flex-col gap-3"
             style={{ animation: 'enter 0.5s ease 0.1s both' }}>
 
             {user ? (
@@ -303,8 +307,11 @@ export default function Home() {
                 )}
 
                 <div className="flex items-center justify-between pt-1">
-                  <span className="text-[var(--text-muted)] text-[11px] font-mono truncate max-w-[240px]">
-                    {agentUrl}
+                  {/* Do NOT render the raw agent/sandbox URL here — it leaks the
+                      machine hostname on the login page. Show a neutral label;
+                      the actual endpoint stays in the (gated) settings panel. */}
+                  <span className="text-[var(--text-muted)] text-[11px] truncate max-w-[240px]">
+                    Connection settings
                   </span>
                   <button onClick={() => setShowSettings(s => !s)}
                     className="text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors text-sm p-1">

@@ -13,8 +13,12 @@
 
 import VoiceRoom from '@/components/VoiceRoom'
 import { useChatSession } from '@/components/ChatSessionProvider'
+import { useDocumentTitle } from '@/lib/use-document-title'
 
 export default function ChatPage() {
+  // Own tab title — this client route otherwise inherited the landing page's
+  // <title> ('Voice Native — Talk to it. It ships.') from the root layout.
+  useDocumentTitle('Chat')
   const {
     connecting,
     connected,

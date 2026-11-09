@@ -23,6 +23,7 @@ import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle } from '@/lib/sessions'
 import { agentReadUrl } from '@/lib/agent-read'
+import { useHeaderPanel } from '@/lib/use-header-panel'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -197,6 +198,10 @@ export default function Dashboard() {
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
+  const profileMenuRef = useRef<HTMLDivElement>(null)
+  // Account menu: Esc + click-outside (its own backdrop covers outside clicks)
+  // + mutual exclusion with the create menu, so the two can't both be open.
+  useHeaderPanel('dash-account', showProfileMenu, setShowProfileMenu, profileMenuRef)
   const [showReportBug, setShowReportBug] = useState(false)
   // Admin discoverability: /admin is standalone; surface a link only when the
   // SERVER confirms this user is in ADMIN_EMAILS (probe once on load).
@@ -1311,10 +1316,21 @@ export default function Dashboard() {
   }
 
   const handleCreateProject = () => {
-    const name = newProjectName.trim().toLowerCase().replace(/\s+/g, '-')
+    // Strict slug: same char class used at VoiceRoom.tsx:3023 and
+    // SkillsPanel.tsx:83, so `..`, `/` and other path chars can't survive
+    // (e.g. "TEST ../../escape" → "test-escape", not "/workspace/test-../../escape").
+    const name = newProjectName
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-') // non-slug chars (incl. '.', '/', spaces) → '-'
+      .replace(/-+/g, '-') // collapse repeated dashes
+      .replace(/^-+|-+$/g, '') // trim leading/trailing dashes
     if (!name) return
     const base = (baseCwd || '/workspace').replace(/\/+$/, '')
     const projectPath = `${base}/${name}`
+    // Defense in depth: the slug above can't produce these, but assert the
+    // final path never escapes the base before we hand it to the agent.
+    if (name.includes('/') || name.includes('..') || name === '.') return
     setShowNewProject(false)
     setNewProjectName('')
     startChat(undefined, projectPath)
@@ -1407,7 +1423,7 @@ export default function Dashboard() {
                   (Google/Claude/ChatGPT). One glance, zero learning curve:
                   Settings · Library · Sign out. Replaces the old behavior where
                   the avatar dumped the whole settings sheet. */}
-              <div className="relative shrink-0">
+              <div className="relative shrink-0" ref={profileMenuRef}>
                 <button onClick={() => setShowProfileMenu(s => !s)} title="Account"
                   aria-haspopup="menu" aria-expanded={showProfileMenu}
                   className={`shrink-0 p-1 rounded-full transition-all ${showProfileMenu ? 'bg-[var(--accent-dim)]/20 ring-1 ring-[var(--accent)]/50' : 'hover:bg-[var(--surface)]'}`}>
