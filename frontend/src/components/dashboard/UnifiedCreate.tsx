@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
+import { useHeaderPanel } from '@/lib/use-header-panel'
 
 /**
  * UnifiedCreate — the dashboard's single CREATE control.
@@ -20,13 +21,9 @@ export default function UnifiedCreate({
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [])
+  // Esc + click-outside to close, and mutual exclusion with the other header
+  // menus (opening the Account menu closes this, and vice-versa).
+  useHeaderPanel('dash-create', open, setOpen, wrapRef)
 
   const fire = (fn: () => void) => { setOpen(false); fn() }
 

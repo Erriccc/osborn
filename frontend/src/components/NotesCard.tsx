@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { micErrorKind, micHelp } from '@/lib/mic-permission'
 
 /**
  * NotesRecorder — the dashboard's note CAPTURE control (record-only).
@@ -19,6 +20,10 @@ export default function NotesCard() {
   const [attachments, setAttachments] = useState<string[]>([])
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Mic capture failure gets an ACTIONABLE recovery (title + how-to + a
+  // gesture-driven Try again), mapped from the getUserMedia error name the same
+  // way /chat does (mic-permission.ts) — not just an inline red line.
+  const [micError, setMicError] = useState<{ title: string; body: string } | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
   const [seconds, setSeconds] = useState(0)
   const [paused, setPaused] = useState(false)
@@ -41,7 +46,7 @@ export default function NotesCard() {
   }
 
   const start = async () => {
-    setError(null); setDraft(''); setAttachments([]); cancelledRef.current = false; setSavedFlash(false)
+    setError(null); setMicError(null); setDraft(''); setAttachments([]); cancelledRef.current = false; setSavedFlash(false)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const rec = new MediaRecorder(stream)
@@ -53,8 +58,13 @@ export default function NotesCard() {
       setSeconds(0); setPaused(false)
       timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000)
       setPhase('recording')
-    } catch {
-      setError('Microphone unavailable — check browser permissions.')
+    } catch (e) {
+      const kind = micErrorKind((e as { name?: string } | null)?.name)
+      setMicError(
+        kind
+          ? micHelp(kind, { ua: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints })
+          : { title: 'Microphone unavailable', body: 'Check your browser permissions, then tap Try again.' },
+      )
     }
   }
 
@@ -121,12 +131,32 @@ export default function NotesCard() {
 
   return (
     <section className="mb-6" style={{ animation: 'fadeSlideIn .45s ease both' }}>
-      {phase === 'idle' && (
+      {phase === 'idle' && !micError && (
         <button onClick={start}
           className="w-full sm:w-auto min-h-[44px] px-5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] flex items-center justify-center gap-2 text-[13.5px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--accent-dim)]/60 transition-all active:scale-[0.99]">
           <svg className="w-4 h-4 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
           {savedFlash ? 'Saved — see Recent activity ✓' : 'Record a note'}
         </button>
+      )}
+
+      {/* Mic-denied recovery: actionable (how to re-allow) + a gesture-driven
+          Try again (re-requests the mic on click), mirroring /chat's mic banner.
+          Replaces the old inline-only "Microphone unavailable" red line. */}
+      {phase === 'idle' && micError && (
+        <div role="alert" className="rounded-xl border border-red-500/40 bg-red-500/10 p-3">
+          <p className="text-[13px] font-semibold text-red-300">{micError.title}</p>
+          <p className="mt-1 text-[12.5px] text-[var(--text-secondary)] leading-relaxed">{micError.body}</p>
+          <div className="mt-2.5 flex items-center gap-2">
+            <button onClick={start}
+              className="min-h-[36px] px-3.5 rounded-lg bg-[var(--accent)] text-[13px] font-semibold text-[var(--background)] hover:opacity-90 transition-opacity">
+              Try again
+            </button>
+            <button onClick={() => setMicError(null)}
+              className="min-h-[36px] px-3.5 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
+              Dismiss
+            </button>
+          </div>
+        </div>
       )}
 
       {phase === 'recording' && (
