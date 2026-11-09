@@ -14,6 +14,7 @@ import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getGroundingBlock, getRecalledContextBlock } from './prompts.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
+import { appendCompactionRecord, countTranscriptRows } from './compaction-log.js'
 import { getEmbedder } from './embedder.js'
 import { launchCompactionLens } from './content/lens-launch.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
@@ -172,7 +173,10 @@ export interface ClaudeLLMOptions {
   onCompactionEvent?: (event:
     | { type: 'compaction_started'; trigger?: string }
     | { type: 'compaction_progress'; stage: string; detail?: string }
-    | { type: 'compaction_complete'; skillsWritten?: number; skillNames?: string[]; trigger?: string }
+    // `at` (ISO), `transcriptRows` and `integrityWarning` ride the complete event
+    // so the SAME payload that paints the live marker is what gets persisted and
+    // reconstructed on resume (compaction-log.ts).
+    | { type: 'compaction_complete'; skillsWritten?: number; skillNames?: string[]; trigger?: string; at?: string; transcriptRows?: number; integrityWarning?: string }
   ) => void
   // Per-user named agents (DB-backed, sent by the frontend via set_agents).
   // When set, used INSTEAD of the built-in NAMED_AGENTS at query creation.
@@ -2321,6 +2325,9 @@ type PermissionResult = { behavior: 'allow'; updatedInput: Record<string, unknow
 class ClaudeLLMStream extends llm.LLMStream {
   #opts: ClaudeLLMOptions
   #sessionId: string | null
+  // Trigger rides the PreCompact event; PostCompact (where the durable record is
+  // written) needs it, so it's stashed here between the two hooks.
+  #lastCompactTrigger: string | undefined = undefined
   #onSessionId: (id: string) => void
   #eventEmitter: EventEmitter
   #onPermissionRequest: (toolName: string, input: Record<string, unknown>) => Promise<PermissionResult>
@@ -2763,6 +2770,7 @@ class ClaudeLLMStream extends llm.LLMStream {
             matcher: '.*',
             hooks: [async (input: any) => {
               try {
+                this.#lastCompactTrigger = typeof input?.trigger === 'string' ? input.trigger : undefined
                 this.#opts.onCompactionEvent?.({ type: 'compaction_started', trigger: input?.trigger })
 
                 const instructionPath = join(__claudeLlmDir, 'prompts', 'compact-learnings-instruction.md')
@@ -3027,7 +3035,33 @@ class ClaudeLLMStream extends llm.LLMStream {
                   console.error('⚠️ PostCompact: CONTENT_LENS launch failed:', clErr instanceof Error ? clErr.message : clErr)
                 }
 
-                this.#opts.onCompactionEvent?.({ type: 'compaction_complete', skillsWritten, skillNames })
+                // ── Durable persistence + integrity self-check ──
+                // Write the compaction as one JSONL line in a sidecar next to the
+                // recall store so resume/export read it back and the UI rebuilds
+                // the marker at its real transcript position (compaction-log.ts).
+                // The same enriched payload (at/trigger/transcriptRows/warning) is
+                // emitted live, so the live marker and the reconstructed one match.
+                const at = new Date().toISOString()
+                let transcriptRows = 0
+                let integrityWarning: string | undefined
+                try {
+                  const sid = this.#sessionId
+                  const wd = this.#opts.workingDirectory
+                  if (sid && wd) {
+                    transcriptRows = countTranscriptRows(sid, wd)
+                    const rec = appendCompactionRecord(sid, wd, {
+                      at, trigger: this.#lastCompactTrigger, skillsWritten, skillNames, transcriptRows,
+                    })
+                    integrityWarning = rec.integrityWarning
+                    if (integrityWarning) {
+                      console.warn(`⚠️ Compaction integrity: ${integrityWarning} (session ${sid.substring(0, 8)})`)
+                    }
+                  }
+                } catch (persistErr) {
+                  console.error('⚠️ PostCompact: durable compaction record failed:', persistErr instanceof Error ? persistErr.message : persistErr)
+                }
+
+                this.#opts.onCompactionEvent?.({ type: 'compaction_complete', skillsWritten, skillNames, trigger: this.#lastCompactTrigger, at, transcriptRows, integrityWarning })
                 console.log(`🧠 PostCompact: complete — ${skillsWritten} skill file(s) written: [${skillNames.join(', ')}]`)
 
               } catch (err) {

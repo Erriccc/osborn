@@ -54,6 +54,7 @@ import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmithery
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
+import { readCompactionMarkers } from './compaction-log.js'
 import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, ClientNoteQueue, parseFavoriteChanged, parseLegacyFavoriteNotice } from './transcript-wiring.js'
 import { getRecallClient } from './recall-client.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
@@ -677,10 +678,14 @@ function startApiServer(workingDir: string, port: number): void {
           res.end(JSON.stringify({ error: 'session required' }))
           return
         }
+        // Durable compaction markers (sidecar, not the derived store) so a
+        // resumed transcript rebuilds every past "Conversation compacted" row at
+        // its real position — the store rebuild can't wipe these.
+        const compactions = readCompactionMarkers(sessionId, workingDir)
         const dbPath = storeExists(sessionId, workingDir)
         if (!dbPath) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ sessionId, messages: [] }))
+          res.end(JSON.stringify({ sessionId, messages: [], compactions }))
           return
         }
         const db = openStore(dbPath, { readonly: true })
@@ -689,7 +694,7 @@ function startApiServer(workingDir: string, port: number): void {
           // (notices, injected blocks) don't shrink the page (L2b).
           const messages = cleanHistoryRows(n => recentRows(db, n, ['user', 'assistant']), limit, 1200)
           res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ sessionId, messages }))
+          res.end(JSON.stringify({ sessionId, messages, compactions }))
         } finally { try { db.close() } catch {} }
       } catch (err) {
         console.error('API /session-messages error:', err)
@@ -5527,9 +5532,12 @@ async function main() {
                   try {
                     // Sanitized before truncation, over-fetched, chronological (L2b).
                     const priorMessages = cleanHistoryRows(n => recentRows(db, n, ['user', 'assistant']), 20, 800)
+                    // Durable compaction markers ride the same push so the resumed
+                    // transcript rebuilds its "Conversation compacted" rows too.
+                    const compactions = readCompactionMarkers(preSelectedSessionId!, workingDir)
                     if (priorMessages.length > 0) {
-                      await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages })
-                      console.log(`💬 Sent ${priorMessages.length} prior messages from DB for optimistic UI`)
+                      await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages, compactions })
+                      console.log(`💬 Sent ${priorMessages.length} prior messages (+${compactions.length} compaction markers) from DB for optimistic UI`)
                     }
                   } finally { try { db.close() } catch {} }
                 }

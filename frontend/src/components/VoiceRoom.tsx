@@ -20,7 +20,7 @@ import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle,
 import { agentReadUrl } from '@/lib/agent-read'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
@@ -153,31 +153,89 @@ function isCompactionBubbleText(text: unknown): boolean {
   return typeof text === 'string' && /Teaching Osborn|Osborn learned/.test(text)
 }
 
+// A persisted compaction marker as it arrives from the agent (sidecar via
+// /session-messages or the prior_messages push). `at` is an ISO string.
+interface PriorCompaction {
+  at?: string | number | null
+  trigger?: string
+  skillNames?: string[]
+  skillsWritten?: number
+  integrityWarning?: string
+}
+
 // Build the prior-conversation block for a resumed session: real timestamps plus
-// Slack-style date dividers wherever the calendar day changes. Shared by the HTTP
-// hydration path (mount-time fetch) and the data-channel prior_messages fallback —
-// both emit `prior-` prefixed ids so whichever lands second is deduped.
+// Slack-style date dividers wherever the calendar day changes, AND the durable
+// "Conversation compacted" markers interleaved at their real transcript position.
+// Shared by the HTTP hydration path (mount-time fetch) and the data-channel
+// prior_messages fallback — both emit `prior-` prefixed ids so whichever lands
+// second is deduped. The markers come from the agent's compaction sidecar
+// (compaction-log.ts), so a reload shows every past compaction, not just live ones.
 function buildPriorItems(
   sessionId: string,
   msgs: Array<{ role: string; content: string; ts?: string | number | null }>,
+  compactions?: PriorCompaction[],
 ): ChatMessage[] {
+  // Unified timeline: messages (kind 0) and compaction markers (kind 1), merged by
+  // timestamp. A tie puts the marker AFTER the messages at that instant — a
+  // compaction happens once those turns already exist.
+  type Row =
+    | { kind: 0; t: number; idx: number; role: string; content: string }
+    | { kind: 1; t: number; idx: number; comp: CompactionMarker }
+
+  const rows: Row[] = []
+  // Bug 14bedf48: control notices in the stored history are not You bubbles.
+  dropControlUserItems(
+    msgs.map((m) => ({ ...m, role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content ?? '') })),
+  ).forEach((m, i) => {
+    const t = m.ts ? new Date(m.ts).getTime() : 0
+    rows.push({ kind: 0, t: Number.isNaN(t) ? 0 : t, idx: i, role: m.role, content: m.content })
+  })
+  ;(compactions ?? []).forEach((c, i) => {
+    const t = c.at != null ? new Date(c.at).getTime() : NaN
+    if (Number.isNaN(t)) return // a marker with no usable timestamp can't be placed
+    const skillNames = Array.isArray(c.skillNames) ? c.skillNames.filter((s): s is string => typeof s === 'string') : []
+    rows.push({
+      kind: 1,
+      t,
+      idx: i,
+      comp: {
+        trigger: typeof c.trigger === 'string' ? c.trigger : undefined,
+        skillNames,
+        skillsWritten: typeof c.skillsWritten === 'number' ? c.skillsWritten : skillNames.length,
+        at: t,
+        integrityWarning: typeof c.integrityWarning === 'string' ? c.integrityWarning : undefined,
+      },
+    })
+  })
+
+  rows.sort((a, b) => (a.t !== b.t ? a.t - b.t : a.kind !== b.kind ? a.kind - b.kind : a.idx - b.idx))
+
   const items: ChatMessage[] = []
   let lastDay = ''
-  // Bug 14bedf48: control notices in the stored history are not You bubbles.
-  dropControlUserItems(msgs.map((m) => ({ ...m, role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content ?? '') }))).forEach((m, i) => {
-    const t = m.ts ? new Date(m.ts) : new Date(0)
-    const day = t.getTime() > 0 ? t.toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''
+  for (const r of rows) {
+    const t = new Date(r.t)
+    const day = r.t > 0 ? t.toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''
     if (day && day !== lastDay) {
       lastDay = day
       items.push({ id: `prior-day-${day}-${sessionId}`, role: 'system', content: `── ${day} ──`, timestamp: t })
     }
-    items.push({
-      id: `prior-${i}-${sessionId}`,
-      role: (m.role === 'assistant' ? 'assistant' : 'user') as ChatMessage['role'],
-      content: m.content,
-      timestamp: t,
-    })
-  })
+    if (r.kind === 1) {
+      items.push({
+        id: `prior-compaction-${r.idx}-${sessionId}`,
+        role: 'system',
+        content: 'Conversation compacted',
+        timestamp: t,
+        compaction: r.comp,
+      })
+    } else {
+      items.push({
+        id: `prior-${r.idx}-${sessionId}`,
+        role: (r.role === 'assistant' ? 'assistant' : 'user') as ChatMessage['role'],
+        content: r.content,
+        timestamp: t,
+      })
+    }
+  }
   if (items.length > 0) {
     items.push({ id: `prior-sep-${sessionId}`, role: 'system', content: '── Today ──', timestamp: new Date() })
   }
@@ -666,8 +724,8 @@ function VoiceRoomInner({
           const d = await r.json()
           if (cancelled) return
           if (!Array.isArray(d?.messages) || d.messages.length === 0) continue
-          console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length}`)
-          const priorItems = buildPriorItems(preSelectedSessionId, d.messages)
+          console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length} (+${Array.isArray(d.compactions) ? d.compactions.length : 0} compaction markers)`)
+          const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined)
           setMessages(prev => (prev.some(m => m.id.startsWith('prior-')) ? prev : [...priorItems, ...prev]))
           return // painted — stop retrying
         } catch { /* cold machine / network — retry */ }
@@ -2328,17 +2386,23 @@ function VoiceRoomInner({
             ? data.skillNames.filter((s: unknown): s is string => typeof s === 'string')
             : []
           const skillsWritten = typeof data.skillsWritten === 'number' ? data.skillsWritten : skillNames.length
+          // Prefer the agent's own values (same payload it persisted to the
+          // sidecar) so the live marker matches the one reconstructed on reload.
+          const serverAt = typeof data.at === 'string' ? new Date(data.at).getTime() : NaN
+          const at = Number.isNaN(serverAt) ? Date.now() : serverAt
+          const integrityWarning = typeof data.integrityWarning === 'string' ? data.integrityWarning : undefined
           setMessages(prev => [...prev, {
             id: `compaction-${Date.now()}-${Math.random()}`,
             role: 'system' as const,
             content: 'Conversation compacted',
-            timestamp: new Date(),
+            timestamp: new Date(at),
             category: 'chat' as const,
             compaction: {
-              trigger: compactionTriggerRef.current,
+              trigger: typeof data.trigger === 'string' ? data.trigger : compactionTriggerRef.current,
               skillNames,
               skillsWritten,
-              at: Date.now(),
+              at,
+              integrityWarning,
             },
           }])
         }
@@ -2436,8 +2500,8 @@ function VoiceRoomInner({
         // /session-messages (parallel with the LiveKit handshake); the prior- id
         // guard dedupes whichever arrives second.
         if (Array.isArray(data.messages) && data.messages.length > 0) {
-          console.log(`💬 prior_messages received: ${data.messages.length} messages`)
-          const priorItems = buildPriorItems(data.sessionId ?? 'x', data.messages)
+          console.log(`💬 prior_messages received: ${data.messages.length} messages (+${Array.isArray(data.compactions) ? data.compactions.length : 0} compaction markers)`)
+          const priorItems = buildPriorItems(data.sessionId ?? 'x', data.messages, Array.isArray(data.compactions) ? data.compactions : undefined)
           setMessages(prev => {
             // Don't double-inject: skip if we already have prior- prefixed messages
             if (prev.some(m => m.id.startsWith('prior-'))) return prev
