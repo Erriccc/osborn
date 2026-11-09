@@ -61,6 +61,7 @@ import { missingRequiredEnv } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
+import { meetingAddressing } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, checkControlSender, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { llm } from '@livekit/agents'
@@ -2927,6 +2928,7 @@ async function main() {
     activeMeetingBotId = null
     meetingAddressedUntil = 0
     meetingSpeakers.clear()
+    meetingAddressing.reset() // inert when OSBORN_MEETING_ADDRESSING is unset (empty registry)
     // leaveBot=false when Recall itself reported the meeting over (bot already gone).
     if (opts.leaveBot !== false) {
       const recall = getRecallClient()
@@ -3301,6 +3303,25 @@ async function main() {
     recall.on('transcript', ({ botId, speaker, text, partial }: { botId: string, speaker: string, text: string, partial?: boolean }) => {
       console.log(`📝 Meeting transcript [${speaker}]${partial ? ' (partial)' : ''}: ${text}`)
       if (!partial && text.trim()) {
+        // Multi-agent meeting addressing/mute (OFF by default — set
+        // OSBORN_MEETING_ADDRESSING=on to engage). When the flag is unset this
+        // whole block is skipped: processUtterance() short-circuits and the
+        // meeting path below behaves EXACTLY as before. Scaffolding — `target`
+        // is logged only; routing a turn to a specific worker is future work
+        // (docs/multiagent-runtime-plan.md).
+        if (meetingAddressing.enabled) {
+          const verdict = meetingAddressing.processUtterance(speaker, text)
+          if (verdict.muteChanged) {
+            console.log(`🎛️ [meeting-addr] ${verdict.muteChanged.action} "${verdict.muteChanged.who}" — muted now: ${meetingAddressing.mutes.list().join(', ') || 'none'}`)
+          }
+          if (verdict.drop) {
+            console.log(`🔇 [meeting-addr] dropped utterance from muted speaker "${speaker}"`)
+            return // muted participant — do not buffer or forward to the LLM
+          }
+          if (verdict.target) {
+            console.log(`🎯 [meeting-addr] "${speaker}" addresses @${verdict.target} (routing not yet wired — logged only)`)
+          }
+        }
         meetingTranscriptBuffer.push(`${speaker}: ${text.trim()}`)
         // Addressed by name → flush NOW (don't wait the 20s batch) and tag it so
         // the agent replies out loud into the meeting. This is the chat-mode path:
