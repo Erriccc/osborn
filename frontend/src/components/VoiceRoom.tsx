@@ -19,7 +19,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
-import { chatUrlForSession } from '@/lib/chat-url'
+import { chatUrlForSession, sessionMessagesQuery } from '@/lib/chat-url'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -250,6 +250,8 @@ function VoiceRoomInner({
   // The URL param is the launch-time fallback; the live session's own cwd
   // (resolved below, once the session list is known) wins after a switch.
   const urlCwd = useSearchParams()?.get('workingDirectory') || ''
+  // Captured once: the project the page was launched into (mount hydration).
+  const [launchCwd] = useState(urlCwd)
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   // iOS recovery surfaces (2026-10-24 mobile branch, P1.6/P1.7). audioBlocked →
   // "tap to enable sound" bar when the room's AudioContext started suspended
@@ -767,7 +769,7 @@ function VoiceRoomInner({
         if (cancelled) return
         try {
           const r = await fetch(
-            `${agentReadUrl(base, 'session-messages')}?session=${encodeURIComponent(preSelectedSessionId)}&limit=50`,
+            `${agentReadUrl(base, 'session-messages')}${sessionMessagesQuery(preSelectedSessionId, launchCwd)}`,
             { signal: AbortSignal.timeout(8000) },
           )
           if (cancelled || !r.ok) continue
@@ -782,7 +784,7 @@ function VoiceRoomInner({
       }
     })()
     return () => { cancelled = true }
-  }, [agentUrl, preSelectedSessionId])
+  }, [agentUrl, preSelectedSessionId, launchCwd])
   const [meetingError, setMeetingError] = useState<string | null>(null)
   // IDE (code-server) state
   const [ideStatus, setIdeStatus] = useState<'idle' | 'starting' | 'ready' | 'error'>('idle')

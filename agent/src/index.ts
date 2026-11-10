@@ -51,7 +51,7 @@ import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from '.
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -667,8 +667,11 @@ function startApiServer(workingDir: string, port: number): void {
         // Durable compaction markers (sidecar, not the derived store) so a
         // resumed transcript rebuilds every past "Conversation compacted" row at
         // its real position — the store rebuild can't wipe these.
-        const compactions = readCompactionMarkers(sessionId, workingDir)
-        const dbPath = storeExists(sessionId, workingDir)
+        // Sessions outside the boot project (after a switch, or a reload of one)
+        // pass their own cwd; honoured only if the session really lives there.
+        const readDir = sessionMessagesDir(sessionId, url.searchParams.get('workingDirectory'), workingDir, sessionExists)
+        const compactions = readCompactionMarkers(sessionId, readDir)
+        const dbPath = storeExists(sessionId, readDir)
         if (!dbPath) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ sessionId, messages: [], compactions }))

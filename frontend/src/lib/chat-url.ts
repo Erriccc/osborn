@@ -37,3 +37,11 @@ export function sessionParamsFromSearch(search: string): { sessionId: string | n
   const p = new URLSearchParams(search || '')
   return { sessionId: p.get('session') || null, workingDirectory: p.get('workingDirectory') || '' }
 }
+
+/** Query string for the agent's /session-messages read (S8): the session's
+ * own cwd rides along so sessions outside the agent's boot project hydrate. */
+export function sessionMessagesQuery(sessionId: string, cwd?: string | null, limit = 50): string {
+  const p = new URLSearchParams({ session: sessionId, limit: String(limit) })
+  if (cwd) p.set('workingDirectory', cwd)
+  return `?${p.toString()}`
+}

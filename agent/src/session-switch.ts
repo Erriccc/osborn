@@ -213,3 +213,20 @@ export function recoverySessionId(ids: {
 export function warmParkKey(llm: { sessionId?: string | null; spawnedResumeId?: string | null } | null | undefined): string | null {
   return llm?.sessionId || llm?.spawnedResumeId || null
 }
+
+/**
+ * Directory /session-messages reads a session's store from (S8): the
+ * requested workingDirectory only when the session really lives there,
+ * otherwise the agent's boot dir (today's behaviour). Never trusts the param.
+ */
+export function sessionMessagesDir(
+  sessionId: string,
+  requested: string | null | undefined,
+  bootDir: string,
+  exists: (sessionId: string, cwd: string) => boolean,
+): string {
+  if (requested && sessionId) {
+    try { if (exists(sessionId, requested)) return requested } catch { /* fall through */ }
+  }
+  return bootDir
+}

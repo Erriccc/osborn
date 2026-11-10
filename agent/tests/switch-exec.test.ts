@@ -5,7 +5,9 @@
 //   recoverySessionId      — auto-recovery resumes the switched-to session (4.3, D7)
 //   warmParkKey            — keep-warm keys a primed-but-uninitialised session (4.3)
 import assert from 'node:assert/strict'
-import { resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey } from '../src/session-switch.js'
+import { resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey, sessionMessagesDir } from '../src/session-switch.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 let pass = 0, fail = 0
 async function t(name: string, fn: () => void | Promise<void>) {
@@ -84,6 +86,23 @@ await t('warm park key: init id, else the id the query was spawned for', () => {
   assert.equal(warmParkKey({ sessionId: null, spawnedResumeId: 'B' }), 'B')
   assert.equal(warmParkKey({ sessionId: null, spawnedResumeId: null }), null)
   assert.equal(warmParkKey(null), null)
+})
+
+await t('S8 /session-messages dir: a workingDirectory that holds the session is used', () => {
+  assert.equal(sessionMessagesDir(B, '/w/proj-b', '/w/boot', (id, wd) => where[id] === wd), '/w/proj-b')
+})
+await t('S8 /session-messages dir: invalid / foreign / missing workingDirectory falls back to the boot dir', () => {
+  const ex = (id: string, wd: string) => where[id] === wd
+  assert.equal(sessionMessagesDir(B, '/etc', '/w/boot', ex), '/w/boot')
+  assert.equal(sessionMessagesDir(B, '', '/w/boot', ex), '/w/boot')
+  assert.equal(sessionMessagesDir(B, null, '/w/boot', ex), '/w/boot')
+})
+await t('S8 route reads compactions + store from the validated dir', () => {
+  const src = readFileSync(join(import.meta.dirname, '../src/index.ts'), 'utf8')
+  const i = src.indexOf("url.pathname === '/session-messages'")
+  const b = src.slice(i, i + 2600)
+  assert.ok(/sessionMessagesDir\(sessionId, url\.searchParams\.get\('workingDirectory'\)/.test(b))
+  assert.ok(/readCompactionMarkers\(sessionId, readDir\)/.test(b) && /storeExists\(sessionId, readDir\)/.test(b))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
