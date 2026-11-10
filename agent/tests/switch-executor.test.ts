@@ -122,6 +122,28 @@ await t('4.8 forced switch denies a pending permission; a late watch approve fin
   assert.equal(pd.hasPendingPermission(), false, 'watch handler logs "no pending permission, ignoring"')
 })
 
+await t('4.2 THE LIVE LOG SEQUENCE: resume armed B while A is live+idle -> next turn runs in B, no session_resume_failed', async () => {
+  const fq = makeFakeQueryFn()
+  const pd: any = new PipelineDirectLLM({ workingDirectory: fakeHome, voiceMode: 'direct', skipTTSQueue: true, resumeSessionId: A, queryFn: fq.fn as any })
+  const failures: any[] = []
+  pd.events.on('session_resume_failed', (d: any) => failures.push(d))
+  turn(pd, 'first')
+  await until(() => fq.spawned.length === 1)
+  fq.spawned[0].emit({ type: 'system', subtype: 'init', session_id: A })
+  fq.spawned[0].emit({ type: 'result', result: 'ok' })
+  await until(() => pd.sessionId === A && pd.busyState().idle)
+  // Exactly what the old resume_session did: arm only (session_resume_set).
+  pd.setResumeSessionId(B)
+  turn(pd, 'second')
+  await until(() => fq.spawned.length === 2)
+  assert.equal(fq.spawned[0].closed, true)
+  assert.equal(fq.spawned[1].options.resume, B)
+  fq.spawned[1].emit({ type: 'system', subtype: 'init', session_id: B })
+  fq.spawned[1].emit({ type: 'result', result: 'ok' })
+  await until(() => pd.sessionId === B)
+  assert.deepEqual(failures, [], 'session_resume_failed must never fire for this sequence')
+})
+
 // ── index.ts wiring (closures; source-anchored) ──────────────────────────────
 const src = readFileSync(join(import.meta.dirname, '../src/index.ts'), 'utf8')
 function body(fnStart: string, len = 9000) {

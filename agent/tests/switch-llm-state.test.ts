@@ -178,5 +178,100 @@ await t('S2 resetForSessionSwitch clears wrapper per-turn state (meeting TTS gat
   assert.equal(pd.spawnedResumeId, null)
 })
 
+// ── S6: pushMessage backstop ─────────────────────────────────────────────────
+async function liveIdle(fq: ReturnType<typeof makeFakeQueryFn>, llm: any, id: string) {
+  llm.pushMessage('first', { resume: id } as any, cb(llm))
+  const q = fq.spawned[fq.spawned.length - 1]
+  q.emit({ type: 'system', subtype: 'init', session_id: id })
+  q.emit({ type: 'result', result: 'ok' })
+  for (let i = 0; i < 50 && !llm.busyState().idle; i++) await tick()
+  assert.equal(llm.busyState().idle, true)
+  return q
+}
+
+await t('S6 armed B != spawned A != live A, idle -> pushMessage closes A and cold-starts resume:B', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq)
+  const qa = await liveIdle(fq, llm, A)
+  llm.setResumeSessionId(B) // legacy arm-only path (what resume_session used to do)
+  llm.pushMessage('next', { resume: B } as any, cb(llm))
+  assert.equal(qa.closed, true, 'old query closed')
+  assert.equal(fq.spawned.length, 2, 'cold start')
+  assert.equal(fq.spawned[1].options.resume, B)
+  assert.equal(llm.spawnedResumeId, B)
+})
+
+await t('S6 backstop: B\'s init fires a fresh session_id event (frontend learns B)', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq)
+  await liveIdle(fq, llm, A)
+  const ids: string[] = []
+  llm.events.on('session_id', (d: any) => ids.push(d.sessionId))
+  llm.setResumeSessionId(B)
+  llm.pushMessage('next', { resume: B } as any, { ...cb(llm), onSessionId: (id: string) => { const first = !llm.sessionId; if (first) llm.events.emit('session_id', { sessionId: id }) } })
+  assert.equal(llm.sessionId, null, 'old live id cleared on rebuild')
+})
+
+await t('S6 armed differs but A is BUSY -> push into A (never abort), warn', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq)
+  llm.pushMessage('first', { resume: A } as any, cb(llm))
+  const qa = fq.spawned[0]
+  qa.emit({ type: 'system', subtype: 'init', session_id: A })
+  await tick(); await tick()
+  assert.equal(llm.busyState().turnInFlight, true)
+  llm.setResumeSessionId(B)
+  const warns: string[] = []
+  const orig = console.warn
+  console.warn = (...a: any[]) => { warns.push(a.join(' ')) }
+  try { llm.pushMessage('next', { resume: B } as any, cb(llm)) } finally { console.warn = orig }
+  assert.equal(qa.closed, false, 'busy query must not be closed')
+  assert.equal(fq.spawned.length, 1, 'no second spawn')
+  assert.ok(warns.some((w) => /switch/i.test(w)), 'warned')
+})
+
+await t('S6 failed resume (armed == spawned != live) never rebuilds', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq)
+  llm.setResumeSessionId(B)
+  llm.pushMessage('first', { resume: B } as any, cb(llm))
+  const q = fq.spawned[0]
+  q.emit({ type: 'system', subtype: 'init', session_id: 'cccccccc-fallback' })
+  q.emit({ type: 'result', result: 'ok' })
+  for (let i = 0; i < 50 && !llm.busyState().idle; i++) await tick()
+  llm.pushMessage('second', { resume: B } as any, cb(llm))
+  llm.pushMessage('third', { resume: B } as any, cb(llm))
+  assert.equal(fq.spawned.length, 1, 'no rebuild loop')
+  assert.equal(q.closed, false)
+})
+
+await t('S6 no armed target -> plain fast-path push (unchanged)', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq)
+  llm.pushMessage('first', {} as any, cb(llm))
+  const q = fq.spawned[0]
+  q.emit({ type: 'system', subtype: 'init', session_id: A })
+  q.emit({ type: 'result', result: 'ok' })
+  for (let i = 0; i < 50 && !llm.busyState().idle; i++) await tick()
+  llm.pushMessage('second', {} as any, cb(llm))
+  assert.equal(fq.spawned.length, 1)
+})
+
+await t('4.5 auth restart pending + switch at idle: exactly one close, B spawns on the new generation', async () => {
+  const { requestAuthRestart } = await import('../src/claude-llm.js')
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq)
+  const qa = await liveIdle(fq, llm, A)
+  requestAuthRestart()
+  assert.equal(llm.authRestartPending, true)
+  llm.resetForSessionSwitch()
+  llm.setResumeSessionId(B)
+  llm.pushMessage('next', { resume: B } as any, cb(llm))
+  assert.equal(qa.closed, true)
+  assert.equal(fq.spawned.length, 2, 'exactly one new spawn')
+  assert.equal(fq.spawned[1].options.resume, B)
+  assert.equal(llm.authRestartPending, false)
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

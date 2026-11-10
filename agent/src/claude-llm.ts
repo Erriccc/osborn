@@ -2155,6 +2155,29 @@ export class ClaudeLLM extends llm.LLM {
       this.closeSession()
     }
 
+    // Session-switch backstop (#74): a resume target was armed for a DIFFERENT
+    // session than the live query runs (not the id it was spawned for, not the
+    // id init reported). Pushing would run this turn in the old session and
+    // init would then report session_resume_failed {requested: armed, actual:
+    // old} — the live bug. When idle, rebuild on the armed target (sdkOptions
+    // already carries resume: armed, see run()). When busy, never abort the
+    // old session's work: push as before and warn. A target the query was
+    // already spawned for (a failed resume) is never retried — no loop.
+    if (this.#persistentQuery && this.#messageChannel && !this.#messageChannel.closed) {
+      const armed = this.#opts.resumeSessionId || null
+      if (armed && armed !== this.#spawnedResumeId && armed !== this.#sessionId) {
+        const busy = this.busyState()
+        if (busy.idle) {
+          console.log(`🔀 Pending switch to ${armed.substring(0, 8)} — closing idle session ${this.#sessionId?.substring(0, 8) ?? '(new)'} and resuming the target`)
+          this.closeSession()
+          this.#sessionId = null
+          userMessage.session_id = ''
+        } else {
+          console.warn(`⚠️ Session switch to ${armed.substring(0, 8)} is pending but the live session is busy (${JSON.stringify(busy)}) — this turn still runs in ${this.#sessionId?.substring(0, 8) ?? 'the live session'}`)
+        }
+      }
+    }
+
     this.#turnsInFlight++
 
     if (this.#persistentQuery && this.#messageChannel && !this.#messageChannel.closed) {
