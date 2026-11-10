@@ -60,3 +60,25 @@ export function pinnedSessionCwd(
   if (reported && reported.sessionId === sessionId && reported.cwd) return reported.cwd
   return sessions.find((s) => s.sessionId === sessionId)?.cwd
 }
+
+// ── Take-over adopts the live session (S13) ──────────────────────────────────
+// The active tab records the session it is live in; a standby tab that takes
+// over rewrites its URL to that session BEFORE connect(), so it doesn't
+// rejoin the stale session its URL was opened with.
+
+export const LIVE_SESSION_KEY = 'vn-chat-live-session'
+const LIVE_SESSION_MAX_AGE_MS = 12 * 3600 * 1000
+
+export function liveSessionRecord(sessionId: string, cwd: string | null | undefined, now: number = Date.now()): string {
+  return JSON.stringify({ sessionId, cwd: cwd || undefined, at: now })
+}
+
+/** URL to adopt on take-over, or null (first mount, same session, stale or bad record). */
+export function takeoverSessionUrl(href: string, stored: string | null, prevRole: string, now: number = Date.now()): string | null {
+  if (!stored || prevRole === 'probing' || prevRole === 'active') return null
+  let rec: { sessionId?: unknown; cwd?: unknown; at?: unknown }
+  try { rec = JSON.parse(stored) } catch { return null }
+  if (typeof rec?.sessionId !== 'string' || typeof rec.at !== 'number') return null
+  if (now - rec.at > LIVE_SESSION_MAX_AGE_MS) return null
+  return chatUrlForSession(href, rec.sessionId, typeof rec.cwd === 'string' ? rec.cwd : null)
+}

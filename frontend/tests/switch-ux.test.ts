@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { sessionMessagesQuery, pinnedSessionCwd } from '../src/lib/chat-url'
+import { sessionMessagesQuery, pinnedSessionCwd, takeoverSessionUrl, liveSessionRecord, LIVE_SESSION_KEY } from '../src/lib/chat-url'
 import { switchFailureText, pendingSwitchLabel, switchPendingReducer } from '../src/lib/switch-ui'
 import { buildRoomRows } from '../src/lib/rooms'
 import { isRedundantFinal } from '../src/lib/claude-output'
@@ -163,6 +163,35 @@ t('S12 claude_output handler consults isRedundantFinal; addMessage records messa
   const b = vr.slice(vr.indexOf("data.type === 'claude_output'"), vr.indexOf("data.type === 'permission_request'"))
   assert.ok(/isRedundantFinal\(data,/.test(b))
   assert.ok(/assistantMessageIdsRef\.current\.add\(/.test(vr))
+})
+
+// ── S13 (P2) take-over adopts the live session ──
+const T0 = 1_000_000
+t('S13 record: {sessionId, cwd, at} JSON', () => {
+  assert.deepEqual(JSON.parse(liveSessionRecord(S, '/w/b', T0)), { sessionId: S, cwd: '/w/b', at: T0 })
+  assert.equal(LIVE_SESSION_KEY, 'vn-chat-live-session')
+})
+t('S13 a tab taking over rewrites its URL to the live session', () => {
+  const next = takeoverSessionUrl('https://x.test/chat?session=aaaaaaaa-1', liveSessionRecord(S, '/w/b', T0), 'taking', T0 + 1000)
+  const u = new URL(next!, 'https://x.test')
+  assert.equal(u.searchParams.get('session'), S)
+  assert.equal(u.searchParams.get('workingDirectory'), '/w/b')
+})
+t('S13 first mount (probing) never adopts — the URL the user opened wins', () => {
+  assert.equal(takeoverSessionUrl('https://x.test/chat?session=aaaaaaaa-1', liveSessionRecord(S, '/w/b', T0), 'probing', T0), null)
+})
+t('S13 same session / stale / garbage record -> null', () => {
+  assert.equal(takeoverSessionUrl(`https://x.test/chat?session=${S}&workingDirectory=%2Fw%2Fb`, liveSessionRecord(S, '/w/b', T0), 'standby', T0), null)
+  assert.equal(takeoverSessionUrl('https://x.test/chat', liveSessionRecord(S, '/w/b', T0), 'taking', T0 + 13 * 3600e3), null)
+  assert.equal(takeoverSessionUrl('https://x.test/chat', 'not json', 'taking', T0), null)
+  assert.equal(takeoverSessionUrl('https://x.test/chat', null, 'taking', T0), null)
+})
+t('S13 wiring: VoiceRoom records the live session; provider adopts it before connect on take-over', () => {
+  assert.ok(/LIVE_SESSION_KEY, liveSessionRecord\(/.test(vr))
+  const prov = fs.readFileSync(path.join(__dirname, '../src/components/ChatSessionProvider.tsx'), 'utf8')
+  const i = prov.indexOf('if (shouldConnectOnTransition(prev, tabRole))')
+  assert.ok(i > 0)
+  assert.ok(/takeoverSessionUrl\(/.test(prov.slice(i, i + 700)))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

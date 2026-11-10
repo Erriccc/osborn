@@ -19,7 +19,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
-import { chatUrlForSession, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
+import { LIVE_SESSION_KEY, chatUrlForSession, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -3453,10 +3453,14 @@ function VoiceRoomInner({
   useEffect(() => {
     if (!currentSessionId || typeof window === 'undefined') return
     const cwd = pinnedSessionCwd(currentSessionId, reportedCwd, sessions)
+    // S13: record the live session so a tab that takes over adopts it.
+    if (isController) {
+      try { localStorage.setItem(LIVE_SESSION_KEY, liveSessionRecord(currentSessionId, cwd)) } catch { /* storage blocked */ }
+    }
     const next = chatUrlForSession(window.location.href, currentSessionId, cwd)
     if (!next) return
     try { window.history.replaceState(null, '', next) } catch { /* sandboxed iframe */ }
-  }, [currentSessionId, sessions, reportedCwd])
+  }, [currentSessionId, sessions, reportedCwd, isController])
   // Declared first so it captures the title from before this page set one.
   useEffect(() => {
     if (typeof document === 'undefined') return
