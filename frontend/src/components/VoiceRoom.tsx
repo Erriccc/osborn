@@ -41,7 +41,7 @@ import { MeetingMuteControl, type MeetingMuteState } from './voice/MeetingMuteCo
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
-import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, contentRequestFor, favoriteRepairAction, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
@@ -373,21 +373,52 @@ function VoiceRoomInner({
   // favorites are persisted to localStorage WITH their metadata + Supabase URL,
   // so they survive reloads and are re-injected into the list on mount. This is
   // the "favorited files stay up even if everything else gets lost" behavior.
-  const FAVORITES_KEY = 'osborn-favorite-files'
-  const [favoriteFiles, setFavoriteFiles] = useState<GeneratedFile[]>(() => {
-    if (typeof window === 'undefined') return []
-    try {
-      const raw = localStorage.getItem(FAVORITES_KEY)
-      if (!raw) return []
-      const arr = JSON.parse(raw) as GeneratedFile[]
-      return arr.map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
-    } catch { return [] }
-  })
+  //
+  // #57: the localStorage cache is namespaced by signed-in user id. A single
+  // browser-global key leaked one account's pinned files (and their durable
+  // urls) to the next account that signed in on the same browser, so the cache
+  // starts EMPTY and is loaded only once we know whose account this is.
+  const favoritesKeyRef = useRef<string>(favoritesStorageKey(null))
+  const [favoritesReady, setFavoritesReady] = useState(false)
+  const [favoriteFiles, setFavoriteFiles] = useState<GeneratedFile[]>([])
   // Fast membership check keyed by filePath (stable per file).
   const favoritePaths = useMemo(() => new Set(favoriteFiles.map((f) => f.filePath)), [favoriteFiles])
   // Ref mirror so the async toggle can check membership without stale closures.
   const favoriteFilesRef = useRef(favoriteFiles)
   useEffect(() => { favoriteFilesRef.current = favoriteFiles }, [favoriteFiles])
+
+  // Resolve the signed-in account, then load ITS favorites cache (#57). Until
+  // this runs favorites stay empty, so a brand-new account never shows — or
+  // back-fills to the server — a previous account's pins.
+  useEffect(() => {
+    let cancelled = false
+    const load = (userId: string | null) => {
+      if (cancelled) return
+      const key = favoritesStorageKey(userId)
+      favoritesKeyRef.current = key
+      let cached: GeneratedFile[] = []
+      try {
+        let raw = localStorage.getItem(key)
+        // One-time migration: a pre-#57 cache lived under the browser-global key.
+        // Fold it into the GUEST namespace ONLY — a signed-in account must never
+        // inherit another account's residue (#57) — then drop the global key.
+        if (!raw && userId === null) raw = localStorage.getItem(LEGACY_FAVORITES_KEY)
+        if (raw) {
+          cached = (JSON.parse(raw) as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
+          try { localStorage.setItem(key, JSON.stringify(cached)) } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+      // Remove the legacy residue from this browser regardless of who is signed in.
+      try { localStorage.removeItem(LEGACY_FAVORITES_KEY) } catch { /* ignore */ }
+      setFavoriteFiles(cached)
+      setFavoritesReady(true)
+    }
+    if (!isSupabaseConfigured()) { load(null); return () => { cancelled = true } }
+    createSupabaseBrowser().auth.getUser()
+      .then(({ data }) => load(data?.user?.id ?? null))
+      .catch(() => load(null))
+    return () => { cancelled = true }
+  }, [])
 
   // Persist favorites to localStorage (per-device cache) AND the server (source
   // of truth, cross-device). Slim: metadata + durable URL only, never base64.
@@ -397,7 +428,7 @@ function VoiceRoomInner({
   // Returns the HTTP status of the server write (null on network failure) so the
   // caller can roll back an optimistic star (UI#21: check res.ok, not only throws).
   const persistFavorites = useCallback(async (next: GeneratedFile[]): Promise<number | null> => {
-    try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* quota — ignore */ }
+    try { localStorage.setItem(favoritesKeyRef.current, JSON.stringify(next)) } catch { /* quota — ignore */ }
     try {
       const res = await fetch('/api/favorites', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -474,7 +505,7 @@ function VoiceRoomInner({
         ? (cur.some((f) => f.filePath === file.filePath) ? cur : [...cur, prevEntry!])
         : cur.filter((f) => f.filePath !== file.filePath)
       setFavoritesNow(rolled)
-      try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(rolled)) } catch { /* ignore */ }
+      try { localStorage.setItem(favoritesKeyRef.current, JSON.stringify(rolled)) } catch { /* ignore */ }
       lastPinFailRef.current = file
       setPinError(currentlyFav ? `Couldn't unpin ${file.fileName}.` : `Couldn't save pin for ${file.fileName}.`)
       return
@@ -531,20 +562,24 @@ function VoiceRoomInner({
     // Wait until we know which session we're in; also guard against running
     // twice for the same session if currentSessionId identity changes.
     if (!currentSessionId) return
+    // #57: do not reconcile until we know whose account's cache to read/write,
+    // or a fresh account could back-fill a prior account's residue to its blob.
+    if (!favoritesReady) return
     if (syncedSessionRef.current === currentSessionId) return
     syncedSessionRef.current = currentSessionId
 
+    const favKey = favoritesKeyRef.current
     let cancelled = false
     fetch(`/api/favorites`)
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
         if (cancelled || !json) return
 
-        // Read whatever is currently in localStorage — may include items that
-        // were starred but whose POST failed in a previous session.
+        // Read whatever is currently in this account's localStorage — may include
+        // items that were starred but whose POST failed in a previous session.
         let local: GeneratedFile[] = []
         try {
-          const raw = localStorage.getItem(FAVORITES_KEY)
+          const raw = localStorage.getItem(favKey)
           if (raw) local = (JSON.parse(raw) as GeneratedFile[]).map((f) => ({ ...f, updatedAt: new Date(f.updatedAt) }))
         } catch { /* ignore */ }
 
@@ -556,7 +591,7 @@ function VoiceRoomInner({
           const localOnly = local.filter((f) => f.filePath && !serverPaths.has(f.filePath))
           const merged = localOnly.length > 0 ? [...server, ...localOnly] : server
           setFavoriteFiles(merged)
-          try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(merged)) } catch { /* ignore */ }
+          try { localStorage.setItem(favKey, JSON.stringify(merged)) } catch { /* ignore */ }
           // Back-fill server if we found local-only items (they missed a POST).
           if (localOnly.length > 0) {
             fetch('/api/favorites', {
@@ -574,7 +609,7 @@ function VoiceRoomInner({
       })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [currentSessionId])
+  }, [currentSessionId, favoritesReady])
   const [fileCopyFeedback, setFileCopyFeedback] = useState<string | null>(null)
   // Full-screen Files view: reachable only through "Expand" in the Outputs drawer.
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false)
