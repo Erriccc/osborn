@@ -961,11 +961,11 @@ function VoiceRoomInner({
   agentAudioTrackRef.current = (audioTrack?.publication?.track as unknown) || null
 
   useEffect(() => {
-    if (!localParticipant) return
+    if (!localParticipant) { console.log('🦆 [duck] bail: no localParticipant'); return }
     const lp = localParticipant as any
     const micPub = lp.getTrackPublication?.(Track.Source.Microphone) || lp.getTrack?.(Track.Source.Microphone)
     const micTrack = micPub?.audioTrack || micPub?.track
-    if (!micTrack) return
+    if (!micTrack) { console.log('🦆 [duck] bail: no micTrack'); return }
 
     let analyser: { calculateVolume: () => number; analyser: AnalyserNode; cleanup: () => Promise<void> } | null = null
     try {
@@ -987,8 +987,15 @@ function VoiceRoomInner({
     let belowSince = 0
     let raf = 0
 
+    // Log a missing agent track / setVolume once per state change, not per frame.
+    let lastMissing: string | null = null
     const applyVolume = (v: number) => {
       const t = agentAudioTrackRef.current as { setVolume?: (v: number) => void } | null
+      const missing = !t ? 'agentAudioTrackRef.current' : typeof t.setVolume !== 'function' ? 'agentAudioTrack.setVolume' : null
+      if (missing !== lastMissing) {
+        if (missing) console.log(`🦆 [duck] bail: no ${missing} (wanted volume ${v})`)
+        lastMissing = missing
+      }
       try { t?.setVolume?.(v) } catch { /* track detached */ }
     }
 
@@ -1005,11 +1012,17 @@ function VoiceRoomInner({
         if (vol > ONSET) {
           belowSince = 0
           if (!aboveSince) aboveSince = now
-          if (targetVol === 1 && now - aboveSince >= ONSET_HOLD_MS) targetVol = DUCK_LEVEL
+          if (targetVol === 1 && now - aboveSince >= ONSET_HOLD_MS) {
+            targetVol = DUCK_LEVEL
+            console.log(`🦆 [duck] engaged: mic=${vol.toFixed(3)} msSinceOnset=${Math.round(now - aboveSince)} → ${DUCK_LEVEL}`)
+          }
         } else {
           aboveSince = 0
           if (!belowSince) belowSince = now
-          if (targetVol !== 1 && now - belowSince >= QUIET_HOLD_MS) targetVol = 1
+          if (targetVol !== 1 && now - belowSince >= QUIET_HOLD_MS) {
+            targetVol = 1
+            console.log(`🦆 [duck] restore: false trigger (mic=${vol.toFixed(3)} quiet ${Math.round(now - belowSince)}ms)`)
+          }
         }
       }
       // Smooth ramp toward target; only touch the track while it's actually changing.
