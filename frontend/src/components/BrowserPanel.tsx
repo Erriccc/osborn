@@ -18,6 +18,10 @@ type EngineState = {
   configured: boolean
   state: string | null
   machineId: string | null
+  // Set by the server when the Fly Machines API itself couldn't be reached, so
+  // `state` is null because we failed to read it — surfaced as an explicit
+  // "engine unreachable" badge instead of a bare "unknown" (#81).
+  unreachable?: boolean
   // Server-side only reports whether OSBORN_ENGINE_TOKEN is set — never the value.
   // false ⇒ every drive/output action will 401; the live stream still works.
   engineTokenConfigured?: boolean
@@ -28,10 +32,16 @@ type Status = {
   pageState?: string
   idlePaused?: boolean
   brain?: { ready?: boolean; dead?: boolean } | string
-  activeTab?: number | string
+  // The engine reports the active tab as { i, url }; older shapes used a bare
+  // number/string. Handle both so the readout never renders "[object Object]".
+  activeTab?: number | string | { i?: number; url?: string }
   tabs?: unknown[]
   lastFrameAgeMs?: number
   journey?: { name?: string; goal?: string } | string | null
+  // #49/#81: when the auto-joined chat agent can't be reached the engine reports
+  // why here (else null). The panel surfaces it instead of spinning on "unknown".
+  agentUrl?: string | null
+  agentUnreachable?: string | null
 }
 type Task = { n?: number; index?: number; title?: string; name?: string; goal?: string; journey?: string }
 
@@ -65,10 +75,12 @@ export function BrowserPanel() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamKickRef = useRef(0)
 
-  // No-wake awake/asleep probe (Fly Machines API via the proxy).
+  // No-wake awake/asleep probe (Fly Machines API via the proxy). If the probe
+  // itself can't be reached (proxy/network down), say so explicitly rather than
+  // leaving a stale/"unknown" badge (#81).
   const refreshEngineState = useCallback(async () => {
     const s = await jget<EngineState>('engine-state')
-    if (s) setEngine(s)
+    setEngine(s ?? { configured: true, state: null, machineId: null, unreachable: true })
   }, [])
 
   useEffect(() => {
@@ -132,6 +144,13 @@ export function BrowserPanel() {
           setTokenError(true)
           return null
         }
+        // Cold-start / unreachable come back structured + retriable (#102/#104):
+        // the engine was asleep or mid-boot. Show the actionable message as-is
+        // (it already tells the user to retry) rather than a bare "say failed: 502".
+        if (data?.retriable || data?.code === 'engine_booting' || data?.code === 'engine_unreachable') {
+          setNote(data?.error || `${label}: the browser engine is waking — retry in a moment.`)
+          return null
+        }
         setNote(`${label} failed: ${data?.error || text || r.status}`)
         return null
       }
@@ -163,6 +182,16 @@ export function BrowserPanel() {
 
   const taskN = (t: Task, i: number) => (typeof t.n === 'number' ? t.n : typeof t.index === 'number' ? t.index : i)
   const asleep = engine?.state && engine.state !== 'started'
+  // The engine reports activeTab as { i, url } now — render the index, never a
+  // stringified object ("Tab [object Object]", #102).
+  const activeTabLabel = (() => {
+    const a = status?.activeTab
+    if (a == null) return '—'
+    if (typeof a === 'object') return a.i != null ? String(a.i) : '—'
+    return String(a)
+  })()
+  // #81: the engine tells us when the auto-joined chat agent is unreachable.
+  const agentUnreachable = watching ? status?.agentUnreachable ?? null : null
   // The server is missing the engine token if it says so up front, or if a drive
   // action just came back 401. Either way, every control/output action will fail.
   const tokenMisconfigured = engine?.engineTokenConfigured === false || tokenError
@@ -179,7 +208,7 @@ export function BrowserPanel() {
         <div className="flex items-center gap-2">
           <span className="text-lg">🎥</span>
           <h2 className="text-base font-semibold text-neutral-100">Browser</h2>
-          <StateBadge engine={engine} watching={watching} status={status} tokenMisconfigured={tokenMisconfigured} />
+          <StateBadge engine={engine} watching={watching} status={status} tokenMisconfigured={tokenMisconfigured} agentUnreachable={agentUnreachable} />
         </div>
         <div className="flex items-center gap-2">
           {!watching ? (
@@ -213,6 +242,18 @@ export function BrowserPanel() {
           <code className="rounded bg-black/40 px-1 font-mono text-amber-100">OSBORN_ENGINE_TOKEN</code>{' '}
           on the Railway frontend to match the engine’s Fly secret. Watching the live
           stream still works without it.
+        </div>
+      )}
+
+      {/* Agent-unreachable notice (#81) — the engine is up and drivable, but the
+          auto-joined chat agent can't be reached, so the streamed /chat tab would
+          sit on "Connecting…". Say so explicitly instead of a silent "unknown". */}
+      {agentUnreachable && (
+        <div className="rounded-lg border border-amber-600/60 bg-amber-950/40 px-3 py-2 text-xs leading-relaxed text-amber-200">
+          <span className="font-semibold">Engine reachable, but the chat agent isn’t.</span>{' '}
+          {agentUnreachable}. The browser engine stays drivable for plain browsing (Open
+          a URL, Say on a mic-bearing page); auto-joining a Voice Native chat needs a
+          reachable agent.
         </div>
       )}
 
@@ -260,7 +301,7 @@ export function BrowserPanel() {
       {watching && !tokenMisconfigured && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400 sm:grid-cols-4">
           <Field label="Page" value={status?.pageState || (status ? '—' : 'connecting…')} />
-          <Field label="Tab" value={status?.activeTab != null ? String(status.activeTab) : '—'} />
+          <Field label="Tab" value={activeTabLabel} />
           <Field label="Brain" value={brainReady == null ? '—' : brainReady ? 'ready' : 'not ready'} tone={brainReady === false ? 'warn' : undefined} />
           <Field label="Stream" value={status?.lastFrameAgeMs != null ? `${Math.round(status.lastFrameAgeMs / 1000)}s ago` : '—'} tone={(status?.lastFrameAgeMs ?? 0) > 10000 ? 'warn' : undefined} />
           {status?.pageUrl && <div className="col-span-2 truncate sm:col-span-4"><span className="text-neutral-500">URL </span><span className="text-neutral-300">{status.pageUrl}</span></div>}
@@ -339,10 +380,14 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: 'w
   )
 }
 
-function StateBadge({ engine, watching, status, tokenMisconfigured }: { engine: EngineState | null; watching: boolean; status: Status | null; tokenMisconfigured?: boolean }) {
+function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreachable }: { engine: EngineState | null; watching: boolean; status: Status | null; tokenMisconfigured?: boolean; agentUnreachable?: string | null }) {
   let label = 'unknown'
   let cls = 'bg-neutral-700 text-neutral-200'
-  if (engine && engine.state) {
+  // Agent-unreachable wins while watching: the engine is up (we have status) but
+  // the chat agent it should join isn't answering (#81).
+  if (watching && agentUnreachable) {
+    label = 'agent unreachable'; cls = 'bg-amber-600/80 text-black'
+  } else if (engine && engine.state) {
     if (engine.state === 'started') {
       // Without the engine token the status poll 401s, so `status` never
       // arrives — don't sit on a misleading "connecting" (#80).
@@ -350,8 +395,14 @@ function StateBadge({ engine, watching, status, tokenMisconfigured }: { engine: 
       else { label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white' }
     }
     else { label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300' }
+  } else if (engine && engine.unreachable) {
+    // Fly state couldn't be read (API/proxy down) — explicit, not "unknown" (#81).
+    label = 'engine unreachable'; cls = 'bg-red-700/80 text-white'
   } else if (engine && !engine.configured) {
     label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'
+  } else if (!engine) {
+    // Still probing on first paint — honest "unknown" until the first result.
+    label = 'unknown'; cls = 'bg-neutral-700 text-neutral-200'
   }
   return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{label}</span>
 }

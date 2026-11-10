@@ -693,7 +693,32 @@ async function main() {
           await focusDriverTab(driver)
           const ownedSay = guardOwnership(driver)
           if (ownedSay) return json(res, { error: ownedSay }, 409)
-          const t0 = Date.now(); await updateTabHud(); await speakText(active, body.text); mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
+          const t0 = Date.now(); await updateTabHud()
+          // ERROR PARITY (#102): /say is a drive action and must surface WHY it
+          // failed — like /hear and /eval do — instead of throwing into the
+          // generic 500 and showing the panel a reasonless error. The common
+          // failure on a non-room page is the mic precondition (the tab never
+          // opened a getUserMedia mic); name it and still stamp a (failed) task
+          // so a Say attempt never vanishes from "This run's tasks".
+          try {
+            await speakText(active, body.text)
+          } catch (e) {
+            const msg = (e as Error).message || 'speak failed'
+            const noMic = /mic/i.test(msg)
+            mark(`say[${driver}] FAILED: ${msg.slice(0, 80)}`)
+            const fn = ++reqN
+            const fshot = await reqShot(fn, 'say')
+            stampTask(fn, 'say', t0, null, fshot, body.text)
+            return json(res, {
+              ok: false,
+              code: noMic ? 'no_mic' : 'speak_failed',
+              error: noMic
+                ? `this page has no open microphone — Say needs a Voice Native /chat tab (open one first). (${msg})`
+                : `could not speak: ${msg}`,
+              artifact: fshot, artifactUrl: fshot ? `/artifact?n=${fn}` : null, driver,
+            }, noMic ? 422 : 502)
+          }
+          mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
           const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
           const n = ++reqN
           const { clip, clipError } = await reqClip(n, 'say', body.clipSeconds ?? 14)

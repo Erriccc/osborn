@@ -20,6 +20,9 @@ import {
   engineToken,
   engineTokenConfigured,
   engineMachineState,
+  startEngineMachine,
+  classifyFetchError,
+  type EngineErrorKind,
 } from '@/lib/browser-engine'
 
 export const runtime = 'nodejs'
@@ -51,6 +54,64 @@ function warnIfEngineTokenMissing(action: string): void {
         `Set OSBORN_ENGINE_TOKEN on the frontend to match the engine's Fly secret.`,
     )
   }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// Cold-start-aware failure for a control request that never reached the engine.
+// Instead of a bare opaque 502 (#102/#104), inspect the Fly machine state and
+// return a clear, actionable, retriable error — and wake a stopped engine so the
+// user's retry lands on a booting one rather than another connection-refused.
+async function engineUnreachableResponse(kind: EngineErrorKind): Promise<NextResponse> {
+  const machine = await engineMachineState()
+  const asleep = machine.state != null && machine.state !== 'started'
+
+  // Known-stopped/asleep: the fetch to the control port already nudges Fly's
+  // auto-start, but issue the start explicitly too so the wake is reliable.
+  if (asleep) {
+    await startEngineMachine(machine.machineId)
+    return NextResponse.json(
+      {
+        error: 'The browser engine was asleep and is now booting (~1–2 min). Retry in a moment.',
+        code: 'engine_booting',
+        retriable: true,
+        engineState: machine.state,
+      },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } },
+    )
+  }
+
+  // Can't even read the machine state (Fly API unreachable, or no token) AND the
+  // control request failed → genuinely unreachable; still likely transient.
+  if (machine.state == null) {
+    const booting = kind === 'refused'
+    return NextResponse.json(
+      {
+        error: booting
+          ? 'The browser engine is still booting (~1–2 min) — retry shortly.'
+          : "The browser engine can't be reached right now — it may be booting. Retry in a moment.",
+        code: booting ? 'engine_booting' : 'engine_unreachable',
+        retriable: true,
+        engineState: null,
+      },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } },
+    )
+  }
+
+  // Machine reports 'started' but the control API refused/timed out → the engine
+  // process is mid-boot (listening not ready) or wedged.
+  const booting = kind === 'refused'
+  return NextResponse.json(
+    {
+      error: booting
+        ? 'The browser engine is still booting (~1–2 min) — retry shortly.'
+        : `The browser engine isn't responding (${kind}). Retry in a few seconds, or press Stop engine and Wake again.`,
+      code: booting ? 'engine_booting' : 'engine_unreachable',
+      retriable: true,
+      engineState: machine.state,
+    },
+    { status: 503, headers: { 'Cache-Control': 'no-store' } },
+  )
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ action: string }> }) {
@@ -144,19 +205,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ act
   const body = await req.arrayBuffer()
   // `act`/`say` drive the browser + record a clip — they can take a while.
   const timeoutMs = action === 'act' || action === 'say' ? 90000 : 30000
-  try {
-    const upstream = await fetch(target, {
-      method: 'POST',
-      headers: engineHeaders({ 'Content-Type': req.headers.get('content-type') ?? 'application/json' }),
-      body,
-      cache: 'no-store',
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-    return new NextResponse(await upstream.arrayBuffer(), {
-      status: upstream.status,
-      headers: { 'Content-Type': upstream.headers.get('content-type') ?? 'application/json' },
-    })
-  } catch {
-    return NextResponse.json({ error: 'Engine unreachable' }, { status: 502 })
+  const headers = engineHeaders({ 'Content-Type': req.headers.get('content-type') ?? 'application/json' })
+
+  // Cold-start handling (#102/#104): when the engine is stopped or mid-boot the
+  // control port refuses the connection. `say` (and every drive action) used to
+  // collapse that into a bare opaque 502. Instead: one quick retry across the
+  // brief mid-boot refuse window, then a clear, actionable, retriable error.
+  let lastKind: EngineErrorKind = 'network'
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const upstream = await fetch(target, {
+        method: 'POST',
+        headers,
+        body,
+        cache: 'no-store',
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      return new NextResponse(await upstream.arrayBuffer(), {
+        status: upstream.status,
+        headers: { 'Content-Type': upstream.headers.get('content-type') ?? 'application/json' },
+      })
+    } catch (e) {
+      lastKind = classifyFetchError(e)
+      // Only a connection-refused is worth a fast in-request retry (the engine
+      // process is seconds from listening). A timeout already burned the budget,
+      // and DNS/other won't fix themselves in 1.5s.
+      if (attempt === 0 && lastKind === 'refused') {
+        await sleep(1500)
+        continue
+      }
+      break
+    }
   }
+  return engineUnreachableResponse(lastKind)
 }
