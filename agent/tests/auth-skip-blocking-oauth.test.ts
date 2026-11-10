@@ -25,6 +25,7 @@ const {
   clearAuthFallbackIfActive,
   startClaudeAuthOnDemand,
   isOnDemandAuthInFlight,
+  redactClaudeTokens,
 } = await import('../src/claude-auth.js')
 const { createClaudeLLM, requestAuthRestart, getAuthEnvGeneration, shouldRestartForAuth } = await import('../src/claude-llm.js')
 // claude-llm sets a module-load default for ANTHROPIC_SMALL_FAST_MODEL (haiku);
@@ -292,6 +293,12 @@ t('clear restores pre-fallback model env instead of deleting it', () => {
   delete process.env.ANTHROPIC_MODEL
   delete process.env.ANTHROPIC_SMALL_FAST_MODEL
   delete process.env.Z_AI_PERSONAL_API_KEY
+})
+t('redactClaudeTokens scrubs sk-ant tokens from CLI output', () => {
+  const out = redactClaudeTokens('Your token: sk-ant-oat01-AbC_9-xyz done; key sk-ant-api03-QQ')
+  assert.ok(!/sk-ant-oat01|AbC_9|QQ/.test(out))
+  assert.equal(out, 'Your token: sk-ant-[REDACTED] done; key sk-ant-[REDACTED]')
+  assert.equal(redactClaudeTokens('no secrets here'), 'no secrets here')
 })
 t('OAuth token is no longer logged (even a prefix)', () => {
   const src = readFileSync(new URL('../src/claude-auth.ts', import.meta.url), 'utf-8')

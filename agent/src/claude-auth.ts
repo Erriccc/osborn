@@ -90,6 +90,14 @@ const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json')
  * `\x1B\\`. Claude's Ink UI uses these extensively and they leak into error
  * messages and URLs when we only strip the basic CSI form.
  */
+/**
+ * Redact Claude tokens (sk-ant-oat01-…, sk-ant-api…) from CLI output before it
+ * is logged or forwarded — `claude setup-token` prints the token to the pty.
+ */
+export function redactClaudeTokens(text: string): string {
+  return text.replace(/sk-ant-[A-Za-z0-9_-]+/g, 'sk-ant-[REDACTED]')
+}
+
 function stripAnsi(text: string): string {
   return text
     // Full CSI: ESC [ <intermediates 0x20–0x3F> <final 0x40–0x7E>
@@ -576,7 +584,8 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
 
       // Debug log (truncated)
       const logLine = clean.trim()
-      if (logLine) console.log(`🔑 [claude-cli] ${logLine.substring(0, 200)}`)
+      // Redact BEFORE truncating so a token can't survive as a cut-off prefix.
+      if (logLine) console.log(`🔑 [claude-cli] ${redactClaudeTokens(logLine).substring(0, 200)}`)
 
       callbacks.onOutput?.(data)
 
@@ -634,7 +643,7 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
 
       // Detect errors
       if (/OAuth error|Invalid code|expired/i.test(recentBuffer)) {
-        const errMsg = stripAnsi(recentBuffer).trim().substring(0, 200)
+        const errMsg = redactClaudeTokens(stripAnsi(recentBuffer).trim()).substring(0, 200)
         console.log('⚠️ Claude auth error:', errMsg)
         callbacks.onError(errMsg)
         recentBuffer = ''
