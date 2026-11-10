@@ -35,6 +35,7 @@ import { AgentsPopover, type NamedAgent, type UserAgentDraft } from './voice/Age
 import { SkillsPopover } from './voice/SkillsPanel'
 import { ControlMenu } from './voice/ControlMenu'
 import { ChatPanel } from './voice/ChatPanel'
+import { MeetingMuteControl, type MeetingMuteState } from './voice/MeetingMuteControl'
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
@@ -664,6 +665,10 @@ function VoiceRoomInner({
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
   const [meetingStatus, setMeetingStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
+  // Multi-agent meeting addressing/mute state (Phase B). Pushed by the agent on
+  // the 'osborn-updates' channel as meeting_state/mute_changed, and only when the
+  // OSBORN_MEETING_ADDRESSING flag is on — so it's null (no UI) in normal meetings.
+  const [meetingMuteState, setMeetingMuteState] = useState<MeetingMuteState | null>(null)
   // MEETING = ACTIVITY (2026-08-01): the provider's 15-min voice-idle check was
   // STOPPING the Fly machine mid-meeting (exit 130, "STT stopped after a
   // while") — nobody touches the voice tab while talking in the Meet. While a
@@ -2302,10 +2307,26 @@ function VoiceRoomInner({
         console.log('🎥 Meeting: joined, botId:', data.botId)
         setMeetingBotId(data.botId)
         setMeetingStatus('joined')
+      } else if (data.type === 'meeting_state') {
+        // Full addressing/mute snapshot (Phase B). Only sent when the agent's
+        // OSBORN_MEETING_ADDRESSING flag is on, so this also toggles the UI on.
+        setMeetingMuteState({
+          enabled: !!data.enabled,
+          roster: Array.isArray(data.roster) ? data.roster.map(String) : [],
+          speakers: Array.isArray(data.speakers) ? data.speakers.map(String) : [],
+          muted: Array.isArray(data.muted) ? data.muted.map(String) : [],
+          addressed: typeof data.addressed === 'string' ? data.addressed : null,
+        })
+      } else if (data.type === 'mute_changed') {
+        // Lightweight delta; a full meeting_state follows, but update eagerly.
+        if (Array.isArray(data.muted)) {
+          setMeetingMuteState(prev => prev ? { ...prev, muted: data.muted.map(String) } : prev)
+        }
       } else if (data.type === 'meeting_left') {
         console.log('🎥 Meeting: left')
         setMeetingBotId(null)
         setMeetingStatus('idle')
+        setMeetingMuteState(null)
         // Keep meetingTodosContent visible after leave — user may want to
         // review the final TODO list. Cleared on next join.
       } else if (data.type === 'meeting_error') {
@@ -4098,6 +4119,10 @@ function VoiceRoomInner({
                   Waiting for the first transcript chunk…
                 </div>
               )}
+              <MeetingMuteControl
+                state={meetingMuteState}
+                onMute={(action, who) => sendJson({ type: 'mute_participant', action, who })}
+              />
             </div>
           </div>
         )}
