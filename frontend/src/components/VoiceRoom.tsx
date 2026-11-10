@@ -2042,7 +2042,12 @@ function VoiceRoomInner({
         console.log('📋 Current session:', data.sessionId)
         setCurrentSessionId(data.sessionId || null)
       } else if (data.type === 'session_resume_set') {
-        // Session resume confirmation
+        // Ack for the INITIAL resume/continue flows (resume_session,
+        // continue_session, session_selected) — NOT a mid-session switch. A live
+        // switch goes through switch_session → session_switched (below), so this
+        // bare ack is no longer (mis)treated as a completed switch. Here it is the
+        // legitimate first-connect confirmation, so adopting the id + keeping the
+        // chip alive until the greeting is correct.
         if (data.success) {
           console.log('🔄 Session resume set:', data.sessionId)
           setCurrentSessionId(data.sessionId)
@@ -2053,13 +2058,20 @@ function VoiceRoomInner({
           addMessageRef.current?.('system', `❌ ${data.error || 'Failed to resume session'}`)
         }
       } else if (data.type === 'session_resume_failed') {
-        // SDK created a new session instead of resuming the requested one
+        // The SDK couldn't restore the requested session and fell back to a
+        // DIFFERENT one. Be honest: the resume/switch did NOT take — don't dress
+        // it up as a clean "fresh start", and reflect the session that is actually
+        // live now (data.actualSessionId) rather than leaving the user mislabelled
+        // against a session the agent isn't running.
         console.warn('⚠️ Session resume verification failed:', data)
         dispatchResumeChip({ type: 'clear' })
-        addMessageRef.current?.('system', `⚠️ Could not restore previous session. Starting fresh conversation.`)
-        setCurrentSessionId(data.actualSessionId)
+        addMessageRef.current?.('system', `⚠️ Couldn't restore the session you picked — it's no longer available. You're now in a different conversation, not the one you selected.`)
+        if (data.actualSessionId) setCurrentSessionId(data.actualSessionId)
       } else if (data.type === 'session_switched') {
-        // Handle mid-conversation session switch
+        // Handle mid-conversation session switch. This event — not a bare ack — is
+        // the real confirmation that the switch took, so it owns clearing the
+        // "Resuming session…" chip (on success AND failure).
+        dispatchResumeChip({ type: 'clear' })
         if (data.success) {
           setCurrentSessionId(data.sessionId)
 
@@ -2620,10 +2632,31 @@ function VoiceRoomInner({
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent])
 
+  // INITIAL resume-on-connect only (the `showResumePrompt` gate + ControlMenu's
+  // Continue). This sends `resume_session`, which merely STORES the target id for
+  // the connect/`session_selected` flow to apply — it does NOT tear down a live
+  // session, so it must never be used to switch an already-running session.
   const handleResumeSession = useCallback((sessionId: string) => {
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({
       type: 'resume_session',
+      sessionId,
+    }))
+    sendToAgent(payload, { reliable: true })
+    dispatchResumeChip({ type: 'start', label: resumeChipLabel(sessionId), now: Date.now() })
+  }, [sendToAgent])
+
+  // MID-SESSION switch of an already-live session (in-chat History menu + Rooms
+  // rail). Unlike `resume_session`, `switch_session` makes the agent actually
+  // close the current session and rebuild against the target
+  // (`resetForSessionSwitch`), then emit `session_switched` + history. That event
+  // — not a bare ack — is the real confirmation, and it (plus failure) clears the
+  // resume chip. Trade-off: closing the current session ends any in-flight work
+  // in it; a background-warm-then-switch-in model is a separate, larger feature.
+  const handleSwitchSession = useCallback((sessionId: string) => {
+    const encoder = new TextEncoder()
+    const payload = encoder.encode(JSON.stringify({
+      type: 'switch_session',
       sessionId,
     }))
     sendToAgent(payload, { reliable: true })
@@ -2640,14 +2673,15 @@ function VoiceRoomInner({
   }, [sendToAgent])
 
   // ── Rooms (§14 first cut) ────────────────────────────────────────────────
-  // Switch the foreground room by resuming that session over the SAME live
-  // connection — the single-session voice flow is untouched; the agent swaps
-  // which Claude session it is focused on and replays that room's durable
-  // state. Background slots keep running concurrently meanwhile.
+  // Switch the foreground room by SWITCHING to that session over the SAME live
+  // connection — the single-session voice flow is untouched; the agent closes the
+  // current session, rebuilds against the target, and replays that room's durable
+  // state (`session_switched`). Note: this ends in-flight work in the session
+  // being left — a background-warm-then-switch-in model is a separate feature.
   const handleSwitchRoom = useCallback((room: Room) => {
     if (!room?.id) return
-    handleResumeSession(room.id)
-  }, [handleResumeSession])
+    handleSwitchSession(room.id)
+  }, [handleSwitchSession])
   // Reload the sessions + slots that feed the rooms rail.
   const handleRefreshRooms = useCallback(() => {
     handleLoadSessions()
@@ -3799,7 +3833,7 @@ function VoiceRoomInner({
               sessions={sessionsByActivity}
               currentSessionId={currentSessionId}
               onLoadSessions={handleLoadSessions}
-              onResumeSession={handleResumeSession}
+              onResumeSession={handleSwitchSession}
               onContinueSession={handleContinueSession}
               isLoadingSessions={isLoadingSessions}
               disabled={!agentConnected}
