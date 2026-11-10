@@ -31,7 +31,7 @@ import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/li
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
 import { isAuthGateTerminal } from '@/lib/connect-gate'
-import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
+import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
@@ -2926,6 +2926,15 @@ function VoiceRoomInner({
   }
 
   const handleSendText = useCallback(async (text: string, files?: AttachedFile[]) => {
+    // Issue #114: drop an accidental rapid double-send of the same text before
+    // anything happens — no second optimistic bubble, no second payload, so the
+    // duplicate can never strand a bubble that never gets a reply. A deliberate
+    // repeat seconds later is outside the short window and still goes through.
+    if (isRapidDoubleSend(pendingTypedRef.current, text, Date.now())) {
+      console.log('⏭️ Rapid double-send deduped (same text within window)')
+      return
+    }
+
     let content = text
     const fileData: { name: string; type: string; content: string; url?: string }[] = []
 
@@ -4231,7 +4240,10 @@ function VoiceRoomInner({
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
                         <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
                         <span className="flex-1">Files Explorer</span>
-                        {generatedFiles.length > 0 && <span className="text-[11px] font-semibold text-gray-500">{generatedFiles.length}</span>}
+                        {/* Issue #113: the entry itself carries the generated-files
+                            count (matching the explorer window's "Files Explorer (N)"),
+                            shown even at 0 and turning amber once the agent writes a file. */}
+                        <span className={`text-[11px] font-semibold ${generatedFiles.length > 0 ? 'text-amber-400' : 'text-gray-500'}`}>{generatedFiles.length}</span>
                       </button>
                       <button role="menuitem" onClick={() => { setShowHeaderMore(false); panel.openPanel('outputs') }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
