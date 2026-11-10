@@ -20,8 +20,10 @@
 //
 // This rail is pure surface over data VoiceRoom already has (sessions, slots,
 // currentSessionId) + handlers it already owns (resume, spawn/list). It is
-// additive: VoiceRoom renders <RoomsSidebar/> (desktop) and <RoomsBar/>
-// (mobile) and nothing else changes.
+// additive: VoiceRoom renders <RoomsSidebar/> (the vertical rail, desktop xl+
+// only) and <RoomsBar/> (the slim horizontal switcher, below xl — phone AND
+// tablet, so the conversation keeps full width instead of a three-column
+// squeeze, issue #118) and nothing else changes.
 
 import { useEffect, useState } from 'react'
 import { buildRoomRows, type RoomRow, type RoomStatus } from '@/lib/rooms'
@@ -92,7 +94,7 @@ interface RoomsProps {
 
 const COLLAPSE_KEY = 'vn-rooms-collapsed'
 
-// ── Desktop: persistent left sidebar (Phase D) ────────────────────────────
+// ── Desktop (xl+): persistent left sidebar (Phase D) ──────────────────────
 export function RoomsSidebar({
   sessions,
   slots,
@@ -125,7 +127,7 @@ export function RoomsSidebar({
     return (
       <aside
         aria-label="Rooms"
-        className="hidden sm:flex w-12 shrink-0 flex-col items-center gap-2 py-2 bg-gray-900 rounded-xl border border-gray-800/50"
+        className="hidden xl:flex w-12 shrink-0 flex-col items-center gap-2 py-2 bg-gray-900 rounded-xl border border-gray-800/50"
       >
         <button
           onClick={toggleCollapsed}
@@ -169,7 +171,7 @@ export function RoomsSidebar({
   return (
     <aside
       aria-label="Rooms"
-      className="hidden sm:flex w-60 shrink-0 flex-col bg-gray-900 rounded-xl border border-gray-800/50 overflow-hidden"
+      className="hidden xl:flex w-60 shrink-0 flex-col bg-gray-900 rounded-xl border border-gray-800/50 overflow-hidden"
     >
       <div className="flex items-center gap-1.5 px-3 py-2.5 border-b border-gray-800/60 shrink-0">
         <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
@@ -265,7 +267,7 @@ export function RoomsSidebar({
   )
 }
 
-// ── Mobile: slim horizontal room switcher (shown only with 2+ rooms) ──────
+// ── Below xl (phone + tablet): slim horizontal room switcher (2+ rooms) ────
 export function RoomsBar({
   sessions,
   slots,
@@ -281,7 +283,7 @@ export function RoomsBar({
   // switch to. nav/switchers don't count toward the primary-action budget.
   if (rooms.length <= 1) return null
   return (
-    <div className="sm:hidden flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto border-b border-gray-800/50 bg-gray-900/40">
+    <div className="xl:hidden flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto border-b border-gray-800/50 bg-gray-900/40">
       {rooms.map((room) => {
         const isLive = room.status === 'live'
         return (
