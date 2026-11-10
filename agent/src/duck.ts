@@ -3,8 +3,8 @@
 // captureFrame on the outermost session.output.audio and scale Int16 samples.
 // Frames already queued in the rtc AudioSource (~200ms) play at the old gain.
 
-// Gain while ducked: 0.45 = 55% quieter (user spec: cut BY 50-60%, not TO 60%).
-export const DUCK_LEVEL = 0.45
+// Gain while ducked: 0.35 = 35% of original volume (65% quieter).
+export const DUCK_LEVEL = 0.35
 
 /** Returns a NEW array with gain ramped linearly from `from` to `to`. Identity (same ref) at 1→1. */
 export function applyGain(src: Int16Array, from: number, to: number): Int16Array {

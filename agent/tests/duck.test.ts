@@ -19,7 +19,7 @@ class FakeOutput {
 const mkSession = () => ({ output: { audio: new FakeOutput() } })
 const frame = (vals: number[]) => new FakeFrame(Int16Array.from(vals), 24000, 1, vals.length)
 
-await t('DUCK_LEVEL is 0.45 (55% quieter)', () => assert.equal(DUCK_LEVEL, 0.45))
+await t('DUCK_LEVEL is 0.35 (35% of original)', () => assert.equal(DUCK_LEVEL, 0.35))
 
 await t('applyGain identity at 1→1 returns same reference', () => {
   const a = Int16Array.from([1, 2, 3])

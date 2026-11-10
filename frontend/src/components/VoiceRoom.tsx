@@ -978,7 +978,7 @@ function VoiceRoomInner({
   // VAD and the Recall meeting webhook are untouched. Purely additive: it reads
   // your own mic and sets the agent's own RemoteAudioTrack volume, nothing else.
   // Meeting (Recall) path can't duck (pre-rendered MP3) — it stays stop-only.
-  const DUCK_LEVEL = 0.6
+  const DUCK_LEVEL = 0.35 // 35% of original volume while ducked
   const agentStateRef = useRef(state)
   agentStateRef.current = state
   const agentAudioTrackRef = useRef<unknown>(null)

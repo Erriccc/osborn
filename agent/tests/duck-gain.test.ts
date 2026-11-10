@@ -27,7 +27,7 @@ function mkSession() {
   return { session: { output: { audio } } as any, audio, got }
 }
 
-await t('DUCK_LEVEL is 0.45', () => assert.equal(DUCK_LEVEL, 0.45))
+await t('DUCK_LEVEL is 0.35', () => assert.equal(DUCK_LEVEL, 0.35))
 
 await t('applyGain identity returns same reference', () => {
   const a = new Int16Array([1, 2, 3])
@@ -88,19 +88,19 @@ await t('duck: ramp frame then steady state', async () => {
   const { session, audio, got } = mkSession()
   const c: any = installDuck(session)
   c.setDuck(DUCK_LEVEL, 'test')
-  assert.equal(c.target, 0.45)
+  assert.equal(c.target, DUCK_LEVEL)
   const f1 = mkFrame(10000, 100)
   await audio.captureFrame(f1)
   const o1 = got[0]
   assert.notEqual(o1, f1); assert.ok(o1 instanceof Frame)
   assert.equal(o1.sampleRate, 48000); assert.equal(o1.channels, 1); assert.equal(o1.samplesPerChannel, 100)
-  assert.equal(o1.data[0], 10000); assert.equal(o1.data[99], 4500)
+  assert.equal(o1.data[0], 10000); assert.equal(o1.data[99], 3500)
   assert.equal(f1.data[99], 10000)
   const f2 = mkFrame(10000, 100)
   await audio.captureFrame(f2)
   const o2 = got[1]
   assert.notEqual(o2, f2)
-  assert.ok(Array.from(o2.data as Int16Array).every(v => v === 4500))
+  assert.ok(Array.from(o2.data as Int16Array).every(v => v === 3500))
 })
 await t('restore: setDuck(1) ramps back to full', async () => {
   const { session, audio, got } = mkSession()
