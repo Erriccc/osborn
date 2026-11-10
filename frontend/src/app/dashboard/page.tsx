@@ -1989,7 +1989,7 @@ export default function Dashboard() {
           </aside>{/* ── end LEFT SIDEBAR ── */}
         </div>
       </main>
-      <ReportBugModal open={showReportBug} onClose={() => setShowReportBug(false)} supabase={supabase} />
+      <ReportBugModal open={showReportBug} onClose={() => setShowReportBug(false)} />
 
       {/* New-session project picker (bug B15). Lightweight: reuses the same
           project grouping as the sidebar list. Pick a project to start the

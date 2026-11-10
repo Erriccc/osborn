@@ -1,21 +1,20 @@
 'use client'
 
 import React, { useEffect, useRef, useState } from 'react'
-import type { SupabaseClient } from '@supabase/supabase-js'
 import { submitBugReport, type BugReportSeverity, type BugReportType } from '@/lib/bug-report'
 
 type Props = {
   open: boolean
   onClose: () => void
-  supabase: SupabaseClient
 }
 
 const SEVERITIES: BugReportSeverity[] = ['low', 'medium', 'high', 'critical']
 
-// In-app "Report a bug" form. Writes straight to the bug_reports table as the
-// signed-in user (RLS-scoped). This is the manual counterpart to the voice
-// bug-reporter skill — the test run flagged that there was no non-voice way to file.
-export function ReportBugModal({ open, onClose, supabase }: Props) {
+// In-app "Report a bug" form. Posts to /api/report, which inserts into the
+// bug_reports table as the signed-in user (RLS-scoped) AND mirrors the report to
+// GitHub Issues server-side (issue #44). This is the manual counterpart to the
+// voice bug-reporter skill — the test run flagged that there was no non-voice way to file.
+export function ReportBugModal({ open, onClose }: Props) {
   const [type, setType] = useState<BugReportType>('bug')
   const [severity, setSeverity] = useState<BugReportSeverity>('medium')
   const [title, setTitle] = useState('')
@@ -46,7 +45,7 @@ export function ReportBugModal({ open, onClose, supabase }: Props) {
 
   const submit = async () => {
     setBusy(true); setError(null)
-    const res = await submitBugReport(supabase, {
+    const res = await submitBugReport({
       type, severity, title, description,
       reproduction_notes: repro || undefined,
       osborn_version: 'web',

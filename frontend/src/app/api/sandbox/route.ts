@@ -23,6 +23,7 @@ import {
   getLastUpdateResult,
 } from '@/lib/cloud'
 import { checkSandboxClaim, claimSandboxForUser, type SandboxClaim } from '@/lib/sandbox-claims'
+import { mirrorReportToGitHub } from '@/lib/github-issue-mirror'
 
 /**
  * GET /api/sandbox — get current user's sandbox status
@@ -841,6 +842,21 @@ export async function POST(request: Request) {
         )
       }
       console.log(`[bug-report] filed ${inserted?.id.slice(0, 8)} (${inserted?.type}/${inserted?.severity}): ${inserted?.title}`)
+
+      // Mirror to GitHub Issues (issue #44) — best-effort, privacy-safe (only the
+      // report text + product context travel, never reporter/session/machine ids).
+      const mirror = await mirrorReportToGitHub({
+        type: payload.type,
+        severity: payload.severity || 'medium',
+        title: payload.title,
+        description: payload.description,
+        reproduction_notes: payload.reproduction_notes ?? null,
+        tags: Array.isArray(payload.tags) ? payload.tags : [],
+        osborn_version: context?.osborn_version ?? null,
+        voice_mode: context?.voice_mode ?? null,
+      })
+      if (!mirror.ok) console.error('[bug-report] github mirror failed:', mirror.error)
+
       return NextResponse.json({ success: true, report: inserted, logUrl })
     }
 
