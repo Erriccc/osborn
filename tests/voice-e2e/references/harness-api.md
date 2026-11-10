@@ -7,7 +7,7 @@
 ## Engine endpoints (:8781 — send `x-engine-token` when OSBORN_ENGINE_TOKEN is set)
 | Endpoint | What |
 |---|---|
-| `GET /status` | ground truth: roomReady, pageUrl, pageState, idlePaused, brain ready/dead, activeTab, tabs+owners, lastFrameAgeMs, journey |
+| `GET /status` | ground truth: roomReady, pageUrl, pageState, idlePaused, brain ready/dead, activeTab, tabs+owners, lastFrameAgeMs, journey, **agentUrl / agentUnreachable** (#49: null when the auto-joined chat's agent is reachable, else `"agent unreachable: <host>"` — the in-app Browser panel reads this via its /status proxy) |
 | `GET /tasks` | this run's task index (same as manifest.json) |
 | `GET /clip?n=N` / `GET /artifact?n=N` | download task N's mp4 / screenshot |
 | `GET /clip?n=N&audio=1` | task N's clip WITH the agent's aligned audio muxed in (mp4 video+audio). Current run only; decodes+aligns via the recording's own start, not rel0/rel1 |
@@ -31,6 +31,7 @@
 ## Key environment
 - `GOOGLE_API_KEY` — REQUIRED (Stagehand brain). `OPENAI_API_KEY` (TTS mouth), `DEEPGRAM_API_KEY` (transcription ears) recommended.
 - `OSBORN_APP_URL` — the target site. `OSBORN_ENTRY=none` — just load the page, skip the voice-native room flow (ANY website).
+- `OSBORN_AGENT_URL` — the Voice Native agent machine the auto-joined chat talks to. **No default (#49)**: unset (or unreachable at boot) → the engine skips the room join, opens `OSBORN_APP_URL` for plain browsing, and marks `agentUnreachable` on `/status` + the live view instead of spinning on "Connecting…".
 - `OSBORN_ENGINE_TOKEN` — control-API auth (REQUIRED on public deployments).
 - `OSBORN_IDLE_STOP_MS` (default 15min container) — self-sleep. `OSBORN_TAB_STALE_MS` (default 30min) — stale-tab sweep.
 - `OSBORN_WEBHOOK_URL`/`OSBORN_WEBHOOK_TOKEN` — push events to any receiver.

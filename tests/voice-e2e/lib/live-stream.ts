@@ -46,6 +46,10 @@ export type LiveStream = {
   latestFrame: () => string | null
   // Re-bind the screencast to a different tab (the engine's active page).
   retarget: (page: Page) => Promise<void>
+  // A passive-view notice (e.g. "agent unreachable: <host>") shown as a banner
+  // over the stream and returned from /ready, so a watcher sees WHY the chat is
+  // dead instead of a silent spinner (#49). Pass null to clear it.
+  setNotice: (text: string | null) => void
 }
 
 // `page` may be null in display mode (x11grab needs no page) — that lets the
@@ -58,6 +62,9 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   const clients = new Set<import('http').ServerResponse>()
   let latest: Buffer | null = null
   let lastFrameTime: number | null = null
+  // Passive-view notice (#49): set by the engine when the auto-joined chat
+  // can't reach its agent; surfaced via /ready and a banner on the viewer page.
+  let notice: string | null = null
 
   // Rolling frame buffer (last ~120s) for per-task clips.
   const BUFFER_MS = 120_000, MAX_FRAMES = 2400
@@ -159,7 +166,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     if (req.url === '/ready') {
       // Wake-up poll for the viewer page: are frames flowing yet?
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-      res.end(JSON.stringify({ streaming: !!lastFrameTime, lastFrameAgeMs: lastFrameTime ? Date.now() - lastFrameTime : null }))
+      res.end(JSON.stringify({ streaming: !!lastFrameTime, lastFrameAgeMs: lastFrameTime ? Date.now() - lastFrameTime : null, notice }))
       return
     }
     if (pathName === '/stream') {
@@ -184,18 +191,26 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       .dot{width:44px;height:44px;border-radius:50%;border:5px solid #ffb300;border-top-color:transparent;animation:spin 1s linear infinite;box-shadow:0 0 30px rgba(255,179,0,.35)}
       #msg{font-size:26px;font-weight:700;text-shadow:0 0 20px rgba(255,179,0,.4)}
       .sub{color:#8a7b55;font-size:14px}
+      #notice{position:fixed;top:0;left:0;right:0;z-index:10;display:none;background:#3a1414;color:#ffb4b4;font:600 13px monospace;padding:10px 16px;text-align:center;border-bottom:1px solid #a33;box-shadow:0 2px 16px rgba(0,0,0,.5)}
       @keyframes spin{to{transform:rotate(360deg)}}</style></head>
       <body><img src="/stream${STREAM_TOKEN ? `?key=${encodeURIComponent(reqUrl.searchParams.get('key') || '')}` : ''}" alt="live">
+      <div id="notice"></div>
       <div id="wake"><div class="brand">BROWSER&nbsp;SCREEN&nbsp;RECORDER</div><div class="dot"></div><div id="msg">engine waking up…</div>
       <div class="sub">the full browser will appear here as it boots (~40s)</div></div>
       <script>
         const t0 = Date.now()
-        const poll = setInterval(async () => {
+        const wake = document.getElementById('wake'), noticeEl = document.getElementById('notice'), msgEl = document.getElementById('msg')
+        // Poll forever (cheap, and /ready does NOT keep the machine awake): hide
+        // the wake overlay once frames flow, and show/update the agent-unreachable
+        // banner (#49) whenever the engine sets it — it can arrive after streaming.
+        setInterval(async () => {
           try {
             const r = await fetch('/ready', { cache: 'no-store' }).then(r => r.json())
-            if (r.streaming) { document.getElementById('wake').classList.add('gone'); clearInterval(poll); return }
+            if (r.streaming) wake.classList.add('gone')
+            if (r.notice) { noticeEl.textContent = r.notice; noticeEl.style.display = 'block' }
+            else noticeEl.style.display = 'none'
           } catch {}
-          document.getElementById('msg').textContent = 'engine waking up… ' + Math.round((Date.now() - t0) / 1000) + 's'
+          if (!wake.classList.contains('gone')) msgEl.textContent = 'engine waking up… ' + Math.round((Date.now() - t0) / 1000) + 's'
         }, 2000)
       </script></body></html>`)
   })
@@ -230,6 +245,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
     latestFrame: () => (latest ? latest.toString('base64') : null),
+    setNotice: (text: string | null) => { notice = text },
     retarget: async (p: Page) => {
       // Display mode captures the whole window — tab focus IS the retarget.
       if (DISPLAY) return
