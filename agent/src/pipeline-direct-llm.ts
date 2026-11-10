@@ -580,7 +580,6 @@ export class PipelineDirectLLM extends llm.LLM {
         sessionBaseDir,
         agentControl: buildGuardedAgentControl({
           inner,
-          signal,
           getCurrentInner: () => this.#claudeLLM,
           getChatHistory: () => this.#opts.getChatHistory?.() || [],
         }),
@@ -611,18 +610,19 @@ export class PipelineDirectLLM extends llm.LLM {
 
 /**
  * Fast-brain agentControl bound to the inner ClaudeLLM a turn started on. Every
- * callback is a no-op once the turn is stale: its abort signal fired (a newer turn
- * or swapInner) or the wrapper's current inner is no longer `inner`. Without this,
- * an emergency_stop from a pre-swap turn could interrupt/re-prompt the promoted session.
+ * callback is a no-op once the wrapper's current inner is no longer `inner` (after
+ * swapInner), so an emergency_stop from a pre-swap turn can't interrupt/re-prompt the
+ * promoted session. Deliberately NOT gated on the turn's abort signal: a newer user
+ * turn aborts it, and a "stop" followed quickly by more speech must still let the
+ * earlier turn's emergency_stop act on the same session (pre-swap behavior).
  */
 export function buildGuardedAgentControl(args: {
   inner: ClaudeLLM
-  signal: AbortSignal
   getCurrentInner: () => ClaudeLLM
   getChatHistory: () => { role: string; content: string }[]
 }): AgentControlCallbacks {
-  const { inner, signal, getCurrentInner, getChatHistory } = args
-  const stale = () => signal.aborted || inner !== getCurrentInner()
+  const { inner, getCurrentInner, getChatHistory } = args
+  const stale = () => inner !== getCurrentInner()
   return {
     interrupt: async () => {
       if (stale()) return false
@@ -645,7 +645,7 @@ export function buildGuardedAgentControl(args: {
     },
     sendPrompt: (prompt: string) => {
       if (stale()) {
-        console.log('🧠⚡ [control] Dropped stale sendPrompt (turn aborted or inner swapped)')
+        console.log('🧠⚡ [control] Dropped stale sendPrompt (inner swapped)')
         return
       }
       // Direct call to ClaudeLLM.chat() — event listeners (tts_say, tool_use, etc.) still attached

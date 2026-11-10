@@ -6,8 +6,9 @@
  *        swapInner returns the previous inner and `inner` reports the new one
  *   SW2  swapInner aborts the in-flight fast-brain turn: with the same setup a
  *        turn that is NOT swapped reports onFastBrainResult, a swapped one does not
- *   SW3  stale agentControl closures are no-ops after the inner is swapped
- *        (and after the turn signal aborts); fresh closures still reach the inner
+ *   SW3  stale agentControl closures are no-ops after the inner is swapped; an
+ *        aborted turn signal with the SAME inner still lets them fire (a quick
+ *        follow-up utterance must not swallow a prior turn's emergency_stop)
  *   SW4  consumer finally only clears #persistentQuery/#messageChannel/
  *        #backgroundConsumerRunning when this.#persistentQuery === pq
  *        (source-anchored: driving the real consumer needs an SDK subprocess)
@@ -96,15 +97,14 @@ const history = () => [{ role: 'user', content: 'hi' }, { role: 'assistant', con
   // Fresh turn: callbacks reach the inner.
   const A = fakeInner()
   let current: any = A.inner
-  const ac = new AbortController()
-  const ctl = buildGuardedAgentControl({ inner: A.inner, signal: ac.signal, getCurrentInner: () => current, getChatHistory: history })
+  const ctl = buildGuardedAgentControl({ inner: A.inner, getCurrentInner: () => current, getChatHistory: history })
   const r = await ctl.interrupt()
   ctl.abort(); ctl.sendPrompt('p')
   check('SW3a', r === true && A.calls.interrupt === 1 && A.calls.abort === 1 && A.calls.chat === 1
     && ctl.hasActiveAgent() === true && ctl.getRecentUserMessages(5).length === 1,
     `live turn: all callbacks reach the bound inner (${JSON.stringify(A.calls)})`)
 
-  // Swap (identity changes, signal NOT aborted) → stale.
+  // Swap (identity changes) → stale.
   const B = fakeInner()
   current = B.inner
   const r2 = await ctl.interrupt()
@@ -118,22 +118,32 @@ const history = () => [{ role: 'user', content: 'hi' }, { role: 'assistant', con
     `after inner swap: nothing reaches the new inner (${JSON.stringify(B.calls)})`)
 }
 {
-  // Aborted signal alone (same inner) → stale.
+  // Turn superseded by a newer user turn (its #turnAbort signal aborted) but SAME
+  // inner → side effects must still fire. Drive it through the real wrapper: start
+  // turn N, start turn N+1 (aborts N's signal), and confirm a control bound to the
+  // unchanged inner still reaches it.
+  const pd = new PipelineDirectLLM({ workingDirectory: workingDir } as any)
   const A = fakeInner()
-  const ac = new AbortController()
-  const ctl = buildGuardedAgentControl({ inner: A.inner, signal: ac.signal, getCurrentInner: () => A.inner, getChatHistory: history })
-  ac.abort()
-  await ctl.interrupt(); ctl.abort(); ctl.sendPrompt('p')
-  check('SW3d', A.calls.interrupt === 0 && A.calls.abort === 0 && A.calls.chat === 0,
-    `after turn abort: closures are no-ops (${JSON.stringify(A.calls)})`)
+  pd.swapInner(A.inner)
+  const ctl = buildGuardedAgentControl({ inner: A.inner, getCurrentInner: () => pd.inner, getChatHistory: history })
+  pd.chat({ chatCtx: makeCtx('stop') })
+  pd.chat({ chatCtx: makeCtx('actually also check the logs') }) // aborts turn N's signal
+  await sleep(20)
+  const r = await ctl.interrupt(); ctl.sendPrompt('p')
+  check('SW3d', r === true && A.calls.interrupt === 1 && A.calls.chat === 3,
+    `aborted turn signal + same inner: interrupt/sendPrompt still fire (${JSON.stringify(A.calls)}; chat=2 user turns + 1 sendPrompt)`)
+  // Source pin: the guard must not consult the turn signal.
+  const src = stripComments(readSource('agent/src/pipeline-direct-llm.ts'))
+  const helper = anchoredSlice(src, 'export function buildGuardedAgentControl(', { endAnchor: 'sendPrompt:' })
+  check('SW3f', !/signal/.test(helper) && /inner !== getCurrentInner\(\)/.test(helper),
+    'buildGuardedAgentControl stale check is identity-only (no signal gating)')
 }
 {
   // Real wrapper: a control bound before swapInner goes stale after it.
   const pd = new PipelineDirectLLM({ workingDirectory: workingDir } as any)
   const A = fakeInner()
   pd.swapInner(A.inner)
-  const ac = new AbortController()
-  const ctl = buildGuardedAgentControl({ inner: A.inner, signal: ac.signal, getCurrentInner: () => pd.inner, getChatHistory: history })
+  const ctl = buildGuardedAgentControl({ inner: A.inner, getCurrentInner: () => pd.inner, getChatHistory: history })
   pd.swapInner(fakeInner().inner)
   ctl.sendPrompt('p'); await ctl.interrupt()
   check('SW3e', A.calls.chat === 0 && A.calls.interrupt === 0,
