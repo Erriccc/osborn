@@ -3958,6 +3958,19 @@ async function main() {
       }
     })
 
+    // #71: tell the frontend which session is actually live as soon as the SDK
+    // reports it (a brand-new session included), so /chat can pin ?session= and
+    // a reload resumes it instead of starting fresh. Fires once per fresh
+    // session id (ClaudeLLM emits session_id only when it had none).
+    directLLM.events.on('session_id', ({ sessionId }: { sessionId: string }) => {
+      if (!sessionId) return
+      sendToFrontend({
+        type: 'current_session',
+        sessionId,
+        isResumingSession: currentLLM?.isResumingSession ?? false,
+      })
+    })
+
     // Also pre-warm for resumed sessions (sessionId already known)
     if (resumeSessionId && currentVoiceMode === 'pipeline') {
       prewarmBM25Index(resumeSessionId, workingDir).catch(() => {})

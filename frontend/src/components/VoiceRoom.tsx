@@ -19,6 +19,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
+import { chatUrlForSession } from '@/lib/chat-url'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -3377,6 +3378,17 @@ function VoiceRoomInner({
     const session = sid ? sessions.find((x) => x.sessionId === sid) ?? null : null
     return chatDocumentTitle({ session, firstUserMessage })
   }, [sessions, currentSessionId, preSelectedSessionId, firstUserMessage])
+  // #71: keep /chat?session= pinned to the live session — a brand-new session
+  // as soon as the agent reports its id, and the new one after a switch — so a
+  // reload or re-entry resumes it instead of starting fresh. replaceState: no
+  // navigation, no remount (the provider captured its launch params once).
+  useEffect(() => {
+    if (!currentSessionId || typeof window === 'undefined') return
+    const cwd = sessions.find((x) => x.sessionId === currentSessionId)?.cwd
+    const next = chatUrlForSession(window.location.href, currentSessionId, cwd)
+    if (!next) return
+    try { window.history.replaceState(null, '', next) } catch { /* sandboxed iframe */ }
+  }, [currentSessionId, sessions])
   // Declared first so it captures the title from before this page set one.
   useEffect(() => {
     if (typeof document === 'undefined') return

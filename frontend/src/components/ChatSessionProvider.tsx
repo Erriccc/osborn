@@ -27,6 +27,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { sessionParamsFromSearch } from '@/lib/chat-url'
 import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
 import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
@@ -130,23 +131,29 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const provider = params.get('provider') || lsGet('osborn-provider') || 'gemini'
   const voiceArch = params.get('voiceArch') || 'pipeline' // only 'pipeline' is supported now
   const codingAgent = params.get('agent') || lsGet('osborn-coding-agent') || 'claude'
-  const preSelectedSessionId = params.get('session') || null
+  // Captured ONCE for the page life (#71): VoiceRoom rewrites ?session= with
+  // history.replaceState as soon as the live session id is known (new session,
+  // or after a switch) so a reload lands back in it. That rewrite must not
+  // re-run the mount-time effects keyed on these values (prior-message
+  // hydration would re-inject the live transcript). Reconnects read the LIVE
+  // URL instead — see connect().
+  const [preSelectedSessionId] = useState<string | null>(() => params.get('session') || null)
   // Optional: cwd the selected session was originally created with. Forwarded to the
   // token API so the agent boots with the matching directory and the session lookup
   // path resolves correctly. Empty when starting a fresh conversation.
-  const workingDirectory = params.get('workingDirectory') || ''
+  const [workingDirectory] = useState<string>(() => params.get('workingDirectory') || '')
   // Seed prompt for "Talk about it" / chat-based refine. A short seed rides the
   // URL (?prompt=); a FULL draft body (too big for a URL) is stashed in
   // sessionStorage by the caller and signalled with ?seed=1. VoiceRoom clears
   // it after sending so a refresh never re-seeds.
-  const seedPrompt = (() => {
+  const [seedPrompt] = useState<string | null>(() => {
     const p = params.get('prompt')
     if (p) return p.slice(0, 4000)
     if (params.get('seed') === '1' && typeof window !== 'undefined') {
       try { return sessionStorage.getItem('voice-native-seed') || null } catch { return null }
     }
     return null
-  })()
+  })
 
   const initialAgentUrl =
     typeof window !== 'undefined'
@@ -615,13 +622,21 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       if (code) url += `&roomCode=${code}`
       // CONNECT TIMING: forward the click epoch so the agent reports true E2E.
       url += `&clickTs=${clickTs}`
-      if (preSelectedSessionId)
-        url += `&sessionId=${encodeURIComponent(preSelectedSessionId)}`
+      // Resume the session the URL pins NOW, not the one the page opened with: a
+      // reconnect after a switch (or after a new session got its id) must rejoin
+      // the live session (#71). On first connect the two are the same.
+      const live = typeof window !== 'undefined'
+        ? sessionParamsFromSearch(window.location.search)
+        : { sessionId: null, workingDirectory: '' }
+      const connectSessionId = live.sessionId || preSelectedSessionId
+      const connectWorkingDirectory = live.sessionId ? live.workingDirectory : workingDirectory
+      if (connectSessionId)
+        url += `&sessionId=${encodeURIComponent(connectSessionId)}`
       // Forward the session's cwd into the token metadata so the agent boots with
       // the matching directory. Required for session resume to find the JSONL file
       // (which lives at ~/.claude/projects/<slug-derived-from-cwd>/<sessionId>.jsonl).
-      if (workingDirectory)
-        url += `&workingDirectory=${encodeURIComponent(workingDirectory)}`
+      if (connectWorkingDirectory)
+        url += `&workingDirectory=${encodeURIComponent(connectWorkingDirectory)}`
 
       const res = await fetch(url)
       // User cancelled while the token request was in flight — don't resurrect.
