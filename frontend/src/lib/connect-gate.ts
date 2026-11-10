@@ -1,0 +1,56 @@
+// Connect-gate: pure helpers for the chat "Connecting…" watchdog + the
+// fresh-account Anthropic sign-in gate (issue #53).
+//
+// Background: when a brand-new account (never connected an Anthropic account)
+// starts a session, the agent runs ensureClaudeAuth() on participant-join and
+// BLOCKS before creating the voice session — so `agent_ready` never fires until
+// OAuth completes. The frontend handled the auth case (markAuthRequired flips
+// `connected` true so the Claude auth modal is uncovered), but there was NO
+// bound on the generic "Connecting…" overlay: if neither `agent_ready` NOR an
+// auth prompt ever arrived (slow/cold machine, a dropped data message, a
+// crashed agent), the spinner ran forever. These helpers decide when to stop
+// waiting and what to say — kept pure so they can be unit-tested without React.
+
+export interface ConnectWaitState {
+  /** connect() is mid-flight (pre-token). */
+  connecting: boolean
+  /** agent_ready fired → the session is live. */
+  connected: boolean
+  /** a LiveKit token has been handed off (VoiceRoom is mounting). */
+  hasToken: boolean
+  /** an error is already surfaced. */
+  error: boolean
+  /** the agent asked for Anthropic sign-in (OAuth modal is/was up). */
+  authRequired: boolean
+}
+
+/**
+ * How long the "Connecting…" screen may sit with no resolution before the
+ * watchdog surfaces an actionable error. Generous enough to clear a cold Fly
+ * machine boot + agent room-join, bounded so it can never spin forever.
+ * The watchdog timer is reset on every progress tick (status message change),
+ * so a slow-but-progressing connect never trips it.
+ */
+export const CONNECT_WATCHDOG_MS = 90_000
+
+/**
+ * Is the UI actively waiting on the agent (and therefore should the watchdog
+ * be armed)? It disarms the moment the session connects, an error is shown, or
+ * Anthropic sign-in is pending — the auth modal is its own resolution, so an
+ * account that needs to sign in never trips the timeout.
+ */
+export function isAwaitingAgent(s: ConnectWaitState): boolean {
+  if (s.connected || s.error || s.authRequired) return false
+  return s.connecting || s.hasToken
+}
+
+/**
+ * The actionable message shown when the watchdog fires. Auth-aware: if the
+ * agent had asked for sign-in at any point we point the user at that, otherwise
+ * we describe the slow-start / retry path.
+ */
+export function connectTimeoutMessage(authRequired: boolean): string {
+  return authRequired
+    ? 'Anthropic sign-in is required to start your agent. Reopen the session to finish signing in, or connect your Claude account first.'
+    : 'Still connecting to your agent. It may be starting up, or your account needs to finish Anthropic sign-in. Retry, or go back and open the session again.'
+}
