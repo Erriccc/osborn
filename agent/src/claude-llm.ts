@@ -184,6 +184,9 @@ export interface ClaudeLLMOptions {
   // SDK constraint: agents are fixed once query() starts — changes apply on
   // the next session (cold start / resume / switch), not mid-session.
   agents?: Record<string, { description: string; prompt: string; tools?: string[]; model?: string }>
+  /** Test seam: replaces the SDK `query()` for the persistent session (cold start
+   * + primeResume). Production never sets it. */
+  queryFn?: typeof query
 }
 
 /**
@@ -1310,6 +1313,12 @@ export class ClaudeLLM extends llm.LLM {
   #spawnAuthGen = authEnvGeneration
   #turnsInFlight = 0
 
+  // `resume` id the live persistent query was spawned with (null = fresh, or no
+  // query). Lets a session switch tell "query already runs the armed target"
+  // from "armed target is a pending switch" (#74; see session-switch.ts).
+  #spawnedResumeId: string | null = null
+  #queryFn: typeof query = query
+
   /** True when the live subprocess predates the latest auth-backend change. */
   get authRestartPending(): boolean {
     return !!this.#persistentQuery && this.#spawnAuthGen !== authEnvGeneration
@@ -1370,6 +1379,7 @@ export class ClaudeLLM extends llm.LLM {
       onCompactionEvent: opts.onCompactionEvent,
     }
     this.#eventEmitter = opts.eventEmitter || new EventEmitter()
+    if (opts.queryFn) this.#queryFn = opts.queryFn
 
     console.log('🟠 ClaudeLLM initialized (Research Mode)')
     console.log(`   📁 Working dir (cwd): ${this.#opts.workingDirectory}`)
@@ -1975,6 +1985,29 @@ export class ClaudeLLM extends llm.LLM {
   // subprocess via the MessageChannel — no JSONL replay.
   // ============================================================
 
+  /** `resume` id the live persistent query was spawned with (null = fresh / none). */
+  get spawnedResumeId(): string | null {
+    return this.#spawnedResumeId
+  }
+
+  /**
+   * What the live session is doing right now (#74). A session switch is only
+   * executed when `idle`: a turn awaiting its result, SDK tasks (sub-agents
+   * outlive their turn), compaction, an in-flight interrupt or a permission
+   * prompt all mean closing the query would lose work.
+   */
+  busyState(): { turnInFlight: boolean; runningTasks: number; compacting: boolean; interruptPending: boolean; permissionPending: boolean; idle: boolean } {
+    const turnInFlight = this.#turnsInFlight > 0
+    const runningTasks = this.getRunningTasks().length
+    const compacting = !!this.compacting
+    const interruptPending = !!this.#pendingInterrupt
+    const permissionPending = this.hasPendingPermission()
+    return {
+      turnInFlight, runningTasks, compacting, interruptPending, permissionPending,
+      idle: !turnInFlight && runningTasks === 0 && !compacting && !interruptPending && !permissionPending,
+    }
+  }
+
   /** Whether a persistent session is alive and consuming messages */
   hasSession(): boolean {
     return this.#persistentQuery !== null && !this.#messageChannel?.closed
@@ -2006,6 +2039,7 @@ export class ClaudeLLM extends llm.LLM {
     }
     this.#persistentQuery = null
     this.#messageChannel = null
+    this.#spawnedResumeId = null
     this.#backgroundConsumerRunning = false
     this.#dispatchedFor.clear()
     // Task registry is per-process (SDK task ids die with the subprocess).
@@ -2057,7 +2091,8 @@ export class ClaudeLLM extends llm.LLM {
     console.log('🔥 primeResume: eager cold-start — resume replay overlaps connect (no user message)')
     this.#spawnAuthGen = authEnvGeneration
     this.#messageChannel = new MessageChannel<SDKUserMessage>()
-    this.#persistentQuery = query({ prompt: this.#messageChannel as any, options: sdkOptions })
+    this.#spawnedResumeId = (sdkOptions as any)?.resume ?? null
+    this.#persistentQuery = this.#queryFn({ prompt: this.#messageChannel as any, options: sdkOptions })
     this.#activeQueries.add(this.#persistentQuery)
     this.#startBackgroundConsumer(callbacks)
   }
@@ -2151,7 +2186,8 @@ export class ClaudeLLM extends llm.LLM {
     this.#messageChannel = new MessageChannel()
     this.#messageChannel.push(userMessage)
 
-    this.#persistentQuery = query({ prompt: this.#messageChannel as any, options: sdkOptions })
+    this.#spawnedResumeId = (sdkOptions as any)?.resume ?? null
+    this.#persistentQuery = this.#queryFn({ prompt: this.#messageChannel as any, options: sdkOptions })
     this.#activeQueries.add(this.#persistentQuery)
 
     this.#startBackgroundConsumer(callbacks)
