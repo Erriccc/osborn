@@ -5,7 +5,7 @@
 //   recoverySessionId      — auto-recovery resumes the switched-to session (4.3, D7)
 //   warmParkKey            — keep-warm keys a primed-but-uninitialised session (4.3)
 import assert from 'node:assert/strict'
-import { resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey, sessionMessagesDir } from '../src/session-switch.js'
+import { resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from '../src/session-switch.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -103,6 +103,59 @@ await t('S8 route reads compactions + store from the validated dir', () => {
   const b = src.slice(i, i + 2600)
   assert.ok(/sessionMessagesDir\(sessionId, url\.searchParams\.get\('workingDirectory'\)/.test(b))
   assert.ok(/readCompactionMarkers\(sessionId, readDir\)/.test(b) && /storeExists\(sessionId, readDir\)/.test(b))
+})
+
+// ── Review minors ──
+await t('guard: a never-resolving acknowledgment does not block the next switch', async () => {
+  const g = createSwitchGuard()
+  const first = await g.run(async () => 'ack-1', () => new Promise(() => { /* say() never resolves */ }))
+  assert.equal(first.ran, true)
+  assert.equal(g.busy, false, 'guard released before the acknowledgment')
+  const second = await g.run(async () => 'ack-2')
+  assert.equal(second.ran, true)
+})
+await t('guard: a request during the critical section is dropped (caller replies switch_in_progress)', async () => {
+  const g = createSwitchGuard()
+  let release!: () => void
+  const p1 = g.run(() => new Promise<string>((r) => { release = () => r('done') }))
+  const p2 = await g.run(async () => 'x')
+  assert.equal(p2.ran, false)
+  release()
+  assert.equal((await p1).ran, true)
+  assert.equal(g.busy, false)
+})
+await t('guard: a throwing critical section still releases the guard', async () => {
+  const g = createSwitchGuard()
+  await assert.rejects(g.run(async () => { throw new Error('boom') }))
+  assert.equal(g.busy, false)
+})
+await t('guard: a rejecting acknowledgment is swallowed', async () => {
+  const g = createSwitchGuard()
+  const r = await g.run(async () => 1, () => Promise.reject(new Error('tts down')))
+  assert.equal(r.ran, true)
+  await new Promise((res) => setTimeout(res, 5))
+})
+await t('index: performSessionSwitch uses the guard and replies switch_in_progress', () => {
+  const src = readFileSync(join(import.meta.dirname, '../src/index.ts'), 'utf8')
+  const i = src.indexOf('async function performSessionSwitch(')
+  const b = src.slice(i, i + 9000)
+  assert.ok(/switchGuard\.run\(/.test(b))
+  assert.ok(/reason: 'switch_in_progress'/.test(b))
+  assert.ok(!/await \(currentSession as any\)\.say\(/.test(b), 'acknowledgment must not be awaited inside the guard')
+  const d = src.slice(src.indexOf('async function requestSessionSwitch('), src.indexOf('async function performSessionSwitch('))
+  assert.ok(/void requestSessionSwitch\([^)]*\)\.catch\(/.test(d), 'deferred re-request needs .catch')
+})
+await t('scanSlugCwd: decoded path that does not exist is not returned (no mkdir of scan paths)', async () => {
+  const fsx = { readdir: () => ['-w-projb', '-w-ghost'], exists: (p: string) => p === '/w/projb' || p === '/p/-w-projb/' + B + '.jsonl' || p === '/p/-w-ghost/' + B + '.jsonl' || p === '/p' }
+  assert.equal(await scanSlugCwd(B, '/p', fsx), '/w/projb')
+  const ghostOnly = { readdir: () => ['-w-ghost'], exists: (p: string) => p === '/p' || p === '/p/-w-ghost/' + B + '.jsonl' }
+  assert.equal(await scanSlugCwd(B, '/p', ghostOnly), null)
+  assert.equal(await scanSlugCwd(B, '/missing', { readdir: () => [], exists: () => false }), null)
+})
+await t('index: scan goes through scanSlugCwd (existing dirs only)', () => {
+  const src = readFileSync(join(import.meta.dirname, '../src/index.ts'), 'utf8')
+  assert.ok(/scanCwd: \(id\) => scanSlugCwd\(id,/.test(src))
+  assert.ok(!/async function scanSessionSlugCwd/.test(src))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

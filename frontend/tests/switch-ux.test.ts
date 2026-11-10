@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { sessionMessagesQuery, pinnedSessionCwd, takeoverSessionUrl, liveSessionRecord, LIVE_SESSION_KEY } from '../src/lib/chat-url'
+import { sessionMessagesQuery, pinnedSessionCwd, takeoverSessionUrl, liveSessionRecord, LIVE_SESSION_KEY, liveSessionKey, clearLiveSessionRecords } from '../src/lib/chat-url'
 import { switchFailureText, pendingSwitchLabel, switchPendingReducer } from '../src/lib/switch-ui'
 import { buildRoomRows } from '../src/lib/rooms'
 import { isRedundantFinal } from '../src/lib/claude-output'
@@ -187,11 +187,38 @@ t('S13 same session / stale / garbage record -> null', () => {
   assert.equal(takeoverSessionUrl('https://x.test/chat', null, 'taking', T0), null)
 })
 t('S13 wiring: VoiceRoom records the live session; provider adopts it before connect on take-over', () => {
-  assert.ok(/LIVE_SESSION_KEY, liveSessionRecord\(/.test(vr))
+  assert.ok(/localStorage\.setItem\(liveSessionKey\(liveUserId\), liveSessionRecord\(/.test(vr))
   const prov = fs.readFileSync(path.join(__dirname, '../src/components/ChatSessionProvider.tsx'), 'utf8')
   const i = prov.indexOf('if (shouldConnectOnTransition(prev, tabRole))')
   assert.ok(i > 0)
   assert.ok(/takeoverSessionUrl\(/.test(prov.slice(i, i + 700)))
+})
+
+// ── Review minor: live-session record is per user ──
+t('S13 key is scoped by user id', () => {
+  assert.equal(liveSessionKey('user-a'), 'vn-chat-live-session:user-a')
+  assert.notEqual(liveSessionKey('user-a'), liveSessionKey('user-b'))
+  assert.equal(liveSessionKey(null), 'vn-chat-live-session:anon')
+})
+t('S13 a record written by user A is ignored when user B takes over', () => {
+  const recA = liveSessionRecord(S, '/w/b', T0, 'user-a')
+  assert.equal(takeoverSessionUrl('https://x.test/chat', recA, 'taking', T0 + 1000, 'user-b'), null)
+  assert.ok(takeoverSessionUrl('https://x.test/chat', recA, 'taking', T0 + 1000, 'user-a'))
+})
+t('S13 sign-out clears every live-session record', () => {
+  const store = new Map<string, string>([['vn-chat-live-session:user-a', 'x'], ['vn-chat-live-session:anon', 'y'], ['osborn-agent-url', 'z']])
+  const storage = { get length() { return store.size }, key: (i: number) => Array.from(store.keys())[i] ?? null, removeItem: (k: string) => { store.delete(k) } }
+  clearLiveSessionRecords(storage)
+  assert.deepEqual(Array.from(store.keys()), ['osborn-agent-url'])
+})
+t('S13 wiring: keyed reads/writes; every sign-out clears the records', () => {
+  assert.ok(/liveSessionKey\(/.test(vr))
+  const prov = fs.readFileSync(path.join(__dirname, '../src/components/ChatSessionProvider.tsx'), 'utf8')
+  assert.ok(/localStorage\.getItem\(liveSessionKey\(/.test(prov))
+  for (const f of ['../src/app/settings/page.tsx', '../src/app/dashboard/page.tsx', '../src/app/login/page.tsx']) {
+    const src = fs.readFileSync(path.join(__dirname, f), 'utf8')
+    assert.ok(/clearLiveSessionRecords\(/.test(src), f)
+  }
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

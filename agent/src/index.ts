@@ -51,7 +51,7 @@ import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from '.
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -3721,29 +3721,16 @@ async function main() {
     since: number
     timer: ReturnType<typeof setInterval>
   } | null = null
-  let switchExecuting = false
+  const switchGuard = createSwitchGuard()
   // Set by the agent_ready retry loop; a switch must stop it so a late
   // agent_ready (preSelectedSessionId = A) doesn't reset the UI back to A.
   let stopReadyRetries: (() => void) | null = null
-
-  async function scanSessionSlugCwd(sessionId: string): Promise<string | null> {
-    const projectsDir = join(homedir(), '.claude', 'projects')
-    if (!existsSync(projectsDir)) return null
-    for (const slug of readdirSync(projectsDir)) {
-      if (existsSync(join(projectsDir, slug, `${sessionId}.jsonl`))) {
-        // Same slug → path recovery resume_session has always used.
-        const recovered = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
-        return recovered && recovered !== '/' ? recovered : null
-      }
-    }
-    return null
-  }
 
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
       listCwd: async (id) => (await listAllClaudeSessions()).find(s => s.sessionId === id)?.cwd ?? null,
-      scanCwd: scanSessionSlugCwd,
+      scanCwd: (id) => scanSlugCwd(id, join(homedir(), '.claude', 'projects'), { readdir: (d) => readdirSync(d), exists: (p) => existsSync(p) }),
     })
   }
 
@@ -3862,7 +3849,10 @@ async function main() {
         const p = pendingSwitch
         clearInterval(timer)
         pendingSwitch = null
-        void requestSessionSwitch(p.target, p.cwd, { origin: `deferred:${p.origin}` })
+        void requestSessionSwitch(p.target, p.cwd, { origin: `deferred:${p.origin}` }).catch((err) => {
+          console.error(`❌ Deferred switch to ${p.target.slice(0, 8)} failed:`, err instanceof Error ? err.message : err)
+          void sendToFrontend({ type: 'session_switched', sessionId: p.target, success: false, reason: 'switch_failed', error: 'Could not switch sessions' })
+        })
       }, 500)
       pendingSwitch = { target, cwd, origin: opts.origin, since, timer }
       await sendToFrontend({
@@ -3882,9 +3872,10 @@ async function main() {
     origin: string,
   ): Promise<void> {
     if (!currentLLM) return
-    if (switchExecuting) { console.warn(`⚠️ Switch to ${target.slice(0, 8)} ignored — another switch is executing`); return }
-    switchExecuting = true
-    try {
+    // Single-flight: only the teardown/arm/notify section holds the guard; the
+    // spoken acknowledgment runs after it is released (a say() that never
+    // resolves must not wedge every later switch).
+    const outcome = await switchGuard.run(async (): Promise<string | null> => {
       if (pendingSwitch) { clearInterval(pendingSwitch.timer); pendingSwitch = null }
       const llmAny = currentLLM as any
 
@@ -3985,23 +3976,30 @@ async function main() {
         await sendToFrontend({ type: 'slots_list', slots: [{ id: target, isFocused: true, workingDir: cwd, hasSession: false }, ...bg] })
       }
       injectSessionIndexIntoChatCtx(currentAgent, target, cwd)
-      if (currentSession && summary) {
-        try {
-          const acknowledgment = summary.lastMessages.length > 0
-            ? `I've switched to your previous session. You were working on: ${summary.lastMessages[summary.lastMessages.length - 1]?.substring(0, 100)}`
-            : `Switched to previous session with ${summary.messageCount} messages. What would you like to continue with?`
-          await (currentSession as any).say(acknowledgment)
-        } catch (err) {
-          console.log('⚠️ Switch acknowledgment failed:', err)
-        }
-      }
 
       // 12. Overlap the target's JSONL replay with the user's next utterance.
       if (CONNECT_OVERLAP) {
         try { llmAny.prewarmResume?.() } catch {}
       }
-    } finally {
-      switchExecuting = false
+
+      if (!summary) return null
+      return summary.lastMessages.length > 0
+        ? `I've switched to your previous session. You were working on: ${summary.lastMessages[summary.lastMessages.length - 1]?.substring(0, 100)}`
+        : `Switched to previous session with ${summary.messageCount} messages. What would you like to continue with?`
+    }, (acknowledgment) => {
+      // Fire-and-forget, outside the guard.
+      if (!acknowledgment || !currentSession) return
+      return Promise.resolve()
+        .then(() => (currentSession as any)?.say(acknowledgment))
+        .catch((err) => console.log('⚠️ Switch acknowledgment failed:', err))
+    })
+
+    if (!outcome.ran) {
+      console.warn(`⚠️ Switch to ${target.slice(0, 8)} dropped — another switch is executing`)
+      await sendToFrontend({
+        type: 'session_switched', sessionId: target, success: false, reason: 'switch_in_progress',
+        error: 'Another session switch is still in progress — try again in a moment.',
+      })
     }
   }
 

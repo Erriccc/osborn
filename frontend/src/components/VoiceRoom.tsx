@@ -19,7 +19,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
-import { LIVE_SESSION_KEY, chatUrlForSession, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
+import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -391,6 +391,17 @@ function VoiceRoomInner({
   // A fresh session is not in the session list yet, so this is the only source
   // for pinning ?workingDirectory= (S11).
   const [reportedCwd, setReportedCwd] = useState<{ sessionId: string; cwd?: string | null } | null>(null)
+  // Signed-in user id for the per-user live-session record (S13). undefined =
+  // not resolved yet; null = no Supabase session (guest / self-hosted).
+  const [liveUserId, setLiveUserId] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    if (!isSupabaseConfigured()) { setLiveUserId(null); return }
+    createSupabaseBrowser().auth.getSession()
+      .then(({ data }) => { if (!cancelled) setLiveUserId(data?.session?.user?.id ?? null) })
+      .catch(() => { if (!cancelled) setLiveUserId(null) })
+    return () => { cancelled = true }
+  }, [])
   // Header project chip: prefer the LIVE session's own cwd (correct after a
   // switch to a session in another project), else the /chat URL param.
   const sessionCwd = (currentSessionId && sessions.find((x) => x.sessionId === currentSessionId)?.cwd) || urlCwd
@@ -3453,14 +3464,15 @@ function VoiceRoomInner({
   useEffect(() => {
     if (!currentSessionId || typeof window === 'undefined') return
     const cwd = pinnedSessionCwd(currentSessionId, reportedCwd, sessions)
-    // S13: record the live session so a tab that takes over adopts it.
-    if (isController) {
-      try { localStorage.setItem(LIVE_SESSION_KEY, liveSessionRecord(currentSessionId, cwd)) } catch { /* storage blocked */ }
+    // S13: record the live session (per signed-in user) so a tab that takes
+    // over adopts it. Skipped until the user id is known.
+    if (isController && liveUserId !== undefined) {
+      try { localStorage.setItem(liveSessionKey(liveUserId), liveSessionRecord(currentSessionId, cwd, Date.now(), liveUserId)) } catch { /* storage blocked */ }
     }
     const next = chatUrlForSession(window.location.href, currentSessionId, cwd)
     if (!next) return
     try { window.history.replaceState(null, '', next) } catch { /* sandboxed iframe */ }
-  }, [currentSessionId, sessions, reportedCwd, isController])
+  }, [currentSessionId, sessions, reportedCwd, isController, liveUserId])
   // Declared first so it captures the title from before this page set one.
   useEffect(() => {
     if (typeof document === 'undefined') return

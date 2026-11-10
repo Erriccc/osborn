@@ -69,16 +69,33 @@ export function pinnedSessionCwd(
 export const LIVE_SESSION_KEY = 'vn-chat-live-session'
 const LIVE_SESSION_MAX_AGE_MS = 12 * 3600 * 1000
 
-export function liveSessionRecord(sessionId: string, cwd: string | null | undefined, now: number = Date.now()): string {
-  return JSON.stringify({ sessionId, cwd: cwd || undefined, at: now })
+/** Per-user storage key: a record left by one account is never adopted by another. */
+export function liveSessionKey(userId: string | null | undefined): string {
+  return `${LIVE_SESSION_KEY}:${userId || 'anon'}`
+}
+
+export function liveSessionRecord(sessionId: string, cwd: string | null | undefined, now: number = Date.now(), userId?: string | null): string {
+  return JSON.stringify({ sessionId, cwd: cwd || undefined, at: now, userId: userId || undefined })
+}
+
+/** Remove every live-session record (all users). Called on sign-out. */
+export function clearLiveSessionRecords(storage: { readonly length: number; key(i: number): string | null; removeItem(k: string): void }): void {
+  const keys: string[] = []
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i)
+    if (k && (k === LIVE_SESSION_KEY || k.startsWith(`${LIVE_SESSION_KEY}:`))) keys.push(k)
+  }
+  for (const k of keys) storage.removeItem(k)
 }
 
 /** URL to adopt on take-over, or null (first mount, same session, stale or bad record). */
-export function takeoverSessionUrl(href: string, stored: string | null, prevRole: string, now: number = Date.now()): string | null {
+export function takeoverSessionUrl(href: string, stored: string | null, prevRole: string, now: number = Date.now(), userId?: string | null): string | null {
   if (!stored || prevRole === 'probing' || prevRole === 'active') return null
-  let rec: { sessionId?: unknown; cwd?: unknown; at?: unknown }
+  let rec: { sessionId?: unknown; cwd?: unknown; at?: unknown; userId?: unknown }
   try { rec = JSON.parse(stored) } catch { return null }
   if (typeof rec?.sessionId !== 'string' || typeof rec.at !== 'number') return null
+  // Defense in depth on top of the per-user key: only adopt our own record.
+  if ((rec.userId ?? null) !== (userId || null)) return null
   if (now - rec.at > LIVE_SESSION_MAX_AGE_MS) return null
   return chatUrlForSession(href, rec.sessionId, typeof rec.cwd === 'string' ? rec.cwd : null)
 }

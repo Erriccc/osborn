@@ -230,3 +230,52 @@ export function sessionMessagesDir(
   }
   return bootDir
 }
+
+// ── Review minors ────────────────────────────────────────────────────────────
+
+/**
+ * Single-flight guard for performSessionSwitch. Only the critical section
+ * (teardown + arm + session_switched) holds the guard; `after` (the spoken
+ * acknowledgment) runs fire-and-forget once it is released, so a say() that
+ * never resolves can't wedge every later switch. A request that arrives while
+ * the guard is held returns { ran: false } — the caller must reply so the UI
+ * never hangs.
+ */
+export function createSwitchGuard() {
+  let busy = false
+  return {
+    get busy() { return busy },
+    async run<T>(critical: () => Promise<T>, after?: (result: T) => unknown): Promise<{ ran: true; result: T } | { ran: false }> {
+      if (busy) return { ran: false }
+      busy = true
+      let result: T
+      try { result = await critical() } finally { busy = false }
+      if (after) {
+        try { void Promise.resolve(after(result)).catch(() => {}) } catch { /* sync throw */ }
+      }
+      return { ran: true, result }
+    },
+  }
+}
+
+/**
+ * Find a session's project dir by scanning ~/.claude/projects/<slug>/<id>.jsonl
+ * and decoding the slug (the same recovery resume_session has always used).
+ * The decoding is lossy, so only a decoded path that EXISTS is returned — the
+ * switch executor never creates directories for scan-derived paths.
+ */
+export async function scanSlugCwd(
+  sessionId: string,
+  projectsDir: string,
+  fsx: { readdir: (dir: string) => string[]; exists: (path: string) => boolean },
+): Promise<string | null> {
+  if (!sessionId || !fsx.exists(projectsDir)) return null
+  let slugs: string[] = []
+  try { slugs = fsx.readdir(projectsDir) } catch { return null }
+  for (const slug of slugs) {
+    if (!fsx.exists(`${projectsDir}/${slug}/${sessionId}.jsonl`)) continue
+    const recovered = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
+    if (recovered && recovered !== '/' && fsx.exists(recovered)) return recovered
+  }
+  return null
+}
