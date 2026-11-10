@@ -14,7 +14,14 @@
 //   shareable link to this in-app view.
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-type EngineState = { configured: boolean; state: string | null; machineId: string | null }
+type EngineState = {
+  configured: boolean
+  state: string | null
+  machineId: string | null
+  // Server-side only reports whether OSBORN_ENGINE_TOKEN is set — never the value.
+  // false ⇒ every drive/output action will 401; the live stream still works.
+  engineTokenConfigured?: boolean
+}
 type Status = {
   roomReady?: boolean
   pageUrl?: string
@@ -52,6 +59,9 @@ export function BrowserPanel() {
   const [heard, setHeard] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  // Set when a drive/output action comes back 401 from the engine (token missing
+  // or mismatched server-side) — drives the same banner as engineTokenConfigured.
+  const [tokenError, setTokenError] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamKickRef = useRef(0)
 
@@ -89,15 +99,24 @@ export function BrowserPanel() {
   }, [])
 
   const post = useCallback(async (action: string, body: unknown, label: string) => {
-    setBusy(label); setNote(null)
+    setBusy(label); setNote(null); setTokenError(false)
     try {
       const r = await fetch(api(action), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      const data = await r.json().catch(() => ({}))
-      if (!r.ok) { setNote(`${label} failed: ${data?.error || r.status}`); return null }
+      const text = await r.text()
+      let data: any = {}
+      try { data = text ? JSON.parse(text) : {} } catch { /* engine 401 is plain text, not JSON */ }
+      if (!r.ok) {
+        // A 401 that isn't our own "Not authenticated" means the engine rejected
+        // us for a missing/mismatched x-engine-token — surface the actionable
+        // banner instead of the bare per-action error.
+        if (r.status === 401 && data?.error !== 'Not authenticated') setTokenError(true)
+        setNote(`${label} failed: ${data?.error || text || r.status}`)
+        return null
+      }
       return data
     } catch {
       setNote(`${label} failed: engine unreachable`); return null
@@ -126,6 +145,9 @@ export function BrowserPanel() {
 
   const taskN = (t: Task, i: number) => (typeof t.n === 'number' ? t.n : typeof t.index === 'number' ? t.index : i)
   const asleep = engine?.state && engine.state !== 'started'
+  // The server is missing the engine token if it says so up front, or if a drive
+  // action just came back 401. Either way, every control/output action will fail.
+  const tokenMisconfigured = engine?.engineTokenConfigured === false || tokenError
   const brainReady = typeof status?.brain === 'object' ? status?.brain?.ready && !status?.brain?.dead : undefined
 
   const copyShare = async () => {
@@ -162,6 +184,19 @@ export function BrowserPanel() {
           </button>
         </div>
       </div>
+
+      {/* Engine-token misconfiguration banner — makes the server-side token
+          problem legible instead of a cryptic per-action 401. */}
+      {tokenMisconfigured && (
+        <div className="rounded-lg border border-amber-600/60 bg-amber-950/40 px-3 py-2 text-xs leading-relaxed text-amber-200">
+          <span className="font-semibold">The server isn’t configured with the engine token.</span>{' '}
+          Drive and output actions (Open URL, Say, logs, audio, clips, Stop) are being
+          rejected — ask an admin to set{' '}
+          <code className="rounded bg-black/40 px-1 font-mono text-amber-100">OSBORN_ENGINE_TOKEN</code>{' '}
+          on the Railway frontend to match the engine’s Fly secret. Watching the live
+          stream still works without it.
+        </div>
+      )}
 
       {/* Live view */}
       <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-neutral-800 bg-black">

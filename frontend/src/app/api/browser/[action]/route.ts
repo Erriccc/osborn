@@ -18,6 +18,7 @@ import {
   buildControlTarget,
   buildStreamTarget,
   engineToken,
+  engineTokenConfigured,
   engineMachineState,
 } from '@/lib/browser-engine'
 
@@ -37,15 +38,37 @@ function engineHeaders(extra?: Record<string, string>): Record<string, string> {
   return { ...(tok ? { 'x-engine-token': tok } : {}), ...(extra ?? {}) }
 }
 
+// A control/output action (anything that attaches x-engine-token) will be rejected
+// by the engine with a bare 401 "unauthorized — x-engine-token required" when the
+// server has no engine token. Make that misconfiguration visible in the logs — the
+// fix is operational (set OSBORN_ENGINE_TOKEN on the frontend to match the engine),
+// not a code change.
+function warnIfEngineTokenMissing(action: string): void {
+  if (!engineTokenConfigured()) {
+    console.warn(
+      `[browser-proxy] control action "${action}" attempted but OSBORN_ENGINE_TOKEN is not set ` +
+        `server-side — the engine will reject it with 401 (x-engine-token required). ` +
+        `Set OSBORN_ENGINE_TOKEN on the frontend to match the engine's Fly secret.`,
+    )
+  }
+}
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ action: string }> }) {
   const unauth = await requireUser()
   if (unauth) return unauth
   const { action } = await params
   const search = req.nextUrl.search
 
-  // Awake/asleep without waking the engine (Fly Machines API).
+  // Awake/asleep without waking the engine (Fly Machines API). We also report
+  // whether the server-side engine token is configured — only the boolean, never
+  // the value — so the panel can flag the misconfig instead of letting every
+  // control/output action fail with a cryptic 401.
   if (action === 'engine-state') {
-    return NextResponse.json(await engineMachineState(), { headers: { 'Cache-Control': 'no-store' } })
+    const machine = await engineMachineState()
+    return NextResponse.json(
+      { ...machine, engineTokenConfigured: engineTokenConfigured() },
+      { headers: { 'Cache-Control': 'no-store' } },
+    )
   }
 
   // Live MJPEG — pipe the body through so it streams. Visiting this WAKES the engine.
@@ -69,6 +92,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
 
   const target = buildControlTarget('GET', action, search)
   if (!target) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  warnIfEngineTokenMissing(action)
 
   // SSE event stream — pipe through live.
   if (action === 'events') {
@@ -115,6 +139,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ act
   const { action } = await params
   const target = buildControlTarget('POST', action, req.nextUrl.search)
   if (!target) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  warnIfEngineTokenMissing(action)
 
   const body = await req.arrayBuffer()
   // `act`/`say` drive the browser + record a clip — they can take a while.
