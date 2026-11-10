@@ -28,7 +28,7 @@ export function resolveTextProvider(): TextProvider | null {
     return {
       url: 'https://api.z.ai/api/paas/v4/chat/completions',
       key: zai,
-      model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-4.5-air',
+      model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-5.3-flash',
       name: 'z.ai (house pass)',
     }
   }

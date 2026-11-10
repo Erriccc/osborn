@@ -75,7 +75,7 @@ function resolveFastBrainProvider(): { url: string; model: string; name: string 
   if (!zaiKey) return null
   return {
     url: 'https://api.z.ai/api/paas/v4/chat/completions',
-    model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-4.5-air', // fast/cheap tier of the pass
+    model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-5.3-flash', // fast/cheap tier of the pass
     name: 'z.ai (demo pass)',
   }
 }
