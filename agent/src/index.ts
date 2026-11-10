@@ -58,6 +58,7 @@ import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
 import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, ClientNoteQueue, parseFavoriteChanged, parseLegacyFavoriteNotice } from './transcript-wiring.js'
 import { getRecallClient } from './recall-client.js'
+import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './pushover.js'
@@ -504,33 +505,12 @@ function interruptMeetingSpeech(reason: string): void {
   if (recall && botId) void recall.stopOutputAudio(botId)
   console.log(`✋ meeting speech interrupted (${reason}) — queue cleared + output_audio stopped`)
 }
-// Synthesize speech as MP3 (Deepgram fast path, OpenAI fallback) — for
-// Recall native output_audio, which requires mp3.
+// Synthesize speech as MP3 for Recall native output_audio (which requires mp3).
+// Soniox REST first (same provider as the voice pipeline), OpenAI fallback only
+// if OPENAI_API_KEY is set, else null. See meeting-tts.ts for provider order.
 async function synthMp3(text: string): Promise<Buffer | null> {
-  const t0 = Date.now()
-  const oa = process.env.OPENAI_API_KEY
-  if (!oa) { console.warn('⚠️ synthMp3: no OPENAI_API_KEY — meeting has no voice'); return null }
-  // Meeting audio is always OpenAI TTS (HTTP MP3 required for Recall output_audio).
-  // Reads OSBORN_TTS_* env vars — same source as getDirectConfig — so voice is
-  // consistent between the pipeline and meeting canvas when TTS provider is openai.
-  const model = process.env.OSBORN_TTS_PROVIDER === 'openai' ? (process.env.OSBORN_TTS_MODEL || 'tts-1-hd') : 'tts-1-hd'
-  const voice = process.env.OSBORN_TTS_PROVIDER === 'openai' ? (process.env.OSBORN_TTS_VOICE || 'fable') : 'fable'
-  try {
-    const r = await fetch('https://api.openai.com/v1/audio/speech', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${oa}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, voice, input: text.slice(0, 4000), response_format: 'mp3' }),
-      signal: AbortSignal.timeout(20000),
-    })
-    if (r.ok) {
-      const buf = Buffer.from(await r.arrayBuffer())
-      console.log(`🗣️ synthMp3 openai ${model}/${voice} ${buf.length}b in ${Date.now() - t0}ms`)
-      return buf
-    }
-    const e = await r.text().catch(() => '')
-    console.warn(`⚠️ synthMp3 openai ${r.status}: ${e.slice(0, 120)}`)
-  } catch (e) { console.warn(`⚠️ synthMp3 openai: ${(e as Error).message}`) }
-  return null
+  const r = await synthMeetingAudio(text)
+  return r ? r.audio : null
 }
 
 // THE speak path for meetings (2026-08-01): Recall native output_audio FIRST
@@ -1004,30 +984,21 @@ function startApiServer(workingDir: string, port: number): void {
     }
 
     // ── Meeting canvas: TTS audio for speaking INTO the meeting ──────────────
-    // GET /tts?text=... → mp3 (OpenAI TTS). The canvas plays this as a real
-    // <audio> element so Recall's webpage output pipes it into the meeting —
-    // speechSynthesis is NOT captured by Recall, a media element IS.
+    // GET /tts?text=... → mp3 (Soniox first, OpenAI fallback — meeting-tts.ts).
+    // The canvas decodes it with AudioContext.decodeAudioData so Recall's
+    // webpage output pipes it into the meeting — speechSynthesis is NOT
+    // captured by Recall, page audio IS.
     if (req.method === 'GET' && url.pathname === '/tts') {
       const text = (url.searchParams.get('text') || '').slice(0, 4000)
       if (!text) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no text' })); return }
       const t0 = Date.now()
-      // Meeting canvas TTS — always OpenAI HTTP (mp3 for <audio> element).
-      // Reads OSBORN_TTS_* env vars so voice stays in sync with pipeline when provider is openai.
-      const key = process.env.OPENAI_API_KEY
-      if (!key) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no OPENAI_API_KEY' })); return }
-      const model = process.env.OSBORN_TTS_PROVIDER === 'openai' ? (process.env.OSBORN_TTS_MODEL || 'tts-1-hd') : 'tts-1-hd'
-      const voice = url.searchParams.get('voice') || (process.env.OSBORN_TTS_PROVIDER === 'openai' ? (process.env.OSBORN_TTS_VOICE || 'fable') : 'fable')
+      if (selectMeetingTtsProviders().length === 0) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no SONIOX_API_KEY or OPENAI_API_KEY' })); return }
       try {
-        const tts = await fetch('https://api.openai.com/v1/audio/speech', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, voice, input: text, response_format: 'mp3' }),
-        })
-        if (!tts.ok) { const e = await tts.text().catch(() => ''); res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: `tts ${tts.status}`, detail: e.slice(0, 200) })); return }
-        const buf = Buffer.from(await tts.arrayBuffer())
-        console.log(`🗣️ /tts openai ${model}/${voice} ${buf.length}b in ${Date.now() - t0}ms t=${new Date().toISOString()}`)
-        res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store', 'Content-Length': buf.length })
-        res.end(buf)
+        const out = await synthMeetingAudio(text, { voice: url.searchParams.get('voice') || undefined })
+        if (!out) { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'tts failed (all providers)' })); return }
+        console.log(`🗣️ /tts ${out.provider} ${out.audio.length}b in ${Date.now() - t0}ms t=${new Date().toISOString()}`)
+        res.writeHead(200, { 'Content-Type': out.contentType, 'Cache-Control': 'no-store', 'Content-Length': out.audio.length })
+        res.end(out.audio)
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: (e as Error).message }))
       }
