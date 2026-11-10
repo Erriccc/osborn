@@ -14,14 +14,43 @@
 export interface ConnectWaitState {
   /** connect() is mid-flight (pre-token). */
   connecting: boolean
-  /** agent_ready fired → the session is live. */
-  connected: boolean
-  /** a LiveKit token has been handed off (VoiceRoom is mounting). */
+  /** agent_ready fired → the session is live. NOTE: this is NOT the provider's
+   *  `connected` flag — markAuthRequired also flips `connected` true (to uncover
+   *  the sign-in modal) without the agent being ready (issue #78). */
+  agentReady: boolean
+  /** a LiveKit token has been handed off (VoiceRoom is mounting / mounted). */
   hasToken: boolean
   /** an error is already surfaced. */
   error: boolean
-  /** the agent asked for Anthropic sign-in (OAuth modal is/was up). */
+  /** the agent asked for Anthropic sign-in and it has not resolved yet
+   *  (cleared on claude_auth_complete / claude_auth_error). Selects the
+   *  auth-specific timeout message; it does NOT by itself disarm the watchdog. */
   authRequired: boolean
+  /** the Claude sign-in modal is open on an active OAuth step (the user is
+   *  mid-sign-in). Only this disarms the watchdog for the auth case. */
+  authInProgress: boolean
+}
+
+/** Claude sign-in modal status, as tracked by VoiceRoom. */
+export type ClaudeAuthStatus =
+  | 'none' | 'required' | 'waiting' | 'waiting_code' | 'submitting' | 'complete' | 'error'
+
+/**
+ * Is the user mid-OAuth (modal open on an active step)? `none` = dismissed or
+ * never shown; `complete` / `error` are terminal — the user is not signing in.
+ */
+export function isOAuthInProgress(status: ClaudeAuthStatus): boolean {
+  return status === 'required' || status === 'waiting' || status === 'waiting_code' || status === 'submitting'
+}
+
+/**
+ * Pending-auth flag transition for an agent data message type. Set when the
+ * agent asks for sign-in, cleared when sign-in resolves either way.
+ */
+export function nextAuthRequired(prev: boolean, messageType: string): boolean {
+  if (messageType === 'claude_auth_required' || messageType === 'claude_auth_url') return true
+  if (messageType === 'claude_auth_complete' || messageType === 'claude_auth_error') return false
+  return prev
 }
 
 /**
@@ -35,12 +64,15 @@ export const CONNECT_WATCHDOG_MS = 90_000
 
 /**
  * Is the UI actively waiting on the agent (and therefore should the watchdog
- * be armed)? It disarms the moment the session connects, an error is shown, or
- * Anthropic sign-in is pending — the auth modal is its own resolution, so an
- * account that needs to sign in never trips the timeout.
+ * be armed)? It disarms the moment agent_ready fires, an error is shown, or the
+ * user is mid-OAuth in the sign-in modal (never cut them off). A transport-level
+ * connection without agent_ready still counts as waiting — so a user who
+ * DISMISSES the sign-in modal (agent still blocked on ensureClaudeAuth) gets
+ * the bounded timeout + Retry/Back instead of "Connecting…" forever (#78).
  */
 export function isAwaitingAgent(s: ConnectWaitState): boolean {
-  if (s.connected || s.error || s.authRequired) return false
+  if (s.agentReady || s.error) return false
+  if (s.authInProgress) return false
   return s.connecting || s.hasToken
 }
 
