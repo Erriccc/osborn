@@ -283,7 +283,9 @@ t('clear restores pre-fallback model env instead of deleting it', () => {
   delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
   process.env.Z_AI_PERSONAL_API_KEY = 'zai-key'
   applyAuthFallback()
-  assert.equal(process.env.ANTHROPIC_MODEL, 'glm-4.7')
+  assert.equal(process.env.ANTHROPIC_MODEL, 'glm-5.3')
+  assert.equal(process.env.ANTHROPIC_SMALL_FAST_MODEL, 'glm-5.3-flash')
+  assert.equal(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1000000')
   // A second activation must not snapshot the fallback's own values.
   applyAuthFallback()
   assert.equal(clearAuthFallbackIfActive(), true)

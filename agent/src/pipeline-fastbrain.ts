@@ -69,13 +69,15 @@ const MAX_TOOL_ROUNDS = 4
  * because a mid-session real-Claude login clears the flag via clearAuthFallback.
  * Returns null on the normal (user pays their own providers) path.
  */
-function resolveFastBrainProvider(): { url: string; model: string; name: string } | null {
+export function resolveFastBrainProvider(): { url: string; model: string; name: string } | null {
   if (process.env.OSBORN_DEMO_PASS !== 'zai') return null
   const zaiKey = process.env.Z_AI_PERSONAL_API_KEY || process.env.ZAI_API_KEY
   if (!zaiKey) return null
   return {
-    url: 'https://api.z.ai/api/paas/v4/chat/completions',
-    model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-4.5-air', // fast/cheap tier of the pass
+    // Coding Plan endpoint - the standard /api/paas/v4 bills the pay-as-you-go
+    // wallet instead of the GLM Coding Plan quota.
+    url: 'https://api.z.ai/api/coding/paas/v4/chat/completions',
+    model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-5.3-flash', // fast/cheap tier of the pass
     name: 'z.ai (demo pass)',
   }
 }
