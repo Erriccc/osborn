@@ -121,7 +121,7 @@ card replaced the stream).
 
 **Drive the engine** (one Bash call, needs `OSBORN_ENGINE_TOKEN` env):
 ```bash
-curl -sS -X POST "https://osborn-voice-e2e.fly.dev:8781/act" \
+curl -sS -X POST "https://osborn-voice-e2e-n.fly.dev:8781/act" \
   -H "x-engine-token: $OSBORN_ENGINE_TOKEN" -H 'Content-Type: application/json' \
   -d '{"instruction":"go to youtube.com"}'
 ```

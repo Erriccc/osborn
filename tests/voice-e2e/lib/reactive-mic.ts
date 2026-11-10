@@ -137,7 +137,19 @@ export async function speakText(page: Page, text: string) {
 async function synthesize(text: string, base: string): Promise<void> {
   const { optionalEnvKey } = await import('./env')
   const { writeFileSync } = await import('fs')
-  // Deepgram Aura TTS — preferred mouth. The engine already carries
+  // Soniox TTS (tts-rt-v1) — preferred mouth: real-time WebSocket that streams
+  // base64 pcm_s16le @ 24kHz, which we concatenate and wrap in a WAV header.
+  // The SONIOX_API_KEY is already on the engine; no OpenAI/Deepgram needed.
+  const soniox = optionalEnvKey('SONIOX_API_KEY')
+  if (soniox) {
+    try {
+      writeFileSync(`${base}.wav`, await sonioxTTS(text, soniox))
+      return
+    } catch (e) {
+      console.warn('[reactive-mic] Soniox TTS error — falling back:', e)
+    }
+  }
+  // Deepgram Aura TTS — fallback mouth. The engine already carries
   // DEEPGRAM_API_KEY (same key the "ears" use), so a single REST call returns a
   // ready-to-play WAV with no OpenAI dependency. ~100ms TTFB, natural voice.
   // Decoded in-page by an AudioContext that resamples 24k → 48k automatically.
@@ -180,4 +192,63 @@ async function synthesize(text: string, base: string): Promise<void> {
     return
   } catch { /* not macOS */ }
   execSync(`espeak-ng -w "${base}.wav" ${JSON.stringify(text)}`, { stdio: 'pipe' })
+}
+
+/** Synthesize `text` via Soniox real-time TTS → a complete WAV Buffer (24kHz mono PCM16). */
+async function sonioxTTS(text: string, apiKey: string): Promise<Buffer> {
+  const { WebSocket } = await import('ws')
+  return await new Promise<Buffer>((resolve, reject) => {
+    const ws = new WebSocket('wss://tts-rt.soniox.com/tts-websocket')
+    const chunks: Buffer[] = []
+    const streamId = `e2e-${Date.now()}`
+    let settled = false
+    const finish = (err?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { ws.close() } catch { /* ignore */ }
+      if (err) reject(err)
+      else resolve(pcmToWav(Buffer.concat(chunks), 24000))
+    }
+    const timer = setTimeout(() => finish(new Error('Soniox TTS timeout')), 25000)
+    ws.on('open', () => {
+      ws.send(JSON.stringify({
+        api_key: apiKey, model: 'tts-rt-v1-preview', language: 'en', voice: 'Maya',
+        audio_format: 'pcm_s16le', sample_rate: 24000, speed: 1, stream_id: streamId,
+      }))
+      ws.send(JSON.stringify({ stream_id: streamId, text }))
+      ws.send(JSON.stringify({ stream_id: streamId, text_end: true }))
+    })
+    ws.on('message', (raw: Buffer) => {
+      let m: any
+      try { m = JSON.parse(raw.toString()) } catch { return }
+      if (m.error_code !== undefined) return finish(new Error(`Soniox TTS ${m.error_code}: ${m.error_message}`))
+      if (typeof m.audio === 'string' && m.audio) chunks.push(Buffer.from(m.audio, 'base64'))
+      if (m.audio_end === true || m.terminated === true) finish(chunks.length ? undefined : new Error('Soniox TTS produced no audio'))
+    })
+    ws.on('error', (e: Error) => finish(e instanceof Error ? e : new Error(String(e))))
+    ws.on('close', () => finish(chunks.length ? undefined : new Error('Soniox TTS closed with no audio')))
+  })
+}
+
+/** Wrap raw little-endian 16-bit mono PCM in a minimal WAV container. */
+function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
+  const numChannels = 1, bitsPerSample = 16
+  const blockAlign = (numChannels * bitsPerSample) / 8
+  const byteRate = sampleRate * blockAlign
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + pcm.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(numChannels, 22)
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(byteRate, 28)
+  header.writeUInt16LE(blockAlign, 32)
+  header.writeUInt16LE(bitsPerSample, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(pcm.length, 40)
+  return Buffer.concat([header, pcm])
 }

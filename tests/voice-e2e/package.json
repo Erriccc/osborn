@@ -17,6 +17,7 @@
     "@browserbasehq/stagehand": "^3.7.1",
     "@types/js-yaml": "^4.0.9",
     "js-yaml": "^5.2.2",
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "ws": "^8.18.0"
   }
 }

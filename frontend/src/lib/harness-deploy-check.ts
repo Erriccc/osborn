@@ -20,7 +20,7 @@
  * (same reasoning as the sandbox check: a push after the last Railway boot
  * still gets its deploy within 15 min).
  *
- * Never throws. Requires FLY_API_TOKEN; app defaults to osborn-voice-e2e
+ * Never throws. Requires FLY_API_TOKEN; app defaults to osborn-voice-e2e-n
  * (override FLY_HARNESS_APP; set it empty to disable).
  */
 
@@ -109,7 +109,7 @@ async function imageTagExists(tag: string, token: string, app: string): Promise<
 export async function checkHarnessDeploy(): Promise<void> {
   try {
     const FLY_API_TOKEN = process.env.FLY_API_TOKEN?.trim()
-    const APP = (process.env.FLY_HARNESS_APP ?? 'osborn-voice-e2e').trim()
+    const APP = (process.env.FLY_HARNESS_APP ?? 'osborn-voice-e2e-n').trim()
     if (!FLY_API_TOKEN) { log('FLY_API_TOKEN not set — skipping'); writeStatus('skipped: no FLY_API_TOKEN'); return }
     if (!APP) { log('FLY_HARNESS_APP empty — disabled'); writeStatus('disabled'); return }
 
