@@ -303,8 +303,10 @@ export function applyAuthFallback(): void {
   // pay-per-use). Cline/opencode-style: unauthenticated demo users ride the
   // house pass instead of raw API billing. The z.ai Anthropic-compatible
   // endpoint (api.z.ai/api/anthropic) speaks native Messages - verified live
-  // 2026-10-24 (glm-4.7 returned a real response). Precedence: Z_AI_PERSONAL_API_KEY,
-  // then ZAI_API_KEY.
+  // 2026-10-24 (glm-4.7 returned a real response). Defaults moved to glm-5.3 /
+  // glm-5.3-flash 2026-11-10: the GLM Coding Plan now only lists GLM-5.3 and
+  // GLM-5.3-Flash (docs.z.ai/devpack/overview; glm-4.7 is silently routed to
+  // 5.3-Flash). Precedence: Z_AI_PERSONAL_API_KEY, then ZAI_API_KEY.
   const zaiKey = cleanEnvKey(process.env.Z_AI_PERSONAL_API_KEY) || cleanEnvKey(process.env.ZAI_API_KEY)
   if (zaiKey !== '') {
     snapshotModelEnv()
@@ -312,18 +314,20 @@ export function applyAuthFallback(): void {
     process.env.ANTHROPIC_BASE_URL = process.env.OSBORN_DEMO_BASE_URL || 'https://api.z.ai/api/anthropic'
     process.env.ANTHROPIC_AUTH_TOKEN = zaiKey
     process.env.ANTHROPIC_API_KEY = '' // required - a set key bypasses AUTH_TOKEN
-    const demoModel = process.env.OSBORN_DEMO_MODEL || 'glm-4.7'
+    const demoModel = process.env.OSBORN_DEMO_MODEL || 'glm-5.3'
+    const demoFastModel = process.env.OSBORN_DEMO_FAST_MODEL || 'glm-5.3-flash'
     process.env.ANTHROPIC_MODEL = demoModel
-    process.env.ANTHROPIC_SMALL_FAST_MODEL = demoModel
+    process.env.ANTHROPIC_SMALL_FAST_MODEL = demoFastModel
     process.env.CLAUDE_CODE_SUBAGENT_MODEL = demoModel
     process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = demoModel
-    // GLM-4.7 exposes a 200K window; pins the CLI's context-cap handling.
-    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = process.env.OSBORN_DEMO_MAX_CONTEXT || '200000'
+    // GLM-5.3 and GLM-5.3-Flash expose a 1M-token window (docs.z.ai/guides/llm/glm-5.3,
+    // verified 2026-11-10); pins the CLI's context-cap handling.
+    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = process.env.OSBORN_DEMO_MAX_CONTEXT || '1000000'
     // Signal for the fast brain (pipeline-fastbrain reads this per call) so the
     // WHOLE model layer - main agent AND fast brain - rides the same pass.
     process.env.OSBORN_DEMO_PASS = 'zai'
     fallbackTierActive = true
-    console.log(`[auth-fallback] using house demo pass (z.ai), model=${demoModel}`)
+    console.log(`[auth-fallback] using house demo pass (z.ai), model=${demoModel}, fast=${demoFastModel}`)
     return
   }
 
@@ -378,7 +382,7 @@ export function clearAuthFallbackIfActive(): boolean {
   delete process.env.ANTHROPIC_AUTH_TOKEN
   // Model-slot overrides both tiers (z.ai + OpenRouter) set — restore the
   // pre-fallback values (or unset) so the real Claude session isn't pinned onto
-  // glm-4.7 / FALLBACK_MODEL and the fallback's context cap.
+  // glm-5.3 / FALLBACK_MODEL and the fallback's context cap.
   restoreModelEnv()
   // Was forced to '' for the OpenRouter redirect; unset so the real OAuth
   // token path (CLAUDE_CODE_OAUTH_TOKEN) is used cleanly.
