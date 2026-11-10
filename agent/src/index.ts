@@ -51,7 +51,7 @@ import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from '.
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -2459,7 +2459,9 @@ async function main() {
   // we never strand an unkeyable subprocess.
   const parkWarm = (reason: string): void => {
     if (!currentLLM) return
-    const sid = (currentLLM as any).sessionId as string | undefined
+    // Key by the init id, else the id the live query was spawned for (a primed /
+    // just-switched session has no init id yet — killing it lost the warm brain).
+    const sid = warmParkKey(currentLLM as any) || undefined
     if (!sid) {
       console.log(`🔥 [KEEP-WARM] no sessionId to key re-attach — aborting instead (${reason})`)
       killCurrentLLM(reason + '_no_sessionid')
@@ -4266,9 +4268,13 @@ async function main() {
     // session id (ClaudeLLM emits session_id only when it had none).
     directLLM.events.on('session_id', ({ sessionId }: { sessionId: string }) => {
       if (!sessionId) return
+      // A fresh session becomes the "switched-to" id so recovery / reconnect
+      // resume it (D7).
+      if (!currentResumeSessionId) currentResumeSessionId = sessionId
       sendToFrontend({
         type: 'current_session',
         sessionId,
+        workingDirectory: workingDir,
         isResumingSession: currentLLM?.isResumingSession ?? false,
       })
     })
@@ -5687,7 +5693,8 @@ async function main() {
 
           try {
             // Reuse existing session ID so Claude SDK resumes where it left off
-            const recoverySessionId = currentLLM?.sessionId || resumeSessionId
+            // D7: after a switch, B may have no live id yet — resume B, not the connect-time A.
+            const recoverySessionId = pickRecoverySessionId({ liveSessionId: currentLLM?.sessionId, switchedTo: currentResumeSessionId, connectTime: resumeSessionId })
 
             let result
             {

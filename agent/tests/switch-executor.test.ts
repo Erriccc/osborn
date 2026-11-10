@@ -224,5 +224,20 @@ await t('S5 liveSwitchNeeded: no live query -> legacy arm-only; same session (pr
   assert.ok(/action === 'switch'/.test(b))
 })
 
+// ── S7: reconnect / recovery ids ─────────────────────────────────────────────
+await t('S7 auto-recovery resumes the switched-to session (pickRecoverySessionId)', () => {
+  const b = body('const recoverySessionId = ', 400)
+  assert.ok(/pickRecoverySessionId\(\{ liveSessionId: currentLLM\?\.sessionId, switchedTo: currentResumeSessionId, connectTime: resumeSessionId \}\)/.test(b), b.slice(0, 200))
+})
+await t('S7 keep-warm parks a primed-but-uninitialised session (warmParkKey)', () => {
+  const b = body('const parkWarm = (reason: string)', 600)
+  assert.ok(/warmParkKey\(currentLLM/.test(b))
+})
+await t('S7 current_session carries workingDirectory; first session_id adopts a fresh session id', () => {
+  const b = body("directLLM.events.on('session_id'", 900)
+  assert.ok(/workingDirectory: workingDir/.test(b))
+  assert.ok(/if \(!currentResumeSessionId\) currentResumeSessionId = sessionId/.test(b))
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
