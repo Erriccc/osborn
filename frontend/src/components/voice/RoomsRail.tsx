@@ -8,9 +8,9 @@
 //     controlling tab — see ChatSessionProvider). We do NOT open a second
 //     WebRTC connection per room; that would burn connection minutes and fight
 //     the tab lock.
-//   • Switching to another room sends the existing `resume_session` message on
-//     the SAME live channel, so the agent swaps which Claude session it is
-//     focused on and replays that session's durable state. Each room keeps its
+//   • Switching to another room sends `switch_session` on the SAME live
+//     channel, so the agent swaps which Claude session it is focused on and
+//     replays that session's durable state (`session_switched`). Each room keeps its
 //     own state because sessions are persisted agent-side (JSONL) — switching
 //     away and back is lossless.
 //   • Background "slots" (InstancesPanel) are the genuinely-concurrent rooms:
@@ -22,90 +22,36 @@
 // (mobile) and nothing else changes.
 
 import { useEffect, useState } from 'react'
-import { deriveSessionTitle, sortSessionsByActivity } from '@/lib/sessions'
+import { buildRoomRows, type RoomRow, type RoomStatus } from '@/lib/rooms'
 import type { SessionInfo, SlotInfo } from './shared'
 
-export type RoomStatus = 'live' | 'background' | 'idle'
-
-export interface Room {
-  /** sessionId (idle/live) or slot id (background). */
-  id: string
-  title: string
-  status: RoomStatus
-  cwd?: string
-  /** 8-char short id shown as a monospace hint. */
-  shortId: string
-}
-
-/** A slot id may be the full sessionId OR an 8-char prefix. Match both. */
-function slotMatches(slotId: string, sessionId: string): boolean {
-  return slotId === sessionId || slotId === sessionId.substring(0, 8) || sessionId.startsWith(slotId)
-}
+export type { RoomStatus }
+export type Room = RoomRow
 
 /**
  * Compose the switchable room list from the three sources VoiceRoom tracks.
- * Order: the live/foreground room first, then concurrently-running background
- * slots, then recent resumable sessions. Deduped so a session that is also a
- * running slot appears once (as the slot).
+ * Thin wrapper over the pure row model (lib/rooms.ts, #75): live room first,
+ * then background slots, then recent resumable sessions; one LIVE row.
  */
 export function buildRooms(
   sessions: SessionInfo[],
   slots: SlotInfo[],
   currentSessionId: string | null,
+  liveFallbackTitle?: string | null,
 ): Room[] {
-  const rooms: Room[] = []
-  const seen = new Set<string>()
-  const short = (id: string) => (id ? id.substring(0, 8) : '')
+  return buildRoomRows(sessions, currentSessionId, { slots, liveFallbackTitle })
+}
 
-  // 1) Live / foreground — the session the agent is focused on right now.
-  if (currentSessionId) {
-    const match = sessions.find((s) => s.sessionId === currentSessionId)
-    rooms.push({
-      id: currentSessionId,
-      title: match ? deriveSessionTitle(match) : 'Current session',
-      status: 'live',
-      cwd: match?.cwd,
-      shortId: short(currentSessionId),
-    })
-    seen.add(currentSessionId)
-    seen.add(short(currentSessionId))
-  }
-
-  // 2) Background slots — truly concurrent agent sessions. Skip the focused
-  //    slot (that is the live room) and anything already listed.
-  for (const slot of slots) {
-    if (slot.isFocused || !slot.hasSession) continue
-    if (seen.has(slot.id) || (currentSessionId && slotMatches(slot.id, currentSessionId))) continue
-    rooms.push({
-      id: slot.id,
-      title: `Background · ${slot.id.substring(0, 6)}`,
-      status: slot.status === 'error' ? 'idle' : 'background',
-      cwd: slot.workingDir,
-      shortId: short(slot.id),
-    })
-    seen.add(slot.id)
-    seen.add(short(slot.id))
-  }
-
-  // 3) Recent sessions — resumable into the foreground. Exclude the live room
-  //    and any session already running as a background slot.
-  const runningSlotIds = new Set(slots.map((s) => s.id))
-  for (const s of sortSessionsByActivity(sessions)) {
-    if (seen.has(s.sessionId) || seen.has(short(s.sessionId))) continue
-    if (runningSlotIds.has(s.sessionId) || runningSlotIds.has(short(s.sessionId))) continue
-    rooms.push({
-      id: s.sessionId,
-      title: deriveSessionTitle(s),
-      status: 'idle',
-      cwd: s.cwd,
-      shortId: short(s.sessionId),
-    })
-    seen.add(s.sessionId)
-    seen.add(short(s.sessionId))
-    if (rooms.filter((r) => r.status === 'idle').length >= 12) break
-  }
-
-  return rooms
+/** Secondary line: "3m ago · osborn · 12 msgs" (falls back to the short id). */
+function roomMeta(room: Room): string {
+  const parts = [
+    room.time,
+    room.project,
+    typeof room.messageCount === 'number' && room.messageCount > 0
+      ? `${room.messageCount} msg${room.messageCount === 1 ? '' : 's'}`
+      : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' · ') : room.shortId
 }
 
 function StatusDot({ status }: { status: RoomStatus }) {
@@ -135,6 +81,8 @@ interface RoomsProps {
   /** Reload the sessions + slots that feed the rail. */
   onRefresh: () => void
   disabled?: boolean
+  /** Title for the live session before it shows up in the session list. */
+  liveTitle?: string | null
 }
 
 const COLLAPSE_KEY = 'vn-rooms-collapsed'
@@ -148,6 +96,7 @@ export function RoomsSidebar({
   onNewRoom,
   onRefresh,
   disabled,
+  liveTitle,
 }: RoomsProps) {
   const [collapsed, setCollapsed] = useState(false)
   useEffect(() => {
@@ -163,7 +112,7 @@ export function RoomsSidebar({
     })
   }
 
-  const rooms = buildRooms(sessions, slots, currentSessionId)
+  const rooms = buildRooms(sessions, slots, currentSessionId, liveTitle)
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
 
   if (collapsed) {
@@ -265,7 +214,8 @@ export function RoomsSidebar({
                 key={room.id}
                 onClick={() => !isLive && !disabled && onSwitchRoom(room)}
                 disabled={isLive || disabled}
-                title={isLive ? 'This room is live' : `Switch to ${room.title}`}
+                title={`${isLive ? 'Live now' : `Switch to ${room.title}`}${room.timeIso ? ` · last active ${new Date(room.timeIso).toLocaleString()}` : ''} · ${room.id}`}
+                aria-current={isLive ? 'true' : undefined}
                 className={`w-full text-left px-2.5 py-2 rounded-lg border transition-colors ${
                   isLive
                     ? 'bg-amber-500/10 border-amber-500/30 cursor-default'
@@ -287,7 +237,7 @@ export function RoomsSidebar({
                     {STATUS_LABEL[room.status]}
                   </span>
                 </div>
-                <div className="font-mono text-[10px] text-gray-500 truncate pl-4 mt-0.5">{room.shortId}</div>
+                <div className="text-[10px] text-gray-500 truncate pl-4 mt-0.5">{roomMeta(room)}</div>
               </button>
             )
           })
@@ -317,8 +267,9 @@ export function RoomsBar({
   onSwitchRoom,
   onNewRoom,
   disabled,
+  liveTitle,
 }: RoomsProps) {
-  const rooms = buildRooms(sessions, slots, currentSessionId)
+  const rooms = buildRooms(sessions, slots, currentSessionId, liveTitle)
   // Keep the voice screen clean (3-6-9): no rail until there is somewhere to
   // switch to. nav/switchers don't count toward the primary-action budget.
   if (rooms.length <= 1) return null
@@ -331,7 +282,8 @@ export function RoomsBar({
             key={room.id}
             onClick={() => !isLive && !disabled && onSwitchRoom(room)}
             disabled={isLive || disabled}
-            title={room.title}
+            title={`${room.title}${room.time ? ` · ${room.time}` : ''}`}
+            aria-current={isLive ? 'true' : undefined}
             className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap border transition-colors ${
               isLive
                 ? 'bg-amber-500/15 text-amber-200 border-amber-500/30'
@@ -340,6 +292,11 @@ export function RoomsBar({
           >
             <StatusDot status={room.status} />
             <span className="max-w-[9rem] truncate">{room.title}</span>
+            {isLive ? (
+              <span className="text-[9px] font-semibold uppercase tracking-wide text-amber-300">Live</span>
+            ) : room.time ? (
+              <span className="text-[10px] text-gray-500">{room.time}</span>
+            ) : null}
           </button>
         )
       })}
