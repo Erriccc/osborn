@@ -404,6 +404,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const myGen = ++connectGenRef.current
     const isCurrent = () => connectGenRef.current === myGen
     setConnecting(true)
+    setAgentReady(false)
     setError(null)
     let resolvedUrl = agentUrl
 
