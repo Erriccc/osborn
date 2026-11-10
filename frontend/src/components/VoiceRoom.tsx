@@ -247,13 +247,9 @@ function VoiceRoomInner({
   // provider) — surfaced as a header chip so a stranger can see WHICH repo /
   // project the session is attached to (audit C1/P1-7; §12 found it invisible,
   // and a project session even opened in an empty placeholder dir).
-  const sessionCwd = useSearchParams()?.get('workingDirectory') || ''
-  const projectName = (() => {
-    if (!sessionCwd) return null
-    const segs = sessionCwd.replace(/\/+$/, '').split('/').filter(Boolean)
-    const leaf = segs[segs.length - 1] || ''
-    return !leaf || leaf.toLowerCase() === 'workspace' ? 'Workspace' : leaf
-  })()
+  // The URL param is the launch-time fallback; the live session's own cwd
+  // (resolved below, once the session list is known) wins after a switch.
+  const urlCwd = useSearchParams()?.get('workingDirectory') || ''
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   // iOS recovery surfaces (2026-10-24 mobile branch, P1.6/P1.7). audioBlocked →
   // "tap to enable sound" bar when the room's AudioContext started suspended
@@ -383,6 +379,15 @@ function VoiceRoomInner({
   // Bug c50200ef: lists order by the agent's lastActivityAt (PR #20), not mtime.
   const sessionsByActivity = useMemo(() => sortSessionsByActivity(sessions), [sessions])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  // Header project chip: prefer the LIVE session's own cwd (correct after a
+  // switch to a session in another project), else the /chat URL param.
+  const sessionCwd = (currentSessionId && sessions.find((x) => x.sessionId === currentSessionId)?.cwd) || urlCwd
+  const projectName = (() => {
+    if (!sessionCwd) return null
+    const segs = sessionCwd.replace(/\/+$/, '').split('/').filter(Boolean)
+    const leaf = segs[segs.length - 1] || ''
+    return !leaf || leaf.toLowerCase() === 'workspace' ? 'Workspace' : leaf
+  })()
   const [isLoadingSessions, setIsLoadingSessions] = useState(false)
   // Auto-resume prompt state
   const [showResumePrompt, setShowResumePrompt] = useState(false)
