@@ -1587,6 +1587,10 @@ export class ClaudeLLM extends llm.LLM {
     this.#opts.workingDirectory = path
   }
 
+  get workingDirectory(): string | undefined {
+    return this.#opts.workingDirectory
+  }
+
   /**
    * Reset state for mid-conversation session switch
    * Clears pending permissions and resets conversation tracking

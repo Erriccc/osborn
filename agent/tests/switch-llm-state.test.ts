@@ -142,5 +142,41 @@ await t('S1 busyState: compacting and pending permission are not idle', () => {
   assert.equal(llm.busyState().idle, true)
 })
 
+// ── S2 ────────────────────────────────────────────────────────────────────────
+function newPipeline(fq: ReturnType<typeof makeFakeQueryFn>, extra: any = {}) {
+  return new PipelineDirectLLM({ workingDirectory: fakeHome, voiceMode: 'direct', skipTTSQueue: true, queryFn: fq.fn as any, ...extra })
+}
+
+await t('S2 PipelineDirectLLM.setWorkingDirectory exists and updates inner + wrapper cwd', () => {
+  const pd: any = newPipeline(makeFakeQueryFn())
+  assert.equal(typeof pd.setWorkingDirectory, 'function', 'missing proxy (resume_session cross-slug branch threw TypeError)')
+  pd.setWorkingDirectory('/tmp/proj-b')
+  assert.equal(pd.inner.workingDirectory, '/tmp/proj-b', 'inner #opts not updated')
+  assert.equal(pd.workingDirectory, '/tmp/proj-b', 'wrapper #opts not updated')
+})
+
+await t('S2 PipelineDirectLLM proxies busyState() and spawnedResumeId', () => {
+  const fq = makeFakeQueryFn()
+  const pd: any = newPipeline(fq)
+  assert.equal(typeof pd.busyState, 'function')
+  assert.equal(pd.busyState().idle, true)
+  assert.equal(pd.spawnedResumeId, null)
+  pd.inner.pushMessage('hi', { resume: A } as any, cb(pd.inner))
+  assert.equal(pd.spawnedResumeId, A)
+  assert.equal(pd.busyState().turnInFlight, true)
+})
+
+await t('S2 resetForSessionSwitch clears wrapper per-turn state (meeting TTS gate) and closes the query', () => {
+  const fq = makeFakeQueryFn()
+  const pd: any = newPipeline(fq)
+  pd.inner.pushMessage('hi', { resume: A } as any, cb(pd.inner))
+  pd.suppressMeetingTTS = true
+  pd.resetForSessionSwitch()
+  assert.equal(pd.suppressMeetingTTS, false)
+  assert.equal(pd.hasSession(), false)
+  assert.equal(fq.spawned[0].closed, true)
+  assert.equal(pd.spawnedResumeId, null)
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

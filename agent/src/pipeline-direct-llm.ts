@@ -251,8 +251,26 @@ export class PipelineDirectLLM extends llm.LLM {
   setResumeSessionId(id: string | null) { this.#claudeLLM.setResumeSessionId(id) }
   setContinueSession(e: boolean) { this.#claudeLLM.setContinueSession(e) }
   resetForSessionSwitch() {
+    // Mirror swapInner's per-turn cleanup (#74): a fast-brain turn bound to the
+    // closed session must not report or re-prompt into the next one, the
+    // compaction-tail seam belongs to the old session, and a meeting chunk's
+    // TTS gate must not outlive its turn.
+    try { this.#turnAbort?.abort() } catch {}
+    this.#turnAbort = null
+    this.#postCompactionTailPending = false
+    this.suppressMeetingTTS = false
     this.#claudeLLM.resetForSessionSwitch()
   }
+  // Cross-project switch/resume (#74): the inner's cwd drives the SDK query; the
+  // wrapper's drives the fast brain + session tail. Both must move together.
+  // (Was missing: resume_session's cross-slug branch threw a TypeError here.)
+  setWorkingDirectory(path: string) {
+    this.#claudeLLM.setWorkingDirectory(path)
+    this.setWorkingContext({ workingDirectory: path })
+  }
+  get workingDirectory(): string | undefined { return this.#opts.workingDirectory }
+  get spawnedResumeId(): string | null { return this.#claudeLLM.spawnedResumeId }
+  busyState() { return this.#claudeLLM.busyState() }
   respondToPermission(allow: boolean, msg?: string) { this.#claudeLLM.respondToPermission(allow, msg) }
   hasPendingPermission() { return this.#claudeLLM.hasPendingPermission() }
   getPendingPermission() { return this.#claudeLLM.getPendingPermission() }
