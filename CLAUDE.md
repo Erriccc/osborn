@@ -25,7 +25,7 @@ npm run build  # Production build
 npm run lint   # ESLint via next lint
 ```
 
-There is no test suite.
+There is no single test runner. Tests in `agent/tests/*.test.ts` are standalone `node:assert` scripts, each run on its own with `npx tsx`, for example `npx tsx agent/tests/meeting-tts.test.ts` (also `meeting-tts-adversarial.test.ts` and `meeting-tts-adversarial-2.test.ts`).
 
 ### Deployment
 Frontend deploys to Railway (nixpacks, Node 22). Build: `cd frontend && npm install && npm run build`. Start: `cd frontend && npm run start`.

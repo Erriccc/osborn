@@ -183,6 +183,8 @@ it('synth: openai voice override is not sent to soniox, only to openai', async (
   // default to failure so an early exit can never look like a pass.
   process.exitCode = 1
   const keepAlive = setInterval(() => {}, 1000)
+  // Global watchdog: a hung test must fail the run, not stall it forever.
+  setTimeout(() => { console.log('FAIL watchdog: test run exceeded 60s'); process.exit(1) }, 60000).unref()
   const origWarn = console.warn, origLog = console.log
   console.warn = () => {}; console.log = () => {}
   let pass = 0, fail = 0
