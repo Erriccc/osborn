@@ -6,7 +6,13 @@ process.env.BROWSER_ENGINE_CONTROL_URL = 'https://eng.example:8781'
 process.env.BROWSER_ENGINE_STREAM_URL = 'https://eng.example'
 process.env.OSBORN_STREAM_TOKEN = 'streamsecret'
 
-import { buildControlTarget, buildStreamTarget, GET_ALLOW, POST_ALLOW } from '../src/lib/browser-engine'
+import {
+  buildControlTarget,
+  buildStreamTarget,
+  engineTokenConfigured,
+  GET_ALLOW,
+  POST_ALLOW,
+} from '../src/lib/browser-engine'
 
 const results: [string, boolean, string?][] = []
 function t(name: string, fn: () => void) {
@@ -44,6 +50,18 @@ t('stream URL appends the key; control URLs never carry it', () => {
   ok(buildStreamTarget('?t=5').includes('t=5'), 'stream preserves caller qs')
   ok(buildStreamTarget('?t=5').includes('key=streamsecret'), 'stream still has key')
   ok(!String(buildControlTarget('GET', 'status')).includes('streamsecret'), 'control URL has no stream key')
+})
+
+t('engineTokenConfigured reflects whether the engine token is set (#63)', () => {
+  const saved = process.env.OSBORN_ENGINE_TOKEN
+  delete process.env.OSBORN_ENGINE_TOKEN
+  eq(engineTokenConfigured(), false, 'unset → false')
+  process.env.OSBORN_ENGINE_TOKEN = '   '
+  eq(engineTokenConfigured(), false, 'whitespace-only → false')
+  process.env.OSBORN_ENGINE_TOKEN = 'enginesecret'
+  eq(engineTokenConfigured(), true, 'set → true')
+  if (saved === undefined) delete process.env.OSBORN_ENGINE_TOKEN
+  else process.env.OSBORN_ENGINE_TOKEN = saved
 })
 
 let failed = 0

@@ -32,6 +32,17 @@ export function engineToken(): string {
   return (process.env.OSBORN_ENGINE_TOKEN || '').trim()
 }
 
+// True when the server has an engine token to attach as `x-engine-token`. The
+// client is told ONLY this boolean (never the value), so a missing/mismatched
+// token is legible in the panel instead of surfacing as a cryptic per-action 401.
+export function engineTokenConfigured(): boolean {
+  return engineToken().length > 0
+}
+
+// NOT dead code: consumed transitively by buildStreamTarget() (appended as the
+// `?key=` on the MJPEG stream URL). The stream path authenticates via this stream
+// key, not the x-engine-token header — which is why the live view keeps working
+// even when the engine (control-API) token is missing or mismatched.
 export function streamToken(): string {
   return (process.env.OSBORN_STREAM_TOKEN || '').trim()
 }
