@@ -84,8 +84,22 @@ export function BrowserPanel() {
       return
     }
     const tick = async () => {
-      const s = await jget<Status>('status')
-      if (s) setStatus(s)
+      // Don't use jget here: it collapses every non-OK into null, so a 401 on
+      // /status (engine token missing/mismatched server-side) would leave the
+      // Page/Tab/Brain/Stream fields on "connecting…"/"—" forever with no
+      // explanation (#80). Inspect the status instead and flag the misconfig so
+      // the banner + the explicit "unavailable" fields show.
+      let r: Response | null = null
+      try { r = await fetch(api('status'), { cache: 'no-store' }) } catch { return }
+      if (!r.ok) {
+        if (r.status === 401) {
+          const t = await r.text().catch(() => '')
+          if (!/Not authenticated/.test(t)) setTokenError(true)
+        }
+        return
+      }
+      const s = (await r.json().catch(() => null)) as Status | null
+      if (s) { setStatus(s); setTokenError(false) }
     }
     tick()
     pollRef.current = setInterval(tick, 3000)
@@ -111,9 +125,13 @@ export function BrowserPanel() {
       try { data = text ? JSON.parse(text) : {} } catch { /* engine 401 is plain text, not JSON */ }
       if (!r.ok) {
         // A 401 that isn't our own "Not authenticated" means the engine rejected
-        // us for a missing/mismatched x-engine-token — surface the actionable
-        // banner instead of the bare per-action error.
-        if (r.status === 401 && data?.error !== 'Not authenticated') setTokenError(true)
+        // us for a missing/mismatched x-engine-token. Surface the SINGLE
+        // actionable banner (tokenError) and suppress the redundant, cryptic raw
+        // per-action error (#80) — the banner already explains the fix.
+        if (r.status === 401 && data?.error !== 'Not authenticated') {
+          setTokenError(true)
+          return null
+        }
         setNote(`${label} failed: ${data?.error || text || r.status}`)
         return null
       }
@@ -161,7 +179,7 @@ export function BrowserPanel() {
         <div className="flex items-center gap-2">
           <span className="text-lg">🎥</span>
           <h2 className="text-base font-semibold text-neutral-100">Browser</h2>
-          <StateBadge engine={engine} watching={watching} status={status} />
+          <StateBadge engine={engine} watching={watching} status={status} tokenMisconfigured={tokenMisconfigured} />
         </div>
         <div className="flex items-center gap-2">
           {!watching ? (
@@ -231,7 +249,15 @@ export function BrowserPanel() {
       </div>
 
       {/* Status line */}
-      {watching && (
+      {watching && tokenMisconfigured && (
+        // The /status poll 401s without the engine token, so the fields can
+        // never update — say so explicitly instead of leaving them on an
+        // eternal "connecting…"/"—" (#80).
+        <div className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-amber-400/90">
+          Status, Page, Tab, Brain and Stream are unavailable — engine token not configured.
+        </div>
+      )}
+      {watching && !tokenMisconfigured && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400 sm:grid-cols-4">
           <Field label="Page" value={status?.pageState || (status ? '—' : 'connecting…')} />
           <Field label="Tab" value={status?.activeTab != null ? String(status.activeTab) : '—'} />
@@ -313,11 +339,16 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: 'w
   )
 }
 
-function StateBadge({ engine, watching, status }: { engine: EngineState | null; watching: boolean; status: Status | null }) {
+function StateBadge({ engine, watching, status, tokenMisconfigured }: { engine: EngineState | null; watching: boolean; status: Status | null; tokenMisconfigured?: boolean }) {
   let label = 'unknown'
   let cls = 'bg-neutral-700 text-neutral-200'
   if (engine && engine.state) {
-    if (engine.state === 'started') { label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white' }
+    if (engine.state === 'started') {
+      // Without the engine token the status poll 401s, so `status` never
+      // arrives — don't sit on a misleading "connecting" (#80).
+      if (watching && tokenMisconfigured) { label = 'no token'; cls = 'bg-amber-600/80 text-black' }
+      else { label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white' }
+    }
     else { label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300' }
   } else if (engine && !engine.configured) {
     label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'

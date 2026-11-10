@@ -54,3 +54,16 @@ export function connectTimeoutMessage(authRequired: boolean): string {
     ? 'Anthropic sign-in is required to start your agent. Reopen the session to finish signing in, or connect your Claude account first.'
     : 'Still connecting to your agent. It may be starting up, or your account needs to finish Anthropic sign-in. Retry, or go back and open the session again.'
 }
+
+/**
+ * Once the agent has asked for Anthropic sign-in at least once this session, the
+ * auth gate — not a spinner — is the terminal state. When the sign-in modal is
+ * closed (status 'none'), the UI must rest on the actionable "Anthropic sign-in
+ * required" banner, NEVER an infinite "Connecting…". This is the #53/#78
+ * contract: dismissing the modal lands here, not back on a spinner. The watchdog
+ * disarms on `authRequired` precisely because this banner is the resolution — so
+ * the banner has to be reachable in every auth path for that disarm to be safe.
+ */
+export function isAuthGateTerminal(authEverRequired: boolean, authStatus: string): boolean {
+  return authEverRequired && authStatus === 'none'
+}
