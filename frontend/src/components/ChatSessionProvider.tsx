@@ -32,6 +32,7 @@ import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
 import { MIC_DENIED_EVENT, isMicDenied, reconcileMicDenied, type MicPermissionState } from '@/lib/mic-permission'
 import { TAB_LOCK_NAME, TAB_LOCK_RETRY_MS, controlsEnabled, lockOutcomeAfterRestore, shouldConnectOnTransition, shouldRetryLockProbe, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
+import { CONNECT_WATCHDOG_MS, connectTimeoutMessage, isAwaitingAgent } from '@/lib/connect-gate'
 
 interface ChatSessionContextValue {
   // ── Connection state ───────────────────────
@@ -157,6 +158,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [lastActivityAt, setLastActivityAt] = useState(Date.now())
   const [authRequired, setAuthRequired] = useState(false)
   const [idleStopped, setIdleStopped] = useState(false)
+
+  // Connect-attempt generation. Each connect() run captures the value it was
+  // started with; Cancel/disconnect bumps it. An in-flight connect() whose
+  // generation is stale stops writing state — this is what makes Cancel respond
+  // on the FIRST click (issue #53): without it, a connect() still awaiting a
+  // slow fetch would re-set token/connecting AFTER the user navigated away,
+  // re-showing the "Connecting…" overlay and making Cancel look like a no-op.
+  const connectGenRef = useRef(0)
 
   // ── One controlling tab per browser (bug 619af155, frontend minimum) ──────
   // The agent hands the session to the newest joiner and greets it, so a
@@ -377,6 +386,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
 
   // ── Connection flow ──────────────────────────────────────────────
   const connect = useCallback(async () => {
+    // Claim this connect attempt. If the user cancels (disconnect bumps the
+    // generation) while we're awaiting a fetch below, `isCurrent()` goes false
+    // and we stop touching state so the overlay can't be resurrected.
+    const myGen = ++connectGenRef.current
+    const isCurrent = () => connectGenRef.current === myGen
     setConnecting(true)
     setError(null)
     let resolvedUrl = agentUrl
@@ -578,6 +592,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         url += `&workingDirectory=${encodeURIComponent(workingDirectory)}`
 
       const res = await fetch(url)
+      // User cancelled while the token request was in flight — don't resurrect.
+      if (!isCurrent()) return
       if (!res.ok) {
         // /api/token requires a signed-in owner of the room's machine.
         setError(
@@ -591,6 +607,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         return
       }
       const data = await res.json()
+      if (!isCurrent()) return
 
       ctMark('token minted — handing off to LiveKit room join')
       setToken(data.token)
@@ -598,10 +615,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       ctMark('token+roomCode set → LiveKit client mounting (WebRTC start)')
       setStatusMsg(null)
     } catch (e) {
+      if (!isCurrent()) return
       setError('Failed to connect to agent')
       setStatusMsg(null)
     } finally {
-      setConnecting(false)
+      if (isCurrent()) setConnecting(false)
     }
   }, [
     agentUrl,
@@ -690,6 +708,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // Explicit user leave (Leave button). Tell the agent to leave its LiveKit
   // room so connection-minute burn stops immediately.
   const disconnect = useCallback(() => {
+    // Invalidate any in-flight connect() so it can't re-set token/connecting
+    // after we navigate away (the old "Cancel does nothing on the first click"
+    // behaviour, issue #53). Then clear the connecting state synchronously so
+    // the overlay disappears immediately — the room-leave/log fetches below are
+    // fire-and-forget and never block the navigation.
+    connectGenRef.current++
+    setConnecting(false)
+    setStatusMsg(null)
     if (activeSandboxId) {
       fetch('/api/sandbox', {
         method: 'POST',
@@ -774,6 +800,27 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const markVoiceActivity = useCallback(() => {
     setLastActivityAt(Date.now())
   }, [])
+
+  // ── Connect watchdog (issue #53) ──────────────────────────────────────────
+  // Bound the "Connecting…" screen. A fresh account whose agent blocks on
+  // ensureClaudeAuth() before ever sending agent_ready — or any cold/slow
+  // machine, dropped data message, or crashed agent — used to leave the
+  // spinner running forever. Arm a timer while we're waiting on the agent and
+  // nothing has resolved the screen; on expiry, surface an actionable error
+  // (the page's error branch has Retry + Back). The auth case never trips this:
+  // markAuthRequired flips `connected` true to uncover the Claude sign-in modal,
+  // and isAwaitingAgent() also disarms on `authRequired`. `statusMsg` is in the
+  // deps so each progress tick (sandbox start, "Connecting to agent…") resets
+  // the timer — a slow-but-progressing connect is never cut off.
+  useEffect(() => {
+    if (!isAwaitingAgent({ connecting, connected, hasToken: !!token, error: !!error, authRequired })) return
+    const t = setTimeout(() => {
+      setError(connectTimeoutMessage(authRequired))
+      setStatusMsg(null)
+      setConnecting(false)
+    }, CONNECT_WATCHDOG_MS)
+    return () => clearTimeout(t)
+  }, [connecting, connected, token, error, authRequired, statusMsg])
 
   // ── P1.8 (2026-10-24): foreground fast-rejoin + screen wake lock ──────────
   const connectedRef = useRef(connected)

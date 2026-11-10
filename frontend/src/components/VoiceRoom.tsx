@@ -323,6 +323,12 @@ function VoiceRoomInner({
   const autoApprovedTokenRef = useRef(0)
   const [claudeAuthUrl, setClaudeAuthUrl] = useState<string | null>(null)
   const [claudeAuthStatus, setClaudeAuthStatus] = useState<'none' | 'required' | 'waiting' | 'waiting_code' | 'submitting' | 'complete' | 'error'>('none')
+  // Sticky: the agent asked for Anthropic sign-in at least once this session and
+  // it never completed. Drives the persistent "Anthropic sign-in required"
+  // banner so dismissing the modal doesn't leave a fresh account on a silent,
+  // dead session with no idea why the agent never replies (issue #53). Cleared
+  // on claude_auth_complete.
+  const [claudeAuthEverRequired, setClaudeAuthEverRequired] = useState(false)
   const [claudeAuthCode, setClaudeAuthCode] = useState('')
   const [agentConnected, setAgentConnected] = useState(false)
   // Multi-instance slots panel
@@ -2223,11 +2229,13 @@ function VoiceRoomInner({
       } else if (data.type === 'claude_auth_required') {
         console.log('🔑 Claude auth required')
         setClaudeAuthStatus('required')
+        setClaudeAuthEverRequired(true)
         onAuthRequired?.()
       } else if (data.type === 'claude_auth_url') {
         console.log('🔗 Claude auth URL received')
         setClaudeAuthUrl(data.url)
         setClaudeAuthStatus('waiting')
+        setClaudeAuthEverRequired(true)
       } else if (data.type === 'claude_auth_waiting_code') {
         console.log('🔑 Claude waiting for auth code')
         setClaudeAuthStatus('waiting_code')
@@ -2238,6 +2246,7 @@ function VoiceRoomInner({
         console.log('✅ Claude auth complete')
         setClaudeAuthUrl(null)
         setClaudeAuthStatus('complete')
+        setClaudeAuthEverRequired(false)
         // Auto-dismiss after 3 seconds
         setTimeout(() => setClaudeAuthStatus('none'), 3000)
         // Persist the OAuth token to the host-persistent layer so it survives
@@ -3530,6 +3539,24 @@ function VoiceRoomInner({
               </p>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Persistent Anthropic sign-in gate (issue #53). The agent blocks before
+          creating the voice session until Claude OAuth completes, so a fresh
+          account that dismisses the modal above would otherwise sit on a silent,
+          dead session with no explanation. This banner makes the requirement
+          honest and gives a one-tap way back into the sign-in flow. */}
+      {claudeAuthEverRequired && claudeAuthStatus === 'none' && (
+        <div className="fixed inset-x-0 top-0 z-[60] flex items-center justify-center gap-3 bg-amber-500/95 text-black text-sm font-medium px-4 py-2.5 touch-manipulation">
+          <span className="shrink-0">🔑</span>
+          <span className="min-w-0">Anthropic sign-in required — your agent can&apos;t reply until you sign in.</span>
+          <button
+            onClick={() => setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required')}
+            className="shrink-0 px-3 py-1 rounded-md bg-black/85 hover:bg-black text-white text-xs font-semibold transition-colors"
+          >
+            Sign in
+          </button>
         </div>
       )}
 
