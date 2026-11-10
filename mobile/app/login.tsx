@@ -68,6 +68,7 @@ export default function Login() {
       {step === 'email' ? (
         <View style={styles.form}>
           <TextInput
+            testID="login-email-input"
             value={email}
             onChangeText={setEmail}
             placeholder="you@email.com"
@@ -79,6 +80,7 @@ export default function Login() {
             style={styles.input}
           />
           <Pressable
+            testID="login-send-code"
             onPress={send}
             disabled={busy !== null}
             style={({ pressed }) => [styles.primary, pressed && styles.pressed]}

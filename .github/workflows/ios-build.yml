@@ -28,6 +28,10 @@ on:
     paths:
       - 'frontend/native/**'
       - '.github/workflows/ios-build.yml'
+  pull_request:
+    paths:
+      - 'frontend/native/**'
+      - '.github/workflows/ios-build.yml'
 
 concurrency:
   group: ios-build-${{ github.ref }}
@@ -108,3 +112,56 @@ jobs:
           path: frontend/native/build/artifact/
           retention-days: 14
           if-no-files-found: error
+
+      # ── UI smoke tests (issue #45) ─────────────────────────────────────────
+      # Boot a simulator, install the just-built shell, and run Maestro flows.
+      # The shell is a WKWebView onto https://www.voice-native.com — so this smoke
+      # proves the native wrapper boots and the site renders (it depends on prod
+      # being reachable; the screenshot artifact disambiguates a prod blip from an
+      # app regression). Runs AFTER the build artifact uploads. Modern Maestro
+      # drives the simulator via its embedded XCTest runner (no idb-companion).
+      - name: Set up JDK (Maestro runs on the JVM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Maestro
+        run: |
+          # Pin with `export MAESTRO_VERSION=1.xx.x` before the installer to freeze it.
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Boot iOS Simulator
+        id: sim
+        run: |
+          set -e
+          UDID=$(xcrun simctl list devices available | grep -E 'iPhone 1[5-9]|iPhone 2[0-9]' | head -1 | grep -oE '[0-9A-Fa-f-]{36}' || true)
+          [ -z "$UDID" ] && UDID=$(xcrun simctl list devices available | grep -i 'iPhone' | head -1 | grep -oE '[0-9A-Fa-f-]{36}')
+          echo "Booting simulator $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Install app on simulator
+        run: xcrun simctl install "${{ steps.sim.outputs.udid }}" build/artifact/VoiceNative-sim.app
+
+      - name: Run Maestro smoke flows
+        run: maestro --device "${{ steps.sim.outputs.udid }}" test .maestro --format junit --output maestro-report.xml
+
+      - name: Collect Maestro output
+        if: always()
+        run: |
+          mkdir -p maestro-output
+          cp -R "$HOME/.maestro/tests" maestro-output/ 2>/dev/null || true
+          cp -R artifacts maestro-output/ 2>/dev/null || true
+          cp maestro-report.xml maestro-output/ 2>/dev/null || true
+
+      - name: Upload Maestro artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cap-maestro-${{ github.sha }}
+          path: frontend/native/maestro-output/
+          retention-days: 14
+          if-no-files-found: ignore
