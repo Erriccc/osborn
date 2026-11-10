@@ -60,6 +60,23 @@ export const DEFAULT_AGENT_NAMES = [
   'tester',
 ] as const
 
+/** The orchestrator's canonical id — the main agent / "the bot" itself. An
+ *  utterance addressed to it is NOT routed to a Tier-2 worker (the orchestrator
+ *  already IS the turn's handler); only a NON-orchestrator target is routable. */
+export const ORCHESTRATOR_ID = 'osborn'
+
+/**
+ * Whether an addressing target should be routed to a specific Tier-2 worker.
+ * True only for a concrete, non-orchestrator target. Pure — the single source
+ * of the Phase-C routing decision, shared by the meeting handler and the tests
+ * so the "@researcher routes, @osborn does not" rule is pinned without a live
+ * meeting. Fail-safe: null / undefined / the orchestrator id all return false.
+ */
+export function isRoutableTarget(target: string | null | undefined): boolean {
+  const t = String(target || '').trim().toLowerCase()
+  return !!t && t !== ORCHESTRATOR_ID
+}
+
 /** Build a roster from a list of agent ids. Aliases default to the id plus a
  * couple of forgiving variants (hyphen/space collapsed). Extra aliases let the
  * caller add room-specific nicknames. Pure. */
@@ -242,6 +259,33 @@ class MeetingAddressing {
 
   get roster(): MeetingRoster {
     return this.#roster
+  }
+
+  /** Canonical ids of the addressable roster (for emitting to the frontend). */
+  get rosterIds(): string[] {
+    return this.#roster.map((a) => a.id)
+  }
+
+  /**
+   * Apply an out-of-band mute/unmute control (e.g. a `mute_participant` message
+   * from the frontend) to the registry. Normalizes the name the same way voice
+   * commands do (lowercase/trim; everyone|everybody|all → '*') and returns the
+   * applied change for emission, or null when nothing valid was given. Pure of
+   * I/O — only mutates the registry — so the control path is testable without a
+   * live room or the data channel.
+   */
+  applyMuteControl(action: 'mute' | 'unmute', who: string): { action: 'mute' | 'unmute'; who: string } | null {
+    const raw = String(who || '').trim().toLowerCase()
+    if (!raw) return null
+    const target = /^(everyone|everybody|all)$/.test(raw) ? '*' : raw
+    if (action === 'mute') this.mutes.mute(target)
+    else this.mutes.unmute(target)
+    return { action, who: target }
+  }
+
+  /** Snapshot of the addressing/mute layer for the frontend meeting_state msg. */
+  state(): { enabled: boolean; roster: string[]; muted: string[] } {
+    return { enabled: this.enabled, roster: this.rosterIds, muted: this.mutes.list() }
   }
 
   /** Override the addressable roster, e.g. from Object.keys(NAMED_AGENTS) at
