@@ -2,7 +2,7 @@
 # API) boots it, it runs OSBORN_TEST_SPEC, stores artifacts on the volume at
 # /data/runs/<timestamp>/, then exits and the machine stops — billing only
 # while a test is actually running.
-app = "osborn-voice-e2e"
+app = "osborn-voice-e2e-n"
 primary_region = "ord"
 
 [env]
@@ -44,7 +44,7 @@ primary_region = "ord"
   min_machines_running = 0
 
 # Session-engine control API (engine mode only). Reachable at
-# https://osborn-voice-e2e.fly.dev:8781 — token-protected: the engine rejects
+# https://osborn-voice-e2e-n.fly.dev:8781 — token-protected: the engine rejects
 # requests without x-engine-token when OSBORN_ENGINE_TOKEN (fly secret) is set.
 [[services]]
   protocol = "tcp"
