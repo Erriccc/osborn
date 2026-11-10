@@ -1,0 +1,42 @@
+# GitHub Pages — publishes the static landing/demo site in site/ (issue #46).
+#
+# ONE-CLICK ENABLE (repo admin): Settings → Pages → Build and deployment →
+# Source = "GitHub Actions". That's the only manual step; this workflow then
+# deploys site/ on every push to main that touches it (and on manual dispatch).
+# Until Pages is enabled with the GitHub Actions source, the deploy step will
+# fail — that's expected; enabling it is the one click.
+
+name: pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,6 +1,67 @@
-# Osborn - Voice AI Research & Development Assistant.
+<h1 align="center">🎙️ Voice Native</h1>
+<p align="center"><b>The AI coding agent you talk to.</b><br/>
+It researches your code, plans, and builds — out loud. Powered by LiveKit + the Claude Agent SDK.</p>
 
-Voice-enabled research and coding assistant powered by LiveKit + Claude Agent SDK. Talk to your code, research deeply, and build plans before executing.
+<p align="center">
+  <a href="https://www.voice-native.com"><img alt="Talk to it live" src="https://img.shields.io/badge/talk%20to%20it-live-f59e0b"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-f59e0b.svg"></a>
+  <a href="https://github.com/Erriccc/osborn/actions/workflows/frontend-lint.yml"><img alt="frontend-lint" src="https://github.com/Erriccc/osborn/actions/workflows/frontend-lint.yml/badge.svg"></a>
+  <a href="https://github.com/Erriccc/osborn/actions/workflows/ios-build.yml"><img alt="ios-build" src="https://github.com/Erriccc/osborn/actions/workflows/ios-build.yml/badge.svg"></a>
+  <a href="https://github.com/Erriccc/osborn/actions/workflows/rn-ios-build.yml"><img alt="rn-ios-build" src="https://github.com/Erriccc/osborn/actions/workflows/rn-ios-build.yml/badge.svg"></a>
+</p>
+
+<p align="center">
+  <b>🎧 <a href="https://www.voice-native.com">Talk to it live →</a></b>
+  &nbsp;·&nbsp; <a href="#quick-start">Quick start</a>
+  &nbsp;·&nbsp; <a href="CONTRIBUTING.md">Contributing</a>
+  &nbsp;·&nbsp; <a href="ROADMAP.md">Roadmap</a>
+</p>
+
+<!-- FOUNDER TODO: drop a short demo clip WITH AUDIO here (voice has to be heard) —
+     a GitHub-hosted .mp4 drag-dropped into this README, a GIF + "unmute" note, or a
+     linked YouTube thumbnail. Keep it right at the top. The same placeholder lives
+     on the Pages landing (site/index.html). -->
+> **▶︎ Demo:** a 20–40s clip with audio is coming here. Until then, the fastest way
+> to feel it is to [talk to it live](https://www.voice-native.com).
+
+## Why it's different
+
+- **You talk, it works.** Real-time voice (interrupt it, think out loud) instead of typing prompts.
+- **It actually reasons over your repo.** A persistent Claude Agent SDK session with researcher / reasoner / writer sub-agents — not a one-shot chat.
+- **Open source, self-hostable.** Run the whole stack yourself, or just talk to the hosted one.
+
+## By the numbers
+
+<!-- FOUNDER TODO: replace with real measured figures. Left as placeholders so the
+     table is ready; do not publish invented numbers. -->
+
+| Voice round-trip latency | Cost to run | vs. closed alternatives |
+|---|---|---|
+| ~X.X s* | $X.XX / min* | N× cheaper* |
+
+<sub>*Measured figures pending — tracked on the [roadmap](ROADMAP.md).</sub>
+
+## Quick start
+
+**Just try it (0 setup):** [voice-native.com](https://www.voice-native.com) — sign in and start talking.
+
+**Run it yourself:** you'll need LiveKit + an Anthropic (or Claude OAuth) key, plus
+a Google/OpenAI key for the fast brain. See [Local Development](#option-2-local-development)
+for the full walkthrough, or the in-dashboard **Setup Wizard** which generates your
+`.env` files. In short:
+
+```bash
+git clone https://github.com/Erriccc/osborn.git && cd osborn
+cd agent && npm install && cd ../frontend && npm install
+# add agent/.env + frontend/.env.local (see Local Development), then:
+cd ../agent && npm run dev        # terminal 1
+cd ../frontend && npm run dev     # terminal 2 → http://localhost:3000
+```
+
+New here? See **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to pick up an issue and
+open your first PR.
+
+---
 
 ## Features
 
@@ -95,7 +156,7 @@ Frontend (Next.js 14)  <-->  LiveKit Cloud  <-->  Agent (local or cloud sandbox)
 npx osborn
 
 # Copy the room code shown (e.g., "abc123")
-# Visit https://osborn.app
+# Visit https://www.voice-native.com
 # Enter the room code and click Join
 ```
 
@@ -249,7 +310,7 @@ osborn/
 └── README.md
 ```
 
-## Current Status (v0.8.6)
+## Current Status (v0.9.273)
 
 | Component | Status |
 |-----------|--------|
