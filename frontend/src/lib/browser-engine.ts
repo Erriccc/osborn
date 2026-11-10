@@ -83,6 +83,11 @@ export type EngineMachineState = {
   configured: boolean
   state: string | null // 'started' | 'stopped' | 'starting' | … | null when unknown
   machineId: string | null
+  // True when the engine token IS configured but the Fly Machines API itself
+  // couldn't be reached (so `state` is null because we FAILED to read it, not
+  // because there's no token). Lets the panel show an explicit "engine
+  // unreachable" instead of a bare "unknown" (#81).
+  unreachable: boolean
 }
 
 // Report awake/asleep WITHOUT waking the engine, by asking the Fly Machines API
@@ -90,18 +95,58 @@ export type EngineMachineState = {
 // defeating the purpose). Best-effort — returns {configured:false} if no token.
 export async function engineMachineState(): Promise<EngineMachineState> {
   const flyToken = (process.env.FLY_API_TOKEN || '').trim()
-  if (!flyToken) return { configured: false, state: null, machineId: null }
+  if (!flyToken) return { configured: false, state: null, machineId: null, unreachable: false }
   try {
     const res = await fetch(`https://api.machines.dev/v1/apps/${engineApp()}/machines`, {
       headers: { Authorization: `Bearer ${flyToken}`, 'Content-Type': 'application/json' },
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
     })
-    if (!res.ok) return { configured: true, state: null, machineId: null }
+    if (!res.ok) return { configured: true, state: null, machineId: null, unreachable: true }
     const machines = (await res.json()) as Array<{ id: string; state: string }>
     const m = Array.isArray(machines) && machines.length ? machines[0] : null
-    return { configured: true, state: m?.state ?? 'destroyed', machineId: m?.id ?? null }
+    return { configured: true, state: m?.state ?? 'destroyed', machineId: m?.id ?? null, unreachable: false }
   } catch {
-    return { configured: true, state: null, machineId: null }
+    return { configured: true, state: null, machineId: null, unreachable: true }
   }
+}
+
+// Best-effort wake: ask the Fly Machines API to START the engine's machine so a
+// user's retry lands on a booting engine instead of another connection-refused.
+// A control-API request to a stopped machine already triggers Fly's auto-start,
+// but issuing the start explicitly covers the case where it didn't. Bounded and
+// silent — returns false (never throws) when there's no token or the call fails.
+export async function startEngineMachine(machineId: string | null): Promise<boolean> {
+  const flyToken = (process.env.FLY_API_TOKEN || '').trim()
+  if (!flyToken || !machineId) return false
+  try {
+    const res = await fetch(
+      `https://api.machines.dev/v1/apps/${engineApp()}/machines/${machineId}/start`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${flyToken}`, 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(8000),
+      },
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+// Classify a thrown `fetch()` failure against the engine so the proxy can give a
+// cold-start-aware reason instead of a bare opaque 502 (#102/#104). undici
+// surfaces the socket error on `.cause.code`; an AbortSignal.timeout fires a
+// TimeoutError. 'refused' is the mid-boot window (VM up, engine not yet
+// listening on :8781) and is the retry-worthy case.
+export type EngineErrorKind = 'timeout' | 'refused' | 'dns' | 'network'
+export function classifyFetchError(e: unknown): EngineErrorKind {
+  const err = e as { name?: string; code?: string; cause?: { code?: string } }
+  const name = err?.name ?? ''
+  const code = err?.cause?.code ?? err?.code ?? ''
+  if (name === 'TimeoutError' || name === 'AbortError' || code === 'UND_ERR_CONNECT_TIMEOUT') return 'timeout'
+  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'UND_ERR_SOCKET') return 'refused'
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'dns'
+  return 'network'
 }
