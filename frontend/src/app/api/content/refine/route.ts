@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
 
   const prov = resolveTextProvider()
   if (!prov) {
-    return NextResponse.json({ error: 'Refine is not configured (no FIREWORKS_API_KEY / Z_AI_PERSONAL_API_KEY)' }, { status: 503 })
+    return NextResponse.json({ error: 'Refine is not configured (no FIREWORKS_API_KEY / Z_AI_PERSONAL_API_KEY (or ZAI_API_KEY))' }, { status: 503 })
   }
 
   // ---- Load the content to rewrite -----------------------------------------

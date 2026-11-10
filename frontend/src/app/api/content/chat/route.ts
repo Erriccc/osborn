@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
   }
 
   const prov = resolveTextProvider()
-  if (!prov) return json({ error: 'Chat is not configured (no FIREWORKS_API_KEY / Z_AI_PERSONAL_API_KEY)' }, 503)
+  if (!prov) return json({ error: 'Chat is not configured (no FIREWORKS_API_KEY / Z_AI_PERSONAL_API_KEY (or ZAI_API_KEY))' }, 503)
 
   // ---- Call Fireworks (streaming) -----------------------------------------
   const controller = new AbortController()
