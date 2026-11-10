@@ -296,9 +296,169 @@ async function buildAndPushImage(version: string, flySandboxApp: string): Promis
   log(`Image build and push complete for version ${version}`)
 }
 
+// ─── :latest retag ───────────────────────────────────────────────────────────
+
+const MANIFEST_ACCEPT = [
+  'application/vnd.docker.distribution.manifest.v2+json',
+  'application/vnd.oci.image.manifest.v1+json',
+  'application/vnd.oci.image.index.v1+json',
+  'application/vnd.docker.distribution.manifest.list.v2+json',
+].join(', ')
+
+/**
+ * Compare two dotted numeric versions ("0.9.272" vs "0.9.30"). Prerelease /
+ * build suffixes ("-beta.1", "+abc") are ignored. Returns -1, 0 or 1, or null
+ * if either side isn't a parseable version (e.g. "latest").
+ */
+export function compareVersions(a: string, b: string): -1 | 0 | 1 | null {
+  const parse = (v: string): number[] | null => {
+    const core = v.trim().replace(/^v/, '').split(/[-+]/)[0]
+    if (!/^\d+(\.\d+)*$/.test(core)) return null
+    return core.split('.').map(Number)
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  if (!pa || !pb) return null
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * Best-effort read of the osborn version a tag currently points at, via the
+ * image config's OSBORN_IMAGE_VERSION env (set by Dockerfile.sandbox).
+ * Returns null when the tag doesn't exist or the version can't be determined.
+ */
+async function readTaggedImageVersion(
+  repoUrl: string,
+  auth: string,
+  tag: string,
+): Promise<string | null> {
+  const get = async (path: string, accept: boolean): Promise<Record<string, any> | null> => {
+    const res = await fetch(`${repoUrl}/${path}`, {
+      headers: accept ? { Authorization: auth, Accept: MANIFEST_ACCEPT } : { Authorization: auth },
+      signal: AbortSignal.timeout(30000),
+    })
+    if (!res.ok) return null
+    return await res.json() as Record<string, any>
+  }
+  let manifest = await get(`manifests/${tag}`, true)
+  if (!manifest) return null
+  if (Array.isArray(manifest.manifests)) {
+    const sub = manifest.manifests.find((m: any) => m?.platform?.architecture === 'amd64') ?? manifest.manifests[0]
+    if (!sub?.digest) return null
+    manifest = await get(`manifests/${sub.digest}`, true)
+    if (!manifest) return null
+  }
+  const configDigest = manifest.config?.digest
+  if (!configDigest) return null
+  const cfg = await get(`blobs/${configDigest}`, false)
+  const env: unknown = cfg?.config?.Env
+  if (!Array.isArray(env)) return null
+  const entry = env.find((e) => typeof e === 'string' && e.startsWith('OSBORN_IMAGE_VERSION='))
+  const v = typeof entry === 'string' ? entry.slice('OSBORN_IMAGE_VERSION='.length).trim() : ''
+  return v || null
+}
+
+/**
+ * Point `<app>:latest` at the manifest of `<app>:<version>` via a registry
+ * manifest copy (GET by version tag, PUT to `latest`) — no rebuild.
+ *
+ * Why: new machines (createSandbox + the warm pool) provision from
+ * FLY_SANDBOX_IMAGE, which is `...:latest`. `fly deploy --image-label` never
+ * moves `:latest`, so without this it goes stale forever.
+ *
+ * Forward-only: if `latest` currently points at a NEWER version (read from
+ * the image's OSBORN_IMAGE_VERSION env), it is left alone. If the current
+ * version can't be determined, we proceed — `version` is npm's latest.
+ *
+ * Never throws. Returns a status string for logging / tests.
+ */
+export async function retagLatest(
+  version: string,
+  flyApiToken: string,
+  flySandboxApp: string,
+): Promise<'retagged' | 'skipped-older' | 'failed'> {
+  try {
+    const auth = `Basic ${Buffer.from(`x:${flyApiToken}`).toString('base64')}`
+    const repoUrl = `${FLY_REGISTRY}/v2/${flySandboxApp}`
+
+    let current: string | null = null
+    try {
+      current = await readTaggedImageVersion(repoUrl, auth, 'latest')
+    } catch (err) {
+      log(`Could not read current :latest version (${err instanceof Error ? err.message : String(err)}) — proceeding with retag`)
+    }
+    if (current) {
+      const cmp = compareVersions(version, current)
+      if (cmp === -1) {
+        log(`:latest already points at ${current} (newer than ${version}) — not moving it backwards`)
+        return 'skipped-older'
+      }
+      log(`:latest currently points at ${current} — moving to ${version}`)
+    } else {
+      log(`:latest current version unknown — moving to ${version}`)
+    }
+
+    const getRes = await fetch(`${repoUrl}/manifests/${version}`, {
+      headers: { Authorization: auth, Accept: MANIFEST_ACCEPT },
+      signal: AbortSignal.timeout(60000),
+    })
+    if (!getRes.ok) {
+      throw new Error(`GET manifest ${flySandboxApp}:${version} returned HTTP ${getRes.status}`)
+    }
+    const contentType = getRes.headers.get('content-type') || 'application/vnd.docker.distribution.manifest.v2+json'
+    const digest = getRes.headers.get('docker-content-digest') || 'unknown-digest'
+    // Raw bytes — the manifest digest is over the exact body, so never re-serialize.
+    const body = Buffer.from(await getRes.arrayBuffer())
+
+    const putRes = await fetch(`${repoUrl}/manifests/latest`, {
+      method: 'PUT',
+      headers: { Authorization: auth, 'Content-Type': contentType },
+      body,
+      signal: AbortSignal.timeout(60000),
+    })
+    if (!putRes.ok) {
+      let detail = ''
+      try { detail = (await putRes.text()).slice(0, 300) } catch { /* ignore */ }
+      throw new Error(`PUT manifest ${flySandboxApp}:latest returned HTTP ${putRes.status} ${detail}`)
+    }
+    log(`Retagged ${flySandboxApp}:latest -> ${version} (${digest})`)
+    return 'retagged'
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(
+      `[check-image-build] ERROR: RETAG OF :latest FAILED for ${flySandboxApp}:${version} — ` +
+      `new machines will keep provisioning the OLD :latest image until fixed. ${message}`,
+    )
+    return 'failed'
+  }
+}
+
 // ─── Exported entry point ─────────────────────────────────────────────────────
 
-export async function checkImageBuild(): Promise<void> {
+/** Injectable steps — defaults are the real implementations; tests override. */
+export interface ImageBuildCheckDeps {
+  fetchLatestVersion: () => Promise<string>
+  tagExists: (version: string, token: string, app: string) => Promise<boolean>
+  ensureFlyctl: () => void
+  build: (version: string, app: string) => Promise<void>
+  retag: (version: string, token: string, app: string) => Promise<unknown>
+}
+
+const defaultDeps: ImageBuildCheckDeps = {
+  fetchLatestVersion: fetchLatestOsbornVersion,
+  tagExists: imageTagExists,
+  ensureFlyctl,
+  build: buildAndPushImage,
+  retag: retagLatest,
+}
+
+export async function checkImageBuild(overrides: Partial<ImageBuildCheckDeps> = {}): Promise<void> {
+  const deps: ImageBuildCheckDeps = { ...defaultDeps, ...overrides }
   try {
     const FLY_API_TOKEN = process.env.FLY_API_TOKEN?.trim()
     // trim(): a whitespace-padded value on Railway made the registry URL
@@ -320,12 +480,12 @@ export async function checkImageBuild(): Promise<void> {
     log(`Starting image build check (app=${FLY_SANDBOX_APP})`)
 
     // Step 1: Resolve latest published osborn version.
-    const version = await fetchLatestOsbornVersion()
+    const version = await deps.fetchLatestVersion()
     log(`Latest osborn version on npm: ${version}`)
     console.log(`[image-build-check] npm latest version: ${version}`)
 
     // Step 2: Check if the image tag already exists in the Fly registry.
-    const exists = await imageTagExists(version, FLY_API_TOKEN, FLY_SANDBOX_APP)
+    const exists = await deps.tagExists(version, FLY_API_TOKEN, FLY_SANDBOX_APP)
 
     if (exists) {
       log(`Image tag ${version} already exists in registry — nothing to do`)
@@ -337,14 +497,18 @@ export async function checkImageBuild(): Promise<void> {
     console.log(`[image-build-check] image tag ${version} not found in Fly registry — starting build`)
 
     // Step 3: Ensure flyctl is available, installing it if necessary.
-    ensureFlyctl()
+    deps.ensureFlyctl()
 
-    // Step 4: Build and push the image. We rely on the explicit
-    // `--image-label ${version}` tag — `:latest` is intentionally not
-    // touched. Upgrades go through `machines.updateOsborn` which now
-    // pulls the version-pinned tag directly, so we never need `:latest`
-    // to track the newest digest.
-    await buildAndPushImage(version, FLY_SANDBOX_APP)
+    // Step 4: Build and push the image under the explicit
+    // `--image-label ${version}` tag. Upgrades (`machines.updateOsborn`)
+    // pull that version-pinned tag directly. Throws on failure, which
+    // skips the retag below.
+    await deps.build(version, FLY_SANDBOX_APP)
+
+    // Step 5: Move `:latest` to the new version. New machines (createSandbox
+    // + warm pool) provision from FLY_SANDBOX_IMAGE = `...:latest`, and
+    // `fly deploy --image-label` never moves it. Forward-only; never throws.
+    await deps.retag(version, FLY_API_TOKEN, FLY_SANDBOX_APP)
   } catch (err) {
     // Never throw — log to stderr only.
     const message = err instanceof Error ? err.message : String(err)
