@@ -11,6 +11,7 @@ import path from 'node:path'
 import { sessionMessagesQuery, pinnedSessionCwd } from '../src/lib/chat-url'
 import { switchFailureText, pendingSwitchLabel, switchPendingReducer } from '../src/lib/switch-ui'
 import { buildRoomRows } from '../src/lib/rooms'
+import { isRedundantFinal } from '../src/lib/claude-output'
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -137,6 +138,31 @@ t('S11 VoiceRoom: URL effect uses pinnedSessionCwd; current_session/session_swit
   assert.ok(/setReportedCwd\(/.test(cs))
   const sw = vr.slice(vr.indexOf("data.type === 'session_switched'"), vr.indexOf("data.type === 'session_switched'") + 2500)
   assert.ok(/setReportedCwd\(/.test(sw))
+})
+
+// ── S12 ──
+t('S12 multi-block turn: isFinal with a seen messageId is dropped', () => {
+  const seen = new Set(['m1'])
+  assert.equal(isRedundantFinal({ isFinal: true, messageId: 'm1', text: 'Part one.\n\nPart two.' }, { seenMessageIds: seen, trailingAssistantTexts: ['Part one.', 'Part two.'] }), true)
+})
+t('S12 streaming chunks are never dropped', () => {
+  assert.equal(isRedundantFinal({ isStreaming: true, messageId: 'm1', text: 'x' }, { seenMessageIds: new Set(['m1']), trailingAssistantTexts: [] }), false)
+})
+t('S12 isFinal for an unseen messageId (no chunks shown) is kept', () => {
+  assert.equal(isRedundantFinal({ isFinal: true, messageId: 'm2', text: 'Answer' }, { seenMessageIds: new Set(['m1']), trailingAssistantTexts: ['Other'] }), false)
+})
+t('S12 no messageId: dropped when it equals the trailing assistant run joined', () => {
+  const ctx = { seenMessageIds: new Set<string>(), trailingAssistantTexts: ['Part one.', 'Part  two.'] }
+  assert.equal(isRedundantFinal({ isFinal: true, text: 'Part one. Part two.' }, ctx), true)
+  assert.equal(isRedundantFinal({ isFinal: true, text: 'Something new' }, ctx), false)
+})
+t('S12 single-block turn unchanged (one bubble either way)', () => {
+  assert.equal(isRedundantFinal({ isFinal: true, messageId: 'm3', text: 'Hi' }, { seenMessageIds: new Set(['m3']), trailingAssistantTexts: ['Hi'] }), true)
+})
+t('S12 claude_output handler consults isRedundantFinal; addMessage records messageIds synchronously', () => {
+  const b = vr.slice(vr.indexOf("data.type === 'claude_output'"), vr.indexOf("data.type === 'permission_request'"))
+  assert.ok(/isRedundantFinal\(data,/.test(b))
+  assert.ok(/assistantMessageIdsRef\.current\.add\(/.test(vr))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

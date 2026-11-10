@@ -29,6 +29,7 @@ import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
+import { isRedundantFinal } from '@/lib/claude-output'
 import { isAuthGateTerminal } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
@@ -1635,6 +1636,11 @@ function VoiceRoomInner({
   const agentSendsClientIdsRef = useRef(false)
 
   // addMessage function with duplicate detection
+  // S12: assistant turn ids already rendered as chunks — updated synchronously
+  // (state may not have flushed between two data-channel events).
+  const assistantMessageIdsRef = useRef<Set<string>>(new Set())
+  const messagesRef = useRef<ChatMessage[]>([])
+  messagesRef.current = messages
   addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
@@ -1687,6 +1693,7 @@ function VoiceRoomInner({
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     if (role === 'assistant') dispatchResumeChip({ type: 'assistant' })
+    if (role === 'assistant' && extra?.messageId) assistantMessageIdsRef.current.add(extra.messageId)
     setMessages((prev) => [...prev, newMessage])
   }, [])
 
@@ -2014,6 +2021,14 @@ function VoiceRoomInner({
           // is the text empty? is agentRole something other than 'direct'?
           if (data.text.startsWith('🧠')) {
             console.log('[COMPACT-FRONTEND-BUBBLE] adding compaction chat bubble, category=', category, 'preview=', data.text.substring(0, 80))
+          }
+          // S12: the turn-level isFinal repeats chunks already shown (multi-block
+          // turns rendered a second, joined bubble).
+          const trailing: string[] = []
+          for (let i = messagesRef.current.length - 1; i >= 0 && messagesRef.current[i].role === 'assistant'; i--) trailing.unshift(messagesRef.current[i].content)
+          if (isRedundantFinal(data, { seenMessageIds: assistantMessageIdsRef.current, trailingAssistantTexts: trailing })) {
+            console.log('⏭️ claude_output isFinal duplicates the streamed chunks — dropped')
+            return
           }
           addMessageRef.current?.('assistant', data.text, undefined, category, undefined, data.messageId != null ? { messageId: data.messageId, chunkIndex: data.chunkIndex } : undefined)
         }
