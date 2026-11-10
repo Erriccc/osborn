@@ -14,6 +14,7 @@
  *   Gated (state-changing or leaks session/process ids):
  *     user_text, claude_auth_code, permission_response, list_sessions,
  *     resume_session, continue_session, switch_session, session_selected,
+ *     cancel_session_switch,
  *     mcp_toggle, set_agents, skill_add, skill_remove, noise_cancel,
  *     gate_send_anyway, stop_dispatch, join_meeting, leave_meeting,
  *     mute_participant, start_ide, stop_ide, spawn_background_session,
@@ -46,6 +47,8 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'resume_session',
   'continue_session',
   'switch_session',
+  // Cancels a deferred switch (#74) — state-changing, controller-only.
+  'cancel_session_switch',
   'session_selected',
   'mcp_toggle',
   'set_agents',

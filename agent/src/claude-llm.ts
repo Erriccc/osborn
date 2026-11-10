@@ -184,6 +184,9 @@ export interface ClaudeLLMOptions {
   // SDK constraint: agents are fixed once query() starts — changes apply on
   // the next session (cold start / resume / switch), not mid-session.
   agents?: Record<string, { description: string; prompt: string; tools?: string[]; model?: string }>
+  /** Test seam: replaces the SDK `query()` for the persistent session (cold start
+   * + primeResume). Production never sets it. */
+  queryFn?: typeof query
 }
 
 /**
@@ -1310,6 +1313,12 @@ export class ClaudeLLM extends llm.LLM {
   #spawnAuthGen = authEnvGeneration
   #turnsInFlight = 0
 
+  // `resume` id the live persistent query was spawned with (null = fresh, or no
+  // query). Lets a session switch tell "query already runs the armed target"
+  // from "armed target is a pending switch" (#74; see session-switch.ts).
+  #spawnedResumeId: string | null = null
+  #queryFn: typeof query = query
+
   /** True when the live subprocess predates the latest auth-backend change. */
   get authRestartPending(): boolean {
     return !!this.#persistentQuery && this.#spawnAuthGen !== authEnvGeneration
@@ -1370,6 +1379,7 @@ export class ClaudeLLM extends llm.LLM {
       onCompactionEvent: opts.onCompactionEvent,
     }
     this.#eventEmitter = opts.eventEmitter || new EventEmitter()
+    if (opts.queryFn) this.#queryFn = opts.queryFn
 
     console.log('🟠 ClaudeLLM initialized (Research Mode)')
     console.log(`   📁 Working dir (cwd): ${this.#opts.workingDirectory}`)
@@ -1575,6 +1585,10 @@ export class ClaudeLLM extends llm.LLM {
    */
   setWorkingDirectory(path: string): void {
     this.#opts.workingDirectory = path
+  }
+
+  get workingDirectory(): string | undefined {
+    return this.#opts.workingDirectory
   }
 
   /**
@@ -1975,6 +1989,29 @@ export class ClaudeLLM extends llm.LLM {
   // subprocess via the MessageChannel — no JSONL replay.
   // ============================================================
 
+  /** `resume` id the live persistent query was spawned with (null = fresh / none). */
+  get spawnedResumeId(): string | null {
+    return this.#spawnedResumeId
+  }
+
+  /**
+   * What the live session is doing right now (#74). A session switch is only
+   * executed when `idle`: a turn awaiting its result, SDK tasks (sub-agents
+   * outlive their turn), compaction, an in-flight interrupt or a permission
+   * prompt all mean closing the query would lose work.
+   */
+  busyState(): { turnInFlight: boolean; runningTasks: number; compacting: boolean; interruptPending: boolean; permissionPending: boolean; idle: boolean } {
+    const turnInFlight = this.#turnsInFlight > 0
+    const runningTasks = this.getRunningTasks().length
+    const compacting = !!this.compacting
+    const interruptPending = !!this.#pendingInterrupt
+    const permissionPending = this.hasPendingPermission()
+    return {
+      turnInFlight, runningTasks, compacting, interruptPending, permissionPending,
+      idle: !turnInFlight && runningTasks === 0 && !compacting && !interruptPending && !permissionPending,
+    }
+  }
+
   /** Whether a persistent session is alive and consuming messages */
   hasSession(): boolean {
     return this.#persistentQuery !== null && !this.#messageChannel?.closed
@@ -2006,6 +2043,7 @@ export class ClaudeLLM extends llm.LLM {
     }
     this.#persistentQuery = null
     this.#messageChannel = null
+    this.#spawnedResumeId = null
     this.#backgroundConsumerRunning = false
     this.#dispatchedFor.clear()
     // Task registry is per-process (SDK task ids die with the subprocess).
@@ -2057,7 +2095,8 @@ export class ClaudeLLM extends llm.LLM {
     console.log('🔥 primeResume: eager cold-start — resume replay overlaps connect (no user message)')
     this.#spawnAuthGen = authEnvGeneration
     this.#messageChannel = new MessageChannel<SDKUserMessage>()
-    this.#persistentQuery = query({ prompt: this.#messageChannel as any, options: sdkOptions })
+    this.#spawnedResumeId = (sdkOptions as any)?.resume ?? null
+    this.#persistentQuery = this.#queryFn({ prompt: this.#messageChannel as any, options: sdkOptions })
     this.#activeQueries.add(this.#persistentQuery)
     this.#startBackgroundConsumer(callbacks)
   }
@@ -2116,6 +2155,29 @@ export class ClaudeLLM extends llm.LLM {
       this.closeSession()
     }
 
+    // Session-switch backstop (#74): a resume target was armed for a DIFFERENT
+    // session than the live query runs (not the id it was spawned for, not the
+    // id init reported). Pushing would run this turn in the old session and
+    // init would then report session_resume_failed {requested: armed, actual:
+    // old} — the live bug. When idle, rebuild on the armed target (sdkOptions
+    // already carries resume: armed, see run()). When busy, never abort the
+    // old session's work: push as before and warn. A target the query was
+    // already spawned for (a failed resume) is never retried — no loop.
+    if (this.#persistentQuery && this.#messageChannel && !this.#messageChannel.closed) {
+      const armed = this.#opts.resumeSessionId || null
+      if (armed && armed !== this.#spawnedResumeId && armed !== this.#sessionId) {
+        const busy = this.busyState()
+        if (busy.idle) {
+          console.log(`🔀 Pending switch to ${armed.substring(0, 8)} — closing idle session ${this.#sessionId?.substring(0, 8) ?? '(new)'} and resuming the target`)
+          this.closeSession()
+          this.#sessionId = null
+          userMessage.session_id = ''
+        } else {
+          console.warn(`⚠️ Session switch to ${armed.substring(0, 8)} is pending but the live session is busy (${JSON.stringify(busy)}) — this turn still runs in ${this.#sessionId?.substring(0, 8) ?? 'the live session'}`)
+        }
+      }
+    }
+
     this.#turnsInFlight++
 
     if (this.#persistentQuery && this.#messageChannel && !this.#messageChannel.closed) {
@@ -2151,7 +2213,8 @@ export class ClaudeLLM extends llm.LLM {
     this.#messageChannel = new MessageChannel()
     this.#messageChannel.push(userMessage)
 
-    this.#persistentQuery = query({ prompt: this.#messageChannel as any, options: sdkOptions })
+    this.#spawnedResumeId = (sdkOptions as any)?.resume ?? null
+    this.#persistentQuery = this.#queryFn({ prompt: this.#messageChannel as any, options: sdkOptions })
     this.#activeQueries.add(this.#persistentQuery)
 
     this.#startBackgroundConsumer(callbacks)

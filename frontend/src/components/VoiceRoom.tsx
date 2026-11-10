@@ -19,7 +19,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
-import { chatUrlForSession } from '@/lib/chat-url'
+import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -28,6 +28,8 @@ import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type To
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
+import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
+import { isRedundantFinal } from '@/lib/claude-output'
 import { isAuthGateTerminal } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
@@ -250,6 +252,8 @@ function VoiceRoomInner({
   // The URL param is the launch-time fallback; the live session's own cwd
   // (resolved below, once the session list is known) wins after a switch.
   const urlCwd = useSearchParams()?.get('workingDirectory') || ''
+  // Captured once: the project the page was launched into (mount hydration).
+  const [launchCwd] = useState(urlCwd)
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   // iOS recovery surfaces (2026-10-24 mobile branch, P1.6/P1.7). audioBlocked →
   // "tap to enable sound" bar when the room's AudioContext started suspended
@@ -261,6 +265,10 @@ function VoiceRoomInner({
   // Bug 0e5479b6: transient resume status, outside the transcript (never
   // copied or persisted); first assistant message or 30s clears it.
   const [resumeChip, dispatchResumeChip] = useReducer(resumeChipReducer, null)
+  // #74 finish-then-switch: a switch the agent deferred until the live session's
+  // current step finishes (session_switch_pending). Separate from the resume
+  // chip, which clears on the first assistant message.
+  const [switchPending, dispatchSwitchPending] = useReducer(switchPendingReducer, null)
   useEffect(() => {
     if (!resumeChip) return
     const left = Math.max(0, resumeChip.startedAt + RESUME_CHIP_TIMEOUT_MS - Date.now())
@@ -379,6 +387,21 @@ function VoiceRoomInner({
   // Bug c50200ef: lists order by the agent's lastActivityAt (PR #20), not mtime.
   const sessionsByActivity = useMemo(() => sortSessionsByActivity(sessions), [sessions])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  // cwd the agent reported for a live session (current_session / session_switched).
+  // A fresh session is not in the session list yet, so this is the only source
+  // for pinning ?workingDirectory= (S11).
+  const [reportedCwd, setReportedCwd] = useState<{ sessionId: string; cwd?: string | null } | null>(null)
+  // Signed-in user id for the per-user live-session record (S13). undefined =
+  // not resolved yet; null = no Supabase session (guest / self-hosted).
+  const [liveUserId, setLiveUserId] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    if (!isSupabaseConfigured()) { setLiveUserId(null); return }
+    createSupabaseBrowser().auth.getSession()
+      .then(({ data }) => { if (!cancelled) setLiveUserId(data?.session?.user?.id ?? null) })
+      .catch(() => { if (!cancelled) setLiveUserId(null) })
+    return () => { cancelled = true }
+  }, [])
   // Header project chip: prefer the LIVE session's own cwd (correct after a
   // switch to a session in another project), else the /chat URL param.
   const sessionCwd = (currentSessionId && sessions.find((x) => x.sessionId === currentSessionId)?.cwd) || urlCwd
@@ -767,7 +790,7 @@ function VoiceRoomInner({
         if (cancelled) return
         try {
           const r = await fetch(
-            `${agentReadUrl(base, 'session-messages')}?session=${encodeURIComponent(preSelectedSessionId)}&limit=50`,
+            `${agentReadUrl(base, 'session-messages')}${sessionMessagesQuery(preSelectedSessionId, launchCwd)}`,
             { signal: AbortSignal.timeout(8000) },
           )
           if (cancelled || !r.ok) continue
@@ -782,7 +805,35 @@ function VoiceRoomInner({
       }
     })()
     return () => { cancelled = true }
-  }, [agentUrl, preSelectedSessionId])
+  }, [agentUrl, preSelectedSessionId, launchCwd])
+  // #74 S9: after an in-place switch, paint the TARGET's own history from the
+  // agent's /session-messages (with its cwd), the same path as mount hydration.
+  // Falls back to the session_switched payload's history (older agents / store
+  // not built yet). Dropped if the user switched again before it landed.
+  const hydrateSwitchedRef = useRef<(sessionId: string, query: string, fallback: Array<{ role: string; content: string }>) => void>(() => {})
+  hydrateSwitchedRef.current = (sessionId, query, fallback) => {
+    const base = agentUrl ? agentUrl.replace(/\/$/, '') : ''
+    const paint = (msgs: Array<{ role: string; content: string; ts?: string | number | null }>, compactions?: PriorCompaction[]) => {
+      if (currentSessionIdRef.current && currentSessionIdRef.current !== sessionId) return
+      const items = buildPriorItems(sessionId, msgs, compactions)
+      setMessages(prev => [...items, ...prev.filter(m => !m.id.startsWith('prior-'))])
+    }
+    ;(async () => {
+      try {
+        if (base) {
+          const r = await fetch(`${agentReadUrl(base, 'session-messages')}${query}`, { signal: AbortSignal.timeout(8000) })
+          if (r.ok) {
+            const d = await r.json()
+            if (Array.isArray(d?.messages) && d.messages.length > 0) {
+              paint(d.messages, Array.isArray(d.compactions) ? d.compactions : undefined)
+              return
+            }
+          }
+        }
+      } catch { /* agent unreachable over HTTP — use the payload */ }
+      if (Array.isArray(fallback) && fallback.length > 0) paint(fallback)
+    })()
+  }
   const [meetingError, setMeetingError] = useState<string | null>(null)
   // IDE (code-server) state
   const [ideStatus, setIdeStatus] = useState<'idle' | 'starting' | 'ready' | 'error'>('idle')
@@ -1596,6 +1647,11 @@ function VoiceRoomInner({
   const agentSendsClientIdsRef = useRef(false)
 
   // addMessage function with duplicate detection
+  // S12: assistant turn ids already rendered as chunks — updated synchronously
+  // (state may not have flushed between two data-channel events).
+  const assistantMessageIdsRef = useRef<Set<string>>(new Set())
+  const messagesRef = useRef<ChatMessage[]>([])
+  messagesRef.current = messages
   addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
@@ -1648,6 +1704,7 @@ function VoiceRoomInner({
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     if (role === 'assistant') dispatchResumeChip({ type: 'assistant' })
+    if (role === 'assistant' && extra?.messageId) assistantMessageIdsRef.current.add(extra.messageId)
     setMessages((prev) => [...prev, newMessage])
   }, [])
 
@@ -1976,6 +2033,14 @@ function VoiceRoomInner({
           if (data.text.startsWith('🧠')) {
             console.log('[COMPACT-FRONTEND-BUBBLE] adding compaction chat bubble, category=', category, 'preview=', data.text.substring(0, 80))
           }
+          // S12: the turn-level isFinal repeats chunks already shown (multi-block
+          // turns rendered a second, joined bubble).
+          const trailing: string[] = []
+          for (let i = messagesRef.current.length - 1; i >= 0 && messagesRef.current[i].role === 'assistant'; i--) trailing.unshift(messagesRef.current[i].content)
+          if (isRedundantFinal(data, { seenMessageIds: assistantMessageIdsRef.current, trailingAssistantTexts: trailing })) {
+            console.log('⏭️ claude_output isFinal duplicates the streamed chunks — dropped')
+            return
+          }
           addMessageRef.current?.('assistant', data.text, undefined, category, undefined, data.messageId != null ? { messageId: data.messageId, chunkIndex: data.chunkIndex } : undefined)
         }
       } else if (data.type === 'permission_request') {
@@ -2080,6 +2145,7 @@ function VoiceRoomInner({
         // Current session info
         console.log('📋 Current session:', data.sessionId)
         setCurrentSessionId(data.sessionId || null)
+        if (data.sessionId && data.workingDirectory) setReportedCwd({ sessionId: data.sessionId, cwd: data.workingDirectory })
       } else if (data.type === 'session_resume_set') {
         // Ack for the INITIAL resume/continue flows (resume_session,
         // continue_session, session_selected) — NOT a mid-session switch. A live
@@ -2106,43 +2172,43 @@ function VoiceRoomInner({
         dispatchResumeChip({ type: 'clear' })
         addMessageRef.current?.('system', `⚠️ Couldn't restore the session you picked — it's no longer available. You're now in a different conversation, not the one you selected.`)
         if (data.actualSessionId) setCurrentSessionId(data.actualSessionId)
-      } else if (data.type === 'session_switched') {
-        // Handle mid-conversation session switch. This event — not a bare ack — is
-        // the real confirmation that the switch took, so it owns clearing the
-        // "Resuming session…" chip (on success AND failure).
+      } else if (data.type === 'session_switch_pending') {
+        // #74: the live session is busy — the agent will switch when its current
+        // step finishes. Nothing is lost; the user can Switch now or Cancel.
         dispatchResumeChip({ type: 'clear' })
+        dispatchSwitchPending({ type: 'pending', sessionId: data.sessionId, cwd: data.workingDirectory, runningTasks: data.runningTasks, now: Date.now() })
+      } else if (data.type === 'session_switch_cancelled') {
+        dispatchResumeChip({ type: 'clear' })
+        dispatchSwitchPending({ type: 'cancelled', sessionId: data.sessionId ?? null })
+      } else if (data.type === 'session_switched') {
+        // The real confirmation that an in-place switch ran (not a bare ack): it
+        // owns clearing the resume chip and any pending switch, on success AND
+        // failure. "Armed, old session closed" — the target is verified on its
+        // first turn (a session_resume_failed then is about the target).
+        dispatchResumeChip({ type: 'clear' })
+        dispatchSwitchPending({ type: 'switched' })
         if (data.success) {
           setCurrentSessionId(data.sessionId)
+          if (data.workingDirectory) setReportedCwd({ sessionId: data.sessionId, cwd: data.workingDirectory })
 
           // Clear previous session's files — but keep favorites pinned so the
           // user's starred files survive the switch (they're cross-session).
           setGeneratedFiles(favoriteFiles)
           setUnreadOutputs(new Set())
           setSelectedFilePath(null)
+          // The old session's sub-agent rows and permission prompt don't follow.
+          setBackgroundFlows([])
+          setPendingPermission(null)
 
-          // Clear current chat messages before showing new context
+          // Replace the transcript with the target session's own history.
           setMessages([])
-
-          // Show previous session context if available
-          if (data.conversationHistory?.length > 0) {
-            // Add last few exchanges as context
-            addMessageRef.current?.('system', '─── Previous Session Context ───')
-            for (const exchange of data.conversationHistory.slice(-3)) {
-              addMessageRef.current?.(
-                exchange.role === 'user' ? 'user' : 'assistant',
-                exchange.content
-              )
-            }
-            addMessageRef.current?.('system', '─── Session Resumed ───')
-          }
-
-          // Show summary in chat
-          const summary = data.summary
-          addMessageRef.current?.('system',
-            `🔄 Switched to session (${summary?.messageCount || 0} messages)`
+          hydrateSwitchedRef.current(
+            data.sessionId,
+            sessionMessagesQuery(data.sessionId, data.workingDirectory, 50),
+            Array.isArray(data.conversationHistory) ? data.conversationHistory : [],
           )
         } else {
-          addMessageRef.current?.('system', `❌ Failed to switch: ${data.error}`)
+          addMessageRef.current?.('system', `❌ ${switchFailureText(data)}`)
         }
       } else if (data.type === 'plan_file_updated') {
         // Plan file was written/edited by the agent
@@ -2701,20 +2767,28 @@ function VoiceRoomInner({
   }, [sendToAgent])
 
   // MID-SESSION switch of an already-live session (in-chat History menu + Rooms
-  // rail). Unlike `resume_session`, `switch_session` makes the agent actually
-  // close the current session and rebuild against the target
-  // (`resetForSessionSwitch`), then emit `session_switched` + history. That event
-  // — not a bare ack — is the real confirmation, and it (plus failure) clears the
-  // resume chip. Trade-off: closing the current session ends any in-flight work
-  // in it; a background-warm-then-switch-in model is a separate, larger feature.
-  const handleSwitchSession = useCallback((sessionId: string) => {
+  // rail). The agent switches in place: when the current session is idle it
+  // closes it and rebuilds on the target, then emits `session_switched`; when it
+  // is busy it finishes the current step first (`session_switch_pending`, with
+  // Switch now / Cancel). `session_switched` — not a bare ack — is the real
+  // confirmation, and it (plus failure) clears the resume chip.
+  // `cwd` is the session's routing cwd (session list `cwd`) so the agent finds a
+  // session in another project; `force` = "Switch now" (ends the busy session's
+  // current step instead of waiting for it). currentSessionId is NOT set here —
+  // only session_switched sets it.
+  const handleSwitchSession = useCallback((sessionId: string, cwd?: string, force?: boolean) => {
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({
       type: 'switch_session',
       sessionId,
+      ...(cwd ? { workingDirectory: cwd } : {}),
+      ...(force ? { force: true } : {}),
     }))
     sendToAgent(payload, { reliable: true })
     dispatchResumeChip({ type: 'start', label: resumeChipLabel(sessionId), now: Date.now() })
+  }, [sendToAgent])
+  const handleCancelSwitch = useCallback(() => {
+    sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'cancel_session_switch' })), { reliable: true })
   }, [sendToAgent])
 
   const handleContinueSession = useCallback(() => {
@@ -2728,13 +2802,13 @@ function VoiceRoomInner({
 
   // ── Rooms (§14 first cut) ────────────────────────────────────────────────
   // Switch the foreground room by SWITCHING to that session over the SAME live
-  // connection — the single-session voice flow is untouched; the agent closes the
-  // current session, rebuilds against the target, and replays that room's durable
-  // state (`session_switched`). Note: this ends in-flight work in the session
-  // being left — a background-warm-then-switch-in model is a separate feature.
+  // connection — the single-session voice flow is untouched; the agent finishes
+  // the current step first if busy, rebuilds against the target, and replays that
+  // room's durable state (`session_switched`). The room's cwd rides along so
+  // sessions from other projects resolve.
   const handleSwitchRoom = useCallback((room: Room) => {
     if (!room?.id) return
-    handleSwitchSession(room.id)
+    handleSwitchSession(room.id, room.cwd)
   }, [handleSwitchSession])
   // Reload the sessions + slots that feed the rooms rail.
   const handleRefreshRooms = useCallback(() => {
@@ -3389,11 +3463,16 @@ function VoiceRoomInner({
   // navigation, no remount (the provider captured its launch params once).
   useEffect(() => {
     if (!currentSessionId || typeof window === 'undefined') return
-    const cwd = sessions.find((x) => x.sessionId === currentSessionId)?.cwd
+    const cwd = pinnedSessionCwd(currentSessionId, reportedCwd, sessions)
+    // S13: record the live session (per signed-in user) so a tab that takes
+    // over adopts it. Skipped until the user id is known.
+    if (isController && liveUserId !== undefined) {
+      try { localStorage.setItem(liveSessionKey(liveUserId), liveSessionRecord(currentSessionId, cwd, Date.now(), liveUserId)) } catch { /* storage blocked */ }
+    }
     const next = chatUrlForSession(window.location.href, currentSessionId, cwd)
     if (!next) return
     try { window.history.replaceState(null, '', next) } catch { /* sandboxed iframe */ }
-  }, [currentSessionId, sessions])
+  }, [currentSessionId, sessions, reportedCwd, isController, liveUserId])
   // Declared first so it captures the title from before this page set one.
   useEffect(() => {
     if (typeof document === 'undefined') return
@@ -3811,6 +3890,7 @@ function VoiceRoomInner({
         onRefresh={handleRefreshRooms}
         disabled={!agentConnected}
         liveTitle={firstUserMessage}
+        pendingId={switchPending?.sessionId ?? null}
       />
       <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Persistent Anthropic sign-in gate (issue #53/#78). The agent blocks
@@ -4250,6 +4330,7 @@ function VoiceRoomInner({
           onRefresh={handleRefreshRooms}
           disabled={!agentConnected}
           liveTitle={firstUserMessage}
+          pendingId={switchPending?.sessionId ?? null}
         />
 
         {/* Prominent compaction banner — sits above chat during PreCompact→PostCompact window.
@@ -4427,6 +4508,32 @@ function VoiceRoomInner({
             </span>
           </div>
         )}
+
+        {switchPending && (() => {
+          const target = sessions.find((x) => x.sessionId === switchPending.sessionId)
+          const title = target ? deriveSessionTitle(target) : `session ${switchPending.sessionId.slice(0, 8)}`
+          return (
+            <div className="mx-3 mt-1.5 flex justify-center" data-testid="switch-pending">
+              <span role="status" aria-live="polite"
+                className="inline-flex flex-wrap items-center justify-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-100">
+                {pendingSwitchLabel(title, switchPending.runningTasks)}
+                <button
+                  onClick={() => handleSwitchSession(switchPending.sessionId, switchPending.cwd, true)}
+                  className="rounded-full bg-amber-500/25 px-2 py-0.5 font-medium text-amber-100 hover:bg-amber-500/40"
+                  title="Stop the current step here and switch now"
+                >
+                  Switch now
+                </button>
+                <button
+                  onClick={handleCancelSwitch}
+                  className="rounded-full px-2 py-0.5 text-amber-200/80 hover:text-amber-100 hover:bg-amber-500/15"
+                >
+                  Cancel
+                </button>
+              </span>
+            </div>
+          )
+        })()}
 
         {/* Mic problem (bug 7cf00ae6): small in-flow banner above the
             composer, once per browser session — never a blocking overlay. */}

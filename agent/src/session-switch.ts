@@ -85,3 +85,197 @@ export function decideNextSession(state: SessionSwitchState): SessionSwitchDecis
 
   return { action: 'switch', runIn: target, leave: state.turnInFlight ? 'background' : 'close' }
 }
+
+// ── Executor plan (S3): what to DO with a decision, given live context ────────
+//
+// Interim behaviour until true background-on-leave ships (demoteSupported):
+// FINISH-THEN-SWITCH. A switch requested while the current session is busy is
+// deferred until it goes idle (its turn finishes normally), unless the user
+// forces it ("Switch now" — today's behaviour: the old session's work stops).
+// A pending permission is never queued silently: the user answers it or forces.
+
+export interface SwitchPlanContext {
+  /** A permission prompt is waiting on the user in the current session. */
+  permissionPending: boolean
+  /** A Recall meeting bot is live (its transcript feeds the current session). */
+  meetingActive: boolean
+  /** The target already runs as a background slot: none / idle / busy. */
+  targetSlot: 'none' | 'idle' | 'busy'
+  /** User chose "Switch now". */
+  force: boolean
+  /** Phase 2: a busy session can be demoted to the background instead of closed. */
+  demoteSupported: boolean
+}
+
+export type SwitchPlanKind = 'noop' | 'execute' | 'defer' | 'reject'
+export type SwitchPlanReason =
+  | 'already_live'
+  | 'meeting_active'
+  | 'target_busy_in_background'
+  | 'needs_you'
+  | 'busy'
+  | 'forced'
+  | 'idle'
+  | 'no_live_query'
+  | 'demote'
+
+export interface SwitchPlan {
+  kind: SwitchPlanKind
+  reason: SwitchPlanReason
+  /** What happens to the session being left when this executes. */
+  leave: LeftSessionFate
+  /** The target runs as an idle background slot: stop it before resuming it. */
+  stopSlotFirst: boolean
+}
+
+export function planSwitch(decision: SessionSwitchDecision, ctx: SwitchPlanContext): SwitchPlan {
+  const stopSlotFirst = ctx.targetSlot === 'idle'
+  const plan = (kind: SwitchPlanKind, reason: SwitchPlanReason, leave: LeftSessionFate = 'none'): SwitchPlan =>
+    ({ kind, reason, leave, stopSlotFirst: kind === 'execute' && stopSlotFirst })
+
+  if (decision.action === 'push') return plan('noop', 'already_live')
+  // The meeting transcript and the meeting brain belong to the current session.
+  if (ctx.meetingActive) return plan('reject', 'meeting_active')
+  // Never run a second process on a JSONL a busy background slot is writing.
+  if (ctx.targetSlot === 'busy') return plan('reject', 'target_busy_in_background')
+
+  if (decision.action === 'cold-start') return plan('execute', 'no_live_query')
+
+  if (decision.leave === 'background') {
+    if (ctx.demoteSupported) return plan('execute', 'demote', 'background')
+    if (ctx.force) return plan('execute', 'forced', 'close')
+    if (ctx.permissionPending) return plan('reject', 'needs_you')
+    return plan('defer', 'busy')
+  }
+  return plan('execute', 'idle', decision.leave)
+}
+
+// ── Executor helpers (S4 / S7), pure ─────────────────────────────────────────
+
+export interface SessionCwdDeps {
+  /** sessionExists(id, projectPath) from config.ts. */
+  exists: (sessionId: string, cwd: string) => boolean
+  /** Routing cwd from listAllClaudeSessions() (slug-derived), or null. */
+  listCwd: (sessionId: string) => Promise<string | null | undefined>
+  /** Last resort: find <id>.jsonl in any project slug and decode its cwd. */
+  scanCwd: (sessionId: string) => Promise<string | null | undefined>
+}
+
+/**
+ * The project directory a session's JSONL resolves under (what `--resume`
+ * needs as cwd): the client's hint if the session really lives there, else
+ * the current dir, else the session list's routing cwd, else a slug scan.
+ * null = the session does not exist ("Session not found"). A candidate is
+ * only returned after `exists()` confirms it.
+ */
+export async function resolveSessionCwd(
+  sessionId: string,
+  hint: string | null | undefined,
+  currentDir: string | null | undefined,
+  deps: SessionCwdDeps,
+): Promise<string | null> {
+  if (!sessionId) return null
+  for (const c of [hint, currentDir]) {
+    if (c && deps.exists(sessionId, c)) return c
+  }
+  for (const lookup of [deps.listCwd, deps.scanCwd]) {
+    let c: string | null | undefined = null
+    try { c = await lookup(sessionId) } catch { c = null }
+    if (c && deps.exists(sessionId, c)) return c
+  }
+  return null
+}
+
+/**
+ * chatCtx rebuild on switch (4.13): keep the agent's non-conversation items
+ * (instructions, system/developer notes, non-message items) and drop the old
+ * session's user/assistant turns so the fast brain and noise gate stop
+ * reasoning over the session that was left.
+ */
+export function keepNonConversationItems<T extends { type?: string; role?: string }>(items: T[] | null | undefined): T[] {
+  return (items ?? []).filter((it) => it?.type !== 'message' || (it.role !== 'user' && it.role !== 'assistant'))
+}
+
+/**
+ * Session to resume when the voice session auto-recovers (D7): the live id,
+ * else the session the user switched to (B may not have had its first turn,
+ * so it has no live id yet), else the connect-time id.
+ */
+export function recoverySessionId(ids: {
+  liveSessionId: string | null | undefined
+  switchedTo: string | null | undefined
+  connectTime: string | null | undefined
+}): string | undefined {
+  return ids.liveSessionId || ids.switchedTo || ids.connectTime || undefined
+}
+
+/** Keep-warm key: the init id, else the id the live query was spawned for. */
+export function warmParkKey(llm: { sessionId?: string | null; spawnedResumeId?: string | null } | null | undefined): string | null {
+  return llm?.sessionId || llm?.spawnedResumeId || null
+}
+
+/**
+ * Directory /session-messages reads a session's store from (S8): the
+ * requested workingDirectory only when the session really lives there,
+ * otherwise the agent's boot dir (today's behaviour). Never trusts the param.
+ */
+export function sessionMessagesDir(
+  sessionId: string,
+  requested: string | null | undefined,
+  bootDir: string,
+  exists: (sessionId: string, cwd: string) => boolean,
+): string {
+  if (requested && sessionId) {
+    try { if (exists(sessionId, requested)) return requested } catch { /* fall through */ }
+  }
+  return bootDir
+}
+
+// ── Review minors ────────────────────────────────────────────────────────────
+
+/**
+ * Single-flight guard for performSessionSwitch. Only the critical section
+ * (teardown + arm + session_switched) holds the guard; `after` (the spoken
+ * acknowledgment) runs fire-and-forget once it is released, so a say() that
+ * never resolves can't wedge every later switch. A request that arrives while
+ * the guard is held returns { ran: false } — the caller must reply so the UI
+ * never hangs.
+ */
+export function createSwitchGuard() {
+  let busy = false
+  return {
+    get busy() { return busy },
+    async run<T>(critical: () => Promise<T>, after?: (result: T) => unknown): Promise<{ ran: true; result: T } | { ran: false }> {
+      if (busy) return { ran: false }
+      busy = true
+      let result: T
+      try { result = await critical() } finally { busy = false }
+      if (after) {
+        try { void Promise.resolve(after(result)).catch(() => {}) } catch { /* sync throw */ }
+      }
+      return { ran: true, result }
+    },
+  }
+}
+
+/**
+ * Find a session's project dir by scanning ~/.claude/projects/<slug>/<id>.jsonl
+ * and decoding the slug (the same recovery resume_session has always used).
+ * The decoding is lossy, so only a decoded path that EXISTS is returned — the
+ * switch executor never creates directories for scan-derived paths.
+ */
+export async function scanSlugCwd(
+  sessionId: string,
+  projectsDir: string,
+  fsx: { readdir: (dir: string) => string[]; exists: (path: string) => boolean },
+): Promise<string | null> {
+  if (!sessionId || !fsx.exists(projectsDir)) return null
+  let slugs: string[] = []
+  try { slugs = fsx.readdir(projectsDir) } catch { return null }
+  for (const slug of slugs) {
+    if (!fsx.exists(`${projectsDir}/${slug}/${sessionId}.jsonl`)) continue
+    const recovered = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
+    if (recovered && recovered !== '/' && fsx.exists(recovered)) return recovered
+  }
+  return null
+}

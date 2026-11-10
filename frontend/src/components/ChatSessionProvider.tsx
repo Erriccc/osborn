@@ -27,7 +27,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { sessionParamsFromSearch } from '@/lib/chat-url'
+import { liveSessionKey, sessionParamsFromSearch, takeoverSessionUrl } from '@/lib/chat-url'
 import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
 import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
@@ -683,10 +683,30 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // Losing control drops the room locally; the agent is NOT told to leave
   // (the tab that took over is joining it).
   const prevTabRoleRef = useRef<TabRole>('probing')
+  // Signed-in user id for the per-user live-session record (S13). undefined
+  // until resolved: a take-over before that simply doesn't adopt.
+  const liveUserIdRef = useRef<string | null | undefined>(undefined)
+  useEffect(() => {
+    try {
+      createSupabaseBrowser().auth.getSession()
+        .then(({ data }) => { liveUserIdRef.current = data?.session?.user?.id ?? null })
+        .catch(() => { liveUserIdRef.current = null })
+    } catch { liveUserIdRef.current = null }
+  }, [])
   useEffect(() => {
     const prev = prevTabRoleRef.current
     prevTabRoleRef.current = tabRole
     if (shouldConnectOnTransition(prev, tabRole)) {
+      // S13: a tab taking over adopts the session the previous tab was live in
+      // (it may have switched since this tab's URL was opened). connect() reads
+      // the live URL, so rewrite it first. Never on first mount (probing).
+      try {
+        const uid = liveUserIdRef.current
+        if (uid !== undefined) {
+          const next = takeoverSessionUrl(window.location.href, localStorage.getItem(liveSessionKey(uid)), prev, Date.now(), uid)
+          if (next) window.history.replaceState(null, '', next)
+        }
+      } catch { /* storage blocked */ }
       void connect()
     } else if (tabRole === 'taken-over') {
       setConnected(false)

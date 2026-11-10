@@ -33,6 +33,8 @@ export interface RoomRow {
   status: RoomStatus
   /** True for exactly one row: the session the agent is running now. */
   isLive: boolean
+  /** A switch to this row is pending (the live session is finishing its step). */
+  switching: boolean
   /** Relative last-activity time ("3m ago"); '' when unknown. */
   time: string
   /** ISO last-activity time ('' when unknown) — for tooltips. */
@@ -54,6 +56,8 @@ export interface BuildRoomRowsOptions {
   liveFallbackTitle?: string | null
   /** Max idle (resumable) rows. Default 12. */
   maxIdle?: number
+  /** Session a deferred switch is waiting to open (session_switch_pending). */
+  pendingId?: string | null
 }
 
 const short = (id: string) => (id ? id.substring(0, 8) : '')
@@ -78,6 +82,7 @@ function sessionRow(s: RoomSessionInput, status: RoomStatus, now: number, id = s
     title: deriveSessionTitle(s),
     status,
     isLive: status === 'live',
+    switching: false,
     time: valid ? formatTime(timeIso, now) : '',
     timeIso: valid ? timeIso : '',
     project: projectName(s.cwd),
@@ -115,6 +120,7 @@ export function buildRoomRows(
           title: opts.liveFallbackTitle ? deriveSessionTitle(opts.liveFallbackTitle) : 'Current session',
           status: 'live' as const,
           isLive: true,
+          switching: false,
           time: 'Just now',
           timeIso: '',
           shortId: short(liveId),
@@ -135,6 +141,7 @@ export function buildRoomRows(
           title: `Background session ${short(slot.id)}`,
           status,
           isLive: false,
+          switching: false,
           time: '',
           timeIso: '',
           cwd: slot.workingDir,
@@ -155,5 +162,9 @@ export function buildRoomRows(
     idle++
   }
 
+  const pendingId = opts.pendingId
+  if (pendingId) {
+    for (const r of rows) r.switching = !r.isLive && sameSession(r.id, pendingId)
+  }
   return rows
 }

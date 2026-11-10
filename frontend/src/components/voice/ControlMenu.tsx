@@ -36,7 +36,7 @@ export function ControlMenu({
   sessions: SessionInfo[]
   currentSessionId?: string | null
   onLoadSessions: () => void
-  onResumeSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, cwd?: string) => void
   onContinueSession: () => void
   isLoadingSessions?: boolean
   disabled?: boolean
@@ -61,6 +61,7 @@ export function ControlMenu({
   const [activeTab, setActiveTab] = useState<'history' | 'tools'>('history')
   const [showSwitchConfirm, setShowSwitchConfirm] = useState(false)
   const [pendingSwitchSessionId, setPendingSwitchSessionId] = useState<string | null>(null)
+  const [pendingSwitchCwd, setPendingSwitchCwd] = useState<string | undefined>(undefined)
   usePanelExclusive('history', isOpen, setIsOpen)
   const menuRef = useViewportClamp(isOpen)
   // Bug 1ae9496a: Escape / outside-pointerdown close the menu, and the toggle
@@ -176,9 +177,10 @@ export function ControlMenu({
                           if (currentSessionId && currentSessionId !== session.sessionId) {
                             // Show confirmation for mid-conversation switch
                             setPendingSwitchSessionId(session.sessionId)
+                            setPendingSwitchCwd(session.cwd)
                             setShowSwitchConfirm(true)
                           } else {
-                            onResumeSession(session.sessionId)
+                            onResumeSession(session.sessionId, session.cwd)
                             setIsOpen(false)
                           }
                         }}
@@ -300,7 +302,7 @@ export function ControlMenu({
             <div className="absolute inset-0 bg-black/80 flex items-center justify-center rounded-lg z-10">
               <div className="bg-gray-800 p-4 rounded-lg text-center">
                 <p className="text-sm text-white mb-3">Switch to this session?</p>
-                <p className="text-xs text-gray-400 mb-4">Current context will be saved.</p>
+                <p className="text-xs text-gray-400 mb-4">Osborn finishes the current step here first.</p>
                 <div className="flex gap-2 justify-center">
                   <button
                     onClick={() => setShowSwitchConfirm(false)}
@@ -311,7 +313,7 @@ export function ControlMenu({
                   <button
                     onClick={() => {
                       if (pendingSwitchSessionId) {
-                        onResumeSession(pendingSwitchSessionId)
+                        onResumeSession(pendingSwitchSessionId, pendingSwitchCwd)
                       }
                       setShowSwitchConfirm(false)
                       setIsOpen(false)
