@@ -137,6 +137,28 @@ export async function speakText(page: Page, text: string) {
 async function synthesize(text: string, base: string): Promise<void> {
   const { optionalEnvKey } = await import('./env')
   const { writeFileSync } = await import('fs')
+  // Deepgram Aura TTS — preferred mouth. The engine already carries
+  // DEEPGRAM_API_KEY (same key the "ears" use), so a single REST call returns a
+  // ready-to-play WAV with no OpenAI dependency. ~100ms TTFB, natural voice.
+  // Decoded in-page by an AudioContext that resamples 24k → 48k automatically.
+  // Falls through to OpenAI/local synth on any error.
+  const deepgram = optionalEnvKey('DEEPGRAM_API_KEY')
+  if (deepgram) {
+    try {
+      const res = await fetch('https://api.deepgram.com/v1/speak?model=aura-2-asteria-en&encoding=linear16&sample_rate=24000&container=wav', {
+        method: 'POST',
+        headers: { Authorization: `Token ${deepgram}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      })
+      if (res.ok) {
+        writeFileSync(`${base}.wav`, Buffer.from(await res.arrayBuffer()))
+        return
+      }
+      console.warn(`[reactive-mic] Deepgram Aura TTS ${res.status} — falling back`)
+    } catch (e) {
+      console.warn(`[reactive-mic] Deepgram Aura TTS error — falling back:`, e)
+    }
+  }
   const openai = optionalEnvKey('OPENAI_API_KEY')
   if (openai) {
     const res = await fetch('https://api.openai.com/v1/audio/speech', {
