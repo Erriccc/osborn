@@ -182,6 +182,40 @@ export function isClaudeAuthenticated(): boolean {
  */
 let fallbackTierActive = false
 
+/**
+ * Pre-fallback values of the model env vars applyAuthFallback() overwrites, so
+ * clearAuthFallbackIfActive() can RESTORE an operator-set value instead of
+ * deleting it. `undefined` means "was unset". Captured once, on the first
+ * activation (a second applyAuthFallback() must not snapshot its own values).
+ */
+const RESTORABLE_MODEL_VARS = ['ANTHROPIC_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_MAX_CONTEXT_TOKENS'] as const
+let preFallbackModelEnv: Record<string, string | undefined> | null = null
+function snapshotModelEnv(): void {
+  if (fallbackTierActive || preFallbackModelEnv) return
+  preFallbackModelEnv = {}
+  for (const k of RESTORABLE_MODEL_VARS) preFallbackModelEnv[k] = process.env[k]
+}
+function restoreModelEnv(): void {
+  for (const k of RESTORABLE_MODEL_VARS) {
+    const v = preFallbackModelEnv ? preFallbackModelEnv[k] : undefined
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  preFallbackModelEnv = null
+}
+
+/**
+ * Set when the OAuth onComplete path cleared an active fallback, so a caller that
+ * awaited the flow (claude_auth_start) still learns a restart is needed even
+ * though its own clearAuthFallbackIfActive() then finds nothing to clear.
+ */
+let fallbackClearedByLogin = false
+export function consumeFallbackClearedByLogin(): boolean {
+  const v = fallbackClearedByLogin
+  fallbackClearedByLogin = false
+  return v
+}
+
 /** Trim whitespace and strip one layer of surrounding quotes from an env value. */
 export function cleanEnvKey(value: string | undefined | null): string {
   if (!value) return ''
@@ -265,6 +299,7 @@ export function applyAuthFallback(): void {
   // then ZAI_API_KEY.
   const zaiKey = cleanEnvKey(process.env.Z_AI_PERSONAL_API_KEY) || cleanEnvKey(process.env.ZAI_API_KEY)
   if (zaiKey !== '') {
+    snapshotModelEnv()
     // Native Anthropic-Messages endpoint - no local translation proxy needed.
     process.env.ANTHROPIC_BASE_URL = process.env.OSBORN_DEMO_BASE_URL || 'https://api.z.ai/api/anthropic'
     process.env.ANTHROPIC_AUTH_TOKEN = zaiKey
@@ -287,6 +322,7 @@ export function applyAuthFallback(): void {
   // Tier 4: central OpenRouter key (pay-per-use fallback of the fallback).
   const openRouterKey = cleanEnvKey(process.env.OPENROUTER_API_KEY)
   if (openRouterKey !== '') {
+    snapshotModelEnv()
     // Native Anthropic-Messages endpoint — no local translation proxy needed.
     process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
     // Injected as raw `Authorization: Bearer <token>` by the SDK.
@@ -323,18 +359,19 @@ export function applyAuthFallback(): void {
  * Clear the fallback redirect (z.ai house pass or OpenRouter) — but ONLY if
  * applyAuthFallback() set it. Called from the auth onComplete path so a user who later finishes real
  * Claude login mid-session (or on the next cold start) is not stuck routing to
- * OpenRouter. A user-supplied ANTHROPIC_BASE_URL is left untouched.
+ * the fallback. A user-supplied ANTHROPIC_BASE_URL is left untouched.
+ *
+ * Returns true iff a fallback was active and has now been cleared — callers use
+ * this to decide whether a running session needs a (deferred) restart.
  */
-export function clearAuthFallbackIfActive(): void {
-  if (!fallbackTierActive) return
+export function clearAuthFallbackIfActive(): boolean {
+  if (!fallbackTierActive) return false
   delete process.env.ANTHROPIC_BASE_URL
   delete process.env.ANTHROPIC_AUTH_TOKEN
-  // Model-slot overrides both tiers (z.ai + OpenRouter) set — left in place they
-  // would pin the real Claude session onto glm-4.7 / FALLBACK_MODEL and the
-  // fallback's context cap.
-  delete process.env.ANTHROPIC_MODEL
-  delete process.env.ANTHROPIC_SMALL_FAST_MODEL
-  delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  // Model-slot overrides both tiers (z.ai + OpenRouter) set — restore the
+  // pre-fallback values (or unset) so the real Claude session isn't pinned onto
+  // glm-4.7 / FALLBACK_MODEL and the fallback's context cap.
+  restoreModelEnv()
   // Was forced to '' for the OpenRouter redirect; unset so the real OAuth
   // token path (CLAUDE_CODE_OAUTH_TOKEN) is used cleanly.
   delete process.env.ANTHROPIC_API_KEY
@@ -348,6 +385,7 @@ export function clearAuthFallbackIfActive(): void {
   delete process.env.OSBORN_DEMO_PASS
   fallbackTierActive = false
   console.log('[auth-fallback] real Claude login completed — cleared fallback redirect')
+  return true
 }
 
 /**
@@ -568,7 +606,7 @@ export function runClaudeAuthFlow(callbacks: ClaudeAuthCallbacks): { handle: Cla
         completed = true
         clearTimeout(timeout)
         const token = tokenMatch[0]
-        console.log(`✅ OAuth token captured (${token.length} chars, starts with ${token.substring(0, 20)}...)`)
+        console.log(`✅ OAuth token captured (${token.length} chars)`)
 
         // Set as env var so Claude Agent SDK picks it up immediately
         process.env.CLAUDE_CODE_OAUTH_TOKEN = token
@@ -802,7 +840,7 @@ export async function ensureClaudeAuth(
       // the OpenRouter redirect env (only if the fallback set it) so this
       // session — and the next cold start — use the real OAuth token instead
       // of staying pinned to OpenRouter.
-      clearAuthFallbackIfActive()
+      if (clearAuthFallbackIfActive()) fallbackClearedByLogin = true
       // Include the captured token so the frontend can persist it to the
       // host-persistent layer via the Sprites API. Without this, credentials
       // written inside the service container's ephemeral overlay are lost on
@@ -834,4 +872,71 @@ export async function ensureClaudeAuth(
   })
 
   return { submitCode: handle.submitCode, done }
+}
+
+// ─────────────────────────────────────────
+// On-demand Claude sign-in (claude_auth_start)
+// ─────────────────────────────────────────
+
+let onDemandAuth: Promise<{ fallbackCleared: boolean }> | null = null
+
+/** True while a claude_auth_start-initiated flow is running. */
+export function isOnDemandAuthInFlight(): boolean {
+  return onDemandAuth !== null
+}
+
+/**
+ * Start Claude OAuth on demand — the upgrade path after ensureClaudeAuth()
+ * skipped the blocking flow because a fallback key exists. Guarded: a second
+ * call while one is running does NOT start another flow (started=false, same
+ * result promise).
+ *
+ * `submitCode` get/set bind the caller's pendingAuthSubmitCode slot; on settle
+ * the slot is cleared only if it still holds THIS flow's submitCode.
+ *
+ * Resolves `{ fallbackCleared }` — true only when a fallback redirect was
+ * active and is now gone (the caller should then request a deferred session
+ * restart). Already-authenticated → no flow, fallbackCleared reflects only
+ * whether a stale fallback was active.
+ */
+export function startClaudeAuthOnDemand(
+  sendToFrontend: (type: string, payload: unknown) => void,
+  submitCode: {
+    get: () => ((code: string) => void) | null
+    set: (fn: ((code: string) => void) | null) => void
+  },
+  deps: { ensure?: typeof ensureClaudeAuth } = {},
+): { started: boolean; result: Promise<{ fallbackCleared: boolean }> } {
+  if (onDemandAuth) {
+    console.log('🔑 claude_auth_start: on-demand flow already in flight — not starting another')
+    return { started: false, result: onDemandAuth }
+  }
+  const ensure = deps.ensure ?? ensureClaudeAuth
+  const run = async (): Promise<{ fallbackCleared: boolean }> => {
+    try {
+      const authResult = await ensure(sendToFrontend, { force: true })
+      if (authResult.submitCode && authResult.done) {
+        const mine = authResult.submitCode
+        submitCode.set(mine)
+        try {
+          await authResult.done
+        } finally {
+          if (submitCode.get() === mine) submitCode.set(null)
+        }
+      } else {
+        sendToFrontend('claude_auth_complete', { message: 'Claude is already authenticated.' })
+      }
+      // onComplete may already have cleared it — consume that signal too.
+      const cleared = clearAuthFallbackIfActive()
+      const clearedByLogin = consumeFallbackClearedByLogin()
+      return { fallbackCleared: cleared || clearedByLogin }
+    } catch (err: any) {
+      console.error('❌ On-demand Claude authentication failed:', err?.message)
+      sendToFrontend('claude_auth_error', { message: err?.message || 'Authentication failed' })
+      return { fallbackCleared: false }
+    }
+  }
+  const p = run().finally(() => { onDemandAuth = null })
+  onDemandAuth = p
+  return { started: true, result: p }
 }
