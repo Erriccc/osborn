@@ -263,6 +263,18 @@ export function shouldSkipBlockingOAuth(env: NodeJS.ProcessEnv, authed: boolean)
 }
 
 /**
+ * Pure decision for ensureClaudeAuth()'s in-flight branch (#71): should a new
+ * join wait on an OAuth flow that is already running? Only when the user
+ * explicitly asked to sign in (force) or there is no fallback model to run on.
+ * A fallback-key machine re-entering /chat must not be blocked by the optional
+ * sign-in it opened earlier.
+ */
+export function inFlightAuthBlocksJoin(env: NodeJS.ProcessEnv, force = false): boolean {
+  if (force) return true
+  return !shouldSkipBlockingOAuth(env, false)
+}
+
+/**
  * Additive onboarding tier resolution. Runs AFTER ensureClaudeAuth() and BEFORE
  * session creation. Resolves which auth backend the agent will use, in order
  * (Claude → ANTHROPIC_API_KEY → z.ai → OpenRouter):
@@ -744,6 +756,24 @@ export async function ensureClaudeAuth(
   sendToFrontend: (type: string, payload: unknown) => void,
   opts: { force?: boolean } = {}
 ): Promise<{ submitCode?: (code: string) => void; done?: Promise<void> }> {
+  // A flow is in flight but this machine already has a working model (a
+  // fallback key) and nobody explicitly asked to sign in: this is a re-entry
+  // (reload / back into /chat) while the optional on-demand sign-in is still
+  // open. Don't block the session on it or re-raise the blocking modal (#71) —
+  // run on the fallback and keep sign-in optional; the on-demand flow still
+  // owns the code paste (pendingAuthSubmitCode) and claude_auth_start replays it.
+  if (inFlightAuth && !inFlightAuthBlocksJoin(process.env, !!opts.force)) {
+    console.log('🔑 ensureClaudeAuth: OAuth in flight but a fallback model is available — not blocking this join')
+    try {
+      sendToFrontend('claude_auth_optional', {
+        message: 'Running on the fallback model. Sign in to Claude to upgrade.',
+      })
+    } catch (err) {
+      console.warn('🔑 claude_auth_optional send failed:', err)
+    }
+    return {}
+  }
+
   // If an auth flow is already running, attach to it and replay any
   // state we've already captured (the URL, any waiting_code prompt).
   if (inFlightAuth) {
