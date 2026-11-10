@@ -1,0 +1,14 @@
+# Smoke: the app launches and the sign-in screen renders.
+# Runs on an iOS Simulator in CI (rn-ios-build.yml) against the unsigned build.
+# No network / no real auth — just that the first screen a stranger sees is intact.
+appId: com.voicenative.rn
+---
+- launchApp:
+    clearState: true
+    permissions:
+      microphone: unset
+- assertVisible: "Voice Native"
+- assertVisible: "The AI coding agent you talk to."
+- assertVisible: "Email me a code"
+- assertVisible: "Continue with Google"
+- takeScreenshot: artifacts/rn-01-login

@@ -1,0 +1,18 @@
+# Smoke: the Capacitor shell boots and loads the live web app in its WKWebView.
+# The shell is a thin native wrapper around https://www.voice-native.com/dashboard,
+# which redirects an unauthenticated launch to the sign-in page. So this asserts the
+# webview actually rendered the site (brand visible) rather than a white/crash screen.
+#
+# NOTE: this depends on production being reachable from the runner. A failure here is
+# as likely to be a prod/network blip as an app regression — the screenshot artifact
+# tells them apart. Deeper authenticated flows need a seeded test account.
+appId: com.voicenative.app
+---
+- launchApp:
+    clearState: true
+    permissions:
+      microphone: unset
+- extendedWaitUntil:
+    visible: "Voice Native"
+    timeout: 45000
+- takeScreenshot: artifacts/cap-01-launch

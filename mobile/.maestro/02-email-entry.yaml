@@ -1,0 +1,14 @@
+# Smoke: the email field accepts input and the primary CTA stays actionable.
+# Stops BEFORE submitting — a real submit sends a one-time code (network + OTP),
+# which a seeded test account would be needed to carry further (see docs/README-mobile.md).
+appId: com.voicenative.rn
+---
+- launchApp:
+    clearState: true
+- tapOn:
+    id: "login-email-input"
+- inputText: "smoke@example.com"
+- assertVisible: "smoke@example.com"
+- assertVisible:
+    id: "login-send-code"
+- takeScreenshot: artifacts/rn-02-email
