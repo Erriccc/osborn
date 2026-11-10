@@ -5073,7 +5073,7 @@ async function main() {
         if (ev.newState === 'speaking') {
           if (duckRestoreTimer) { clearTimeout(duckRestoreTimer); duckRestoreTimer = null }
           if (agentState === 'speaking') currentDuck?.setDuck(DUCK_LEVEL, 'user speaking')
-        } else if (ev.newState === 'listening') {
+        } else {
           if (duckRestoreTimer) clearTimeout(duckRestoreTimer)
           duckRestoreTimer = setTimeout(() => {
             duckRestoreTimer = null

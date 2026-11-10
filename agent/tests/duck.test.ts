@@ -10,7 +10,7 @@ const t = async (name: string, fn: () => unknown) => {
 }
 
 class FakeFrame {
-  constructor(public data: Int16Array, public sampleRate: number, public channels: number, public samplesPerChannel: number) {}
+  constructor(public data: Int16Array, public sampleRate: number, public channels: number, public samplesPerChannel: number, public userdata: Record<string, unknown> = {}) {}
 }
 class FakeOutput {
   frames: any[] = []
@@ -90,6 +90,16 @@ await t('scales after setDuck(0.6), then restores', async () => {
   const f4 = frame([1000])
   await out.captureFrame(f4)
   assert.equal(out.frames[3], f4, 'pass-through once fully restored')
+})
+
+await t('ducked frame carries original userdata', async () => {
+  const s = mkSession(); const out = s.output.audio
+  installDuck(s)!.setDuck(0.45)
+  const f = new FakeFrame(Int16Array.from([1000, 1000]), 24000, 1, 2, { segmentId: 'seg-1' })
+  await out.captureFrame(f)
+  const next = out.frames[0]
+  assert.notEqual(next, f)
+  assert.equal(next.userdata, f.userdata)
 })
 
 await t('install is idempotent', async () => {

@@ -40,7 +40,7 @@ export function installDuck(session: any): DuckController | null {
     let next: any
     try {
       const dst = applyGain(frame.data, st.gain, st.target)
-      next = new (frame.constructor as any)(dst, frame.sampleRate, frame.channels, frame.samplesPerChannel)
+      next = new (frame.constructor as any)(dst, frame.sampleRate, frame.channels, frame.samplesPerChannel, frame.userdata)
       st.gain = st.target
     } catch {
       return orig(frame)
