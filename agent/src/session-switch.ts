@@ -149,3 +149,67 @@ export function planSwitch(decision: SessionSwitchDecision, ctx: SwitchPlanConte
   }
   return plan('execute', 'idle', decision.leave)
 }
+
+// ── Executor helpers (S4 / S7), pure ─────────────────────────────────────────
+
+export interface SessionCwdDeps {
+  /** sessionExists(id, projectPath) from config.ts. */
+  exists: (sessionId: string, cwd: string) => boolean
+  /** Routing cwd from listAllClaudeSessions() (slug-derived), or null. */
+  listCwd: (sessionId: string) => Promise<string | null | undefined>
+  /** Last resort: find <id>.jsonl in any project slug and decode its cwd. */
+  scanCwd: (sessionId: string) => Promise<string | null | undefined>
+}
+
+/**
+ * The project directory a session's JSONL resolves under (what `--resume`
+ * needs as cwd): the client's hint if the session really lives there, else
+ * the current dir, else the session list's routing cwd, else a slug scan.
+ * null = the session does not exist ("Session not found"). A candidate is
+ * only returned after `exists()` confirms it.
+ */
+export async function resolveSessionCwd(
+  sessionId: string,
+  hint: string | null | undefined,
+  currentDir: string | null | undefined,
+  deps: SessionCwdDeps,
+): Promise<string | null> {
+  if (!sessionId) return null
+  for (const c of [hint, currentDir]) {
+    if (c && deps.exists(sessionId, c)) return c
+  }
+  for (const lookup of [deps.listCwd, deps.scanCwd]) {
+    let c: string | null | undefined = null
+    try { c = await lookup(sessionId) } catch { c = null }
+    if (c && deps.exists(sessionId, c)) return c
+  }
+  return null
+}
+
+/**
+ * chatCtx rebuild on switch (4.13): keep the agent's non-conversation items
+ * (instructions, system/developer notes, non-message items) and drop the old
+ * session's user/assistant turns so the fast brain and noise gate stop
+ * reasoning over the session that was left.
+ */
+export function keepNonConversationItems<T extends { type?: string; role?: string }>(items: T[] | null | undefined): T[] {
+  return (items ?? []).filter((it) => it?.type !== 'message' || (it.role !== 'user' && it.role !== 'assistant'))
+}
+
+/**
+ * Session to resume when the voice session auto-recovers (D7): the live id,
+ * else the session the user switched to (B may not have had its first turn,
+ * so it has no live id yet), else the connect-time id.
+ */
+export function recoverySessionId(ids: {
+  liveSessionId: string | null | undefined
+  switchedTo: string | null | undefined
+  connectTime: string | null | undefined
+}): string | undefined {
+  return ids.liveSessionId || ids.switchedTo || ids.connectTime || undefined
+}
+
+/** Keep-warm key: the init id, else the id the live query was spawned for. */
+export function warmParkKey(llm: { sessionId?: string | null; spawnedResumeId?: string | null } | null | undefined): string | null {
+  return llm?.sessionId || llm?.spawnedResumeId || null
+}

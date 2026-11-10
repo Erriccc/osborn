@@ -51,6 +51,7 @@ import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from '.
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -2932,6 +2933,7 @@ async function main() {
     const botId = activeMeetingBotId
     if (!botId) return
     console.log(`🏁 Meeting ended (${reason}) — bot ${botId}`)
+    cancelPendingSwitch('meeting_ended')
     // Stop inputs FIRST so no more chunks land mid-teardown.
     stopMeetingFlush()
     if (activeMeetingPoller) { activeMeetingPoller.stop(); activeMeetingPoller = null }
@@ -3697,6 +3699,283 @@ async function main() {
 
   function startProactiveLoop(_task: string, _sessionId: string) {}
   function stopProactiveLoop() {}
+
+  // ============================================================
+  // SESSION SWITCH EXECUTOR (#74)
+  // One path for every in-place switch (switch_session, and resume_session /
+  // continue_session / session_selected while a query is live). Decision +
+  // plan are pure (session-switch.ts). Interim: FINISH-THEN-SWITCH — a busy
+  // session is never closed unless the user forces it ("Switch now"); the
+  // switch is deferred until it goes idle. demoteSupported:false until the
+  // background-on-leave (swap) work ships.
+  // ============================================================
+  let pendingSwitch: {
+    target: string
+    cwd: string
+    origin: string
+    since: number
+    timer: ReturnType<typeof setInterval>
+  } | null = null
+  let switchExecuting = false
+  // Set by the agent_ready retry loop; a switch must stop it so a late
+  // agent_ready (preSelectedSessionId = A) doesn't reset the UI back to A.
+  let stopReadyRetries: (() => void) | null = null
+
+  async function scanSessionSlugCwd(sessionId: string): Promise<string | null> {
+    const projectsDir = join(homedir(), '.claude', 'projects')
+    if (!existsSync(projectsDir)) return null
+    for (const slug of readdirSync(projectsDir)) {
+      if (existsSync(join(projectsDir, slug, `${sessionId}.jsonl`))) {
+        // Same slug → path recovery resume_session has always used.
+        const recovered = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
+        return recovered && recovered !== '/' ? recovered : null
+      }
+    }
+    return null
+  }
+
+  function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
+    return resolveSessionCwd(sessionId, hint, workingDir, {
+      exists: (id, wd) => sessionExists(id, wd),
+      listCwd: async (id) => (await listAllClaudeSessions()).find(s => s.sessionId === id)?.cwd ?? null,
+      scanCwd: scanSessionSlugCwd,
+    })
+  }
+
+  function findSlotKey(sessionId: string): string | undefined {
+    if (slots.has(sessionId)) return sessionId
+    return [...slots.keys()].find(k => k.startsWith(sessionId) || sessionId.startsWith(k))
+  }
+
+  function targetSlotState(sessionId: string): 'none' | 'idle' | 'busy' {
+    const key = findSlotKey(sessionId)
+    if (!key) return 'none'
+    const slot = slots.get(key)!
+    if (slot.dispatchInFlight || !slot.kickoffDone) return 'busy'
+    const b = (slot.llm as any).busyState?.()
+    return b && !b.idle ? 'busy' : 'idle'
+  }
+
+  function cancelPendingSwitch(reason: string, notify = true): void {
+    if (!pendingSwitch) return
+    const { target, timer } = pendingSwitch
+    clearInterval(timer)
+    pendingSwitch = null
+    console.log(`↩️ Pending switch to ${target.slice(0, 8)} cancelled (${reason})`)
+    if (notify) void sendToFrontend({ type: 'session_switch_cancelled', sessionId: target, reason })
+  }
+
+  const SWITCH_REJECT_COPY: Record<string, string> = {
+    meeting_active: 'Leave the meeting first — the meeting is attached to this session.',
+    target_busy_in_background: 'That session is busy in the background. Wait for it to finish or stop it first.',
+    needs_you: 'This session is waiting on your answer to a permission prompt. Answer it, or choose Switch now.',
+    not_found: 'Session not found',
+  }
+
+  async function requestSessionSwitch(
+    target: string,
+    cwdHint: string | null | undefined,
+    opts: { force?: boolean; origin: string },
+  ): Promise<'noop' | 'execute' | 'defer' | 'reject'> {
+    if (!currentLLM || !target) return 'reject'
+    const cwd = await resolveCwdForSession(target, cwdHint)
+    if (!cwd) {
+      await sendToFrontend({ type: 'session_switched', sessionId: target, success: false, error: SWITCH_REJECT_COPY.not_found, reason: 'not_found' })
+      return 'reject'
+    }
+    const llmAny = currentLLM as any
+    const busy = llmAny.busyState?.() ?? { idle: true, permissionPending: false, runningTasks: 0, turnInFlight: false }
+    const decision = decideNextSession({
+      liveSessionId: currentLLM.sessionId ?? null,
+      queryResumeTarget: llmAny.spawnedResumeId ?? null,
+      resumeTarget: currentResumeSessionId ?? null,
+      requestedTarget: target,
+      hasLiveQuery: !!llmAny.hasSession?.(),
+      turnInFlight: !busy.idle,
+    })
+    const plan = planSwitch(decision, {
+      permissionPending: !!busy.permissionPending,
+      meetingActive: !!activeMeetingBotId,
+      targetSlot: targetSlotState(target),
+      force: !!opts.force,
+      demoteSupported: false,
+    })
+    console.log(`🔀 Switch request (${opts.origin}) → ${target.slice(0, 8)}: ${decision.action}/${decision.leave} → ${plan.kind} (${plan.reason}) busy=${JSON.stringify(busy)}`)
+
+    if (plan.kind === 'noop') {
+      if (pendingSwitch) cancelPendingSwitch('already_live')
+      else await sendToFrontend({ type: 'session_switch_cancelled', sessionId: target, reason: 'already_live' })
+      return 'noop'
+    }
+    if (plan.kind === 'reject') {
+      await sendToFrontend({
+        type: 'session_switched', sessionId: target, success: false, reason: plan.reason,
+        error: SWITCH_REJECT_COPY[plan.reason] || 'Could not switch sessions',
+      })
+      return 'reject'
+    }
+    if (plan.kind === 'defer') {
+      // Single pending switch: a newer request replaces the older one.
+      if (pendingSwitch) { clearInterval(pendingSwitch.timer); pendingSwitch = null }
+      const since = Date.now()
+      let lastLog = since
+      const timer = setInterval(() => {
+        if (!pendingSwitch || pendingSwitch.timer !== timer) { clearInterval(timer); return }
+        if (!currentLLM) { cancelPendingSwitch('session_gone'); return }
+        const b = (currentLLM as any).busyState?.()
+        const idle = !b || b.idle || !(currentLLM as any).hasSession?.()
+        if (!idle) {
+          if (Date.now() - lastLog > 10_000) {
+            lastLog = Date.now()
+            console.log(`⏳ Switch to ${target.slice(0, 8)} waiting for idle (${Math.round((Date.now() - since) / 1000)}s): ${JSON.stringify(b)}`)
+          }
+          return
+        }
+        const p = pendingSwitch
+        clearInterval(timer)
+        pendingSwitch = null
+        void requestSessionSwitch(p.target, p.cwd, { origin: `deferred:${p.origin}` })
+      }, 500)
+      pendingSwitch = { target, cwd, origin: opts.origin, since, timer }
+      await sendToFrontend({
+        type: 'session_switch_pending', sessionId: target, workingDirectory: cwd, reason: plan.reason,
+        runningTasks: busy.runningTasks ?? 0, turnInFlight: !!busy.turnInFlight,
+      })
+      return 'defer'
+    }
+    await performSessionSwitch(target, cwd, plan, opts.origin)
+    return 'execute'
+  }
+
+  async function performSessionSwitch(
+    target: string,
+    cwd: string,
+    plan: { reason: string; stopSlotFirst: boolean },
+    origin: string,
+  ): Promise<void> {
+    if (!currentLLM) return
+    if (switchExecuting) { console.warn(`⚠️ Switch to ${target.slice(0, 8)} ignored — another switch is executing`); return }
+    switchExecuting = true
+    try {
+      if (pendingSwitch) { clearInterval(pendingSwitch.timer); pendingSwitch = null }
+      const llmAny = currentLLM as any
+
+      // 1. Target runs as an idle background slot → stop it (one process per JSONL).
+      if (plan.stopSlotFirst) {
+        const key = findSlotKey(target)
+        if (key) {
+          const slot = slots.get(key)!
+          try { (slot.llm as any).abortQuery?.(); (slot.llm as any).abortAgent?.() } catch {}
+          slots.delete(key)
+          console.log(`🗑️ Stopped idle background slot ${key.slice(0, 8)} before switching to it`)
+          await sendToFrontend({ type: 'background_session_stopped', slotId: key })
+        }
+      }
+
+      // 2. Voice-side state of the session being left.
+      try { currentSession?.interrupt() } catch {}
+      voiceQueue.length = 0
+      isProcessingQueue = false
+      currentSpeechHandle = null
+      activeSpeechHandles.clear()
+      lastInterruption = null
+      if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
+      stopProactiveLoop()
+      if (activeResearch) {
+        try { activeResearch.abortController.abort(); activeResearch.cleanup() } catch {}
+        activeResearch = null
+      }
+      lastCompletedResearch = null
+
+      // 3. Sub-agent rows of the closed session can't finish any more.
+      for (const d of statusManager.getActiveDispatches()) {
+        statusManager.upsertDispatch(d.id, { dispatchState: 'failed' })
+      }
+
+      // 4. Close the old query (idle, or forced) and clear its resume state.
+      currentLLM.resetForSessionSwitch()
+
+      // 5. Cross-project: the SDK cwd, fast brain and session tail move together.
+      if (cwd !== workingDir) {
+        if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
+        workingDir = cwd
+        llmAny.setWorkingDirectory?.(cwd)
+        console.log(`📂 Switch moved working directory to ${cwd}`)
+      }
+
+      // 6. Arm the target — the next turn cold-starts with resume: target.
+      currentLLM.setResumeSessionId(target)
+      currentResumeSessionId = target
+      if (hostActive) { hostSessionId = target; hostWorkingDir = cwd }
+
+      // 7. Per-session permission grants don't carry over.
+      sessionAlwaysAllowPaths = new Set<string>()
+
+      // 8. Workspace + caches.
+      ensureSessionWorkspace(cwd, target)
+      invalidateSessionListCache()
+      clearPipelineFastBrainSession()
+
+      // 9. Drop the old session's voice turns from the agent context.
+      if (currentAgent) {
+        try {
+          const c = currentAgent.chatCtx.copy()
+          c.items = keepNonConversationItems(c.items as any) as any
+          await currentAgent.updateChatCtx(c)
+        } catch (err) {
+          console.warn('⚠️ Switch: chatCtx rebuild failed:', err instanceof Error ? err.message : err)
+        }
+      }
+
+      // 10. A late agent_ready (preSelectedSessionId = old) must not reset the UI.
+      stopReadyRetries?.()
+
+      console.log(`🔄 Switched to session ${target.slice(0, 8)} (${origin}, ${plan.reason})`)
+
+      // 11. Tell the UI; it replaces the transcript with the target's history.
+      const summary = await getSessionSummary(target, cwd)
+      const conversationHistory = await getConversationHistory(target, cwd, 30)
+      await sendToFrontend({
+        type: 'session_switched',
+        sessionId: target,
+        workingDirectory: cwd,
+        success: true,
+        forced: plan.reason === 'forced',
+        summary,
+        conversationHistory,
+      })
+      const switchArtifacts = listWorkspaceArtifacts(cwd, target)
+      if (switchArtifacts.length > 0) {
+        await sendToFrontend({
+          type: 'session_artifacts',
+          sessionId: target,
+          artifacts: switchArtifacts.map(a => ({ filePath: a.filePath, fileName: a.fileName, type: a.type, updatedAt: a.updatedAt })),
+        })
+      }
+      if (plan.stopSlotFirst) {
+        const bg = [...slots.values()].map(s => ({ id: s.id, isFocused: s.isFocused, workingDir: s.workingDir, hasSession: s.llm.hasSession?.() ?? false }))
+        await sendToFrontend({ type: 'slots_list', slots: [{ id: target, isFocused: true, workingDir: cwd, hasSession: false }, ...bg] })
+      }
+      injectSessionIndexIntoChatCtx(currentAgent, target, cwd)
+      if (currentSession && summary) {
+        try {
+          const acknowledgment = summary.lastMessages.length > 0
+            ? `I've switched to your previous session. You were working on: ${summary.lastMessages[summary.lastMessages.length - 1]?.substring(0, 100)}`
+            : `Switched to previous session with ${summary.messageCount} messages. What would you like to continue with?`
+          await (currentSession as any).say(acknowledgment)
+        } catch (err) {
+          console.log('⚠️ Switch acknowledgment failed:', err)
+        }
+      }
+
+      // 12. Overlap the target's JSONL replay with the user's next utterance.
+      if (CONNECT_OVERLAP) {
+        try { llmAny.prewarmResume?.() } catch {}
+      }
+    } finally {
+      switchExecuting = false
+    }
+  }
 
   // Helper to send data to frontend (with size limit handling)
   //
@@ -5533,6 +5812,7 @@ async function main() {
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
+      stopReadyRetries = () => { readySent = true; clearInterval(readyInterval) }
       // Fire immediately with the fast-scanned recent session (sessionsLoaded still false)
       await sendReady()
       setTimeout(() => {
@@ -5674,6 +5954,7 @@ async function main() {
   const handleParticipantDisconnected = (participant: RemoteParticipant) => {
     console.log(`👋 User left: ${participant.identity}`)
     if (participant.identity === controllingUserIdentity) controllingUserIdentity = null
+    cancelPendingSwitch('participant_disconnected', false)
 
     // Full cleanup — stop all background work to avoid accumulating API usage
     voiceQueue.length = 0
@@ -5869,6 +6150,9 @@ async function main() {
         // The session echoes this item as user_transcript; carry the frontend's
         // clientMsgId (bubble dedupe) and the attachment blocks onto that echo.
         typedEchoes.register(fullContent, data.clientMsgId, fullContent.slice(String(data.content || '').length))
+        // A typed turn means the UI is live — stop agent_ready retries (they
+        // reset UI state every 2s and, after a switch, name the old session).
+        stopReadyRetries?.()
         // Skip interrupt for Gemini — disrupts state machine (hangs in speaking state)
         if (true) {  // always non-gemini in pipeline mode
           currentSession.interrupt()
@@ -6045,67 +6329,19 @@ async function main() {
         }
       }
       else if (data.type === 'switch_session' && currentLLM) {
-        // Switch to a different session mid-conversation
+        // Switch to a different session mid-conversation (#74). Single executor:
+        // resolves the target's project dir, runs it now when idle, defers it
+        // until the current turn finishes when busy (unless force), rejects in a
+        // meeting / when the target is busy in the background / on a pending
+        // permission. Replies: session_switched | session_switch_pending |
+        // session_switch_cancelled.
         const sessionId = data.sessionId as string
-
-        if (sessionId && sessionExists(sessionId, workingDir)) {
-          // Step 1: Get FULL context summary with conversation history
-          const summary = await getSessionSummary(sessionId, workingDir)
-          const conversationHistory = await getConversationHistory(sessionId, workingDir, 30)
-
-          // Step 2: Reset LLM state and configure for new session
-          currentLLM.resetForSessionSwitch()
-          currentLLM.setResumeSessionId(sessionId)
-          currentResumeSessionId = sessionId
-          clearPipelineFastBrainSession()
-    clearPipelineFastBrainSession()
-          console.log(`🔄 Switched to session: ${sessionId}`)
-
-          // Step 3: Send full context to frontend (including conversation history)
-          await sendToFrontend({
-            type: 'session_switched',
-            sessionId,
-            success: true,
-            summary,
-            conversationHistory,
-          })
-
-          // Step 3.5: Send existing session artifacts to frontend (session-scoped)
-          const switchArtifacts = listWorkspaceArtifacts(workingDir, sessionId)
-          if (switchArtifacts.length > 0) {
-            console.log(`📁 Sending ${switchArtifacts.length} session artifacts to frontend`)
-            await sendToFrontend({
-              type: 'session_artifacts',
-              sessionId,
-              artifacts: switchArtifacts.map(a => ({
-                filePath: a.filePath,
-                fileName: a.fileName,
-                type: a.type,
-                updatedAt: a.updatedAt,
-              }))
-            })
-          }
-
-          // Step 4: Voice agent acknowledges context — greet first, point to index after
-          if (currentSession && summary) {
-            try {
-              const acknowledgment = summary.lastMessages.length > 0
-                ? `I've switched to your previous session. You were working on: ${summary.lastMessages[summary.lastMessages.length - 1]?.substring(0, 100)}`
-                : `Switched to previous session with ${summary.messageCount} messages. What would you like to continue with?`
-              await (currentSession as any).say(acknowledgment)
-            } catch (err) {
-              console.log('⚠️ Switch acknowledgment failed:', err)
-            }
-            injectSessionIndexIntoChatCtx(currentAgent, sessionId, workingDir)
-          }
-        } else {
-          await sendToFrontend({
-            type: 'session_switched',
-            sessionId,
-            success: false,
-            error: 'Session not found',
-          })
-        }
+        const hint = typeof data.workingDirectory === 'string' ? data.workingDirectory : undefined
+        await requestSessionSwitch(sessionId, hint, { force: !!data.force, origin: 'switch_session' })
+      }
+      else if (data.type === 'cancel_session_switch') {
+        if (pendingSwitch) cancelPendingSwitch('user_cancelled')
+        else await sendToFrontend({ type: 'session_switch_cancelled', sessionId: (data.sessionId as string) || null, reason: 'nothing_pending' })
       }
       else if (data.type === 'get_current_session' && currentLLM) {
         // Get current session ID
@@ -7027,6 +7263,7 @@ async function main() {
   let destroyingRoomSession = false
   const destroyRoomSession = async (reason: string): Promise<void> => {
     if (destroyingRoomSession) return
+    cancelPendingSwitch('room_destroyed', false)
     if (!activeRoom) {
       // Already idle — still ensure billing backstop is armed.
       livekitState.status = 'idle'
