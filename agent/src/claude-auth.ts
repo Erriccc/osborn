@@ -183,22 +183,66 @@ export function isClaudeAuthenticated(): boolean {
 let fallbackTierActive = false
 
 /**
- * Additive third onboarding tier. Runs AFTER ensureClaudeAuth() and BEFORE
- * session creation. Resolves which auth backend the agent will use, in order:
+ * Additive onboarding tier resolution. Runs AFTER ensureClaudeAuth() and BEFORE
+ * session creation. Resolves which auth backend the agent will use, in order
+ * (Claude → ANTHROPIC_API_KEY → z.ai → OpenRouter):
  *
  *   Tier 1 — real Claude login active (expiry-aware): use it, no-op.
  *   Tier 2 — user's own ANTHROPIC_API_KEY is set: use it, no-op.
- *   Tier 3 — central OPENROUTER_API_KEY present: redirect the SDK to
+ *   Tier 3 — house demo pass, Z_AI_PERSONAL_API_KEY (or ZAI_API_KEY): redirect
+ *            the SDK to z.ai's Anthropic-compatible endpoint (GLM model).
+ *   Tier 4 — central OPENROUTER_API_KEY present: redirect the SDK to
  *            OpenRouter's native Anthropic-Messages endpoint via env vars and
  *            point every model slot at FALLBACK_MODEL. Proven end-to-end
  *            env-var-only (no proxy) — the Claude Code tool loop completes.
- *   Tier 3 fail — no OpenRouter key: warn and no-op (do NOT throw; the SDK
- *            may still find creds we didn't detect).
+ *   Tier 4 fail — no fallback key at all: warn and no-op (do NOT throw; the
+ *            SDK may still find creds we didn't detect).
+ *
+ * Key values are trimmed and quote-stripped (cleanEnvKey) — a stray trailing
+ * space in a secret would otherwise be sent verbatim as the bearer token.
  *
  * Env vars MUST be set here, before the first query() spawn — the SDK
  * subprocess inherits process.env at spawn time and reads auth/model config
  * once at cold start.
  */
+/** Trim whitespace and strip one layer of surrounding quotes from an env value. */
+export function cleanEnvKey(value: string | undefined | null): string {
+  if (!value) return ''
+  let v = value.trim()
+  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+    v = v.slice(1, -1).trim()
+  }
+  return v
+}
+
+/** Env vars that give the agent a working model backend without a Claude login. */
+export const FALLBACK_MODEL_KEY_VARS = [
+  'ANTHROPIC_API_KEY',
+  'Z_AI_PERSONAL_API_KEY',
+  'ZAI_API_KEY',
+  'OPENROUTER_API_KEY',
+] as const
+
+/**
+ * True when any fallback model key (Anthropic API key, z.ai, OpenRouter) has a
+ * non-empty value after trimming and quote-stripping.
+ */
+export function hasFallbackModelKey(env: NodeJS.ProcessEnv = process.env): boolean {
+  return FALLBACK_MODEL_KEY_VARS.some((name) => cleanEnvKey(env[name]) !== '')
+}
+
+/**
+ * Pure decision for ensureClaudeAuth(): skip the blocking interactive OAuth when
+ * Claude is not authenticated but a fallback key exists — the session starts
+ * immediately on the fallback tier and Claude sign-in is offered as an optional
+ * upgrade. OSBORN_FORCE_CLAUDE_LOGIN=1 restores the old blocking behaviour.
+ */
+export function shouldSkipBlockingOAuth(env: NodeJS.ProcessEnv, authed: boolean): boolean {
+  if (authed) return false
+  if (env.OSBORN_FORCE_CLAUDE_LOGIN === '1') return false
+  return hasFallbackModelKey(env)
+}
+
 export function applyAuthFallback(): void {
   // Tier 1: real Claude login (expiry-aware — NOT hasOAuthTokenEnv, which
   // would treat an expired token as active and let the SDK fail downstream).
@@ -207,7 +251,9 @@ export function applyAuthFallback(): void {
   }
 
   // Tier 2: user's own Anthropic key.
-  if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim() !== '') {
+  const anthropicKey = cleanEnvKey(process.env.ANTHROPIC_API_KEY)
+  if (anthropicKey !== '') {
+    process.env.ANTHROPIC_API_KEY = anthropicKey
     return
   }
 
@@ -215,10 +261,10 @@ export function applyAuthFallback(): void {
   // pay-per-use). Cline/opencode-style: unauthenticated demo users ride the
   // house pass instead of raw API billing. The z.ai Anthropic-compatible
   // endpoint (api.z.ai/api/anthropic) speaks native Messages - verified live
-  // 2026-10-24 (glm-4.7 returned a real response). Precedence: Z_AI_PERSONAL_API_KEY
-  // (verified working; ZAI_STANDARD_API_KEY in .env is expired).
-  const zaiKey = process.env.Z_AI_PERSONAL_API_KEY || process.env.ZAI_API_KEY
-  if (zaiKey && zaiKey.trim() !== '') {
+  // 2026-10-24 (glm-4.7 returned a real response). Precedence: Z_AI_PERSONAL_API_KEY,
+  // then ZAI_API_KEY.
+  const zaiKey = cleanEnvKey(process.env.Z_AI_PERSONAL_API_KEY) || cleanEnvKey(process.env.ZAI_API_KEY)
+  if (zaiKey !== '') {
     // Native Anthropic-Messages endpoint - no local translation proxy needed.
     process.env.ANTHROPIC_BASE_URL = process.env.OSBORN_DEMO_BASE_URL || 'https://api.z.ai/api/anthropic'
     process.env.ANTHROPIC_AUTH_TOKEN = zaiKey
@@ -239,8 +285,8 @@ export function applyAuthFallback(): void {
   }
 
   // Tier 4: central OpenRouter key (pay-per-use fallback of the fallback).
-  const openRouterKey = process.env.OPENROUTER_API_KEY
-  if (openRouterKey && openRouterKey.trim() !== '') {
+  const openRouterKey = cleanEnvKey(process.env.OPENROUTER_API_KEY)
+  if (openRouterKey !== '') {
     // Native Anthropic-Messages endpoint — no local translation proxy needed.
     process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
     // Injected as raw `Authorization: Bearer <token>` by the SDK.
@@ -626,6 +672,8 @@ export function replayInFlightAuth(
  *   1. CLAUDE_CODE_OAUTH_TOKEN env var
  *   2. ~/.claude/.credentials.json file
  *   3. `claude auth status --json`
+ *   3b. Fallback model key present (hasFallbackModelKey) → return immediately
+ *       and emit `claude_auth_optional`; skipped when OSBORN_FORCE_CLAUDE_LOGIN=1
  *   4. Interactive OAuth flow (setup-token)
  *
  * Concurrency: if a previous call is still running its OAuth flow, new
@@ -687,6 +735,22 @@ export async function ensureClaudeAuth(
   const cliStatus = await checkClaudeAuthStatus()
   if (cliStatus) {
     console.log('✅ Claude authenticated (CLI status confirmed)')
+    return {}
+  }
+
+  // Check 3b: Fallback key present — don't block the session on interactive
+  // OAuth (which only ends on completion or a 5-minute timeout). Return the
+  // "no wait" shape so the caller proceeds straight to applyAuthFallback(),
+  // and tell the frontend Claude sign-in is an optional upgrade.
+  if (shouldSkipBlockingOAuth(process.env, false)) {
+    console.log('🔑 Claude not authenticated — fallback key present, skipping blocking OAuth')
+    try {
+      sendToFrontend('claude_auth_optional', {
+        message: 'Running on the fallback model. Sign in to Claude to upgrade.',
+      })
+    } catch (err) {
+      console.warn('🔑 claude_auth_optional send failed:', err)
+    }
     return {}
   }
 
