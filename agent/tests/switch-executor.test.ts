@@ -239,5 +239,27 @@ await t('S7 current_session carries workingDirectory; first session_id adopts a 
   assert.ok(/if \(!currentResumeSessionId\) currentResumeSessionId = sessionId/.test(b))
 })
 
+// ── 4.13 / 4.14 ──
+const { keepNonConversationItems } = await import('../src/session-switch.js')
+await t('4.13 chatCtx rebuild on a REAL ChatContext keeps instructions, drops A\'s turns', () => {
+  const ctx = new llm.ChatContext()
+  ctx.addMessage({ role: 'system', content: 'You are Osborn.' })
+  ctx.addMessage({ role: 'user', content: 'A: fix the login bug' })
+  ctx.addMessage({ role: 'assistant', content: 'A: on it' })
+  const c = ctx.copy()
+  c.items = keepNonConversationItems(c.items as any) as any
+  const roles = c.items.map((i: any) => i.role)
+  assert.deepEqual(roles, ['system'])
+  assert.equal((c.items[0] as any).textContent, 'You are Osborn.')
+  // What getChatHistory() reads after the rebuild: no user/assistant turns.
+  assert.equal(c.items.filter((i: any) => i.type === 'message' && (i.role === 'user' || i.role === 'assistant')).length, 0)
+})
+await t('4.14 housekeeping protects the switched-to session (sessionId ?? currentResumeSessionId)', () => {
+  const b = body('const runHousekeeping = () => {', 600)
+  assert.ok(/const activeSessionId = currentLLM\?\.sessionId \?\? currentResumeSessionId \?\? null/.test(b))
+  // performSessionSwitch arms currentResumeSessionId = target before B has an init id.
+  assert.ok(/currentResumeSessionId = target/.test(body('async function performSessionSwitch(')))
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
