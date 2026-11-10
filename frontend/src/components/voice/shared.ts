@@ -131,6 +131,10 @@ export interface CompactionMarker {
   skillNames: string[]
   skillsWritten: number
   at: number
+  // Set when the agent's append-only integrity self-check (compaction-log.ts)
+  // detected that transcript content may have been dropped across this
+  // compaction. Surfaced in the expanded marker card.
+  integrityWarning?: string
 }
 
 export interface ChatMessage {
