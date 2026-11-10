@@ -17,12 +17,47 @@ export async function nextUtterance(
   screenTail: string,
   screenshotB64?: string, // multimodal: what the screen looks like right now
 ): Promise<{ say: string | null; reason: string }> {
-  const key = optionalEnvKey('OPENAI_API_KEY')
-  if (!key) throw new Error('OPENAI_API_KEY required for conversation generation')
+  const SYSTEM =
+    'You are a QA tester having a NATURAL spoken conversation with a voice AI assistant, by phone-call style voice. ' +
+    'You perceive the app through a bundle: audio you heard (transcribed), the current screenshot, and screen text. ' +
+    'Compose the next thing to say out loud: conversational, 1-2 short sentences, no stage directions, no quotes. ' +
+    'Vary your phrasing naturally — never repeat earlier wording. Pursue the GOAL; react to what the assistant actually said and what you see. ' +
+    'When the goal is complete (or clearly stuck), end the conversation politely. ' +
+    'Reply as JSON: {"say": "<utterance or null when done>", "reason": "<one line why>"}'
   const userText =
     `GOAL: ${goal}\n\nCONVERSATION SO FAR (AGENT lines are what you HEARD, transcribed from audio):\n` +
     (history.map((t) => `${t.speaker.toUpperCase()}: ${t.text}`).join('\n') || '(none — you speak first)') +
     `\n\nCURRENT SCREEN TEXT (tail):\n${screenTail.slice(-1200)}`
+
+  // Composer LLM — Gemini preferred: GOOGLE_API_KEY is already on the engine for
+  // the Stagehand brain, so the tester conversation needs no OpenAI key. Falls
+  // back to OpenAI when its key is present. Both return {"say","reason"} JSON.
+  const google = optionalEnvKey('GOOGLE_API_KEY') || optionalEnvKey('GOOGLE_GENERATIVE_AI_API_KEY')
+  if (google) {
+    const parts: any[] = [{ text: userText }]
+    if (screenshotB64) parts.push({ inline_data: { mime_type: 'image/jpeg', data: screenshotB64 } })
+    const gres = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${google}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: SYSTEM }] },
+        contents: [{ parts }],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.9 },
+      }),
+    })
+    if (gres.ok) {
+      const gj: any = await gres.json()
+      const txt = gj?.candidates?.[0]?.content?.parts?.[0]?.text
+      if (txt) {
+        const parsed = JSON.parse(txt)
+        return { say: parsed.say ?? null, reason: parsed.reason ?? '' }
+      }
+    }
+    console.warn(`[converse] Gemini composer failed (${gres.status}) — trying OpenAI`)
+  }
+
+  const key = optionalEnvKey('OPENAI_API_KEY')
+  if (!key) throw new Error('no composer LLM available — set GOOGLE_API_KEY or OPENAI_API_KEY')
   const userContent: any = screenshotB64
     ? [
         { type: 'text', text: userText },
@@ -36,16 +71,7 @@ export async function nextUtterance(
       model: 'gpt-4o-mini',
       response_format: { type: 'json_object' },
       messages: [
-        {
-          role: 'system',
-          content:
-            'You are a QA tester having a NATURAL spoken conversation with a voice AI assistant, by phone-call style voice. ' +
-            'You perceive the app through a bundle: audio you heard (transcribed), the current screenshot, and screen text. ' +
-            'Compose the next thing to say out loud: conversational, 1-2 short sentences, no stage directions, no quotes. ' +
-            'Vary your phrasing naturally — never repeat earlier wording. Pursue the GOAL; react to what the assistant actually said and what you see. ' +
-            'When the goal is complete (or clearly stuck), end the conversation politely. ' +
-            'Reply as JSON: {"say": "<utterance or null when done>", "reason": "<one line why>"}',
-        },
+        { role: 'system', content: SYSTEM },
         { role: 'user', content: userContent },
       ],
     }),
