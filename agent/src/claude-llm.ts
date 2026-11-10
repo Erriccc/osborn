@@ -2258,10 +2258,15 @@ export class ClaudeLLM extends llm.LLM {
         callbacks.eventEmitter.emit('consumer_error', { message: String(error?.message || error) })
       }
     } finally {
-      this.#backgroundConsumerRunning = false
       this.#activeQueries.delete(pq)
-      this.#persistentQuery = null
-      this.#messageChannel = null
+      // Only tear down session fields this loop still owns. If closeSession() ran and a
+      // newer query (+ consumer) was started before this stale loop drained, the fields
+      // now belong to that newer query — nulling them would orphan its subprocess.
+      if (this.#persistentQuery === pq) {
+        this.#backgroundConsumerRunning = false
+        this.#persistentQuery = null
+        this.#messageChannel = null
+      }
       console.log('🔒 Persistent session background consumer exited')
     }
   }
