@@ -28,6 +28,8 @@ import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type Pend
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
+import { AudioControls } from './voice/AudioControls'
+import { RoomsSidebar, RoomsBar, type Room } from './voice/RoomsRail'
 import { getToolRiskLevel, type PermissionRequest, type ApprovalMode } from './voice/PermissionModal'
 import { classifyRisk } from '@/lib/riskTier'
 import { TextInput, type AttachedFile } from './voice/TextInput'
@@ -53,36 +55,15 @@ function micStore(): KV {
 }
 
 function AudioPopover({ disabled }: { disabled?: boolean }) {
-  const room = useRoomContext()
   const [open, setOpen] = useState(false)
-  const [mics, setMics] = useState<MediaDeviceInfo[]>([])
-  const [speakers, setSpeakers] = useState<MediaDeviceInfo[]>([])
   usePanelExclusive('audio', open, setOpen)
   const popRef = useViewportClamp(open)
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
     window.addEventListener('keydown', onKey)
-    navigator.mediaDevices?.enumerateDevices?.().then((ds) => {
-      setMics(ds.filter((d) => d.kind === 'audioinput'))
-      setSpeakers(ds.filter((d) => d.kind === 'audiooutput'))
-    }).catch(() => { /* enumeration blocked */ })
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
-
-  const pick = async (kind: 'audioinput' | 'audiooutput', id: string) => {
-    try { await room?.switchActiveDevice(kind, id) } catch { /* device unavailable */ }
-  }
-  const testSpeaker = () => {
-    try {
-      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-      const ctx = new Ctx()
-      const osc = ctx.createOscillator(); const gain = ctx.createGain()
-      osc.frequency.value = 440; gain.gain.value = 0.07
-      osc.connect(gain); gain.connect(ctx.destination); osc.start()
-      setTimeout(() => { try { osc.stop(); void ctx.close() } catch { /* already closed */ } }, 600)
-    } catch { /* no AudioContext */ }
-  }
 
   return (
     <div className="relative">
@@ -104,28 +85,8 @@ function AudioPopover({ disabled }: { disabled?: boolean }) {
             <div className="px-3 py-2 border-b border-gray-800">
               <span className="text-xs font-semibold text-gray-200">🎧 Audio</span>
             </div>
-            <div className="p-3 flex flex-col gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="text-[11px] uppercase tracking-wide text-gray-500">Microphone</span>
-                <select defaultValue="" onChange={(e) => pick('audioinput', e.target.value)}
-                  className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2 text-[13px] text-gray-200 outline-none focus:border-amber-500/50">
-                  <option value="">Default microphone</option>
-                  {mics.map((d, i) => <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>)}
-                </select>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[11px] uppercase tracking-wide text-gray-500">Speaker</span>
-                <select defaultValue="" onChange={(e) => pick('audiooutput', e.target.value)}
-                  className="bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-2 text-[13px] text-gray-200 outline-none focus:border-amber-500/50">
-                  <option value="">Default speaker</option>
-                  {speakers.map((d, i) => <option key={d.deviceId || i} value={d.deviceId}>{d.label || `Speaker ${i + 1}`}</option>)}
-                </select>
-              </label>
-              <button onClick={testSpeaker}
-                className="self-start rounded-lg bg-gray-800 border border-gray-700 px-3 py-1.5 text-[12.5px] text-gray-200 hover:border-amber-500/40 transition-colors">
-                Test speaker (plays a tone)
-              </button>
-              <p className="text-[11px] text-gray-500 leading-relaxed">Device names appear once you&rsquo;ve allowed mic access. Picks apply live to this session.</p>
+            <div className="p-3">
+              <AudioControls />
             </div>
           </div>
         </>
@@ -2603,6 +2564,29 @@ function VoiceRoomInner({
     dispatchResumeChip({ type: 'start', label: resumeChipLabel(null, 'continue'), now: Date.now() })
   }, [sendToAgent])
 
+  // ── Rooms (§14 first cut) ────────────────────────────────────────────────
+  // Switch the foreground room by resuming that session over the SAME live
+  // connection — the single-session voice flow is untouched; the agent swaps
+  // which Claude session it is focused on and replays that room's durable
+  // state. Background slots keep running concurrently meanwhile.
+  const handleSwitchRoom = useCallback((room: Room) => {
+    if (!room?.id) return
+    handleResumeSession(room.id)
+  }, [handleResumeSession])
+  // Reload the sessions + slots that feed the rooms rail.
+  const handleRefreshRooms = useCallback(() => {
+    handleLoadSessions()
+    try {
+      const enc = new TextEncoder()
+      sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
+    } catch { /* channel not ready */ }
+  }, [handleLoadSessions, sendToAgent])
+  // Start a brand-new room (a fresh conversation on this machine). First cut:
+  // a plain /chat navigation so the single-session connect flow starts clean.
+  const handleNewRoom = useCallback(() => {
+    try { window.location.assign('/chat') } catch { /* no-op */ }
+  }, [])
+
   // Rehydrate the Files explorer from Supabase Storage (the DURABLE copy) for a
   // given session. The agent's `session_artifacts` message only reflects its
   // local disk, which is empty/partial on a fresh cloud machine after resume —
@@ -3651,6 +3635,19 @@ function VoiceRoomInner({
       )}
 
       <div className="w-full h-full flex gap-3">
+      {/* Persistent desktop sidebar (Phase D) + Rooms switcher (§14 first cut).
+          Lists the live session, concurrently-running background slots, and
+          resumable recent sessions as switchable "rooms". Desktop only;
+          mobile uses the slim RoomsBar inside the chat column. */}
+      <RoomsSidebar
+        sessions={sessionsByActivity}
+        slots={slots}
+        currentSessionId={currentSessionId}
+        onSwitchRoom={handleSwitchRoom}
+        onNewRoom={handleNewRoom}
+        onRefresh={handleRefreshRooms}
+        disabled={!agentConnected}
+      />
       <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Header - Streamlined */}
         <div className="relative z-30 px-1.5 sm:px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
@@ -3726,15 +3723,25 @@ function VoiceRoomInner({
               setNewSkillContent={setNewSkillContent}
             /></div>
 
-            {/* Skill viewer modal — mobile-friendly full SKILL.md reader */}
+            {/* Skill viewer — mobile bottom-sheet / desktop centered dialog.
+                Close is a real 44px icon button (the old bare "×" was a tiny,
+                easy-to-miss tap target); Esc + backdrop still close too. */}
             {viewedSkill && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setViewedSkill(null)}>
-                <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+              <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4" onClick={() => setViewedSkill(null)} role="dialog" aria-modal="true" aria-label={`Skill: ${viewedSkill.name}`}>
+                <div className="bg-gray-900 border border-gray-700 rounded-t-2xl sm:rounded-xl w-full max-w-2xl max-h-[85vh] sm:max-h-[80vh] flex flex-col shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0" onClick={(e) => e.stopPropagation()}>
+                  <div className="sm:hidden w-10 h-1 rounded-full bg-gray-700 mx-auto mt-2 mb-0.5" aria-hidden="true" />
+                  <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-800">
                     <h3 className="text-sm font-semibold text-white truncate">📚 {viewedSkill.name}</h3>
-                    <button onClick={() => setViewedSkill(null)} className="text-gray-400 hover:text-white text-lg leading-none">×</button>
+                    <button
+                      onClick={() => setViewedSkill(null)}
+                      aria-label="Close skill viewer"
+                      title="Close"
+                      className="shrink-0 -mr-1.5 flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
                   </div>
-                  <pre className="flex-1 overflow-auto p-4 text-[11px] leading-relaxed text-gray-300 whitespace-pre-wrap font-mono">{viewedSkill.content}</pre>
+                  <pre className="flex-1 overflow-auto p-4 text-[11px] leading-relaxed text-gray-300 whitespace-pre-wrap font-mono" data-selectable>{viewedSkill.content}</pre>
                 </div>
               </div>
             )}
@@ -3851,8 +3858,10 @@ function VoiceRoomInner({
                 </div>
               )}
 
-              {/* Instances panel toggle — hidden on mobile */}
-              <div className="hidden sm:block relative">
+              {/* Instances panel toggle — desktop trigger; the panel itself is a
+                  mobile bottom-sheet so the burger "Background agents" row can
+                  open it too (wrapper stays in flow, button hidden on mobile). */}
+              <div className="relative">
                 <button
                   onClick={() => {
                     const next = !showInstancesPanel
@@ -3866,7 +3875,7 @@ function VoiceRoomInner({
                     }
                   }}
                   disabled={!agentConnected}
-                  className={`p-2 rounded-lg transition-all ${
+                  className={`hidden sm:block p-2 rounded-lg transition-all ${
                     !agentConnected
                       ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
                       : showInstancesPanel
@@ -4012,6 +4021,18 @@ function VoiceRoomInner({
             </button>
           </div>
         </div>
+
+        {/* Rooms switcher (mobile) — slim scrollable row; appears only when
+            there is another room to switch to, so the voice screen stays clean. */}
+        <RoomsBar
+          sessions={sessionsByActivity}
+          slots={slots}
+          currentSessionId={currentSessionId}
+          onSwitchRoom={handleSwitchRoom}
+          onNewRoom={handleNewRoom}
+          onRefresh={handleRefreshRooms}
+          disabled={!agentConnected}
+        />
 
         {/* Prominent compaction banner — sits above chat during PreCompact→PostCompact window.
             Visible for the full duration (typically 1–3 min), rolling stages keep the user
@@ -4209,7 +4230,7 @@ function VoiceRoomInner({
             input itself). Everything that used to live here — Auto/Ask,
             Agents, Skills, Filter — collapsed into the burger sheet (tray
             rule), which sits at 8 rows ≤ the technical-9 cap. */}
-        <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="sm:hidden flex items-center justify-end gap-1.5 px-3 pt-1.5">
+        <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="sm:hidden flex items-center justify-end gap-2 px-3 pt-2 pb-1 bg-gray-900/50 backdrop-blur-sm">
           <button
             onClick={toggleMute}
             className={`flex items-center gap-1.5 min-h-11 px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
@@ -4339,6 +4360,26 @@ function VoiceRoomInner({
                 )}
               </button>
 
+              {/* Background agents — opens the Instances bottom-sheet (now
+                  reachable on mobile; the sheet renders at header level). */}
+              <button onClick={() => {
+                  setShowMobileMenu(false)
+                  setShowInstancesPanel(true)
+                  const enc = new TextEncoder()
+                  sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
+                  handleLoadSessions()
+                }}
+                disabled={!agentConnected}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+                  <circle cx="9" cy="12" r="5" /><circle cx="15" cy="12" r="5" />
+                </svg>
+                <span className="text-sm text-gray-200">Background agents</span>
+                {slots.length > 1 && (
+                  <span className="ml-auto text-xs bg-emerald-500/30 text-emerald-300 px-2 py-0.5 rounded-full">{slots.length}</span>
+                )}
+              </button>
+
               {/* Files */}
               <button onClick={() => { panel.openPanel('outputs'); setShowMobileMenu(false) }}
                 className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
@@ -4401,6 +4442,18 @@ function VoiceRoomInner({
                     </button>
                   </>
                 )}
+              </div>
+
+              {/* Audio — inline mic/speaker pickers + test tone (Phase C). Lives
+                  in-place here on mobile instead of a separate floating overlay. */}
+              <div className="w-full px-3 py-2">
+                <div className="flex items-center gap-3 mb-2">
+                  <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                  </svg>
+                  <span className="text-sm text-gray-200">Audio</span>
+                </div>
+                <AudioControls compact />
               </div>
 
               {/* Sessions */}

@@ -65,7 +65,15 @@ export function InstancesPanel({
   const atSpawnCap = slots.filter((s) => !s.isFocused).length >= 2
 
   return (
-    <div ref={panelRef} className="absolute top-12 right-0 w-72 max-w-[calc(100vw-1rem)] bg-gray-900 border border-gray-700/60 rounded-xl shadow-2xl z-[100] overflow-hidden">
+    <>
+      {/* Mobile backdrop — tap outside the sheet to close (sheet only). */}
+      <div className="sm:hidden fixed inset-0 z-[95] bg-black/50" onClick={onClose} aria-hidden="true" />
+      {/* Mobile: slide-up bottom-sheet above the dock. Desktop: anchored dropdown
+          under the header button (unchanged). */}
+      <div ref={panelRef} className="fixed inset-x-0 bottom-0 z-[100] max-h-[80vh] overflow-y-auto rounded-t-2xl pb-[env(safe-area-inset-bottom)] bg-gray-900 border border-gray-700/60 shadow-2xl
+        sm:absolute sm:inset-x-auto sm:bottom-auto sm:top-12 sm:right-0 sm:w-72 sm:max-w-[calc(100vw-1rem)] sm:max-h-none sm:rounded-xl sm:pb-0 sm:overflow-hidden">
+      {/* Mobile grab handle */}
+      <div className="sm:hidden w-10 h-1 rounded-full bg-gray-700 mx-auto mt-2 mb-1" aria-hidden="true" />
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
         <span className="text-xs font-semibold text-gray-300">Background agents</span>
@@ -227,6 +235,7 @@ export function InstancesPanel({
           </>
         )}
       </div>
-    </div>
+      </div>
+    </>
   )
 }
