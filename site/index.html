@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voice Native — the AI coding agent you talk to</title>
+<meta name="description" content="Voice Native (Osborn) is an open-source, voice-first AI coding agent. Talk to your code — it researches, plans, and builds. Powered by LiveKit + the Claude Agent SDK." />
+<meta property="og:title" content="Voice Native — the AI coding agent you talk to" />
+<meta property="og:description" content="Open-source, voice-first AI coding agent. Talk to your code." />
+<meta property="og:type" content="website" />
+<style>
+  :root {
+    --bg: #0c0b09;
+    --panel: #15130f;
+    --border: #2a2620;
+    --text: #f5f1e8;
+    --muted: #a69f90;
+    --accent: #f59e0b;
+    --accent-ink: #0c0b09;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 72px 0 32px; text-align: center; }
+  .orb { font-size: 56px; line-height: 1; }
+  h1 { font-size: clamp(32px, 6vw, 52px); margin: 18px 0 8px; letter-spacing: -0.02em; }
+  .tagline { font-size: clamp(17px, 2.6vw, 22px); color: var(--muted); margin: 0 auto 28px; max-width: 32ch; }
+  .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 13px 22px; border-radius: 12px; font-weight: 600;
+    text-decoration: none; border: 1px solid var(--border);
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn.ghost { color: var(--text); }
+  section { padding: 24px 0; }
+  .demo {
+    border: 1px dashed var(--border); border-radius: 16px; background: var(--panel);
+    padding: 40px 20px; text-align: center; color: var(--muted);
+  }
+  .demo strong { color: var(--text); }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+  .stat .n { font-size: 26px; font-weight: 700; color: var(--accent); }
+  .stat .l { color: var(--muted); font-size: 14px; }
+  .how { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 640px) { .how { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  h2 { font-size: 22px; margin: 8px 0 14px; }
+  .links { display: flex; gap: 18px; flex-wrap: wrap; }
+  footer { color: var(--muted); font-size: 14px; text-align: center; padding: 40px 0 60px; }
+  .pill { display:inline-block; font-size:12px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:3px 10px; margin-bottom:14px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="pill">Open source · MIT</div>
+      <div class="orb">🎙️</div>
+      <h1>Voice Native</h1>
+      <p class="tagline">The AI coding agent you talk to. It researches your code, plans, and builds — out loud.</p>
+      <div class="cta-row">
+        <a class="btn primary" href="https://www.voice-native.com">🎧 Talk to it live</a>
+        <a class="btn ghost" href="https://github.com/Erriccc/osborn">View on GitHub</a>
+      </div>
+    </header>
+
+    <section>
+      <!-- FOUNDER TODO: replace this box with a short demo clip that has AUDIO
+           (voice has to be heard). A <video controls> with a hosted .mp4, or a
+           GIF + "unmute" note, or an embedded YouTube. Keep it above the fold. -->
+      <div class="demo">
+        <p><strong>▶︎ Demo clip goes here</strong><br/>
+        A 20–40s recording with audio — hear someone talk to their codebase and watch it respond.<br/>
+        Until then: <a href="https://www.voice-native.com">try it live &rarr;</a></p>
+      </div>
+    </section>
+
+    <section>
+      <h2>By the numbers</h2>
+      <!-- FOUNDER TODO: fill with real measured figures. Placeholders shown so the
+           layout is ready; do not ship invented numbers. -->
+      <div class="grid">
+        <div class="stat"><div class="n">~X.X s</div><div class="l">voice round-trip latency*</div></div>
+        <div class="stat"><div class="n">$X.XX / min</div><div class="l">cost to run*</div></div>
+        <div class="stat"><div class="n">N×</div><div class="l">cheaper than closed alternatives*</div></div>
+      </div>
+      <p style="color:var(--muted);font-size:13px;margin-top:10px">*Measured figures pending — see the roadmap.</p>
+    </section>
+
+    <section>
+      <h2>How it works</h2>
+      <div class="how">
+        <div class="card"><h3>You talk</h3><p>Real-time voice over LiveKit WebRTC — interrupt it, think out loud, no typing.</p></div>
+        <div class="card"><h3>It reasons</h3><p>A persistent Claude Agent SDK session with researcher / reasoner / writer sub-agents.</p></div>
+        <div class="card"><h3>It builds</h3><p>Reads code, searches the web, runs commands, writes plans and diffs — in your workspace.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Build with us</h2>
+      <p style="color:var(--muted)">It's open source (MIT). Grab an issue, open a PR, or just tell us what you'd want it to do.</p>
+      <div class="links">
+        <a href="https://github.com/Erriccc/osborn#readme">README</a>
+        <a href="https://github.com/Erriccc/osborn/blob/main/CONTRIBUTING.md">Contributing</a>
+        <a href="https://github.com/Erriccc/osborn/blob/main/ROADMAP.md">Roadmap</a>
+        <a href="https://github.com/Erriccc/osborn/issues">Issues</a>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    Voice Native · Osborn — powered by LiveKit + the Claude Agent SDK ·
+    <a href="https://github.com/Erriccc/osborn">github.com/Erriccc/osborn</a>
+  </footer>
+</body>
+</html>
