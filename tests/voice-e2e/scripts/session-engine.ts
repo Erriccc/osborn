@@ -75,10 +75,14 @@ import { envKey } from '../lib/env'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const execFileP = promisify(execFile)
-// Default agent = the TEST account's own machine (osborn-tester is routed to
-// osborn-1b9d70e5-v2 in the instances table since 2026-07-31), so engine runs
-// never collide with the owner's machine (osborn-d4f24f46-v2).
-const AGENT_URL = process.env.OSBORN_AGENT_URL || 'https://osborn-1b9d70e5-v2.fly.dev'
+// Agent URL = the Voice Native machine the auto-joined chat talks to. NO
+// hardcoded default (#49): the old default host (osborn-1b9d70e5-v2.fly.dev)
+// left DNS when that agent machine was retired, and a dead default just wedges
+// the boot chat on "Connecting…" forever. Empty = no agent configured → the
+// engine skips the room join, opens a neutral page, and marks `agentUnreachable`
+// on /status + the live view. Set OSBORN_AGENT_URL to a reachable agent to
+// auto-join a chat.
+const AGENT_URL = process.env.OSBORN_AGENT_URL || ''
 const APP_URL = process.env.OSBORN_APP_URL || 'https://www.voice-native.com'
 const CONTROL_PORT = Number(process.env.SESSION_ENGINE_PORT ?? 8781)
 const CDP_PORT = 9280
@@ -257,6 +261,11 @@ async function main() {
   // did exactly that: no /status, no /shot, no way to see or steer the boot.
   let tCapture = Date.now()
   let roomReady = false
+  // AGENT REACHABILITY (#49): null while the configured agent is reachable (or
+  // before a join is attempted); set to a short "agent unreachable: <host>"
+  // reason when the boot chat can't be joined, so /status and the live view say
+  // WHY instead of the chat spinning on "Connecting…" forever.
+  let agentUnreachable: string | null = null
 
   const json = (res: any, body: any, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
   const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({}) } }) })
@@ -558,6 +567,10 @@ async function main() {
         const lastFrame = live?.lastFrameAt() ?? null
         return json(res, {
           run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
+          // #49: the in-app Browser panel (PR #51 proxy) and any watcher can see
+          // whether the auto-joined chat is alive. agentUnreachable is null when
+          // reachable, else "agent unreachable: <host>" (or the join error).
+          agentUrl: AGENT_URL || null, agentUnreachable,
           brain: brainAlive ? 'ready' : 'dead', useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
@@ -840,9 +853,38 @@ async function main() {
   })
   server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))
 
+  // BOOT-TIME AGENT REACHABILITY PROBE (#49). The auto-joined chat only works
+  // if the configured agent machine actually answers. A stale/empty
+  // OSBORN_AGENT_URL (the old hardcoded default host left DNS when its machine
+  // was retired) must NOT send the join flow spinning on "Connecting…" forever.
+  // Probe /health once, bounded: if the host doesn't resolve/answer, report it
+  // (the join is skipped). A reachable-but-not-yet-in-room agent is NOT a
+  // failure — the normal join flow (connect-room) seats it.
+  const probeAgent = async (): Promise<string | null> => {
+    if (!AGENT_URL) return 'no agentUrl configured — set OSBORN_AGENT_URL to auto-join a chat'
+    let host = AGENT_URL
+    try { host = new URL(AGENT_URL).host } catch { /* keep raw */ }
+    try {
+      const r = await fetch(`${AGENT_URL}/health`, { signal: AbortSignal.timeout(6000) })
+      if (!r.ok) return `agent unreachable: ${host} (/health ${r.status})`
+      await r.json().catch(() => ({}))  // reachability is what matters here, not shape
+      return null
+    } catch { return `agent unreachable: ${host}` }
+  }
+
   // BACKGROUND ROOM JOIN + tab restore — the engine is already fully
   // drivable (/status /shot /act /recover /eval) while this runs or wedges.
   void (async () => {
+    // No reachable agent → open a neutral page (no room) so the browser tool
+    // stays usable for plain browsing/testing, and say WHY on /status + the
+    // live view instead of spinning on "Connecting…".
+    const openNeutral = async (reason: string) => {
+      try { await active.goto(APP_URL, { timeout: 60000 }) } catch (e) { mark(`neutral page goto failed: ${(e as Error).message.slice(0, 80)}`) }
+      roomReady = true
+      live?.setNotice(`${reason} — opened ${APP_URL} for plain browsing; set OSBORN_AGENT_URL to a reachable agent to auto-join a chat`)
+      mark(`no room join — ${reason}; ${APP_URL} open for browsing`)
+      notify('agent_unreachable', { agentUrl: AGENT_URL || null, reason })
+    }
     // GENERIC ENTRY (open-source posture): OSBORN_ENTRY=none skips the
     // voice-native room flow entirely — just load APP_URL and be a browser.
     // Point the engine at ANY site: OSBORN_APP_URL=https://any.site OSBORN_ENTRY=none.
@@ -851,16 +893,28 @@ async function main() {
       roomReady = true
       mark(`entry: none — ${APP_URL} loaded, no room flow`)
       notify('room_ready', { entry: 'none' })
-    } else try {
-      const { captureStartedAt } = await enterFreshRoom(active, brain, useAuth ? chatUrl : url, { earsOn: true, agentUrl: AGENT_URL })
-      await ensureSessionLive(active, brain, chatUrl, { agentUrl: AGENT_URL })
-      tCapture = captureStartedAt ?? Date.now()
-      roomReady = true
-      mark('in room — awaiting direction')
-      notify('room_ready', {})
-    } catch (e) {
-      mark(`room join FAILED: ${(e as Error).message.slice(0, 120)} — engine still drivable; use /recover or /act to steer`)
-      notify('room_join_failed', { error: (e as Error).message.slice(0, 200) })
+    } else {
+      // #49: reachability gate BEFORE the join flow — never spin on a dead host.
+      agentUnreachable = await probeAgent()
+      if (agentUnreachable) {
+        await openNeutral(agentUnreachable)
+      } else try {
+        const { captureStartedAt } = await enterFreshRoom(active, brain, useAuth ? chatUrl : url, { earsOn: true, agentUrl: AGENT_URL })
+        await ensureSessionLive(active, brain, chatUrl, { agentUrl: AGENT_URL })
+        tCapture = captureStartedAt ?? Date.now()
+        roomReady = true
+        live?.setNotice(null)
+        mark('in room — awaiting direction')
+        notify('room_ready', {})
+      } catch (e) {
+        // The join flow still failed (agent died mid-flow, gate wedge, …).
+        // Surface it the same way so passive stream viewers see WHY; the engine
+        // stays drivable (/recover, /act) instead of a silent spinner.
+        agentUnreachable = `room join failed: ${(e as Error).message.slice(0, 120)}`
+        live?.setNotice(`agent chat failed to join — ${(e as Error).message.slice(0, 120)}`)
+        mark(`room join FAILED: ${(e as Error).message.slice(0, 120)} — engine still drivable; use /recover or /act to steer`)
+        notify('room_join_failed', { error: (e as Error).message.slice(0, 200) })
+      }
     }
     // WAKE WHERE IT LEFT OFF: reopen the pre-sleep tab layout (urls + owners
     // + active tab). Index 0 is skipped — the boot flow rebuilt the chat tab.
