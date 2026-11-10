@@ -62,6 +62,7 @@ import { missingRequiredEnv } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
+import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, checkControlSender, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
@@ -281,6 +282,9 @@ const livekitState: {
 // stopped). The hooks below are populated by main() (which owns `room` and the
 // connect-with-retry loop) so the module-level HTTP server can drive them.
 let intentionalLeave = false
+// Native barge-in duck on the live session's audio output (see duck.ts)
+let currentDuck: ReturnType<typeof installDuck> | null = null
+let duckRestoreTimer: ReturnType<typeof setTimeout> | null = null
 let connectRoomHook: (() => Promise<string>) | null = null
 // Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
@@ -5037,6 +5041,11 @@ async function main() {
         agentState = ev.newState
         // Clear processing guard when model transitions to any new state
         isProcessingQueue = false
+        // Native duck: never leave the next utterance quiet
+        if (ev.newState !== 'speaking') {
+          if (duckRestoreTimer) { clearTimeout(duckRestoreTimer); duckRestoreTimer = null }
+          currentDuck?.setDuck(1, 'agent ' + ev.newState)
+        }
         console.log(`🤖 State: ${ev.newState}`)
         sendToFrontend({ type: 'agent_state', state: ev.newState })
 
@@ -5058,6 +5067,19 @@ async function main() {
         const prev = userState
         userState = ev.newState
         console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
+
+        // Native duck: drop agent TTS to DUCK_LEVEL while the user talks over it;
+        // restore 250ms after they go quiet (cancelled if they speak again).
+        if (ev.newState === 'speaking') {
+          if (duckRestoreTimer) { clearTimeout(duckRestoreTimer); duckRestoreTimer = null }
+          if (agentState === 'speaking') currentDuck?.setDuck(DUCK_LEVEL, 'user speaking')
+        } else {
+          if (duckRestoreTimer) clearTimeout(duckRestoreTimer)
+          duckRestoreTimer = setTimeout(() => {
+            duckRestoreTimer = null
+            currentDuck?.setDuck(1, 'user quiet')
+          }, 250)
+        }
 
         if (ev.newState === 'speaking' && agentState === 'speaking') {
           // 0.9.67: action commented out, condition + debug kept.
@@ -5169,6 +5191,7 @@ async function main() {
           // Whatever else SDK provides — dump it all for now
           fields: Object.keys(ev),
         }))
+        if (ev.isInterruption === false) currentDuck?.setDuck(1, 'overlap not interruption')
       })
 
       // agent_false_interruption — the SDK's "actually that was a false alarm,
@@ -5181,6 +5204,7 @@ async function main() {
           resumed: ev.resumed,
           createdAt: ev.createdAt,
         }))
+        currentDuck?.setDuck(1, 'false interruption')
       })
 
       // speech_created — every time TTS audio is queued. Lets us correlate
@@ -5419,6 +5443,7 @@ async function main() {
             wireSessionEvents(newSession, newAgent)
 
             await newSession.start({ agent: newAgent, room: activeRoom! })
+            currentDuck = installDuck(newSession)
 
             // Sync state
             agentState = 'listening'
@@ -5462,6 +5487,7 @@ async function main() {
 
     try {
       await session.start({ agent, room: activeRoom! })
+      currentDuck = installDuck(session)
       console.log('✅ Voice session started!')
       console.log('🎤 Ready - speak to begin!\n')
 
