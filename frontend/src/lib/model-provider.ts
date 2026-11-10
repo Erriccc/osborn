@@ -23,10 +23,13 @@ export function resolveTextProvider(): TextProvider | null {
       name: 'Fireworks',
     }
   }
-  const zai = process.env.Z_AI_PERSONAL_API_KEY
+  // Same precedence as the agent (claude-auth / pipeline-fastbrain).
+  const zai = process.env.Z_AI_PERSONAL_API_KEY || process.env.ZAI_API_KEY
   if (zai) {
     return {
-      url: 'https://api.z.ai/api/paas/v4/chat/completions',
+      // Coding Plan endpoint - the standard /api/paas/v4 bills the pay-as-you-go
+      // wallet instead of the GLM Coding Plan quota.
+      url: 'https://api.z.ai/api/coding/paas/v4/chat/completions',
       key: zai,
       model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-5.3-flash',
       name: 'z.ai (house pass)',
