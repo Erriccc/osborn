@@ -383,20 +383,26 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: 'w
 function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreachable }: { engine: EngineState | null; watching: boolean; status: Status | null; tokenMisconfigured?: boolean; agentUnreachable?: string | null }) {
   let label = 'unknown'
   let cls = 'bg-neutral-700 text-neutral-200'
+  // A live /status response is direct, authoritative proof the engine is
+  // reachable — even if the no-wake Fly machine-state probe couldn't read
+  // awake/asleep. Treat it as "up" so a management-API blip (wrong app name /
+  // token scope) never shows red "engine unreachable" over a healthy engine (#115).
+  const up = engine?.state === 'started' || (watching && !!status)
   // Agent-unreachable wins while watching: the engine is up (we have status) but
   // the chat agent it should join isn't answering (#81).
   if (watching && agentUnreachable) {
     label = 'agent unreachable'; cls = 'bg-amber-600/80 text-black'
+  } else if (up) {
+    // Without the engine token the status poll 401s, so `status` never
+    // arrives — don't sit on a misleading "connecting" (#80).
+    if (watching && tokenMisconfigured) { label = 'no token'; cls = 'bg-amber-600/80 text-black' }
+    else { label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white' }
   } else if (engine && engine.state) {
-    if (engine.state === 'started') {
-      // Without the engine token the status poll 401s, so `status` never
-      // arrives — don't sit on a misleading "connecting" (#80).
-      if (watching && tokenMisconfigured) { label = 'no token'; cls = 'bg-amber-600/80 text-black' }
-      else { label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white' }
-    }
-    else { label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300' }
+    // State is readable but not 'started' → the machine is asleep/stopping.
+    label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300'
   } else if (engine && engine.unreachable) {
-    // Fly state couldn't be read (API/proxy down) — explicit, not "unknown" (#81).
+    // The engine's OWN control API didn't answer (not merely a management-API
+    // read miss) — explicit genuine-down, not "unknown" (#81/#115).
     label = 'engine unreachable'; cls = 'bg-red-700/80 text-white'
   } else if (engine && !engine.configured) {
     label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'
