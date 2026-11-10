@@ -974,7 +974,8 @@ function VoiceRoomInner({
       // iOS: the analyser owns its own AudioContext which can start suspended —
       // nudge it (a user gesture has already happened by the time audio plays).
       try { void (analyser.analyser.context as AudioContext).resume() } catch { /* already running */ }
-    } catch { return }
+      console.log('🦆 [duck] armed')
+    } catch (e) { console.log('🦆 [duck] bail: createAudioAnalyser threw', e); return }
 
     const ONSET = 0.04        // above the residual-echo floor (AEC is on); ducking is cheap, err low
     const ONSET_HOLD_MS = 50  // sustained over onset before ducking (ignore single clicks/pops)
@@ -986,13 +987,15 @@ function VoiceRoomInner({
     let aboveSince = 0
     let belowSince = 0
     let raf = 0
+    let lastSpeaking: boolean | null = null
+    let peak = 0 // peak mic level since the last speaking edge
 
     // Log a missing agent track / setVolume once per state change, not per frame.
     let lastMissing: string | null = null
-    const applyVolume = (v: number) => {
+    const applyVolume = (v: number, quiet = false) => {
       const t = agentAudioTrackRef.current as { setVolume?: (v: number) => void } | null
       const missing = !t ? 'agentAudioTrackRef.current' : typeof t.setVolume !== 'function' ? 'agentAudioTrack.setVolume' : null
-      if (missing !== lastMissing) {
+      if (!quiet && missing !== lastMissing) {
         if (missing) console.log(`🦆 [duck] bail: no ${missing} (wanted volume ${v})`)
         lastMissing = missing
       }
@@ -1002,12 +1005,21 @@ function VoiceRoomInner({
     const loop = () => {
       raf = requestAnimationFrame(loop)
       const speaking = agentStateRef.current === 'speaking'
+      if (speaking !== lastSpeaking) {
+        console.log(`🦆 [duck] agent state → speaking=${speaking} (state=${agentStateRef.current})`)
+        if (lastSpeaking === true && !speaking) {
+          console.log(`🦆 [duck] peak mic while agent spoke=${peak.toFixed(3)} (onset ${ONSET})`)
+        }
+        peak = 0
+        lastSpeaking = speaking
+      }
       if (!speaking) {
         // Nothing playing to duck — glide back to full for the next utterance.
         targetVol = 1
         aboveSince = 0; belowSince = 0
       } else {
         const vol = analyser!.calculateVolume() // instant 0..1 RMS of YOUR mic
+        if (vol > peak) peak = vol
         const now = performance.now()
         if (vol > ONSET) {
           belowSince = 0
@@ -1039,7 +1051,7 @@ function VoiceRoomInner({
     return () => {
       cancelAnimationFrame(raf)
       try { void analyser?.cleanup() } catch { /* already closed */ }
-      applyVolume(1) // never leave a track ducked on teardown
+      applyVolume(1, true) // never leave a track ducked on teardown (quiet: no bail log)
     }
   }, [localParticipant, micEnabled])
 
