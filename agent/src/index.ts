@@ -44,6 +44,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
 import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
+import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
@@ -4014,7 +4015,9 @@ async function main() {
       // Detect research artifact writes (session workspace or legacy research dir)
       if ((data.name === 'Write' || data.name === 'Edit') && data.input?.file_path) {
         const fp = data.input.file_path
-        if (fp.includes('/osb/') || fp.includes('.osborn/sessions/') || fp.includes('.osborn/research/')) {
+        // Robust root check (not a substring) — parity with the read gate so a
+        // traversal path can't spoof a "research_artifact_updated" notification.
+        if (isSafeArtifactPath(fp)) {
           sendToFrontend({
             type: 'research_artifact_updated',
             filePath: fp,
@@ -6120,7 +6123,9 @@ async function main() {
       // ============================================================
       else if (data.type === 'get_plan_file') {
         const filePath = data.filePath as string
-        if (filePath && filePath.includes('.claude/plans/')) {
+        // SECURITY: same reachable read-only primitive as get_research_artifact —
+        // gate the plan dir with a resolve+root-prefix check, not a substring.
+        if (filePath && isSafeArtifactPath(filePath, ['plans'])) {
           try {
             const fs = await import('fs')
             const content = fs.readFileSync(filePath, 'utf-8')
@@ -6132,7 +6137,10 @@ async function main() {
       }
       else if (data.type === 'get_research_artifact') {
         const filePath = data.filePath as string
-        if (filePath && (filePath.includes('/osb/') || filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/'))) {
+        // SECURITY: resolve + canonicalize + root-prefix check (NOT a substring
+        // test). This handler is read-only and reachable by ANY room participant,
+        // so a substring gate let `…/osb/../../../etc/passwd` be read + uploaded.
+        if (filePath && isSafeArtifactPath(filePath)) {
           try {
             const fs = await import('fs')
             const path = await import('path')
