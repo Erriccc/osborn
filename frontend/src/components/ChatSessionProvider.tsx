@@ -32,7 +32,7 @@ import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
 import { MIC_DENIED_EVENT, isMicDenied, reconcileMicDenied, type MicPermissionState } from '@/lib/mic-permission'
 import { TAB_LOCK_NAME, TAB_LOCK_RETRY_MS, controlsEnabled, lockOutcomeAfterRestore, shouldConnectOnTransition, shouldRetryLockProbe, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
-import { CONNECT_WATCHDOG_MS, connectTimeoutMessage, isAwaitingAgent } from '@/lib/connect-gate'
+import { CONNECT_WATCHDOG_MS, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired } from '@/lib/connect-gate'
 
 interface ChatSessionContextValue {
   // ── Connection state ───────────────────────
@@ -61,6 +61,12 @@ interface ChatSessionContextValue {
   disconnect: () => void
   markAgentReady: () => void
   markAuthRequired: () => void
+  // Claude sign-in resolved (claude_auth_complete / claude_auth_error):
+  // clears the pending-auth flag.
+  markAuthResolved: (messageType: 'claude_auth_complete' | 'claude_auth_error') => void
+  // VoiceRoom reports whether the sign-in modal is open on an active OAuth
+  // step. While true the connect watchdog stays disarmed (issue #78).
+  markAuthInProgress: (inProgress: boolean) => void
   // Called by VoiceRoom whenever voice activity occurs (user spoke, agent
   // thinking/speaking). Resets the idle-stop timer — voice is the primary
   // activity signal; DOM events are removed as they're unreliable on mobile.
@@ -157,6 +163,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null)
   const [lastActivityAt, setLastActivityAt] = useState(Date.now())
   const [authRequired, setAuthRequired] = useState(false)
+  // agent_ready actually fired. Distinct from `connected`, which
+  // markAuthRequired also flips to uncover the sign-in modal (issue #78).
+  const [agentReady, setAgentReady] = useState(false)
+  // Sign-in modal open on an active OAuth step (reported by VoiceRoom).
+  const [authInProgress, setAuthInProgress] = useState(false)
   const [idleStopped, setIdleStopped] = useState(false)
 
   // Connect-attempt generation. Each connect() run captures the value it was
@@ -376,6 +387,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         // the idle overlay — no navigation, no restart loop.
         setIdleStopped(true)
         setConnected(false)
+        setAgentReady(false)
         setToken(null)
         setRoomCode(null)
       }
@@ -392,6 +404,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const myGen = ++connectGenRef.current
     const isCurrent = () => connectGenRef.current === myGen
     setConnecting(true)
+    setAgentReady(false)
     setError(null)
     let resolvedUrl = agentUrl
 
@@ -643,6 +656,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       void connect()
     } else if (tabRole === 'taken-over') {
       setConnected(false)
+      setAgentReady(false)
       setToken(null)
       setRoomCode(null)
       setStatusMsg(null)
@@ -758,6 +772,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       console.log('🔀 Session moved to another device (duplicate identity) — standing down')
       setStatusMsg('This session is now active on another device.')
       setConnected(false)
+      setAgentReady(false)
       return
     }
     const terminal =
@@ -788,6 +803,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setLastActivityAt(Date.now())
     setIdleStopped(false)
     setConnected(true)
+    setAgentReady(true)
     // A clean ready = reconnect succeeded → reset the auto-rejoin budget.
     reconnectAttemptsRef.current = 0
   }, [])
@@ -795,6 +811,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const markAuthRequired = useCallback(() => {
     setAuthRequired(true)
     setConnected(true) // surface the VoiceRoom UI so user can see + complete auth
+  }, [])
+
+  const markAuthResolved = useCallback((messageType: 'claude_auth_complete' | 'claude_auth_error') => {
+    setAuthRequired((prev) => nextAuthRequired(prev, messageType))
+  }, [])
+
+  const markAuthInProgress = useCallback((inProgress: boolean) => {
+    setAuthInProgress(inProgress)
   }, [])
 
   const markVoiceActivity = useCallback(() => {
@@ -807,20 +831,23 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // machine, dropped data message, or crashed agent — used to leave the
   // spinner running forever. Arm a timer while we're waiting on the agent and
   // nothing has resolved the screen; on expiry, surface an actionable error
-  // (the page's error branch has Retry + Back). The auth case never trips this:
-  // markAuthRequired flips `connected` true to uncover the Claude sign-in modal,
-  // and isAwaitingAgent() also disarms on `authRequired`. `statusMsg` is in the
-  // deps so each progress tick (sandbox start, "Connecting to agent…") resets
-  // the timer — a slow-but-progressing connect is never cut off.
+  // (the page's error branch has Retry + Back). Keyed on `agentReady`, not
+  // `connected`: markAuthRequired flips `connected` true to uncover the Claude
+  // sign-in modal, which used to disarm the watchdog for good — a user who
+  // dismissed the modal sat on "Connecting…" forever (issue #78). Now only an
+  // active OAuth step (modal open, `authInProgress`) holds it off, so someone
+  // mid-sign-in is never cut off. `statusMsg` / `authInProgress` are in the
+  // deps so each progress tick or modal reopen/dismiss restarts the timer — a
+  // slow-but-progressing connect is never cut off.
   useEffect(() => {
-    if (!isAwaitingAgent({ connecting, connected, hasToken: !!token, error: !!error, authRequired })) return
+    if (!isAwaitingAgent({ connecting, agentReady, hasToken: !!token, error: !!error, authRequired, authInProgress })) return
     const t = setTimeout(() => {
       setError(connectTimeoutMessage(authRequired))
       setStatusMsg(null)
       setConnecting(false)
     }, CONNECT_WATCHDOG_MS)
     return () => clearTimeout(t)
-  }, [connecting, connected, token, error, authRequired, statusMsg])
+  }, [connecting, agentReady, token, error, authRequired, authInProgress, statusMsg])
 
   // ── P1.8 (2026-10-24): foreground fast-rejoin + screen wake lock ──────────
   const connectedRef = useRef(connected)
@@ -911,6 +938,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     disconnect,
     markAgentReady,
     markAuthRequired,
+    markAuthResolved,
+    markAuthInProgress,
     markVoiceActivity,
     idleStopped,
     isController: controlsEnabled(tabRole),

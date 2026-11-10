@@ -42,6 +42,7 @@ import { MeetingMuteControl, type MeetingMuteState } from './voice/MeetingMuteCo
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
+import { isOAuthInProgress } from '@/lib/connect-gate'
 import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
@@ -210,6 +211,8 @@ function VoiceRoomInner({
   onDisconnect,
   onAgentReady,
   onAuthRequired,
+  onAuthResolved,
+  onAuthInProgress,
   onVoiceActivity,
   waitingMode,
   preSelectedSessionId,
@@ -220,6 +223,10 @@ function VoiceRoomInner({
   onDisconnect?: () => void
   onAgentReady?: () => void
   onAuthRequired?: () => void
+  /** Sign-in resolved (claude_auth_complete or claude_auth_error). */
+  onAuthResolved?: (messageType: 'claude_auth_complete' | 'claude_auth_error') => void
+  /** Sign-in modal open on an active OAuth step (holds off the connect watchdog). */
+  onAuthInProgress?: (inProgress: boolean) => void
   onVoiceActivity?: () => void
   waitingMode?: boolean
   preSelectedSessionId?: string | null
@@ -331,6 +338,16 @@ function VoiceRoomInner({
   // on claude_auth_complete.
   const [claudeAuthEverRequired, setClaudeAuthEverRequired] = useState(false)
   const [claudeAuthCode, setClaudeAuthCode] = useState('')
+  // Tell the provider whether the user is mid-OAuth (issue #78): while the
+  // sign-in modal is open on an active step the connect watchdog stays
+  // disarmed; once it is dismissed (and agent_ready still hasn't fired) the
+  // watchdog arms so the user gets Retry + Back instead of endless Connecting.
+  const onAuthInProgressRef = useRef(onAuthInProgress)
+  onAuthInProgressRef.current = onAuthInProgress
+  useEffect(() => {
+    onAuthInProgressRef.current?.(isOAuthInProgress(claudeAuthStatus))
+  }, [claudeAuthStatus])
+  useEffect(() => () => onAuthInProgressRef.current?.(false), [])
   const [agentConnected, setAgentConnected] = useState(false)
   // Multi-instance slots panel
   const [slots, setSlots] = useState<SlotInfo[]>([])
@@ -2326,6 +2343,7 @@ function VoiceRoomInner({
         setClaudeAuthUrl(null)
         setClaudeAuthStatus('complete')
         setClaudeAuthEverRequired(false)
+        onAuthResolved?.('claude_auth_complete')
         // Auto-dismiss after 3 seconds
         setTimeout(() => setClaudeAuthStatus('none'), 3000)
         // Persist the OAuth token to the host-persistent layer so it survives
@@ -2345,6 +2363,7 @@ function VoiceRoomInner({
       } else if (data.type === 'claude_auth_error') {
         console.log('❌ Claude auth error:', data.message)
         setClaudeAuthStatus('error')
+        onAuthResolved?.('claude_auth_error')
       } else if (data.type === 'meeting_joining') {
         console.log('🎥 Meeting: joining...')
         setMeetingStatus('joining')
@@ -4666,7 +4685,7 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl, seedPrompt, isController } =
+  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl, seedPrompt, isController } =
     useChatSession()
 
   if (idleStopped) {
@@ -4698,6 +4717,8 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       onDisconnect={disconnect}
       onAgentReady={markAgentReady}
       onAuthRequired={markAuthRequired}
+      onAuthResolved={markAuthResolved}
+      onAuthInProgress={markAuthInProgress}
       onVoiceActivity={markVoiceActivity}
       waitingMode={waitingMode}
       preSelectedSessionId={preSelectedSessionId}
