@@ -40,8 +40,9 @@ export function buildRooms(
   slots: SlotInfo[],
   currentSessionId: string | null,
   liveFallbackTitle?: string | null,
+  pendingId?: string | null,
 ): Room[] {
-  return buildRoomRows(sessions, currentSessionId, { slots, liveFallbackTitle })
+  return buildRoomRows(sessions, currentSessionId, { slots, liveFallbackTitle, pendingId })
 }
 
 /** Secondary line: "3m ago · osborn · 12 msgs" (falls back to the short id). */
@@ -85,6 +86,8 @@ interface RoomsProps {
   disabled?: boolean
   /** Title for the live session before it shows up in the session list. */
   liveTitle?: string | null
+  /** Session a deferred switch is waiting to open (shows "Switching…"). */
+  pendingId?: string | null
 }
 
 const COLLAPSE_KEY = 'vn-rooms-collapsed'
@@ -99,6 +102,7 @@ export function RoomsSidebar({
   onRefresh,
   disabled,
   liveTitle,
+  pendingId,
 }: RoomsProps) {
   const [collapsed, setCollapsed] = useState(false)
   useEffect(() => {
@@ -114,7 +118,7 @@ export function RoomsSidebar({
     })
   }
 
-  const rooms = buildRooms(sessions, slots, currentSessionId, liveTitle)
+  const rooms = buildRooms(sessions, slots, currentSessionId, liveTitle, pendingId)
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
 
   if (collapsed) {
@@ -236,7 +240,7 @@ export function RoomsSidebar({
                           : 'bg-gray-800 text-gray-500'
                     }`}
                   >
-                    {STATUS_LABEL[room.status]}
+                    {room.switching ? 'Switching…' : STATUS_LABEL[room.status]}
                   </span>
                 </div>
                 <div className="text-[10px] text-gray-500 truncate pl-4 mt-0.5">{roomMeta(room)}</div>
@@ -270,8 +274,9 @@ export function RoomsBar({
   onNewRoom,
   disabled,
   liveTitle,
+  pendingId,
 }: RoomsProps) {
-  const rooms = buildRooms(sessions, slots, currentSessionId, liveTitle)
+  const rooms = buildRooms(sessions, slots, currentSessionId, liveTitle, pendingId)
   // Keep the voice screen clean (3-6-9): no rail until there is somewhere to
   // switch to. nav/switchers don't count toward the primary-action budget.
   if (rooms.length <= 1) return null

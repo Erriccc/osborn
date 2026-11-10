@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { sessionMessagesQuery } from '../src/lib/chat-url'
 import { switchFailureText, pendingSwitchLabel, switchPendingReducer } from '../src/lib/switch-ui'
+import { buildRoomRows } from '../src/lib/rooms'
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -88,6 +89,34 @@ t('S9 session_switched success replaces transcript from /session-messages (no 3-
 t('S9 click does not set currentSessionId (only session_switched does)', () => {
   const b = block('const handleSwitchSession = useCallback(', 900)
   assert.ok(!/setCurrentSessionId/.test(b))
+})
+
+// ── S10 ──
+const NOW = Date.parse('2026-11-10T12:00:00Z')
+const sess = [
+  { sessionId: 'aaaaaaaa-1', lastMessage: 'fix the login bug', timestamp: new Date(NOW - 3600e3).toISOString(), messageCount: 3 },
+  { sessionId: 'bbbbbbbb-2', lastMessage: 'plan the offsite', timestamp: new Date(NOW - 7200e3).toISOString(), messageCount: 5 },
+]
+t('S10 pending target row is marked switching; LIVE stays on the running session', () => {
+  const rows = buildRoomRows(sess, 'aaaaaaaa-1', { now: NOW, pendingId: 'bbbbbbbb-2' })
+  const live = rows.filter((r) => r.isLive)
+  assert.equal(live.length, 1)
+  assert.equal(live[0].id, 'aaaaaaaa-1', 'LIVE must not move before session_switched')
+  const b = rows.find((r) => r.id === 'bbbbbbbb-2')!
+  assert.equal(b.switching, true)
+  assert.equal(rows.find((r) => r.id === 'aaaaaaaa-1')!.switching, false)
+})
+t('S10 no pending -> no switching rows', () => {
+  assert.ok(buildRoomRows(sess, 'aaaaaaaa-1', { now: NOW }).every((r) => r.switching === false))
+})
+t('S10 after the switch: one LIVE row equal to B', () => {
+  const rows = buildRoomRows(sess, 'bbbbbbbb-2', { now: NOW })
+  assert.deepEqual(rows.filter((r) => r.isLive).map((r) => r.id), ['bbbbbbbb-2'])
+})
+t('S10 RoomsRail renders the switching state; VoiceRoom passes the pending id', () => {
+  const rail = fs.readFileSync(path.join(__dirname, '../src/components/voice/RoomsRail.tsx'), 'utf8')
+  assert.ok(/room\.switching/.test(rail) && /Switching…/.test(rail))
+  assert.ok(/pendingId=\{switchPending\?\.sessionId/.test(vr))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

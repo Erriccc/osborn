@@ -3853,6 +3853,7 @@ function VoiceRoomInner({
         onRefresh={handleRefreshRooms}
         disabled={!agentConnected}
         liveTitle={firstUserMessage}
+        pendingId={switchPending?.sessionId ?? null}
       />
       <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Persistent Anthropic sign-in gate (issue #53/#78). The agent blocks
@@ -4292,6 +4293,7 @@ function VoiceRoomInner({
           onRefresh={handleRefreshRooms}
           disabled={!agentConnected}
           liveTitle={firstUserMessage}
+          pendingId={switchPending?.sessionId ?? null}
         />
 
         {/* Prominent compaction banner — sits above chat during PreCompact→PostCompact window.
