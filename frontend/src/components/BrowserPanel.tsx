@@ -1,0 +1,291 @@
+'use client'
+
+// In-app Browser panel (issue #51): watch and drive the browser-screen-recorder
+// engine without leaving Voice Native or opening the raw Fly URL. Talks only to
+// the server proxy at /api/browser/* (tokens stay server-side).
+//
+// - Live MJPEG stream + explicit awake/asleep/waking state (so a stuck run is
+//   legible instead of a bare "Connecting…").
+// - Status: page URL/state, active tab, brain health, current journey/task,
+//   stream freshness.
+// - Controls over the existing control API: open a URL / new tab, say (+hear the
+//   reply), stop the engine.
+// - Per-run links: this run's tasks with clip / clip+audio / logs, plus a
+//   shareable link to this in-app view.
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+type EngineState = { configured: boolean; state: string | null; machineId: string | null }
+type Status = {
+  roomReady?: boolean
+  pageUrl?: string
+  pageState?: string
+  idlePaused?: boolean
+  brain?: { ready?: boolean; dead?: boolean } | string
+  activeTab?: number | string
+  tabs?: unknown[]
+  lastFrameAgeMs?: number
+  journey?: { name?: string; goal?: string } | string | null
+}
+type Task = { n?: number; index?: number; title?: string; name?: string; goal?: string; journey?: string }
+
+const api = (action: string, qs = '') => `/api/browser/${action}${qs}`
+
+async function jget<T>(action: string, qs = ''): Promise<T | null> {
+  try {
+    const r = await fetch(api(action, qs), { cache: 'no-store' })
+    if (!r.ok) return null
+    return (await r.json()) as T
+  } catch {
+    return null
+  }
+}
+
+export function BrowserPanel() {
+  const [engine, setEngine] = useState<EngineState | null>(null)
+  const [watching, setWatching] = useState(false)
+  const [streamBroken, setStreamBroken] = useState(false)
+  const [status, setStatus] = useState<Status | null>(null)
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [url, setUrl] = useState('')
+  const [newTab, setNewTab] = useState(false)
+  const [sayText, setSayText] = useState('')
+  const [heard, setHeard] = useState<string | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const streamKickRef = useRef(0)
+
+  // No-wake awake/asleep probe (Fly Machines API via the proxy).
+  const refreshEngineState = useCallback(async () => {
+    const s = await jget<EngineState>('engine-state')
+    if (s) setEngine(s)
+  }, [])
+
+  useEffect(() => {
+    refreshEngineState()
+    const id = setInterval(refreshEngineState, 15000)
+    return () => clearInterval(id)
+  }, [refreshEngineState])
+
+  // Status polling runs only while watching (it wakes/holds the engine).
+  useEffect(() => {
+    if (!watching) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      return
+    }
+    const tick = async () => {
+      const s = await jget<Status>('status')
+      if (s) setStatus(s)
+    }
+    tick()
+    pollRef.current = setInterval(tick, 3000)
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+  }, [watching])
+
+  const refreshTasks = useCallback(async () => {
+    const t = await jget<{ tasks?: Task[] } | Task[]>('tasks')
+    const list = Array.isArray(t) ? t : t?.tasks
+    if (Array.isArray(list)) setTasks(list)
+  }, [])
+
+  const post = useCallback(async (action: string, body: unknown, label: string) => {
+    setBusy(label); setNote(null)
+    try {
+      const r = await fetch(api(action), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) { setNote(`${label} failed: ${data?.error || r.status}`); return null }
+      return data
+    } catch {
+      setNote(`${label} failed: engine unreachable`); return null
+    } finally {
+      setBusy(null)
+    }
+  }, [])
+
+  const openUrl = async () => {
+    const u = url.trim()
+    if (!u) return
+    const full = /^https?:\/\//i.test(u) ? u : `https://${u}`
+    await post('tab', { op: 'open', url: full, reuse: !newTab }, 'open')
+  }
+  const say = async () => {
+    const text = sayText.trim()
+    if (!text) return
+    const r = await post('say', { text }, 'say')
+    if (r && typeof r.heard === 'string') setHeard(r.heard)
+  }
+  const stopEngine = async () => {
+    if (!confirm('Stop the browser engine? Any in-flight run ends and the machine sleeps.')) return
+    await post('end', {}, 'stop')
+    setWatching(false)
+  }
+
+  const taskN = (t: Task, i: number) => (typeof t.n === 'number' ? t.n : typeof t.index === 'number' ? t.index : i)
+  const asleep = engine?.state && engine.state !== 'started'
+  const brainReady = typeof status?.brain === 'object' ? status?.brain?.ready && !status?.brain?.dead : undefined
+
+  const copyShare = async () => {
+    try { await navigator.clipboard.writeText(window.location.href); setNote('Link copied') } catch { setNote('Copy failed') }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 text-neutral-200">
+      {/* Header / engine state */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">🎥</span>
+          <h2 className="text-base font-semibold text-neutral-100">Browser</h2>
+          <StateBadge engine={engine} watching={watching} status={status} />
+        </div>
+        <div className="flex items-center gap-2">
+          {!watching ? (
+            <button
+              onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(true) }}
+              className="rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-medium text-black hover:bg-amber-400"
+            >
+              {asleep ? 'Wake & watch' : 'Watch'}
+            </button>
+          ) : (
+            <button
+              onClick={() => setWatching(false)}
+              className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800"
+            >
+              Stop watching
+            </button>
+          )}
+          <button onClick={copyShare} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800">
+            Copy link
+          </button>
+        </div>
+      </div>
+
+      {/* Live view */}
+      <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-neutral-800 bg-black">
+        {watching ? (
+          <>
+            {/* key kicks a reload when we retry a broken/waking stream */}
+            <img
+              key={streamKickRef.current}
+              src={api('stream', `?t=${streamKickRef.current}`)}
+              alt="Live browser stream"
+              className="h-full w-full object-contain"
+              onError={() => setStreamBroken(true)}
+              onLoad={() => setStreamBroken(false)}
+            />
+            {streamBroken && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-sm text-neutral-300">
+                <div>Waking the browser engine… (first pixels take ~40s)</div>
+                <button
+                  onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(false); setTimeout(() => setWatching(true), 50) }}
+                  className="rounded-lg border border-neutral-600 px-3 py-1.5 hover:bg-neutral-800"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-500">
+            {asleep ? 'Engine is asleep. Press “Wake & watch” to boot it and stream the live view (~40s).' : 'Press “Watch” to stream the live browser view here.'}
+          </div>
+        )}
+      </div>
+
+      {/* Status line */}
+      {watching && (
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400 sm:grid-cols-4">
+          <Field label="Page" value={status?.pageState || (status ? '—' : 'connecting…')} />
+          <Field label="Tab" value={status?.activeTab != null ? String(status.activeTab) : '—'} />
+          <Field label="Brain" value={brainReady == null ? '—' : brainReady ? 'ready' : 'not ready'} tone={brainReady === false ? 'warn' : undefined} />
+          <Field label="Stream" value={status?.lastFrameAgeMs != null ? `${Math.round(status.lastFrameAgeMs / 1000)}s ago` : '—'} tone={(status?.lastFrameAgeMs ?? 0) > 10000 ? 'warn' : undefined} />
+          {status?.pageUrl && <div className="col-span-2 truncate sm:col-span-4"><span className="text-neutral-500">URL </span><span className="text-neutral-300">{status.pageUrl}</span></div>}
+          {status?.journey && <div className="col-span-2 sm:col-span-4"><span className="text-neutral-500">Journey </span><span className="text-neutral-300">{typeof status.journey === 'string' ? status.journey : status.journey?.name || status.journey?.goal || '—'}</span></div>}
+        </div>
+      )}
+
+      {/* Controls */}
+      <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') openUrl() }}
+            placeholder="Open a URL (e.g. example.com)"
+            className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500"
+          />
+          <label className="flex items-center gap-1 text-xs text-neutral-400"><input type="checkbox" checked={newTab} onChange={(e) => setNewTab(e.target.checked)} /> new tab</label>
+          <button onClick={openUrl} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Open</button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={sayText}
+            onChange={(e) => setSayText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') say() }}
+            placeholder="Say into the page mic…"
+            className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500"
+          />
+          <button onClick={say} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Say</button>
+          <button onClick={stopEngine} disabled={!!busy} className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">Stop engine</button>
+        </div>
+        {heard && <p className="rounded bg-neutral-950 px-3 py-1.5 text-xs text-neutral-300"><span className="text-neutral-500">heard: </span>{heard}</p>}
+        {busy && <p className="text-xs text-amber-400">{busy}…</p>}
+        {note && <p className="text-xs text-neutral-400">{note}</p>}
+      </div>
+
+      {/* Per-run links */}
+      <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-sm font-medium text-neutral-200">This run’s tasks</h3>
+          <button onClick={refreshTasks} className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800">Refresh</button>
+        </div>
+        {tasks.length === 0 ? (
+          <p className="text-xs text-neutral-500">No tasks yet — recorded tasks appear here with clip + log links once a run produces them.</p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {tasks.map((t, i) => {
+              const n = taskN(t, i)
+              return (
+                <li key={i} className="flex flex-wrap items-center gap-2 border-b border-neutral-800/60 py-1 text-xs last:border-0">
+                  <span className="font-mono text-neutral-500">#{n}</span>
+                  <span className="flex-1 truncate text-neutral-300">{t.title || t.name || t.goal || t.journey || 'task'}</span>
+                  <a className="text-amber-400 hover:underline" href={api('clip', `?n=${n}`)} target="_blank" rel="noreferrer">clip</a>
+                  <a className="text-amber-400 hover:underline" href={api('clip', `?n=${n}&audio=1`)} target="_blank" rel="noreferrer">+audio</a>
+                  <a className="text-amber-400 hover:underline" href={api('artifact', `?n=${n}`)} target="_blank" rel="noreferrer">shot</a>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+        <div className="mt-2 flex gap-3 text-xs">
+          <a className="text-neutral-400 hover:underline" href={api('logs')} target="_blank" rel="noreferrer">console + network logs</a>
+          <a className="text-neutral-400 hover:underline" href={api('audio')} target="_blank" rel="noreferrer">run audio</a>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, value, tone }: { label: string; value: string; tone?: 'warn' }) {
+  return (
+    <div className="truncate">
+      <span className="text-neutral-500">{label} </span>
+      <span className={tone === 'warn' ? 'text-amber-400' : 'text-neutral-300'}>{value}</span>
+    </div>
+  )
+}
+
+function StateBadge({ engine, watching, status }: { engine: EngineState | null; watching: boolean; status: Status | null }) {
+  let label = 'unknown'
+  let cls = 'bg-neutral-700 text-neutral-200'
+  if (engine && engine.state) {
+    if (engine.state === 'started') { label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white' }
+    else { label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300' }
+  } else if (engine && !engine.configured) {
+    label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'
+  }
+  return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{label}</span>
+}
