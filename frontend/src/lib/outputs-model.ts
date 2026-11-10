@@ -512,6 +512,23 @@ export function contentRequestFor(f: Pick<OutputFile, 'filePath' | 'source'>, op
 
 export type FavoriteSaveOutcome = 'ok' | 'local-only' | 'rollback'
 
+// ── Per-account favorites cache key (#57) ────────────────────────────────────
+// The favorites cache lives in localStorage so pins survive a reload and a
+// failed POST. A single browser-global key leaked one account's pinned files —
+// and their durable urls — to the next account that signed in on the same
+// browser. The key is therefore namespaced by signed-in user id; guests (no
+// account) share one local key. The returned key always carries a ':' segment,
+// so it can never equal the pre-#57 global key and legacy residue is never read
+// back as an account's cache.
+
+/** The pre-#57 browser-global favorites key. Only ever removed, never read. */
+export const LEGACY_FAVORITES_KEY = 'osborn-favorite-files'
+
+/** localStorage key for the signed-in account's favorites cache (#57). */
+export function favoritesStorageKey(userId: string | null | undefined): string {
+  return `${LEGACY_FAVORITES_KEY}:${userId || 'guest'}`
+}
+
 /** UI#21: decide what a POST /api/favorites result means for the optimistic star.
  *  401 = guest (no account): favorites are device-local by design, keep them. */
 export function favoriteSaveOutcome(status: number | null): FavoriteSaveOutcome {
