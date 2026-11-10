@@ -47,9 +47,9 @@ import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getD
 import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
-import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
+import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
-import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth } from './claude-auth.js'
+import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
@@ -5804,6 +5804,36 @@ async function main() {
         console.log('🔑 Received auth code from frontend')
         sendToFrontend({ type: 'claude_auth_submitting', message: 'Submitting code to Claude CLI...' })
         pendingAuthSubmitCode(data.code)
+      } else if (data.type === 'claude_auth_start') {
+        // On-demand Claude sign-in. When a fallback key exists the join path
+        // skips the blocking OAuth (claude_auth_optional), so this is the only
+        // way to start it. Owner-gated via CONTROL_MESSAGE_TYPES.
+        const authSend = (type: string, payload: unknown) => {
+          sendToFrontend({ type, ...payload as object })
+        }
+        if (pendingAuthSubmitCode && !isOnDemandAuthInFlight()) {
+          // The join-path flow is already running — re-deliver its state.
+          console.log('🔑 claude_auth_start: join-path flow in flight — replaying state')
+          replayInFlightAuth(authSend)
+        } else {
+          // Not awaited: done only settles when the user finishes (or the 5-min
+          // timeout), and this handler must stay responsive (claude_auth_code).
+          const { started, result } = startClaudeAuthOnDemand(authSend, {
+            get: () => pendingAuthSubmitCode,
+            set: (fn) => { pendingAuthSubmitCode = fn },
+          })
+          if (!started) {
+            replayInFlightAuth(authSend)
+          } else {
+            console.log('🔑 claude_auth_start: starting on-demand Claude OAuth')
+            void result.then(({ fallbackCleared }) => {
+              // Only when a fallback redirect was actually active: live persistent
+              // sessions restart BEFORE their next turn (deferred — a streaming
+              // turn finishes normally), resuming the same sessionId on Claude.
+              if (fallbackCleared) requestAuthRestart()
+            })
+          }
+        }
       } else if (data.type === 'permission_response') {
         // Handle permission response for direct mode
         if (currentLLM && currentLLM.hasPendingPermission?.()) {

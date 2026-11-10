@@ -931,6 +931,38 @@ export const FAST_MODEL = 'haiku'
 //   'deepseek/deepseek-chat' (needs proxy — thinking mode breaks the tool loop)
 export const FALLBACK_MODEL = 'minimax/minimax-m3'  // OpenRouter tier baseline
 
+// ── Deferred restart after an auth-backend change ──
+// The persistent SDK subprocess inherits process.env (ANTHROPIC_BASE_URL /
+// AUTH_TOKEN / model overrides) once, at spawn. When the auth backend changes
+// mid-session (on-demand Claude sign-in replaces the z.ai/OpenRouter fallback),
+// a live subprocess would keep routing to the fallback. requestAuthRestart()
+// bumps a generation counter; each ClaudeLLM remembers the generation its
+// subprocess was spawned under and, at the START of its next turn (pushMessage,
+// only when no turn is streaming), closes the stale subprocess and cold-starts
+// with `resume: <same sessionId>`. Nothing is aborted at request time — a turn
+// that is currently streaming finishes normally on the old backend.
+let authEnvGeneration = 0
+export function requestAuthRestart(): number {
+  authEnvGeneration++
+  console.log(`🔑 Auth backend changed — persistent sessions will restart before their next turn (gen ${authEnvGeneration})`)
+  return authEnvGeneration
+}
+export function getAuthEnvGeneration(): number { return authEnvGeneration }
+
+/**
+ * Pure decision: restart a live persistent subprocess before pushing the next
+ * message? Only when it was spawned under an older auth generation AND it is
+ * idle (no turn streaming, no interrupt settling).
+ */
+export function shouldRestartForAuth(
+  spawnGen: number,
+  currentGen: number,
+  turnsInFlight: number,
+  interruptPending: boolean,
+): boolean {
+  return spawnGen !== currentGen && turnsInFlight <= 0 && !interruptPending
+}
+
 /**
  * Apply turbo override to an agents roster.
  * When turbo is true returns a DEEP COPY with every agent's model set to
@@ -1271,6 +1303,17 @@ export class ClaudeLLM extends llm.LLM {
   // settles, so an enriched [INTERRUPTED] message can never land inside the
   // turn being aborted (a fold-in-flight message dies with that turn).
   #pendingInterrupt: Promise<void> | null = null
+
+  // Auth generation the persistent subprocess was spawned under, and the number
+  // of pushed user messages whose turn has not produced a `result` yet. Together
+  // they drive the deferred restart (see requestAuthRestart()).
+  #spawnAuthGen = authEnvGeneration
+  #turnsInFlight = 0
+
+  /** True when the live subprocess predates the latest auth-backend change. */
+  get authRestartPending(): boolean {
+    return !!this.#persistentQuery && this.#spawnAuthGen !== authEnvGeneration
+  }
 
   // Dedup guard — prevents double-firing reviewer/gate if SubagentStop fires
   // more than once for the same agent_id (e.g. retry edge cases).
@@ -1962,6 +2005,7 @@ export class ClaudeLLM extends llm.LLM {
     this.#toolUseByAgentId.clear()
     this.#typeByAgentId.clear()
     this.#pendingInterrupt = null
+    this.#turnsInFlight = 0
     console.log('🔒 Persistent session closed')
   }
 
@@ -2001,6 +2045,7 @@ export class ClaudeLLM extends llm.LLM {
       return
     }
     console.log('🔥 primeResume: eager cold-start — resume replay overlaps connect (no user message)')
+    this.#spawnAuthGen = authEnvGeneration
     this.#messageChannel = new MessageChannel<SDKUserMessage>()
     this.#persistentQuery = query({ prompt: this.#messageChannel as any, options: sdkOptions })
     this.#activeQueries.add(this.#persistentQuery)
@@ -2050,6 +2095,19 @@ export class ClaudeLLM extends llm.LLM {
       ...(pushOpts?.priority && { priority: pushOpts.priority }),
     }
 
+    // Deferred auth restart: the subprocess was spawned under a fallback backend
+    // that has since been replaced (Claude sign-in). Close it at this turn
+    // boundary — only when idle, so a streaming turn is never aborted — and fall
+    // through to the cold start, which resumes the same session (sdkOptions
+    // carries resume: this.#sessionId) on the new env.
+    if (this.#persistentQuery && this.#messageChannel && !this.#messageChannel.closed
+      && shouldRestartForAuth(this.#spawnAuthGen, authEnvGeneration, this.#turnsInFlight, !!this.#pendingInterrupt)) {
+      console.log('🔑 Auth backend changed since spawn — restarting persistent session before this turn')
+      this.closeSession()
+    }
+
+    this.#turnsInFlight++
+
     if (this.#persistentQuery && this.#messageChannel && !this.#messageChannel.closed) {
       // Fast path — push to existing subprocess (no cold start).
       // If an interrupt is in flight, order the push AFTER it settles: a message
@@ -2079,6 +2137,7 @@ export class ClaudeLLM extends llm.LLM {
 
     // Cold start — create channel, push first message, start query + background consumer
     console.log('🔄 Persistent session: cold start (first message, JSONL replay)')
+    this.#spawnAuthGen = authEnvGeneration
     this.#messageChannel = new MessageChannel()
     this.#messageChannel.push(userMessage)
 
@@ -2226,6 +2285,7 @@ export class ClaudeLLM extends llm.LLM {
         // Result — marks end of a turn (but we keep consuming for next turn)
         if (msg.type === 'result') {
           logCacheUsage((msg as any).usage)  // per-turn cache reads/writes (main loop only)
+          if (this.#turnsInFlight > 0) this.#turnsInFlight--
           const turnMessageId = this.#currentTurnMessageId
           const turnChunks = [...this.#currentTurnChunks]
           if (msg.result) {
