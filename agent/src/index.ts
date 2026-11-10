@@ -3772,6 +3772,29 @@ async function main() {
     not_found: 'Session not found',
   }
 
+  /**
+   * Legacy entry points (resume_session / continue_session / session_selected)
+   * only ARMED a resume id. With a live query that runs a different session,
+   * that armed id was ignored and the next turn ran in the old session
+   * (session_resume_failed {requested:B, actual:A}). True → route through the
+   * executor. False → keep the legacy arm-only path: no live query yet, or the
+   * live/primed query already runs this session (decider 'push').
+   */
+  function liveSwitchNeeded(target: string): boolean {
+    if (!currentLLM || !target) return false
+    const llmAny = currentLLM as any
+    if (!llmAny.hasSession?.()) return false
+    const busy = llmAny.busyState?.() ?? { idle: true }
+    return decideNextSession({
+      liveSessionId: currentLLM.sessionId ?? null,
+      queryResumeTarget: llmAny.spawnedResumeId ?? null,
+      resumeTarget: currentResumeSessionId ?? null,
+      requestedTarget: target,
+      hasLiveQuery: true,
+      turnInFlight: !busy.idle,
+    }).action === 'switch'
+  }
+
   async function requestSessionSwitch(
     target: string,
     cwdHint: string | null | undefined,
@@ -6192,7 +6215,10 @@ async function main() {
         // Context injection (generateReply) happens in session_selected handler
         // to avoid double generateReply calls that cause timeouts
         const sessionId = data.sessionId as string
-        if (sessionId && sessionExists(sessionId, workingDir)) {
+        if (sessionId && liveSwitchNeeded(sessionId)) {
+          // A live query runs another session: switch for real (#74).
+          await requestSessionSwitch(sessionId, typeof data.workingDirectory === 'string' ? data.workingDirectory : undefined, { force: !!data.force, origin: 'resume_session' })
+        } else if (sessionId && sessionExists(sessionId, workingDir)) {
           currentLLM.setResumeSessionId(sessionId)
           currentResumeSessionId = sessionId
           console.log(`🔄 Will resume session: ${sessionId}`)
@@ -6281,7 +6307,9 @@ async function main() {
       }
       else if (data.type === 'continue_session' && currentLLM) {
         const recentId = await getMostRecentSessionId(workingDir)
-        if (recentId) {
+        if (recentId && liveSwitchNeeded(recentId)) {
+          await requestSessionSwitch(recentId, workingDir, { origin: 'continue_session' })
+        } else if (recentId) {
           currentLLM.setResumeSessionId(recentId)
           currentResumeSessionId = recentId
           console.log(`🔄 Continuing most recent session: ${recentId}`)
@@ -6898,7 +6926,9 @@ async function main() {
         const sessionId = data.sessionId as string | null
         console.log(`🚪 Session gate completed: ${sessionId ? `resume ${sessionId}` : 'fresh start'}`)
 
-        if (sessionId && currentLLM && sessionExists(sessionId, workingDir)) {
+        if (sessionId && currentLLM && liveSwitchNeeded(sessionId)) {
+          await requestSessionSwitch(sessionId, typeof data.workingDirectory === 'string' ? data.workingDirectory : undefined, { force: !!data.force, origin: 'session_selected' })
+        } else if (sessionId && currentLLM && sessionExists(sessionId, workingDir)) {
           // Resume the selected session
           currentLLM.setResumeSessionId(sessionId)
           currentResumeSessionId = sessionId

@@ -175,5 +175,32 @@ await t('S4 a pending switch is cancelled on disconnect, room destroy and meetin
   }
 })
 
+// ── S5: legacy entry points + controller gate ────────────────────────────────
+const { checkControlSender, CONTROL_MESSAGE_TYPES } = await import('../src/data-sender-auth.js')
+
+await t('4.9 cancel_session_switch / switch_session are controller-only', () => {
+  assert.ok(CONTROL_MESSAGE_TYPES.has('cancel_session_switch'), 'listed in CONTROL_MESSAGE_TYPES')
+  for (const type of ['cancel_session_switch', 'switch_session']) {
+    assert.equal(checkControlSender(type, 'user-ctrl', 'user-ctrl').ok, true)
+    assert.equal(checkControlSender(type, 'user-other', 'user-ctrl').ok, false, `${type} from non-controller user`)
+    assert.equal(checkControlSender(type, 'osborn-agent', 'user-ctrl').ok, false, `${type} from osborn-agent`)
+  }
+})
+
+for (const handler of ["data.type === 'resume_session'", "data.type === 'continue_session'", "data.type === 'session_selected'"]) {
+  await t(`S5 ${handler.split("'")[1]}: switches only when a live query runs another session`, () => {
+    const b = body(handler, 1500)
+    assert.ok(/liveSwitchNeeded\(/.test(b), 'must consult liveSwitchNeeded')
+    assert.ok(/requestSessionSwitch\(/.test(b), 'must route a live switch through requestSessionSwitch')
+  })
+}
+
+await t('S5 liveSwitchNeeded: no live query -> legacy arm-only; same session (primed) -> legacy; other -> switch', () => {
+  const b = body('function liveSwitchNeeded(', 1200)
+  assert.ok(/hasSession\?\.\(\)/.test(b))
+  assert.ok(/decideNextSession\(/.test(b))
+  assert.ok(/action === 'switch'/.test(b))
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
