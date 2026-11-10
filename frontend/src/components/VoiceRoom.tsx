@@ -11,6 +11,8 @@ import { RoomEvent, ConnectionState, Track, createAudioAnalyser } from 'livekit-
 import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
 import LiveClock from './LiveClock'
+import ModelBadge from './ModelBadge'
+import { fastBrainLabel } from '@/lib/modelBadge'
 import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
@@ -349,6 +351,11 @@ function VoiceRoomInner({
   }, [claudeAuthStatus])
   useEffect(() => () => onAuthInProgressRef.current?.(false), [])
   const [agentConnected, setAgentConnected] = useState(false)
+  // #87 model/provider badge — driven by REAL server signals, never the agent's
+  // prose self-report. `mainProvider` ← agent_ready.provider (declared main-brain
+  // provider); `agentVersion` ← GET /health → { version } (already polled below).
+  const [mainProvider, setMainProvider] = useState<string | null>(null)
+  const [agentVersion, setAgentVersion] = useState<string | null>(null)
   // Multi-instance slots panel
   const [slots, setSlots] = useState<SlotInfo[]>([])
   const [spawnPending, setSpawnPending] = useState(false)
@@ -719,6 +726,11 @@ function VoiceRoomInner({
           const d = await r.json()
           if (!cancelled && d?.memory && typeof d.memory.usedPct === 'number') {
             setAgentMemory(d.memory)
+          }
+          // #87: /health carries the running osborn version — the version
+          // indicator for the model badge. Older agents omit it (stays null).
+          if (!cancelled && typeof d?.version === 'string' && d.version.trim()) {
+            setAgentVersion(d.version)
           }
         }
       } catch { /* network error / timeout — keep previous reading */ }
@@ -1643,6 +1655,9 @@ function VoiceRoomInner({
         const cts = (window as any).__osbornClickTs
         if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms agent_ready received → setConnected(true)`)
         setAgentConnected(true)
+        // #87: the agent declares its main-brain provider here (not in the reply
+        // prose). Surface it in the header badge. Only trust a string signal.
+        if (typeof data.provider === 'string' && data.provider.trim()) setMainProvider(data.provider)
         // P1.6: catch a suspended AudioContext at agent_ready — BEFORE the
         // first TTS chunk plays into silence. On iOS the connect flow starts
         // without a direct tap on this page, so this is the common case.
@@ -2274,7 +2289,11 @@ function VoiceRoomInner({
           // User-facing label only \u2014 the millisecond timing, responseType and
           // toolsUsed were developer telemetry that read as a bug in the chat.
           // They still arrive on `data` for logging below; keep the human marker.
-          const label = '\u26A1 Quick take (provisional \u2014 the full answer follows)'
+          // #87: name the actual quick-take source. fastBrainLabel prefers an
+          // explicit `data.provider` (future agent-side emit) and otherwise uses
+          // the agentRole ('pipeline-fast-brain') \u2192 "\u26A1 Fast brain". It never
+          // guesses a provider that isn't on the wire.
+          const label = `${fastBrainLabel({ provider: data.provider, agentRole: data.agentRole })} (provisional \u2014 the full answer follows)`
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
           addMessageRef.current?.('assistant', `${label}\n${data.text}`, 'fast-brain', 'chat')
         }
@@ -3817,6 +3836,11 @@ function VoiceRoomInner({
                 <span className="truncate">{projectName}</span>
               </span>
             )}
+
+            {/* #87 model/provider badge — WHICH model is actually answering + the
+                running version, from real server signals (agent_ready.provider +
+                /health version), not the agent's unreliable prose self-report. */}
+            <ModelBadge provider={mainProvider} version={agentVersion} connected={agentConnected} />
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
