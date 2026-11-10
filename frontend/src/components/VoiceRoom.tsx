@@ -19,6 +19,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
+import { chatUrlForSession } from '@/lib/chat-url'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -246,13 +247,9 @@ function VoiceRoomInner({
   // provider) — surfaced as a header chip so a stranger can see WHICH repo /
   // project the session is attached to (audit C1/P1-7; §12 found it invisible,
   // and a project session even opened in an empty placeholder dir).
-  const sessionCwd = useSearchParams()?.get('workingDirectory') || ''
-  const projectName = (() => {
-    if (!sessionCwd) return null
-    const segs = sessionCwd.replace(/\/+$/, '').split('/').filter(Boolean)
-    const leaf = segs[segs.length - 1] || ''
-    return !leaf || leaf.toLowerCase() === 'workspace' ? 'Workspace' : leaf
-  })()
+  // The URL param is the launch-time fallback; the live session's own cwd
+  // (resolved below, once the session list is known) wins after a switch.
+  const urlCwd = useSearchParams()?.get('workingDirectory') || ''
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   // iOS recovery surfaces (2026-10-24 mobile branch, P1.6/P1.7). audioBlocked →
   // "tap to enable sound" bar when the room's AudioContext started suspended
@@ -382,6 +379,15 @@ function VoiceRoomInner({
   // Bug c50200ef: lists order by the agent's lastActivityAt (PR #20), not mtime.
   const sessionsByActivity = useMemo(() => sortSessionsByActivity(sessions), [sessions])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  // Header project chip: prefer the LIVE session's own cwd (correct after a
+  // switch to a session in another project), else the /chat URL param.
+  const sessionCwd = (currentSessionId && sessions.find((x) => x.sessionId === currentSessionId)?.cwd) || urlCwd
+  const projectName = (() => {
+    if (!sessionCwd) return null
+    const segs = sessionCwd.replace(/\/+$/, '').split('/').filter(Boolean)
+    const leaf = segs[segs.length - 1] || ''
+    return !leaf || leaf.toLowerCase() === 'workspace' ? 'Workspace' : leaf
+  })()
   const [isLoadingSessions, setIsLoadingSessions] = useState(false)
   // Auto-resume prompt state
   const [showResumePrompt, setShowResumePrompt] = useState(false)
@@ -3377,6 +3383,17 @@ function VoiceRoomInner({
     const session = sid ? sessions.find((x) => x.sessionId === sid) ?? null : null
     return chatDocumentTitle({ session, firstUserMessage })
   }, [sessions, currentSessionId, preSelectedSessionId, firstUserMessage])
+  // #71: keep /chat?session= pinned to the live session — a brand-new session
+  // as soon as the agent reports its id, and the new one after a switch — so a
+  // reload or re-entry resumes it instead of starting fresh. replaceState: no
+  // navigation, no remount (the provider captured its launch params once).
+  useEffect(() => {
+    if (!currentSessionId || typeof window === 'undefined') return
+    const cwd = sessions.find((x) => x.sessionId === currentSessionId)?.cwd
+    const next = chatUrlForSession(window.location.href, currentSessionId, cwd)
+    if (!next) return
+    try { window.history.replaceState(null, '', next) } catch { /* sandboxed iframe */ }
+  }, [currentSessionId, sessions])
   // Declared first so it captures the title from before this page set one.
   useEffect(() => {
     if (typeof document === 'undefined') return
@@ -3793,6 +3810,7 @@ function VoiceRoomInner({
         onNewRoom={handleNewRoom}
         onRefresh={handleRefreshRooms}
         disabled={!agentConnected}
+        liveTitle={firstUserMessage}
       />
       <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Persistent Anthropic sign-in gate (issue #53/#78). The agent blocks
@@ -4231,6 +4249,7 @@ function VoiceRoomInner({
           onNewRoom={handleNewRoom}
           onRefresh={handleRefreshRooms}
           disabled={!agentConnected}
+          liveTitle={firstUserMessage}
         />
 
         {/* Prominent compaction banner — sits above chat during PreCompact→PostCompact window.
