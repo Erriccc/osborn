@@ -45,3 +45,18 @@ export function sessionMessagesQuery(sessionId: string, cwd?: string | null, lim
   if (cwd) p.set('workingDirectory', cwd)
   return `?${p.toString()}`
 }
+
+/**
+ * The cwd to pin in the URL for the live session (S11): the agent-reported
+ * cwd (current_session / session_switched) when it is about THIS session —
+ * a fresh session isn't in the session list yet — else the list's routing cwd.
+ */
+export function pinnedSessionCwd(
+  sessionId: string | null,
+  reported: { sessionId: string; cwd?: string | null } | null,
+  sessions: Array<{ sessionId: string; cwd?: string }>,
+): string | undefined {
+  if (!sessionId) return undefined
+  if (reported && reported.sessionId === sessionId && reported.cwd) return reported.cwd
+  return sessions.find((s) => s.sessionId === sessionId)?.cwd
+}

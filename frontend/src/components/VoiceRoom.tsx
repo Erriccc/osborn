@@ -19,7 +19,7 @@ import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supa
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
-import { chatUrlForSession, sessionMessagesQuery } from '@/lib/chat-url'
+import { chatUrlForSession, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -386,6 +386,10 @@ function VoiceRoomInner({
   // Bug c50200ef: lists order by the agent's lastActivityAt (PR #20), not mtime.
   const sessionsByActivity = useMemo(() => sortSessionsByActivity(sessions), [sessions])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  // cwd the agent reported for a live session (current_session / session_switched).
+  // A fresh session is not in the session list yet, so this is the only source
+  // for pinning ?workingDirectory= (S11).
+  const [reportedCwd, setReportedCwd] = useState<{ sessionId: string; cwd?: string | null } | null>(null)
   // Header project chip: prefer the LIVE session's own cwd (correct after a
   // switch to a session in another project), else the /chat URL param.
   const sessionCwd = (currentSessionId && sessions.find((x) => x.sessionId === currentSessionId)?.cwd) || urlCwd
@@ -2115,6 +2119,7 @@ function VoiceRoomInner({
         // Current session info
         console.log('📋 Current session:', data.sessionId)
         setCurrentSessionId(data.sessionId || null)
+        if (data.sessionId && data.workingDirectory) setReportedCwd({ sessionId: data.sessionId, cwd: data.workingDirectory })
       } else if (data.type === 'session_resume_set') {
         // Ack for the INITIAL resume/continue flows (resume_session,
         // continue_session, session_selected) — NOT a mid-session switch. A live
@@ -2158,6 +2163,7 @@ function VoiceRoomInner({
         dispatchSwitchPending({ type: 'switched' })
         if (data.success) {
           setCurrentSessionId(data.sessionId)
+          if (data.workingDirectory) setReportedCwd({ sessionId: data.sessionId, cwd: data.workingDirectory })
 
           // Clear previous session's files — but keep favorites pinned so the
           // user's starred files survive the switch (they're cross-session).
@@ -3431,11 +3437,11 @@ function VoiceRoomInner({
   // navigation, no remount (the provider captured its launch params once).
   useEffect(() => {
     if (!currentSessionId || typeof window === 'undefined') return
-    const cwd = sessions.find((x) => x.sessionId === currentSessionId)?.cwd
+    const cwd = pinnedSessionCwd(currentSessionId, reportedCwd, sessions)
     const next = chatUrlForSession(window.location.href, currentSessionId, cwd)
     if (!next) return
     try { window.history.replaceState(null, '', next) } catch { /* sandboxed iframe */ }
-  }, [currentSessionId, sessions])
+  }, [currentSessionId, sessions, reportedCwd])
   // Declared first so it captures the title from before this page set one.
   useEffect(() => {
     if (typeof document === 'undefined') return

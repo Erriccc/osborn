@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { sessionMessagesQuery } from '../src/lib/chat-url'
+import { sessionMessagesQuery, pinnedSessionCwd } from '../src/lib/chat-url'
 import { switchFailureText, pendingSwitchLabel, switchPendingReducer } from '../src/lib/switch-ui'
 import { buildRoomRows } from '../src/lib/rooms'
 
@@ -117,6 +117,26 @@ t('S10 RoomsRail renders the switching state; VoiceRoom passes the pending id', 
   const rail = fs.readFileSync(path.join(__dirname, '../src/components/voice/RoomsRail.tsx'), 'utf8')
   assert.ok(/room\.switching/.test(rail) && /Switching…/.test(rail))
   assert.ok(/pendingId=\{switchPending\?\.sessionId/.test(vr))
+})
+
+// ── S11 ──
+t('S11 pinned cwd: agent-reported cwd for THIS session wins over the list', () => {
+  const list = [{ sessionId: S, cwd: '/w/list' }]
+  assert.equal(pinnedSessionCwd(S, { sessionId: S, cwd: '/w/agent' }, list), '/w/agent')
+})
+t('S11 pinned cwd: a fresh session not in the list yet uses the reported cwd', () => {
+  assert.equal(pinnedSessionCwd(S, { sessionId: S, cwd: '/w/agent' }, []), '/w/agent')
+})
+t('S11 pinned cwd: a report for a different session is ignored (stale)', () => {
+  assert.equal(pinnedSessionCwd(S, { sessionId: 'other', cwd: '/w/agent' }, [{ sessionId: S, cwd: '/w/list' }]), '/w/list')
+  assert.equal(pinnedSessionCwd(S, null, []), undefined)
+})
+t('S11 VoiceRoom: URL effect uses pinnedSessionCwd; current_session/session_switched record the reported cwd', () => {
+  assert.ok(/pinnedSessionCwd\(currentSessionId, reportedCwd, sessions\)/.test(vr))
+  const cs = vr.slice(vr.indexOf("data.type === 'current_session'"), vr.indexOf("data.type === 'current_session'") + 600)
+  assert.ok(/setReportedCwd\(/.test(cs))
+  const sw = vr.slice(vr.indexOf("data.type === 'session_switched'"), vr.indexOf("data.type === 'session_switched'") + 2500)
+  assert.ok(/setReportedCwd\(/.test(sw))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
