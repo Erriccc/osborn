@@ -33,6 +33,7 @@ import '@livekit/components-styles'
 import { MIC_DENIED_EVENT, isMicDenied, reconcileMicDenied, type MicPermissionState } from '@/lib/mic-permission'
 import { TAB_LOCK_NAME, TAB_LOCK_RETRY_MS, controlsEnabled, lockOutcomeAfterRestore, shouldConnectOnTransition, shouldRetryLockProbe, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
 import { CONNECT_WATCHDOG_MS, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired } from '@/lib/connect-gate'
+import { createSupabaseBrowser } from '@/lib/supabase-browser'
 
 interface ChatSessionContextValue {
   // ── Connection state ───────────────────────
@@ -418,6 +419,24 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     ctMark('button clicked (connect start)')
 
     try {
+      // Step 0 — AUTH PRE-WARM (fix: a direct /chat load showed "Sign in to
+      // connect to your agent" while the account was signed in; entering /chat
+      // from the dashboard worked). Every call below is cookie-auth-gated
+      // (/api/sandbox connect-room + status, then /api/token). On a cold DIRECT
+      // load — opening /chat by URL or reloading after being away, e.g. right
+      // after a machine restart — the Supabase access-token cookie may have
+      // expired, and nothing on this route refreshed it first. The dashboard
+      // masks the bug: it runs supabase.auth.getUser() on mount, which refreshes
+      // and persists a fresh cookie, so dashboard→/chat always carries a valid
+      // token; VoiceRoom's own getUser() here is too late (it mounts only AFTER
+      // a token is minted). getSession() is a local no-op when the token is still
+      // valid and refreshes + persists it (under the auth client's refresh lock)
+      // when expired — so the concurrent connect-room / status / token calls
+      // below all see one fresh, non-rotating session instead of each racing a
+      // server-side refresh-token rotation that fails closed as a 401. Best
+      // effort: a genuinely signed-out user still falls through to the real 401.
+      try { await createSupabaseBrowser().auth.getSession() } catch { /* no Supabase / self-hosted: real gate is /api/token */ }
+
       // Step 1: Respect the user's connection mode preference from the dashboard.
       // Cloud is the DEFAULT (no saved preference = cloud); 'local' is opt-in.
       const connectionMode =
