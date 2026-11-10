@@ -1944,8 +1944,7 @@ function VoiceRoomInner({
         // agent enriches with osborn_version / voice_mode / sandbox_id it knows.
         const p = (data.payload || {}) as any
         const ctx = (data.context || {}) as any
-        const sb = createSupabaseBrowser()
-        void submitBugReport(sb, {
+        void submitBugReport({
           type: p.type, severity: p.severity, title: p.title, description: p.description,
           reproduction_notes: p.reproduction_notes, tags: p.tags,
           osborn_version: ctx.osborn_version, voice_mode: ctx.voice_mode,

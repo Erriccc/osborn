@@ -1,16 +1,17 @@
 // Bug report / feature request submission (frontend-owned Supabase write).
 //
-// The bug_reports table (migration 003) is written two ways, both landing here:
+// The bug_reports table (migration 003) is written two ways, both funneling
+// through `submitBugReport` → POST /api/report:
 //   1. Agent/voice path: the bug-reporter skill POSTs the agent's /report-bug,
 //      which forwards a {type:'bug_report', payload, context} data-channel
-//      message to VoiceRoom — the frontend owns the actual insert (it holds the
-//      Supabase session; no service key shipped to the Fly machine).
-//   2. Direct path: the "Report a bug" button in the account menu.
+//      message to VoiceRoom, which calls submitBugReport.
+//   2. Direct path: the "Report a bug" button in the account menu (the modal).
 //
-// RLS: an authenticated user may insert only rows where reporter_user_id =
-// auth.uid() (migration 003), so we always stamp the signed-in user. The agent
-// path reuses the SAME signed-in session here, so it is RLS-compliant too.
-import type { SupabaseClient } from '@supabase/supabase-js'
+// The actual insert is done server-side in /api/report, as the signed-in user
+// (their cookies → RLS: reporter_user_id = auth.uid(), migration 003). That route
+// ALSO mirrors the report to GitHub Issues (issue #44); mirroring must run on the
+// server so the GITHUB_TOKEN never reaches the client. buildBugReportRow stays
+// pure + shared so the route validates/shapes exactly as before.
 
 export type BugReportType = 'bug' | 'feature'
 export type BugReportSeverity = 'low' | 'medium' | 'high' | 'critical'
@@ -87,29 +88,21 @@ export function buildBugReportRow(
   }
 }
 
-// Insert a bug report as the signed-in user. Returns a friendly error (never
-// throws) so both the modal and the silent agent-path handler can surface it.
-export async function submitBugReport(
-  supabase: SupabaseClient,
-  input: BugReportInput,
-): Promise<BugReportResult> {
-  let user: { id: string; email?: string | null } | null = null
+// Submit a bug report via the server (/api/report), which inserts it as the
+// signed-in user and mirrors it to GitHub Issues. Returns a friendly error
+// (never throws) so both the modal and the silent voice-path handler can surface
+// it. Client-only (relative fetch); the server route holds the GITHUB_TOKEN.
+export async function submitBugReport(input: BugReportInput): Promise<BugReportResult> {
   try {
-    const { data } = await supabase.auth.getUser()
-    user = data?.user ? { id: data.user.id, email: data.user.email } : null
-  } catch {
-    return { ok: false, error: 'Could not verify your session. Try again.' }
-  }
-  if (!user) return { ok: false, error: 'Sign in to file a report.' }
-
-  const built = buildBugReportRow(input, user)
-  if (!built.ok) return built
-
-  try {
-    const { data, error } = await supabase.from('bug_reports').insert(built.row).select('id').single()
-    if (error) return { ok: false, error: error.message }
-    return { ok: true, id: (data?.id as string | undefined) }
+    const resp = await fetch('/api/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+    const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; id?: string; error?: string }
+    if (!resp.ok || !data.ok) return { ok: false, error: data.error || 'Submit failed.' }
+    return { ok: true, id: data.id }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'Submit failed.' }
+    return { ok: false, error: e instanceof Error ? e.message : 'Network error — please try again.' }
   }
 }
