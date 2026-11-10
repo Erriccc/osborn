@@ -40,6 +40,7 @@
 export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'user_text',
   'claude_auth_code',
+  'claude_auth_start',
   'permission_response',
   'list_sessions',
   'resume_session',

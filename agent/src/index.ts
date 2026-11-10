@@ -49,7 +49,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
-import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth } from './claude-auth.js'
+import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, clearAuthFallbackIfActive } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
@@ -5804,6 +5804,59 @@ async function main() {
         console.log('🔑 Received auth code from frontend')
         sendToFrontend({ type: 'claude_auth_submitting', message: 'Submitting code to Claude CLI...' })
         pendingAuthSubmitCode(data.code)
+      } else if (data.type === 'claude_auth_start') {
+        // On-demand Claude sign-in. When a fallback key exists the join path
+        // skips the blocking OAuth (claude_auth_optional), so this is the only
+        // way to start it. Owner-gated via CONTROL_MESSAGE_TYPES.
+        const authSend = (type: string, payload: unknown) => {
+          sendToFrontend({ type, ...payload as object })
+        }
+        if (pendingAuthSubmitCode) {
+          // A flow is already running — re-deliver its state instead of a second pty.
+          console.log('🔑 claude_auth_start: flow already in-flight — replaying state')
+          replayInFlightAuth(authSend)
+        } else {
+          console.log('🔑 claude_auth_start: starting on-demand Claude OAuth')
+          // Not awaited: done only settles when the user finishes (or the 5-min
+          // timeout), and the data handler must stay responsive (claude_auth_code).
+          void (async () => {
+            try {
+              const authResult = await ensureClaudeAuth(authSend, { force: true })
+              if (authResult.submitCode && authResult.done) {
+                pendingAuthSubmitCode = authResult.submitCode
+                try {
+                  await authResult.done
+                } finally {
+                  pendingAuthSubmitCode = null
+                }
+              } else {
+                // Already authenticated — nothing to sign in to.
+                authSend('claude_auth_complete', { message: 'Claude is already authenticated.' })
+              }
+              // Success: onComplete already cleared the redirect; the call is
+              // idempotent and also covers the already-authenticated branch.
+              clearAuthFallbackIfActive()
+              // The persistent SDK subprocess inherited the fallback env at spawn.
+              // Close it so the next turn cold-starts on the real Claude login,
+              // continuing the same session.
+              if (currentLLM) {
+                const llm = currentLLM as any
+                try {
+                  if (typeof llm.abortQuery === 'function') llm.abortQuery()
+                  else if (typeof llm.abortAgent === 'function') llm.abortAgent()
+                  if (llm.sessionId) llm.setContinueSession?.(true)
+                  console.log('🔑 Claude sign-in complete — persistent query closed; next turn uses Claude')
+                } catch (err) {
+                  console.warn('🔑 Failed to restart persistent query after sign-in:', err instanceof Error ? err.message : err)
+                }
+              }
+            } catch (err: any) {
+              console.error('❌ On-demand Claude authentication failed:', err?.message)
+              pendingAuthSubmitCode = null
+              sendToFrontend({ type: 'claude_auth_error', message: err?.message || 'Authentication failed' })
+            }
+          })()
+        }
       } else if (data.type === 'permission_response') {
         // Handle permission response for direct mode
         if (currentLLM && currentLLM.hasPendingPermission?.()) {

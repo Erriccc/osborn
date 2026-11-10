@@ -182,29 +182,6 @@ export function isClaudeAuthenticated(): boolean {
  */
 let fallbackTierActive = false
 
-/**
- * Additive onboarding tier resolution. Runs AFTER ensureClaudeAuth() and BEFORE
- * session creation. Resolves which auth backend the agent will use, in order
- * (Claude → ANTHROPIC_API_KEY → z.ai → OpenRouter):
- *
- *   Tier 1 — real Claude login active (expiry-aware): use it, no-op.
- *   Tier 2 — user's own ANTHROPIC_API_KEY is set: use it, no-op.
- *   Tier 3 — house demo pass, Z_AI_PERSONAL_API_KEY (or ZAI_API_KEY): redirect
- *            the SDK to z.ai's Anthropic-compatible endpoint (GLM model).
- *   Tier 4 — central OPENROUTER_API_KEY present: redirect the SDK to
- *            OpenRouter's native Anthropic-Messages endpoint via env vars and
- *            point every model slot at FALLBACK_MODEL. Proven end-to-end
- *            env-var-only (no proxy) — the Claude Code tool loop completes.
- *   Tier 4 fail — no fallback key at all: warn and no-op (do NOT throw; the
- *            SDK may still find creds we didn't detect).
- *
- * Key values are trimmed and quote-stripped (cleanEnvKey) — a stray trailing
- * space in a secret would otherwise be sent verbatim as the bearer token.
- *
- * Env vars MUST be set here, before the first query() spawn — the SDK
- * subprocess inherits process.env at spawn time and reads auth/model config
- * once at cold start.
- */
 /** Trim whitespace and strip one layer of surrounding quotes from an env value. */
 export function cleanEnvKey(value: string | undefined | null): string {
   if (!value) return ''
@@ -243,6 +220,29 @@ export function shouldSkipBlockingOAuth(env: NodeJS.ProcessEnv, authed: boolean)
   return hasFallbackModelKey(env)
 }
 
+/**
+ * Additive onboarding tier resolution. Runs AFTER ensureClaudeAuth() and BEFORE
+ * session creation. Resolves which auth backend the agent will use, in order
+ * (Claude → ANTHROPIC_API_KEY → z.ai → OpenRouter):
+ *
+ *   Tier 1 — real Claude login active (expiry-aware): use it, no-op.
+ *   Tier 2 — user's own ANTHROPIC_API_KEY is set: use it, no-op.
+ *   Tier 3 — house demo pass, Z_AI_PERSONAL_API_KEY (or ZAI_API_KEY): redirect
+ *            the SDK to z.ai's Anthropic-compatible endpoint (GLM model).
+ *   Tier 4 — central OPENROUTER_API_KEY present: redirect the SDK to
+ *            OpenRouter's native Anthropic-Messages endpoint via env vars and
+ *            point every model slot at FALLBACK_MODEL. Proven end-to-end
+ *            env-var-only (no proxy) — the Claude Code tool loop completes.
+ *   Tier 4 fail — no fallback key at all: warn and no-op (do NOT throw; the
+ *            SDK may still find creds we didn't detect).
+ *
+ * Key values are trimmed and quote-stripped (cleanEnvKey) — a stray trailing
+ * space in a secret would otherwise be sent verbatim as the bearer token.
+ *
+ * Env vars MUST be set here, before the first query() spawn — the SDK
+ * subprocess inherits process.env at spawn time and reads auth/model config
+ * once at cold start.
+ */
 export function applyAuthFallback(): void {
   // Tier 1: real Claude login (expiry-aware — NOT hasOAuthTokenEnv, which
   // would treat an expired token as active and let the SDK fail downstream).
@@ -320,15 +320,21 @@ export function applyAuthFallback(): void {
 }
 
 /**
- * Clear the OpenRouter fallback redirect — but ONLY if applyAuthFallback() set
- * it. Called from the auth onComplete path so a user who later finishes real
+ * Clear the fallback redirect (z.ai house pass or OpenRouter) — but ONLY if
+ * applyAuthFallback() set it. Called from the auth onComplete path so a user who later finishes real
  * Claude login mid-session (or on the next cold start) is not stuck routing to
  * OpenRouter. A user-supplied ANTHROPIC_BASE_URL is left untouched.
  */
-function clearAuthFallbackIfActive(): void {
+export function clearAuthFallbackIfActive(): void {
   if (!fallbackTierActive) return
   delete process.env.ANTHROPIC_BASE_URL
   delete process.env.ANTHROPIC_AUTH_TOKEN
+  // Model-slot overrides both tiers (z.ai + OpenRouter) set — left in place they
+  // would pin the real Claude session onto glm-4.7 / FALLBACK_MODEL and the
+  // fallback's context cap.
+  delete process.env.ANTHROPIC_MODEL
+  delete process.env.ANTHROPIC_SMALL_FAST_MODEL
+  delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
   // Was forced to '' for the OpenRouter redirect; unset so the real OAuth
   // token path (CLAUDE_CODE_OAUTH_TOKEN) is used cleanly.
   delete process.env.ANTHROPIC_API_KEY
@@ -674,6 +680,7 @@ export function replayInFlightAuth(
  *   3. `claude auth status --json`
  *   3b. Fallback model key present (hasFallbackModelKey) → return immediately
  *       and emit `claude_auth_optional`; skipped when OSBORN_FORCE_CLAUDE_LOGIN=1
+ *       or opts.force (user explicitly asked to sign in via `claude_auth_start`)
  *   4. Interactive OAuth flow (setup-token)
  *
  * Concurrency: if a previous call is still running its OAuth flow, new
@@ -683,7 +690,8 @@ export function replayInFlightAuth(
  * sees two different URLs / two different code_challenges racing.
  */
 export async function ensureClaudeAuth(
-  sendToFrontend: (type: string, payload: unknown) => void
+  sendToFrontend: (type: string, payload: unknown) => void,
+  opts: { force?: boolean } = {}
 ): Promise<{ submitCode?: (code: string) => void; done?: Promise<void> }> {
   // If an auth flow is already running, attach to it and replay any
   // state we've already captured (the URL, any waiting_code prompt).
@@ -742,7 +750,8 @@ export async function ensureClaudeAuth(
   // OAuth (which only ends on completion or a 5-minute timeout). Return the
   // "no wait" shape so the caller proceeds straight to applyAuthFallback(),
   // and tell the frontend Claude sign-in is an optional upgrade.
-  if (shouldSkipBlockingOAuth(process.env, false)) {
+  // opts.force (the on-demand `claude_auth_start` path) bypasses this check.
+  if (!opts.force && shouldSkipBlockingOAuth(process.env, false)) {
     console.log('🔑 Claude not authenticated — fallback key present, skipping blocking OAuth')
     try {
       sendToFrontend('claude_auth_optional', {

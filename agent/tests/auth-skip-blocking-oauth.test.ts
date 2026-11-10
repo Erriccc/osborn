@@ -1,7 +1,7 @@
 // No Claude login + a fallback key must NOT block on interactive OAuth.
 // Run: npx tsx agent/tests/auth-skip-blocking-oauth.test.ts
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -22,7 +22,9 @@ const {
   cleanEnvKey,
   ensureClaudeAuth,
   applyAuthFallback,
+  clearAuthFallbackIfActive,
 } = await import('../src/claude-auth.js')
+const { CONTROL_MESSAGE_TYPES, checkControlSender } = await import('../src/data-sender-auth.js')
 
 let pass = 0
 const results: Promise<void>[] = []
@@ -101,6 +103,55 @@ t('applyAuthFallback: trims trailing space from the z.ai key', () => {
   applyAuthFallback()
   assert.equal(process.env.ANTHROPIC_AUTH_TOKEN, 'zai-key')
   assert.equal(process.env.OSBORN_DEMO_PASS, 'zai')
+})
+await Promise.all(results.splice(0))
+
+t('clearAuthFallbackIfActive: undoes the z.ai redirect and model overrides', () => {
+  // Precondition: the previous test activated the z.ai tier.
+  assert.equal(process.env.OSBORN_DEMO_PASS, 'zai')
+  clearAuthFallbackIfActive()
+  for (const k of [
+    'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'OSBORN_DEMO_PASS', 'ANTHROPIC_MODEL',
+    'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
+    'CLAUDE_CODE_MAX_CONTEXT_TOKENS', 'ANTHROPIC_API_KEY',
+  ]) assert.equal(process.env[k], undefined, `${k} still set`)
+})
+await Promise.all(results.splice(0))
+
+t('applyAuthFallback: quoted ANTHROPIC_API_KEY is tier 2, cleaned, and does not redirect', () => {
+  delete process.env.Z_AI_PERSONAL_API_KEY
+  process.env.OPENROUTER_API_KEY = 'or-key'
+  process.env.ANTHROPIC_API_KEY = ' "sk-ant-api-xyz" '
+  applyAuthFallback()
+  assert.equal(process.env.ANTHROPIC_API_KEY, 'sk-ant-api-xyz')
+  assert.equal(process.env.ANTHROPIC_BASE_URL, undefined)
+  assert.equal(process.env.ANTHROPIC_AUTH_TOKEN, undefined)
+})
+t('applyAuthFallback: quoted-empty ANTHROPIC_API_KEY falls through to OpenRouter', () => {
+  process.env.ANTHROPIC_API_KEY = '""'
+  process.env.OPENROUTER_API_KEY = "'or-key' "
+  applyAuthFallback()
+  assert.equal(process.env.ANTHROPIC_BASE_URL, 'https://openrouter.ai/api')
+  assert.equal(process.env.ANTHROPIC_AUTH_TOKEN, 'or-key')
+  assert.equal(process.env.ANTHROPIC_API_KEY, '')
+  clearAuthFallbackIfActive()
+})
+await Promise.all(results.splice(0))
+
+t('claude_auth_start is an owner-only control message', () => {
+  assert.ok(CONTROL_MESSAGE_TYPES.has('claude_auth_start'))
+  assert.equal(checkControlSender('claude_auth_start', 'user-other', 'user-owner').ok, false)
+  assert.equal(checkControlSender('claude_auth_start', 'user-owner', 'user-owner').ok, true)
+})
+t('index.ts wires a claude_auth_start handler that forces OAuth past the skip', () => {
+  const src = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8')
+  const i = src.indexOf("data.type === 'claude_auth_start'")
+  assert.ok(i > 0, 'handler missing')
+  const body = src.slice(i, i + 4000)
+  assert.ok(body.includes('{ force: true }'), 'must call ensureClaudeAuth with force')
+  assert.ok(body.includes('pendingAuthSubmitCode = authResult.submitCode'), 'must set pendingAuthSubmitCode')
+  assert.ok(body.includes('clearAuthFallbackIfActive()'), 'must clear the fallback redirect')
+  assert.ok(/abortQuery|closeSession/.test(body), 'must close the persistent query')
 })
 await Promise.all(results.splice(0))
 
