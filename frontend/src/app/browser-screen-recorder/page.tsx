@@ -28,6 +28,11 @@ export default function BrowserScreenRecorderLanding() {
           <div className="text-4xl">🎥🧠</div>
           <h1 className="text-3xl font-semibold text-white">Browser Screen Recorder</h1>
           <p className="text-lg text-amber-400">Give it an app + an intent — it drives the browser and records proof it worked</p>
+          <div className="pt-2">
+            <a href="/browser" className="inline-block rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-black transition hover:bg-amber-400">
+              🎥 Watch &amp; drive the live engine →
+            </a>
+          </div>
         </header>
 
         <section className="space-y-4 text-sm leading-relaxed text-gray-300">
