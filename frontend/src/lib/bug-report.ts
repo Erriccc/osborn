@@ -99,10 +99,23 @@ export async function submitBugReport(input: BugReportInput): Promise<BugReportR
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     })
-    const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; id?: string; error?: string }
-    if (!resp.ok || !data.ok) return { ok: false, error: data.error || 'Submit failed.' }
+    // Read the body ONCE as text, then try to parse JSON out of it. This way a
+    // non-JSON error page (a 404 route miss, or a 500 that crashed before our
+    // handler could return JSON) still yields a useful message instead of a bare
+    // "Submit failed." — the raw status + body is what makes the failure diagnosable.
+    const raw = await resp.text().catch(() => '')
+    let data: { ok?: boolean; id?: string; error?: string } = {}
+    try {
+      data = raw ? JSON.parse(raw) : {}
+    } catch {
+      /* non-JSON error page — fall through to the raw body below */
+    }
+    if (!resp.ok || !data.ok) {
+      const detail = data.error || raw.trim().slice(0, 300) || resp.statusText || 'Unknown error'
+      return { ok: false, error: `Submit failed (HTTP ${resp.status}): ${detail}` }
+    }
     return { ok: true, id: data.id }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'Network error — please try again.' }
+    return { ok: false, error: e instanceof Error ? `Network error: ${e.message}` : 'Network error — please try again.' }
   }
 }
