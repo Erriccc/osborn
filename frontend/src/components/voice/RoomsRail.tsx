@@ -8,9 +8,11 @@
 //     controlling tab — see ChatSessionProvider). We do NOT open a second
 //     WebRTC connection per room; that would burn connection minutes and fight
 //     the tab lock.
-//   • Switching to another room sends `switch_session` on the SAME live
-//     channel, so the agent swaps which Claude session it is focused on and
-//     replays that session's durable state (`session_switched`). Each room keeps its
+//   • Switching to another room sends `switch_session` (with the room's cwd)
+//     on the SAME live channel. The agent switches in place: if the current
+//     session is busy it finishes the current step first
+//     (`session_switch_pending`, Switch now / Cancel), then resumes the target
+//     and replays its durable state (`session_switched`). Each room keeps its
 //     own state because sessions are persisted agent-side (JSONL) — switching
 //     away and back is lossless.
 //   • Background "slots" (InstancesPanel) are the genuinely-concurrent rooms:

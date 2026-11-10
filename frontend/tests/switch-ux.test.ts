@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { sessionMessagesQuery } from '../src/lib/chat-url'
+import { switchFailureText, pendingSwitchLabel, switchPendingReducer } from '../src/lib/switch-ui'
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -28,6 +29,65 @@ t('S8 mount hydration passes the launch cwd', () => {
   const i = vr.indexOf("agentReadUrl(base, 'session-messages')")
   assert.ok(i > 0)
   assert.ok(/sessionMessagesQuery\(preSelectedSessionId, launchCwd/.test(vr.slice(i - 50, i + 200)))
+})
+
+// ── S9 ──
+t('S9 failure copy names the reason', () => {
+  assert.match(switchFailureText({ reason: 'meeting_active' }), /meeting/i)
+  assert.match(switchFailureText({ reason: 'target_busy_in_background' }), /background/i)
+  assert.match(switchFailureText({ reason: 'needs_you' }), /permission/i)
+  assert.match(switchFailureText({ reason: 'not_found' }), /not found/i)
+  assert.equal(switchFailureText({ error: 'Custom agent text' }), 'Custom agent text')
+  assert.ok(switchFailureText({}).length > 0)
+})
+t('S9 pending label: finish-then-switch wording', () => {
+  assert.equal(pendingSwitchLabel('Fix the login bug'), 'Switching to “Fix the login bug” when the current step finishes')
+  assert.match(pendingSwitchLabel('X', 2), /2 sub-agents/)
+})
+t('S9 pending reducer: start / replace / cancel / switched', () => {
+  let st = switchPendingReducer(null, { type: 'pending', sessionId: 'b', cwd: '/w/b', runningTasks: 1, now: 5 })
+  assert.deepEqual(st, { sessionId: 'b', cwd: '/w/b', runningTasks: 1, startedAt: 5 })
+  st = switchPendingReducer(st, { type: 'pending', sessionId: 'c', now: 9 })
+  assert.equal(st?.sessionId, 'c')
+  assert.equal(switchPendingReducer(st, { type: 'cancelled', sessionId: 'other' })?.sessionId, 'c', 'stale cancel ignored')
+  assert.equal(switchPendingReducer(st, { type: 'cancelled', sessionId: 'c' }), null)
+  assert.equal(switchPendingReducer(st, { type: 'cancelled', sessionId: null }), null)
+  assert.equal(switchPendingReducer(st, { type: 'switched' }), null)
+})
+function block(anchor: string, len = 3000) {
+  const i = vr.indexOf(anchor)
+  assert.ok(i > 0, `missing ${anchor}`)
+  return vr.slice(i, i + len)
+}
+t('S9 handleSwitchSession sends workingDirectory + force', () => {
+  const b = block('const handleSwitchSession = useCallback(', 900)
+  assert.ok(/workingDirectory: cwd/.test(b) && /force/.test(b))
+})
+t('S9 Rooms passes room.cwd; ControlMenu passes session.cwd and honest copy', () => {
+  assert.ok(/handleSwitchSession\(room\.id, room\.cwd\)/.test(vr))
+  const cm = fs.readFileSync(path.join(__dirname, '../src/components/voice/ControlMenu.tsx'), 'utf8')
+  assert.ok(!/Current context will be saved/.test(cm))
+  assert.ok(/finishes the current step here first/.test(cm))
+  assert.ok(/onResumeSession\(session\.sessionId, session\.cwd\)/.test(cm))
+})
+t('S9 pending / cancelled handlers exist and Switch now resends with force', () => {
+  assert.ok(vr.includes("data.type === 'session_switch_pending'"))
+  assert.ok(vr.includes("data.type === 'session_switch_cancelled'"))
+  assert.ok(/type: 'cancel_session_switch'/.test(vr))
+  assert.ok(/handleSwitchSession\(switchPending\.sessionId, switchPending\.cwd, true\)/.test(vr))
+})
+t('S9 session_switched success replaces transcript from /session-messages (no 3-line dump)', () => {
+  const b = block("data.type === 'session_switched'", 4000).split("data.type === 'plan_file_updated'")[0]
+  assert.ok(/setMessages\(\[\]\)/.test(b))
+  assert.ok(/setBackgroundFlows\(\[\]\)/.test(b))
+  assert.ok(/setPendingPermission\(null\)/.test(b))
+  assert.ok(/sessionMessagesQuery\(data\.sessionId, data\.workingDirectory/.test(b))
+  assert.ok(!/Previous Session Context/.test(b), 'old dump still present')
+  assert.ok(/switchFailureText\(data\)/.test(b))
+})
+t('S9 click does not set currentSessionId (only session_switched does)', () => {
+  const b = block('const handleSwitchSession = useCallback(', 900)
+  assert.ok(!/setCurrentSessionId/.test(b))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
