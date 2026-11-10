@@ -44,6 +44,42 @@ that patch first (or `brew install cocoapods` just for the generation step).
   `VoiceNative-sim.app` (simulator slices — **this is the one you run
   locally**; the device build won't install into a simulator).
 
+## UI smoke tests (CI) — issue #45
+
+Both iOS workflows now run **Maestro** smoke flows on a booted simulator after
+the build, so a launch/sign-in regression turns the run red (with screenshots)
+instead of shipping silently. They also run on **pull requests** touching each
+app's paths.
+
+- **Expo app (`rn-ios-build`):** flows in `mobile/.maestro/` — app launches, the
+  sign-in screen renders (`01-launch-login`), the email field accepts input
+  (`02-email-entry`). Targets stable `testID`s (`login-email-input`,
+  `login-send-code`) + visible copy.
+- **Capacitor shell (`ios-build`):** flow in `frontend/native/.maestro/` — the
+  native wrapper boots and its WKWebView renders the live site
+  (`01-launch`). This one depends on **production being reachable** from the
+  runner; a failure is as likely a prod/network blip as an app bug — the
+  screenshot artifact tells them apart.
+- **How it runs:** install Maestro (`get.maestro.mobile.dev`, JVM via
+  `setup-java`), `xcrun simctl boot` a runner iPhone, `xcrun simctl install` the
+  `*-sim.app`, `maestro test .maestro`. Modern Maestro drives the simulator with
+  its embedded XCTest runner — **no idb-companion needed** (add `brew install
+  idb-companion` only if a run complains about idb). The build artifact uploads
+  *before* the smoke step, so a smoke failure never hides the `.app`.
+- **Artifacts on failure:** `rn-maestro-<sha>` / `cap-maestro-<sha>` carry the
+  per-flow screenshots, Maestro's command log, and the JUnit report.
+
+**Limits / founder-gated:**
+- **Authenticated screens** (Sessions/Library/Settings tabs, the voice screen's
+  composer + mic-permission states) need a **seeded test account** — a real email
+  submit sends a one-time code. Add `MAESTRO_APP_EMAIL`/OTP injection (or a test
+  Supabase user) to extend past the sign-in surface; parked until that exists.
+- **Voice path** (LiveKit/WebRTC real-time audio, real mic capture) can't be
+  validated on a simulator — needs a real iPhone via TestFlight (post-$99).
+- **Agent test-loop:** for the scheduled automation to read these run results and
+  file/comment issues, add **`Actions: Read`** to the repo-scoped key it already
+  uses for Issues (repo admin step).
+
 ## Where to test what (the ladder)
 1. **PWA — today, $0, no build:** iPhone Safari → `www.voice-native.com` →
    Share → Add to Home Screen. This IS the mobile version; checklist below (§PWA).

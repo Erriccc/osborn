@@ -20,6 +20,10 @@ on:
     paths:
       - 'mobile/**'
       - '.github/workflows/rn-ios-build.yml'
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/rn-ios-build.yml'
 
 concurrency:
   group: rn-ios-build-${{ github.ref }}
@@ -113,3 +117,59 @@ jobs:
           path: mobile/ios/artifact/
           retention-days: 14
           if-no-files-found: error
+
+      # ── UI smoke tests (issue #45) ─────────────────────────────────────────
+      # Boot a simulator, install the just-built .app, and run Maestro flows.
+      # Runs AFTER the build artifact is already uploaded, so a smoke failure
+      # never hides the build output. Modern Maestro drives the simulator via its
+      # embedded XCTest runner (Xcode + CLT only) — no idb-companion needed; if a
+      # future run complains about idb, add `brew install idb-companion` here.
+      - name: Set up JDK (Maestro runs on the JVM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Maestro
+        working-directory: mobile
+        run: |
+          # Pin with `export MAESTRO_VERSION=1.xx.x` before the installer to freeze it.
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Boot iOS Simulator
+        id: sim
+        run: |
+          set -e
+          UDID=$(xcrun simctl list devices available | grep -E 'iPhone 1[5-9]|iPhone 2[0-9]' | head -1 | grep -oE '[0-9A-Fa-f-]{36}' || true)
+          [ -z "$UDID" ] && UDID=$(xcrun simctl list devices available | grep -i 'iPhone' | head -1 | grep -oE '[0-9A-Fa-f-]{36}')
+          echo "Booting simulator $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Install app on simulator
+        working-directory: mobile/ios
+        run: xcrun simctl install "${{ steps.sim.outputs.udid }}" artifact/VoiceNativeRN-sim.app
+
+      - name: Run Maestro smoke flows
+        working-directory: mobile
+        run: maestro --device "${{ steps.sim.outputs.udid }}" test .maestro --format junit --output maestro-report.xml
+
+      - name: Collect Maestro output
+        if: always()
+        working-directory: mobile
+        run: |
+          mkdir -p maestro-output
+          cp -R "$HOME/.maestro/tests" maestro-output/ 2>/dev/null || true
+          cp -R artifacts maestro-output/ 2>/dev/null || true
+          cp maestro-report.xml maestro-output/ 2>/dev/null || true
+
+      - name: Upload Maestro artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rn-maestro-${{ github.sha }}
+          path: mobile/maestro-output/
+          retention-days: 14
+          if-no-files-found: ignore
