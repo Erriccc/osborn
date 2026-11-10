@@ -44,6 +44,7 @@ run "keep-warm"                  env HOME="$SANDBOX" npx tsx "$DIR/keep-warm.ts"
 run "connect-overlap"            env HOME="$SANDBOX" npx tsx "$DIR/connect-overlap.ts"
 run "session-manifest"           env HOME="$SANDBOX" npx tsx "$DIR/session-manifest.ts"
 run "mem-recycle"                env HOME="$SANDBOX" npx tsx "$DIR/mem-recycle.ts"
+run "swap-inner-guard"           env HOME="$SANDBOX" npx tsx "$DIR/swap-inner-guard.ts"
 
 # Type-level pins — tsx strips types without checking, so these MUST go through tsc
 run "type-pins (tsc)"          npx tsc --noEmit -p "$DIR/tsconfig.json"

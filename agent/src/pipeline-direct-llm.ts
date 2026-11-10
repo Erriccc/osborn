@@ -11,7 +11,7 @@
 
 import { llm, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
 import { ClaudeLLM, type ClaudeLLMOptions } from './claude-llm.js'
-import { askPipelineFastBrain, type PipelineFastBrainResult } from './pipeline-fastbrain.js'
+import { askPipelineFastBrain, type PipelineFastBrainResult, type AgentControlCallbacks } from './pipeline-fastbrain.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { statusManager } from './status-manager.js'
 import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
@@ -220,6 +220,32 @@ export class PipelineDirectLLM extends llm.LLM {
   get model(): string { return this.#claudeLLM.model }
   get isResumingSession(): boolean { return this.#claudeLLM.isResumingSession }
   label(): string { return 'pipeline-direct' }
+
+  // ── Instance swap (foreground ⇄ background handoff) ──────────────────────────
+  // The voice AgentSession binds THIS wrapper for the whole session; chat() routes
+  // to #claudeLLM. swapInner() hot-swaps the inner ClaudeLLM so the voice can move
+  // to an already-running subprocess without tearing down the AgentSession. The
+  // caller owns moving voice event listeners between the old and new inner's emitter.
+  // Not wired by any caller yet (swap port step 1: guards + surface only).
+  get inner(): ClaudeLLM { return this.#claudeLLM }
+  swapInner(newInner: ClaudeLLM): ClaudeLLM {
+    const prev = this.#claudeLLM
+    // Cancel any in-flight fast-brain turn bound to the OLD inner so its agentControl
+    // closures can't fire interrupt/sendPrompt into the newly promoted session.
+    // Clear per-turn flags so the new inner starts clean.
+    try { this.#turnAbort?.abort() } catch {}
+    this.#turnAbort = null
+    this.#postCompactionTailPending = false
+    this.#claudeLLM = newInner
+    console.log('🔁 [pipeline] swapped inner ClaudeLLM (voice handoff)')
+    return prev
+  }
+  // After a swap, point the dir-derived work (fast brain, session-tail) at the promoted
+  // session's working dir; otherwise #opts stays bound to the pre-swap session.
+  setWorkingContext({ workingDirectory, sessionBaseDir }: { workingDirectory: string; sessionBaseDir?: string }) {
+    this.#opts = { ...this.#opts, workingDirectory, sessionBaseDir: sessionBaseDir ?? workingDirectory }
+  }
+  hasSession(): boolean { return this.#claudeLLM.hasSession() }
 
   // Proxy all methods
   setResumeSessionId(id: string | null) { this.#claudeLLM.setResumeSessionId(id) }
@@ -515,22 +541,25 @@ export class PipelineDirectLLM extends llm.LLM {
     if (this.#turnAbort) this.#turnAbort.abort()
     this.#turnAbort = new AbortController()
     const signal = this.#turnAbort.signal
+    // Bind this turn to the inner it started on. After swapInner() the closures
+    // below must not reach the newly promoted session (see buildGuardedAgentControl).
+    const inner = this.#claudeLLM
 
     const startMs = Date.now()
     // Wait for SDK to assign session ID — listen for event instead of polling
     // Large sessions (22MB+) can take 10-15s for SDK to replay JSONL
-    let sessionId = this.#claudeLLM.sessionId
+    let sessionId = inner.sessionId
     if (!sessionId) {
       sessionId = await new Promise<string>((resolve) => {
         // Listen for the session_id event from SDK
         const onSessionId = (data: { sessionId: string }) => {
           resolve(data.sessionId)
         }
-        this.#claudeLLM.events.once('session_id', onSessionId)
+        inner.events.once('session_id', onSessionId)
         // Safety timeout — don't wait forever
         setTimeout(() => {
-          this.#claudeLLM.events.removeListener('session_id', onSessionId)
-          resolve(this.#claudeLLM.sessionId || 'pending')
+          inner.events.removeListener('session_id', onSessionId)
+          resolve(inner.sessionId || 'pending')
         }, 15000)
       })
     }
@@ -549,26 +578,11 @@ export class PipelineDirectLLM extends llm.LLM {
         chatHistory: this.#opts.getChatHistory?.() || [],
         researchContext: this.#opts.getResearchContext?.(),
         sessionBaseDir,
-        agentControl: {
-          interrupt: () => this.#claudeLLM.interruptQuery(),
-          abort: () => this.#claudeLLM.abortQuery(),
-          hasActiveAgent: () => this.#claudeLLM.hasActiveQuery(),
-          getRecentUserMessages: (count: number) => {
-            const history = this.#opts.getChatHistory?.() || []
-            return history
-              .filter(t => t.role === 'user')
-              .slice(-count)
-              .map(t => t.content)
-          },
-          sendPrompt: (prompt: string) => {
-            // Direct call to ClaudeLLM.chat() — event listeners (tts_say, tool_use, etc.) still attached
-            // skipTTSQueue mode: tts_say events → index.ts → session.say() — works independently
-            console.log(`🧠⚡ [control] Sending new prompt to Claude (${prompt.length} chars)`)
-            const chatCtx = new llm.ChatContext()
-            chatCtx.addMessage({ role: 'user', content: prompt })
-            this.#claudeLLM.chat({ chatCtx })
-          },
-        },
+        agentControl: buildGuardedAgentControl({
+          inner,
+          getCurrentInner: () => this.#claudeLLM,
+          getChatHistory: () => this.#opts.getChatHistory?.() || [],
+        }),
       })
 
       if (signal.aborted) return
@@ -591,6 +605,56 @@ export class PipelineDirectLLM extends llm.LLM {
     } finally {
       if (this.#turnAbort?.signal === signal) this.#turnAbort = null
     }
+  }
+}
+
+/**
+ * Fast-brain agentControl bound to the inner ClaudeLLM a turn started on. Every
+ * callback is a no-op once the wrapper's current inner is no longer `inner` (after
+ * swapInner), so an emergency_stop from a pre-swap turn can't interrupt/re-prompt the
+ * promoted session. Deliberately NOT gated on the turn's abort signal: a newer user
+ * turn aborts it, and a "stop" followed quickly by more speech must still let the
+ * earlier turn's emergency_stop act on the same session (pre-swap behavior).
+ */
+export function buildGuardedAgentControl(args: {
+  inner: ClaudeLLM
+  getCurrentInner: () => ClaudeLLM
+  getChatHistory: () => { role: string; content: string }[]
+}): AgentControlCallbacks {
+  const { inner, getCurrentInner, getChatHistory } = args
+  const stale = () => inner !== getCurrentInner()
+  return {
+    interrupt: async () => {
+      if (stale()) return false
+      return inner.interruptQuery()
+    },
+    abort: () => {
+      if (stale()) return
+      inner.abortQuery()
+    },
+    hasActiveAgent: () => {
+      if (stale()) return false
+      return inner.hasActiveQuery()
+    },
+    getRecentUserMessages: (count: number) => {
+      if (stale()) return []
+      return getChatHistory()
+        .filter(t => t.role === 'user')
+        .slice(-count)
+        .map(t => t.content)
+    },
+    sendPrompt: (prompt: string) => {
+      if (stale()) {
+        console.log('🧠⚡ [control] Dropped stale sendPrompt (inner swapped)')
+        return
+      }
+      // Direct call to ClaudeLLM.chat() — event listeners (tts_say, tool_use, etc.) still attached
+      // skipTTSQueue mode: tts_say events → index.ts → session.say() — works independently
+      console.log(`🧠⚡ [control] Sending new prompt to Claude (${prompt.length} chars)`)
+      const chatCtx = new llm.ChatContext()
+      chatCtx.addMessage({ role: 'user', content: prompt })
+      inner.chat({ chatCtx })
+    },
   }
 }
 
