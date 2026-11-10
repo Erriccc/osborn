@@ -9,6 +9,7 @@ import path from 'node:path'
 import {
   CONNECT_WATCHDOG_MS,
   connectTimeoutMessage,
+  isAuthGateTerminal,
   isAwaitingAgent,
   isOAuthInProgress,
   nextAuthRequired,
@@ -90,6 +91,22 @@ t('watchdog window is bounded and sane', () => {
   ok(CONNECT_WATCHDOG_MS > 30_000 && CONNECT_WATCHDOG_MS <= 120_000, 'bounded 30s–120s')
 })
 
+// ── #78: the auth gate is the TERMINAL state once sign-in was ever asked for ──
+t('auth gate is terminal once required and the modal is closed', () => {
+  eq(isAuthGateTerminal(true, 'none'), true, 'everRequired + modal closed → banner (terminal)')
+})
+
+t('auth gate is NOT terminal while the sign-in modal is open', () => {
+  // mid-OAuth: the modal is the resolution, not the banner.
+  eq(isAuthGateTerminal(true, 'waiting'), false, 'modal open → not banner')
+  eq(isAuthGateTerminal(true, 'required'), false, 'preparing → not banner')
+  eq(isAuthGateTerminal(true, 'waiting_code'), false, 'awaiting code → not banner')
+})
+
+t('auth gate is not terminal before sign-in was ever required', () => {
+  eq(isAuthGateTerminal(false, 'none'), false, 'never required → no banner')
+})
+
 // ── Wiring guards: cheap static checks so a refactor can't silently drop the fix.
 const root = path.resolve(__dirname, '..')
 const provider = fs.readFileSync(path.join(root, 'src/components/ChatSessionProvider.tsx'), 'utf8')
@@ -112,6 +129,29 @@ t('provider guards Cancel with a connect generation', () => {
 t('VoiceRoom surfaces the persistent sign-in gate', () => {
   ok(voiceRoom.includes('claudeAuthEverRequired'), 'sticky auth flag present')
   ok(/Anthropic sign-in required/.test(voiceRoom), 'banner copy present')
+  ok(voiceRoom.includes('isAuthGateTerminal('), 'banner gated by the terminal-state helper')
+})
+
+t('#78: any auth-gate message surfaces the terminal state (not only claude_auth_required)', () => {
+  // The sign-in banner must be reachable even if the agent emits the URL first
+  // (or claude_auth_required is dropped) — otherwise connected stays false, the
+  // watchdog is disarmed on authRequired, and "Connecting…" spins forever.
+  const urlHandler = voiceRoom.slice(
+    voiceRoom.indexOf("data.type === 'claude_auth_url'"),
+    voiceRoom.indexOf("data.type === 'claude_auth_submitting'"),
+  )
+  ok(/onAuthRequired\?\.\(\)/.test(urlHandler), 'claude_auth_url / waiting_code call onAuthRequired')
+})
+
+t('#79: the sign-in banner is in normal flow, not fixed over the header', () => {
+  // The old `fixed inset-x-0 top-0 z-[60]` banner covered the Rooms header
+  // controls + hid the status line (same bug the sound banner had before #68).
+  ok(!voiceRoom.includes('fixed inset-x-0 top-0 z-[60]'), 'no fixed top-0 z-[60] overlay remains')
+  // The in-flow banner is the div gated by isAuthGateTerminal, carrying the
+  // amber bar classes in normal flow (w-full shrink-0) at the top of the column.
+  const start = voiceRoom.indexOf('isAuthGateTerminal(claudeAuthEverRequired, claudeAuthStatus) && (')
+  const banner = voiceRoom.slice(start, voiceRoom.indexOf('Anthropic sign-in required', start))
+  ok(/w-full shrink-0[^]*bg-amber-500\/95/.test(banner), 'banner renders in-flow (w-full shrink-0 amber bar)')
 })
 
 t('VoiceRoom reports modal state + auth resolution to the provider (#78)', () => {

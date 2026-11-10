@@ -25,6 +25,7 @@ import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type To
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
+import { isAuthGateTerminal } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
@@ -2332,9 +2333,18 @@ function VoiceRoomInner({
         setClaudeAuthUrl(data.url)
         setClaudeAuthStatus('waiting')
         setClaudeAuthEverRequired(true)
+        // #78: surface the terminal auth state (connected=true → spinner off,
+        // banner on) for ANY auth-gate entry message, not only
+        // claude_auth_required. If the agent emits the URL first (or the
+        // required message is dropped), the account would otherwise sit on an
+        // infinite "Connecting…" with the watchdog disarmed. markAuthRequired
+        // is idempotent, so a later claude_auth_required is harmless.
+        onAuthRequired?.()
       } else if (data.type === 'claude_auth_waiting_code') {
         console.log('🔑 Claude waiting for auth code')
         setClaudeAuthStatus('waiting_code')
+        setClaudeAuthEverRequired(true)
+        onAuthRequired?.()
       } else if (data.type === 'claude_auth_submitting') {
         console.log('🔑 Claude submitting auth code')
         setClaudeAuthStatus('submitting')
@@ -3662,23 +3672,11 @@ function VoiceRoomInner({
         </div>
       )}
 
-      {/* Persistent Anthropic sign-in gate (issue #53). The agent blocks before
-          creating the voice session until Claude OAuth completes, so a fresh
-          account that dismisses the modal above would otherwise sit on a silent,
-          dead session with no explanation. This banner makes the requirement
-          honest and gives a one-tap way back into the sign-in flow. */}
-      {claudeAuthEverRequired && claudeAuthStatus === 'none' && (
-        <div className="fixed inset-x-0 top-0 z-[60] flex items-center justify-center gap-3 bg-amber-500/95 text-black text-sm font-medium px-4 py-2.5 touch-manipulation">
-          <span className="shrink-0">🔑</span>
-          <span className="min-w-0">Anthropic sign-in required — your agent can&apos;t reply until you sign in.</span>
-          <button
-            onClick={() => setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required')}
-            className="shrink-0 px-3 py-1 rounded-md bg-black/85 hover:bg-black text-white text-xs font-semibold transition-colors"
-          >
-            Sign in
-          </button>
-        </div>
-      )}
+      {/* Persistent Anthropic sign-in gate (issue #53/#78) now renders IN NORMAL
+          FLOW at the top of the chat column (see below) — the old fixed /
+          top-0 / high-z-index version covered the Rooms header controls and hid
+          the live status line (bug #79), the same way the sound banner did
+          before #68. In-flow, it reserves space and pushes the header down. */}
 
       {/* P1.6 — iOS autoplay unlock bar moved into the chat column (bug #61) so
           it no longer sits fixed over the header and blocks its buttons. See
@@ -3778,6 +3776,26 @@ function VoiceRoomInner({
         disabled={!agentConnected}
       />
       <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
+        {/* Persistent Anthropic sign-in gate (issue #53/#78). The agent blocks
+            before creating the voice session until Claude OAuth completes, so a
+            fresh account that dismisses the modal would otherwise sit on a
+            silent, dead session with no explanation. This banner is the TERMINAL
+            state (isAuthGateTerminal): it stops the spinner and gives a one-tap
+            way back into the sign-in flow. In NORMAL FLOW at the top of the chat
+            column (bug #79) so it reserves space instead of covering the header /
+            hiding the status line. */}
+        {isAuthGateTerminal(claudeAuthEverRequired, claudeAuthStatus) && (
+          <div className="w-full shrink-0 flex items-center justify-center gap-3 bg-amber-500/95 text-black text-sm font-medium px-4 py-2.5 touch-manipulation">
+            <span className="shrink-0">🔑</span>
+            <span className="min-w-0">Anthropic sign-in required — your agent can&apos;t reply until you sign in.</span>
+            <button
+              onClick={() => setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required')}
+              className="shrink-0 px-3 py-1 rounded-md bg-black/85 hover:bg-black text-white text-xs font-semibold transition-colors"
+            >
+              Sign in
+            </button>
+          </div>
+        )}
         {/* iOS autoplay unlock (bug #61). In NORMAL FLOW at the top of the chat
             column — a fixed top-0 bar used to cover the header and block its
             buttons. The whole bar is the gesture: tapping it resumes the
