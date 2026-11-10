@@ -85,3 +85,67 @@ export function decideNextSession(state: SessionSwitchState): SessionSwitchDecis
 
   return { action: 'switch', runIn: target, leave: state.turnInFlight ? 'background' : 'close' }
 }
+
+// ── Executor plan (S3): what to DO with a decision, given live context ────────
+//
+// Interim behaviour until true background-on-leave ships (demoteSupported):
+// FINISH-THEN-SWITCH. A switch requested while the current session is busy is
+// deferred until it goes idle (its turn finishes normally), unless the user
+// forces it ("Switch now" — today's behaviour: the old session's work stops).
+// A pending permission is never queued silently: the user answers it or forces.
+
+export interface SwitchPlanContext {
+  /** A permission prompt is waiting on the user in the current session. */
+  permissionPending: boolean
+  /** A Recall meeting bot is live (its transcript feeds the current session). */
+  meetingActive: boolean
+  /** The target already runs as a background slot: none / idle / busy. */
+  targetSlot: 'none' | 'idle' | 'busy'
+  /** User chose "Switch now". */
+  force: boolean
+  /** Phase 2: a busy session can be demoted to the background instead of closed. */
+  demoteSupported: boolean
+}
+
+export type SwitchPlanKind = 'noop' | 'execute' | 'defer' | 'reject'
+export type SwitchPlanReason =
+  | 'already_live'
+  | 'meeting_active'
+  | 'target_busy_in_background'
+  | 'needs_you'
+  | 'busy'
+  | 'forced'
+  | 'idle'
+  | 'no_live_query'
+  | 'demote'
+
+export interface SwitchPlan {
+  kind: SwitchPlanKind
+  reason: SwitchPlanReason
+  /** What happens to the session being left when this executes. */
+  leave: LeftSessionFate
+  /** The target runs as an idle background slot: stop it before resuming it. */
+  stopSlotFirst: boolean
+}
+
+export function planSwitch(decision: SessionSwitchDecision, ctx: SwitchPlanContext): SwitchPlan {
+  const stopSlotFirst = ctx.targetSlot === 'idle'
+  const plan = (kind: SwitchPlanKind, reason: SwitchPlanReason, leave: LeftSessionFate = 'none'): SwitchPlan =>
+    ({ kind, reason, leave, stopSlotFirst: kind === 'execute' && stopSlotFirst })
+
+  if (decision.action === 'push') return plan('noop', 'already_live')
+  // The meeting transcript and the meeting brain belong to the current session.
+  if (ctx.meetingActive) return plan('reject', 'meeting_active')
+  // Never run a second process on a JSONL a busy background slot is writing.
+  if (ctx.targetSlot === 'busy') return plan('reject', 'target_busy_in_background')
+
+  if (decision.action === 'cold-start') return plan('execute', 'no_live_query')
+
+  if (decision.leave === 'background') {
+    if (ctx.demoteSupported) return plan('execute', 'demote', 'background')
+    if (ctx.force) return plan('execute', 'forced', 'close')
+    if (ctx.permissionPending) return plan('reject', 'needs_you')
+    return plan('defer', 'busy')
+  }
+  return plan('execute', 'idle', decision.leave)
+}

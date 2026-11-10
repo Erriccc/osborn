@@ -8,7 +8,7 @@
 // {requested: 73b234e6, actual: c97588f4}. The decision for that exact state
 // must be "switch to 73b234e6", never "push into c97588f4".
 import assert from 'node:assert/strict'
-import { decideNextSession, type SessionSwitchState } from '../src/session-switch.js'
+import { decideNextSession, planSwitch, type SessionSwitchState, type SwitchPlanContext } from '../src/session-switch.js'
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -144,6 +144,83 @@ t('empty-string targets are treated as absent', () => {
   const d = decideNextSession(live({ resumeTarget: '', requestedTarget: '' }))
   assert.equal(d.action, 'push')
   assert.equal(d.runIn, OLD)
+})
+
+// ── S3: planSwitch (executor plan; finish-then-switch interim) ───────────────
+const ctx = (over: Partial<SwitchPlanContext> = {}): SwitchPlanContext => ({
+  permissionPending: false,
+  meetingActive: false,
+  targetSlot: 'none',
+  force: false,
+  demoteSupported: false,
+  ...over,
+})
+const switchIdle = decideNextSession(live({ requestedTarget: NEW }))
+const switchBusy = decideNextSession(live({ requestedTarget: NEW, turnInFlight: true }))
+const stay = decideNextSession(live({ requestedTarget: OLD }))
+const cold = decideNextSession({ liveSessionId: null, queryResumeTarget: null, resumeTarget: null, requestedTarget: NEW, hasLiveQuery: false, turnInFlight: false })
+
+t('S3 switch to the live session -> noop', () => {
+  assert.equal(planSwitch(stay, ctx()).kind, 'noop')
+  assert.equal(planSwitch(stay, ctx({ meetingActive: true })).kind, 'noop')
+})
+t('S3 idle switch -> execute (close the idle session)', () => {
+  const p = planSwitch(switchIdle, ctx())
+  assert.equal(p.kind, 'execute')
+  assert.equal(p.stopSlotFirst, false)
+})
+t('S3 no live query -> execute (nothing to close)', () => {
+  assert.equal(planSwitch(cold, ctx()).kind, 'execute')
+})
+t('S3 busy, no force -> defer until idle (finish-then-switch)', () => {
+  const p = planSwitch(switchBusy, ctx())
+  assert.equal(p.kind, 'defer')
+  assert.equal(p.reason, 'busy')
+})
+t('S3 busy + force -> execute now (today\'s "Switch now")', () => {
+  const p = planSwitch(switchBusy, ctx({ force: true }))
+  assert.equal(p.kind, 'execute')
+  assert.equal(p.reason, 'forced')
+})
+t('S3 permission pending, no force -> reject needs_you (never queued silently)', () => {
+  const p = planSwitch(switchBusy, ctx({ permissionPending: true }))
+  assert.equal(p.kind, 'reject')
+  assert.equal(p.reason, 'needs_you')
+})
+t('S3 permission pending + force -> execute (the reset denies the permission)', () => {
+  assert.equal(planSwitch(switchBusy, ctx({ permissionPending: true, force: true })).kind, 'execute')
+})
+t('S3 meeting live -> reject meeting_active (even forced)', () => {
+  for (const d of [switchIdle, switchBusy, cold]) {
+    assert.equal(planSwitch(d, ctx({ meetingActive: true })).reason, 'meeting_active')
+    assert.equal(planSwitch(d, ctx({ meetingActive: true, force: true })).kind, 'reject')
+  }
+})
+t('S3 target is a busy background slot -> reject target_busy_in_background', () => {
+  const p = planSwitch(switchIdle, ctx({ targetSlot: 'busy', force: true }))
+  assert.equal(p.kind, 'reject')
+  assert.equal(p.reason, 'target_busy_in_background')
+})
+t('S3 target is an idle background slot -> execute with stopSlotFirst', () => {
+  const p = planSwitch(switchIdle, ctx({ targetSlot: 'idle' }))
+  assert.equal(p.kind, 'execute')
+  assert.equal(p.stopSlotFirst, true)
+})
+t('S3 demoteSupported (phase 2) -> busy session leaves to the background, executes', () => {
+  const p = planSwitch(switchBusy, ctx({ demoteSupported: true }))
+  assert.equal(p.kind, 'execute')
+  assert.equal(p.leave, 'background')
+})
+t('S3 invariant: no plan executes a close of a busy session unless forced', () => {
+  for (const permissionPending of [true, false]) for (const meetingActive of [true, false])
+    for (const targetSlot of ['none', 'idle', 'busy'] as const) {
+      const p = planSwitch(switchBusy, ctx({ permissionPending, meetingActive, targetSlot }))
+      assert.ok(!(p.kind === 'execute' && p.leave === 'close'), JSON.stringify({ permissionPending, meetingActive, targetSlot, p }))
+      assert.notEqual(p.kind, 'execute', JSON.stringify(p))
+    }
+})
+t('S3 forced busy switch reports leave=close (A\'s work stops, by request)', () => {
+  assert.equal(planSwitch(switchBusy, ctx({ force: true })).leave, 'close')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
