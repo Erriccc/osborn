@@ -1746,6 +1746,16 @@ export class ClaudeLLM extends llm.LLM {
         })
         this.#pendingInterrupt = tracked
         await p
+        // Turn-in-flight reset (#90 leak fix): the interrupt aborts the current
+        // turn and returns the subprocess to idle, but closeSession() is
+        // deliberately NOT called here (the subprocess stays alive) and the
+        // aborted turn may never emit a terminal `result` to decrement
+        // #turnsInFlight. Without this reset the counter leaks upward forever,
+        // permanently wedging shouldRestartForAuth() so a later Claude sign-in
+        // never swaps the live subprocess off the fallback backend. Reset to 0
+        // (not decrement): an idle subprocess has no turn streaming. Safe — the
+        // result handler clamps at > 0, so a late `result` can't drive it negative.
+        this.#turnsInFlight = 0
         console.log('🛑 Interrupted persistent session (Esc equivalent — subprocess stays alive)')
         return true
       } catch (err: any) {
@@ -2328,6 +2338,13 @@ export class ClaudeLLM extends llm.LLM {
         this.#backgroundConsumerRunning = false
         this.#persistentQuery = null
         this.#messageChannel = null
+        // Turn-in-flight reset (#90 leak fix): this loop owned the subprocess and
+        // it is now gone (iterator ended or errored), so no turn can still be
+        // streaming on it. A turn that ended without a terminal `result` (an
+        // interrupt or a mid-turn iterator error) never decremented #turnsInFlight;
+        // leaving it > 0 would permanently block shouldRestartForAuth(). Strictly
+        // safe — the subprocess is dead, so there is nothing in flight to miscount.
+        this.#turnsInFlight = 0
       }
       console.log('🔒 Persistent session background consumer exited')
     }
