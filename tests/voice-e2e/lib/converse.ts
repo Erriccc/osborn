@@ -95,24 +95,73 @@ export async function screenTail(page: Page): Promise<string> {
  */
 export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const { peekCapture } = await import('./audio-capture')
-  const { envKey } = await import('./env')
+  const { optionalEnvKey } = await import('./env')
   const { base64, anchorOffsetMs } = await peekCapture(page)
   const audio = Buffer.from(base64, 'base64')
+  // word.start is file-relative (timeline begins at the first tapped source,
+  // NOT capture start — verified 38.3s skew, 2026-07-31); convert the wall-clock
+  // window into file time via the anchor.
+  const fileSinceMs = Math.max(0, sinceMs - anchorOffsetMs)
+
+  // Soniox async STT — upload the recorded clip, poll the job, keep tokens whose
+  // start_ms falls after the window. Word timestamps come back by default; no
+  // OpenAI/Deepgram key needed.
+  const soniox = optionalEnvKey('SONIOX_API_KEY')
+  if (soniox) {
+    try {
+      return await sonioxTranscribeSince(audio, fileSinceMs, soniox)
+    } catch (e) {
+      console.warn('[converse] Soniox STT error — trying Deepgram:', e)
+    }
+  }
+
+  const dg = optionalEnvKey('DEEPGRAM_API_KEY')
+  if (!dg) return ''
   const res = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', {
     method: 'POST',
-    headers: { Authorization: `Token ${envKey('DEEPGRAM_API_KEY')}`, 'Content-Type': 'audio/webm' },
+    headers: { Authorization: `Token ${dg}`, 'Content-Type': 'audio/webm' },
     body: audio,
   })
   if (!res.ok) throw new Error(`deepgram ${res.status}`)
   const j: any = await res.json()
   const words: Array<{ punctuated_word?: string; word: string; start: number }> =
     j?.results?.channels?.[0]?.alternatives?.[0]?.words ?? []
-  // Deepgram's word.start is seconds into the FILE, whose timeline begins at
-  // the first tapped source, NOT at capture start (verified 38.3s skew,
-  // 2026-07-31). Convert the wall-clock window into file time via the anchor.
-  const fileSinceMs = Math.max(0, sinceMs - anchorOffsetMs)
   return words
     .filter((w) => w.start * 1000 >= fileSinceMs)
     .map((w) => w.punctuated_word ?? w.word)
     .join(' ')
+}
+
+/** Soniox async file transcription: the text spoken after `sinceMs` (file time). */
+async function sonioxTranscribeSince(audio: Buffer, sinceMs: number, apiKey: string): Promise<string> {
+  const H = { Authorization: `Bearer ${apiKey}` }
+  const fd = new FormData()
+  fd.append('file', new Blob([new Uint8Array(audio)], { type: 'audio/webm' }), 'clip.webm')
+  const up = await fetch('https://api.soniox.com/v1/files', { method: 'POST', headers: H, body: fd as any })
+  if (!up.ok) throw new Error(`soniox upload ${up.status}`)
+  const fileId = (await up.json() as any).id
+  try {
+    const cr = await fetch('https://api.soniox.com/v1/transcriptions', {
+      method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: fileId, model: 'stt-async-v3' }),
+    })
+    if (!cr.ok) throw new Error(`soniox transcribe ${cr.status}`)
+    const jobId = (await cr.json() as any).id
+    try {
+      for (let i = 0; i < 40; i++) {
+        const st: any = await (await fetch(`https://api.soniox.com/v1/transcriptions/${jobId}`, { headers: H })).json()
+        if (st.status === 'completed') break
+        if (st.status === 'error' || st.status === 'failed') throw new Error(`soniox job ${st.status}: ${st.error_message ?? ''}`)
+        await new Promise((r) => setTimeout(r, 400))
+      }
+      const tx: any = await (await fetch(`https://api.soniox.com/v1/transcriptions/${jobId}/transcript`, { headers: H })).json()
+      const tokens: Array<{ text?: string; start_ms?: number }> = tx?.tokens ?? []
+      const picked = tokens.filter((t) => (t.start_ms ?? 0) >= sinceMs).map((t) => t.text ?? '').join('')
+      return (picked || tx?.text || '').trim()
+    } finally {
+      fetch(`https://api.soniox.com/v1/transcriptions/${jobId}`, { method: 'DELETE', headers: H }).catch(() => {})
+    }
+  } finally {
+    fetch(`https://api.soniox.com/v1/files/${fileId}`, { method: 'DELETE', headers: H }).catch(() => {})
+  }
 }

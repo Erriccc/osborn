@@ -44,7 +44,7 @@ the in-app product surface over it.
 
 ## Setup (env on the frontend / Railway)
 
-The engine host is derived from `FLY_HARNESS_APP` (default `osborn-voice-e2e`) →
+The engine host is derived from `FLY_HARNESS_APP` (default `osborn-voice-e2e-n`) →
 `https://<app>.fly.dev`. To make the proxy reach a token-protected engine, set:
 
 - **`OSBORN_ENGINE_TOKEN`** — the engine's control-API token (`x-engine-token`).
