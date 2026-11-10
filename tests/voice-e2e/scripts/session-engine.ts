@@ -693,7 +693,26 @@ async function main() {
           await focusDriverTab(driver)
           const ownedSay = guardOwnership(driver)
           if (ownedSay) return json(res, { error: ownedSay }, 409)
-          const t0 = Date.now(); await updateTabHud(); await speakText(active, body.text); mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
+          const t0 = Date.now(); await updateTabHud()
+          // /say must surface its own failures the way /hear and /eval do — a
+          // bare throw here reached the top-level catch as an opaque 500/502 with
+          // the reason swallowed (issue #102). The common cause is a page that
+          // never opened a mic: "Say" injects into the page's microphone, and an
+          // ENTRY=none engine browses a plain page with no mic open.
+          try {
+            await speakText(active, body.text)
+          } catch (e) {
+            const raw = (e as Error).message || String(e)
+            const entryNone = process.env.OSBORN_ENTRY === 'none' || !process.env.OSBORN_AGENT_URL
+            const reason = /opened the mic/i.test(raw)
+              ? `no microphone on the active page — "Say" injects into a page's mic, but this engine is in ${entryNone ? 'ENTRY=none (plain browsing)' : 'this'} mode with no mic open. Open a Voice Native /chat session (or set OSBORN_AGENT_URL) so a mic exists, then Say.`
+              : raw
+            mark(`say failed[${driver}]: ${reason.slice(0, 90)}`)
+            const nf = ++reqN
+            stampTask(nf, 'say', t0, null, null, body.text, '')
+            return json(res, { ok: false, error: reason, entryNone, driver })
+          }
+          mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
           const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
           const n = ++reqN
           const { clip, clipError } = await reqClip(n, 'say', body.clipSeconds ?? 14)
