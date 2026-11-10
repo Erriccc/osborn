@@ -151,6 +151,13 @@ export default function NotesCard() {
               className="min-h-[36px] px-3.5 rounded-lg bg-[var(--accent)] text-[13px] font-semibold text-[var(--background)] hover:opacity-90 transition-opacity">
               Try again
             </button>
+            {/* Bug #56: the mic is blocked but the copy says "you can keep
+                typing" — give that a real path. Jump straight to the editable
+                draft so a note can be written and saved without the mic. */}
+            <button onClick={() => { setMicError(null); setDraft(''); setAttachments([]); setPhase('confirm') }}
+              className="min-h-[36px] px-3.5 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
+              Type instead
+            </button>
             <button onClick={() => setMicError(null)}
               className="min-h-[36px] px-3.5 rounded-lg border border-[var(--border-subtle)] text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
               Dismiss

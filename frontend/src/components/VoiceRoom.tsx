@@ -18,6 +18,7 @@ import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { agentReadUrl } from '@/lib/agent-read'
+import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
@@ -658,11 +659,17 @@ function VoiceRoomInner({
   const [showMeetingInput, setShowMeetingInput] = useState(false)
   // Keep the header dropdowns mutually exclusive (no stacking/overlap).
   usePanelExclusive('instances', showInstancesPanel, setShowInstancesPanel)
-  usePanelExclusive('more', showHeaderMore, setShowHeaderMore)
   usePanelExclusive('meeting', showMeetingInput, setShowMeetingInput)
   // Keep the More menu / meeting popover on screen when the header wraps and
   // their right-anchored triggers land on the left (iPad portrait).
   const moreMenuRef = useViewportClamp(showHeaderMore)
+  // Bug #55: the More menu only closed by picking an item or clicking its
+  // backdrop — Escape did nothing, and the backdrop sat above the toggle so
+  // re-clicking it was blocked. useHeaderPanel adds Escape + click-outside
+  // (via moreWrapRef) and keeps mutual exclusion (same 'vn:header-panel-open'
+  // bus as usePanelExclusive), so the backdrop can be dropped entirely.
+  const moreWrapRef = useRef<HTMLDivElement>(null)
+  useHeaderPanel('more', showHeaderMore, setShowHeaderMore, moreWrapRef)
   const meetingPopRef = useViewportClamp(showMeetingInput)
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
@@ -3620,26 +3627,9 @@ function VoiceRoomInner({
         </div>
       )}
 
-      {/* P1.6 — iOS autoplay unlock. The whole bar is the gesture: tapping it
-          resumes the suspended AudioContext. Sits above everything (z-70);
-          disappears via AudioPlaybackStatusChanged once audio can play. */}
-      {audioBlocked && (
-        <button
-          onClick={async () => {
-            // startAudio() is livekit-client's official gesture-driven unlock
-            // (resumes the internal AudioContext + starts the audio elements).
-            try { await room.startAudio() } catch { /* surfaced by re-check */ }
-            // Unlock is async; AudioPlaybackStatusChanged usually flips it —
-            // re-check both now and slightly later for late-firing browsers.
-            setAudioBlocked(room.canPlaybackAudio === false)
-            setTimeout(() => setAudioBlocked(room.canPlaybackAudio === false), 250)
-          }}
-          className="fixed inset-x-0 top-0 z-[70] flex items-center justify-center gap-2 bg-amber-400/95 text-black text-sm font-semibold px-4 py-3 touch-manipulation"
-          aria-live="polite"
-        >
-          🔊 Tap to enable sound
-        </button>
-      )}
+      {/* P1.6 — iOS autoplay unlock bar moved into the chat column (bug #61) so
+          it no longer sits fixed over the header and blocks its buttons. See
+          the in-flow banner at the top of the chat column below. */}
 
       {/* Tool-permission approval is no longer a blocking full-screen modal —
           it renders as an inline ApprovalCard inside the transcript (ChatPanel
@@ -3735,6 +3725,28 @@ function VoiceRoomInner({
         disabled={!agentConnected}
       />
       <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
+        {/* iOS autoplay unlock (bug #61). In NORMAL FLOW at the top of the chat
+            column — a fixed top-0 bar used to cover the header and block its
+            buttons. The whole bar is the gesture: tapping it resumes the
+            suspended AudioContext; it disappears via AudioPlaybackStatusChanged
+            once audio can play. */}
+        {audioBlocked && (
+          <button
+            onClick={async () => {
+              // startAudio() is livekit-client's official gesture-driven unlock
+              // (resumes the internal AudioContext + starts the audio elements).
+              try { await room.startAudio() } catch { /* surfaced by re-check */ }
+              // Unlock is async; AudioPlaybackStatusChanged usually flips it —
+              // re-check both now and slightly later for late-firing browsers.
+              setAudioBlocked(room.canPlaybackAudio === false)
+              setTimeout(() => setAudioBlocked(room.canPlaybackAudio === false), 250)
+            }}
+            className="w-full shrink-0 flex items-center justify-center gap-2 bg-amber-400/95 text-black text-sm font-semibold px-4 py-3 touch-manipulation"
+            aria-live="polite"
+          >
+            🔊 Tap to enable sound
+          </button>
+        )}
         {/* Header - Streamlined */}
         <div className="relative z-30 px-1.5 sm:px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
           <div className="flex flex-wrap items-center gap-1 sm:gap-3">
@@ -4003,7 +4015,7 @@ function VoiceRoomInner({
                   row (Files, Auto-approve, Copy all, Noise filter) into one
                   menu. Amber dot signals an active setting inside. */}
               <PanelToggleButton className="hidden sm:flex" />
-              <div className="hidden sm:block relative">
+              <div ref={moreWrapRef} className="hidden sm:block relative">
                 <button
                   onClick={() => setShowHeaderMore(v => !v)}
                   aria-haspopup="menu" aria-expanded={showHeaderMore}
@@ -4018,9 +4030,16 @@ function VoiceRoomInner({
                   )}
                 </button>
                 {showHeaderMore && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowHeaderMore(false)} />
                     <div ref={moreMenuRef} role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
+                      {/* Bug #59: a dedicated Files Explorer entry — the Outputs
+                          drawer was the only files surface. Opens the full
+                          FilesExplorerModal. */}
+                      <button role="menuitem" onClick={() => { setShowHeaderMore(false); setIsFilesModalOpen(true) }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
+                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                        <span className="flex-1">Files Explorer</span>
+                        {generatedFiles.length > 0 && <span className="text-[11px] font-semibold text-gray-500">{generatedFiles.length}</span>}
+                      </button>
                       <button role="menuitem" onClick={() => { setShowHeaderMore(false); panel.openPanel('outputs') }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
                         <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
@@ -4043,7 +4062,6 @@ function VoiceRoomInner({
                         <span className="flex-1">{copyFeedback ? 'Copied!' : 'Copy all messages'}</span>
                       </button>
                     </div>
-                  </>
                 )}
               </div>
 

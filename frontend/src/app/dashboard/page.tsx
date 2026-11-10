@@ -330,6 +330,9 @@ export default function Dashboard() {
   const [expandedSessionLists, setExpandedSessionLists] = useState<Set<string>>(new Set())
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
+  // Bug #58: empty / all-punctuation names (e.g. "" or "..") used to make
+  // "Start" a silent no-op. Surface WHY nothing happened instead.
+  const [projectNameError, setProjectNameError] = useState<string | null>(null)
   // "New session" project picker (bug B15): a fresh session used to jump
   // straight to /chat with no chance to say WHICH project it belongs to.
   const [showSessionPicker, setShowSessionPicker] = useState(false)
@@ -1316,21 +1319,26 @@ export default function Dashboard() {
   }
 
   const handleCreateProject = () => {
+    const raw = newProjectName.trim()
     // Strict slug: same char class used at VoiceRoom.tsx:3023 and
     // SkillsPanel.tsx:83, so `..`, `/` and other path chars can't survive
     // (e.g. "TEST ../../escape" → "test-escape", not "/workspace/test-../../escape").
-    const name = newProjectName
-      .trim()
+    const name = raw
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, '-') // non-slug chars (incl. '.', '/', spaces) → '-'
       .replace(/-+/g, '-') // collapse repeated dashes
       .replace(/^-+|-+$/g, '') // trim leading/trailing dashes
-    if (!name) return
+    // Bug #58: don't fail silently. An empty box, or a name that is only
+    // punctuation (e.g. "..", which the slug reduces to ""), now tells the
+    // user why "Start" did nothing instead of appearing to ignore the click.
+    if (!raw) { setProjectNameError('Enter a project name.'); return }
+    if (!name) { setProjectNameError('Use letters or numbers — that name has none.'); return }
     const base = (baseCwd || '/workspace').replace(/\/+$/, '')
     const projectPath = `${base}/${name}`
     // Defense in depth: the slug above can't produce these, but assert the
     // final path never escapes the base before we hand it to the agent.
-    if (name.includes('/') || name.includes('..') || name === '.') return
+    if (name.includes('/') || name.includes('..') || name === '.') { setProjectNameError("That name isn't allowed."); return }
+    setProjectNameError(null)
     setShowNewProject(false)
     setNewProjectName('')
     startChat(undefined, projectPath)
@@ -1553,7 +1561,7 @@ export default function Dashboard() {
           {/* Unified create — Notion "+ New ▾" model: session / note / project */}
           <UnifiedCreate
             onNewSession={handleNewSession}
-            onNewProject={() => setShowNewProject(true)}
+            onNewProject={() => { setProjectNameError(null); setShowNewProject(true) }}
           />
 
           {/* Quick voice notes — record → transcribe → saved to the account */}
@@ -1666,7 +1674,7 @@ export default function Dashboard() {
                   )}
                   {!showNewProject && (
                     <button
-                      onClick={() => setShowNewProject(true)}
+                      onClick={() => { setProjectNameError(null); setShowNewProject(true) }}
                       className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors px-1.5 py-0.5 rounded"
                     >
                       + New project
@@ -1679,16 +1687,18 @@ export default function Dashboard() {
               {showNewProject && (
               <div className="mb-3">
                 {showNewProject ? (
+                  <>
                   <div className="flex gap-2">
                     <input
                       autoFocus
+                      aria-invalid={!!projectNameError}
                       className="flex-1 rounded-xl bg-[var(--surface)] px-4 py-3 text-sm outline-none"
                       placeholder="Project name"
                       value={newProjectName}
-                      onChange={e => setNewProjectName(e.target.value)}
+                      onChange={e => { setNewProjectName(e.target.value); if (projectNameError) setProjectNameError(null) }}
                       onKeyDown={e => {
                         if (e.key === 'Enter') handleCreateProject()
-                        if (e.key === 'Escape') { setShowNewProject(false); setNewProjectName('') }
+                        if (e.key === 'Escape') { setShowNewProject(false); setNewProjectName(''); setProjectNameError(null) }
                       }}
                     />
                     <button
@@ -1698,6 +1708,8 @@ export default function Dashboard() {
                       Start
                     </button>
                   </div>
+                  {projectNameError && <p role="alert" className="mt-2 px-1 text-xs text-red-400">{projectNameError}</p>}
+                  </>
                 ) : null}
               </div>
               )}
@@ -2037,7 +2049,7 @@ export default function Dashboard() {
             </div>
             <div className="shrink-0 border-t border-[var(--border-subtle)] px-3 py-2.5">
               <button
-                onClick={() => { setShowSessionPicker(false); setShowNewProject(true) }}
+                onClick={() => { setShowSessionPicker(false); setProjectNameError(null); setShowNewProject(true) }}
                 className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--surface-2)]/60 hover:text-[var(--text-primary)] transition-colors">
                 <div className="w-8 h-8 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-[var(--text-muted)]">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" /></svg>
