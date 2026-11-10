@@ -17,6 +17,7 @@ import { openStore, recall, storeExists, updateSessionStore, getStorePath, type 
 import { appendCompactionRecord, countTranscriptRows } from './compaction-log.js'
 import { getEmbedder } from './embedder.js'
 import { launchCompactionLens } from './content/lens-launch.js'
+import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1011,13 +1012,14 @@ const WRITE_RULES: Record<string, WriteRule> = {
   reviewer: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' },
 }
 
-/** Path is inside the per-session sandbox workspace. */
+/**
+ * Path is inside the per-session sandbox workspace. Used by decideWrite's
+ * 'workspace' rule: true → write allowed, false → denied. Robust resolve+root
+ * check (NOT a substring) so a `..` traversal path like `…/osb/../../etc/foo`
+ * can't masquerade as a workspace path and widen the allow surface.
+ */
 function isWorkspacePath(filePath: string): boolean {
-  return !!filePath && (
-    filePath.includes('/osb/') ||
-    filePath.includes('.osborn/sessions/') ||
-    filePath.includes('.osborn/research/')
-  )
+  return isSafeArtifactPath(filePath)
 }
 
 /**
@@ -2505,7 +2507,11 @@ class ClaudeLLMStream extends llm.LLMStream {
               console.log('input,', input, 'input.file_path', filePath, 'agent_type', agentType)
             console.log(`🔍 canUseTool: ${toolName} filePath="${filePath}" keys=${Object.keys(input || {}).join(',')}`)
             console.log(`🔍 canUseTool _options keys=[${Object.keys(_options || {}).join(', ')}] title="${(_options as any)?.title || ''}" decisionReason="${(_options as any)?.decisionReason || ''}" blockedPath="${(_options as any)?.blockedPath || ''}"`)
-            if (filePath.includes('/osb/') || filePath.includes('.osborn/sessions/') || filePath.includes('.osborn/research/')) {
+            if (isSafeArtifactPath(filePath)) {
+              // Robust resolve+root check (not a substring): `..` traversal can no
+              // longer trick the workspace auto-approve into clearing a write that
+              // lands outside the session workspace. Legit absolute workspace
+              // writes (~/.claude/projects/<slug>/osb/…) still auto-approve.
               // Block writes to spec.md — the fast brain manages it
               const fileName = filePath.split('/').pop() || ''
               if (fileName === 'spec.md') {
