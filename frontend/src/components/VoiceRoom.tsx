@@ -4268,6 +4268,18 @@ function VoiceRoomInner({
                         <span className="flex-1">Outputs</span>
                         {!outputsVisible && unreadOutputs.size > 0 && <span className="text-[11px] font-semibold text-amber-400">{unreadOutputs.size} new</span>}
                       </button>
+                      {/* Browser engine (#62) — the discoverable door from /chat to
+                          the in-app Browser panel at /browser (#51). Opened in a new
+                          tab so the live voice/LiveKit session here stays connected
+                          while you watch & drive the engine. */}
+                      <button role="menuitem" aria-label="Open the Browser engine (opens a new tab)"
+                        onClick={() => { setShowHeaderMore(false); window.open('/browser', '_blank', 'noopener,noreferrer') }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors"
+                        title="Browser engine — watch & drive it at /browser">
+                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9 9 0 100-18 9 9 0 000 18zm0 0a14.5 14.5 0 010-18m0 18a14.5 14.5 0 000-18M3.6 9h16.8M3.6 15h16.8" /></svg>
+                        <span className="flex-1">Browser</span>
+                        <svg className="w-3.5 h-3.5 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M14 5h5v5m0-5l-7 7M10 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-4" /></svg>
+                      </button>
                       {/* Auto-approve is no longer a hidden toggle — the single,
                           visible, session-scoped "Approvals" mode picker lives in
                           the composer (see TextInput). */}
@@ -4746,6 +4758,20 @@ function VoiceRoomInner({
                 {!outputsVisible && panelData.outputs.unseenCount > 0 ? (
                   <span className="ml-auto text-xs bg-amber-500 text-gray-900 font-semibold px-2 py-0.5 rounded-full">{panelData.outputs.unseenCount} new</span>
                 ) : null}
+              </button>
+
+              {/* Browser engine (#62) — door to the in-app Browser panel at
+                  /browser (#51). New tab keeps this voice session alive. */}
+              <button onClick={() => { window.open('/browser', '_blank', 'noopener,noreferrer'); setShowMobileMenu(false) }}
+                aria-label="Open the Browser engine (opens a new tab)"
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9 9 0 100-18 9 9 0 000 18zm0 0a14.5 14.5 0 010-18m0 18a14.5 14.5 0 000-18M3.6 9h16.8M3.6 15h16.8" />
+                </svg>
+                <span className="text-sm text-gray-200">Browser</span>
+                <svg className="ml-auto w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14 5h5v5m0-5l-7 7M10 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-4" />
+                </svg>
               </button>
 
               {/* Copy messages */}
