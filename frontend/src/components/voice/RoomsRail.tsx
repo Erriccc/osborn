@@ -25,8 +25,9 @@
 // tablet, so the conversation keeps full width instead of a three-column
 // squeeze, issue #118) and nothing else changes.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { buildRoomRows, type RoomRow, type RoomStatus } from '@/lib/rooms'
+import { prepareSessions } from '@/lib/session-list'
 import type { SessionInfo, SlotInfo } from './shared'
 
 export type { RoomStatus }
@@ -43,11 +44,43 @@ export function buildRooms(
   currentSessionId: string | null,
   liveFallbackTitle?: string | null,
   pendingId?: string | null,
+  opts?: { forkCountById?: Map<string, number>; maxIdle?: number },
 ): Room[] {
-  return buildRoomRows(sessions, currentSessionId, { slots, liveFallbackTitle, pendingId })
+  return buildRoomRows(sessions, currentSessionId, {
+    slots,
+    liveFallbackTitle,
+    pendingId,
+    forkCountById: opts?.forkCountById,
+    maxIdle: opts?.maxIdle,
+  })
 }
 
-/** Secondary line: "3m ago · osborn · 12 msgs" (falls back to the short id). */
+/** "2 forks" / "1 fork" label for a collapsed fork family (#107). */
+function forkLabel(n: number | undefined): string {
+  return n && n > 0 ? `${n} fork${n === 1 ? '' : 's'}` : ''
+}
+
+/** Group recent (idle) rows under their project, most-recent project first,
+ * rows already activity-ordered within each (#107). Rows with no project fall
+ * into an "Other" bucket shown last. */
+function groupRoomsByProject(rooms: Room[]): { project: string; rooms: Room[] }[] {
+  const map = new Map<string, Room[]>()
+  for (const r of rooms) {
+    const key = r.project || 'Other'
+    const list = map.get(key)
+    if (list) list.push(r)
+    else map.set(key, [r])
+  }
+  return Array.from(map.entries())
+    .map(([project, list]) => ({ project, rooms: list }))
+    .sort((a, b) => {
+      if (a.project === 'Other') return 1
+      if (b.project === 'Other') return -1
+      return 0 // preserve insertion order (already activity-sorted)
+    })
+}
+
+/** Secondary line: "3m ago · osborn · 12 msgs · 2 forks" (falls back to id). */
 function roomMeta(room: Room): string {
   const parts = [
     room.time,
@@ -55,6 +88,7 @@ function roomMeta(room: Room): string {
     typeof room.messageCount === 'number' && room.messageCount > 0
       ? `${room.messageCount} msg${room.messageCount === 1 ? '' : 's'}`
       : '',
+    forkLabel(room.forkCount),
   ].filter(Boolean)
   return parts.length ? parts.join(' · ') : room.shortId
 }
@@ -75,6 +109,55 @@ const STATUS_LABEL: Record<RoomStatus, string> = {
   idle: 'Resume',
 }
 
+/** One room row in the expanded sidebar (shared by the pinned top section and
+ * the per-project recent groups). */
+function RoomRowButton({
+  room,
+  disabled,
+  onSwitchRoom,
+}: {
+  room: Room
+  disabled?: boolean
+  onSwitchRoom: (room: Room) => void
+}) {
+  const isLive = room.status === 'live'
+  return (
+    <button
+      onClick={() => !isLive && !disabled && onSwitchRoom(room)}
+      disabled={isLive || disabled}
+      title={`${isLive ? 'Live now' : `Switch to ${room.title}`}${room.timeIso ? ` · last active ${new Date(room.timeIso).toLocaleString()}` : ''} · ${room.id}`}
+      aria-current={isLive ? 'true' : undefined}
+      className={`w-full text-left px-2.5 py-2 rounded-lg border transition-colors ${
+        isLive
+          ? 'bg-amber-500/10 border-amber-500/30 cursor-default'
+          : 'border-transparent hover:bg-gray-800/60 disabled:opacity-50 disabled:cursor-not-allowed'
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <StatusDot status={room.status} />
+        <span className="flex-1 min-w-0 text-[12.5px] text-gray-200 truncate">{room.title}</span>
+        {forkLabel(room.forkCount) && (
+          <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300" title={`${forkLabel(room.forkCount)} collapsed under this session`}>
+            {forkLabel(room.forkCount)}
+          </span>
+        )}
+        <span
+          className={`shrink-0 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+            room.status === 'live'
+              ? 'bg-amber-500/20 text-amber-300'
+              : room.status === 'background'
+                ? 'bg-emerald-500/15 text-emerald-300'
+                : 'bg-gray-800 text-gray-500'
+          }`}
+        >
+          {room.switching ? 'Switching…' : STATUS_LABEL[room.status]}
+        </span>
+      </div>
+      <div className="text-[10px] text-gray-500 truncate pl-4 mt-0.5">{roomMeta(room)}</div>
+    </button>
+  )
+}
+
 interface RoomsProps {
   sessions: SessionInfo[]
   slots: SlotInfo[]
@@ -93,6 +176,7 @@ interface RoomsProps {
 }
 
 const COLLAPSE_KEY = 'vn-rooms-collapsed'
+const SHOW_SYSTEM_KEY = 'vn-rooms-show-system'
 
 // ── Desktop (xl+): persistent left sidebar (Phase D) ──────────────────────
 export function RoomsSidebar({
@@ -107,9 +191,12 @@ export function RoomsSidebar({
   pendingId,
 }: RoomsProps) {
   const [collapsed, setCollapsed] = useState(false)
+  const [query, setQuery] = useState('')
+  const [showSystem, setShowSystem] = useState(false)
   useEffect(() => {
     try {
       setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1')
+      setShowSystem(localStorage.getItem(SHOW_SYSTEM_KEY) === '1')
     } catch { /* storage blocked */ }
   }, [])
   const toggleCollapsed = () => {
@@ -119,9 +206,30 @@ export function RoomsSidebar({
       return next
     })
   }
+  const toggleShowSystem = () => {
+    setShowSystem((v) => {
+      const next = !v
+      try { localStorage.setItem(SHOW_SYSTEM_KEY, next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }
 
-  const rooms = buildRooms(sessions, slots, currentSessionId, liveTitle, pendingId)
+  // #107: dedupe copies + collapse forks + hide system sessions + search, then
+  // build the switchable rows. Search raises the recent cap so a match isn't
+  // hidden below the fold.
+  const prepared = useMemo(
+    () => prepareSessions(sessions, { search: query, hideSystem: !showSystem }),
+    [sessions, query, showSystem],
+  )
+  const rooms = buildRooms(prepared.sessions, slots, currentSessionId, liveTitle, pendingId, {
+    forkCountById: prepared.forkCountById,
+    maxIdle: query.trim() ? 100 : 12,
+  })
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
+  // Live + Running stay pinned at the top; Recent (idle) rows group by project.
+  const topRooms = rooms.filter((r) => r.status !== 'idle')
+  const idleRooms = rooms.filter((r) => r.status === 'idle')
+  const idleByProject = useMemo(() => groupRoomsByProject(idleRooms), [idleRooms])
 
   if (collapsed) {
     return (
@@ -209,50 +317,76 @@ export function RoomsSidebar({
         </div>
       </div>
 
+      {/* Search (#107) — filter by title / preview / project. */}
+      <div className="px-2 py-2 border-b border-gray-800/60 shrink-0">
+        <div className="relative">
+          <svg className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+          </svg>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search sessions"
+            aria-label="Search sessions"
+            className="w-full pl-7 pr-7 py-1.5 rounded-lg bg-gray-800/60 border border-gray-800 text-[12px] text-gray-200 placeholder-gray-500 outline-none focus:border-amber-500/40"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-500 hover:text-gray-200"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
         {rooms.length === 0 ? (
           <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
-            No other sessions yet. Start one with “New room”.
+            {query.trim()
+              ? 'No sessions match your search.'
+              : 'No other sessions yet. Start one with “New room”.'}
           </p>
         ) : (
-          rooms.map((room) => {
-            const isLive = room.status === 'live'
-            return (
-              <button
-                key={room.id}
-                onClick={() => !isLive && !disabled && onSwitchRoom(room)}
-                disabled={isLive || disabled}
-                title={`${isLive ? 'Live now' : `Switch to ${room.title}`}${room.timeIso ? ` · last active ${new Date(room.timeIso).toLocaleString()}` : ''} · ${room.id}`}
-                aria-current={isLive ? 'true' : undefined}
-                className={`w-full text-left px-2.5 py-2 rounded-lg border transition-colors ${
-                  isLive
-                    ? 'bg-amber-500/10 border-amber-500/30 cursor-default'
-                    : 'border-transparent hover:bg-gray-800/60 disabled:opacity-50 disabled:cursor-not-allowed'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <StatusDot status={room.status} />
-                  <span className="flex-1 min-w-0 text-[12.5px] text-gray-200 truncate">{room.title}</span>
-                  <span
-                    className={`shrink-0 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
-                      room.status === 'live'
-                        ? 'bg-amber-500/20 text-amber-300'
-                        : room.status === 'background'
-                          ? 'bg-emerald-500/15 text-emerald-300'
-                          : 'bg-gray-800 text-gray-500'
-                    }`}
-                  >
-                    {room.switching ? 'Switching…' : STATUS_LABEL[room.status]}
-                  </span>
+          <>
+            {/* Live + Running — pinned above the grouped recents. */}
+            {topRooms.map((room) => (
+              <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+            ))}
+            {/* Recent — grouped by project. */}
+            {idleByProject.map(({ project, rooms: group }) => (
+              <div key={project} className="pt-1.5">
+                <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">
+                  {project}
                 </div>
-                <div className="text-[10px] text-gray-500 truncate pl-4 mt-0.5">{roomMeta(room)}</div>
-              </button>
-            )
-          })
+                {group.map((room) => (
+                  <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+                ))}
+              </div>
+            ))}
+          </>
         )}
       </div>
 
-      <div className="p-2 border-t border-gray-800/60 shrink-0">
+      <div className="p-2 border-t border-gray-800/60 shrink-0 space-y-1.5">
+        {/* Show system sessions toggle (#107) — off by default. */}
+        {(prepared.systemCount > 0 || showSystem) && (
+          <button
+            onClick={toggleShowSystem}
+            aria-pressed={showSystem}
+            className="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
+          >
+            <span>Show system sessions{prepared.systemCount > 0 ? ` (${prepared.systemCount})` : ''}</span>
+            <span className={`shrink-0 w-7 h-4 rounded-full relative transition-colors ${showSystem ? 'bg-amber-500/60' : 'bg-gray-700'}`}>
+              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-gray-100 transition-all ${showSystem ? 'left-3.5' : 'left-0.5'}`} />
+            </span>
+          </button>
+        )}
         <button
           onClick={onNewRoom}
           className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 hover:border-amber-500/50 transition-all"
@@ -278,7 +412,12 @@ export function RoomsBar({
   liveTitle,
   pendingId,
 }: RoomsProps) {
-  const rooms = buildRooms(sessions, slots, currentSessionId, liveTitle, pendingId)
+  // #107: dedupe copies + collapse forks + hide system sessions so the slim
+  // mobile switcher shows one chip per real session (no "three identical rows").
+  const prepared = useMemo(() => prepareSessions(sessions, { hideSystem: true }), [sessions])
+  const rooms = buildRooms(prepared.sessions, slots, currentSessionId, liveTitle, pendingId, {
+    forkCountById: prepared.forkCountById,
+  })
   // Keep the voice screen clean (3-6-9): no rail until there is somewhere to
   // switch to. nav/switchers don't count toward the primary-action budget.
   if (rooms.length <= 1) return null

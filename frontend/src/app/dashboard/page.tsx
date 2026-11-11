@@ -22,6 +22,7 @@ import { ReportBugModal } from '@/components/ReportBugModal'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle } from '@/lib/sessions'
+import { prepareSessions } from '@/lib/session-list'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import type { User } from '@supabase/supabase-js'
@@ -195,6 +196,24 @@ export default function Dashboard() {
   // project-card sessions. See the comment block above groupByProject.
   const [baseCwd, setBaseCwd] = useState<string | null>(null)
   const [sessionsLoading, setSessionsLoading] = useState(false)
+  // #107: session-list hygiene — search box + "show system sessions" toggle.
+  // The raw list is ~95% auto-spawned sub-agent/verifier runs and carries the
+  // same id under several slugs; prepareSessions dedupes, collapses forks and
+  // (by default) hides system sessions before grouping. Toggle persisted so the
+  // human list stays clean across reloads.
+  const [sessionSearch, setSessionSearch] = useState('')
+  const [showSystemSessions, setShowSystemSessions] = useState(false)
+  useEffect(() => {
+    try { setShowSystemSessions(localStorage.getItem('vn-dash-show-system') === '1') } catch { /* ignore */ }
+  }, [])
+  const toggleShowSystemSessions = () => {
+    setShowSystemSessions((v) => {
+      const next = !v
+      try { localStorage.setItem('vn-dash-show-system', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }
+  const preparedSessions = prepareSessions(sessions, { search: sessionSearch, hideSystem: !showSystemSessions })
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -1728,6 +1747,48 @@ export default function Dashboard() {
                 </div>
               </div>
 
+              {/* Search + hide-system toggle (#107) — only when there are sessions to sift. */}
+              {sessions.length > 0 && (
+                <div className="mb-3 space-y-2">
+                  <div className="relative">
+                    <svg className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+                    </svg>
+                    <input
+                      type="text"
+                      value={sessionSearch}
+                      onChange={(e) => setSessionSearch(e.target.value)}
+                      placeholder="Search sessions…"
+                      aria-label="Search sessions"
+                      className="w-full pl-8 pr-8 py-2 rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none focus:border-[var(--accent)]"
+                    />
+                    {sessionSearch && (
+                      <button
+                        onClick={() => setSessionSearch('')}
+                        aria-label="Clear search"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  {(preparedSessions.systemCount > 0 || showSystemSessions) && (
+                    <button
+                      onClick={toggleShowSystemSessions}
+                      aria-pressed={showSystemSessions}
+                      className="w-full flex items-center justify-between gap-2 px-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                    >
+                      <span>Show system sessions{preparedSessions.systemCount > 0 ? ` (${preparedSessions.systemCount})` : ''}</span>
+                      <span className={`shrink-0 w-8 h-[18px] rounded-full relative transition-colors ${showSystemSessions ? 'bg-[var(--accent)]' : 'bg-[var(--surface-2)]'}`}>
+                        <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all ${showSystemSessions ? 'left-[18px]' : 'left-0.5'}`} />
+                      </span>
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* New Project input — shown only while naming (the trigger lives in the section header) */}
               {showNewProject && (
               <div className="mb-3">
@@ -1821,9 +1882,13 @@ export default function Dashboard() {
                 </div>
               ) : sessions.length === 0 && agentOnline ? (
                 <p className="px-4 text-sm text-[var(--muted)]">No conversations yet</p>
+              ) : preparedSessions.sessions.length === 0 && agentOnline ? (
+                <p className="px-4 text-sm text-[var(--muted)]">
+                  {sessionSearch.trim() ? 'No sessions match your search.' : 'No conversations to show.'}
+                </p>
               ) : (
                 <div className="rounded-xl border border-[var(--border-subtle)]/60 bg-[var(--surface)] divide-y divide-[var(--border-subtle)]/40">{/* Slack-style flush list: one bordered container, rows divided by hairlines — replaces the old per-project bubble cards (space-y-2 + rounded-2xl each) */}
-                  {groupByProject(sessions, baseCwd).map(project => (
+                  {groupByProject(preparedSessions.sessions, baseCwd).map(project => (
                     <div key={project.cwd} className={`relative transition-colors first:rounded-t-xl last:rounded-b-xl ${openProjectMenu === project.cwd ? 'z-30' : 'z-0'} ${expandedProjects.has(project.cwd) ? 'bg-[var(--surface-2)]/30' : 'hover:bg-[var(--surface-2)]/40'}`}>{/* relative + z-30 when its ⋯ menu is open so the dropdown floats ABOVE sibling rows (was ghosting through them). no overflow-hidden — it clipped the dropdown */}
                       {/* Project header row */}
                       <div className={`relative flex items-center gap-3 px-3 py-2.5 ${openProjectMenu === project.cwd ? 'z-40' : ''}`}>
@@ -2012,6 +2077,14 @@ export default function Dashboard() {
                                         <>
                                           <span className="opacity-40">·</span>
                                           <span className="font-mono">{s.messageCount} msgs</span>
+                                        </>
+                                      ) : null}
+                                      {preparedSessions.forkCountById.get(s.sessionId) ? (
+                                        <>
+                                          <span className="opacity-40">·</span>
+                                          <span className="px-1.5 py-px rounded-full bg-sky-500/15 text-sky-500 text-[10px] font-medium" title="Forked copies collapsed under this session">
+                                            {preparedSessions.forkCountById.get(s.sessionId)} fork{preparedSessions.forkCountById.get(s.sessionId) === 1 ? '' : 's'}
+                                          </span>
                                         </>
                                       ) : null}
                                     </div>

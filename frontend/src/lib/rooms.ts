@@ -45,6 +45,8 @@ export interface RoomRow {
   messageCount?: number
   /** 8-char id hint (only real disambiguator for identical titles). */
   shortId: string
+  /** Sibling forks collapsed under this row (#107); 0/undefined when none. */
+  forkCount?: number
 }
 
 export interface BuildRoomRowsOptions {
@@ -58,6 +60,8 @@ export interface BuildRoomRowsOptions {
   maxIdle?: number
   /** Session a deferred switch is waiting to open (session_switch_pending). */
   pendingId?: string | null
+  /** sessionId → collapsed fork count, from prepareSessions (#107). */
+  forkCountById?: Map<string, number>
 }
 
 const short = (id: string) => (id ? id.substring(0, 8) : '')
@@ -74,7 +78,13 @@ function projectName(cwd: string | undefined): string | undefined {
   return seg.length ? seg[seg.length - 1] : undefined
 }
 
-function sessionRow(s: RoomSessionInput, status: RoomStatus, now: number, id = s.sessionId): RoomRow {
+function sessionRow(
+  s: RoomSessionInput,
+  status: RoomStatus,
+  now: number,
+  id = s.sessionId,
+  forks?: Map<string, number>,
+): RoomRow {
   const timeIso = sessionActivityTime(s)
   const valid = timeIso && !Number.isNaN(new Date(timeIso).getTime())
   return {
@@ -89,6 +99,7 @@ function sessionRow(s: RoomSessionInput, status: RoomStatus, now: number, id = s
     cwd: s.cwd,
     messageCount: typeof s.messageCount === 'number' ? s.messageCount : undefined,
     shortId: short(s.sessionId),
+    forkCount: forks?.get(s.sessionId) || undefined,
   }
 }
 
@@ -105,6 +116,7 @@ export function buildRoomRows(
   const now = opts.now ?? Date.now()
   const slots = opts.slots ?? []
   const maxIdle = opts.maxIdle ?? 12
+  const forks = opts.forkCountById
   const sorted = sortSessionsByActivity(sessions.filter((s) => s && s.sessionId))
   const rows: RoomRow[] = []
   const taken: string[] = []
@@ -114,7 +126,7 @@ export function buildRoomRows(
   if (liveId) {
     const match = sorted.find((s) => sameSession(s.sessionId, liveId))
     const row = match
-      ? sessionRow(match, 'live', now, liveId)
+      ? sessionRow(match, 'live', now, liveId, forks)
       : {
           id: liveId,
           title: opts.liveFallbackTitle ? deriveSessionTitle(opts.liveFallbackTitle) : 'Current session',
@@ -135,7 +147,7 @@ export function buildRoomRows(
     const match = sorted.find((s) => sameSession(s.sessionId, slot.id))
     const status: RoomStatus = slot.status === 'error' ? 'idle' : 'background'
     const row: RoomRow = match
-      ? { ...sessionRow(match, status, now, slot.id), cwd: match.cwd ?? slot.workingDir, project: projectName(match.cwd ?? slot.workingDir) }
+      ? { ...sessionRow(match, status, now, slot.id, forks), cwd: match.cwd ?? slot.workingDir, project: projectName(match.cwd ?? slot.workingDir) }
       : {
           id: slot.id,
           title: `Background session ${short(slot.id)}`,
@@ -157,7 +169,7 @@ export function buildRoomRows(
   for (const s of sorted) {
     if (idle >= maxIdle) break
     if (isTaken(s.sessionId)) continue
-    rows.push(sessionRow(s, 'idle', now))
+    rows.push(sessionRow(s, 'idle', now, s.sessionId, forks))
     taken.push(s.sessionId)
     idle++
   }
