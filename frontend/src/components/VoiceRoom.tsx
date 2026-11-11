@@ -3948,7 +3948,13 @@ function VoiceRoomInner({
         )}
         {/* Header - Streamlined */}
         <div className="relative z-30 px-1.5 sm:px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
-          <div className="flex flex-wrap items-center gap-1 sm:gap-3">
+          {/* Two groups, NOT one wrapping row (issue #85). The left info group
+              wraps within itself; the right control strip is shrink-0 and pinned
+              top-right so the End button never drops onto a second row over the
+              transcript when the Outputs panel shrinks the chat pane. items-start
+              keeps the strip in the header band when the left group wraps. */}
+          <div className="flex items-start gap-1 sm:gap-3">
+            <div className="flex flex-wrap items-center gap-1 sm:gap-3 min-w-0 flex-1">
             {/* Visualizer — only visible when speaking */}
             {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
 
@@ -4048,9 +4054,12 @@ function VoiceRoomInner({
               </div>
             )}
 
-            {/* Spacer — pushes the burger (mobile) / control cluster (desktop)
-                to the far right. */}
-            <div className="flex-1" />
+            </div>{/* /left info group */}
+
+            {/* Right control strip — pinned top-right, never wraps (issue #85):
+                Agents/Skills, Meeting/More/Mute/End, and the mobile burger stay
+                together on the header line so End can't float over the transcript. */}
+            <div className="flex items-center gap-1 sm:gap-3 shrink-0">
 
             {/* Named agents + Skills — desktop header only. On mobile these
                 live in the composer control strip next to the input (Claude-
@@ -4330,6 +4339,7 @@ function VoiceRoomInner({
                 <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400" aria-label="New outputs" />
               )}
             </button>
+            </div>{/* /right control strip */}
           </div>
         </div>
 

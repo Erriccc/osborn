@@ -60,6 +60,41 @@ t('result is always an integer', () => {
   ok(Number.isInteger(clampPopoverShift(-70.4, 240.3, 834.5)), 'integer')
 })
 
+// ── issue #85: clamp to the VISIBLE chat region, not just the window ──────────
+// With the Rooms rail (right edge ~400) and the Outputs panel (left edge ~1040)
+// open on a 1280-wide desktop, the usable chat strip is [400, 1040]. A
+// right-anchored 22rem (352px) Audio popover whose natural box starts at left=128
+// clears the *window* clamp (128 > 8) but sits half under the rail — it must be
+// pushed inside the strip.
+t('panel open: popover under the pane LEFT edge is pushed inside the strip', () => {
+  const dx = clampPopoverShift(128, 352, 1280, 8, 400, 1040)
+  eq(dx, 280, 'shift to the pane gutter')
+  eq(128 + dx, 408, 'final left at strip left + margin')
+})
+
+t('panel open: popover past the pane RIGHT edge is pulled inside the strip', () => {
+  // maxLeft = 1040 - 8 - 352 = 680
+  const dx = clampPopoverShift(900, 352, 1280, 8, 400, 1040)
+  eq(900 + dx, 680, 'final left at strip right - margin - width')
+  ok(dx < 0, 'negative shift')
+})
+
+t('no region arg -> back-compat window clamp (popover that fits is untouched)', () => {
+  eq(clampPopoverShift(128, 352, 1280), 0, 'fits the window, no shift')
+})
+
+t('popover already inside the strip -> no shift', () => {
+  eq(clampPopoverShift(500, 352, 1280, 8, 400, 1040), 0, 'inside the pane')
+})
+
+t('region clamped to the viewport (off-screen/oversized region never pushes out)', () => {
+  // A region that runs off the right edge is capped at the viewport; a popover
+  // that fits the viewport is left alone rather than shoved past the edge.
+  eq(clampPopoverShift(900, 352, 1280, 8, 0, 5000), 0, 'region capped at vw, fits')
+  // A degenerate (empty) region is ignored.
+  eq(clampPopoverShift(100, 240, 834, 8, 500, 500), 0, 'empty region -> no shift')
+})
+
 let fail = 0
 for (const [n, p, m] of results) { console.log(`${p ? 'PASS' : 'FAIL'}  ${n}${m ? `\n      ${m}` : ''}`); if (!p) fail++ }
 console.log(`\n${results.length - fail}/${results.length} passed`)
