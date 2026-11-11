@@ -10,7 +10,7 @@ import Database from 'better-sqlite3'
 const tmp = mkdtempSync(join(tmpdir(), 'library-ingest-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(tmp, 'claude')
 const deny = join(tmp, 'deny.json')
-writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Audos'] } }))
+writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Acme'] } }))
 process.env.OSBORN_LENS_DENYLIST = deny
 process.env.OPENROUTER_API_KEY = 'dummy-not-a-key'
 for (const k of ['OSBORN_CONTENT_LENS', 'OSBORN_CONTENT_INGEST', 'OSBORN_CONTENT_LENS_MODEL', 'OSBORN_LIBRARY_MIN_PERIOD_H', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']) delete process.env[k]
@@ -36,7 +36,7 @@ const H = 3_600_000
 const T0 = Date.UTC(2026, 0, 1, 8, 0)
 const seam = (w: string) => `<session_tail>\n2026-01-01T09:00  Assistant: replayed\n</session_tail>\n\n${w}`
 const ROWS: [string, string, number][] = [
-  ['user', 'We shipped the period library writer for Audos today', 0],
+  ['user', 'We shipped the period library writer for Acme today', 0],
   ['assistant', 'The library writer is live and tested', 2],
   ['user', 'Great, the index table looks right to me', 4],
   ['assistant', 'Moving on to the ingest seam', 5],
@@ -92,7 +92,7 @@ await t('config: anon key only — a service_role key is refused, never sent', (
   try { const c = resolveIngestConfig(); assert.ok(!c.ok || c.anonKey !== SERVICE) } finally { process.env.OSBORN_SUPABASE_ANON_KEY = ANON }
 })
 await t('payload: allowed type, required content_hash, anchors, never a status/owner field', () => {
-  const p = buildIngestPayload(page(), s => s.replace(/Audos/g, '[client]'))
+  const p = buildIngestPayload(page(), s => s.replace(/Acme/g, '[client]'))
   assert.ok(['short', 'compilation', 'text_post', 'transcript', 'audio_video'].includes(p.type as string))
   assert.match(String(p.content_hash), /^[0-9a-f]{64}$/)
   assert.equal(p.title, 'Period 01: Ship it.')
@@ -186,7 +186,7 @@ await t('step: next run retries the failed ingest (no model call) and records ok
   assert.equal(e.ingest?.status, 'ok')
   firstHash = e.ingest!.contentHash
   assert.equal(JSON.parse(rpc[0].init.body).p_payload.content_hash, firstHash)
-  assert.ok(!JSON.parse(rpc[0].init.body).p_payload.body.includes('Audos'))
+  assert.ok(!JSON.parse(rpc[0].init.body).p_payload.body.includes('Acme'))
 })
 await t('step: once ingested, later runs send nothing', async () => {
   rpc = []

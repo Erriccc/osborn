@@ -9,7 +9,7 @@ import Database from 'better-sqlite3'
 const tmp = mkdtempSync(join(tmpdir(), 'lens-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(tmp, 'claude')
 const deny = join(tmp, 'deny.json')
-writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Audos', 'Prehype', 'Peazy'], '[founder]': ['Jane Doerfler'] } }))
+writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Acme', 'Globex', 'Initech'], '[founder]': ['Jane Smith'] } }))
 process.env.OSBORN_LENS_DENYLIST = deny
 delete process.env.OSBORN_LENS_INCLUDE_SUBAGENTS
 
@@ -95,7 +95,7 @@ await t('windows pack in order, respect size', () => {
 const R = loadClientRedactor(null)
 await t('client redaction: names / companies / emails / ids / uuids / billing', () => {
   const s = [
-    'Audos and Prehype and Peazy asked; Jane Doerfler agreed. Audos\'s account.',
+    'Acme and Globex and Initech asked; Jane Smith agreed. Acme\'s account.',
     'mail jane.d@example.com now',
     'ad account act_1234567890123 and urn:li:sponsoredAccount:508123456',
     'workspace 3f2b8c1e-9d4a-4e6b-8a1c-0123456789ab',
@@ -103,7 +103,7 @@ await t('client redaction: names / companies / emails / ids / uuids / billing', 
     'google customer id 123-456-7890 and page id 1784140000000001',
   ].join('\n')
   const o = R.redact(s)
-  for (const bad of [/audos/i, /prehype/i, /peazy/i, /doerfler/i, /@example\.com/, /act_\d/, /508123456/, /3f2b8c1e/, /12,500/, /\$3k/, /123-456-7890/, /1784140000000001/]) assert.ok(!bad.test(o), String(bad))
+  for (const bad of [/acme/i, /globex/i, /initech/i, /smith/i, /@example\.com/, /act_\d/, /508123456/, /3f2b8c1e/, /12,500/, /\$3k/, /123-456-7890/, /1784140000000001/]) assert.ok(!bad.test(o), String(bad))
   assert.ok(/\[amount\]/.test(o))
 })
 
@@ -115,11 +115,11 @@ await t('redaction applied to every pulled row before return (via loadConversati
   const p = join(tmp, 'red.db'); const d = new Database(p)
   d.exec(`CREATE TABLE content(id INTEGER PRIMARY KEY, source TEXT, line_num INT, byte_offset INT, ts TEXT, msg_type TEXT, model TEXT, git_branch TEXT, cwd TEXT, tool_name TEXT, blob BLOB)`)
   const i = d.prepare('INSERT INTO content(source, ts, msg_type, blob) VALUES (?,?,?,?)')
-  i.run('main', '2026-01-01T10:00:00Z', 'user', brotliCompressSync(Buffer.from('ping Audos at ops@audos.example about act_99999999 using key sk-ant-api03-' + 'A'.repeat(60))))
-  i.run('main', '2026-01-01T10:01:00Z', 'assistant', brotliCompressSync(Buffer.from('curl -H "x-goog-api-key: AIzaSyD' + 'q'.repeat(30) + '" -H "api-key: abcdef1234567890zz" Prehype')))
+  i.run('main', '2026-01-01T10:00:00Z', 'user', brotliCompressSync(Buffer.from('ping Acme at ops@acme.example about act_99999999 using key sk-ant-api03-' + 'A'.repeat(60))))
+  i.run('main', '2026-01-01T10:01:00Z', 'assistant', brotliCompressSync(Buffer.from('curl -H "x-goog-api-key: AIzaSyD' + 'q'.repeat(30) + '" -H "api-key: abcdef1234567890zz" Globex')))
   d.close()
   const out = loadConversationRows(p, 0, R.redact).records.map(r => r.text).join('\n')
-  for (const bad of [/audos/i, /prehype/i, /@audos/, /act_9/, /sk-ant-api03-A/, /AIzaSyDq/, /abcdef1234567890zz/]) assert.ok(!bad.test(out), String(bad))
+  for (const bad of [/acme/i, /globex/i, /@acme/, /act_9/, /sk-ant-api03-A/, /AIzaSyDq/, /abcdef1234567890zz/]) assert.ok(!bad.test(out), String(bad))
 })
 
 await t('sanitizer: x-goog-api-key and api-key header values redacted', () => {
@@ -323,9 +323,9 @@ await t('outPath set: updateHwm:true is ignored, profile untouched, review file 
 })
 
 await t('reveal is per-piece opt-in; default redacts', () => {
-  const rv = loadClientRedactor(null, { reveal: ['Audos'] }).redact('Audos and Prehype')
-  assert.ok(/Audos/.test(rv) && !/Prehype/.test(rv))
-  assert.ok(!/Audos/.test(R.redact('Audos')))
+  const rv = loadClientRedactor(null, { reveal: ['Acme'] }).redact('Acme and Globex')
+  assert.ok(/Acme/.test(rv) && !/Globex/.test(rv))
+  assert.ok(!/Acme/.test(R.redact('Acme')))
 })
 
 const recs = loadConversationRows(dbPath, 0).records

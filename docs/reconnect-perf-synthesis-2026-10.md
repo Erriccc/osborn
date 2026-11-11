@@ -10,7 +10,7 @@ Four parallel agents: log-timing forensics, server/boot architect, transport/han
 2. **Sessions die on any hard drop** (the teardown chain: `👋 User left` → kill subprocess → room destroyed → machine idle-stops). So you pay that 21–40s replay on *every* reconnect.
 3. **Cold boot ≈ 6–8s** (Fly start + Node boot + the synchronous 6,739-artifact housekeeping scan — already deferred in 0.9.257 — + LiveKit connect).
 
-The two monster transcripts: `4ba9e287` (AudosNextJsServer) = **323MB/92,967 rows** (130× the next file in its project), and `c97588f4` = **155MB/36,675 rows**.
+The two monster transcripts: `4ba9e287` (ProjectX) = **323MB/92,967 rows** (130× the next file in its project), and `c97588f4` = **155MB/36,675 rows**.
 
 **Implication:** warm re-attach isn't a nice-to-have — it **eliminates 21–40 seconds per reconnect**. And a *true* cold resume on a 323MB session is fundamentally ~21–40s unless the JSONL is shrunk. These two are the whole ballgame; token pre-mint etc. save hundreds of ms.
 

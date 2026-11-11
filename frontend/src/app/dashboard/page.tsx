@@ -74,7 +74,7 @@ interface ProjectGroup {
   sessions: SessionInfo[]
   lastActive: string  // timestamp of most recent session
   // Set only when another group shares this display name (e.g. two
-  // "AudosNextJsServer" at different paths). The parent path segment,
+  // "ProjectX" at different paths). The parent path segment,
   // shown dimmed so duplicate cards are distinguishable. Bug: "duplicate
   // project names with no distinguishing info."
   distinguisher?: string
