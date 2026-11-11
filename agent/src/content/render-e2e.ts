@@ -19,7 +19,10 @@ import { redactSecrets } from './transcript-sanitizer.js'
 const OUT = '/workspace/.claude/projects/-workspace/osb/c97588f4-5760-4b5b-b789-ab5f65aaed29/render-run-1'
 const FFMPEG = process.env.FFMPEG || '/workspace/.local/bin/ffmpeg'
 const FFPROBE = process.env.FFPROBE || '/workspace/.local/bin/ffprobe'
-const FONT_SRC = '/workspace/audos-com/node_modules/pdfmake/build/fonts/Roboto/Roboto-Medium.ttf'
+// Optional caption font for the burned-in ASS subtitles. Set CAPTION_FONT_TTF to a
+// Roboto-Medium .ttf to use it; otherwise libass falls back to its default font.
+// (No absolute/external path is baked in — the previous hardcoded path is gone.)
+const FONT_SRC = process.env.CAPTION_FONT_TTF || ''
 const OR = 'https://openrouter.ai/api/v1'
 const KEY = process.env.OPENROUTER_API_KEY || ''
 const TTS_MODEL = 'microsoft/mai-voice-2.1-flash'
@@ -155,7 +158,11 @@ async function main(): Promise<void> {
   if (!KEY) throw new Error('OPENROUTER_API_KEY missing — stopping (no fabricated output).')
   fs.mkdirSync(path.join(OUT, 'lines'), { recursive: true })
   fs.mkdirSync(path.join(OUT, 'fonts'), { recursive: true })
-  fs.copyFileSync(FONT_SRC, path.join(OUT, 'fonts', 'Roboto-Medium.ttf'))
+  if (FONT_SRC && fs.existsSync(FONT_SRC)) {
+    fs.copyFileSync(FONT_SRC, path.join(OUT, 'fonts', 'Roboto-Medium.ttf'))
+  } else if (FONT_SRC) {
+    log(`CAPTION_FONT_TTF set but not found: ${FONT_SRC} — using libass default font`)
+  }
   writeText(path.join(OUT, 'script.txt'), SCRIPT.join('\n') + '\n')
   writeText(path.join(OUT, 'text-variants.md'), textVariants())
   const results: Record<string, any> = {}
