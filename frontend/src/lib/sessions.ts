@@ -155,19 +155,23 @@ export function deriveSessionTitle(input: string | null | undefined | SessionLis
 export const APP_TITLE = 'Voice Native'
 
 /**
- * Browser tab title for a chat page (bug ab31e017): "<session title> · Voice
- * Native", else "New chat · Voice Native". The listed session's title wins;
- * before the session is listed, the first real user message stands in.
+ * Browser tab title for a chat page (bug ab31e017 / #60): "<session title> ·
+ * Voice Native" once the session has a real, listed title, otherwise a STABLE
+ * "Chat · Voice Native".
+ *
+ * The raw first user message is deliberately NOT used as the title. It used to
+ * stand in before the session was listed, but that made the browser tab show
+ * the truncated first message as soon as one was sent (#60) — it changed on
+ * every chat and leaked message content into the tab. The route keeps a stable
+ * "Chat · Voice Native" (matching useDocumentTitle('Chat') and the other
+ * routes) and only upgrades to the clean session title once one exists.
  */
 export function chatDocumentTitle(input: {
   session?: SessionListFields | null
-  firstUserMessage?: string | null
 }): string {
   const fromSession = input.session ? deriveSessionTitle(input.session) : UNTITLED_SESSION
-  const title = fromSession !== UNTITLED_SESSION
-    ? fromSession
-    : (input.firstUserMessage ? deriveSessionTitle(input.firstUserMessage) : UNTITLED_SESSION)
-  return `${title === UNTITLED_SESSION ? 'New chat' : title} · ${APP_TITLE}`
+  const title = fromSession !== UNTITLED_SESSION ? fromSession : 'Chat'
+  return `${title} · ${APP_TITLE}`
 }
 
 /** Cap a normalized title at 6 words: capitalize the first, add an ellipsis
