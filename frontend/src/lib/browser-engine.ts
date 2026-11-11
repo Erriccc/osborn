@@ -83,18 +83,55 @@ export type EngineMachineState = {
   configured: boolean
   state: string | null // 'started' | 'stopped' | 'starting' | … | null when unknown
   machineId: string | null
-  // True when the engine token IS configured but the Fly Machines API itself
-  // couldn't be reached (so `state` is null because we FAILED to read it, not
-  // because there's no token). Lets the panel show an explicit "engine
-  // unreachable" instead of a bare "unknown" (#81).
+  // True ONLY when the ENGINE itself is unreachable — its control API didn't
+  // answer. A failure to read the Fly Machines *management* API (wrong app name,
+  // mis-scoped FLY_API_TOKEN, Fly outage) is NOT this: that says nothing about
+  // engine health, so we confirm against the engine's own /status before setting
+  // it (#115). Lets the panel show an explicit "engine unreachable" instead of a
+  // bare "unknown" (#81) — without firing while a healthy engine answers directly.
   unreachable: boolean
+}
+
+// Direct, authoritative reachability check: does the engine's OWN control API
+// answer? This is the source of truth for "is the engine up", and — unlike the
+// Fly Machines management API — it honors BROWSER_ENGINE_CONTROL_URL /
+// BROWSER_ENGINE_HOST, so it targets the real engine host even when the Fly app
+// name has drifted. Any HTTP reply (even a 401 token-mismatch) proves the engine
+// is reachable; only a thrown fetch (refused / timeout / dns) means it is down.
+// A reachable engine is already running, so this does not wake a stopped machine
+// in practice; the short timeout bounds the probe. Used as a fallback only when
+// the management API can't be read, so the no-wake machine-state path is unchanged
+// for the normal case.
+export async function engineControlReachable(): Promise<boolean> {
+  try {
+    const tok = engineToken()
+    const res = await fetch(`${controlBase()}/status`, {
+      headers: tok ? { 'x-engine-token': tok } : {},
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+    })
+    // Drain the small body so the socket is released; any response = reachable.
+    await res.body?.cancel().catch(() => {})
+    return true
+  } catch {
+    return false
+  }
 }
 
 // Report awake/asleep WITHOUT waking the engine, by asking the Fly Machines API
 // for the app's machine state (any request to the app itself would auto-start it,
 // defeating the purpose). Best-effort — returns {configured:false} if no token.
+//
+// When the management API CAN'T be read (non-OK, or thrown), we do NOT assume the
+// engine is down — that failure is about the management API / token scope / app
+// name, not engine health. We fall back to the engine's own control /status and
+// report `unreachable` from THAT (#115). A reachable-but-unreadable engine reads
+// as 'started' (it is demonstrably up; we just can't read precise awake/asleep).
 export async function engineMachineState(): Promise<EngineMachineState> {
   const flyToken = (process.env.FLY_API_TOKEN || '').trim()
+  // No Fly token → the no-wake management read is unavailable. That's a config
+  // gap, not an unreachable engine: keep the existing neutral "state n/a" (no
+  // probe, no wake) rather than a scary red badge.
   if (!flyToken) return { configured: false, state: null, machineId: null, unreachable: false }
   try {
     const res = await fetch(`https://api.machines.dev/v1/apps/${engineApp()}/machines`, {
@@ -102,12 +139,18 @@ export async function engineMachineState(): Promise<EngineMachineState> {
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
     })
-    if (!res.ok) return { configured: true, state: null, machineId: null, unreachable: true }
+    if (!res.ok) {
+      // The MANAGEMENT API failed (wrong app/org, mis-scoped token, Fly outage) —
+      // ask the engine directly before declaring it unreachable (#115).
+      const up = await engineControlReachable()
+      return { configured: true, state: up ? 'started' : null, machineId: null, unreachable: !up }
+    }
     const machines = (await res.json()) as Array<{ id: string; state: string }>
     const m = Array.isArray(machines) && machines.length ? machines[0] : null
     return { configured: true, state: m?.state ?? 'destroyed', machineId: m?.id ?? null, unreachable: false }
   } catch {
-    return { configured: true, state: null, machineId: null, unreachable: true }
+    const up = await engineControlReachable()
+    return { configured: true, state: up ? 'started' : null, machineId: null, unreachable: !up }
   }
 }
 

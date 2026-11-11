@@ -10,6 +10,8 @@ import {
   buildControlTarget,
   buildStreamTarget,
   engineTokenConfigured,
+  engineControlReachable,
+  engineMachineState,
   GET_ALLOW,
   POST_ALLOW,
 } from '../src/lib/browser-engine'
@@ -18,8 +20,21 @@ const results: [string, boolean, string?][] = []
 function t(name: string, fn: () => void) {
   try { fn(); results.push([name, true]) } catch (e: any) { results.push([name, false, String(e.message).slice(0, 300)]) }
 }
+async function at(name: string, fn: () => Promise<void>) {
+  try { await fn(); results.push([name, true]) } catch (e: any) { results.push([name, false, String(e.message).slice(0, 300)]) }
+}
 const ok = (c: any, m: string) => { if (!c) throw new Error(m) }
 const eq = (a: any, b: any, m: string) => ok(a === b, `${m}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`)
+
+// Swap global.fetch for a URL-routed mock for the duration of one async test.
+type FetchLike = (url: any, init?: any) => Promise<any>
+async function withFetch(mock: FetchLike, fn: () => Promise<void>) {
+  const saved = global.fetch
+  ;(global as any).fetch = mock
+  try { await fn() } finally { (global as any).fetch = saved }
+}
+const isMgmt = (url: any) => String(url).includes('api.machines.dev')
+const isStatus = (url: any) => String(url).includes('eng.example:8781/status')
 
 t('GET allowlist builds the control URL', () => {
   eq(buildControlTarget('GET', 'status'), 'https://eng.example:8781/status', 'status')
@@ -64,10 +79,73 @@ t('engineTokenConfigured reflects whether the engine token is set (#63)', () => 
   else process.env.OSBORN_ENGINE_TOKEN = saved
 })
 
-let failed = 0
-for (const [name, pass, err] of results) {
-  console.log(`${pass ? '✅' : '❌'} ${name}${err ? ` — ${err}` : ''}`)
-  if (!pass) failed++
+// #115: a HEALTHY engine must NOT read as unreachable just because the Fly
+// Machines *management* API can't be read (wrong app name / mis-scoped token /
+// outage). engineMachineState() must confirm against the engine's own /status.
+async function reachabilityTests() {
+  const savedFly = process.env.FLY_API_TOKEN
+  process.env.FLY_API_TOKEN = 'flytok' // management read is attempted only with a token
+
+  await at('#115: mgmt-API failure + engine /status up ⇒ reachable (not unreachable)', async () => {
+    await withFetch(async (url) => {
+      if (isMgmt(url)) return { ok: false, status: 404 } // wrong app/org/token scope
+      if (isStatus(url)) return { ok: true, status: 200 } // engine answers directly
+      throw new Error(`unexpected url ${url}`)
+    }, async () => {
+      const s = await engineMachineState()
+      eq(s.configured, true, 'configured')
+      eq(s.unreachable, false, 'healthy engine must read reachable')
+      eq(s.state, 'started', 'demonstrably-up engine reads started')
+    })
+  })
+
+  await at('#115: mgmt-API failure + engine /status down ⇒ genuinely unreachable', async () => {
+    await withFetch(async (url) => {
+      if (isMgmt(url)) return { ok: false, status: 404 }
+      if (isStatus(url)) throw Object.assign(new Error('refused'), { cause: { code: 'ECONNREFUSED' } })
+      throw new Error(`unexpected url ${url}`)
+    }, async () => {
+      const s = await engineMachineState()
+      eq(s.unreachable, true, 'genuine-down engine stays flagged unreachable')
+      eq(s.state, null, 'no state when the engine is down')
+    })
+  })
+
+  await at('#115: healthy mgmt read ⇒ state used verbatim, no engine wake', async () => {
+    let statusProbed = false
+    await withFetch(async (url) => {
+      if (isMgmt(url)) return { ok: true, status: 200, json: async () => [{ id: 'm1', state: 'stopped' }] }
+      if (isStatus(url)) { statusProbed = true; return { ok: true, status: 200 } }
+      throw new Error(`unexpected url ${url}`)
+    }, async () => {
+      const s = await engineMachineState()
+      eq(s.state, 'stopped', 'management state reported as-is')
+      eq(s.unreachable, false, 'readable state is never unreachable')
+      eq(statusProbed, false, 'no-wake: a readable stopped machine is NOT probed')
+    })
+  })
+
+  await at('engineControlReachable: any HTTP reply (even 401) ⇒ reachable', async () => {
+    await withFetch(async () => ({ ok: false, status: 401 }), async () => {
+      eq(await engineControlReachable(), true, '401 proves the engine is up')
+    })
+    await withFetch(async () => { throw new Error('ECONNREFUSED') }, async () => {
+      eq(await engineControlReachable(), false, 'a thrown fetch means down')
+    })
+  })
+
+  if (savedFly === undefined) delete process.env.FLY_API_TOKEN
+  else process.env.FLY_API_TOKEN = savedFly
 }
-console.log(`\n${results.length - failed}/${results.length} passed`)
-if (failed) process.exit(1)
+
+async function main() {
+  await reachabilityTests()
+  let failed = 0
+  for (const [name, pass, err] of results) {
+    console.log(`${pass ? '✅' : '❌'} ${name}${err ? ` — ${err}` : ''}`)
+    if (!pass) failed++
+  }
+  console.log(`\n${results.length - failed}/${results.length} passed`)
+  if (failed) process.exit(1)
+}
+main()
