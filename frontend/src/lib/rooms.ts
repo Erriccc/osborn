@@ -180,3 +180,112 @@ export function buildRoomRows(
   }
   return rows
 }
+
+// ============================================================
+// ROW IDENTITY (#75 / #107) — pure, display-only helpers
+// ============================================================
+// The collapsed rail used to render every row as the same featureless dot, so
+// rows carried no identity. These helpers turn a row into a recognisable token:
+// a project-derived label, a single initial for the avatar, and a deterministic
+// colour hashed from that label. All display-only — they never change the
+// agent/server cwd semantics; they only decide what the UI shows.
+
+/** The cwd leaf that means "the workspace root" (no distinguishing folder). */
+const WORKSPACE_ROOT = 'workspace'
+
+export interface RoomColor {
+  /** 0–359 hue the label hashes to (stable across renders and reloads). */
+  hue: number
+  /** Avatar fill. */
+  bg: string
+  /** Avatar foreground (the initial). */
+  fg: string
+  /** A lighter same-hue ring, for optional emphasis. */
+  ring: string
+}
+
+type IdentityFields = { project?: string; title?: string }
+
+/**
+ * The identity label for a row: its project folder — EXCEPT a session rooted at
+ * the workspace root (leaf "workspace", or no cwd at all) has no distinguishing
+ * folder, so every such row would collapse to the same generic "Workspace".
+ * For those we fall back to the session's own title so the rows stay distinct.
+ * Display-only: this does not change where the session resolves on disk.
+ */
+export function roomIdentityLabel(row: IdentityFields): string {
+  const project = (row.project ?? '').trim()
+  if (project && project.toLowerCase() !== WORKSPACE_ROOT) return project
+  const title = (row.title ?? '').trim()
+  return title || project || ''
+}
+
+/** The single uppercase glyph for a row's avatar: the first letter/number of
+ * its identity label, else '#'. Prefers an ASCII alphanumeric, then any
+ * non-ASCII character (a letter in another script) so non-English projects
+ * still get a sensible glyph; pure-punctuation labels fall back to '#'. */
+export function roomInitial(row: IdentityFields): string {
+  const label = roomIdentityLabel(row).trim()
+  for (const ch of label) {
+    if (!ch.trim()) continue // skip whitespace
+    // Take the first ASCII alphanumeric or any non-ASCII character (a letter in
+    // another script); skip ASCII punctuation (so "_beta" → "B", "***" → "#").
+    if (/[a-z0-9]/i.test(ch) || ch.charCodeAt(0) > 127) return ch.toUpperCase()
+  }
+  return '#'
+}
+
+/**
+ * Deterministic colour for an identity string (FNV-1a hash → hue). The same
+ * project always maps to the same colour, so a folder's sessions share a hue
+ * and different folders read as different colours; two workspace-root sessions
+ * with different titles get different hues (they hash their fallback title).
+ * Fixed saturation/lightness keep the initial legible on a dark rail.
+ */
+export function roomColor(seed: string): RoomColor {
+  const key = (seed ?? '').trim().toLowerCase()
+  let h = 2166136261 // FNV-1a offset basis
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  const hue = (h >>> 0) % 360
+  return {
+    hue,
+    bg: `hsl(${hue} 52% 38%)`,
+    fg: `hsl(${hue} 85% 92%)`,
+    ring: `hsl(${hue} 60% 55%)`,
+  }
+}
+
+/** One call for the UI: a row's label, avatar initial and colour together. */
+export function roomAvatar(row: IdentityFields): { label: string; initial: string; color: RoomColor } {
+  const label = roomIdentityLabel(row)
+  return { label, initial: roomInitial(row), color: roomColor(label) }
+}
+
+/**
+ * Group rows under their project folder, most-recent folder first (rows are
+ * already activity-ordered within each). Rows with no project fall into an
+ * "Other" bucket shown last. Pure so the rail (#107 grouping) can be unit-
+ * tested without React: given rows spanning N distinct project folders it
+ * returns one group per folder, each holding exactly that folder's rows.
+ */
+export function groupRoomsByProject<T extends { project?: string }>(
+  rows: T[],
+): { project: string; rooms: T[] }[] {
+  const map = new Map<string, T[]>()
+  for (const r of rows) {
+    const key = r.project || 'Other'
+    const list = map.get(key)
+    if (list) list.push(r)
+    else map.set(key, [r])
+  }
+  return Array.from(map.entries())
+    .map(([project, list]) => ({ project, rooms: list }))
+    .sort((a, b) => {
+      if (a.project === 'Other') return 1
+      if (b.project === 'Other') return -1
+      return 0 // preserve insertion order (already activity-sorted)
+    })
+}
