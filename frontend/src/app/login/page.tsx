@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useRouter } from 'next/navigation'
-import { createSupabaseBrowser } from '@/lib/supabase-browser'
+import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import SessionBrowser from '@/components/SessionBrowser'
 import SetupWizard from '@/components/SetupWizard'
@@ -50,7 +50,7 @@ export default function Home() {
   const autoConnectAttempted = useRef(false)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    getBrowserUser(supabase).then((user) => {
       setUser(user)
       setAuthLoading(false)
     })
