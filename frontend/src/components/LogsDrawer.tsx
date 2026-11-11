@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { categorizeTool, categoryStyle, stripResultMarkdown } from '../lib/activityCategory'
 
 // ---------------------------------------------------------------------------
 // Machine-chip health thresholds — edit these to calibrate live
@@ -221,6 +222,13 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   const { verb, icon } = toolVisual(meta.tool)
   const running = meta.status === 'running'
 
+  // Categorise the row from the one field already on it — the tool name (#86) — so
+  // the card can say at a glance what KIND of thing this is (a shell command vs a
+  // file op vs a search vs a web fetch) and format the body accordingly.
+  const category = categorizeTool(meta.tool)
+  const catStyle = categoryStyle(category)
+  const isCommand = category === 'command'
+
   // The primary display target: prefer the human-readable name/description,
   // fall back to command/pattern/url. Used in the card body and copy payload.
   const displayName = meta.fileName || meta.description || meta.pattern || meta.url || meta.command
@@ -330,6 +338,15 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         {/* Tool icon + verb — immediately after agent chip; amber tint when running */}
         <span className={`shrink-0 ${running ? 'text-amber-400' : 'text-gray-400'}`}>{icon}</span>
         <span className="text-[11px] font-semibold text-gray-300 shrink-0">{verb}</span>
+
+        {/* Category chip — a quiet classifier so the row's KIND is legible at a glance (#86) */}
+        <span
+          title={`${catStyle.label} — ${isCommand ? 'a shell command the agent ran' : category === 'file' ? 'a file the agent read or changed' : category === 'search' ? 'a codebase search' : category === 'web' ? 'a web fetch or search' : 'an activity log entry'}`}
+          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-medium leading-none whitespace-nowrap shrink-0 ${catStyle.chipClass}`}
+        >
+          <span className={`w-1 h-1 rounded-full shrink-0 ${catStyle.dotClass}`} />
+          {catStyle.label}
+        </span>
         {running && (
           <svg className="w-3 h-3 animate-spin text-amber-400/70 shrink-0" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
@@ -355,12 +372,21 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
           </div>
         )}
 
-        {/* Body: command / filePath — the substantive content */}
+        {/* Body: command / filePath — the substantive content.
+            Shell commands get a terminal affordance (a $ prompt in a dark mono
+            block) so they read as something that was run, not generic text (#86). */}
         {bodyText ? (
           <div>
-            <pre className={`font-mono text-[11px] leading-relaxed text-gray-200 whitespace-pre-wrap break-all ${!bodyExpanded && bodyNeedsExpand ? 'line-clamp-6' : ''}`}>
-              {shownBody}
-            </pre>
+            {isCommand ? (
+              <pre className="flex gap-2 rounded-md bg-gray-950/70 border border-gray-800 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-emerald-200/90 whitespace-pre-wrap break-all">
+                <span className="select-none text-gray-500 shrink-0" aria-hidden="true">$</span>
+                <span className="min-w-0">{shownBody}</span>
+              </pre>
+            ) : (
+              <pre className={`font-mono text-[11px] leading-relaxed text-gray-200 whitespace-pre-wrap break-all ${!bodyExpanded && bodyNeedsExpand ? 'line-clamp-6' : ''}`}>
+                {shownBody}
+              </pre>
+            )}
             {bodyNeedsExpand && (
               <button
                 onClick={() => setBodyExpanded((v) => !v)}
@@ -467,6 +493,41 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   )
 }
 
+// Preview thresholds for a finished flow's result in the Running tab.
+const RESULT_PREVIEW_LINES = 4
+const RESULT_PREVIEW_CHARS = 240
+
+// FlowResultText — a finished sub-agent's result, shown readable instead of
+// truncated to one line mid-sentence (#86). Markdown emphasis/verdict markers are
+// stripped so `**GATE: PASS**` reads as "GATE: PASS"; long results collapse to a
+// few lines with a "Show full result" affordance, with its own expand state so
+// each row expands independently.
+function FlowResultText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const clean = stripResultMarkdown(text)
+  const lineCount = clean.split('\n').length
+  const needsExpand = clean.length > RESULT_PREVIEW_CHARS || lineCount > RESULT_PREVIEW_LINES
+  const preview = needsExpand
+    ? clean.split('\n').slice(0, RESULT_PREVIEW_LINES).join('\n').slice(0, RESULT_PREVIEW_CHARS)
+    : clean
+  const shown = expanded ? clean : preview
+  return (
+    <div className="mt-1">
+      <div className={`text-[11px] leading-relaxed text-gray-300 whitespace-pre-wrap break-words ${!expanded && needsExpand ? 'line-clamp-4' : ''}`}>
+        {shown}
+      </div>
+      {needsExpand && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-0.5 text-[10px] text-violet-400 hover:text-violet-300 transition-colors"
+        >
+          {expanded ? 'Show less' : 'Show full result'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 const DRAWER_MIN_HEIGHT = 120
 const DRAWER_DEFAULT_HEIGHT = 256
 
@@ -501,11 +562,14 @@ function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: nu
   return (
     <span
       title={`${ramPct}% of the machine's RAM in use · ${procCount} processes running`}
-      className={`inline-flex items-center gap-1 ml-1 px-1.5 py-0.5 rounded-full bg-gray-800 border border-gray-700/70 text-[9px] font-semibold leading-none tabular-nums ${TIER_TEXT_CLASS[tier]}`}>
+      className={`inline-flex items-center gap-1 ml-1 px-1.5 py-0.5 rounded-full bg-gray-800 border border-gray-700/70 text-[9px] font-semibold leading-none ${TIER_TEXT_CLASS[tier]}`}>
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${TIER_DOT_CLASS[tier]}`} />
-      {ramPct}%
-      <span className="text-gray-500 font-normal">·</span>
-      {procCount}p
+      {/* Labelled so every number on screen says what it is (#86) */}
+      <span className="text-gray-400 font-normal">RAM</span>
+      <span className="tabular-nums">{ramPct}%</span>
+      <span className="text-gray-600 font-normal">·</span>
+      <span className="tabular-nums">{procCount}</span>
+      <span className="text-gray-400 font-normal">proc</span>
     </span>
   )
 }
@@ -747,38 +811,38 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                   const initials = pill?.initials ?? deriveInitials(flow.agentType)
                   const pillClass = pill?.className ?? 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
                   const isRunning = flow.status === 'running'
-                  return (
-                    <div
-                      key={flow.agentId}
-                      className="flex items-center gap-2 rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-1.5"
-                    >
-                      {/* Agent chip */}
+
+                  // The agent chip + status line, shared by both running and done rows.
+                  const header = (
+                    <>
                       <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap shrink-0 ${pillClass}`}>
                         <ProfileAvatar initials={initials} />
                         {flow.agentType}
                       </span>
-
-                      {/* Status — pulses while running so a live row reads as alive. */}
                       <span className={`text-[11px] shrink-0 ${isRunning ? 'text-amber-400 animate-pulse' : 'text-emerald-400'}`}>
                         {isRunning ? 'running' : 'done'}
                       </span>
+                    </>
+                  )
 
-                      {/* While running: live activity (from the sub-agent's tool stream) if we
-                          have it, else the dispatch task. When done: its last message (artifact). */}
-                      {(() => {
-                        const text = isRunning ? (flow.lastMessage || flow.task) : (flow.artifact || flow.task)
-                        if (!text) return <span className="flex-1" />
-                        const isLive = isRunning && !!flow.lastMessage
-                        const cls = isLive ? 'text-amber-300/90' : (isRunning ? 'text-gray-500 italic' : 'text-gray-400')
-                        return (
+                  // RUNNING: compact single line — live activity (from the sub-agent's tool
+                  // stream) if we have it, else the dispatch task. Status is transient here,
+                  // so one truncated line is fine; the Stop control sits inline on the right.
+                  if (isRunning) {
+                    const text = flow.lastMessage || flow.task
+                    const isLive = !!flow.lastMessage
+                    const cls = isLive ? 'text-amber-300/90' : 'text-gray-500 italic'
+                    return (
+                      <div
+                        key={flow.agentId}
+                        className="flex items-center gap-2 rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-1.5"
+                      >
+                        {header}
+                        {text ? (
                           <span className={`min-w-0 truncate text-[11px] flex-1 ${cls}`} title={text}>
                             {text}
                           </span>
-                        )
-                      })()}
-
-                      {/* Stop button — only when running */}
-                      {isRunning && (
+                        ) : <span className="flex-1" />}
                         <button
                           onClick={() => onStopDispatch?.(flow.agentId)}
                           title="Stop this flow"
@@ -788,7 +852,22 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                             <rect x="6" y="6" width="12" height="12" rx="1" />
                           </svg>
                         </button>
-                      )}
+                      </div>
+                    )
+                  }
+
+                  // DONE: the result is the point — show it in full, markdown cleaned, wrapping,
+                  // with an expand affordance instead of a mid-sentence one-line truncation (#86).
+                  const result = flow.artifact || flow.task
+                  return (
+                    <div
+                      key={flow.agentId}
+                      className="rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-1.5"
+                    >
+                      <div className="flex items-center gap-2">{header}</div>
+                      {result
+                        ? <FlowResultText text={result} />
+                        : <div className="mt-1 text-[11px] text-gray-500 italic">Finished with no result text.</div>}
                     </div>
                   )
                 })
@@ -802,6 +881,18 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
               className="overflow-y-auto overflow-x-hidden px-3 py-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
               style={{ height: drawerHeight }}
             >
+              {/* Plain-language frame — this tab is host/developer diagnostics, not a
+                  product feature every user must interpret. Says what the surface IS
+                  and that it is safe to ignore, in a quiet style (#86). */}
+              <div className="flex items-start gap-2 rounded-md border border-gray-700/40 bg-gray-800/30 px-2.5 py-1.5">
+                <svg className="shrink-0 w-3.5 h-3.5 mt-px text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                </svg>
+                <span className="text-[10px] leading-relaxed text-gray-500">
+                  Host diagnostics — technical details about the machine running your session (memory, processes, the code editor). Nothing here needs your attention.
+                </span>
+              </div>
+
               {/* Editor row — Codespaces-style status row with lifecycle controls */}
               {(() => {
                 const isRunning = ideState === 'running'
@@ -912,11 +1003,13 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                 const maxRss = machineData.processes[0].rssMb || 1
                 return (
                   <div className="space-y-0.5">
+                    {/* Plain-language label for the process table (RSS = memory each uses) (#86) */}
+                    <div className="px-2 pt-1 text-[10px] text-gray-500">Programs running on the host machine</div>
                     {/* Header row */}
                     <div className="flex items-center gap-2 px-2 py-0.5 text-[10px] text-gray-500 font-medium uppercase tracking-wide">
                       <span className="flex-1">Process</span>
                       <span className="w-10 text-right tabular-nums">PID</span>
-                      <span className="w-12 text-right tabular-nums">RSS MB</span>
+                      <span className="w-14 text-right tabular-nums normal-case">Memory</span>
                       {/* TODO: add kill button per row here once deferred kill feature lands */}
                     </div>
                     {machineData.processes.map((proc) => (
@@ -942,8 +1035,8 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                         <span className="w-10 text-right text-[10px] text-gray-500 tabular-nums shrink-0">
                           {proc.pid}
                         </span>
-                        <span className="w-12 text-right text-[11px] text-gray-400 tabular-nums shrink-0">
-                          {proc.rssMb}
+                        <span className="w-14 text-right text-[11px] text-gray-400 tabular-nums shrink-0">
+                          {proc.rssMb}<span className="text-gray-600"> MB</span>
                         </span>
                         {/* TODO: kill button goes here (deferred fast-follow) */}
                       </div>

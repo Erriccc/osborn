@@ -1905,7 +1905,10 @@ function VoiceRoomInner({
         setBackgroundFlows(prev =>
           prev.map(f =>
             f.agentId === data.agent_id
-              ? { ...f, status: 'completed', artifact: data.last_assistant_message?.substring(0, 120) ?? f.artifact }
+              // Carry the full result so the Running tab can show it readable + expandable (#86).
+              // Cap only at a generous ceiling to guard against a pathological payload — the
+              // drawer handles preview/expand from the full text, so no mid-sentence truncation.
+              ? { ...f, status: 'completed', artifact: data.last_assistant_message?.slice(0, 4000) ?? f.artifact }
               : f
           )
         )
