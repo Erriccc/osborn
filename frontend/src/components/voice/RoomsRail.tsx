@@ -26,7 +26,7 @@
 // squeeze, issue #118) and nothing else changes.
 
 import { useEffect, useMemo, useState } from 'react'
-import { buildRoomRows, type RoomRow, type RoomStatus } from '@/lib/rooms'
+import { buildRoomRows, groupRoomsByProject, roomAvatar, roomColor, roomIdentityLabel, type RoomRow, type RoomStatus } from '@/lib/rooms'
 import { prepareSessions } from '@/lib/session-list'
 import type { SessionInfo, SlotInfo } from './shared'
 
@@ -60,26 +60,6 @@ function forkLabel(n: number | undefined): string {
   return n && n > 0 ? `${n} fork${n === 1 ? '' : 's'}` : ''
 }
 
-/** Group recent (idle) rows under their project, most-recent project first,
- * rows already activity-ordered within each (#107). Rows with no project fall
- * into an "Other" bucket shown last. */
-function groupRoomsByProject(rooms: Room[]): { project: string; rooms: Room[] }[] {
-  const map = new Map<string, Room[]>()
-  for (const r of rooms) {
-    const key = r.project || 'Other'
-    const list = map.get(key)
-    if (list) list.push(r)
-    else map.set(key, [r])
-  }
-  return Array.from(map.entries())
-    .map(([project, list]) => ({ project, rooms: list }))
-    .sort((a, b) => {
-      if (a.project === 'Other') return 1
-      if (b.project === 'Other') return -1
-      return 0 // preserve insertion order (already activity-sorted)
-    })
-}
-
 /** Secondary line: "3m ago · osborn · 12 msgs · 2 forks" (falls back to id). */
 function roomMeta(room: Room): string {
   const parts = [
@@ -103,6 +83,35 @@ function StatusDot({ status }: { status: RoomStatus }) {
   return <span className={`w-2 h-2 rounded-full shrink-0 ${cls}`} aria-hidden="true" />
 }
 
+/** Project-derived identity token for a row (#75): a coloured square carrying
+ * the project initial, with the live/running status marker overlaid in the
+ * corner. Replaces the featureless dot so collapsed rows — and every project
+ * group — are distinguishable at a glance. `size="sm"` is the inline token for
+ * the expanded rows; the default is the larger collapsed-rail avatar. */
+function IdentityAvatar({ room, size = 'md' }: { room: Room; size?: 'sm' | 'md' }) {
+  const { initial, color } = roomAvatar(room)
+  const box = size === 'sm' ? 'w-5 h-5 text-[9px] rounded' : 'w-7 h-7 text-[11px] rounded-md'
+  const showMarker = room.status === 'live' || room.status === 'background'
+  return (
+    <span className="relative inline-flex shrink-0">
+      <span
+        className={`${box} flex items-center justify-center font-semibold leading-none select-none ${
+          room.status === 'live' ? 'ring-1 ring-amber-400/70' : ''
+        }`}
+        style={{ backgroundColor: color.bg, color: color.fg }}
+        aria-hidden="true"
+      >
+        {initial}
+      </span>
+      {showMarker && (
+        <span className="absolute -bottom-0.5 -right-0.5 ring-2 ring-gray-900 rounded-full">
+          <StatusDot status={room.status} />
+        </span>
+      )}
+    </span>
+  )
+}
+
 const STATUS_LABEL: Record<RoomStatus, string> = {
   live: 'Live',
   background: 'Running',
@@ -121,11 +130,12 @@ function RoomRowButton({
   onSwitchRoom: (room: Room) => void
 }) {
   const isLive = room.status === 'live'
+  const identity = roomIdentityLabel(room)
   return (
     <button
       onClick={() => !isLive && !disabled && onSwitchRoom(room)}
       disabled={isLive || disabled}
-      title={`${isLive ? 'Live now' : `Switch to ${room.title}`}${room.timeIso ? ` · last active ${new Date(room.timeIso).toLocaleString()}` : ''} · ${room.id}`}
+      title={`${isLive ? 'Live now' : `Switch to ${room.title}`}${identity ? ` · ${identity}` : ''}${room.timeIso ? ` · last active ${new Date(room.timeIso).toLocaleString()}` : ''} · ${room.id}`}
       aria-current={isLive ? 'true' : undefined}
       className={`w-full text-left px-2.5 py-2 rounded-lg border transition-colors ${
         isLive
@@ -134,7 +144,7 @@ function RoomRowButton({
       }`}
     >
       <div className="flex items-center gap-2">
-        <StatusDot status={room.status} />
+        <IdentityAvatar room={room} size="sm" />
         <span className="flex-1 min-w-0 text-[12.5px] text-gray-200 truncate">{room.title}</span>
         {forkLabel(room.forkCount) && (
           <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300" title={`${forkLabel(room.forkCount)} collapsed under this session`}>
@@ -153,7 +163,7 @@ function RoomRowButton({
           {room.switching ? 'Switching…' : STATUS_LABEL[room.status]}
         </span>
       </div>
-      <div className="text-[10px] text-gray-500 truncate pl-4 mt-0.5">{roomMeta(room)}</div>
+      <div className="text-[10px] text-gray-500 truncate pl-7 mt-0.5">{roomMeta(room)}</div>
     </button>
   )
 }
@@ -248,19 +258,22 @@ export function RoomsSidebar({
           </svg>
         </button>
         <div className="flex-1 w-full overflow-y-auto flex flex-col items-center gap-1.5 py-1">
-          {rooms.slice(0, 10).map((room) => (
-            <button
-              key={room.id}
-              onClick={() => room.status !== 'live' && !disabled && onSwitchRoom(room)}
-              title={`${room.title} · ${STATUS_LABEL[room.status]}`}
-              aria-label={`${room.title} (${STATUS_LABEL[room.status]})`}
-              className={`w-8 h-8 shrink-0 rounded-lg flex items-center justify-center transition-colors ${
-                room.status === 'live' ? 'bg-amber-500/15 ring-1 ring-amber-500/40' : 'hover:bg-gray-800/60'
-              }`}
-            >
-              <StatusDot status={room.status} />
-            </button>
-          ))}
+          {rooms.slice(0, 10).map((room) => {
+            const identity = roomIdentityLabel(room)
+            return (
+              <button
+                key={room.id}
+                onClick={() => room.status !== 'live' && !disabled && onSwitchRoom(room)}
+                title={`${room.title}${identity ? ` · ${identity}` : ''} · ${STATUS_LABEL[room.status]}`}
+                aria-label={`${room.title}${identity ? `, ${identity}` : ''} (${STATUS_LABEL[room.status]})`}
+                className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center transition-colors ${
+                  room.status === 'live' ? 'bg-amber-500/15' : 'hover:bg-gray-800/60'
+                }`}
+              >
+                <IdentityAvatar room={room} />
+              </button>
+            )
+          })}
         </div>
         <button
           onClick={onNewRoom}
@@ -361,8 +374,13 @@ export function RoomsSidebar({
             {/* Recent — grouped by project. */}
             {idleByProject.map(({ project, rooms: group }) => (
               <div key={project} className="pt-1.5">
-                <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">
-                  {project}
+                <div className="px-2 pb-0.5 flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600">
+                  <span
+                    className="w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ backgroundColor: roomColor(project).ring }}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{project}</span>
                 </div>
                 {group.map((room) => (
                   <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
