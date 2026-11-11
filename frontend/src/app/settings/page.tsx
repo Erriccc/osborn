@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { MagnifyingGlass, Brain, PenNib, Robot } from '@phosphor-icons/react'
-import { createSupabaseBrowser } from '@/lib/supabase-browser'
+import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -122,7 +122,7 @@ export default function SettingsPage() {
   // ── Auth: redirect out if there's no user (settings is account-centric) ──
   useEffect(() => {
     const timeout = setTimeout(() => setLoading(false), 3000)
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    getBrowserUser(supabase).then((user) => {
       clearTimeout(timeout)
       setUser(user)
       setLoading(false)

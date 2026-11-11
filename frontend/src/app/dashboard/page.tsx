@@ -19,7 +19,7 @@ import UnifiedCreate from '@/components/dashboard/UnifiedCreate'
 import ActivityFeed from '@/components/dashboard/ActivityFeed'
 import FeedStream from '@/components/dashboard/FeedStream'
 import { ReportBugModal } from '@/components/ReportBugModal'
-import { createSupabaseBrowser } from '@/lib/supabase-browser'
+import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle } from '@/lib/sessions'
 import { agentReadUrl } from '@/lib/agent-read'
@@ -352,7 +352,7 @@ export default function Dashboard() {
   // Auth check
   useEffect(() => {
     const timeout = setTimeout(() => setLoading(false), 3000)
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    getBrowserUser(supabase).then((user) => {
       clearTimeout(timeout)
       setUser(user)
       setLoading(false)

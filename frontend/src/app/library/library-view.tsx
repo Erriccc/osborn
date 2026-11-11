@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { createSupabaseBrowser } from '@/lib/supabase-browser'
+import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import { REFINE_PLATFORMS, buildSeededChatUrl, refineSeed } from '@/lib/seed-chat'
 import type { User } from '@supabase/supabase-js'
 import ReactMarkdown from 'react-markdown'
@@ -284,7 +284,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
   // Resolve the signed-in user, then load their library rows (RLS scopes to owner).
   useEffect(() => {
     let cancelled = false
-    supabase.auth.getUser().then(async ({ data: { user: u } }) => {
+    getBrowserUser(supabase).then(async (u) => {
       if (cancelled) return
       setUser(u ?? null)
       setAuthChecked(true)
