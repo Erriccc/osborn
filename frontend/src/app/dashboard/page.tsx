@@ -206,11 +206,41 @@ export default function Dashboard() {
   const [showReportBug, setShowReportBug] = useState(false)
   // Admin discoverability: /admin is standalone; surface a link only when the
   // SERVER confirms this user is in ADMIN_EMAILS (probe once on load).
+  //
+  // #73: the account menu must show the SAME items on every open. /admin is the
+  // only entry whose presence is gated on async state, so it has to be
+  // deterministic rather than "appears once isAdmin happens to resolve". Two
+  // changes: (1) `adminChecked` marks the probe settled so the menu renders a
+  // stable loading row instead of a partial set that silently gains Admin later;
+  // (2) a transient network/5xx failure is retried once (and never silently
+  // committed to "not admin"), so a blip can't drop the entry on one visit and
+  // restore it on the next. The /api/admin/users route is the real enforcement
+  // point — this flag only decides discoverability. (The signed-in user gate
+  // itself already routes through getBrowserUser, which refreshes a stale access
+  // token — see the auth effect below — so that leg is not the source of the
+  // inconsistency.)
   const [isAdmin, setIsAdmin] = useState(false)
+  const [adminChecked, setAdminChecked] = useState(false)
   useEffect(() => {
-    fetch('/api/admin/users')
-      .then(r => { if (r.ok) setIsAdmin(true) })
-      .catch(() => {})
+    let cancelled = false
+    const probe = async (retry: boolean): Promise<void> => {
+      try {
+        const r = await fetch('/api/admin/users')
+        if (cancelled) return
+        if (r.ok) { setIsAdmin(true); setAdminChecked(true); return }
+        // 401/403 is a definitive "not an admin" — settle on it.
+        if (r.status === 401 || r.status === 403) { setAdminChecked(true); return }
+        // Transient server error — retry once, then settle as non-admin.
+        if (retry) return probe(false)
+        setAdminChecked(true)
+      } catch {
+        if (cancelled) return
+        if (retry) return probe(false) // transient network blip — retry once
+        setAdminChecked(true)
+      }
+    }
+    probe(true)
+    return () => { cancelled = true }
   }, []) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
 
   // Session sharing (0.9.123) — Share modal + "Shared with me".
@@ -1460,13 +1490,25 @@ export default function Dashboard() {
                         <p className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">{user?.email ? 'Signed in' : 'Guest session'}</p>
                         <p className="text-sm text-[var(--text-primary)] truncate">{user?.email || 'No account connected'}</p>
                       </div>
-                                              {isAdmin && (
-                          <button onClick={() => { setShowProfileMenu(false); router.push('/admin') }}
-                            className="w-full text-left px-3 py-2 rounded-lg text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)]/50 transition-colors flex items-center gap-2.5">
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-                            Admin
-                          </button>
-                        )}
+                      {/* #73: deterministic Admin slot. Until the server probe
+                          settles we render a disabled placeholder rather than a
+                          partial set that silently gains Admin once isAdmin
+                          resolves. The probe fires on page load, so by the time
+                          this menu is opened it has almost always settled and
+                          this row is never seen. */}
+                      {!adminChecked ? (
+                        <div role="menuitem" aria-disabled="true"
+                          className="w-full text-left px-3 py-2 rounded-lg text-[13px] text-[var(--text-muted)] opacity-60 select-none flex items-center gap-2.5">
+                          <svg className="w-4 h-4 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 3a9 9 0 1 0 9 9" /></svg>
+                          Loading…
+                        </div>
+                      ) : isAdmin ? (
+                        <button onClick={() => { setShowProfileMenu(false); router.push('/admin') }}
+                          className="w-full text-left px-3 py-2 rounded-lg text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)]/50 transition-colors flex items-center gap-2.5">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                          Admin
+                        </button>
+                      ) : null}
 <button role="menuitem"
                         onClick={() => { setShowProfileMenu(false); router.push('/settings') }}
                         className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] transition-colors">

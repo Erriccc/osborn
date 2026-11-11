@@ -1,9 +1,10 @@
 // Run: cd frontend && npx --yes tsx tests/chat-title.test.ts
-// Spec (bug ab31e017, chat half): the browser tab on a chat page reads
-// "<session title> · Voice Native", or "New chat · Voice Native" when there is
-// no title yet. The title comes from deriveSessionTitle(session) (agent title
-// first); before the session is listed, the first real user message stands in.
-// Never pipeline text, never "Untitled session".
+// Spec (bug ab31e017, chat half + #60): the browser tab on a chat page reads
+// "<session title> · Voice Native" once the session has a real, listed title,
+// otherwise a STABLE "Chat · Voice Native". The title comes from
+// deriveSessionTitle(session) (agent title first). The raw first user message is
+// NOT used as the title (#60) — that leaked truncated message text into the tab
+// as soon as a message was sent. Never pipeline text, never "Untitled session".
 import { chatDocumentTitle } from '../src/lib/sessions'
 
 let pass = 0, fail = 0
@@ -20,21 +21,20 @@ t('no title: derived from the session preview', () => {
   eq(chatDocumentTitle({ session: { lastMessage: '[time: 2026-11-07 09:00 local] deploy the frontend today' } }), 'Deploy the frontend today · Voice Native', 'derived')
 })
 
-t('nothing at all: New chat', () => {
-  eq(chatDocumentTitle({}), 'New chat · Voice Native', 'empty')
-  eq(chatDocumentTitle({ session: null, firstUserMessage: null }), 'New chat · Voice Native', 'nulls')
+t('nothing at all: stable Chat title', () => {
+  eq(chatDocumentTitle({}), 'Chat · Voice Native', 'empty')
+  eq(chatDocumentTitle({ session: null }), 'Chat · Voice Native', 'null session')
 })
 
-t('untitled session falls back to New chat, never "Untitled session"', () => {
-  eq(chatDocumentTitle({ session: { lastMessage: '[SYSTEM] notice' } }), 'New chat · Voice Native', 'notice-only')
+t('untitled session falls back to Chat, never "Untitled session"', () => {
+  eq(chatDocumentTitle({ session: { lastMessage: '[SYSTEM] notice' } }), 'Chat · Voice Native', 'notice-only')
 })
 
-t('session not listed yet: first real user message stands in', () => {
-  eq(chatDocumentTitle({ session: null, firstUserMessage: 'Can you summarize the meeting notes' }), 'Summarize the meeting notes · Voice Native', 'first message')
-})
-
-t('first user message that is a control notice is ignored', () => {
-  eq(chatDocumentTitle({ firstUserMessage: '[Request interrupted by user]' }), 'New chat · Voice Native', 'control')
+t('#60: no session yet → stable Chat title (first message never becomes the tab title)', () => {
+  // Before the session is listed with a real title, the tab stays "Chat · Voice
+  // Native" — it must not turn into the truncated first user message.
+  eq(chatDocumentTitle({ session: null }), 'Chat · Voice Native', 'no leak')
+  eq(chatDocumentTitle({ session: undefined }), 'Chat · Voice Native', 'no leak (undefined)')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

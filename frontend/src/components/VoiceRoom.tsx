@@ -3458,14 +3458,17 @@ function VoiceRoomInner({
     openOutputsPreview(filePath)
     panel.openPanel('outputs')
   }, [openOutputsPreview, panel.openPanel])
-  // Bug ab31e017: the tab reads "<session title> · Voice Native" or
-  // "New chat · Voice Native"; the previous title is restored on leave.
+  // Bug ab31e017 / #60: the tab reads "<session title> · Voice Native", or a
+  // STABLE "Chat · Voice Native" until the session has a real title. The raw
+  // first user message is intentionally NOT used here — it leaked truncated
+  // message text into the tab title (#60). `firstUserMessage` still feeds the
+  // in-app live session label (liveTitle), which is a separate surface.
   const firstUserMessage = useMemo(() => messages.find((m) => m.role === 'user' && !m.id.startsWith('prior-'))?.content ?? null, [messages])
   const docTitle = useMemo(() => {
     const sid = currentSessionId || preSelectedSessionId
     const session = sid ? sessions.find((x) => x.sessionId === sid) ?? null : null
-    return chatDocumentTitle({ session, firstUserMessage })
-  }, [sessions, currentSessionId, preSelectedSessionId, firstUserMessage])
+    return chatDocumentTitle({ session })
+  }, [sessions, currentSessionId, preSelectedSessionId])
   // #71: keep /chat?session= pinned to the live session — a brand-new session
   // as soon as the agent reports its id, and the new one after a switch — so a
   // reload or re-entry resumes it instead of starting fresh. replaceState: no
