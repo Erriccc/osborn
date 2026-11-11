@@ -12,6 +12,7 @@ import '@livekit/components-styles'
 import { MarkdownMessage } from './MarkdownMessage'
 import LiveClock from './LiveClock'
 import ModelBadge from './ModelBadge'
+import AgentHealthNotice from './AgentHealthNotice'
 import { fastBrainLabel } from '@/lib/modelBadge'
 import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
@@ -48,7 +49,7 @@ import { MeetingMuteControl, type MeetingMuteState } from './voice/MeetingMuteCo
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
-import { isOAuthInProgress } from '@/lib/connect-gate'
+import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
 import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
@@ -345,6 +346,19 @@ function VoiceRoomInner({
   // dead session with no idea why the agent never replies (issue #53). Cleared
   // on claude_auth_complete.
   const [claudeAuthEverRequired, setClaudeAuthEverRequired] = useState(false)
+  // Prompt discipline (issue #87 §6): once the user dismisses the Claude sign-in
+  // modal, a later `claude_auth_required`/`claude_auth_url` re-emit (the agent's
+  // auth flow can fire more than once) must NOT re-open the blocking modal — it
+  // only updates the quiet terminal banner. The explicit "Sign in" button
+  // bypasses this. A ref mirrors it so the stable data-message handler reads the
+  // live value without re-subscribing.
+  const [authPromptDismissed, setAuthPromptDismissed] = useState(false)
+  const authPromptDismissedRef = useRef(false)
+  authPromptDismissedRef.current = authPromptDismissed
+  const dismissAuthModal = useCallback(() => {
+    setAuthPromptDismissed(true)
+    setClaudeAuthStatus('none')
+  }, [])
   const [claudeAuthCode, setClaudeAuthCode] = useState('')
   // Tell the provider whether the user is mid-OAuth (issue #78): while the
   // sign-in modal is open on an active step the connect watchdog stays
@@ -2419,13 +2433,18 @@ function VoiceRoomInner({
         }
       } else if (data.type === 'claude_auth_required') {
         console.log('🔑 Claude auth required')
-        setClaudeAuthStatus('required')
+        // Prompt discipline (#87 §6): only auto-open the modal if the user hasn't
+        // already dismissed it this session. The terminal banner + watchdog state
+        // (onAuthRequired / everRequired) update regardless.
+        if (shouldAutoOpenAuthModal('claude_auth_required', authPromptDismissedRef.current)) setClaudeAuthStatus('required')
         setClaudeAuthEverRequired(true)
         onAuthRequired?.()
       } else if (data.type === 'claude_auth_url') {
         console.log('🔗 Claude auth URL received')
+        // Keep the URL ready even when the modal stays closed, so the banner's
+        // "Sign in" button can open straight into the flow.
         setClaudeAuthUrl(data.url)
-        setClaudeAuthStatus('waiting')
+        if (shouldAutoOpenAuthModal('claude_auth_url', authPromptDismissedRef.current)) setClaudeAuthStatus('waiting')
         setClaudeAuthEverRequired(true)
         // #78: surface the terminal auth state (connected=true → spinner off,
         // banner on) for ANY auth-gate entry message, not only
@@ -2436,7 +2455,7 @@ function VoiceRoomInner({
         onAuthRequired?.()
       } else if (data.type === 'claude_auth_waiting_code') {
         console.log('🔑 Claude waiting for auth code')
-        setClaudeAuthStatus('waiting_code')
+        if (shouldAutoOpenAuthModal('claude_auth_waiting_code', authPromptDismissedRef.current)) setClaudeAuthStatus('waiting_code')
         setClaudeAuthEverRequired(true)
         onAuthRequired?.()
       } else if (data.type === 'claude_auth_submitting') {
@@ -2447,6 +2466,7 @@ function VoiceRoomInner({
         setClaudeAuthUrl(null)
         setClaudeAuthStatus('complete')
         setClaudeAuthEverRequired(false)
+        setAuthPromptDismissed(false) // auth resolved — allow a future prompt to re-open
         onAuthResolved?.('claude_auth_complete')
         // Auto-dismiss after 3 seconds
         setTimeout(() => setClaudeAuthStatus('none'), 3000)
@@ -3553,7 +3573,7 @@ function VoiceRoomInner({
                     {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
                   </p>
                 </div>
-                <button onClick={() => setClaudeAuthStatus('none')}
+                <button onClick={dismissAuthModal}
                   className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all shrink-0"
                   title="Dismiss">
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -3653,10 +3673,12 @@ function VoiceRoomInner({
               {claudeAuthStatus === 'error' && (
                 <div className="space-y-3">
                   <p className="text-sm text-red-400">
-                    Authentication failed. The agent will fall back to API key authentication if available.
+                    Sign-in didn&apos;t complete. If this machine has a demo or API key configured, your
+                    session continues on it — the model badge in the header shows which model is answering,
+                    or <span className="font-medium">No model</span> if none can.
                   </p>
                   <button
-                    onClick={() => setClaudeAuthStatus('none')}
+                    onClick={dismissAuthModal}
                     className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
                   >
                     Dismiss
@@ -3697,7 +3719,7 @@ function VoiceRoomInner({
                   {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
                 </p>
               </div>
-              <button onClick={() => setClaudeAuthStatus('none')}
+              <button onClick={dismissAuthModal}
                 className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all shrink-0"
                 title="Dismiss">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -3795,7 +3817,9 @@ function VoiceRoomInner({
 
             {claudeAuthStatus === 'error' && (
               <p className="text-sm text-red-400">
-                Authentication failed. Check the agent logs for details. The agent will fall back to API key authentication if available.
+                Sign-in didn&apos;t complete (check the agent logs for details). If this machine has a demo
+                or API key configured, your session continues on it — the model badge in the header shows
+                which model is answering, or <span className="font-medium">No model</span> if none can.
               </p>
             )}
           </div>
@@ -3921,12 +3945,16 @@ function VoiceRoomInner({
         {isAuthGateTerminal(claudeAuthEverRequired, claudeAuthStatus) && (
           <div className="w-full shrink-0 flex items-center justify-center gap-3 bg-amber-500/95 text-black text-sm font-medium px-4 py-2.5 touch-manipulation">
             <span className="shrink-0">🔑</span>
-            <span className="min-w-0">Anthropic sign-in required — your agent can&apos;t reply until you sign in.</span>
+            {/* #87: not a false "can't reply" wall — the agent boots fallback-first
+                when a demo/API key exists, so the badge (and the health notice) is
+                the source of truth for what's actually answering. This is the quiet,
+                upgrade framing (models 3 + 5): connect Claude for full power. */}
+            <span className="min-w-0">Not signed in to Claude — the model badge shows what&apos;s answering. Connect Claude for full power.</span>
             <button
-              onClick={() => setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required')}
+              onClick={() => { setAuthPromptDismissed(false); setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required') }}
               className="shrink-0 px-3 py-1 rounded-md bg-black/85 hover:bg-black text-white text-xs font-semibold transition-colors"
             >
-              Sign in
+              Connect Claude
             </button>
           </div>
         )}
@@ -3980,6 +4008,13 @@ function VoiceRoomInner({
                 running version, from real server signals (agent_ready.provider +
                 /health version), not the agent's unreliable prose self-report. */}
             <ModelBadge provider={mainProvider} version={agentVersion} connected={agentConnected} />
+
+            {/* #87 gap 3 — surface a SILENT failure the session would otherwise
+                hide: an agent too old for the demo-model fallback (version floor),
+                or a failed key self-test. Only shows for a no-Claude session that
+                is relying on the fallback (claude_auth_everRequired). Same real
+                /health version signal as the badge; never fabricates a status. */}
+            <AgentHealthNotice version={agentVersion} relyingOnFallback={claudeAuthEverRequired} />
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
