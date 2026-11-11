@@ -50,6 +50,19 @@ harness itself or trusting any surprising result.
   clean exit.
 - **A double page reload detaches Stagehand** ("uninitialized Stagehand
   object") — `POST /brain` re-inits in place.
+- **A mid-journey process RESTART loses the journey unless it's persisted**
+  (#120). `journey` and `RUN_STAMP` are process-memory only; a crash/OOM/machine
+  recycle (seen at the Say step as an EMPTY 502 from the edge proxy, not the
+  engine's structured 502) re-stamps the run id and nulls the journey → `/status`
+  journey:null, `/journey end` 400s. The journey is now persisted to
+  `journey-state.json` (volume-durable, like tab-state) and ADOPTED on the next
+  boot with `previousRun` linkage; `/status.restartRecovered` tells a caller
+  "restarted, not an app failure". An **empty-body** 502 ⇒ process died
+  (retryable / the engine is waking); a **structured** 502 (`{ok:false,code}`)
+  ⇒ real speak failure (do not retry). NOTE: the restart CAUSE itself (why the
+  process dies ~minutes into these journeys) needs the engine-side machine logs
+  around the failure timestamps — the code change makes the restart survivable
+  and visible, it does not stop the restart.
 - The control API starts BEFORE the room join (a wedged "Connecting…" once
   left the engine totally headless for 20+ minutes) — `roomReady` in /status
   tells you which phase you're in.

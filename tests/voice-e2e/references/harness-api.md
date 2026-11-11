@@ -7,7 +7,7 @@
 ## Engine endpoints (:8781 — send `x-engine-token` when OSBORN_ENGINE_TOKEN is set)
 | Endpoint | What |
 |---|---|
-| `GET /status` | ground truth: roomReady, pageUrl, pageState, idlePaused, brain ready/dead, activeTab, tabs+owners, lastFrameAgeMs, journey, **agentUrl / agentUnreachable** (#49: null when the auto-joined chat's agent is reachable, else `"agent unreachable: <host>"` — the in-app Browser panel reads this via its /status proxy) |
+| `GET /status` | ground truth: roomReady, pageUrl, pageState, idlePaused, brain ready/dead, activeTab, tabs+owners, lastFrameAgeMs, journey, **agentUrl / agentUnreachable** (#49: null when the auto-joined chat's agent is reachable, else `"agent unreachable: <host>"` — the in-app Browser panel reads this via its /status proxy), **previousRun / restartRecovered** (#120: set when this process ADOPTED a journey from a process that died mid-journey — `restartRecovered:true` means "engine restarted, journey carried over", and `/clip?run=<previousRun>` reaches the pre-restart media) |
 | `GET /tasks` | this run's task index (same as manifest.json) |
 | `GET /clip?n=N` / `GET /artifact?n=N` | download task N's mp4 / screenshot |
 | `GET /clip?n=N&audio=1` | task N's clip WITH the agent's aligned audio muxed in (mp4 video+audio). Current run only; decodes+aligns via the recording's own start, not rel0/rel1 |
@@ -34,6 +34,7 @@
 - `OSBORN_AGENT_URL` — the Voice Native agent machine the auto-joined chat talks to. **No default (#49)**: unset (or unreachable at boot) → the engine skips the room join, opens `OSBORN_APP_URL` for plain browsing, and marks `agentUnreachable` on `/status` + the live view instead of spinning on "Connecting…".
 - `OSBORN_ENGINE_TOKEN` — control-API auth (REQUIRED on public deployments).
 - `OSBORN_IDLE_STOP_MS` (default 15min container) — self-sleep. `OSBORN_TAB_STALE_MS` (default 30min) — stale-tab sweep.
+- `OSBORN_RECOVER_JOURNEY` (default on; `=0` disables) — persist the active journey to `journey-state.json` in the results dir and ADOPT it on the next boot, so a mid-journey process restart (#120) keeps the journey instead of nulling it. `OSBORN_SAY_RETRIES` (default 2) — bounded in-process retries of a TRANSIENT (non-mic) speak failure at the Say step. (Caller-side: `drive.sh say` re-attaches once on an empty/gateway 502 — the restart signature — after polling `/status` for the engine to wake; `BSR_SAY_REATTACH=0` disables.)
 - `OSBORN_WEBHOOK_URL`/`OSBORN_WEBHOOK_TOKEN` — push events to any receiver.
 - `OSBORN_TEST_EMAIL/PASSWORD` + `OSBORN_SUPABASE_URL/ANON` — mint an auth profile at boot from secrets (cloud auth without baking cookies into images).
 - `OSBORN_DEVTOOLS=1` — DevTools panel on camera. `OSBORN_DISPLAY_SIZE` — virtual display size.
