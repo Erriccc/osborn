@@ -88,6 +88,36 @@ export function connectTimeoutMessage(authRequired: boolean): string {
 }
 
 /**
+ * Prompt discipline (issue #87 §6, model 3 "Linear/Slack"): the Connect-Claude
+ * prompt is a dismissible, remembered affordance — NOT a wall that re-pops. The
+ * agent's auth flow can emit `claude_auth_required` / `claude_auth_url` more than
+ * once per session (observed: "the modal reappears on its own, more than once").
+ * Once the user has dismissed it, a later prompt must update the quiet terminal
+ * banner (via onAuthRequired) but must NOT re-open the blocking modal.
+ */
+
+/** Agent data-message types that would OPEN the Claude sign-in modal. */
+export function isAuthPromptMessage(messageType: string): boolean {
+  return (
+    messageType === 'claude_auth_required' ||
+    messageType === 'claude_auth_url' ||
+    messageType === 'claude_auth_waiting_code'
+  )
+}
+
+/**
+ * Should an incoming auth-prompt message AUTO-OPEN the modal? Only when the user
+ * has not already dismissed the prompt this session. A dismissed prompt still
+ * flips the pending-auth / terminal-banner state (that path is unconditional in
+ * the caller) — this gate is strictly about not resurfacing the blocking modal.
+ * The explicit "Sign in" button bypasses this (it is direct user intent).
+ */
+export function shouldAutoOpenAuthModal(messageType: string, dismissed: boolean): boolean {
+  if (dismissed) return false
+  return isAuthPromptMessage(messageType)
+}
+
+/**
  * Once the agent has asked for Anthropic sign-in at least once this session, the
  * auth gate — not a spinner — is the terminal state. When the sign-in modal is
  * closed (status 'none'), the UI must rest on the actionable "Anthropic sign-in
