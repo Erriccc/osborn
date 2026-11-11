@@ -1,8 +1,11 @@
 'use client'
 
-// Right-side living panel shell (build plan L4). Desktop: a drawer beside the
-// chat (default 45% of the row, drag/arrow-key resizable). Mobile: a bottom
-// sheet that sits ABOVE the mic / hang-up strip, so voice controls stay usable.
+// Right-side living panel shell (build plan L4). Desktop (xl+, >=1280px): an
+// inline drawer beside the chat (default 45% of the row, drag/arrow-key
+// resizable). Below xl (phone + tablet): a bottom-sheet OVERLAY that sits ABOVE
+// the mic / hang-up strip when it exists (phone) and otherwise at the viewport
+// bottom (tablet), so the conversation stays full width instead of being
+// crushed into a three-column squeeze (issue #118).
 // Never a full-screen takeover, never a backdrop: the session stays visible.
 // Open/tab/width persist via usePanelState (localStorage `vn-panel`).
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -70,11 +73,15 @@ function useMobileSheetBottom(enabled: boolean): number {
   const [bottom, setBottom] = useState(0)
   useEffect(() => {
     if (!enabled || typeof window === 'undefined') return
-    const mq = window.matchMedia('(max-width: 639px)')
+    // Overlay for everything below the xl desktop breakpoint (phone + tablet).
+    const mq = window.matchMedia('(max-width: 1279px)')
     const measure = () => {
       if (!mq.matches) { setBottom(0); return }
       const anchor = document.querySelector(`[${PANEL_ANCHOR_ATTR}]`) as HTMLElement | null
-      if (!anchor) { setBottom(0); return }
+      // The anchor (mobile mic / hang-up strip) is display:none at tablet
+      // widths, so it has no layout box — fall back to the viewport bottom and
+      // let the sheet sit as a plain bottom overlay there.
+      if (!anchor || anchor.getClientRects().length === 0) { setBottom(0); return }
       const top = anchor.getBoundingClientRect().top
       setBottom(Math.max(0, Math.round(window.innerHeight - top)))
     }
@@ -134,7 +141,7 @@ export function RightPanel() {
   return (
     <aside ref={asideRef} aria-label="Side panel" data-testid="right-panel" style={style}
       className="fixed inset-x-0 z-40 bottom-[var(--vn-sheet-bottom)] h-[var(--vn-sheet-h)] rounded-t-2xl border-t border-gray-700 shadow-2xl
-        sm:relative sm:inset-auto sm:bottom-auto sm:z-auto sm:h-auto sm:w-[var(--vn-panel-w)] sm:shrink-0 sm:rounded-xl sm:border sm:border-gray-800/50 sm:shadow-none
+        xl:relative xl:inset-auto xl:bottom-auto xl:z-auto xl:h-auto xl:w-[var(--vn-panel-w)] xl:shrink-0 xl:rounded-xl xl:border xl:border-gray-800/50 xl:shadow-none
         flex flex-col bg-gray-900 overflow-hidden">
       {/* Desktop resize handle (left edge) */}
       <div role="separator" aria-orientation="vertical" aria-label="Resize side panel" tabIndex={0}
@@ -144,10 +151,10 @@ export function RightPanel() {
           if (e.key === 'ArrowLeft') { e.preventDefault(); setWidthPct(widthPct + 2) }
           if (e.key === 'ArrowRight') { e.preventDefault(); setWidthPct(widthPct - 2) }
         }}
-        className="hidden sm:block absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize z-20 hover:bg-amber-500/30 focus:bg-amber-500/40 focus:outline-none" />
+        className="hidden xl:block absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize z-20 hover:bg-amber-500/30 focus:bg-amber-500/40 focus:outline-none" />
       {/* Mobile grab handle: toggles short / tall sheet */}
       <button onClick={() => setTall((v) => !v)} aria-label={tall ? 'Shrink panel' : 'Expand panel'}
-        className="sm:hidden w-full pt-2 pb-1 flex justify-center">
+        className="xl:hidden w-full pt-2 pb-1 flex justify-center">
         <span className="w-10 h-1 rounded-full bg-gray-700" />
       </button>
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-gray-800 shrink-0">

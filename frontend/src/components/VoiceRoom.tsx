@@ -3888,8 +3888,10 @@ function VoiceRoomInner({
       <div className="w-full h-full flex gap-3">
       {/* Persistent desktop sidebar (Phase D) + Rooms switcher (§14 first cut).
           Lists the live session, concurrently-running background slots, and
-          resumable recent sessions as switchable "rooms". Desktop only;
-          mobile uses the slim RoomsBar inside the chat column. */}
+          resumable recent sessions as switchable "rooms". The vertical rail is
+          desktop (xl+) only; below xl — phone AND tablet — the slim RoomsBar
+          inside the chat column takes over, so the three panes never squeeze
+          the conversation into a sliver (issue #118). */}
       <RoomsSidebar
         sessions={sessionsByActivity}
         slots={slots}
@@ -3901,7 +3903,7 @@ function VoiceRoomInner({
         liveTitle={firstUserMessage}
         pendingId={switchPending?.sessionId ?? null}
       />
-      <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
+      <div className="flex-1 min-w-0 xl:min-w-[24rem] flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Persistent Anthropic sign-in gate (issue #53/#78). The agent blocks
             before creating the voice session until Claude OAuth completes, so a
             fresh account that dismisses the modal would otherwise sit on a
@@ -4331,7 +4333,8 @@ function VoiceRoomInner({
           </div>
         </div>
 
-        {/* Rooms switcher (mobile) — slim scrollable row; appears only when
+        {/* Rooms switcher (below xl — phone + tablet) — slim scrollable row;
+            replaces the vertical rail at those widths and appears only when
             there is another room to switch to, so the voice screen stays clean. */}
         <RoomsBar
           sessions={sessionsByActivity}
