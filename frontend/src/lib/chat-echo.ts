@@ -48,6 +48,29 @@ function prune(pending: readonly PendingTyped[], now: number): PendingTyped[] {
   return pending.filter((p) => now - p.at <= TYPED_ECHO_WINDOW_MS)
 }
 
+/** Rapid accidental double-send guard (issue #114): a second identical typed
+ *  message within this window of the first (double Enter, a double click, a
+ *  stuttered tap) is dropped at the send site — no second "You" bubble is shown
+ *  and no second payload is sent, so the duplicate can never strand a bubble
+ *  that never gets a reply. The window is deliberately short: a deliberate
+ *  repeat ("yes", "yes") seconds apart falls outside it and still goes through,
+ *  preserving the fix for bug d9bb78b2. */
+export const RAPID_DOUBLE_SEND_MS = 1500
+
+/** True when `text` matches a message this tab already sent within `windowMs`
+ *  — i.e. an accidental rapid double-send. Notice-only / empty text (null key,
+ *  e.g. an attachment-only send) never matches, so those are unaffected. */
+export function isRapidDoubleSend(
+  pending: readonly PendingTyped[],
+  text: string,
+  now: number,
+  windowMs: number = RAPID_DOUBLE_SEND_MS,
+): boolean {
+  const key = echoMatchKey(text)
+  if (key === null) return false
+  return pending.some((p) => p.key !== null && p.key === key && now - p.at <= windowMs)
+}
+
 /** Record a message this tab just typed and sent. */
 export function rememberTyped(pending: readonly PendingTyped[], m: { clientMsgId: string; text: string; now: number }): PendingTyped[] {
   const next = [...prune(pending, m.now), { clientMsgId: m.clientMsgId, key: echoMatchKey(m.text), at: m.now }]

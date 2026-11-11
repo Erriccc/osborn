@@ -8,6 +8,7 @@
 // User bubbles render through cleanSessionText (transcript-clean.ts).
 import {
   newClientMsgId, echoMatchKey, rememberTyped, takeTypedEcho, userBubbleText, TYPED_ECHO_WINDOW_MS,
+  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS,
   type PendingTyped,
 } from '../src/lib/chat-echo'
 
@@ -128,6 +129,33 @@ t('text fallback only while the agent has never returned a clientMsgId', () => {
   eq(r.duplicate, false, 'spoken "yes" is kept')
   eq(r.pending.length, 1, 'typed entry still awaits its id echo')
   eq(takeTypedEcho(r.pending, { text: 'yes', clientMsgId: 'a' }, 20, { agentSendsIds: true }).duplicate, true, 'id echo still deduped')
+})
+
+// Issue #114: rapid accidental double-send is dropped at the send site; a
+// deliberate repeat seconds later still goes through.
+t('rapid double-send: identical text within the window is a duplicate', () => {
+  const p = rememberTyped([], { clientMsgId: 'a', text: 'DOUBLE', now: T0 })
+  ok(isRapidDoubleSend(p, 'DOUBLE', T0 + 200), 'same text 200ms later is a double-send')
+})
+
+t('rapid double-send ignores the time tag, case and whitespace', () => {
+  const p = rememberTyped([], { clientMsgId: 'a', text: 'Reply DOUBLE', now: T0 })
+  ok(isRapidDoubleSend(p, '[time: 2026-11-10 02:18 local] reply   double', T0 + 300), 'normalized match')
+})
+
+t('deliberate repeat past the window is NOT a double-send', () => {
+  const p = rememberTyped([], { clientMsgId: 'a', text: 'yes', now: T0 })
+  ok(!isRapidDoubleSend(p, 'yes', T0 + RAPID_DOUBLE_SEND_MS + 1), 'a later deliberate repeat goes through')
+})
+
+t('rapid double-send: different text is never a duplicate', () => {
+  const p = rememberTyped([], { clientMsgId: 'a', text: 'hello', now: T0 })
+  ok(!isRapidDoubleSend(p, 'goodbye', T0 + 100), 'distinct text sends')
+})
+
+t('rapid double-send: empty / notice-only text (attachment-only) never matches', () => {
+  const p = rememberTyped([], { clientMsgId: 'a', text: '', now: T0 })
+  ok(!isRapidDoubleSend(p, '', T0 + 100), 'empty key never deduped')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
