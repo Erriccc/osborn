@@ -1,9 +1,9 @@
 # Osborn Design Direction — "Warm Oracle" (est. 2026-08-01)
 
 The product identity: **a voice with a presence, not a chat app with a mic.**
-References the user named: Claude's app, audos.com, voice-mode primitives
+References the user named: Claude's app, example.com, voice-mode primitives
 (ChatGPT AVM / Gemini Live / Perplexity voice). Full research in session
-c8dc09f2 (two subagent reports: Claude UI anatomy + audos tokens/icons/type).
+c8dc09f2 (two subagent reports: Claude UI anatomy + example.com tokens/icons/type).
 
 ## Foundations (SHIPPED, commit fcd68f2 + bda87c3)
 - **Type**: Fraunces (display serif — greetings, wordmark, voice-state labels,
