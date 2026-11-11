@@ -51,7 +51,7 @@ import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from '.
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, pickConnectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -5113,25 +5113,35 @@ async function main() {
         const c = Number(metadata.clickTs)
         if (Number.isFinite(c) && c > 0) connectTiming.clickTs = c
       }
-      // Read working directory override from frontend.
+      // Working directory for this connection (resume-mismatch fix, #112).
       //
-      // If the path doesn't exist yet (new project on first use, or freshly
-      // imported sessions on a new sprite), create it with mkdirSync so the
-      // agent can accept it. This is safe: recursive mkdirSync is a no-op when
-      // the directory already exists, and project paths always live under the
-      // workspace root. The Claude SDK child_process.spawn requires the cwd to
-      // exist — mkdirSync satisfies that requirement without silently falling back.
-      if (metadata.workingDirectory && typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0) {
-        if (!existsSync(metadata.workingDirectory)) {
-          mkdirSync(metadata.workingDirectory, { recursive: true })
-          console.log(`📁 Created project directory: ${metadata.workingDirectory}`)
-        }
-        workingDir = metadata.workingDirectory
-        console.log(`📂 Working directory from frontend: ${workingDir}`)
-      } else {
-        // Reset to default for new connections (in case previous session changed it)
-        workingDir = defaultWorkingDir
+      // The client's workingDirectory is only a HINT. When a session is pre-
+      // selected, the agent is AUTHORITATIVE about where that session lives:
+      // resolve its real project dir (the only dir whose slug holds the
+      // session's JSONL) and boot there, so `--resume <id>` finds it instead of
+      // coming up in /workspace root — or silently as a different session —
+      // when the hint is stale or empty (e.g. a switch rewrote the URL without
+      // a cwd). resolveCwdForSession returns null only when the JSONL exists
+      // nowhere yet (fresh sprite / brand-new project), in which case the hint
+      // is honoured and created so the SDK spawn still has a valid cwd.
+      const wdHint = (metadata.workingDirectory && typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
+        ? metadata.workingDirectory
+        : null
+      let resolvedConnectCwd: string | null = null
+      if (preSelectedSessionId) {
+        try { resolvedConnectCwd = await resolveCwdForSession(preSelectedSessionId, wdHint) }
+        catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e); resolvedConnectCwd = null }
       }
+      const connectWd = pickConnectWorkingDir({ preSelectedSessionId, resolved: resolvedConnectCwd, hint: wdHint, defaultDir: defaultWorkingDir })
+      // Recursive mkdirSync is a no-op when the dir already exists; only the
+      // hint path (new project / fresh sprite) needs creating — the resolved
+      // dir exists by construction, the default is the agent's own boot dir.
+      if (connectWd.createIfMissing && !existsSync(connectWd.dir)) {
+        mkdirSync(connectWd.dir, { recursive: true })
+        console.log(`📁 Created project directory: ${connectWd.dir}`)
+      }
+      workingDir = connectWd.dir
+      console.log(`📂 Working directory (${connectWd.source}): ${workingDir}`)
     } catch (err) {
       console.log('⚠️ Could not parse participant metadata, using config voiceMode:', voiceMode)
     }
