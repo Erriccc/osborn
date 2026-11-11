@@ -16,21 +16,42 @@ export function useViewportClamp<T extends HTMLElement = HTMLDivElement>(open: b
     if (!open) return
     const el = ref.current
     if (!el) return
+    // Clamp to the VISIBLE chat region, not just the window. With a side panel
+    // (Outputs) or the Rooms rail open, the chat column is a narrow strip and a
+    // right-anchored popover can clear the viewport yet still clip at the pane
+    // edge (issue #85). The pane is the nearest ancestor that clips its overflow
+    // (overflow-hidden), so measure that and clamp inside it. Found once per
+    // open — the popover stays mounted in the same pane while it is open.
+    let region: HTMLElement | null = null
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      const ox = getComputedStyle(node).overflowX
+      if (ox === 'hidden' || ox === 'clip' || ox === 'auto' || ox === 'scroll') { region = node; break }
+    }
     const apply = () => {
       el.style.transform = ''
       const r = el.getBoundingClientRect()
       const vw = document.documentElement.clientWidth || window.innerWidth
-      const dx = clampPopoverShift(r.left, r.width, vw, margin)
+      let regionLeft = 0
+      let regionRight = vw
+      if (region) {
+        const rr = region.getBoundingClientRect()
+        regionLeft = rr.left
+        regionRight = rr.right
+      }
+      const dx = clampPopoverShift(r.left, r.width, vw, margin, regionLeft, regionRight)
       el.style.transform = dx ? `translateX(${dx}px)` : ''
     }
     apply()
     window.addEventListener('resize', apply)
     window.visualViewport?.addEventListener('resize', apply)
     // Re-measure when the popover's own box changes after opening (e.g. the
-    // skills list loads and the popover grows past the edge). translateX does
-    // not change the observed layout size, so apply() can't feed back a loop.
+    // skills list loads and the popover grows past the edge) AND when the chat
+    // pane resizes — opening or closing the Outputs panel / Rooms rail moves the
+    // popover's anchor without resizing the popover itself (issue #85). translateX
+    // does not change the observed layout size, so apply() can't feed back a loop.
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => apply()) : null
     ro?.observe(el)
+    if (region) ro?.observe(region)
     return () => {
       window.removeEventListener('resize', apply)
       window.visualViewport?.removeEventListener('resize', apply)
