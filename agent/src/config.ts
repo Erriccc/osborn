@@ -764,10 +764,19 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
       const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
       const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
       const lastMessage = tail.lastUser ?? head.lastUser
-      // Estimate total from head density (display-only). Gate ">2" is satisfied
-      // by head.count alone for any real large session.
-      const avg = head.count > 0 ? hn / head.count : hn
-      const messageCount = head.count >= 3 ? Math.max(3, Math.round(size / avg)) : head.count
+      // Estimate total from the density of BOTH samples (display-only).
+      // The previous code assumed head.count alone clears the ">2" gate for any
+      // real large session. It does not: a compacted transcript opens with a
+      // compact_boundary plus tool records, and a single tool result can fill
+      // the 64KB head, so head.count was 0 for conversations over 100MB. Those
+      // then failed `messageCount > 2` in listSessions and vanished from the
+      // list — the longer the conversation, the surer it disappeared. tail.count
+      // was already computed here and discarded; count it too, and floor at 3
+      // because a file larger than HEAD+TAIL is never a <=2-turn session.
+      const sampledBytes = hn + tn
+      const sampledCount = head.count + tail.count
+      const avg = sampledCount > 0 ? sampledBytes / sampledCount : 0
+      const messageCount = avg > 0 ? Math.max(3, Math.round(size / avg)) : 3
       return {
         lastMessage,
         title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
