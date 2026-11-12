@@ -442,7 +442,32 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // below all see one fresh, non-rotating session instead of each racing a
       // server-side refresh-token rotation that fails closed as a 401. Best
       // effort: a genuinely signed-out user still falls through to the real 401.
-      try { await createSupabaseBrowser().auth.getSession() } catch { /* no Supabase / self-hosted: real gate is /api/token */ }
+      let prewarmedSession: { user?: unknown } | null = null
+      try {
+        const { data } = await createSupabaseBrowser().auth.getSession()
+        prewarmedSession = data.session
+      } catch { /* no Supabase / self-hosted: real gate is /api/token */ }
+
+      // GUEST SHORT-CIRCUIT (#140): a signed-out visitor landing on /chat (e.g.
+      // from the dashboard loop) would otherwise fire /api/sandbox (connect-room
+      // + status) and /api/token — all 401 — and sit on a dead "Connecting…".
+      // /api/token has no guest path (it 401s every anonymous caller), so there
+      // is nothing to gain by making those calls. Surface the sign-in prompt up
+      // front with NO sandbox/token calls. The explicit guest/test lane (a
+      // visible ?agentUrl= on the URL) talks straight to that agent and is left
+      // untouched. Signed-in users (and auto-reconnect, which only runs for an
+      // already-live session) always have a session here, so this never fires
+      // for them.
+      const hasVisibleAgentParam =
+        typeof window !== 'undefined' &&
+        !!new URLSearchParams(window.location.search).get('agentUrl')
+      if (!prewarmedSession?.user && !hasVisibleAgentParam) {
+        if (isCurrent()) {
+          setError('Sign in to connect to your agent.')
+          setConnecting(false)
+        }
+        return
+      }
 
       // Step 1: Respect the user's connection mode preference from the dashboard.
       // Cloud is the DEFAULT (no saved preference = cloud); 'local' is opt-in.
