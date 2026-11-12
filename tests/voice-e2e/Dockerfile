@@ -21,6 +21,7 @@ COPY specs ./specs
 COPY fixtures ./fixtures
 COPY scripts ./scripts
 COPY scenarios ./scenarios
+COPY SKILL.served.md ./
 
 ARG HARNESS_SHA=dev
 ENV HARNESS_SHA=$HARNESS_SHA

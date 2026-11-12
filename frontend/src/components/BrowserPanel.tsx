@@ -35,10 +35,11 @@ type Status = {
   pageState?: string
   idlePaused?: boolean
   brain?: { ready?: boolean; dead?: boolean } | string
+  tabsByOwner?: Array<{ i: number; owner: string | null }>
   // The engine reports the active tab as { i, url }; older shapes used a bare
   // number/string. Handle both so the readout never renders "[object Object]".
   activeTab?: number | string | { i?: number; url?: string }
-  tabs?: unknown[]
+  tabs?: Array<{ i: number; url: string }>
   lastFrameAgeMs?: number
   journey?: { name?: string; goal?: string } | string | null
   // #49/#81: when the auto-joined chat agent can't be reached the engine reports
@@ -49,6 +50,22 @@ type Status = {
 type Task = { n?: number; index?: number; title?: string; name?: string; goal?: string; journey?: string }
 
 const api = (action: string, qs = '') => `/api/browser/${action}${qs}`
+
+// Whatever was typed or pasted ("URL https://x.com", "x.com/path", "https://…"),
+// the address to open: the first http(s) URL, else the first domain-like word.
+function toAddress(input: string): string | null {
+  const url = input.match(/https?:\/\/\S+/i)?.[0]
+  if (url) return url
+  const host = input.split(/\s+/).find((w) => /^(localhost|[\w-]+(\.[\w-]+)+)(:\d+)?([/?#]\S*)?$/i.test(w))
+  if (!host) return null
+  return /^(localhost|127\.|\d+\.\d+\.\d+\.\d+)/i.test(host) ? `http://${host}` : `https://${host}`
+}
+const blankPage = (u?: string) => !u || u === 'about:blank' || u.startsWith('chrome://newtab')
+const shortUrl = (u: string) => u.replace(/^https?:\/\/(www\.)?/, '').slice(0, 40) || 'New tab'
+const STARTERS = [
+  { label: 'example.com', url: 'https://example.com' },
+  { label: 'Mic + audio test (WebRTC samples)', url: 'https://webrtc.github.io/samples/src/content/getusermedia/audio/' },
+]
 
 async function jget<T>(action: string, qs = ''): Promise<T | null> {
   try {
@@ -79,6 +96,7 @@ export function BrowserPanel() {
   // That is NOT an engine problem — say "sign in" and stop polling, instead of a
   // state badge and an endless "Waking…" spinner.
   const [signedOut, setSignedOut] = useState(false)
+  const [unresponsivePolls, setUnresponsivePolls] = useState(0)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamKickRef = useRef(0)
 
@@ -130,6 +148,7 @@ export function BrowserPanel() {
       }
       const s = (await r.json().catch(() => null)) as Status | null
       setStatus(s); if (s) setTokenError(false)
+      setUnresponsivePolls((n) => (s?.pageState === 'unresponsive' ? n + 1 : 0))
     }
     tick()
     pollRef.current = setInterval(tick, 3000)
@@ -181,9 +200,9 @@ export function BrowserPanel() {
   }, [])
 
   const openUrl = async () => {
-    const u = url.trim()
-    if (!u) return
-    const full = /^https?:\/\//i.test(u) ? u : `https://${u}`
+    const full = toAddress(url.trim())
+    if (!full) { setNote('Type a web address, e.g. example.com'); return }
+    setUrl(full)
     await post('tab', { op: 'open', url: full, reuse: !newTab }, 'open')
   }
   const say = async () => {
@@ -191,6 +210,13 @@ export function BrowserPanel() {
     if (!text) return
     const r = await post('say', { text }, 'say')
     if (r && typeof r.heard === 'string') setHeard(r.heard)
+  }
+  const openStarter = (u: string) => post('tab', { op: 'open', url: u, reuse: true }, 'open')
+  const switchTab = (i: number) => post('tab', { op: 'switch', i }, 'switch tab')
+  // Reload acts on the panel's own tab, so make the shown tab ours first.
+  const reloadTab = async () => {
+    if (activeI != null && !(await post('tab', { op: 'switch', i: activeI }, 'reload tab'))) return
+    await post('recover', {}, 'reload tab')
   }
   const stopEngine = async () => {
     if (!confirm('Stop the browser engine? Any in-flight run ends and the machine sleeps.')) return
@@ -209,11 +235,19 @@ export function BrowserPanel() {
     return String(a)
   })()
   // #81: the engine tells us when the auto-joined chat agent is unreachable.
-  const agentUnreachable = watching ? status?.agentUnreachable ?? null : null
+  // Only a configured agent can be unreachable; none configured is plain browsing.
+  const agentUnreachable = watching && status?.agentUrl ? status?.agentUnreachable ?? null : null
   // The server is missing the engine token if it says so up front, or if a drive
   // action just came back 401. Either way, every control/output action will fail.
   const tokenMisconfigured = engine?.engineTokenConfigured === false || tokenError
-  const brainReady = typeof status?.brain === 'object' ? status?.brain?.ready && !status?.brain?.dead : undefined
+  const brainReady = typeof status?.brain === 'object' ? status?.brain?.ready && !status?.brain?.dead
+    : typeof status?.brain === 'string' ? status.brain === 'ready' : undefined
+  const activeI = typeof status?.activeTab === 'object' ? status.activeTab?.i : undefined
+  // Two polls in a row: one 'unresponsive' is often just a page mid-navigation.
+  const frozen = watching && unresponsivePolls >= 2
+  const shownOwner = status?.tabsByOwner?.find((o) => o.i === activeI)?.owner ?? null
+  const blank = watching && !!status && blankPage(status.pageUrl)
+
 
   const copyShare = async () => {
     try { await navigator.clipboard.writeText(window.location.href); setNote('Link copied') } catch { setNote('Copy failed') }
@@ -290,6 +324,23 @@ export function BrowserPanel() {
         </div>
       )}
 
+      {/* Tabs, like a browser's tab bar: click to show that tab. */}
+      {watching && (status?.tabs?.length ?? 0) > 0 && (
+        <div className="flex gap-1 overflow-x-auto">
+          {status!.tabs!.map((t) => {
+            const owner = status?.tabsByOwner?.find((o) => o.i === t.i)?.owner
+            const on = t.i === activeI
+            return (
+              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || !!owner} title={owner ? `${t.url} (driven by ${owner})` : t.url}
+                className={`flex min-w-0 max-w-[14rem] items-center gap-1 rounded-t-lg border px-2 py-1 text-xs ${on ? 'border-amber-500/70 bg-neutral-800 text-neutral-100' : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}>
+                <span className="truncate">{shortUrl(t.url)}</span>
+                {owner && <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">{owner}</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {/* Live view */}
       <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-neutral-800 bg-black">
         {watching ? (
@@ -303,7 +354,7 @@ export function BrowserPanel() {
               onError={() => setStreamBroken(true)}
               onLoad={() => setStreamBroken(false)}
             />
-            {streamBroken && (
+            {streamBroken && !frozen && !blank && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-sm text-neutral-300">
                 {/* `unreachable` only means the Fly state couldn't be READ, so it is
                     no reason to blank this out — that left a bare Retry button (#62/#49). */}
@@ -314,6 +365,26 @@ export function BrowserPanel() {
                 >
                   Retry
                 </button>
+              </div>
+            )}
+            {frozen && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 px-6 text-center text-sm text-neutral-300">
+                <div>This tab stopped responding, so there is nothing to show.</div>
+                {shownOwner ? (
+                  <div className="text-xs text-neutral-400">It is driven by {shownOwner}, which has to reload it.</div>
+                ) : (
+                  <button onClick={reloadTab} disabled={!!busy} className="rounded-lg bg-amber-500 px-3 py-1.5 font-medium text-black hover:bg-amber-400 disabled:opacity-50">Reload tab</button>
+                )}
+              </div>
+            )}
+            {!frozen && blank && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950 px-6 text-center text-sm text-neutral-300">
+                <div>Nothing is open in this tab. Type an address below, or start with:</div>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {STARTERS.map((s) => (
+                    <button key={s.url} onClick={() => openStarter(s.url)} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 disabled:opacity-50">{s.label}</button>
+                  ))}
+                </div>
               </div>
             )}
           </>
@@ -351,7 +422,7 @@ export function BrowserPanel() {
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') openUrl() }}
-            placeholder="Open a URL (e.g. example.com)"
+            placeholder="Address, e.g. example.com"
             className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500"
           />
           <label className="flex items-center gap-1 text-xs text-neutral-400"><input type="checkbox" checked={newTab} onChange={(e) => setNewTab(e.target.checked)} /> new tab</label>
@@ -359,13 +430,14 @@ export function BrowserPanel() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <input
+            title="Synthesized speech played into the page's microphone, for testing voice apps. It does not steer the agent."
             value={sayText}
             onChange={(e) => setSayText(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') say() }}
-            placeholder="Say into the page mic…"
+            placeholder="Speak into the page’s microphone (only for pages that listen)…"
             className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500"
           />
-          <button onClick={say} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Say</button>
+          <button onClick={say} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Speak</button>
           <button onClick={stopEngine} disabled={!!busy} className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">Stop engine</button>
         </div>
         {heard && <p className="rounded bg-neutral-950 px-3 py-1.5 text-xs text-neutral-300"><span className="text-neutral-500">heard: </span>{heard}</p>}
