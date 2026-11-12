@@ -8,7 +8,7 @@
 // last-activity time, the project and message count, and a single LIVE marker
 // on the session the agent is actually running.
 
-import { deriveSessionTitle, formatTime, sessionActivityTime, sortSessionsByActivity, type SessionListFields } from './sessions'
+import { deriveSessionTitle, formatTime, sameSession, sessionActivityTime, sortSessionsByActivity, type SessionListFields } from './sessions'
 
 export type RoomStatus = 'live' | 'background' | 'idle'
 
@@ -61,14 +61,6 @@ export interface BuildRoomRowsOptions {
 }
 
 const short = (id: string) => (id ? id.substring(0, 8) : '')
-
-/** A slot id may be the full sessionId OR an 8-char prefix. Exported so the
- * session-list dedupe pass (lib/session-list) folds rows by the SAME identity
- * rule the rows themselves use. */
-export function sameSession(a: string, b: string): boolean {
-  if (!a || !b) return false
-  return a === b || (a.length === 8 && b.startsWith(a)) || (b.length === 8 && a.startsWith(b))
-}
 
 function projectName(cwd: string | undefined): string | undefined {
   if (!cwd) return undefined

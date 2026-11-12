@@ -20,8 +20,7 @@
 // merged different sessions on a 6-word title and left no path to the one it
 // dropped). `prepareSessions` runs the pass and is what both surfaces call.
 
-import { sameSession } from './rooms'
-import { prettySessionPreview, sessionActivityMs, type SessionListFields } from './sessions'
+import { prettySessionPreview, sameSession, sessionActivityMs, type SessionListFields } from './sessions'
 
 /** The shape the hygiene helpers read. Every extra field is optional so the
  * dashboard's SessionInfo, the rail's RoomSessionInput and partial shapes all
@@ -58,11 +57,11 @@ function isSystemSession(s: SessionListItem): boolean {
  * message count) and then the most recently active, so the surviving row has
  * the best title/time/project. First-seen order is otherwise preserved.
  *
- * Identity is `sameSession` (lib/rooms), the same rule the rows use, bucketed
- * by id prefix to stay linear — so the two can't drift apart.
+ * Identity is `sameSession`, the same rule the rows use, bucketed by id prefix
+ * to stay linear — so the two can't drift apart. A Map keeps insertion order
+ * across overwrites, so first-seen order needs no second structure.
  */
 function dedupeSessions<T extends SessionListItem>(sessions: T[]): T[] {
-  const order: string[] = []
   const best = new Map<string, T>()
   const byPrefix = new Map<string, string[]>()
   for (const s of sessions) {
@@ -72,14 +71,13 @@ function dedupeSessions<T extends SessionListItem>(sessions: T[]): T[] {
     const key = bucket?.find((k) => sameSession(k, s.sessionId))
     if (key === undefined) {
       best.set(s.sessionId, s)
-      order.push(s.sessionId)
       if (bucket) bucket.push(s.sessionId)
       else byPrefix.set(prefix, [s.sessionId])
       continue
     }
     if (preferCopy(s, best.get(key)!)) best.set(key, s)
   }
-  return order.map((id) => best.get(id)!)
+  return Array.from(best.values())
 }
 
 /** Should `a` replace `b` as the kept copy of a duplicated session? */
@@ -134,9 +132,9 @@ export function prepareSessions<T extends SessionListItem>(
   opts: PrepareOptions = {},
 ): PreparedList<T> {
   const deduped = dedupeSessions(sessions)
-  const systemCount = deduped.filter((s) => isSystemSession(s)).length
+  const kept = deduped.filter((s) => !isSystemSession(s)) // one classify pass
   return {
-    sessions: opts.hideSystem ? deduped.filter((s) => !isSystemSession(s)) : deduped,
-    systemCount,
+    sessions: opts.hideSystem ? kept : deduped,
+    systemCount: deduped.length - kept.length,
   }
 }
