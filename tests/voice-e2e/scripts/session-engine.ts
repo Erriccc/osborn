@@ -443,7 +443,7 @@ async function main() {
       cleanup = [webm, wav]
       // Full decode → wav: MediaRecorder opus can't be seeked directly (bad
       // packet headers — proven), so decode once and trim the wav reliably.
-      await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav])
+      await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav], { timeout: 30000 })
       const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wav]).catch(() => ({ stdout: '0' }))
       cleanup = [webm]
       return { wav, startedAt, durationMs: Math.round((Number(String(probe.stdout).trim()) || 0) * 1000) }
@@ -493,7 +493,7 @@ async function main() {
   // the instant it was played into the mic) and what the page played back
   // (the ears' recording, aligned by wall clock). Returns null when there is
   // no audio at all to add.
-  const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number, captions: { said: string; heard: string }, a: Awaited<ReturnType<typeof peekAudioToWav>>): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
+  const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number, captions: { said: string; heard: string }, a: Awaited<ReturnType<typeof peekAudioToWav>>, timeoutMs = 45000): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
     const args = ['-y', '-loglevel', 'error', '-i', clip.path]
     const filters: string[] = []; const labels: string[] = []
     let idx = 1
@@ -538,7 +538,7 @@ async function main() {
     }
     filters.push(`${vchain}[v]`)
     try {
-      await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-movflags', '+faststart', '-shortest', out], { timeout: 120000 })
+      await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-movflags', '+faststart', '-shortest', out], { timeout: timeoutMs })
       return existsSync(out) ? { path: out, said, heard } : null
     } catch (e) { mark(`audio mux failed: ${(e as Error).message.slice(0, 100)}`); return null }
     finally { for (const f of capFiles) { try { rmSync(f, { force: true }) } catch { /* ignore */ } } }
@@ -1281,6 +1281,7 @@ async function main() {
         })
         if (!spoken) return  // answered inside the lock (refused, invalid, or no mic)
         const { page, t0, ears, saidWav, playStartMs, n } = spoken
+        const turnDeadline = t0 + 80000
         {
           await page.waitForTimeout(body.listenMs ?? 6000).catch(() => {})
           // Cut the clip NOW — speak start to end of the listen window — before
@@ -1291,17 +1292,19 @@ async function main() {
           const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, Date.now(), page).catch(() => null) : null
           let hearError: string | null = null
           // Decode the recording once; the transcript and the clip's audio both use it (#165).
-          // Every hearing step is time-boxed (#199): a busy or just-reloaded page
-          // must give "nothing heard" in seconds, never hold /say for minutes.
-          const within = <T,>(ms: number, p: Promise<T>, what: string) => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`${what} took over ${ms / 1000}s`)), ms))])
-          const decoded = await within(30000, peekAudioToWav(page), 'reading the page audio').catch(() => null)
+          // One deadline for the turn, under the panel's 90s cut-off (#199): each
+          // step gets what is left, so a stuck page means "nothing heard", not a hang.
+          const left = (min: number) => Math.max(min, turnDeadline - Date.now())
+          const decoded = await peekAudioToWav(page)  // its ffmpeg decode is capped at 30s
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
-          const heard = await within(60000, decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw(), 'hearing')
+          const budget = left(5000)
+          const heard = await Promise.race([decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw(),
+            new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)), budget))])
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           if (!range) clipError = live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session'
           else {
             clip = range.path
-            const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded).catch(() => null)
+            const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, left(10000)).catch(() => null)
             if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
             mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
           }
@@ -1465,6 +1468,7 @@ async function main() {
         })
       }
       if (path === '/journey') {
+        body.owner = driverId(req)  // the mission owner is the caller, like a tab's (#193)
         const host = (() => { try { return new URL(active.url()).hostname } catch { return 'unknown' } })()
         if (body.op === 'start') {
           if (journey && journey.owner && body.owner !== journey.owner) return json(res, { error: `mission "${journey.name}" is active (owner: ${journey.owner}) — coordinate or wait for journey end`, mission: { name: journey.name, owner: journey.owner, startedAt: journey.startedAt } }, 409)

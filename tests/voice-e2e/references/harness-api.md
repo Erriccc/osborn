@@ -14,12 +14,12 @@
 | `GET /audio` | the whole run's captured audio as mp3 (the agent's voice — absent from the video-only clips/stream). Room-mode/ears only |
 | `GET /logs` | full console+network+websocket buffers, all tabs |
 | `GET /events` | SSE: live navigation/task/tab/journey/transcript/agent_output/lifecycle events (25-event replay on connect; `engine_stopping` announces sleep) |
-| `POST /act {instruction, owner?, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab |
+| `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab |
 | `POST /say {text, ...}` | speak into the mic; returns media + `heard` (agent's spoken reply, transcribed) |
 | `POST /hear {lastMs}` | transcript of recent agent audio |
-| `POST /eval {expression, owner?}` | run JS in the page (the website console, programmatic); recorded as a journey step |
+| `POST /eval {expression}` | run JS in the page (the website console, programmatic); recorded as a journey step |
 | `POST /shot` | on-demand screenshot (viewport only — NOT proof media; clips are) |
-| `POST /tab {op: open\|navigate\|switch\|close\|claim\|release, url?, i?, owner?, viewport?, reuse?}` | tab ops. `open` REUSES a same-site tab unless `reuse:false`; `viewport:"mobile"` = 390×844; owners guard against other directors (409) |
+| `POST /tab {op: open\|navigate\|switch\|close\|claim\|release, url?, i?, viewport?, reuse?}` (owner = your `x-driver-id`) | tab ops. `open` REUSES a same-site tab unless `reuse:false`; `viewport:"mobile"` = 390×844; owners guard against other directors (409) |
 | `POST /journey {op: start\|end\|list, name?, goal?, save?, cleanup?}` | journey framing — see below |
 | `POST /brain` | re-init a detached Stagehand in place |
 | `POST /recover` | reload the active tab |

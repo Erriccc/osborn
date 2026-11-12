@@ -13,7 +13,7 @@
 #   drive.sh act  "click the Logs label"
 #   drive.sh say  "what color is the sky?"
 #   drive.sh tab  '{"op":"open","url":"https://x.com","viewport":"mobile"}'
-#   drive.sh status | drive.sh eval "document.title" | drive.sh journey '{"op":"start","name":"x","owner":"me"}'
+#   drive.sh status | drive.sh eval "document.title" | drive.sh journey '{"op":"start","name":"x"}'
 #
 # Config (env): BSR_ENGINE (default https://osborn-voice-e2e.fly.dev:8781),
 #   BSR_TOKEN (or ~/osborn-backups/voice-e2e-engine-token.txt), BSR_IP

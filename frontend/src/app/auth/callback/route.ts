@@ -24,15 +24,9 @@ export async function GET(request: Request) {
   const code = searchParams.get('code')
   const h = await headers()
   const origin = getPublicOrigin(request, h)
-  // Same-site paths only: gluing a raw `next` onto the origin lets
-  // `next=@evil.com` become https://site@evil.com (#197).
-  const next = (() => {
-    const raw = searchParams.get('next') ?? '/'
-    try {
-      const u = new URL(raw, origin)
-      return u.origin === origin ? u.pathname + u.search + u.hash : '/'
-    } catch { return '/' }
-  })()
+  // Same-site paths only: a raw `next` glued onto the origin can leave the site.
+  let next = '/'
+  try { const u = new URL(searchParams.get('next') ?? '/', origin); if (u.origin === new URL(origin).origin) next = u.pathname + u.search + u.hash } catch { /* keep '/' */ }
 
   if (code) {
     const cookieStore = await cookies()

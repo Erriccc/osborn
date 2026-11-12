@@ -188,7 +188,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 ## What's new in v33
 - **A tab's owner is always your `x-driver-id`.** An `owner` field in a `/tab` body is ignored, so nobody can act as another driver. Set `x-driver-id` on every call.
 - `/input` only works on a tab you opened or took over (`not_your_tab` otherwise).
-- `/say` never waits minutes on a page that won't answer: reading the page audio, hearing and the clip mix are each time-boxed.
+- `/say` answers within about 90 seconds of speaking, even on a page that won't answer: hearing and the clip mix share one deadline, and a turn that runs out reports "nothing heard" with the reason.
 
 ## What's new in v32
 - When the page plays nothing back, `/say` and `/hear` now report "nothing heard" instead of a speech-to-text error ("Invalid audio file").
