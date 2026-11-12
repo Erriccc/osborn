@@ -787,8 +787,8 @@ function VoiceRoomInner({
           // mid-session Claude sign-in only this poll tells the truth. keyHealth
           // is re-read every poll (never merged) so a verdict for a tier the
           // agent has left — or one an older agent never emits — cannot linger.
-          if (!cancelled && typeof d?.provider === 'string' && d.provider.trim()) {
-            setMainProvider(d.provider)
+          if (!cancelled && d && 'provider' in d) {
+            setMainProvider(typeof d.provider === 'string' && d.provider.trim() ? d.provider : null)
           }
           if (!cancelled) {
             setAgentKeyHealth(Array.isArray(d?.keyHealth) ? d.keyHealth as KeyHealthEntry[] : undefined)

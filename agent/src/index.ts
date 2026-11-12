@@ -318,24 +318,13 @@ let agentActiveProvider: ActiveProvider | null = null
 let agentKeyHealth: KeyHealthEntry[] | null = null
 
 /**
- * (Re)derive the active tier from applyAuthFallback() and publish it to /health +
- * agent_ready. Re-running it after a mid-session sign-in is also self-healing: if
- * the sign-in did NOT land, the redirect the auth path cleared is re-applied.
+ * House-tier key self-test (#87) for whichever tier is active, fire-and-forget so
+ * it costs the connect path nothing. A user's OWN Anthropic key is skipped — the
+ * SDK surfaces its failures directly. Always clears the previous tier's verdict
+ * first, so a tier swap cannot leave a stale "No working model" on screen.
  */
-function refreshActiveProvider(): ActiveProvider {
-  const provider = applyAuthFallback()
-  agentActiveProvider = provider === 'none' ? null : provider
-  console.log(`🧭 Active model provider: ${provider}`)
-  return provider
-}
-
-/**
- * House-tier key self-test (#87), fire-and-forget so it costs the connect path
- * nothing. A user's OWN Anthropic key is skipped — the SDK surfaces its failures
- * directly. Always clears the previous tier's verdict first, so a sign-in that
- * swaps tiers cannot leave a stale "No working model" on screen.
- */
-function startKeyHealthProbe(provider: ActiveProvider): void {
+function startKeyHealthProbe(): void {
+  const provider = agentActiveProvider
   agentKeyHealth = null
   if (provider !== 'zai' && provider !== 'openrouter') return
   void probeActiveProviderKey(provider)
@@ -826,7 +815,7 @@ function startApiServer(workingDir: string, port: number): void {
         // #87: the tier actually answering + its key self-test. `provider` is the
         // LIVE reading — agent_ready fires once, so it goes stale the moment a
         // mid-session sign-in swaps the tier.
-        ...(agentActiveProvider ? { provider: agentActiveProvider } : {}),
+        provider: agentActiveProvider,
         ...(agentKeyHealth ? { keyHealth: agentKeyHealth } : {}),
       }))
       return
@@ -5229,9 +5218,11 @@ async function main() {
     // BEFORE session creation so the OpenRouter redirect env vars (tier 3) are
     // set before the first query() spawn inherits process.env. No-op for
     // tier-1 (real Claude login) and tier-2 (user's own ANTHROPIC_API_KEY).
-    // #87: refreshActiveProvider() also records WHICH tier it selected, driving
-    // agent_ready.provider + /health. Its key self-test fires after session start.
-    const activeProvider: ActiveProvider = refreshActiveProvider()
+    // #87: record WHICH tier it selected — that drives agent_ready.provider and
+    // /health. The key self-test for it fires after session start.
+    const activeProvider: ActiveProvider = applyAuthFallback()
+    agentActiveProvider = activeProvider === 'none' ? null : activeProvider
+    console.log(`🧭 Active model provider: ${activeProvider}`)
 
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession
@@ -5307,7 +5298,7 @@ async function main() {
     currentAgent = agent  // Store for updateChatCtx() context injection
 
     // #87: the session is live — NOW run the house-tier key self-test.
-    startKeyHealthProbe(activeProvider)
+    startKeyHealthProbe()
 
     // CLICK-TIME OVERLAP (default-ON; OSBORN_CONNECT_OVERLAP=off): for a resumed
     // session, kick the JSONL replay NOW (fire-and-forget) so it overlaps the
@@ -6193,11 +6184,14 @@ async function main() {
               // sessions restart BEFORE their next turn (deferred — a streaming
               // turn finishes normally), resuming the same sessionId on Claude.
               if (!fallbackCleared) return
-              // The tier just changed under a live session: re-derive it and drop
-              // the old tier's verdict BEFORE the respawn, or /health keeps serving
-              // {provider:'zai', status:'expired'} and the UI claims "The session
-              // can't answer" while Claude answers fine.
-              startKeyHealthProbe(refreshActiveProvider())
+              // A cleared fallback means real Claude login landed, so Claude is the
+              // tier now: publish it and drop the dead tier's verdict BEFORE the
+              // respawn, or /health keeps serving {provider:'zai', status:'expired'}
+              // and the UI claims "The session can't answer" while Claude answers
+              // fine. Deliberately NOT applyAuthFallback() again — its side effects
+              // would re-apply the very redirect the auth path just cleared.
+              agentActiveProvider = 'claude'
+              agentKeyHealth = null
               requestAuthRestart()
             })
           }
