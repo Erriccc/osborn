@@ -168,12 +168,16 @@ await t('scanSlugCwd: lossy slug (project dir whose name contains "-") falls bac
   // `-w-my-app` decodes to /w/my/app, which does not exist → slugToPath ''.
   // The one case the full session-list sweep recovered.
   const base = {
-    readdir: () => ['-w-my-app'], exists: (p: string) => p === '/p' || p === '/p/-w-my-app/' + B + '.jsonl',
+    readdir: () => ['-w-my-app'],
+    exists: (p: string) => p === '/p' || p === '/p/-w-my-app/' + B + '.jsonl' || p === '/w/my-app',
     decodeSlug: () => '', readCwd: noCwd,
   }
   assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => '/w/my-app' }), '/w/my-app')
   assert.equal(await scanSlugCwd(B, '/p', base), null, 'no recorded cwd → null')
   assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => { throw new Error('unreadable') } }), null)
+  // An imported session's JSONL can name ANOTHER machine's path, and
+  // sessionExists only checks the slug — so the dir must exist to be returned.
+  assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => '/Users/elsewhere/proj' }), null)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -262,8 +262,9 @@ export function createSwitchGuard() {
  *
  * When no slug decodes to a real dir — which is exactly what happens when the
  * project dir's OWN name contains `-`, since the decode turns that into `/` —
- * `readCwd` reads the cwd recorded inside the session's JSONL. The caller still
- * validates whatever comes back.
+ * `readCwd` reads the cwd recorded inside the session's JSONL. That path gets
+ * the same existence check, because an imported session's JSONL can record a
+ * cwd from another machine and sessionExists() only looks at the slug.
  */
 export async function scanSlugCwd(
   sessionId: string,
@@ -289,5 +290,8 @@ export async function scanSlugCwd(
     if (recovered && recovered !== '/') return recovered
   }
   if (!firstMatch) return null
-  try { return (await fsx.readCwd(firstMatch)) || null } catch { return null }
+  try {
+    const recorded = await fsx.readCwd(firstMatch)
+    return recorded && fsx.exists(recorded) ? recorded : null
+  } catch { return null }
 }
