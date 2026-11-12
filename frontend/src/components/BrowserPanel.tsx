@@ -18,6 +18,10 @@ type EngineState = {
   configured: boolean
   state: string | null
   machineId: string | null
+  // The engine host the proxy targets (e.g. osborn-voice-e2e-n.fly.dev). Named in
+  // the "engine unreachable — <host>" state so a down/unresolving host is legible
+  // instead of a silent, endless "Waking…" (#62/#49).
+  host?: string | null
   // Set by the server when the Fly Machines API itself couldn't be reached, so
   // `state` is null because we failed to read it — surfaced as an explicit
   // "engine unreachable" badge instead of a bare "unknown" (#81).
@@ -269,6 +273,18 @@ export function BrowserPanel() {
         </div>
       )}
 
+      {/* Engine-unreachable notice (#62/#49) — the engine's OWN control API didn't
+          answer (host down or no longer resolves). Distinct from the signed-out
+          "sign in" card above: this is a reachability failure, so name the failing
+          host instead of a silent, endless "Waking…"/"Connecting…". */}
+      {engine?.unreachable && (
+        <div className="rounded-lg border border-red-800/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-200">
+          <span className="font-semibold">Engine unreachable{engine.host ? ` — ${engine.host}` : ''}.</span>{' '}
+          The browser engine isn’t answering — its host may be down or no longer resolve.
+          Check the engine machine (Fly app <code className="rounded bg-black/40 px-1 font-mono text-red-100">{engine.host || 'unknown'}</code>) is running, then press {asleep ? '“Wake & watch”' : '“Watch”'} again.
+        </div>
+      )}
+
       {/* Agent-unreachable notice (#81) — the engine is up and drivable, but the
           auto-joined chat agent can't be reached, so the streamed /chat tab would
           sit on "Connecting…". Say so explicitly instead of a silent "unknown". */}
@@ -296,7 +312,17 @@ export function BrowserPanel() {
             />
             {streamBroken && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-sm text-neutral-300">
-                <div>Waking the browser engine… (first pixels take ~40s)</div>
+                {/* #62/#49: don't sit on an endless "Waking…" when the engine is
+                    known-unreachable — say the host is down instead. The ~40s
+                    "Waking…" is only honest while the engine is booting. */}
+                {engine?.unreachable ? (
+                  <div className="px-4 text-red-300">
+                    Engine unreachable{engine.host ? ` — ${engine.host}` : ''}.<br />
+                    <span className="text-neutral-400">The host may be down or no longer resolve.</span>
+                  </div>
+                ) : (
+                  <div>Waking the browser engine… (first pixels take ~40s)</div>
+                )}
                 <button
                   onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(false); setTimeout(() => setWatching(true), 50) }}
                   className="rounded-lg border border-neutral-600 px-3 py-1.5 hover:bg-neutral-800"
