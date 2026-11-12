@@ -18,11 +18,7 @@
 import type { ChatMessage, CompactionMarker } from '../components/voice/shared'
 import { clearKeysByPrefix, LIVE_SESSION_KEY, type KeyedStorage } from './chat-url'
 
-export const TRANSCRIPT_CACHE_PREFIX = 'vn-chat-transcript-u'
-
-// The pre-namespacing key shape: one browser-global `vn-chat-transcript:<id>`
-// per session, left readable by whoever signed in next. Only ever removed.
-const LEGACY_TRANSCRIPT_PREFIX = 'vn-chat-transcript'
+export const TRANSCRIPT_CACHE_PREFIX = 'vn-chat-transcript'
 
 // The cache can never usefully hold more than the replay that supersedes it, and
 // anything beyond that just eats the shared localStorage quota: the agent's
@@ -48,24 +44,18 @@ export interface CachedMessage {
   compaction?: CompactionMarker
 }
 
-/** One session's cached tail. The user's entry list is oldest-touched first. */
-interface CachedSession {
-  id: string
-  items: CachedMessage[]
-}
-
 /**
- * Per-account storage key. Transcript text is the most sensitive thing this app
- * keeps in localStorage, and a browser-global key hands it to the next account
- * that signs in here — the leak #57 fixed for pinned files. So it is namespaced
- * by user id like its siblings liveSessionKey()/favoritesStorageKey(); guests
- * share one key. ONE key per user holds every cached session, so eviction order
- * is explicit in the value rather than relying on `Storage.key(i)` being
- * insertion-ordered (the Web Storage spec leaves that implementation-defined).
- * The `u:` segment can never collide with a legacy `<prefix>:<sessionId>` key.
+ * Per-account, per-session storage key. Transcript text is the most sensitive
+ * thing this app keeps in localStorage, and a key scoped to the session alone
+ * hands it to the next account that signs in here — the leak #57 fixed for
+ * pinned files. So it carries the user id, like its siblings liveSessionKey()
+ * and favoritesStorageKey(); guests share the 'anon' namespace. The `u:`
+ * segment keeps it from ever colliding with a pre-fix `<prefix>:<sessionId>`
+ * key (a session id is 6+ characters), and those stale keys are only ever
+ * removed — by capSessions below and by sign-out — never read back.
  */
-export function transcriptCacheKey(userId: string | null | undefined): string {
-  return `${TRANSCRIPT_CACHE_PREFIX}:${userId || 'anon'}`
+function keyFor(userId: string | null | undefined, sessionId: string): string {
+  return `${TRANSCRIPT_CACHE_PREFIX}:u:${userId || 'anon'}:${sessionId}`
 }
 
 /** Reduce a live transcript to the cacheable tail: keep the last MAX_ITEMS of
@@ -108,17 +98,20 @@ function resolveStorage(storage?: CacheStorage): CacheStorage | null {
   return null
 }
 
-/** Every session this account has cached, oldest-touched first, or []. */
-function readSessions(store: CacheStorage, userId: string | null | undefined): CachedSession[] {
-  let raw: string | null
-  try { raw = store.getItem(transcriptCacheKey(userId)) } catch { return [] }
-  if (!raw) return []
-  try {
-    const all: unknown = JSON.parse(raw)
-    if (!Array.isArray(all)) return []
-    return all.filter((s): s is CachedSession =>
-      !!s && typeof s.id === 'string' && Array.isArray(s.items))
-  } catch { return [] }
+/** Drop the oldest transcript keys beyond MAX_SESSIONS (and any pre-fix key it
+ * sweeps past) so the cache can't grow without bound and starve other features
+ * of the quota. `key(i)` order is the browser's insertion order in practice;
+ * the spec leaves it implementation-defined, and the only cost of a wrong guess
+ * here is evicting a cache entry early — one missed optimistic paint. */
+function capSessions(store: CacheStorage): void {
+  const keys: string[] = []
+  for (let i = 0; i < store.length; i++) {
+    const k = store.key(i)
+    if (k && k.startsWith(`${TRANSCRIPT_CACHE_PREFIX}:`)) keys.push(k)
+  }
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_SESSIONS))) {
+    try { store.removeItem(k) } catch { /* ignore */ }
+  }
 }
 
 /** Persist a session's transcript tail. No-op on empty input or no storage. */
@@ -133,10 +126,9 @@ export function cacheTranscript(
   if (!store) return
   const items = serializeTranscript(messages)
   if (items.length === 0) return // never clobber a good cache with nothing
-  // Re-appended at the end, so the session touched longest ago is evicted.
-  const all = [...readSessions(store, userId).filter(s => s.id !== sessionId), { id: sessionId, items }]
   try {
-    store.setItem(transcriptCacheKey(userId), JSON.stringify(all.slice(-MAX_SESSIONS)))
+    store.setItem(keyFor(userId, sessionId), JSON.stringify(items))
+    capSessions(store)
   } catch {
     // Quota / serialization failure — give up quietly; the replay still hydrates.
   }
@@ -151,7 +143,12 @@ export function readCachedTranscript(
   if (!sessionId) return []
   const store = resolveStorage(storage)
   if (!store) return []
-  const items = readSessions(store, userId).find(s => s.id === sessionId)?.items ?? []
+  let raw: string | null
+  try { raw = store.getItem(keyFor(userId, sessionId)) } catch { return [] }
+  if (!raw) return []
+  let items: unknown
+  try { items = JSON.parse(raw) } catch { return [] }
+  if (!Array.isArray(items)) return []
   return items.filter(
     (m): m is CachedMessage =>
       !!m && typeof m.id === 'string' &&
@@ -169,5 +166,4 @@ export function clearSignOutLocalState(storage?: CacheStorage): void {
   if (!store) return
   clearKeysByPrefix(store, LIVE_SESSION_KEY)
   clearKeysByPrefix(store, TRANSCRIPT_CACHE_PREFIX)
-  clearKeysByPrefix(store, LEGACY_TRANSCRIPT_PREFIX)
 }

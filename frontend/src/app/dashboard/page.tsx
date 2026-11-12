@@ -408,23 +408,21 @@ export default function Dashboard() {
   useEffect(() => {
     // #140: a signed-out visitor used to get the full dashboard shell ("Working
     // late…", New session, "Cloud workspace is offline") and a chat↔dashboard
-    // loop with no way to sign in. Send them to /login, like /settings does.
-    // EVERY exit resolves through here: the 3s watchdog and the .catch used to
-    // clear `loading` with `user` still null, which fell through to the bare
-    // spinner below — the same dead end #140 was fixing. getBrowserUser
-    // swallows its errors and returns null, so a transient auth failure takes
-    // this path too. A self-hosted build with no Supabase has no /login to send
-    // anyone to, so it keeps the signed-out dashboard (mirrors the
-    // ChatSessionProvider gate).
-    const resolve = (u: User | null) => {
+    // loop with no way to sign in. Send them to /login — but ONLY once the probe
+    // has actually answered "no user". The 3s watchdog must not redirect: a
+    // merely-slow token refresh is not a signed-out visitor, and /login bounces
+    // an authenticated user back with a full page reload. It only stops the
+    // spinner, and the screen it lands on carries the Sign in link.
+    // The redirect is gated on isSupabaseConfigured() because a self-hosted
+    // build has no /login to send anyone to (mirrors the ChatSessionProvider
+    // gate) and getBrowserUser() returns null for a transient failure too.
+    const timeout = setTimeout(() => setLoading(false), 3000)
+    getBrowserUser(supabase).then((u) => {
+      clearTimeout(timeout)
       setUser(u)
       setLoading(false)
       if (!u && isSupabaseConfigured()) router.replace('/login')
-    }
-    const timeout = setTimeout(() => resolve(null), 3000)
-    getBrowserUser(supabase)
-      .then((u) => { clearTimeout(timeout); resolve(u) })
-      .catch(() => { clearTimeout(timeout); resolve(null) })
+    }).catch(() => { clearTimeout(timeout); setLoading(false) })
   }, [])
 
   // Load prefs
@@ -1424,10 +1422,10 @@ export default function Dashboard() {
   }
 
   // #140: the auth effect redirects a signed-out visitor to /login; render only
-  // a spinner until the navigation lands so the app shell never flashes.
-  // (Mirrors /settings.) The link is the escape hatch: if the redirect never
-  // lands — a blocked replace, a slow route — a bare spinner would be the very
-  // dead end #140 was about, so the one action that resolves it is on screen.
+  // a spinner until the navigation lands so the app shell never flashes. The
+  // link is the escape hatch for every path that reaches here WITHOUT a
+  // redirect — the 3s watchdog and the .catch — where a bare spinner was the
+  // very dead end #140 was about. (/settings still has that dead end.)
   if (!user && isSupabaseConfigured()) {
     return (
       <main className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center gap-5">

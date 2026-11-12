@@ -6,7 +6,6 @@
 // sign-out.
 import {
   TRANSCRIPT_CACHE_PREFIX,
-  transcriptCacheKey,
   cacheTranscript,
   readCachedTranscript,
   clearSignOutLocalState,
@@ -73,12 +72,6 @@ t('round-trips through storage keyed by session id', () => {
 })
 
 // ── The #57-class leak, now for transcript text ──
-t('cache key is namespaced by account, like liveSessionKey/favoritesStorageKey', () => {
-  eq(transcriptCacheKey('user-a'), `${TRANSCRIPT_CACHE_PREFIX}:user-a`, 'per-user key')
-  ok(transcriptCacheKey('user-a') !== transcriptCacheKey('user-b'), 'distinct per account')
-  eq(transcriptCacheKey(null), `${TRANSCRIPT_CACHE_PREFIX}:anon`, 'guests share one key')
-})
-
 t('one account never reads the next account\'s cached transcript', () => {
   const s = fakeStorage()
   cacheTranscript('user-a', 'sess', [msg({ id: 'u1', content: 'account A transcript' })], s)
@@ -114,6 +107,7 @@ t('evicts the longest-untouched sessions beyond the cap', () => {
   eq(readCachedTranscript('u1', 'sess0', s), [], 'oldest evicted')
   eq(readCachedTranscript('u1', 'sess3', s), [], 'oldest evicted (3)')
   eq(readCachedTranscript('u1', 'sess4', s).map(m => m.content), ['c4'], 'the last 8 are kept')
+  ok(Array.from(s.map.keys()).every(k => k.startsWith(`${TRANSCRIPT_CACHE_PREFIX}:u:u1:`)), 'only this account\'s keys')
 })
 
 t('sign-out clears transcripts (incl. pre-namespacing residue) + live records', () => {
@@ -129,7 +123,7 @@ t('sign-out clears transcripts (incl. pre-namespacing residue) + live records', 
 
 t('corrupt cache entry reads as empty, never throws', () => {
   const s = fakeStorage()
-  s.setItem(transcriptCacheKey('u1'), '{not json')
+  s.setItem(`${TRANSCRIPT_CACHE_PREFIX}:u:u1:sess`, '{not json')
   eq(readCachedTranscript('u1', 'sess', s), [], 'graceful on garbage')
 })
 

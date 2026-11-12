@@ -1,8 +1,8 @@
-import type { Metadata } from 'next'
-import MarketingShell from '@/components/marketing/MarketingShell'
-import CopyButton from '@/components/marketing/CopyButton'
+'use client'
 
-export const metadata: Metadata = { title: { absolute: 'Browser Screen Recorder' } }
+import { useState } from 'react'
+import { useDocumentTitle } from '@/lib/use-document-title'
+import MarketingShell from '@/components/marketing/MarketingShell'
 
 const AGENT_MESSAGE = `Install the Browser Screen Recorder skill — give it a web app + what you want done, and it drives the app in a real browser and records proof it worked (per-action screenshots + video clips, transcribed audio, DevTools diagnostics, metrics). It can speak into the page's mic, hear and verify replies, and click via natural language.
 
@@ -13,15 +13,22 @@ const AGENT_MESSAGE = `Install the Browser Screen Recorder skill — give it a w
 
 Then run a first smoke test against a site I give you and show me the replay video.`
 
-// #141: the recorder page was an island — no site header, nav or link home,
-// reachable only by direct URL. Wrapped in the standard marketing chrome so it
-// carries the Voice Native header (wordmark → home) and footer — which is why
-// this page stays a SERVER component (the shell is one, and the only
-// interactive piece is the CopyButton below). The shell owns the full-height
-// background, so the panel no longer paints its own bg-black over part of it.
 export default function BrowserScreenRecorderLanding() {
+  useDocumentTitle('Browser Screen Recorder')
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    await navigator.clipboard.writeText(AGENT_MESSAGE)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   return (
+    // #141: the recorder page was an island — no site header, nav or link home,
+    // reachable only by direct URL. Wrap it in the standard marketing chrome so
+    // it carries the Voice Native header (wordmark → home) and footer.
     <MarketingShell>
+    {/* No bg-black / min-h-screen here: the shell owns the full-height
+        background, so a black panel just ended mid-viewport over it. */}
     <div className="text-gray-200 flex flex-col items-center px-6 py-16">
       <div className="max-w-2xl w-full space-y-10">
         <header className="space-y-3 text-center">
@@ -60,10 +67,12 @@ export default function BrowserScreenRecorderLanding() {
           <h2 className="text-white font-medium">Install: copy this message to your coding agent</h2>
           <div className="relative rounded-xl border border-gray-800 bg-gray-950 p-4">
             <pre className="whitespace-pre-wrap text-xs text-gray-300 leading-relaxed">{AGENT_MESSAGE}</pre>
-            <CopyButton
-              text={AGENT_MESSAGE}
+            <button
+              onClick={copy}
               className="absolute top-3 right-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-medium px-3 py-1.5 transition"
-            />
+            >
+              {copied ? 'Copied ✓' : 'Copy'}
+            </button>
           </div>
           <p className="text-xs text-gray-500">
             Skill source: <a className="text-amber-400 underline" href="/api/browser-screen-recorder">/api/browser-screen-recorder</a> · Harness bundle:{' '}

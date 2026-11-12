@@ -49,18 +49,14 @@ t('client pages set their own title', () => {
   const want: Record<string, string> = {
     'dashboard/page.tsx': 'Dashboard',
     'settings/page.tsx': 'Settings',
-    // /library renders its client view from a sibling file (bug B17), so the
-    // useDocumentTitle call lives there, not in the server page.tsx.
-    'library/library-view.tsx': 'Library',
+    'library/page.tsx': 'Library',
     'login/page.tsx': 'Sign in',
     'admin/page.tsx': 'Admin',
+    'browser-screen-recorder/page.tsx': 'Browser Screen Recorder',
   }
   for (const [p, title] of Object.entries(want)) {
     ok(read(p).includes(`useDocumentTitle('${title}')`), `${p} should call useDocumentTitle('${title}')`)
   }
-  // A SERVER page declares its title as metadata instead (the recorder page).
-  ok(/title: \{ absolute: 'Browser Screen Recorder' \}/.test(read('browser-screen-recorder/page.tsx')),
-    'browser-screen-recorder/page.tsx should declare its title as metadata')
 })
 
 t('no child metadata title carries the brand unless it is absolute (no doubled suffix)', () => {

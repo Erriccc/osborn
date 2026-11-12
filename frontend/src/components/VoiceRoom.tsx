@@ -2256,9 +2256,11 @@ function VoiceRoomInner({
         // reconciled them away — they re-cached on every reload (#149 review).
         // The user's OWN live turns in this connection belong to the session
         // that is actually running, so they stay: only the prior-/cached rows go.
-        if (data.actualSessionId) setMessages(prev => prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache))
         addMessageRef.current?.('system', `⚠️ Couldn't restore the session you picked — it's no longer available. You're now in a different conversation, not the one you selected.`)
-        if (data.actualSessionId) setCurrentSessionId(data.actualSessionId)
+        if (data.actualSessionId) {
+          setMessages(prev => prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache))
+          setCurrentSessionId(data.actualSessionId)
+        }
       } else if (data.type === 'session_switch_pending') {
         // #74: the live session is busy — the agent will switch when its current
         // step finishes. Nothing is lost; the user can Switch now or Cancel.
