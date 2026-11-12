@@ -83,22 +83,19 @@ export type EngineMachineState = {
   configured: boolean
   state: string | null // 'started' | 'stopped' | 'starting' | … | null when unknown
   machineId: string | null
-  // The host the proxy targets (e.g. <app>.fly.dev). Part of the state so an
-  // unreachable-engine message can name the failing host (#62/#49) instead of
-  // leaving a silent, indefinite "Waking…" — a hostname, not a Fly app name.
+  // The host the proxy targets (e.g. <app>.fly.dev — a hostname, not a Fly app
+  // name), carried in the engine-state payload so a failure can name it (#62/#49).
   host: string
-  // True when the Fly token IS configured but the Machines API read FAILED, so
-  // `state` is null because we couldn't READ it (wrong app name, mis-scoped
-  // FLY_API_TOKEN, Fly outage) — NOT because the engine is down. The panel shows
-  // an amber "state unreadable" for this, never a red engine-down claim (#81/#115).
+  // True when the Fly token IS configured but the Machines API read FAILED: `state`
+  // is null because we couldn't READ it (wrong app name, mis-scoped FLY_API_TOKEN,
+  // Fly outage), NOT because the engine is down — amber, never red (#81/#115).
   unreachable: boolean
 }
 
 // Report awake/asleep WITHOUT waking the engine, by asking the Fly Machines API
-// for the app's machine state (any request to the app itself would auto-start it,
-// defeating the purpose — which is why a failed read is NEVER confirmed against
-// the engine: that probe would bill compute). Best-effort — returns
-// {configured:false} if no token.
+// for the app's machine state: any request to the app itself auto-starts it, so a
+// failed read is NEVER confirmed against the engine — that probe bills compute.
+// Best-effort — returns {configured:false} if no token.
 export async function engineMachineState(): Promise<EngineMachineState> {
   const host = engineHost()
   const flyToken = (process.env.FLY_API_TOKEN || '').trim()

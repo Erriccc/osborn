@@ -418,10 +418,9 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: 'w
 function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreachable }: { engine: EngineState | null; watching: boolean; status: Status | null; tokenMisconfigured?: boolean; agentUnreachable?: string | null }) {
   let label = 'unknown'
   let cls = 'bg-neutral-700 text-neutral-200'
-  // A live /status response is direct, authoritative proof the engine is
-  // reachable — even if the no-wake Fly machine-state probe couldn't read
-  // awake/asleep. Treat it as "up" so a management-API blip (wrong app name /
-  // token scope) never shows red "engine unreachable" over a healthy engine (#115).
+  // A live /status response is direct proof the engine is up, even when the
+  // no-wake Fly read couldn't tell us awake/asleep (wrong app name / token
+  // scope) — so a healthy engine reads green, not unreadable (#115).
   const up = engine?.state === 'started' || (watching && !!status)
   // Agent-unreachable wins while watching: the engine is up (we have status) but
   // the chat agent it should join isn't answering (#81).
