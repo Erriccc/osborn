@@ -866,7 +866,7 @@ const UUID_JSONL_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
  * `assistant` / `system` entry in a Claude JSONL session carries `cwd`, so the
  * scan finishes in the first few KB of any normal session).
  */
-async function extractCwd(filePath: string): Promise<string> {
+export async function extractCwd(filePath: string): Promise<string> {
   return new Promise((resolve) => {
     const fileStream = createReadStream(filePath)
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity })

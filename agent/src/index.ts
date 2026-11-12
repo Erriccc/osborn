@@ -43,7 +43,7 @@ import { createGunzip } from 'node:zlib'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
 import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
@@ -51,7 +51,7 @@ import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from '.
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, pickConnectWorkingDir } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -3760,11 +3760,22 @@ async function main() {
   // agent_ready (preSelectedSessionId = A) doesn't reset the UI back to A.
   let stopReadyRetries: (() => void) | null = null
 
+  // The connect path awaits this for a pre-selected session, so every lookup
+  // here must be CHEAP. It used to consult listAllClaudeSessions() first: a
+  // full cross-project sweep (readdir+stat of every slug, then metadata reads
+  // of up to 1000 JSONLs) whose in-memory cache is COLD after every machine
+  // start — seconds of blocking disk work before the room comes up, which is
+  // why the agent_ready path deliberately keeps that same sweep in the
+  // background. scanSlugCwd answers the same question for ONE session: one
+  // readdir of the projects dir, an existsSync per slug, and at most one file
+  // read (readCwd) when the slug decode is lossy. It also covers strictly more
+  // than the list did, which drops sub-2-message and subagent sessions.
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
-      listCwd: async (id) => (await listAllClaudeSessions()).find(s => s.sessionId === id)?.cwd ?? null,
-      scanCwd: (id) => scanSlugCwd(id, join(homedir(), '.claude', 'projects'), { readdir: (d) => readdirSync(d), exists: (p) => existsSync(p) }),
+      lookupCwd: (id) => scanSlugCwd(id, join(homedir(), '.claude', 'projects'), {
+        readdir: (d) => readdirSync(d), exists: (p) => existsSync(p), readCwd: (p) => extractCwd(p),
+      }),
     })
   }
 
@@ -4678,6 +4689,11 @@ async function main() {
         type: 'session_resume_failed',
         requestedSessionId: data.requestedSessionId,
         actualSessionId: data.actualSessionId,
+        // The fallback session lives in the dir the agent is running in, and the
+        // frontend is about to repoint its URL at that id — without this it would
+        // pin a session with no project hint at all (the session list doesn't
+        // carry a brand-new id yet).
+        workingDirectory: workingDir,
       })
     })
 
@@ -5155,27 +5171,28 @@ async function main() {
       // session's JSONL) and boot there, so `--resume <id>` finds it instead of
       // coming up in /workspace root — or silently as a different session —
       // when the hint is stale or empty (e.g. a switch rewrote the URL without
-      // a cwd). resolveCwdForSession returns null only when the JSONL exists
-      // nowhere yet (fresh sprite / brand-new project), in which case the hint
-      // is honoured and created so the SDK spawn still has a valid cwd.
-      const wdHint = (metadata.workingDirectory && typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
+      // a cwd). resolveCwdForSession is cheap by construction (one readdir, at
+      // most one file read — see its comment) so this never blocks the connect;
+      // it returns null only when the JSONL exists nowhere yet (fresh sprite /
+      // brand-new project), in which case the hint is honoured and created so
+      // the SDK spawn still has a valid cwd.
+      const wdHint = (typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
         ? metadata.workingDirectory
         : null
       let resolvedConnectCwd: string | null = null
       if (preSelectedSessionId) {
         try { resolvedConnectCwd = await resolveCwdForSession(preSelectedSessionId, wdHint) }
-        catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e); resolvedConnectCwd = null }
+        catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e) }
       }
-      const connectWd = pickConnectWorkingDir({ preSelectedSessionId, resolved: resolvedConnectCwd, hint: wdHint, defaultDir: defaultWorkingDir })
+      workingDir = resolvedConnectCwd || wdHint || defaultWorkingDir
       // Recursive mkdirSync is a no-op when the dir already exists; only the
-      // hint path (new project / fresh sprite) needs creating — the resolved
-      // dir exists by construction, the default is the agent's own boot dir.
-      if (connectWd.createIfMissing && !existsSync(connectWd.dir)) {
-        mkdirSync(connectWd.dir, { recursive: true })
-        console.log(`📁 Created project directory: ${connectWd.dir}`)
+      // hint (new project / fresh sprite) can be missing — a resolved dir exists
+      // by construction and the default is the agent's own boot dir.
+      if (!existsSync(workingDir)) {
+        mkdirSync(workingDir, { recursive: true })
+        console.log(`📁 Created project directory: ${workingDir}`)
       }
-      workingDir = connectWd.dir
-      console.log(`📂 Working directory (${connectWd.source}): ${workingDir}`)
+      console.log(`📂 Working directory: ${workingDir}`)
     } catch (err) {
       console.log('⚠️ Could not parse participant metadata, using config voiceMode:', voiceMode)
     }

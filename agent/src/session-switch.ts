@@ -155,16 +155,22 @@ export function planSwitch(decision: SessionSwitchDecision, ctx: SwitchPlanConte
 export interface SessionCwdDeps {
   /** sessionExists(id, projectPath) from config.ts. */
   exists: (sessionId: string, cwd: string) => boolean
-  /** Routing cwd from listAllClaudeSessions() (slug-derived), or null. */
-  listCwd: (sessionId: string) => Promise<string | null | undefined>
-  /** Last resort: find <id>.jsonl in any project slug and decode its cwd. */
-  scanCwd: (sessionId: string) => Promise<string | null | undefined>
+  /**
+   * Find ONE session's project dir on disk (scanSlugCwd), or null.
+   *
+   * Deliberately a single CHEAP lookup. This resolve runs on the voice connect
+   * path, where it used to await listAllClaudeSessions() first — a full
+   * cross-project metadata sweep whose cache is cold after every machine start.
+   * A one-session scan answers the same question, so there is nowhere left to
+   * hang a sweep on the critical path.
+   */
+  lookupCwd: (sessionId: string) => Promise<string | null | undefined>
 }
 
 /**
  * The project directory a session's JSONL resolves under (what `--resume`
  * needs as cwd): the client's hint if the session really lives there, else
- * the current dir, else the session list's routing cwd, else a slug scan.
+ * the current dir, else a one-session scan of the project slugs.
  * null = the session does not exist ("Session not found"). A candidate is
  * only returned after `exists()` confirms it.
  */
@@ -178,12 +184,9 @@ export async function resolveSessionCwd(
   for (const c of [hint, currentDir]) {
     if (c && deps.exists(sessionId, c)) return c
   }
-  for (const lookup of [deps.listCwd, deps.scanCwd]) {
-    let c: string | null | undefined = null
-    try { c = await lookup(sessionId) } catch { c = null }
-    if (c && deps.exists(sessionId, c)) return c
-  }
-  return null
+  let c: string | null | undefined = null
+  try { c = await deps.lookupCwd(sessionId) } catch { c = null }
+  return c && deps.exists(sessionId, c) ? c : null
 }
 
 /**
@@ -231,45 +234,6 @@ export function sessionMessagesDir(
   return bootDir
 }
 
-/**
- * Working directory the agent boots a CONNECTION in (connect-time, #112).
- *
- * The resume mismatch bug: a client opens `/chat?session=A&workingDirectory=X`,
- * but X is stale/empty (a switch rewrote the URL without a cwd, or the hint was
- * never the session's real project). Trusting the raw hint booted the agent in
- * the wrong dir — often `/workspace` root — so `--resume A` never found A's
- * JSONL and the session silently came up as the wrong one with a generic
- * "Workspace" chip. The fix makes the agent AUTHORITATIVE about a pre-selected
- * session's cwd: its RESOLVED project dir wins over the client hint.
- *
- * `resolved` is resolveSessionCwd(preSelectedSessionId, hint, …) — the only dir
- * where A's JSONL actually exists (null = found nowhere yet). Pure: the caller
- * does the I/O (resolveSessionCwd) and the mkdir when `createIfMissing`.
- *
- *  - pre-selected + resolved  → the resolved dir (already exists, no mkdir).
- *  - pre-selected + unresolved + hint → the hint, created (fresh sprite / new
- *    project whose JSONL isn't on disk yet, so --resume can still attach there).
- *  - pre-selected + nothing   → the default boot dir.
- *  - no pre-selected + hint    → the hint, created (new project).
- *  - no pre-selected + nothing → the default boot dir.
- */
-export function pickConnectWorkingDir(args: {
-  preSelectedSessionId: string | null | undefined
-  resolved: string | null | undefined
-  hint: string | null | undefined
-  defaultDir: string
-}): { dir: string; createIfMissing: boolean; source: 'resolved' | 'hint' | 'default' } {
-  const hint = norm(args.hint)
-  if (norm(args.preSelectedSessionId)) {
-    const resolved = norm(args.resolved)
-    if (resolved) return { dir: resolved, createIfMissing: false, source: 'resolved' }
-    if (hint) return { dir: hint, createIfMissing: true, source: 'hint' }
-    return { dir: args.defaultDir, createIfMissing: false, source: 'default' }
-  }
-  if (hint) return { dir: hint, createIfMissing: true, source: 'hint' }
-  return { dir: args.defaultDir, createIfMissing: false, source: 'default' }
-}
-
 // ── Review minors ────────────────────────────────────────────────────────────
 
 /**
@@ -302,19 +266,33 @@ export function createSwitchGuard() {
  * and decoding the slug (the same recovery resume_session has always used).
  * The decoding is lossy, so only a decoded path that EXISTS is returned — the
  * switch executor never creates directories for scan-derived paths.
+ *
+ * When no slug decodes to a real dir — which is exactly what happens when the
+ * project dir's OWN name contains `-`, since the decode turns that into `/` —
+ * `readCwd` reads the cwd recorded inside the session's JSONL. That is the one
+ * case listAllClaudeSessions() used to recover, at the cost of crawling every
+ * session on the machine; here it costs a single file read.
  */
 export async function scanSlugCwd(
   sessionId: string,
   projectsDir: string,
-  fsx: { readdir: (dir: string) => string[]; exists: (path: string) => boolean },
+  fsx: {
+    readdir: (dir: string) => string[]
+    exists: (path: string) => boolean
+    readCwd?: (filePath: string) => Promise<string | null | undefined>
+  },
 ): Promise<string | null> {
   if (!sessionId || !fsx.exists(projectsDir)) return null
   let slugs: string[] = []
   try { slugs = fsx.readdir(projectsDir) } catch { return null }
+  let firstMatch: string | null = null
   for (const slug of slugs) {
-    if (!fsx.exists(`${projectsDir}/${slug}/${sessionId}.jsonl`)) continue
+    const filePath = `${projectsDir}/${slug}/${sessionId}.jsonl`
+    if (!fsx.exists(filePath)) continue
+    if (!firstMatch) firstMatch = filePath
     const recovered = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
     if (recovered && recovered !== '/' && fsx.exists(recovered)) return recovered
   }
-  return null
+  if (!firstMatch || !fsx.readCwd) return null
+  try { return (await fsx.readCwd(firstMatch)) || null } catch { return null }
 }
