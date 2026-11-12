@@ -44,23 +44,11 @@ export function buildRooms(
   currentSessionId: string | null,
   liveFallbackTitle?: string | null,
   pendingId?: string | null,
-  opts?: { forkCountById?: Map<string, number>; maxIdle?: number },
 ): Room[] {
-  return buildRoomRows(sessions, currentSessionId, {
-    slots,
-    liveFallbackTitle,
-    pendingId,
-    forkCountById: opts?.forkCountById,
-    maxIdle: opts?.maxIdle,
-  })
+  return buildRoomRows(sessions, currentSessionId, { slots, liveFallbackTitle, pendingId })
 }
 
-/** "2 forks" / "1 fork" label for a collapsed fork family (#107). */
-function forkLabel(n: number | undefined): string {
-  return n && n > 0 ? `${n} fork${n === 1 ? '' : 's'}` : ''
-}
-
-/** Secondary line: "3m ago · osborn · 12 msgs · 2 forks" (falls back to id). */
+/** Secondary line: "3m ago · osborn · 12 msgs" (falls back to the id hint). */
 function roomMeta(room: Room): string {
   const parts = [
     room.time,
@@ -68,7 +56,6 @@ function roomMeta(room: Room): string {
     typeof room.messageCount === 'number' && room.messageCount > 0
       ? `${room.messageCount} msg${room.messageCount === 1 ? '' : 's'}`
       : '',
-    forkLabel(room.forkCount),
   ].filter(Boolean)
   return parts.length ? parts.join(' · ') : room.shortId
 }
@@ -146,11 +133,6 @@ function RoomRowButton({
       <div className="flex items-center gap-2">
         <IdentityAvatar room={room} size="sm" />
         <span className="flex-1 min-w-0 text-[12.5px] text-gray-200 truncate">{room.title}</span>
-        {forkLabel(room.forkCount) && (
-          <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300" title={`${forkLabel(room.forkCount)} collapsed under this session`}>
-            {forkLabel(room.forkCount)}
-          </span>
-        )}
         <span
           className={`shrink-0 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
             room.status === 'live'
@@ -186,7 +168,10 @@ interface RoomsProps {
 }
 
 const COLLAPSE_KEY = 'vn-rooms-collapsed'
-const SHOW_SYSTEM_KEY = 'vn-rooms-show-system'
+// Opt-IN noise filter (see lib/session-list): nothing is hidden until the user
+// turns it on, so no row can vanish on a deploy. A fresh key, because the old
+// `vn-rooms-show-system` stored the inverted meaning.
+const HIDE_SYSTEM_KEY = 'vn-rooms-hide-system'
 
 // ── Desktop (xl+): persistent left sidebar (Phase D) ──────────────────────
 export function RoomsSidebar({
@@ -201,12 +186,11 @@ export function RoomsSidebar({
   pendingId,
 }: RoomsProps) {
   const [collapsed, setCollapsed] = useState(false)
-  const [query, setQuery] = useState('')
-  const [showSystem, setShowSystem] = useState(false)
+  const [hideSystem, setHideSystem] = useState(false)
   useEffect(() => {
     try {
       setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1')
-      setShowSystem(localStorage.getItem(SHOW_SYSTEM_KEY) === '1')
+      setHideSystem(localStorage.getItem(HIDE_SYSTEM_KEY) === '1')
     } catch { /* storage blocked */ }
   }, [])
   const toggleCollapsed = () => {
@@ -216,25 +200,19 @@ export function RoomsSidebar({
       return next
     })
   }
-  const toggleShowSystem = () => {
-    setShowSystem((v) => {
+  const toggleHideSystem = () => {
+    setHideSystem((v) => {
       const next = !v
-      try { localStorage.setItem(SHOW_SYSTEM_KEY, next ? '1' : '0') } catch { /* ignore */ }
+      try { localStorage.setItem(HIDE_SYSTEM_KEY, next ? '1' : '0') } catch { /* ignore */ }
       return next
     })
   }
 
-  // #107: dedupe copies + collapse forks + hide system sessions + search, then
-  // build the switchable rows. Search raises the recent cap so a match isn't
-  // hidden below the fold.
-  const prepared = useMemo(
-    () => prepareSessions(sessions, { search: query, hideSystem: !showSystem }),
-    [sessions, query, showSystem],
-  )
-  const rooms = buildRooms(prepared.sessions, slots, currentSessionId, liveTitle, pendingId, {
-    forkCountById: prepared.forkCountById,
-    maxIdle: query.trim() ? 100 : 12,
-  })
+  // #107: fold duplicate copies of the same session into one row (and, only if
+  // the user asked, drop machine-written meeting/task rows), then build the
+  // switchable rows.
+  const prepared = useMemo(() => prepareSessions(sessions, { hideSystem }), [sessions, hideSystem])
+  const rooms = buildRooms(prepared.sessions, slots, currentSessionId, liveTitle, pendingId)
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
   // Live + Running stay pinned at the top; Recent (idle) rows group by project.
   const topRooms = rooms.filter((r) => r.status !== 'idle')
@@ -267,7 +245,7 @@ export function RoomsSidebar({
                 title={`${room.title}${identity ? ` · ${identity}` : ''} · ${STATUS_LABEL[room.status]}`}
                 aria-label={`${room.title}${identity ? `, ${identity}` : ''} (${STATUS_LABEL[room.status]})`}
                 className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center transition-colors ${
-                  room.status === 'live' ? 'bg-amber-500/15' : 'hover:bg-gray-800/60'
+                  room.status === 'live' ? 'bg-amber-500/15 ring-1 ring-amber-500/40' : 'hover:bg-gray-800/60'
                 }`}
               >
                 <IdentityAvatar room={room} />
@@ -330,39 +308,11 @@ export function RoomsSidebar({
         </div>
       </div>
 
-      {/* Search (#107) — filter by title / preview / project. */}
-      <div className="px-2 py-2 border-b border-gray-800/60 shrink-0">
-        <div className="relative">
-          <svg className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
-          </svg>
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search sessions"
-            aria-label="Search sessions"
-            className="w-full pl-7 pr-7 py-1.5 rounded-lg bg-gray-800/60 border border-gray-800 text-[12px] text-gray-200 placeholder-gray-500 outline-none focus:border-amber-500/40"
-          />
-          {query && (
-            <button
-              onClick={() => setQuery('')}
-              aria-label="Clear search"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-500 hover:text-gray-200"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </div>
-
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
         {rooms.length === 0 ? (
           <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
-            {query.trim()
-              ? 'No sessions match your search.'
+            {hideSystem
+              ? 'No sessions shown. Turn off “Hide system sessions” to see every room.'
               : 'No other sessions yet. Start one with “New room”.'}
           </p>
         ) : (
@@ -377,7 +327,7 @@ export function RoomsSidebar({
                 <div className="px-2 pb-0.5 flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600">
                   <span
                     className="w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{ backgroundColor: roomColor(project).ring }}
+                    style={{ backgroundColor: roomColor(roomIdentityLabel({ project })).ring }}
                     aria-hidden="true"
                   />
                   <span className="truncate">{project}</span>
@@ -392,16 +342,17 @@ export function RoomsSidebar({
       </div>
 
       <div className="p-2 border-t border-gray-800/60 shrink-0 space-y-1.5">
-        {/* Show system sessions toggle (#107) — off by default. */}
-        {(prepared.systemCount > 0 || showSystem) && (
+        {/* Hide machine-written meeting/task rows (#107) — opt-in, never on by
+            default, so nothing disappears unless the user asked for it. */}
+        {(prepared.systemCount > 0 || hideSystem) && (
           <button
-            onClick={toggleShowSystem}
-            aria-pressed={showSystem}
+            onClick={toggleHideSystem}
+            aria-pressed={hideSystem}
             className="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
           >
-            <span>Show system sessions{prepared.systemCount > 0 ? ` (${prepared.systemCount})` : ''}</span>
-            <span className={`shrink-0 w-7 h-4 rounded-full relative transition-colors ${showSystem ? 'bg-amber-500/60' : 'bg-gray-700'}`}>
-              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-gray-100 transition-all ${showSystem ? 'left-3.5' : 'left-0.5'}`} />
+            <span>Hide system sessions{prepared.systemCount > 0 ? ` (${prepared.systemCount})` : ''}</span>
+            <span className={`shrink-0 w-7 h-4 rounded-full relative transition-colors ${hideSystem ? 'bg-amber-500/60' : 'bg-gray-700'}`}>
+              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-gray-100 transition-all ${hideSystem ? 'left-3.5' : 'left-0.5'}`} />
             </span>
           </button>
         )}
@@ -430,14 +381,16 @@ export function RoomsBar({
   liveTitle,
   pendingId,
 }: RoomsProps) {
-  // #107: dedupe copies + collapse forks + hide system sessions so the slim
-  // mobile switcher shows one chip per real session (no "three identical rows").
-  const prepared = useMemo(() => prepareSessions(sessions, { hideSystem: true }), [sessions])
-  const rooms = buildRooms(prepared.sessions, slots, currentSessionId, liveTitle, pendingId, {
-    forkCountById: prepared.forkCountById,
-  })
-  // Keep the voice screen clean (3-6-9): no rail until there is somewhere to
-  // switch to. nav/switchers don't count toward the primary-action budget.
+  // #107: fold duplicate copies of the same session into one chip (no "three
+  // identical rows"). NOTHING is filtered out here: this switcher has no toggle
+  // of its own, so a filter it hardcoded could empty the rail with no way back
+  // (the desktop sidebar at least owns the toggle). Dedupe only.
+  const prepared = useMemo(() => prepareSessions(sessions), [sessions])
+  const rooms = buildRooms(prepared.sessions, slots, currentSessionId, liveTitle, pendingId)
+  // Keep the voice screen clean (3-6-9): no rail when there is nowhere to
+  // switch to — i.e. only when the user genuinely has a single room, never
+  // because a filter removed the rest. nav/switchers don't count toward the
+  // primary-action budget.
   if (rooms.length <= 1) return null
   return (
     <div className="xl:hidden flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto border-b border-gray-800/50 bg-gray-900/40">

@@ -1,24 +1,16 @@
 // Run: cd frontend && npx tsx tests/session-list.test.ts
-// #107: the human-facing session lists (Rooms rail + dashboard) must be clean.
-// This pins the pure core: dedupe copies (same id across slugs), collapse forks
-// (different id, same first turn), hide system/auto sessions, and search.
+// #107: the human-facing session lists (Rooms rail + dashboard) must be clean
+// WITHOUT hiding real work. This pins the pure core: duplicate copies of the
+// same session fold into one row, machine-written meeting/task rows can be
+// hidden only on request, and nothing else is ever filtered out.
 import assert from 'node:assert/strict'
-import {
-  dedupeSessions,
-  collapseForks,
-  isSystemSession,
-  sessionMatchesQuery,
-  prepareSessions,
-  type SessionListItem,
-} from '../src/lib/session-list'
+import { prepareSessions, sessionMatchesQuery, type SessionListItem } from '../src/lib/session-list'
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
   try { fn(); pass++; console.log('PASS', name) }
   catch (e: any) { fail++; console.log('FAIL', name, '-', String(e.message).split('\n')[0].slice(0, 300)) }
 }
-
-const ISO = (d: string) => new Date(d).toISOString()
 
 // ── Dedupe ────────────────────────────────────────────────────────────────
 t('dedupe collapses the same id filed under several slugs into one row', () => {
@@ -27,102 +19,90 @@ t('dedupe collapses the same id filed under several slugs into one row', () => {
     { sessionId: 'id-A', lastMessage: 'hello', messageCount: 3, cwd: '/workspace/osborn' }, // resume copy
     { sessionId: 'id-B', lastMessage: 'world', messageCount: 1, cwd: '/workspace' },
   ]
-  const out = dedupeSessions(sessions)
+  const out = prepareSessions(sessions).sessions
   assert.equal(out.length, 2)
   // id-A survivor is the copy with a resume cwd.
-  const a = out.find((s) => s.sessionId === 'id-A')!
-  assert.equal(a.cwd, '/workspace/osborn')
+  assert.equal(out.find((s) => s.sessionId === 'id-A')!.cwd, '/workspace/osborn')
 })
 
 t('dedupe prefers the fuller copy when both have a resume cwd', () => {
-  const out = dedupeSessions([
+  const out = prepareSessions([
     { sessionId: 'x', cwd: '/w', messageCount: 2 },
     { sessionId: 'x', cwd: '/w', messageCount: 20 },
-  ])
+  ]).sessions
   assert.equal(out.length, 1)
   assert.equal(out[0].messageCount, 20)
 })
 
-// ── System detection ────────────────────────────────────────────────────────
-t('system detection catches sub-agent / verify / meeting / task, not real chats', () => {
-  assert.equal(isSystemSession({ sessionId: '1', title: 'Use the reasoner sub-agent to check X' }), true)
-  assert.equal(isSystemSession({ sessionId: '2', lastMessage: 'Run tests and verify the build' }), true)
-  assert.equal(isSystemSession({ sessionId: '3', lastMessage: '[MEETING — bot42]: standup notes' }), true)
-  assert.equal(isSystemSession({ sessionId: '4', lastMessage: '<task-notification> <task-id>abc</task-id>' }), true)
-  assert.equal(isSystemSession({ sessionId: '5', title: 'Fix the login bug' }), false)
-  // A human's own "verify" task is NOT a system session (conservative patterns).
-  assert.equal(isSystemSession({ sessionId: '6', title: 'Verify the invoice total with the vendor' }), false)
+t('the 8-char short form of a session is the SAME session, not a second row', () => {
+  // The rail's `sameSession` already treats an 8-char id as the full one; the
+  // list pass has to agree or the prefix copy renders twice.
+  const out = prepareSessions([
+    { sessionId: 'abcdef12-3456-7890-aaaa-bbbbbbbbbbbb', cwd: '/w', messageCount: 9 },
+    { sessionId: 'abcdef12', messageCount: 1 },
+  ]).sessions
+  assert.equal(out.length, 1)
+  assert.equal(out[0].messageCount, 9)
 })
 
-// ── Fork collapse ───────────────────────────────────────────────────────────
-t('forks (same first turn + firstTs, different id) collapse under one primary', () => {
-  const firstTs = ISO('2026-11-01T10:00:00Z')
-  const groups = collapseForks([
-    { sessionId: 'fork-short', title: 'Plan the offsite', firstTs, messageCount: 5 },
-    { sessionId: 'fork-full', title: 'Plan the offsite', firstTs, messageCount: 42 },
-  ])
-  assert.equal(groups.length, 1)
-  assert.equal(groups[0].primary.sessionId, 'fork-full') // fullest = trunk
-  assert.equal(groups[0].forkCount, 1)
-  assert.deepEqual(groups[0].forkIds, ['fork-short'])
+t('two different sessions that merely share an id prefix stay separate', () => {
+  const out = prepareSessions([
+    { sessionId: 'abcdef12-0000-0000-0000-000000000001', cwd: '/w' },
+    { sessionId: 'abcdef12-0000-0000-0000-000000000002', cwd: '/w' },
+  ]).sessions
+  assert.equal(out.length, 2)
 })
 
-t('different first turns are NOT merged as forks', () => {
-  const groups = collapseForks([
-    { sessionId: 'a', title: 'Plan the offsite', firstTs: ISO('2026-11-01T10:00:00Z') },
-    { sessionId: 'b', title: 'Plan the offsite', firstTs: ISO('2026-11-02T10:00:00Z') }, // different firstTs
-  ])
-  assert.equal(groups.length, 2)
-  assert.equal(groups.every((g) => g.forkCount === 0), true)
+// ── System detection: machine markers only ────────────────────────────────
+t('only the agent\'s own meeting / task markers count as system sessions', () => {
+  const out = prepareSessions([
+    { sessionId: 'm', lastMessage: '[MEETING — bot42]: standup notes' },
+    { sessionId: 't', lastMessage: '<task-notification> <task-id>abc</task-id>' },
+    { sessionId: 'c', title: 'Fix the login bug' },
+  ], { hideSystem: true })
+  assert.equal(out.systemCount, 2)
+  assert.deepEqual(out.sessions.map((s) => s.sessionId), ['c'])
 })
 
-t('sessions without firstTs or with a generic title never collapse', () => {
-  const groups = collapseForks([
-    { sessionId: 'a', title: 'Plan the offsite' }, // no firstTs
-    { sessionId: 'b', title: 'Plan the offsite' },
-    { sessionId: 'c', firstTs: ISO('2026-11-01T10:00:00Z') }, // untitled
-    { sessionId: 'd', firstTs: ISO('2026-11-01T10:00:00Z') },
-  ])
-  assert.equal(groups.length, 4)
-  assert.equal(groups.every((g) => g.forkCount === 0), true)
+// REGRESSION (#126 review): these four are HUMAN sessions. The prompt-text
+// patterns that used to classify them ("sub-agent", "use the … agent",
+// "verifier|tester") matched all four and hid them from BOTH lists. `lastMessage`
+// is the session's LAST user turn (agent/src/config.ts), so anchored patterns
+// were reading the wrong text as well. None of them may ever be hidden.
+t('real human sessions are never hidden, even when they talk about agents', () => {
+  const humans: SessionListItem[] = [
+    { sessionId: 'h1', lastMessage: 'can you run the tester on that?' },
+    { sessionId: 'h2', lastMessage: 'use the reasoner agent next time' },
+    { sessionId: 'h3', title: 'Hire a QA tester' },
+    { sessionId: 'h4', lastMessage: 'what does the sub-agent cost?' },
+    { sessionId: 'h5', lastMessage: 'Run tests and verify the invoice total' },
+    { sessionId: 'h6', title: 'Verify the invoice total with the vendor' },
+  ]
+  for (const opts of [{}, { hideSystem: true }]) {
+    const out = prepareSessions(humans, opts)
+    assert.equal(out.systemCount, 0, JSON.stringify(opts))
+    assert.equal(out.sessions.length, humans.length, JSON.stringify(opts))
+  }
 })
 
-// ── Search ──────────────────────────────────────────────────────────────────
-t('search matches title, preview and project; blank matches all', () => {
-  const s: SessionListItem = { sessionId: '1', title: 'Refactor voice pipeline', cwd: '/workspace/osborn' }
-  assert.equal(sessionMatchesQuery(s, 'voice'), true)
-  assert.equal(sessionMatchesQuery(s, 'osborn'), true) // project leaf
-  assert.equal(sessionMatchesQuery(s, 'nope'), false)
-  assert.equal(sessionMatchesQuery(s, ''), true)
-})
-
-// ── Full pipeline ───────────────────────────────────────────────────────────
-t('prepareSessions dedupes, collapses forks, hides system by default, counts them', () => {
-  const firstTs = ISO('2026-11-01T10:00:00Z')
+t('nothing is hidden unless hideSystem is asked for', () => {
   const sessions: SessionListItem[] = [
-    { sessionId: 'chat', title: 'Fix the login bug', cwd: '/workspace/osborn', messageCount: 10 },
-    { sessionId: 'chat', title: 'Fix the login bug', messageCount: 10 }, // dup copy (no cwd)
-    { sessionId: 'f1', title: 'Weekly plan', firstTs, messageCount: 3, cwd: '/workspace/osborn' },
-    { sessionId: 'f2', title: 'Weekly plan', firstTs, messageCount: 9, cwd: '/workspace/osborn' }, // fork of f1
-    { sessionId: 'sys1', title: 'Use the reasoner sub-agent to verify', cwd: '/workspace/osborn' },
-    { sessionId: 'sys2', lastMessage: 'Run tests and verify the change', cwd: '/workspace/osborn' },
+    { sessionId: 'm', lastMessage: '[MEETING — bot42]: standup notes' },
+    { sessionId: 'c', title: 'Fix the login bug' },
   ]
   const def = prepareSessions(sessions)
-  // chat (deduped) + one fork primary = 2 visible; 2 system hidden.
-  assert.equal(def.sessions.length, 2)
-  assert.equal(def.systemCount, 2)
-  assert.equal(def.sessions.some((s) => s.sessionId === 'chat'), true)
-  assert.equal(def.sessions.some((s) => s.sessionId === 'f2'), true) // fuller fork kept
-  assert.equal(def.forkCountById.get('f2'), 1)
+  assert.equal(def.sessions.length, 2, 'default must show every row')
+  assert.equal(def.systemCount, 1, 'but still count what the toggle would hide')
+})
 
-  // Toggle on → system sessions appear.
-  const withSys = prepareSessions(sessions, { hideSystem: false })
-  assert.equal(withSys.sessions.length, 4)
-
-  // Search narrows to matching rows (over visible, non-system set).
-  const searched = prepareSessions(sessions, { search: 'login' })
-  assert.equal(searched.sessions.length, 1)
-  assert.equal(searched.sessions[0].sessionId, 'chat')
+// ── Search (the one shared matcher — SessionBrowser's list) ────────────────
+t('search matches title, preview, project and id; blank matches all', () => {
+  const s: SessionListItem = { sessionId: 'abc123', title: 'Refactor voice pipeline', cwd: '/workspace/osborn' }
+  assert.equal(sessionMatchesQuery(s, 'voice'), true)
+  assert.equal(sessionMatchesQuery(s, 'osborn'), true) // project leaf
+  assert.equal(sessionMatchesQuery(s, 'abc123'), true) // id
+  assert.equal(sessionMatchesQuery(s, 'nope'), false)
+  assert.equal(sessionMatchesQuery(s, ''), true)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

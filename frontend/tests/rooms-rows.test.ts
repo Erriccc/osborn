@@ -6,7 +6,14 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { buildRoomRows } from '../src/lib/rooms'
+import {
+  buildRoomRows,
+  groupRoomsByProject,
+  roomAvatar,
+  roomColor,
+  roomIdentityLabel,
+  roomInitial,
+} from '../src/lib/rooms'
 import { UNTITLED_SESSION } from '../src/lib/sessions'
 
 let pass = 0, fail = 0
@@ -115,6 +122,125 @@ t('RoomsRail renders from buildRoomRows and shows the time', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/components/voice/RoomsRail.tsx'), 'utf8')
   assert.ok(/buildRoomRows\(/.test(src), 'RoomsRail must use buildRoomRows')
   assert.ok(/\.time\b/.test(src), 'RoomsRail must render the relative time')
+})
+
+// ============================================================
+// ROW IDENTITY (#75 / #107 / #129)
+// ============================================================
+// The collapsed rail must carry identity, not featureless dots: a
+// project-derived label (with a title fallback for workspace-root sessions), a
+// single avatar initial, a deterministic colour, and the project grouping —
+// proven to surface EVERY distinct project folder's sessions.
+// Folder names below are generic placeholders on purpose (no real user folder).
+
+// ── roomIdentityLabel ──────────────────────────────────────────────────────
+t('identity label is the project folder for a normal session', () => {
+  assert.equal(roomIdentityLabel({ project: 'alpha', title: 'Fix the login bug' }), 'alpha')
+})
+
+t('workspace-root session falls back to its own title (not generic "Workspace")', () => {
+  // leaf === "workspace" would make every such row identical — use the title.
+  assert.equal(roomIdentityLabel({ project: 'workspace', title: 'Plan the offsite' }), 'Plan the offsite')
+  assert.equal(roomIdentityLabel({ project: 'Workspace', title: 'Plan the offsite' }), 'Plan the offsite')
+})
+
+t('a row with no project at all falls back to its title', () => {
+  assert.equal(roomIdentityLabel({ title: 'Check the deploy logs' }), 'Check the deploy logs')
+})
+
+t('workspace-root with no title keeps the raw workspace label (last resort)', () => {
+  assert.equal(roomIdentityLabel({ project: 'workspace' }), 'workspace')
+  assert.equal(roomIdentityLabel({}), '')
+})
+
+t('two workspace-root sessions with different titles get DIFFERENT identities', () => {
+  assert.notEqual(
+    roomIdentityLabel({ project: 'workspace', title: 'Draft the invoice' }),
+    roomIdentityLabel({ project: 'workspace', title: 'Review the contract' }),
+  )
+})
+
+// ── roomInitial ────────────────────────────────────────────────────────────
+t('initial is the first letter/number of the identity label, uppercased', () => {
+  assert.equal(roomInitial({ project: 'alpha' }), 'A')
+  assert.equal(roomInitial({ project: 'workspace', title: 'draft the invoice' }), 'D')
+  assert.equal(roomInitial({ project: '7-eleven-notes' }), '7')
+})
+
+t('initial skips leading punctuation/whitespace, falls back to # when empty', () => {
+  assert.equal(roomInitial({ project: '  _beta' }), 'B')
+  assert.equal(roomInitial({}), '#')
+  assert.equal(roomInitial({ project: '***' }), '#')
+})
+
+t('initial still gives a glyph for a non-ASCII (non-English) project name', () => {
+  assert.equal(roomInitial({ project: 'über-notes' }), 'Ü'.toUpperCase())
+  assert.equal(roomInitial({ project: '日本語メモ' }), '日')
+})
+
+// ── roomColor ──────────────────────────────────────────────────────────────
+t('colour is deterministic and case-insensitive for the same label', () => {
+  assert.deepEqual(roomColor('Alpha'), roomColor('alpha'))
+  assert.deepEqual(roomColor(' alpha '), roomColor('alpha'))
+})
+
+t('distinct labels spread across different colours (not one colour for all)', () => {
+  const fills = new Set(['alpha', 'beta', 'gamma', 'delta', 'epsilon'].map((l) => roomColor(l).bg))
+  assert.ok(fills.size >= 4, `expected spread, got ${fills.size} distinct fills`)
+})
+
+t('same project → same colour; so a folder reads as one colour across its rows', () => {
+  assert.deepEqual(
+    roomColor(roomIdentityLabel({ project: 'alpha', title: 'one' })),
+    roomColor(roomIdentityLabel({ project: 'alpha', title: 'two' })),
+  )
+})
+
+// #129 review: the group header hashed the RAW bucket key while its rows hashed
+// roomIdentityLabel, so for the "workspace" and "Other" buckets — which hold
+// every workspace-root and project-less session — the header dot and its rows
+// showed DIFFERENT colours. The header must hash what the rows hash.
+t('the group dot seeds its colour the same way its rows do', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/components/voice/RoomsRail.tsx'), 'utf8')
+  assert.ok(/roomColor\(roomIdentityLabel\(\{ project \}\)\)/.test(src),
+    'group header must seed roomColor through roomIdentityLabel')
+  // For a normal folder the two seeds already agreed; the degenerate buckets
+  // are the ones that used to disagree, and roomIdentityLabel is what both read.
+  for (const bucket of ['alpha', 'workspace', 'Other']) {
+    assert.deepEqual(roomColor(roomIdentityLabel({ project: bucket })), roomColor(roomIdentityLabel({ project: bucket })))
+  }
+})
+
+// ── roomAvatar (the one call the UI makes) ─────────────────────────────────
+t('roomAvatar bundles the initial + colour consistently', () => {
+  const av = roomAvatar({ project: 'alpha', title: 'Fix the login bug' })
+  assert.equal(av.initial, 'A')
+  assert.deepEqual(av.color, roomColor('alpha'))
+})
+
+// ── groupRoomsByProject surfaces EVERY distinct project folder (#107) ───────
+t('grouping lists all distinct project folders, each with its own sessions', () => {
+  // Three distinct project folders + the workspace root — generic names only.
+  const grouped = [
+    { sessionId: 'g1', lastMessage: 'a1', timestamp: ago(1 * MIN), messageCount: 3, cwd: '/home/sprite/workspace/alpha' },
+    { sessionId: 'g2', lastMessage: 'a2', timestamp: ago(2 * MIN), messageCount: 3, cwd: '/home/sprite/workspace/alpha' },
+    { sessionId: 'g3', lastMessage: 'b1', timestamp: ago(3 * MIN), messageCount: 3, cwd: '/home/sprite/workspace/beta' },
+    { sessionId: 'g4', lastMessage: 'c1', timestamp: ago(4 * MIN), messageCount: 3, cwd: '/home/sprite/workspace/gamma' },
+    { sessionId: 'g5', lastMessage: 'root-level task', timestamp: ago(5 * MIN), messageCount: 3, cwd: '/home/sprite/workspace' },
+  ]
+  const groups = groupRoomsByProject(buildRoomRows(grouped, null, { now: NOW }))
+  // every distinct folder present — not just the current one
+  assert.deepEqual(new Set(groups.map((g) => g.project)), new Set(['alpha', 'beta', 'gamma', 'workspace']))
+  assert.equal(groups.find((g) => g.project === 'alpha')!.rooms.length, 2, 'both alpha sessions grouped together')
+  for (const g of groups) assert.ok(g.rooms.length >= 1)
+  // no session is dropped
+  assert.equal(groups.reduce((n, g) => n + g.rooms.length, 0), grouped.length)
+})
+
+t('rows with no project fall into an "Other" bucket shown last', () => {
+  const groups = groupRoomsByProject([{ project: 'alpha' }, { project: undefined }, { project: 'beta' }])
+  assert.equal(groups[groups.length - 1].project, 'Other')
+  assert.equal(groups.length, 3)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

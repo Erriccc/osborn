@@ -70,14 +70,15 @@ export function sessionActivityTime(s: SessionListFields): string {
   return s.timestamp || ''
 }
 
-function activityMs(s: SessionListFields): number {
+/** `sessionActivityTime` as a sortable epoch, 0 when unknown/unparseable. */
+export function sessionActivityMs(s: SessionListFields): number {
   const ms = new Date(sessionActivityTime(s)).getTime()
   return Number.isNaN(ms) ? 0 : ms
 }
 
 /** New array, most recently active first. Does not mutate the input. */
 export function sortSessionsByActivity<T extends SessionListFields>(sessions: T[]): T[] {
-  return [...sessions].sort((a, b) => activityMs(b) - activityMs(a))
+  return [...sessions].sort((a, b) => sessionActivityMs(b) - sessionActivityMs(a))
 }
 
 /**
