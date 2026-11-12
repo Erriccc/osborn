@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
+import MarketingShell from '@/components/marketing/MarketingShell'
 
 const AGENT_MESSAGE = `Install the Browser Screen Recorder skill — give it a web app + what you want done, and it drives the app in a real browser and records proof it worked (per-action screenshots + video clips, transcribed audio, DevTools diagnostics, metrics). It can speak into the page's mic, hear and verify replies, and click via natural language.
 
@@ -22,7 +23,11 @@ export default function BrowserScreenRecorderLanding() {
   }
 
   return (
-    <main className="min-h-screen bg-black text-gray-200 flex flex-col items-center px-6 py-16">
+    // #141: the recorder page was an island — no site header, nav or link home,
+    // reachable only by direct URL. Wrap it in the standard marketing chrome so
+    // it carries the Voice Native header (wordmark → home) and footer.
+    <MarketingShell>
+    <div className="bg-black text-gray-200 flex flex-col items-center px-6 py-16">
       <div className="max-w-2xl w-full space-y-10">
         <header className="space-y-3 text-center">
           <div className="text-4xl">🎥🧠</div>
@@ -73,6 +78,7 @@ export default function BrowserScreenRecorderLanding() {
           </p>
         </section>
       </div>
-    </main>
+    </div>
+    </MarketingShell>
   )
 }
