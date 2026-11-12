@@ -414,14 +414,17 @@ export default function Dashboard() {
     // spinner below — the same dead end #140 was fixing. getBrowserUser
     // swallows its errors and returns null, so a transient auth failure takes
     // this path too. A self-hosted build with no Supabase has no /login to send
-    // anyone to, so it keeps the signed-out dashboard (mirrors the
-    // ChatSessionProvider gate).
-    const resolve = (u: User | null) => {
+    // anyone to, so it keeps the signed-out dashboard.
+    // Only a PROBED "no user" is a signed-out visitor: getBrowserUser never
+    // rejects, so the watchdog fires for a merely-slow token refresh, and
+    // /login sends an authenticated user straight back with a full page reload.
+    // It just stops the spinner — the Sign in link below is that path's exit.
+    const resolve = (u: User | null, probed = true) => {
       setUser(u)
       setLoading(false)
-      if (!u && isSupabaseConfigured()) router.replace('/login')
+      if (probed && !u && isSupabaseConfigured()) router.replace('/login')
     }
-    const timeout = setTimeout(() => resolve(null), 3000)
+    const timeout = setTimeout(() => resolve(null, false), 3000)
     getBrowserUser(supabase)
       .then((u) => { clearTimeout(timeout); resolve(u) })
       .catch(() => { clearTimeout(timeout); resolve(null) })

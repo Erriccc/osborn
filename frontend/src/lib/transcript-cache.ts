@@ -74,9 +74,11 @@ export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
   const out: CachedMessage[] = []
   for (const m of messages) {
     if (!m || !m.id || m.isStreaming) continue
-    // A cache row must never be re-cached: that is what let a transcript cached
-    // under the wrong key (a failed resume) survive every reload (#149 review).
-    if (m.fromCache) continue
+    // fromCache rows ARE re-serialized. They are the history on screen until the
+    // replay lands, and on the 60-90s cold boot this cache exists for the user
+    // can speak first — skipping them made that first live turn overwrite the
+    // key and destroy the history. Stale rows under a dead session id are
+    // handled where they come from: VoiceRoom drops them on session_resume_failed.
     // Skip the synthetic day / "── Today ──" dividers: they are time-relative,
     // so a cached "Today" would mislead on a later-day reload. buildPriorItems
     // regenerates them from the real timestamps on both paint paths.
