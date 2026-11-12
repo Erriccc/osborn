@@ -28,10 +28,18 @@ inp = payload.get("tool_input") or {}
 
 if tool == "Bash":
     cmd = str(inp.get("command", ""))
-    if re.search(r"\bgit\b[^\n;&|]*\b(commit|merge|tag|notes)\b|\bgh\s+pr\s+(create|edit)\b", cmd):
-        if SESSION.search(cmd) or CREDIT.search(cmd):
-            deny("Blocked by repo rule: no session links or AI attribution in commits or PRs "
-                 "(CLAUDE.md, Attribution rules). Remove the trailer/footer and retry.")
+    # Only a command that actually RUNS git commit / gh pr create|edit counts:
+    # the text merely appearing (inside a heredoc, a test fixture) does not.
+    runs = re.search(r"(^|[;&|(]\s*|\n\s*)(git(\s+-C\s+\S+)?\s+commit|gh\s+pr\s+(create|edit))\b", cmd)
+    if runs and (SESSION.search(cmd) or CREDIT.search(cmd)):
+        # Strip instead of refusing; .githooks/commit-msg strips again at the git level.
+        # Remove the credit text only; a closing quote at the end of the line stays.
+        clean = re.sub(r"^[ \t]*(Co-Authored-By\s*:[^\n]*?(claude|anthropic)[^\n]*?|Claude-Session\s*:[^\n]*?|[^\n]*?Generated (with|by) \[?Claude[^\n]*?)(?=[\"']?[ \t]*$)", "", cmd, flags=re.I | re.M)
+        clean = re.sub(r"\S*claude\.ai/code/session_[^\s'\"]*", "", clean)
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+                          "updatedInput": {**inp, "command": clean},
+                          "permissionDecisionReason": "Attribution stripped (CLAUDE.md, Attribution rules)."}}))
+        sys.exit(0)
 elif tool.startswith("mcp__github__"):
     text = "\n".join(str(inp.get(k, "")) for k in ("body", "title", "message", "commit_message"))
     # PR titles/descriptions and commit messages: no credit of any kind.

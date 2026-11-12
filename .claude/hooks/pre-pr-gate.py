@@ -4,7 +4,7 @@ review (.claude/agents/pre-pr-reviewer.md) has run on the exact commit being
 proposed. Record a finished review with:
     git rev-parse HEAD > "$(git rev-parse --git-dir)/pre-pr-reviewed"
 Fails open on anything unexpected, so a broken gate never blocks real work."""
-import json, os, subprocess, sys
+import json, os, re, subprocess, sys
 
 def deny(reason):
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
@@ -17,8 +17,8 @@ except Exception:
 tool, inp = p.get("tool_name", ""), p.get("tool_input") or {}
 if tool == "mcp__github__create_pull_request":
     ref = str(inp.get("head") or "HEAD").split(":")[-1]
-elif tool == "Bash" and "gh pr create" in str(inp.get("command", "")):
-    ref = "HEAD"
+elif tool == "Bash" and re.search(r"(^|[;&|(]\s*|\n\s*)gh\s+pr\s+create\b", str(inp.get("command", ""))):
+    ref = "HEAD"  # only when the command RUNS it, not when the text appears in it
 else:
     sys.exit(0)
 

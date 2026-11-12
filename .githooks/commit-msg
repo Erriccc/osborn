@@ -1,9 +1,17 @@
 #!/bin/sh
-# Refuse commit messages that carry a session link or AI attribution.
-# Enabled by `git config core.hooksPath .githooks` (the repo's Claude Code
-# SessionStart hook sets it; run it yourself in a plain checkout).
-if grep -Eiq 'claude\.ai/code/session_|^[[:space:]]*Claude-Session[[:space:]]*:|^[[:space:]]*Co-Authored-By[[:space:]]*:.*(claude|anthropic)|Generated (with|by) \[?Claude' "$1"; then
-  echo "commit-msg: session links and AI attribution are not allowed in this repo (see CLAUDE.md, Attribution rules)." >&2
-  exit 1
-fi
+# Strip AI credit lines and session links from every commit message, whoever
+# writes it (Claude, another tool or a person). See CLAUDE.md, Attribution
+# rules. Enabled by `git config core.hooksPath .githooks` (the repo's Claude
+# Code SessionStart hook sets it; run it yourself in a plain checkout).
+f="$1"
+python3 - "$f" <<'PY' || exit 0
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+out = re.sub(r"^\s*(Co-Authored-By\s*:.*(claude|anthropic).*|Claude-Session\s*:.*|.*Generated (with|by) \[?Claude.*|\S*claude\.ai/code/session_\S*)\s*$\n?", "", s, flags=re.I | re.M)
+out = re.sub(r"\n{3,}", "\n\n", out).rstrip() + "\n"
+if out != s:
+    open(p, "w", encoding="utf-8").write(out)
+    sys.stderr.write("commit-msg: removed AI attribution / session links (CLAUDE.md, Attribution rules)\n")
+PY
 exit 0
