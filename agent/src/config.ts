@@ -725,8 +725,9 @@ function scanPreviewLines(text: string, skipFirstPartial: boolean): PreviewAcc {
  * gate and (b) the LAST user message. So: small files are read whole (exact);
  * large files read a bounded HEAD (gate + density sample + first turn/title) +
  * TAIL (last user message, last activity), turning a hundreds-of-MB parse into
- * ~192KB. messageCount becomes an estimate for large files — it's display-only
- * and gated on ">2", which any large session clears from the head alone.
+ * ~192KB. messageCount becomes an estimate for large files — it's display-only,
+ * and is derived from BOTH samples because a compacted transcript can have no
+ * countable turn in the head at all.
  */
 async function getSessionPreview(filePath: string, fileSize?: number): Promise<SessionPreview> {
   const HEAD = 64 * 1024
@@ -764,19 +765,10 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
       const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
       const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
       const lastMessage = tail.lastUser ?? head.lastUser
-      // Estimate total from the density of BOTH samples (display-only).
-      // The previous code assumed head.count alone clears the ">2" gate for any
-      // real large session. It does not: a compacted transcript opens with a
-      // compact_boundary plus tool records, and a single tool result can fill
-      // the 64KB head, so head.count was 0 for conversations over 100MB. Those
-      // then failed `messageCount > 2` in listSessions and vanished from the
-      // list — the longer the conversation, the surer it disappeared. tail.count
-      // was already computed here and discarded; count it too, and floor at 3
-      // because a file larger than HEAD+TAIL is never a <=2-turn session.
-      const sampledBytes = hn + tn
-      const sampledCount = head.count + tail.count
-      const avg = sampledCount > 0 ? sampledBytes / sampledCount : 0
-      const messageCount = avg > 0 ? Math.max(3, Math.round(size / avg)) : 3
+      // Density from BOTH samples: a compacted transcript opens with a
+      // compact_boundary plus tool records, so head.count alone can be 0.
+      const sampled = head.count + tail.count
+      const messageCount = sampled > 0 ? Math.max(3, Math.round(size * sampled / (hn + tn))) : 3
       return {
         lastMessage,
         title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
@@ -926,7 +918,11 @@ interface SessionManifestEntry {
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
 // v2: sanitized lastMessage, title, firstTs, lastActivityAt, corrected turn count.
 // A v1 manifest is discarded on load (its previews carry raw wrapper text).
-const SESSION_MANIFEST_VERSION = 2
+// 3: the large-file messageCount estimate changed. Cached entries are reused
+// whenever mtime+size are unchanged, and an archived transcript never changes,
+// so without this bump every already-cached `messageCount: 0` would survive and
+// the fix would be a no-op on exactly the sessions it targets.
+const SESSION_MANIFEST_VERSION = 3
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }
