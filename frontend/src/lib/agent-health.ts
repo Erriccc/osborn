@@ -13,12 +13,10 @@
  *      compare it against the floor and say "this machine needs an update to use
  *      the demo model" instead of showing a dead session.
  *
- *   2. KEY HEALTH — each configured fallback's self-test result (works / failed /
- *      expired). This is NOT yet on the wire: the agent must run one tiny real
- *      request per key at start and emit the result (health field or agent_ready).
- *      This helper CONSUMES that shape so the surface is ready the moment the
- *      agent emits it, but it never fabricates a status — an absent `keyHealth`
- *      simply yields no key notice. Tracked as the #87 agent-side follow-up.
+ *   2. KEY HEALTH — the active fallback's self-test result (ok / failed / expired),
+ *      from the one tiny real request the agent fires after the session starts and
+ *      serves on GET /health alongside `provider`. This helper never fabricates a
+ *      status: an absent or inconclusive `keyHealth` simply yields no key notice.
  *
  * Everything here is pure (no React, no fetch) so the state machine is unit-tested
  * in agent-health.test.ts.
@@ -98,9 +96,8 @@ export interface AgentHealthInput {
   /**
    * The session is relying on a configured fallback rather than a real Claude
    * login — i.e. the agent asked for Claude sign-in at least once this session
-   * (VoiceRoom's `claudeAuthEverRequired`). Only then is the version floor / a
-   * broken fallback key actionable to THIS user; a Claude-connected session is
-   * unaffected by the demo tier's health.
+   * (VoiceRoom's `claudeAuthEverRequired`). It is sticky — a mid-session sign-in
+   * never clears it — so `mainProvider` below has the last word.
    */
   relyingOnFallback?: boolean
   /**
@@ -111,7 +108,7 @@ export interface AgentHealthInput {
    * whatever the modal did earlier in the session.
    */
   mainProvider?: string | null
-  /** Per-key self-test results, once the agent emits them (absent for now). */
+  /** The active tier's self-test result(s) from GET /health (absent = no verdict). */
   keyHealth?: KeyHealthEntry[]
   /** The fallback version floor (overridable for tests). */
   floor?: string
