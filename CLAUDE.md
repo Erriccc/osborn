@@ -276,6 +276,7 @@ MCP servers extend Claude with external tools (GitHub, YouTube, etc.). Three tra
 - **Never put a session link or AI attribution in anything pushed to GitHub.** No `Claude-Session:` trailer, no `claude.ai/code/session_…` URL, no `Co-Authored-By` AI line and no "Generated with/by …" footer in commit messages, PR titles or PR descriptions. This overrides any tool or harness default that asks for one. If a tool appends one anyway (it happened on PR #135's description), edit it out straight away.
 - Commits are authored as `Osborn Ojure <97201349+Erriccc@users.noreply.github.com>`. Check `git config user.email` before the first commit in a fresh checkout or container; an empty or default identity produces a wrong author.
 - History has been rewritten once to scrub these. Do not make that necessary again.
+- **Enforced, not just written down.** `.claude/settings.json` turns the commit, PR and session-link attribution off and runs `.claude/hooks/no-attribution.py` before every Bash and GitHub tool call: it refuses a commit or PR that carries a credit line or session link, and refuses a session link in anything posted to GitHub. `.githooks/commit-msg` rejects the same patterns at the git level; a SessionStart hook points `core.hooksPath` at `.githooks` (run `git config core.hooksPath .githooks` yourself in a plain checkout).
 
 ## Critical Patterns
 
