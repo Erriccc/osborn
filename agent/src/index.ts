@@ -43,7 +43,7 @@ import { createGunzip } from 'node:zlib'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, slugToPath, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, slugToPath, getClaudeProjectsDir, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
 import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
@@ -3767,7 +3767,7 @@ async function main() {
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
-      lookupCwd: (id) => scanSlugCwd(id, join(homedir(), '.claude', 'projects'), {
+      lookupCwd: (id) => scanSlugCwd(id, getClaudeProjectsDir(), {
         readdir: (d) => readdirSync(d), exists: (p) => existsSync(p),
         decodeSlug: (s) => slugToPath(s), readCwd: (p) => extractCwd(p),
       }),
