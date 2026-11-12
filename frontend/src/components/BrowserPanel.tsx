@@ -306,10 +306,9 @@ export function BrowserPanel() {
             />
             {streamBroken && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-sm text-neutral-300">
-                {/* #62/#49: only claim "Waking…" while the engine could actually be
-                    booting. When it's known-unreachable the red banner above already
-                    names the host — don't contradict it with an endless "Waking…". */}
-                {!engine?.unreachable && <div>Waking the browser engine… (first pixels take ~40s)</div>}
+                {/* `unreachable` only means the Fly state couldn't be READ, so it is
+                    no reason to blank this out — that left a bare Retry button (#62/#49). */}
+                <div>Waking the browser engine… (first pixels take ~40s)</div>
                 <button
                   onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(false); setTimeout(() => setWatching(true), 50) }}
                   className="rounded-lg border border-neutral-600 px-3 py-1.5 hover:bg-neutral-800"
