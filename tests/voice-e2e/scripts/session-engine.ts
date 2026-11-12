@@ -1489,6 +1489,36 @@ async function main() {
         await probeStt()
         return json(res, { ok: true, brain: 'ready', brainModel, stt: sttHealth })
       }
+      if (path === '/input') {
+        // A person driving by hand from the live view: click / type / key /
+        // scroll on the caller's tab. x,y are fractions of the streamed frame,
+        // which shows the whole browser window, so the browser's own top bar
+        // (tabs + address bar) is subtracted to land in page coordinates.
+        const driver = driverId(req)
+        return await withLock(async () => {
+          await focusDriverTab(driver)
+          const owned = guardOwnership(driver)
+          if (owned) return json(res, owned, 409)
+          const page = active
+          const kind = String(body.type || '')
+          if (kind === 'click') {
+            const fx = Number(body.x), fy = Number(body.y)
+            if (!(fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1)) return json(res, { ok: false, code: 'bad_request', error: 'click needs x and y as fractions 0..1 of the frame' }, 400)
+            const win = await page.evaluate(() => ({ ow: window.outerWidth, oh: window.outerHeight, iw: window.innerWidth, ih: window.innerHeight })).catch(() => null)
+            if (!win) return json(res, { ok: false, code: 'unresponsive', error: 'the page did not answer; reload the tab' }, 409)
+            const frameW = DISPLAY_MODE ? win.ow : win.iw, frameH = DISPLAY_MODE ? win.oh : win.ih
+            const x = fx * frameW - (DISPLAY_MODE ? (win.ow - win.iw) / 2 : 0)
+            const y = fy * frameH - (DISPLAY_MODE ? win.oh - win.ih : 0)
+            if (y < 0) return json(res, { ok: false, code: 'browser_bar', error: 'that is the browser bar; use the address box or the tab bar instead' }, 400)
+            await page.mouse.click(x, y)
+          } else if (kind === 'type') await page.keyboard.type(String(body.text ?? '').slice(0, 2000))
+          else if (kind === 'key') await page.keyboard.press(String(body.key || '').slice(0, 40))
+          else if (kind === 'scroll') await page.mouse.wheel(0, Math.max(-5000, Math.min(5000, Number(body.dy) || 0)))
+          else return json(res, { ok: false, code: 'bad_request', error: 'type must be click | type | key | scroll' }, 400)
+          touchTab(page)
+          return json(res, { ok: true, driver, url: page.url() })
+        })
+      }
       if (path === '/recover') {
         // Under the action lock, on the CALLER's tab: it used to reload the
         // global active tab — i.e. whatever another driver fronted last, even

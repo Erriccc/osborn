@@ -28,13 +28,17 @@ import {
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-async function requireUser(): Promise<NextResponse | null> {
+async function signedInUser() {
   const supabase = await createSupabaseServer()
   const {
     data: { user },
   } = await supabase.auth.getUser()
-  return user ? null : NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+  return user
 }
+
+// The engine's driver identity for a person using the panel. Set here on the
+// server so a browser cannot claim to be another driver (or an agent).
+const personDriver = (u: { email?: string | null; id: string }) => `person:${u.email ?? u.id}`
 
 function engineHeaders(extra?: Record<string, string>): Record<string, string> {
   const tok = engineToken()
@@ -115,8 +119,8 @@ async function engineUnreachableResponse(kind: EngineErrorKind): Promise<NextRes
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ action: string }> }) {
-  const unauth = await requireUser()
-  if (unauth) return unauth
+  const user = await signedInUser()
+  if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
   const { action } = await params
   const search = req.nextUrl.search
 
@@ -127,7 +131,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
   if (action === 'engine-state') {
     const machine = await engineMachineState()
     return NextResponse.json(
-      { ...machine, engineTokenConfigured: engineTokenConfigured() },
+      { ...machine, engineTokenConfigured: engineTokenConfigured(), driver: personDriver(user) },
       { headers: { 'Cache-Control': 'no-store' } },
     )
   }
@@ -195,17 +199,26 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ action: string }> }) {
-  const unauth = await requireUser()
-  if (unauth) return unauth
+  const user = await signedInUser()
+  if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+  const driver = personDriver(user)
   const { action } = await params
   const target = buildControlTarget('POST', action, req.nextUrl.search)
   if (!target) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   warnIfEngineTokenMissing(action)
 
-  const body = await req.arrayBuffer()
+  let body = await req.arrayBuffer()
+  // Tab ownership (takeover / handback / claim) is by driver: the owner is the
+  // signed-in person, whatever the browser sent.
+  if (action === 'tab') {
+    try {
+      const j = JSON.parse(new TextDecoder().decode(body))
+      if (j && typeof j === 'object') body = new TextEncoder().encode(JSON.stringify({ ...j, owner: driver })).buffer as ArrayBuffer
+    } catch { /* not JSON: pass through, the engine rejects it */ }
+  }
   // `act`/`say` drive the browser + record a clip — they can take a while.
   const timeoutMs = action === 'act' || action === 'say' ? 90000 : 30000
-  const headers = engineHeaders({ 'Content-Type': req.headers.get('content-type') ?? 'application/json' })
+  const headers = engineHeaders({ 'Content-Type': req.headers.get('content-type') ?? 'application/json', 'x-driver-id': driver })
 
   // Cold-start handling (#102/#104): when the engine is stopped or mid-boot the
   // control port refuses the connection. `say` (and every drive action) used to
