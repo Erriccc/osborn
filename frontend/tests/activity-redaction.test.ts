@@ -30,9 +30,13 @@ const SAMPLES = [
   'Authorization: Token ' + 'N'.repeat(12), 'Authorization: ' + 'N'.repeat(14),
   'OPENAI_API_KEY=' + 'O'.repeat(24), 'LIVEKIT_API_KEY=APIu8vQj3xyzAb',
   'DB_PASSWORD=hunter2x', 'API_KEY=abc1234x',
+  'ghp_16C7e42F292c6912E7710c838347Ae178B4a', 'github_pat_11ABCDE_' + 'F'.repeat(40),
   // Colon form — a YAML/JSON block, not a .env line. Narrowing the assignment
   // rule to "=" alone once un-masked every one of these.
   'SUPABASE_SERVICE_ROLE_SECRET: "' + 'Q'.repeat(24) + '"', 'MY_TOKEN: ' + 'R'.repeat(24), 'password: hunter2x',
+  // Quoted NAME — JSON and `fly secrets` output. A separator that cannot cross
+  // the name's closing quote leaked every one of these.
+  '{"MY_TOKEN": "abcdef1234567890xyz9"}', '{"OPENAI_API_KEY": "' + 'S'.repeat(24) + '"}', '{"DB_PASSWORD": "hunter2xyz9"}',
 ]
 
 t('every credential shape is masked in bare text', () => {
@@ -61,7 +65,10 @@ t('code, diffs and prose are left byte-identical', () => {
   for (const s of [
     'interface Cfg { apiKey: string; token: string }', '-  password: string', 'let token: number = 0',
     'TOKEN: string | null', 'api_key: Optional[str] = None', 'secret: boolean',
+    '{ "apiKey": "string" }', '{"token": "string"}', '{"password": "required"}',
     'TOKEN: expired, re-run the login flow', 'Authorization: required for this endpoint', 'x-api-key: header',
+    'password: $DB_PASSWORD', 'Set TOKEN=$MY_VAR before running',
+    'const ghp_token_name = 1', 'let ghs_installation_cache = {}', 'the risk-ant-icipation of failure',
     'Auth header uses Bearer formatting now', 'the sk-ant- prefix identifies Anthropic keys',
     'GATE: PASS on fix/activity-log-redaction', '**VERDICT: REJECT**', 'ran `npm test` — 12 passed', '2 * 3 = 6',
     'Diff:\n```diff\n- const a = 1\n+ const a = 2\n```',

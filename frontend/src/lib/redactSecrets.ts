@@ -20,29 +20,36 @@
 // Both have happened here. When a rule over-reaches, narrow it by SHAPE: see
 // NOT_A_VALUE, which is why `apiKey: string` in a diff survives untouched.
 //
-// A credential is never a single short word: `string`, `number`, `None`,
-// `expired`, `header`, `required` are what follows a key-ish name in a type
-// annotation, a diff or a sentence — never a secret. Pure letters up to 11 of
-// them are therefore not a value. A real token is longer or mixes in digits,
-// punctuation or case, so this costs no coverage.
-const NOT_A_VALUE = /(?![A-Za-z]{1,11}\b)/.source
-
+// The three rules taking a FREE-FORM value carry two guards, inline so each
+// pattern stays a literal: `(?!\$)` skips a `$VAR` reference, and
+// `(?![A-Za-z]{1,11}\b)` skips a single short word. A credential is never one
+// short word — `string`, `number`, `None`, `expired`, `header`, `required` are
+// what follows a key-ish name in a type annotation, a diff line or a sentence.
+// A real token is longer, or mixes in digits, punctuation or case, so neither
+// guard costs coverage. Separators stay quote-tolerant: `"MY_TOKEN": "…"` from a
+// JSON or `fly secrets` block is as common in a result as a bare .env line, and
+// a separator that cannot cross the name's closing quote leaks all of them.
 export function redactSecrets(s: string | undefined | null): string {
   if (!s) return s ?? ''
   return s
-    .replace(/sk-(ant|or)-[A-Za-z0-9_-]{6,}/g, 'sk-$1-••••')
-    .replace(/sk-[A-Za-z0-9]{20,}/g, 'sk-••••')
+    .replace(/(?<![A-Za-z0-9])sk-(ant|or)-[A-Za-z0-9_-]{6,}/g, 'sk-$1-••••')
+    .replace(/(?<![A-Za-z0-9])sk-[A-Za-z0-9]{20,}/g, 'sk-••••')
     .replace(/sbp_[A-Za-z0-9]{10,}/g, 'sbp_••••')
-    .replace(/\bg(?:h[pousr]|ithub_pat)_[A-Za-z0-9_]{10,}/g, 'gh_••••')
+    // Two rules, not one: folding them lets the `_` the fine-grained class needs
+    // match an identifier like `ghp_token_name`, and stops a real github_pat_
+    // body at its first underscore so the tail still prints. The lookahead wants
+    // a digit or a capital in the body, which every real base62 token has and a
+    // snake_case identifier like `ghs_installation_cache` does not.
+    .replace(/\bgh[pousr]_(?=[A-Za-z0-9]*[0-9A-Z])[A-Za-z0-9]{10,}/g, 'gh_••••')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}/g, 'gh_••••')
     // A real Fly macaroon is a comma-separated list of segments; redact the
     // whole list, not just the first one.
     .replace(/FlyV1\s+fm[12]_[A-Za-z0-9/+_=-]+(?:\s*,\s*fm[12]_[A-Za-z0-9/+_=-]+)*/g, 'FlyV1 ••••')
     .replace(/(?<![A-Za-z0-9])(?:fm[12]|fo1)_[A-Za-z0-9/+_=-]{20,}/g, 'fly_••••')
     // Two segments, short header: a truncated JWT is still a credential.
     .replace(/eyJ[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}/g, 'eyJ••••')
-    .replace(new RegExp(`(\\b(?:x-goog-|x-)?api-key["'\`]?\\s*[:=]\\s*["'\`]?)(?!\\$)${NOT_A_VALUE}[^\\s"'\`,;}]{8,}`, 'gi'), '$1••••')
-    .replace(new RegExp(`(Authorization["'\`]?\\s*:\\s*["'\`]?(?:(?:Bearer|Basic|Token)\\s+)?)(?!\\$)${NOT_A_VALUE}[^\\s"'\`,;}]{8,}`, 'gi'), '$1••••')
+    .replace(/(\b(?:x-goog-|x-)?api-key["'`]?\s*[:=]\s*["'`]?)(?!\$)(?![A-Za-z]{1,11}\b)[^\s"'`,;}]{8,}/gi, '$1••••')
+    .replace(/(Authorization["'`]?\s*:\s*["'`]?(?:(?:Bearer|Basic|Token)\s+)?)(?!\$)(?![A-Za-z]{1,11}\b)[^\s"'`,;}]{8,}/gi, '$1••••')
     .replace(/(Bearer\s+)[A-Za-z0-9._\-+/=]{20,}/gi, '$1••••')
-    // "=" OR ":" — a .env line and a YAML/JSON block are both common in results.
-    .replace(new RegExp(`\\b([A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|PRIVATE[_-]?KEY|TOKEN))(\\s*[=:]\\s*)(["']?)${NOT_A_VALUE}([^\\s"']{6,})\\3`, 'gi'), '$1$2$3••••$3')
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|PRIVATE[_-]?KEY|TOKEN))(["']?\s*[=:]\s*)(["']?)(?!\$)(?![A-Za-z]{1,11}\b)([^\s"']{6,})\3/gi, '$1$2$3••••$3')
 }
