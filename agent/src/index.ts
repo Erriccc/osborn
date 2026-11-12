@@ -5206,15 +5206,17 @@ async function main() {
     const activeProvider: ActiveProvider = resolveActiveProvider()
     console.log(`🧭 Active model provider: ${activeProvider}`)
 
-    // #87: fallback-only key self-test. Presence of a key ≠ validity (the test
+    // #87: HOUSE-tier key self-test. Presence of a key ≠ validity (the test
     // account's z.ai key failed and its OpenRouter key had expired, yet the
     // session showed "Listening" and never replied — the #70 symptom). Fire ONE
     // tiny real request, fire-and-forget, AFTER the session starts below, so it
-    // adds ZERO latency to the connect path and never runs on the Claude path.
-    // The result rides GET /health; a definitive failure surfaces "No working
-    // model" instead of a silent non-reply.
+    // adds ZERO latency to the connect path. Scoped to the house fallback tiers
+    // (zai / openrouter) — a user's OWN Anthropic key is their concern and the
+    // SDK surfaces its failures directly; we never ping it per connect. The
+    // result rides GET /health; a definitive failure surfaces "No working model"
+    // instead of a silent non-reply.
     agentKeyHealth = null
-    if (activeProvider !== 'claude' && activeProvider !== 'none') {
+    if (activeProvider === 'zai' || activeProvider === 'openrouter') {
       void probeActiveProviderKey(activeProvider)
         .then((entry) => {
           if (!entry) return
@@ -5875,10 +5877,12 @@ async function main() {
         if (readySent) return
         await sendToFrontend({
           type: 'agent_ready',
-          // #87: the REAL active provider (claude / zai / openrouter / anthropic /
-          // none), not a hardcoded 'claude' — so the model badge is honest on a
-          // fallback session.
-          provider: activeProvider,
+          // #87: the REAL active provider (claude / zai / openrouter / anthropic),
+          // not a hardcoded 'claude' — so the model badge is honest on a fallback
+          // session. 'none' (no model configured at all) is emitted as null so the
+          // badge stays neutral instead of rendering a literal "none" pill; that
+          // dead-end is surfaced by the Claude sign-in flow, not the badge.
+          provider: activeProvider === 'none' ? null : activeProvider,
           voiceMode: sessionVoiceMode,
           hasRecentSession,
           recentSessionId,
