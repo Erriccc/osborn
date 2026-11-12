@@ -4030,7 +4030,7 @@ function VoiceRoomInner({
                 /health signals as the badge; never fabricates a status. */}
             <AgentHealthNotice
               version={agentVersion}
-              relyingOnFallback={claudeAuthEverRequired || ['zai', 'z.ai', 'openrouter'].includes((mainProvider || '').trim().toLowerCase())}
+              relyingOnFallback={claudeAuthEverRequired || ['zai', 'openrouter'].includes((mainProvider || '').trim().toLowerCase())}
               keyHealth={agentKeyHealth}
             />
 
