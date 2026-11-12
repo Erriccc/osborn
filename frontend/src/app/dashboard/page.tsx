@@ -409,22 +409,22 @@ export default function Dashboard() {
     // #140: a signed-out visitor used to get the full dashboard shell ("Working
     // late…", New session, "Cloud workspace is offline") and a chat↔dashboard
     // loop with no way to sign in. Send them to /login, like /settings does.
-    // EVERY exit resolves through here: the 3s watchdog and the .catch used to
-    // clear `loading` with `user` still null, which fell through to the bare
-    // spinner below — the same dead end #140 was fixing. getBrowserUser
-    // swallows its errors and returns null, so a transient auth failure takes
-    // this path too. A self-hosted build with no Supabase has no /login to send
-    // anyone to, so it keeps the signed-out dashboard (mirrors the
-    // ChatSessionProvider gate).
+    // A self-hosted build with no Supabase has no /login to send anyone to, so
+    // it keeps the signed-out dashboard. Only a RESOLVED "no user" redirects:
+    // getBrowserUser swallows its errors and never rejects, so the watchdog and
+    // the .catch mean "the probe hasn't answered", not "signed out" — and
+    // /login sends an authenticated user straight back with a full page reload
+    // (a slow token refresh became a visible bounce). Both just clear `loading`,
+    // like /settings does, and the screen below carries the Sign in link.
     const resolve = (u: User | null) => {
       setUser(u)
       setLoading(false)
       if (!u && isSupabaseConfigured()) router.replace('/login')
     }
-    const timeout = setTimeout(() => resolve(null), 3000)
+    const timeout = setTimeout(() => setLoading(false), 3000)
     getBrowserUser(supabase)
       .then((u) => { clearTimeout(timeout); resolve(u) })
-      .catch(() => { clearTimeout(timeout); resolve(null) })
+      .catch(() => { clearTimeout(timeout); setLoading(false) })
   }, [])
 
   // Load prefs

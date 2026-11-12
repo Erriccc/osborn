@@ -876,8 +876,14 @@ function VoiceRoomInner({
   // Persist the live transcript so a reload can paint it instantly (above).
   // Debounced so streaming tokens don't thrash localStorage; keyed by the live
   // session so a switch caches each room separately (also speeds switch-back).
+  // Nothing is written while an optimistic paint is still on screen: the cache
+  // already holds exactly those rows, and serializeTranscript drops them (they
+  // must never be re-written under another session's key). Without this, a user
+  // who speaks during the 60-90s cold boot had the key overwritten with that
+  // one live turn — destroying the history this cache exists to show.
   useEffect(() => {
     if (!currentSessionId || messages.length === 0 || liveUserId === undefined) return
+    if (messages.some(m => m.fromCache)) return
     const id = setTimeout(() => cacheTranscript(liveUserId, currentSessionId, messages), 600)
     return () => clearTimeout(id)
   }, [currentSessionId, messages, liveUserId])
