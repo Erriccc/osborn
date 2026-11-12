@@ -117,8 +117,8 @@ check('resolveAgentHealth: empty key list is not "all failed"', () => {
 // --- resolveAgentHealth: mainProvider gating (house tier in, Claude out) -----
 const DEAD: KeyHealthEntry[] = [{ provider: 'zai', status: 'expired' }]
 check('resolveAgentHealth: house-tier provider alone shows the notice (no auth modal)', () => {
-  const v = resolveAgentHealth({ version: '0.9.278', mainProvider: 'zai', keyHealth: DEAD })
-  assert.equal(v.level, 'keys-failed')
+  assert.equal(resolveAgentHealth({ version: '0.9.278', mainProvider: 'zai', keyHealth: DEAD }).level, 'keys-failed')
+  assert.equal(resolveAgentHealth({ version: '0.9.278', mainProvider: 'openrouter', keyHealth: DEAD }).level, 'keys-failed')
 })
 check('resolveAgentHealth: a Claude provider overrules the sticky fallback flag', () => {
   // Mid-session sign-in: claudeAuthEverRequired stays true forever, but the

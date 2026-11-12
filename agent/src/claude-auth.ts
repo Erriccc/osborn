@@ -395,7 +395,7 @@ export function applyAuthFallback(): ActiveProvider {
  */
 export type ActiveProvider = 'claude' | 'anthropic' | 'zai' | 'openrouter' | 'none'
 
-/** One fallback key's self-test result. Documented in frontend/src/lib/agent-health.ts. */
+/** One fallback key's self-test result, as served on GET /health. */
 export interface KeyHealthEntry {
   provider: string
   status: 'ok' | 'failed' | 'expired'

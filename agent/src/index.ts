@@ -815,7 +815,7 @@ function startApiServer(workingDir: string, port: number): void {
         // #87: the tier actually answering + its key self-test. `provider` is the
         // LIVE reading — agent_ready fires once, so it goes stale the moment a
         // mid-session sign-in swaps the tier.
-        provider: agentActiveProvider,
+        ...(agentActiveProvider ? { provider: agentActiveProvider } : {}),
         ...(agentKeyHealth ? { keyHealth: agentKeyHealth } : {}),
       }))
       return
@@ -6191,7 +6191,7 @@ async function main() {
               // fine. Deliberately NOT applyAuthFallback() again — its side effects
               // would re-apply the very redirect the auth path just cleared.
               agentActiveProvider = 'claude'
-              agentKeyHealth = null
+              startKeyHealthProbe()
               requestAuthRestart()
             })
           }
