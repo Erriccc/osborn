@@ -185,7 +185,11 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       const upstream = httpRequest({
         host: '127.0.0.1', port: Number(process.env.SESSION_ENGINE_PORT ?? 8781),
         method: req.method, path: (pathName.slice('/control'.length) || '/') + reqUrl.search, headers: fwdHeaders,
-      }, (up) => { res.writeHead(up.statusCode || 502, up.headers); up.pipe(res) })
+      }, (up) => {
+        // Hop-by-hop headers describe the upstream connection, not this one.
+        const h = { ...up.headers }; for (const k of ['connection', 'keep-alive', 'transfer-encoding']) delete h[k]
+        res.writeHead(up.statusCode || 502, h); up.pipe(res)
+      })
       upstream.on('error', () => { if (!res.headersSent) sendJson(503, { error: 'engine control API is not up yet — the engine is still booting; retry in a few seconds', code: 'engine_booting' }); else res.end() })
       res.on('close', () => upstream.destroy())
       req.pipe(upstream)
@@ -284,9 +288,10 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   }
 
   const clipRange = async (outPath: string, fromMs: number, toMs = Date.now(), page?: Page): Promise<{ path: string; startMs: number; endMs: number } | null> => {
-    const own = page ? tabRecs.get(page)?.ring : undefined
-    const src = own?.length ? own : ring
-    const frames = src.filter((f) => f.t >= fromMs && f.t <= toMs)
+    const inRange = (r: Array<{ t: number; buf: Buffer }>) => r.filter((f) => f.t >= fromMs && f.t <= toMs)
+    const own = page ? inRange(tabRecs.get(page)?.ring ?? []) : []
+    // A recorder that only just started has too few frames: use the main ring.
+    const frames = own.length >= 2 ? own : inRange(ring)
     if (frames.length < 2) { console.log(`[live-stream] clip skipped — ${frames.length} frame(s)`); return null }
     const dir = mkdtempSync(join(tmpdir(), 'osbclip-'))
     try {
