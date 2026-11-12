@@ -151,10 +151,11 @@ async function transcribeTurn({ audio, fileSinceMs, wav }: { audio: Buffer; file
   catch (e) { failures.push(`Deepgram: ${((e as Error).message || String(e)).slice(0, 140)}`); throw new Error(failures.join('; ')) }
 }
 
-/** Loudest 16-bit sample in a PCM wav (after its 44-byte header); 0..32767. */
-function peakLevel(wav: Buffer): number {
+/** Loudest 16-bit sample in a PCM wav; 0..32767. ffmpeg adds a LIST chunk, so find 'data'. */
+export function peakLevel(wav: Buffer): number {
+  const d = wav.indexOf('data')
   let peak = 0
-  for (let i = 44; i + 1 < wav.length; i += 2) { const v = Math.abs(wav.readInt16LE(i)); if (v > peak) peak = v }
+  for (let i = d >= 0 ? d + 8 : 44; i + 1 < wav.length; i += 2) { const v = Math.abs(wav.readInt16LE(i)); if (v > peak) peak = v }
   return peak
 }
 
