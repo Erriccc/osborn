@@ -725,8 +725,9 @@ function scanPreviewLines(text: string, skipFirstPartial: boolean): PreviewAcc {
  * gate and (b) the LAST user message. So: small files are read whole (exact);
  * large files read a bounded HEAD (gate + density sample + first turn/title) +
  * TAIL (last user message, last activity), turning a hundreds-of-MB parse into
- * ~192KB. messageCount becomes an estimate for large files — it's display-only
- * and gated on ">2", which any large session clears from the head alone.
+ * ~192KB. messageCount becomes an estimate for large files — it's display-only,
+ * and is derived from BOTH samples because a compacted transcript can have no
+ * countable turn in the head at all.
  */
 async function getSessionPreview(filePath: string, fileSize?: number): Promise<SessionPreview> {
   const HEAD = 64 * 1024
@@ -764,10 +765,10 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
       const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
       const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
       const lastMessage = tail.lastUser ?? head.lastUser
-      // Estimate total from head density (display-only). Gate ">2" is satisfied
-      // by head.count alone for any real large session.
-      const avg = head.count > 0 ? hn / head.count : hn
-      const messageCount = head.count >= 3 ? Math.max(3, Math.round(size / avg)) : head.count
+      // Density from BOTH samples: a compacted transcript opens with a
+      // compact_boundary plus tool records, so head.count alone can be 0.
+      const sampled = head.count + tail.count
+      const messageCount = sampled > 0 ? Math.max(3, Math.round(size * sampled / (hn + tn))) : 3
       return {
         lastMessage,
         title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
@@ -915,9 +916,9 @@ interface SessionManifestEntry {
   title?: string; firstTs?: string; lastActivityAt?: string
 }
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
-// v2: sanitized lastMessage, title, firstTs, lastActivityAt, corrected turn count.
-// A v1 manifest is discarded on load (its previews carry raw wrapper text).
-const SESSION_MANIFEST_VERSION = 2
+// Older manifests are discarded on load. v2: sanitized preview fields. v3: the
+// large-file messageCount estimate changed, and unchanged files are never re-read.
+const SESSION_MANIFEST_VERSION = 3
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }
