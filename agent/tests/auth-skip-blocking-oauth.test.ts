@@ -161,7 +161,7 @@ t('index.ts claude_auth_start uses the guarded helper and only a deferred restar
   // Gated on a cleared fallback, and the #148 follow-up: publish the new tier +
   // drop the dead tier's key verdict BEFORE the deferred restart, or /health keeps
   // serving the dead tier after a mid-session sign-in.
-  assert.ok(/if \(!fallbackCleared\) return[\s\S]*agentActiveProvider = 'claude'[\s\S]*startKeyHealthProbe\(\)[\s\S]*requestAuthRestart\(\)/.test(body),
+  assert.ok(/if \(!fallbackCleared\) return[\s\S]*agentActiveProvider = isClaudeAuthenticated\(\)[\s\S]*startKeyHealthProbe\(\)[\s\S]*requestAuthRestart\(\)/.test(body),
     'gated provider + key-verdict reset, then the deferred restart')
   assert.ok(!/abortQuery|abortAgent|closeSession|killCurrentLLM/.test(body), 'must not abort the running turn')
 })

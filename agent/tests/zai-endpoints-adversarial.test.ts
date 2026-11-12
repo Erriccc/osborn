@@ -75,7 +75,7 @@ await t('(e) Claude login -> claude, and beats a configured fallback (no redirec
   assert.equal(applyAuthFallback(), 'claude')
   assert.equal(process.env.ANTHROPIC_BASE_URL, undefined, 'Claude path applies no redirect')
 })
-t("(e) user's own Anthropic key -> anthropic", () => {
+await t("(e) user's own Anthropic key -> anthropic", () => {
   reset(); process.env.ANTHROPIC_API_KEY = 'sk-user-own'
   assert.equal(applyAuthFallback(), 'anthropic')
 })
