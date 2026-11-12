@@ -443,9 +443,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // server-side refresh-token rotation that fails closed as a 401. Best
       // effort: a genuinely signed-out user still falls through to the real 401.
       let prewarmedSession: { user?: unknown } | null = null
+      let sessionResolved = false
       try {
         const { data } = await createSupabaseBrowser().auth.getSession()
         prewarmedSession = data.session
+        sessionResolved = true
       } catch { /* no Supabase / self-hosted: real gate is /api/token */ }
 
       // GUEST SHORT-CIRCUIT (#140): a signed-out visitor landing on /chat (e.g.
@@ -453,15 +455,22 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // + status) and /api/token — all 401 — and sit on a dead "Connecting…".
       // /api/token has no guest path (it 401s every anonymous caller), so there
       // is nothing to gain by making those calls. Surface the sign-in prompt up
-      // front with NO sandbox/token calls. The explicit guest/test lane (a
-      // visible ?agentUrl= on the URL) talks straight to that agent and is left
-      // untouched. Signed-in users (and auto-reconnect, which only runs for an
-      // already-live session) always have a session here, so this never fires
-      // for them.
+      // front with NO sandbox/token calls.
+      //   - Only when Supabase is configured AND getSession() resolved with no
+      //     session: that is a definitive "signed out" on the hosted, auth-gated
+      //     product. A self-hosted build with no Supabase (getSession throws →
+      //     sessionResolved stays false) keeps the old behavior where /api/token
+      //     is the real gate.
+      //   - The explicit guest/test lane (a visible ?agentUrl= on the URL) talks
+      //     straight to that agent and is left untouched.
+      //   - Signed-in users (and auto-reconnect, which only runs for an
+      //     already-live session) always have a session here, so this never fires
+      //     for them.
       const hasVisibleAgentParam =
         typeof window !== 'undefined' &&
         !!new URLSearchParams(window.location.search).get('agentUrl')
-      if (!prewarmedSession?.user && !hasVisibleAgentParam) {
+      const supabaseConfigured = !!process.env.NEXT_PUBLIC_SUPABASE_URL
+      if (supabaseConfigured && sessionResolved && !prewarmedSession?.user && !hasVisibleAgentParam) {
         if (isCurrent()) {
           setError('Sign in to connect to your agent.')
           setConnecting(false)
