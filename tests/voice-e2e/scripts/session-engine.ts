@@ -252,19 +252,48 @@ async function main() {
   // WHY the brain is down (missing key, bad key, CDP attach failure) — carried
   // on /status and every refused /act so a director never has to guess.
   let brainError: string | null = null
+  // BRAIN PROVIDER FALLBACK (ported from b8dd898 on
+  // fix/engine-voice-deepgram-gemini): a single depleted key (Gemini prepay
+  // ran dry, 402) must not leave the engine brainless. Probe each configured
+  // key with a 1-token real completion and build the brain on the first
+  // provider that answers: Gemini → Anthropic → z.ai (Anthropic-compatible).
+  // Keys travel in headers, never in a URL, so a failed probe can't leak one
+  // into a log line.
+  let brainModel = ''
+  const pickBrainModel = async (): Promise<{ model: string; opts: Record<string, string> }> => {
+    const tried: string[] = []
+    const probe = async (name: string, url: string, headers: Record<string, string>, body: unknown): Promise<boolean> => {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) }).catch(() => null)
+      if (r?.ok) return true
+      tried.push(`${name} ${r ? r.status : 'network'}`)
+      mark(`brain: ${name} probe failed (${r ? r.status : 'network'}) — trying next provider`)
+      return false
+    }
+    const anthropicBody = (model: string) => ({ model, max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] })
+    const g = optionalEnvKey('GOOGLE_API_KEY') || optionalEnvKey('GEMINI_API_KEY')
+    if (g && await probe('gemini', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', { 'x-goog-api-key': g },
+      { contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } })) return { model: 'google/gemini-2.5-flash', opts: { apiKey: g } }
+    const a = optionalEnvKey('ANTHROPIC_API_KEY')
+    if (a && await probe('anthropic', 'https://api.anthropic.com/v1/messages', { 'x-api-key': a, 'anthropic-version': '2023-06-01' }, anthropicBody('claude-haiku-5-5')))
+      return { model: 'anthropic/claude-haiku-5-5', opts: { apiKey: a } }
+    const z = optionalEnvKey('Z_AI_API_KEY') || optionalEnvKey('ZAI_API_KEY')
+    if (z && await probe('z.ai', 'https://api.z.ai/api/anthropic/v1/messages', { 'x-api-key': z, 'anthropic-version': '2023-06-01' }, anthropicBody('glm-4.7')))
+      return { model: 'anthropic/glm-4.7', opts: { apiKey: z, baseURL: 'https://api.z.ai/api/anthropic' } }
+    throw new Error(tried.length ? `no working brain key — ${tried.join(', ')}` : 'no brain key — set GOOGLE_API_KEY (or GEMINI_API_KEY), ANTHROPIC_API_KEY or Z_AI_API_KEY')
+  }
   const initBrain = async () => {
     brainAlive = false
     try {
-      const key = optionalEnvKey('GOOGLE_API_KEY') || optionalEnvKey('GEMINI_API_KEY')
-      if (!key) throw new Error('no Gemini key — set GOOGLE_API_KEY (or GEMINI_API_KEY)')
+      const picked = await pickBrainModel()
       const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = key
+      if (picked.model.startsWith('google/')) process.env.GOOGLE_GENERATIVE_AI_API_KEY = picked.opts.apiKey
       stagehand = new Stagehand({
         env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-        model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: key }, verbose: 0,
+        model: picked.model as any, modelClientOptions: picked.opts, verbose: 0,
       })
       await stagehand.init()
-      brainAlive = true; brainError = null
+      brainAlive = true; brainError = null; brainModel = picked.model
+      mark(`brain ready on ${picked.model}`)
     } catch (e) {
       brainError = ((e as Error).message || String(e)).slice(0, 200)
       throw e
@@ -656,7 +685,7 @@ async function main() {
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
           agentUrl: AGENT_URL || null, agentUnreachable,
-          brain: brainAlive ? 'ready' : 'dead', brainError: brainAlive ? null : brainError, useAuth, live: live?.url,
+          brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
           // #120: previousRun is set when THIS process adopted a journey from a
@@ -768,10 +797,32 @@ async function main() {
           // crash: say what the provider said so the director can act on it.
           let r: unknown
           try { r = await brain(body.instruction) }
-          catch (e) {
-            const msg = ((e as Error).message || String(e)).slice(0, 300)
-            mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
-            return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, brain: brainAlive ? 'ready' : 'dead' }, brainAlive ? 502 : 503)
+          catch (e0) {
+            let e = e0
+            // The provider itself refused (credits ran out, key revoked, rate
+            // limit) AFTER boot: re-pick a provider and retry the action once,
+            // so a key dying mid-session heals itself instead of failing every
+            // /act until someone POSTs /brain.
+            const providerDown = /credit|quota|billing|RESOURCE_EXHAUSTED|rate.?limit|api.?key|unauthori|\b(401|402|403|429)\b/i.test(String((e0 as Error).message || e0))
+            let healed = false
+            if (providerDown) {
+              const before = brainModel
+              mark(`act[${driver}]: provider refused on ${before} — re-picking a brain provider`)
+              try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
+              await initBrain().catch(() => {})
+              if (brainAlive && brainModel !== before) {
+                try { r = await brain(body.instruction); healed = true } catch (e1) { e = e1 }
+              }
+            }
+            if (!healed) {
+              const msg = ((e as Error).message || String(e)).slice(0, 300)
+              mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
+              // A failed act is still a task: it must not vanish from the run.
+              const fn = ++reqN
+              const fshot = await reqShot(fn, 'act')
+              stampTask(fn, 'act', t0, null, fshot, body.instruction)
+              return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
+            }
           }
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
@@ -784,7 +835,7 @@ async function main() {
           const shot = await reqShot(n, 'act')
           const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
           scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
-          return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, audioClipUrl: `/clip?n=${n}&audio=1`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, driver, window })
+          return json(res, { ok: true, result: r, brainModel, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, audioClipUrl: `/clip?n=${n}&audio=1`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, driver, window })
         })
       }
       if (path === '/say') {
@@ -996,7 +1047,7 @@ async function main() {
         try { await initBrain() }
         catch { mark(`brain re-init failed — ${brainError}`); return json(res, { ok: false, brain: 'dead', code: 'brain_unavailable', error: brainDownMsg() }, 503) }
         mark('brain re-initialized')
-        return json(res, { ok: true, brain: 'ready' })
+        return json(res, { ok: true, brain: 'ready', brainModel })
       }
       if (path === '/recover') {
         // Under the action lock, on the CALLER's tab: it used to reload the
