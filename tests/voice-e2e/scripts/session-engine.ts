@@ -1024,6 +1024,22 @@ async function main() {
           const before = await snap()
           const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
+          // PLAIN PAGE SCROLLS ARE DONE BY THE ENGINE, NOT THE BRAIN. On the live
+          // landing page the brain's scroll action first moved nothing and, on
+          // the identical repeat, scrolled back UP to the top for "scroll down".
+          // A scroll with no named target needs no model: it is a mouse-wheel
+          // gesture of a known size and direction — exact, instant and free.
+          const plainScroll = /^\s*(?:please\s+)?scroll\s+(?:(?:the\s+)?(?:page|window)\s+)?(?:(down|up)|(?:back\s+)?to\s+the\s+(?:very\s+)?(top|bottom|beginning|end|start))(?:\s+(?:of\s+)?(?:the\s+)?(?:page|window))?(?:\s+(?:by\s+)?(?:about\s+|roughly\s+)?(?:(\d+)\s*(?:px|pixels?)|(a|one|two|three|half\s+a)\s+(?:screen|page|viewport)s?|a\s+(?:bit|little)))?\s*\.?\s*$/i.exec(String(body.instruction))
+          if (plainScroll) {
+            const vp = active.viewportSize() ?? { width: 1280, height: 720 }
+            const [, dir, edge, px, screens] = plainScroll
+            const size = px ? Number(px) : Math.round(vp.height * 0.9 * (screens ? ({ a: 1, one: 1, two: 2, three: 3 } as Record<string, number>)[screens.toLowerCase()] ?? 0.5 : /bit|little/i.test(plainScroll[0]) ? 0.3 : 1))
+            const dy = edge ? (/top|beginning|start/i.test(edge) ? -1e6 : 1e6) : (dir.toLowerCase() === 'up' ? -size : size)
+            await active.mouse.move(Math.round(vp.width / 2), Math.round(vp.height / 2)).catch(() => {})
+            await active.mouse.wheel(0, dy).catch(() => {})
+            r = { cached: false, healed: false, did: `engine mouse-wheel scroll ${edge ? `to the ${edge.toLowerCase()}` : `${dir.toLowerCase()} ${size}px`} (no model call)`, engine: true }
+            mark(`act[${driver}]: ${r.did}`)
+          } else
           try { r = await brain(body.instruction) }
           catch (e0) {
             let e = e0
@@ -1063,7 +1079,7 @@ async function main() {
           // mouse-wheel gesture over the viewport, which is what a person does.
           const scrollIntent = /\bscroll/i.test(String(body.instruction))
           let fallback: string | null = null
-          if (scrollIntent && before && after && before.url === after.url && !moved(before, after) && !r?.noop) {
+          if (scrollIntent && !r?.engine && before && after && before.url === after.url && !moved(before, after) && !r?.noop) {
             const ins = String(body.instruction).toLowerCase()
             const vp = active.viewportSize() ?? { width: 1280, height: 720 }
             const dy = /\b(top|beginning|start)\b/.test(ins) ? -1e6 : /\b(bottom|end)\b/.test(ins) ? 1e6 : (/\bup\b/.test(ins) ? -1 : 1) * Math.round(vp.height * 0.9)
@@ -1098,6 +1114,15 @@ async function main() {
               ? 'the scroll did not move the page or any scrollable panel (also tried a mouse-wheel gesture) — the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll'
               : `the action ran but nothing observable changed on the page (url, title, scroll, form values${textVolatile ? '; visible text was ignored because this page animates on its own' : ', text length'}) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction`
             if (before) forgetCached(before.url, String(body.instruction))
+          }
+          if (!warning && scrollIntent && before && after && before.url === after.url) {
+            const ins = String(body.instruction).toLowerCase()
+            const wantDown = /\b(down|bottom|end)\b/.test(ins), wantUp = /\b(up|top|beginning|start)\b/.test(ins)
+            const delta = (after.scrollY - before.scrollY) || (after.innerScroll - before.innerScroll)
+            if ((wantDown && !wantUp && delta < 0) || (wantUp && !wantDown && delta > 0)) {
+              warning = `the page scrolled the OPPOSITE way to the instruction (scroll ${before.scrollY} → ${after.scrollY})`
+              forgetCached(before.url, String(body.instruction))
+            }
           }
           if (fallback && before) forgetCached(before.url, String(body.instruction))
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
