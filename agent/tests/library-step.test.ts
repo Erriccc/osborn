@@ -12,7 +12,7 @@ import Database from 'better-sqlite3'
 const tmp = mkdtempSync(join(tmpdir(), 'library-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(tmp, 'claude')
 const deny = join(tmp, 'deny.json')
-writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Audos'] } }))
+writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Acme'] } }))
 process.env.OSBORN_LENS_DENYLIST = deny
 process.env.OPENROUTER_API_KEY = 'dummy-not-a-key'
 delete process.env.OSBORN_CONTENT_LENS
@@ -37,7 +37,7 @@ const iso = (h: number) => new Date(T0 + h * H).toISOString()
 const seam = (words: string) => `<session_tail>\n2026-01-01T09:00  Assistant: replayed\n</session_tail>\n\n${words}`
 // [msg_type, text, hour]
 const ROWS: [string, string, number][] = [
-  ['user', 'Kick off the lens work for Audos today', 0],                    // 1
+  ['user', 'Kick off the lens work for Acme today', 0],                     // 1
   ['assistant', 'Starting the lens worker now', 1],                         // 2
   ['user', 'Keep going with the worker please', 2],                         // 3
   ['assistant', 'Worker is wired and logging', 5],                          // 4  P1 = #1–#4 (5h)
@@ -171,7 +171,7 @@ await t('written: one page for the period that just ended + INDEX.md; errored pe
   assert.deepEqual(pages(), ['2026-01-01-period-02.md'])
   const md = readFileSync(r.page!, 'utf-8')
   assert.ok(md.startsWith('<!-- osborn-library: key=5 rows=5-10 closed-by=11 period=2 -->'), md.slice(0, 120))
-  assert.ok(md.includes('Period library writer shipped') && !md.includes('Audos'))
+  assert.ok(md.includes('Period library writer shipped') && !md.includes('Acme'))
   const idx = readFileSync(join(libDir, 'INDEX.md'), 'utf-8')
   assert.ok(idx.includes('| 02 | 2026-01-01 14:00 → 2026-01-01 19:00 | #5–#10 | Ship the automatic period library.'), idx)
   assert.ok(idx.includes('The library writer') && idx.includes('(row #10)'))

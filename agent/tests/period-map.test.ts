@@ -10,7 +10,7 @@ import Database from 'better-sqlite3'
 const tmp = mkdtempSync(join(tmpdir(), 'period-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(tmp, 'claude')
 const deny = join(tmp, 'deny.json')
-writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Audos'] } }))
+writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Acme'] } }))
 process.env.OSBORN_LENS_DENYLIST = deny
 delete process.env.OSBORN_LENS_INCLUDE_SUBAGENTS
 
@@ -35,7 +35,7 @@ const FAKE_NPM = 'npm_' + 'A1b2C3d4'.repeat(4) + 'XyZw'
 
 // [msg_type, text, ts minute]
 const rows: [string, string][] = [
-  ['user', 'Before compaction: we started the lens with Audos data here'],                                        // 1
+  ['user', 'Before compaction: we started the lens with Acme data here'],                                         // 1
   ['assistant', 'Earlier assistant reply about the old period'],                                                   // 2
   ['user', `<session_tail>\n2026-01-01T09:00  Assistant: replayed old stuff\n</session_tail>\n\n${REAL_USER}`],     // 3 boundary
   ['user', 'This session is being continued from a previous conversation that ran out of context. Summary: ...'],  // 4
@@ -49,7 +49,7 @@ const rows: [string, string][] = [
   ['user', '[INTERRUPTED] The user interrupted your response mid-speech.\n\nWhat the user heard before cutoff:\n"Assistant spoken words"\n\nYour recent messages:\nassistant text HANDOFF_STATE mention\n\nUser\'s message: "No, no, from the same session ID"\n\nCONTEXT PRESERVATION (READ THIS):\nblah'], // 12
   ['user', '[CONTEXT] You generated speech while the user was already talking. None of it played.\n\nWhat the user is saying now:\n"That is where the timeline matters"\n\nText you produced that the user did NOT hear:\n"unheard agent text"\n\nCONTEXT PRESERVATION (READ THIS):\nx'], // 13
   ['assistant', REAL_ASSIST],                                                                                       // 14
-  ['assistant', `Set the token ${FAKE_NPM} for Audos deploys`],                                                     // 15
+  ['assistant', `Set the token ${FAKE_NPM} for Acme deploys`],                                                      // 15
   ['tool_use', 'TOOL_USE_PAYLOAD never read'],                                                                     // 16
   ['tool_result', 'TOOL_RESULT_PAYLOAD never read'],                                                               // 17
   ['thinking', 'THINKING never read'],                                                                             // 18
@@ -105,8 +105,8 @@ await t('per-kind strip counts', () => {
 await t('secret + client redaction still applied', () => {
   const x = byId.get(15)!.text
   assert.ok(!x.includes(FAKE_NPM) && x.includes('[REDACTED'), x)
-  assert.ok(!x.includes('Audos') && x.includes('[client]'), x)
-  assert.ok(!byId.get(1)!.text.includes('Audos'))
+  assert.ok(!x.includes('Acme') && x.includes('[client]'), x)
+  assert.ok(!byId.get(1)!.text.includes('Acme'))
 })
 await t('stripInjected leaves assistant rows untouched', () => {
   const s = '<system-reminder>x</system-reminder> literal'
@@ -269,7 +269,7 @@ await t('dry run writes review md, refuses the profile path, never writes HWM/pr
   const r = await runPeriodMap({ sessionId: sid, outPath: out, dry: true })
   assert.equal(r.calls, 0)
   const md = readFileSync(out, 'utf-8')
-  assert.ok(md.includes('silent-control') && !md.includes('Audos'), md)
+  assert.ok(md.includes('silent-control') && !md.includes('Acme'), md)
   assert.ok(!existsSync(join(pd, 'content-profile.md')) && !existsSync(join(pd, '.content-lens-hwm.json')))
 })
 

@@ -115,7 +115,7 @@ Personal values are NOT stored in this skill. They live in a local secret file t
 | City / State / Zip | `$CANDIDATE_CITY` / `$CANDIDATE_STATE` / `$CANDIDATE_ZIP` |
 
 Jobs:
-1. Meta API Consultant at Prehype / Audos — April 2024 to Present
+1. Senior Engineer at Acme Corp — April 2024 to Present
 2. Full Stack Developer, Freelance — January 2016 to Present
 
 Education:

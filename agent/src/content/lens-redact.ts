@@ -84,7 +84,7 @@ function termRule(term: string, tag: string): RedactRule | null {
 export interface RedactorOptions {
   /**
    * PER-PIECE opt-in un-redaction: denylisted terms to leave visible for ONE
-   * named draft/render (e.g. reveal: ["Audos"]). Never used by extraction —
+   * named draft/render (e.g. reveal: ["Acme"]). Never used by extraction —
    * the profile and samples are always stored fully redacted. A renderer that
    * reveals re-pulls the quote rows from session.db by row # and redacts them
    * with this option, in memory, for that piece only.

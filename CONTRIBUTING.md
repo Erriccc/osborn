@@ -29,9 +29,9 @@ any size are welcome, from a typo fix to a new voice mode.
 
 ## Local setup
 
-See **Local Development** in the [README](README.md#local-development) for the full
-agent + frontend setup (LiveKit, Anthropic/Google keys, Supabase). The fastest way
-to *try* the product without any setup is to just
+See **[QUICKSTART.md](QUICKSTART.md)** for the full agent + frontend setup (LiveKit,
+Anthropic/Google keys) — both the zero-setup and run-it-locally paths. The fastest
+way to *try* the product without any setup is to just
 [talk to it live](https://www.voice-native.com).
 
 ## Before you open a PR

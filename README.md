@@ -12,7 +12,7 @@ It researches your code, plans, and builds — out loud. Powered by LiveKit + th
 
 <p align="center">
   <b>🎧 <a href="https://www.voice-native.com">Talk to it live →</a></b>
-  &nbsp;·&nbsp; <a href="#quick-start">Quick start</a>
+  &nbsp;·&nbsp; <a href="QUICKSTART.md">Quickstart</a>
   &nbsp;·&nbsp; <a href="CONTRIBUTING.md">Contributing</a>
   &nbsp;·&nbsp; <a href="ROADMAP.md">Roadmap</a>
 </p>
@@ -42,6 +42,9 @@ It researches your code, plans, and builds — out loud. Powered by LiveKit + th
 <sub>*Measured figures pending — tracked on the [roadmap](ROADMAP.md).</sub>
 
 ## Quick start
+
+> **Prefer a step-by-step guide?** See **[QUICKSTART.md](QUICKSTART.md)** —
+> zero-setup and run-it-locally (~5 min). The short version is below.
 
 **Just try it (0 setup):** [voice-native.com](https://www.voice-native.com) — sign in and start talking.
 
@@ -147,7 +150,10 @@ Frontend (Next.js 14)  <-->  LiveKit Cloud  <-->  Agent (local or cloud sandbox)
                                                   └── Self-hosted Daytona sandboxes (per-user)
 ```
 
-## Quick Start
+## Running it yourself
+
+> A guided version of this lives in **[QUICKSTART.md](QUICKSTART.md)**; the two
+> options below are the same thing in detail.
 
 ### Option 1: Using Hosted Frontend
 

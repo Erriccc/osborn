@@ -72,6 +72,7 @@ import { attachDevtools, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
+import { buildJourneyState, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const execFileP = promisify(execFile)
@@ -109,6 +110,10 @@ const manifest: Record<string, unknown> = {
   run: RUN_STAMP, startedAt: Date.now(), model: 'per-task video + incremental manifest (v2)',
   agentUrl: AGENT_URL, appUrl: APP_URL, profile: null, useAuth: false, live: null,
   tasks, endedAt: null, audioCapture: null,
+  // #120: when this process ADOPTED a journey from a process that died
+  // mid-journey, this links back to the run that died (else null). Lets a
+  // caller pull the pre-restart run's media via /clip?run=<previousRun>.
+  previousRun: null,
 }
 const writeManifest = () => {
   try { writeFileSync(join(RUN_DIR, 'manifest.json'), JSON.stringify({ ...manifest, marks: marks.slice(-200) }, null, 2)) } catch { /* ignore */ }
@@ -448,6 +453,10 @@ async function main() {
     const devtools = devtoolsBufs.get(active)?.summary() ?? null
     const rec = { n, label, text, heard, tab: activeTab(), startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), clip, artifact, devtools }
     tasks.push(rec); writeManifest(); writeDevtoolsFile(); saveTabState()
+    // #120: snapshot journey progress on every task so a restart recovers a
+    // journey that points at the work already done (saveJourneyState no-ops
+    // when no journey is open).
+    saveJourneyState('active')
     notifyRef('task', { task: { n, label, text, heard, tab: rec.tab }, clipUrl: clip ? `/clip?n=${n}` : null, artifactUrl: artifact ? `/artifact?n=${n}` : null })
     return rec
   }
@@ -520,6 +529,46 @@ async function main() {
   // the engine is claimed, and idle-stop HOLDS while a mission is active
   // (capped at 2h so a forgotten journey can't hold the machine forever).
   let journey: { name: string; goal?: string; owner?: string; startStep: number; startTaskN: number; startUrl: string; startedAt: number } | null = null
+
+  // ── #120: JOURNEY SURVIVES AN ENGINE RESTART ───────────────────────────────
+  // `journey` and `RUN_STAMP` are process-memory only. A mid-journey restart
+  // (crash / OOM / Fly machine recycle — observed at the Say step, where the
+  // edge proxy returns an EMPTY 502 as the dying process drops the connection)
+  // starts a fresh process that re-stamps the run id and nulls the journey, so
+  // /status reads journey:null and /journey end 400s "no journey in progress".
+  // Persist the active journey to a VOLUME-DURABLE file (the same OUT_DIR the
+  // tab-state restore already survives sleep on) and ADOPT it on the next boot,
+  // keeping run-id continuity (previousRun). Opt out with OSBORN_RECOVER_JOURNEY=0.
+  const JOURNEY_STATE = join(OUT_DIR, 'journey-state.json')
+  let restoredFromRun: string | null = null
+  const saveJourneyState = (status: 'active' | 'ended') => {
+    try {
+      if (!journey) return
+      const pj: PersistedJourney = { name: journey.name, goal: journey.goal, owner: journey.owner, startUrl: journey.startUrl, startedAt: journey.startedAt }
+      writeFileSync(JOURNEY_STATE, JSON.stringify(buildJourneyState(RUN_STAMP, status, pj, reqN, tasks.length, Date.now()), null, 2))
+    } catch { /* never block the journey on a persistence miss */ }
+  }
+  if (process.env.OSBORN_RECOVER_JOURNEY !== '0') {
+    try {
+      const persisted = existsSync(JOURNEY_STATE) ? (JSON.parse(readFileSync(JOURNEY_STATE, 'utf8')) as JourneyStateFile) : null
+      const decision = decideRecovery(persisted, { now: Date.now(), currentRun: RUN_STAMP })
+      if (decision.recover && decision.journey) {
+        // Re-home the step/task counters onto THIS process (the persisted
+        // indices belonged to the dead process) and preserve identity + owner
+        // (the mission lock survives too). Re-save under the new run id so a
+        // SECOND restart chains from here, not from the stale run.
+        journey = { name: decision.journey.name, goal: decision.journey.goal, owner: decision.journey.owner, startStep: scenarioSteps.length, startTaskN: reqN, startUrl: decision.journey.startUrl, startedAt: decision.journey.startedAt }
+        restoredFromRun = decision.previousRun ?? null
+        manifest.previousRun = restoredFromRun
+        saveJourneyState('active')
+        mark(`journey RECOVERED across restart: "${journey.name}"${restoredFromRun ? ` (previous run ${restoredFromRun})` : ''} — ${decision.reason}`)
+        notify('journey_recovered', { name: journey.name, owner: journey.owner ?? null, previousRun: restoredFromRun })
+      } else if (persisted && persisted.status === 'active') {
+        mark(`journey not recovered — ${decision.reason}`)
+      }
+    } catch (e) { mark(`journey recovery read failed: ${(e as Error).message.slice(0, 100)}`) }
+  }
+
   // Fetch-nag (v13): clips that were returned but never downloaded — the
   // act-verify gate's teeth. GET /clip marks a task reviewed-able.
   const fetchedClips = new Set<number>()
@@ -610,6 +659,11 @@ async function main() {
           brain: brainAlive ? 'ready' : 'dead', brainError: brainAlive ? null : brainError, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
+          // #120: previousRun is set when THIS process adopted a journey from a
+          // process that died mid-journey; restartRecovered lets a caller tell
+          // "engine restarted (journey carried over)" apart from an app failure,
+          // and reach the pre-restart media via /clip?run=<previousRun>.
+          previousRun: restoredFromRun, restartRecovered: restoredFromRun != null,
           depth: depthNow(),
           drivers: [...driverActive.keys()], tabsByOwner: context.pages().map((p,i)=>({i, owner: ownerOf(p)})),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
@@ -747,12 +801,30 @@ async function main() {
           // failure on a non-room page is the mic precondition (the tab never
           // opened a getUserMedia mic); name it and still stamp a (failed) task
           // so a Say attempt never vanishes from "This run's tasks".
-          try {
-            await speakText(active, body.text)
-          } catch (e) {
-            const msg = (e as Error).message || 'speak failed'
+          // #120: BOUNDED RETRY on a TRANSIENT speak failure. A one-shot throw
+          // used to degrade straight to a structured 502; a momentary mic/
+          // LiveKit hiccup is worth one or two in-process retries. A mic
+          // PRECONDITION failure is NOT retried — it will not fix itself (the
+          // tab never opened a getUserMedia mic). (A full process death can't be
+          // retried here; the caller's re-attach — see drive.sh — covers that.)
+          const MAX_SAY_ATTEMPTS = Math.max(1, Number(process.env.OSBORN_SAY_RETRIES ?? 2))
+          let sayErr: Error | null = null
+          for (let attempt = 1; attempt <= MAX_SAY_ATTEMPTS; attempt++) {
+            try { await speakText(active, body.text); sayErr = null; break }
+            catch (e) {
+              sayErr = e as Error
+              const m = sayErr.message || ''
+              if (/mic/i.test(m)) break
+              if (attempt < MAX_SAY_ATTEMPTS) {
+                mark(`say[${driver}] transient fail (attempt ${attempt}/${MAX_SAY_ATTEMPTS}): ${m.slice(0, 60)} — retrying`)
+                await active.waitForTimeout(retryDelayMs(attempt)).catch(() => {})
+              }
+            }
+          }
+          if (sayErr) {
+            const msg = sayErr.message || 'speak failed'
             const noMic = /mic/i.test(msg)
-            mark(`say[${driver}] FAILED: ${msg.slice(0, 80)}`)
+            mark(`say[${driver}] FAILED after ${MAX_SAY_ATTEMPTS} attempt(s): ${msg.slice(0, 80)}`)
             const fn = ++reqN
             const fshot = await reqShot(fn, 'say')
             stampTask(fn, 'say', t0, null, fshot, body.text)
@@ -890,6 +962,7 @@ async function main() {
         if (body.op === 'start') {
           if (journey && journey.owner && body.owner !== journey.owner) return json(res, { error: `mission "${journey.name}" is active (owner: ${journey.owner}) — coordinate or wait for journey end`, mission: { name: journey.name, owner: journey.owner, startedAt: journey.startedAt } }, 409)
           journey = { name: String(body.name || 'unnamed'), goal: body.goal, owner: body.owner ? String(body.owner) : undefined, startStep: scenarioSteps.length, startTaskN: reqN, startUrl: active.url(), startedAt: Date.now() }
+          saveJourneyState('active')  // #120: durable from the first moment
           mark(`journey start: ${journey.name}${journey.owner ? ` [${journey.owner}]` : ''}${journey.goal ? ` — ${journey.goal}` : ''}`)
           return json(res, { ok: true, journey, knownJourneys: listJourneys(host) })
         }
@@ -910,6 +983,7 @@ async function main() {
           mark(`journey end: ${journey.name} (${steps.length} step(s), ${depth.kind}, ${depth.pages} page(s)${saved ? ', saved' : ''}${depth.thin ? ' — THIN: single navigation, not exploration' : ''})`)
           const done = { ok: true, name: journey.name, steps: steps.length, depth, saved, tasks: [journey.startTaskN + 1, reqN] }
           notify('journey_end', { name: journey.name, goal: journey.goal ?? null, steps: steps.length, depth, saved: !!saved })
+          saveJourneyState('ended')  // #120: mark ended BEFORE null so a later boot won't resurrect it
           journey = null
           return json(res, done)
         }

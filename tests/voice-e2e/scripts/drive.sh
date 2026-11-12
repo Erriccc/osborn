@@ -40,8 +40,30 @@ case "$CMD" in
   act|say)
     field="instruction"; [ "$CMD" = "say" ] && field="text"
     body=$(python3 -c "import json,sys; print(json.dumps({'$field': sys.argv[1]}))" "$ARG")
-    resp=$(cc --max-time 120 -X POST -H 'Content-Type: application/json' "$ENGINE/$CMD" -d "$body")
-    n=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('window',{}).get('n',''))" 2>/dev/null || true)
+    # #120 RE-ATTACH: a mid-journey engine restart drops the connection at Say,
+    # so the POST returns an empty/gateway 502 with no task. For `say` only,
+    # if the failure looks TRANSIENT (empty/gateway — NOT a structured engine
+    # error like no_mic/speak_failed), wait for the engine to wake and retry
+    # ONCE. The engine recovers the journey across the restart (journey-state.ts),
+    # so the retry lands in the SAME journey. Bounded; opt out with BSR_SAY_REATTACH=0.
+    attempts=1; { [ "$CMD" = "say" ] && [ "${BSR_SAY_REATTACH:-1}" != "0" ]; } && attempts=2
+    resp=""; n=""
+    for tryn in $(seq 1 "$attempts"); do
+      resp=$(cc --max-time 120 -X POST -H 'Content-Type: application/json' "$ENGINE/$CMD" -d "$body" || true)
+      n=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('window',{}).get('n',''))" 2>/dev/null || true)
+      [ -n "$n" ] && break
+      { [ "$CMD" = "say" ] && [ "$tryn" -lt "$attempts" ]; } || break
+      # Structured engine error (ok:false + code) → settled app failure, don't re-attach.
+      struct=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('1' if d.get('ok') is False and d.get('code') else '')" 2>/dev/null || true)
+      [ -n "$struct" ] && break
+      echo "  ⟳ Say returned no task (transient — likely an engine restart at Say, #120); waiting for the engine to wake, then re-attaching to the recovered journey…" >&2
+      for _w in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        sleep 5
+        st=$(cc --max-time 15 "$ENGINE/status" 2>/dev/null || true)
+        ready=$(printf '%s' "$st" | python3 -c "import sys,json; d=json.load(sys.stdin); print('1' if d.get('brain')=='ready' else '')" 2>/dev/null || true)
+        [ -n "$ready" ] && break
+      done
+    done
     heard=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('heard') or '')" 2>/dev/null || true)
     nag=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nag') or '')" 2>/dev/null || true)
     if [ -z "$n" ]; then echo "DRIVE FAILED — no task number in response:" >&2; echo "$resp" | head -c 400 >&2; exit 3; fi

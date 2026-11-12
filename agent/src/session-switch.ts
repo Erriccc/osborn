@@ -231,6 +231,45 @@ export function sessionMessagesDir(
   return bootDir
 }
 
+/**
+ * Working directory the agent boots a CONNECTION in (connect-time, #112).
+ *
+ * The resume mismatch bug: a client opens `/chat?session=A&workingDirectory=X`,
+ * but X is stale/empty (a switch rewrote the URL without a cwd, or the hint was
+ * never the session's real project). Trusting the raw hint booted the agent in
+ * the wrong dir — often `/workspace` root — so `--resume A` never found A's
+ * JSONL and the session silently came up as the wrong one with a generic
+ * "Workspace" chip. The fix makes the agent AUTHORITATIVE about a pre-selected
+ * session's cwd: its RESOLVED project dir wins over the client hint.
+ *
+ * `resolved` is resolveSessionCwd(preSelectedSessionId, hint, …) — the only dir
+ * where A's JSONL actually exists (null = found nowhere yet). Pure: the caller
+ * does the I/O (resolveSessionCwd) and the mkdir when `createIfMissing`.
+ *
+ *  - pre-selected + resolved  → the resolved dir (already exists, no mkdir).
+ *  - pre-selected + unresolved + hint → the hint, created (fresh sprite / new
+ *    project whose JSONL isn't on disk yet, so --resume can still attach there).
+ *  - pre-selected + nothing   → the default boot dir.
+ *  - no pre-selected + hint    → the hint, created (new project).
+ *  - no pre-selected + nothing → the default boot dir.
+ */
+export function pickConnectWorkingDir(args: {
+  preSelectedSessionId: string | null | undefined
+  resolved: string | null | undefined
+  hint: string | null | undefined
+  defaultDir: string
+}): { dir: string; createIfMissing: boolean; source: 'resolved' | 'hint' | 'default' } {
+  const hint = norm(args.hint)
+  if (norm(args.preSelectedSessionId)) {
+    const resolved = norm(args.resolved)
+    if (resolved) return { dir: resolved, createIfMissing: false, source: 'resolved' }
+    if (hint) return { dir: hint, createIfMissing: true, source: 'hint' }
+    return { dir: args.defaultDir, createIfMissing: false, source: 'default' }
+  }
+  if (hint) return { dir: hint, createIfMissing: true, source: 'hint' }
+  return { dir: args.defaultDir, createIfMissing: false, source: 'default' }
+}
+
 // ── Review minors ────────────────────────────────────────────────────────────
 
 /**

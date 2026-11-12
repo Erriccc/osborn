@@ -202,7 +202,7 @@ projects in one sitting (→ P2)? Build P1, measure, then decide.
 Stay on **LiveKit + Claude Agent SDK** (don't add CrewAI/AutoGen/LangGraph —
 Python-first or graph-CRUD-awkward, and a second runtime). Build **P1 tag &
 continue** first — it directly solves "notice a bug on Osborn while working on
-Audos → tell it → keep going," reuses ~everything we have, and de-risks whether we
+a client project → tell it → keep going," reuses ~everything we have, and de-risks whether we
 even need the full deck before paying for the mic-lock machinery.
 
 > Note: the Claude Agent SDK subagents (`agents` param in `query()`) are the
