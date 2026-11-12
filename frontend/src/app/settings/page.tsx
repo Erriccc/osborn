@@ -9,8 +9,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
-import { clearLiveSessionRecords } from '@/lib/chat-url'
-import { clearCachedTranscripts } from '@/lib/transcript-cache'
+import { clearSignOutLocalState } from '@/lib/transcript-cache'
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
 // fall back to the uppercased code (still tells you WHERE-ish).
@@ -595,9 +594,8 @@ export default function SettingsPage() {
 
   const signOut = async () => {
     try { await supabase.auth.signOut() } catch {}
-    // The /chat live-session records (take-over adoption) belong to this account.
-    try { clearLiveSessionRecords(localStorage) } catch {}
-    try { clearCachedTranscripts(localStorage) } catch {}
+    // The /chat live-session records + cached transcripts belong to this account.
+    try { clearSignOutLocalState(localStorage) } catch {}
     try {
       ['osborn-setup-completed', 'osborn-agent-url', 'osborn-provider',
        'osborn-voice-arch', 'osborn-coding-agent', 'osborn-room-code']

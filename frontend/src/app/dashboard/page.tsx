@@ -28,8 +28,7 @@ import { useHeaderPanel } from '@/lib/use-header-panel'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { clearLiveSessionRecords } from '@/lib/chat-url'
-import { clearCachedTranscripts } from '@/lib/transcript-cache'
+import { clearSignOutLocalState } from '@/lib/transcript-cache'
 
 interface SessionInfo {
   sessionId: string
@@ -1160,9 +1159,8 @@ export default function Dashboard() {
 
   const signOut = async () => {
     try { await supabase.auth.signOut() } catch {}
-    // The /chat live-session records (take-over adoption) belong to this account.
-    try { clearLiveSessionRecords(localStorage) } catch {}
-    try { clearCachedTranscripts(localStorage) } catch {}
+    // The /chat live-session records + cached transcripts belong to this account.
+    try { clearSignOutLocalState(localStorage) } catch {}
     // "Connect without account" users have NO Supabase session — the osborn-*
     // localStorage flags are what keep them connected, so signOut() alone is a
     // no-op and redirecting just bounces them straight back in. Clear the local

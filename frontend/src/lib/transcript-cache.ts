@@ -15,7 +15,7 @@
 // and it is cleared on sign-out. All reads/writes are wrapped so a blocked or
 // full localStorage degrades to "no cache" rather than throwing.
 
-import { clearKeysByPrefix, type KeyedStorage } from './chat-url'
+import { clearKeysByPrefix, clearLiveSessionRecords, type KeyedStorage } from './chat-url'
 
 export const TRANSCRIPT_CACHE_PREFIX = 'vn-chat-transcript'
 
@@ -44,8 +44,9 @@ export interface CachedMessage {
 }
 
 /** The shape this cache reads off a live transcript message (structural — the
- * component's ChatMessage satisfies it without importing the UI type here). */
-export interface TranscriptInput {
+ * component's ChatMessage satisfies it without importing the UI type here).
+ * Internal: consumed only by serializeTranscript/cacheTranscript in this file. */
+interface TranscriptInput {
   id: string
   role: 'user' | 'assistant' | 'system'
   content?: string
@@ -158,4 +159,15 @@ export function readCachedTranscript(
 export function clearCachedTranscripts(storage?: CacheStorage): void {
   const store = resolveStorage(storage)
   if (store) clearKeysByPrefix(store, TRANSCRIPT_CACHE_PREFIX)
+}
+
+/** Wipe everything scoped to the signed-in account in localStorage: the
+ * live-session take-over records and the cached transcripts. One call so a sign-
+ * out site can't clear one and forget the other (and the next per-account cache
+ * is added here, not at three pages). Called from every sign-out path. */
+export function clearSignOutLocalState(storage?: CacheStorage): void {
+  const store = resolveStorage(storage)
+  if (!store) return
+  clearLiveSessionRecords(store)
+  clearCachedTranscripts(store)
 }

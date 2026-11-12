@@ -10,7 +10,6 @@ import {
   clearCachedTranscripts,
   serializeTranscript,
   type CacheStorage,
-  type TranscriptInput,
 } from '../src/lib/transcript-cache'
 
 let pass = 0, fail = 0
@@ -33,7 +32,10 @@ function fakeStorage(): CacheStorage & { map: Map<string, string> } {
   }
 }
 
-const msg = (over: Partial<TranscriptInput>): TranscriptInput => ({
+// Local structural shape for a live transcript message (TranscriptInput is
+// internal to the lib); serializeTranscript accepts anything of this shape.
+type Input = { id: string; role: 'user' | 'assistant' | 'system'; content?: string; timestamp?: Date | string | number | null; compaction?: unknown; isStreaming?: boolean }
+const msg = (over: Partial<Input>): Input => ({
   id: 'm1', role: 'user', content: 'hello', timestamp: new Date('2026-11-11T19:00:00Z'), ...over,
 })
 
@@ -78,7 +80,7 @@ t('never clobbers a good cache with an empty transcript', () => {
 
 t('content is capped and tail is bounded', () => {
   const s = fakeStorage()
-  const many: TranscriptInput[] = []
+  const many: Input[] = []
   for (let i = 0; i < 200; i++) many.push(msg({ id: `m${i}`, content: `msg ${i}` }))
   many.push(msg({ id: 'big', content: 'x'.repeat(10000) }))
   cacheTranscript('sess', many, s)
