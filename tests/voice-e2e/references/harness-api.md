@@ -41,3 +41,26 @@
 
 ## Self-hosting the cloud engine (Fly)
 From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 --shared` + `fly ips allocate-v6` (Machines-API-created apps get NO public IPs), set secrets (GOOGLE_API_KEY, OSBORN_ENGINE_TOKEN required; stream token strongly advised — see streaming.md). You get wake-on-visit (~40s to pixels), idle self-stop, full-window capture (Xvfb+openbox+x11grab: real tab strip at real-time speed), tab-state restore across sleep. Updating = `fly deploy` from a fresh bundle; the version probe says when you're stale.
+
+## v24 additions
+
+- **Control API on the stream port.** `https://<app>.fly.dev/control/<action>`
+  forwards to the control server with the same `x-engine-token`. Use it when
+  `:8781` is not reachable (443-only sandboxes and proxies). 403 when the
+  engine has no token configured; 503 `engine_booting` until the control
+  server is listening.
+- **`/act` response**: `effect {changed, noop, urlBefore, urlAfter, titleAfter,
+  scrollBefore, scrollAfter}`, `warning`, `result.did`, `brainModel`. Failures:
+  `brain_error` (502, provider message), `brain_unavailable` (503),
+  `bad_request` (400).
+- **Async**: `POST /act|/say {"async":true}` → 202 `{job, resultUrl}`;
+  `GET /result?id=<job>` → 202 `{done:false, runningSec}` or 200
+  `{done:true, status, ...the synchronous response}`.
+- **Tabs**: `takeover` / `handback` (supervisor borrows a driver's tab; the
+  driver gets 409 `paused_by_supervisor` with `retryAfterSec`); `release` is
+  owner-only; switching onto another driver's tab is 409 `tab_owned`; unknown
+  op is 400, bad index 404. `/status.takeovers` lists active takeovers.
+- **Brain**: provider fallback Gemini → Anthropic → z.ai
+  (`GOOGLE_API_KEY`/`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `Z_AI_API_KEY`);
+  `/status.brainModel`, `/status.brainError`; `POST /brain` re-picks.
+- **Env**: `OSBORN_CHROMIUM_PATH` uses an existing Chromium binary.

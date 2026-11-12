@@ -73,6 +73,16 @@ export default function ChatPage() {
       <main className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center p-8 gap-4">
         <p className="text-red-400 text-sm">{error}</p>
         <div className="flex gap-3">
+          {/* #140: "Sign in to connect…" was a dead end — Retry can only 401
+              again. Offer the one action that actually resolves it. */}
+          {/sign in/i.test(error) && (
+            <a
+              href="/login"
+              className="px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--background)] text-sm font-medium hover:opacity-90 transition-opacity"
+            >
+              Sign in
+            </a>
+          )}
           <button
             onClick={reconnect}
             className="px-4 py-2 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)] text-sm hover:bg-[var(--surface-raised)] transition-colors"
