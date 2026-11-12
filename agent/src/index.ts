@@ -318,31 +318,20 @@ let agentActiveProvider: ActiveProvider | null = null
 let agentKeyHealth: KeyHealthEntry[] | null = null
 
 /**
- * (Re)derive the active model tier from applyAuthFallback() — the single source of
- * truth, since the tier is known at decision time — and publish it to /health +
- * agent_ready. Re-running it after a mid-session sign-in is also self-healing: if
- * the sign-in did NOT land, the redirect the auth path cleared is re-applied.
+ * House-tier key self-test (#87) for whichever tier is active, fire-and-forget so
+ * it costs the connect path nothing. A user's OWN Anthropic key is skipped — the
+ * SDK surfaces its failures directly. Always clears the previous tier's verdict
+ * first, so a tier swap cannot leave a stale "No working model" on screen.
  */
-function refreshActiveProvider(): ActiveProvider {
-  const provider = applyAuthFallback()
-  agentActiveProvider = provider === 'none' ? null : provider
-  console.log(`🧭 Active model provider: ${provider}`)
-  return provider
-}
-
-/**
- * HOUSE-tier key self-test (#87): ONE tiny real request, fire-and-forget, so it
- * costs the connect path nothing. House tiers only — a user's OWN Anthropic key is
- * their concern and the SDK surfaces its failures directly. Always clears the
- * previous tier's verdict first, so a sign-in that swaps tiers cannot leave a
- * stale "No working model" on screen.
- */
-function startKeyHealthProbe(provider: ActiveProvider): void {
+function startKeyHealthProbe(): void {
+  const provider = agentActiveProvider
   agentKeyHealth = null
   if (provider !== 'zai' && provider !== 'openrouter') return
   void probeActiveProviderKey(provider)
     .then((entry) => {
-      if (!entry) return
+      // The tier may have changed while this 8s probe was in flight (a sign-in
+      // mid-session) — a late verdict for the tier we left is not news.
+      if (!entry || agentActiveProvider !== provider) return
       agentKeyHealth = [entry]
       console.log(`${entry.status === 'ok' ? '✅' : '⚠️'} [key-health] ${entry.provider} self-test: ${entry.status}`)
     })
@@ -824,9 +813,8 @@ function startApiServer(workingDir: string, port: number): void {
         // Whole-machine memory — what the OOM killer watches. All values in MB.
         memory: { totalMb, usedMb, availableMb, usedPct, processRssMb },
         // #87: the tier actually answering + its key self-test. `provider` is the
-        // LIVE reading (agent_ready fires once, so it goes stale the moment a
-        // mid-session sign-in swaps the tier); keyHealth is absent until the probe
-        // lands. The frontend shows "No working model" when every entry failed.
+        // LIVE reading — agent_ready fires once, so it goes stale the moment a
+        // mid-session sign-in swaps the tier.
         ...(agentActiveProvider ? { provider: agentActiveProvider } : {}),
         ...(agentKeyHealth ? { keyHealth: agentKeyHealth } : {}),
       }))
@@ -5230,10 +5218,11 @@ async function main() {
     // BEFORE session creation so the OpenRouter redirect env vars (tier 3) are
     // set before the first query() spawn inherits process.env. No-op for
     // tier-1 (real Claude login) and tier-2 (user's own ANTHROPIC_API_KEY).
-    // #87: refreshActiveProvider() also records WHICH tier it selected, driving
-    // agent_ready.provider + /health so the badge names the real model instead of
-    // the old hardcoded 'claude'. Its key self-test fires after session start.
-    const activeProvider: ActiveProvider = refreshActiveProvider()
+    // #87: record WHICH tier it selected — that drives agent_ready.provider and
+    // /health. The key self-test for it fires after session start.
+    const activeProvider = applyAuthFallback()
+    agentActiveProvider = activeProvider === 'none' ? null : activeProvider
+    console.log(`🧭 Active model provider: ${activeProvider}`)
 
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession
@@ -5309,7 +5298,7 @@ async function main() {
     currentAgent = agent  // Store for updateChatCtx() context injection
 
     // #87: the session is live — NOW run the house-tier key self-test.
-    startKeyHealthProbe(activeProvider)
+    startKeyHealthProbe()
 
     // CLICK-TIME OVERLAP (default-ON; OSBORN_CONNECT_OVERLAP=off): for a resumed
     // session, kick the JSONL replay NOW (fire-and-forget) so it overlaps the
@@ -6195,11 +6184,14 @@ async function main() {
               // sessions restart BEFORE their next turn (deferred — a streaming
               // turn finishes normally), resuming the same sessionId on Claude.
               if (!fallbackCleared) return
-              // The tier just changed under a live session: re-derive it and drop
-              // the old tier's verdict BEFORE the respawn, or /health keeps serving
-              // {provider:'zai', status:'expired'} and the UI claims "The session
-              // can't answer" while Claude answers fine.
-              startKeyHealthProbe(refreshActiveProvider())
+              // Publish the new tier and drop the dead one's verdict BEFORE the
+              // respawn, or /health keeps serving {provider:'zai', status:'expired'}
+              // and the UI claims "The session can't answer" while Claude answers
+              // fine. fallbackCleared is only reachable once Claude auth really
+              // exists (every other outcome of the flow rejects), including the
+              // CLI/Keychain case that isClaudeAuthenticated() cannot see.
+              agentActiveProvider = 'claude'
+              startKeyHealthProbe()
               requestAuthRestart()
             })
           }
