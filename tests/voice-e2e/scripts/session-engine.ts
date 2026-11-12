@@ -1257,11 +1257,16 @@ async function main() {
           const MAX_SAY_ATTEMPTS = Math.max(1, Number(process.env.OSBORN_SAY_RETRIES ?? 2))
           let sayErr: Error | null = null
           for (let attempt = 1; attempt <= MAX_SAY_ATTEMPTS; attempt++) {
-            try { await speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { playStartMs = Date.now() } }); sayErr = null; break }
+            // Each attempt is capped at 30s, and a retry only if the turn has room (#204).
+            try {
+              await Promise.race([speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { playStartMs = Date.now() } }),
+                new Promise<never>((_, rej) => setTimeout(() => rej(new Error('speaking took over 30s')), 30000))])
+              sayErr = null; break
+            }
             catch (e) {
               sayErr = e as Error
               const m = sayErr.message || ''
-              if (/mic/i.test(m)) break
+              if (/mic/i.test(m) || Date.now() - tReq > 35000) break
               if (attempt < MAX_SAY_ATTEMPTS) {
                 mark(`say[${driver}] transient fail (attempt ${attempt}/${MAX_SAY_ATTEMPTS}): ${m.slice(0, 60)} — retrying`)
                 await active.waitForTimeout(retryDelayMs(attempt)).catch(() => {})
@@ -1275,9 +1280,11 @@ async function main() {
             try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
             const fn = ++reqN
             const fshot = await reqShot(fn, 'say')
-            stampTask(fn, 'say', t0, null, fshot, body.text)
+            const fw = stampTask(fn, 'say', t0, null, fshot, body.text)
+            timings.speak = Date.now() - tReq; timings.total = timings.speak; (fw as any).timings = timings; writeManifest()
             return json(res, {
               ok: false,
+              timings,
               code: noMic ? 'no_mic' : 'speak_failed',
               error: noMic
                 ? `this page has no open microphone — Say needs a Voice Native /chat tab (open one first). (${msg})`
@@ -1341,9 +1348,9 @@ async function main() {
             : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say', page)
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard, page)
-          ;(window as any).clipAudio = audio; writeManifest()
-          addStep('say', String(body.text))
           timings.total = Date.now() - tReq
+          ;(window as any).clipAudio = audio; (window as any).timings = timings; writeManifest()
+          addStep('say', String(body.text))
           return json(res, { ok: true, timings, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
