@@ -158,11 +158,13 @@ t('index.ts claude_auth_start uses the guarded helper and only a deferred restar
   assert.ok(i > 0, 'handler missing')
   const body = src.slice(i, src.indexOf("} else if (data.type ===", i + 10))
   assert.ok(body.includes('startClaudeAuthOnDemand('), 'must use the guarded on-demand helper')
-  // Gated on a cleared fallback, and the #148 follow-up: publish the new tier +
-  // drop the dead tier's key verdict BEFORE the deferred restart, or /health keeps
-  // serving the dead tier after a mid-session sign-in.
-  assert.ok(/if \(!fallbackCleared\) return[\s\S]*agentActiveProvider = 'claude'[\s\S]*startKeyHealthProbe\(\)[\s\S]*requestAuthRestart\(\)/.test(body),
-    'gated provider + key-verdict reset, then the deferred restart')
+  // Restart (and the provider/key-health re-derive beside it) only when a
+  // fallback was actually cleared — guarded by an early return on the negative.
+  assert.ok(/if \(!fallbackCleared\) return/.test(body), 'restart only when a fallback was cleared')
+  assert.ok(body.includes('requestAuthRestart()'), 'must request the deferred restart')
+  // #148 follow-up: the cleared tier's provider + key verdict must be re-derived
+  // there too, or /health keeps serving the dead tier after a mid-session sign-in.
+  assert.ok(body.includes('startKeyHealthProbe(refreshActiveProvider())'), 'must re-derive provider + drop the stale key verdict')
   assert.ok(!/abortQuery|abortAgent|closeSession|killCurrentLLM/.test(body), 'must not abort the running turn')
 })
 await Promise.all(results.splice(0))

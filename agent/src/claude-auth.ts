@@ -395,18 +395,25 @@ export function applyAuthFallback(): ActiveProvider {
  */
 export type ActiveProvider = 'claude' | 'anthropic' | 'zai' | 'openrouter' | 'none'
 
-/** One fallback key's self-test result, as served on GET /health. */
+/** One fallback key's self-test result. Mirrors the frontend KeyHealthEntry. */
 export interface KeyHealthEntry {
+  /** Provider key, e.g. 'zai' | 'openrouter' | 'anthropic'. */
   provider: string
+  /** Outcome of the tiny real request. */
   status: 'ok' | 'failed' | 'expired'
 }
 
 /**
- * A /v1/messages probe's HTTP status → key-health verdict, or null when the
- * outcome is ambiguous: only a DEFINITIVE credential/billing failure earns a
- * negative verdict, because a transient blip must never fabricate "No working
- * model". 403 is deliberately ambiguous — a WAF/edge block or gateway throttle in
- * front of api.z.ai or openrouter.ai answers 403 for a perfectly good key.
+ * Classify a /v1/messages probe's HTTP status into a key-health verdict, or null
+ * when the outcome is ambiguous. Only a DEFINITIVE credential/billing failure
+ * earns a negative verdict — a transient blip must never fabricate "No working
+ * model" in the UI.
+ *   2xx, 429      → ok       (the key answered; 429 = valid but throttled)
+ *   401           → expired  (the only definitive credential rejection)
+ *   402           → failed   (billing / credit depleted)
+ *   anything else → null     (no verdict). 403 lands here on purpose: a WAF /
+ *     edge block or gateway rate-limit in front of api.z.ai or openrouter.ai
+ *     answers 403 for a perfectly good key, so it is NOT evidence of a dead one.
  */
 export function classifyProbeStatus(httpStatus: number): 'ok' | 'failed' | 'expired' | null {
   if (httpStatus >= 200 && httpStatus < 300) return 'ok'
@@ -418,11 +425,20 @@ export function classifyProbeStatus(httpStatus: number): 'ok' | 'failed' | 'expi
 
 /**
  * Fire ONE minimal request against the ACTIVE provider endpoint to confirm the
- * configured key can really answer (#87, gap 5) — applyAuthFallback() picks a tier
- * on key PRESENCE, which is not validity. Reads the env that function just set, so
- * it tests exactly what query() will use; every fallback tier speaks native
- * Anthropic Messages, so one request shape covers them. Returns null when there
- * was nothing to test or the outcome was ambiguous — never a fabricated failure.
+ * configured key can really answer (#87, gap 5). applyAuthFallback() picks a tier
+ * because a key is PRESENT, but presence is not validity — the observed test
+ * account had a failing z.ai key and an expired OpenRouter key, and nothing said
+ * so: the session showed "Listening" and silently never replied (the #70 symptom).
+ *
+ * Reads the env applyAuthFallback() set just above (ANTHROPIC_BASE_URL /
+ * ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY / ANTHROPIC_MODEL), so it tests
+ * exactly what query() will use; every fallback tier speaks native Anthropic
+ * Messages, so one request shape covers them. The caller runs it fire-and-forget
+ * AFTER the session starts and only for the house tiers — never on the Claude
+ * path, never on the connect critical path.
+ *
+ * Returns the verdict entry, or null when there was nothing to test or the
+ * outcome was ambiguous (never a fabricated failure).
  */
 export async function probeActiveProviderKey(
   provider: string,

@@ -117,8 +117,9 @@ check('resolveAgentHealth: empty key list is not "all failed"', () => {
 // --- resolveAgentHealth: mainProvider gating (house tier in, Claude out) -----
 const DEAD: KeyHealthEntry[] = [{ provider: 'zai', status: 'expired' }]
 check('resolveAgentHealth: house-tier provider alone shows the notice (no auth modal)', () => {
-  assert.equal(resolveAgentHealth({ version: '0.9.278', mainProvider: 'zai', keyHealth: DEAD }).level, 'keys-failed')
-  assert.equal(resolveAgentHealth({ version: '0.9.278', mainProvider: 'openrouter', keyHealth: DEAD }).level, 'keys-failed')
+  const v = resolveAgentHealth({ version: '0.9.278', mainProvider: 'zai', keyHealth: DEAD })
+  assert.equal(v.level, 'keys-failed')
+  assert.equal(resolveAgentHealth({ version: '0.9.268', mainProvider: 'openrouter' }).level, 'version-floor')
 })
 check('resolveAgentHealth: a Claude provider overrules the sticky fallback flag', () => {
   // Mid-session sign-in: claudeAuthEverRequired stays true forever, but the
@@ -129,7 +130,7 @@ check('resolveAgentHealth: a Claude provider overrules the sticky fallback flag'
 check("resolveAgentHealth: a user's own anthropic key is not a demo-tier concern", () => {
   assert.equal(resolveAgentHealth({ version: '0.9.278', relyingOnFallback: true, mainProvider: 'ANTHROPIC', keyHealth: DEAD }).show, false)
 })
-check('resolveAgentHealth: unknown provider leaves the sticky flag in charge', () => {
+check('resolveAgentHealth: unknown/absent provider leaves the flag in charge', () => {
   assert.equal(resolveAgentHealth({ version: '0.9.278', mainProvider: null, keyHealth: DEAD }).show, false)
   assert.equal(resolveAgentHealth({ version: '0.9.278', relyingOnFallback: true, mainProvider: null, keyHealth: DEAD }).level, 'keys-failed')
 })

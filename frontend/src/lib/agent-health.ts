@@ -97,10 +97,16 @@ export interface AgentHealthInput {
    * The session is relying on a configured fallback rather than a real Claude
    * login — i.e. the agent asked for Claude sign-in at least once this session
    * (VoiceRoom's `claudeAuthEverRequired`). It is sticky — a mid-session sign-in
-   * never clears it — so `mainProvider` has the last word.
+   * never clears it — so `mainProvider` below has the last word.
    */
   relyingOnFallback?: boolean
-  /** The tier the agent says it is answering on (GET /health → provider). */
+  /**
+   * The tier the agent says it is actually answering on (GET /health → provider,
+   * seeded by agent_ready.provider). The house demo tiers ('zai' / 'openrouter')
+   * imply the fallback path even when the auth modal never opened; 'claude' or
+   * the user's own 'anthropic' key means the demo tier's health is irrelevant,
+   * whatever the modal did earlier in the session.
+   */
   mainProvider?: string | null
   /** The active tier's self-test result(s) from GET /health (absent = no verdict). */
   keyHealth?: KeyHealthEntry[]
@@ -118,14 +124,15 @@ const OK: AgentHealthView = { level: 'ok', label: null, title: '', show: false }
  */
 export function resolveAgentHealth(input: AgentHealthInput): AgentHealthView {
   const floor = input.floor || FALLBACK_VERSION_FLOOR
-  // Only surface fallback-health problems to a user actually on the fallback path.
-  // Gated on the WIRE provider keys (agent_ready / GET /health), not modelBadge's
-  // display labels — a presentation rename must not silence a health notice. A
-  // declared Claude tier (or the user's own key) overrules the sticky "sign-in was
-  // asked once" flag, which a mid-session sign-in never clears.
-  const p = String(input.mainProvider || '').trim().toLowerCase()
-  if (p === 'claude' || p === 'anthropic') return OK
-  if (input.relyingOnFallback !== true && p !== 'zai' && p !== 'openrouter') return OK
+  const provider = String(input.mainProvider || '').trim().toLowerCase()
+
+  // Only surface fallback-health problems to a user who is actually on the
+  // fallback path. A Claude-connected session is not blocked by the demo tier —
+  // including one that signed in mid-session, which is why a declared
+  // claude/anthropic provider overrules the sticky "sign-in was asked" flag.
+  if (provider === 'claude' || provider === 'anthropic') return OK
+  const onHouseTier = provider === 'zai' || provider === 'openrouter'
+  if (input.relyingOnFallback !== true && !onHouseTier) return OK
 
   // 1. Version floor — the most fundamental: no fallback can run at all.
   if (isBelowFallbackFloor(input.version, floor)) {

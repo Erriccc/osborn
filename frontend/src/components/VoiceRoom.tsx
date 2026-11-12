@@ -374,8 +374,8 @@ function VoiceRoomInner({
   useEffect(() => () => onAuthInProgressRef.current?.(false), [])
   const [agentConnected, setAgentConnected] = useState(false)
   // #87 model/provider badge — driven by REAL server signals, never the agent's
-  // prose self-report. `mainProvider` ← agent_ready.provider, then kept live by
-  // the GET /health → { provider } poll below; `agentVersion` ← that same /health.
+  // prose self-report. `mainProvider` ← agent_ready.provider (declared main-brain
+  // provider); `agentVersion` ← GET /health → { version } (already polled below).
   const [mainProvider, setMainProvider] = useState<string | null>(null)
   const [agentVersion, setAgentVersion] = useState<string | null>(null)
   // #87: per-key self-test results from GET /health (agent probes the active
@@ -4081,8 +4081,13 @@ function VoiceRoomInner({
             <ModelBadge provider={mainProvider} version={agentVersion} connected={agentConnected} />
 
             {/* #87 gap 3 — surface a SILENT failure the session would otherwise
-                hide: an agent too old for the demo-model fallback, or a failed key
-                self-test. resolveAgentHealth owns which sessions that applies to. */}
+                hide: an agent too old for the demo-model fallback (version floor),
+                or a failed key self-test. resolveAgentHealth owns which sessions
+                that applies to: the auth modal having opened at least once
+                (claudeAuthEverRequired — the pre-fallback/old-agent path) OR a
+                declared house-tier provider (the smooth fallback path never opens
+                the modal), while a claude/anthropic provider rules it out. Same
+                real /health signals as the badge; never fabricates a status. */}
             <AgentHealthNotice
               version={agentVersion}
               relyingOnFallback={claudeAuthEverRequired}
