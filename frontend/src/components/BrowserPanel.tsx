@@ -103,6 +103,8 @@ export function BrowserPanel() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const imgRef = useRef<HTMLImageElement | null>(null)
   const typedRef = useRef<{ text: string; timer: ReturnType<typeof setTimeout> | null }>({ text: '', timer: null })
+  const scrollRef = useRef<{ dy: number; timer: ReturnType<typeof setTimeout> | null }>({ dy: 0, timer: null })
+  const inputChain = useRef<Promise<unknown>>(Promise.resolve())
   const streamKickRef = useRef(0)
 
   // No-wake awake/asleep probe (Fly Machines API via the proxy). If the probe
@@ -224,12 +226,21 @@ export function BrowserPanel() {
     await post('recover', {}, 'reload tab')
   }
   const takeControl = () => activeI != null && post('tab', { op: 'takeover', i: activeI }, 'take control')
-  const handBack = () => activeI != null && post('tab', { op: 'handback', i: activeI }, 'hand back')
-  // While in control: the picture is the page. Clicks land where you click,
-  // typing is sent in short bursts, special keys and the wheel pass through.
-  const sendInput = (body: Record<string, unknown>) => fetch(api('input'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    .then(async (r) => { if (!r.ok) { const d = await r.json().catch(() => ({})); setNote(d?.error || `input failed: ${r.status}`) } })
-    .catch(() => setNote('input failed: engine unreachable'))
+  // A takeover is handed back to the agent; a tab you opened is released.
+  const handBack = () => activeI != null && post('tab', { op: shownTakeover ? 'handback' : 'release', i: activeI }, 'hand back')
+  // One request at a time, in order: a click then fast typing must not race.
+  const sendNow = (body: Record<string, unknown>) => {
+    inputChain.current = inputChain.current.then(() => fetch(api('input'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(async (r) => { if (!r.ok) { const d = await r.json().catch(() => ({})); setNote(d?.error || `input failed: ${r.status}`) } })
+      .catch(() => setNote('input failed: engine unreachable')))
+  }
+  const flushTyped = () => {
+    const t = typedRef.current
+    if (t.timer) { clearTimeout(t.timer); t.timer = null }
+    if (t.text) { const text = t.text; t.text = ''; sendNow({ type: 'type', text }) }
+  }
+  // Anything but more typing first sends the text still held back.
+  const sendInput = (body: Record<string, unknown>) => { flushTyped(); sendNow(body) }
   const onPictureClick = (e: MouseEvent<HTMLDivElement>) => {
     const img = imgRef.current
     if (!inControl || !img?.naturalWidth) return
@@ -250,12 +261,18 @@ export function BrowserPanel() {
     if (e.key.length === 1) {
       t.text += e.key
       if (t.timer) clearTimeout(t.timer)
-      t.timer = setTimeout(() => { const text = t.text; t.text = ''; t.timer = null; if (text) sendInput({ type: 'type', text }) }, 150)
+      t.timer = setTimeout(flushTyped, 150)
     } else if (['Enter', 'Backspace', 'Tab', 'Escape', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
       sendInput({ type: 'key', key: e.key })
     }
   }
-  const onPictureWheel = (e: WheelEvent<HTMLDivElement>) => { if (inControl && Math.abs(e.deltaY) > 2) sendInput({ type: 'scroll', dy: Math.round(e.deltaY) }) }
+  // Trackpads fire ~60 wheel events a second: add them up, send every 200ms.
+  const onPictureWheel = (e: WheelEvent<HTMLDivElement>) => {
+    if (!inControl) return
+    const sc = scrollRef.current
+    sc.dy += e.deltaY
+    if (!sc.timer) sc.timer = setTimeout(() => { const dy = Math.round(sc.dy); sc.dy = 0; sc.timer = null; if (Math.abs(dy) > 2) sendInput({ type: 'scroll', dy }) }, 200)
+  }
   const stopEngine = async () => {
     if (!confirm('Stop the browser engine? Any in-flight run ends and the machine sleeps.')) return
     await post('end', {}, 'stop')
@@ -286,11 +303,21 @@ export function BrowserPanel() {
   const shownOwner = status?.tabsByOwner?.find((o) => o.i === activeI)?.owner ?? null
   const me = engine?.driver
   const shownTakeover = status?.takeovers?.find((t) => t.i === activeI) ?? null
-  const inControl = !!me && shownTakeover?.by === me
+  // In control: you took the tab over, or it is simply yours (you opened it).
+  const inControl = !!me && (shownTakeover ? shownTakeover.by === me : shownOwner === me)
   const label = (d: string | null | undefined) => (d && d === me ? 'you' : d?.replace(/^person:/, '') ?? '')
   const blank = watching && !!status && blankPage(status.pageUrl)
 
 
+  // Closing the page while in control hands the tab back instead of leaving the
+  // agent paused (the engine also hands back after 10 idle minutes).
+  useEffect(() => {
+    if (!inControl || !shownTakeover || activeI == null) return
+    const i = activeI
+    const bye = () => navigator.sendBeacon(api('tab'), new Blob([JSON.stringify({ op: 'handback', i })], { type: 'application/json' }))
+    window.addEventListener('pagehide', bye)
+    return () => window.removeEventListener('pagehide', bye)
+  }, [inControl, shownTakeover, activeI])
   const copyShare = async () => {
     try { await navigator.clipboard.writeText(window.location.href); setNote('Link copied') } catch { setNote('Copy failed') }
   }
@@ -388,13 +415,13 @@ export function BrowserPanel() {
         inControl ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
             <span><span className="font-semibold">You have control.</span> Click, type and scroll in the picture.{shownTakeover?.prevOwner ? ` ${label(shownTakeover.prevOwner)} is paused until you hand back.` : ''}</span>
-            <button onClick={handBack} disabled={!!busy} className="rounded-lg bg-emerald-500 px-3 py-1 font-medium text-black hover:bg-emerald-400 disabled:opacity-50">I’m done, hand back</button>
+            <button onClick={handBack} disabled={!!busy} className="rounded-lg bg-emerald-500 px-3 py-1 font-medium text-black hover:bg-emerald-400 disabled:opacity-50">{shownTakeover ? 'I’m done, hand back' : 'Let agents use this tab'}</button>
           </div>
         ) : shownTakeover ? (
           <div className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">{label(shownTakeover.by)} has control of this tab.</div>
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">
-            <span>{shownOwner ? `${label(shownOwner)} is driving this tab. Taking control pauses it until you hand back.` : 'Nobody is driving this tab.'}</span>
+            <span>{shownOwner ? `${label(shownOwner)} ${shownOwner === me ? 'are' : 'is'} driving this tab. Taking control pauses it until you hand back.` : 'Nobody is driving this tab.'}</span>
             <button onClick={takeControl} disabled={!!busy} className="rounded-lg border border-neutral-600 px-3 py-1 text-neutral-200 hover:bg-neutral-800 disabled:opacity-50">Take control</button>
           </div>
         )

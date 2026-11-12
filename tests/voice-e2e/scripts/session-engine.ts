@@ -603,7 +603,19 @@ async function main() {
   // tab and hands it back. While borrowed, the original driver's requests get
   // a 409 that says "paused, retry" (not "open your own tab"), and handback
   // restores its ownership so it resumes exactly where the supervisor left it.
-  const takeovers = new Map<Page, { by: string; prevOwner: string | null; since: number }>()
+  const takeovers = new Map<Page, { by: string; prevOwner: string | null; since: number; seen?: number }>()
+  // A person who closes the panel while in control must not pause the agent
+  // forever: a takeover with no input for 10 minutes is handed back.
+  const TAKEOVER_IDLE_MS = 10 * 60 * 1000
+  setInterval(() => {
+    for (const [p, tk] of takeovers) {
+      if (Date.now() - (tk.seen ?? tk.since) < TAKEOVER_IDLE_MS) continue
+      takeovers.delete(p)
+      if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+      mark(`tab HANDBACK (idle takeover by ${tk.by}): ${context.pages().indexOf(p)}`)
+      notify('handback', { i: context.pages().indexOf(p), by: tk.by, owner: tk.prevOwner, url: p.url(), reason: 'idle' })
+    }
+  }, 60000).unref()
   const guardOwnership = (driver: string): Record<string, unknown> | null => {
     const t = driverActive.get(driver) ?? active
     const o = tabOwners.get(t)?.owner
@@ -1490,10 +1502,7 @@ async function main() {
         return json(res, { ok: true, brain: 'ready', brainModel, stt: sttHealth })
       }
       if (path === '/input') {
-        // A person driving by hand from the live view: click / type / key /
-        // scroll on the caller's tab. x,y are fractions of the streamed frame,
-        // which shows the whole browser window, so the browser's own top bar
-        // (tabs + address bar) is subtracted to land in page coordinates.
+        // A person driving by hand from the live view (x,y = fractions of the streamed frame).
         const driver = driverId(req)
         return await withLock(async () => {
           await focusDriverTab(driver)
@@ -1516,6 +1525,7 @@ async function main() {
           else if (kind === 'scroll') await page.mouse.wheel(0, Math.max(-5000, Math.min(5000, Number(body.dy) || 0)))
           else return json(res, { ok: false, code: 'bad_request', error: 'type must be click | type | key | scroll' }, 400)
           touchTab(page)
+          const tk = takeovers.get(page); if (tk) tk.seen = Date.now()
           return json(res, { ok: true, driver, url: page.url() })
         })
       }
