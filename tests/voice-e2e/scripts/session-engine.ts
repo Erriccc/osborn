@@ -56,6 +56,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from '@playwri
 import { Stagehand } from '@browserbasehq/stagehand'
 import { createServer } from 'http'
 import { execFile } from 'child_process'
+import { createHmac, randomBytes } from 'crypto'
 import { promisify } from 'util'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync } from 'fs'
 import { join, dirname } from 'path'
@@ -66,7 +67,7 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince } from '../lib/converse'
-import { actWithCache } from '../lib/step-cache'
+import { actWithCache, forgetCached } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
 import { attachDevtools, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
@@ -95,7 +96,7 @@ mkdirSync(RUN_DIR, { recursive: true })
 
 // Retention: keep the newest OSBORN_KEEP_RUNS run folders (counting this one),
 // prune the rest at startup so the artifact dir can't balloon.
-const KEEP_RUNS = Number(process.env.OSBORN_KEEP_RUNS ?? 10)
+const KEEP_RUNS = Number(process.env.OSBORN_KEEP_RUNS ?? 30)
 try {
   const old = readdirSync(RUNS_ROOT).filter((d) => d !== RUN_STAMP).sort()
   for (const d of old.slice(0, Math.max(0, old.length - (KEEP_RUNS - 1))))
@@ -252,19 +253,56 @@ async function main() {
   // WHY the brain is down (missing key, bad key, CDP attach failure) — carried
   // on /status and every refused /act so a director never has to guess.
   let brainError: string | null = null
+  // BRAIN PROVIDER FALLBACK (ported from b8dd898 on
+  // fix/engine-voice-deepgram-gemini): a single depleted key (Gemini prepay
+  // ran dry, 402) must not leave the engine brainless. Probe each configured
+  // key with a 1-token real completion and build the brain on the first
+  // provider that answers: Gemini → Anthropic → z.ai (Anthropic-compatible).
+  // Keys travel in headers, never in a URL, so a failed probe can't leak one
+  // into a log line.
+  let brainModel = ''
+  const pickBrainModel = async (): Promise<{ model: string; opts: Record<string, string> }> => {
+    const tried: string[] = []
+    const probe = async (name: string, url: string, headers: Record<string, string>, body: unknown): Promise<boolean> => {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) }).catch(() => null)
+      if (r?.ok) return true
+      tried.push(`${name} ${r ? r.status : 'network'}`)
+      mark(`brain: ${name} probe failed (${r ? r.status : 'network'}) — trying next provider`)
+      return false
+    }
+    const anthropicBody = (model: string) => ({ model, max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] })
+    const g = optionalEnvKey('GOOGLE_API_KEY') || optionalEnvKey('GEMINI_API_KEY')
+    if (g && await probe('gemini', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', { 'x-goog-api-key': g },
+      { contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } })) return { model: 'google/gemini-2.5-flash', opts: { apiKey: g } }
+    const a = optionalEnvKey('ANTHROPIC_API_KEY')
+    if (a && await probe('anthropic', 'https://api.anthropic.com/v1/messages', { 'x-api-key': a, 'anthropic-version': '2023-06-01' }, anthropicBody('claude-haiku-5-5')))
+      return { model: 'anthropic/claude-haiku-5-5', opts: { apiKey: a } }
+    const z = optionalEnvKey('Z_AI_API_KEY') || optionalEnvKey('ZAI_API_KEY')
+    if (z && await probe('z.ai', 'https://api.z.ai/api/anthropic/v1/messages', { 'x-api-key': z, 'anthropic-version': '2023-06-01' }, anthropicBody('glm-4.7')))
+      return { model: 'anthropic/glm-4.7', opts: { apiKey: z, baseURL: 'https://api.z.ai/api/anthropic/v1' } }
+    throw new Error(tried.length ? `no working brain key — ${tried.join(', ')}` : 'no brain key — set GOOGLE_API_KEY (or GEMINI_API_KEY), ANTHROPIC_API_KEY or Z_AI_API_KEY')
+  }
   const initBrain = async () => {
     brainAlive = false
     try {
-      const key = optionalEnvKey('GOOGLE_API_KEY') || optionalEnvKey('GEMINI_API_KEY')
-      if (!key) throw new Error('no Gemini key — set GOOGLE_API_KEY (or GEMINI_API_KEY)')
+      const picked = await pickBrainModel()
       const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = key
+      if (picked.model.startsWith('google/')) process.env.GOOGLE_GENERATIVE_AI_API_KEY = picked.opts.apiKey
+      // The Anthropic-compatible path (z.ai) lost its key when only passed as
+      // a client option alongside a custom baseURL ("Anthropic API key is
+      // missing" on every act). The provider SDK also reads these env vars,
+      // so set them for whichever Anthropic-style provider was picked.
+      if (picked.model.startsWith('anthropic/')) {
+        process.env.ANTHROPIC_API_KEY = picked.opts.apiKey
+        if (picked.opts.baseURL) process.env.ANTHROPIC_BASE_URL = picked.opts.baseURL; else delete process.env.ANTHROPIC_BASE_URL
+      }
       stagehand = new Stagehand({
         env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-        model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: key }, verbose: 0,
+        model: picked.model as any, modelClientOptions: picked.opts, verbose: 0,
       })
       await stagehand.init()
-      brainAlive = true; brainError = null
+      brainAlive = true; brainError = null; brainModel = picked.model
+      mark(`brain ready on ${picked.model}`)
     } catch (e) {
       brainError = ((e as Error).message || String(e)).slice(0, 200)
       throw e
@@ -306,6 +344,8 @@ async function main() {
   const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({}) } }) })
 
   let reqN = 0
+  const jobs = new Map<string, { done: boolean; path: string; startedAt: number; code?: number; body?: unknown }>()
+  let jobN = 0
   // PROOF MEDIA PER TASK (user requirement 2026-07-31): every /act and /say
   // returns BOTH a video clip (ring buffer + heartbeat frames, so it is a
   // continuous wall-clock record) AND a screenshot, in the SAME response —
@@ -422,11 +462,21 @@ async function main() {
     await live?.retarget(tab).catch(() => {})
   }
   // Enforced (not warned): a driver may not act on a tab OWNED BY ANOTHER.
-  const guardOwnership = (driver: string): string | null => {
+  // SUPERVISOR TAKEOVER — a human (or supervising agent) borrows a driver's
+  // tab and hands it back. While borrowed, the original driver's requests get
+  // a 409 that says "paused, retry" (not "open your own tab"), and handback
+  // restores its ownership so it resumes exactly where the supervisor left it.
+  const takeovers = new Map<Page, { by: string; prevOwner: string | null; since: number }>()
+  const guardOwnership = (driver: string): Record<string, unknown> | null => {
     const t = driverActive.get(driver) ?? active
     const o = tabOwners.get(t)?.owner
-    if (o && o !== driver) return `that tab is owned by "${o}" — you are "${driver}"; open your own tab (pass x-driver-id and /tab open)`
-    return null
+    if (!o || o === driver) return null
+    const tk = takeovers.get(t)
+    if (tk && tk.prevOwner === driver) return {
+      ok: false, code: 'paused_by_supervisor', by: tk.by, since: tk.since, retryAfterSec: 5,
+      error: `your tab is temporarily taken over by "${tk.by}" — do NOT open a new tab; retry this same request every ~5s until it succeeds, then re-check the page (the supervisor may have navigated)`,
+    }
+    return { ok: false, code: 'tab_owned', owner: o, error: `that tab is owned by "${o}" — you are "${driver}"; open your own tab (pass x-driver-id and /tab open)` }
   }
 
   // STATE ACROSS SLEEP — persist the tab layout (urls, active index, owners)
@@ -465,6 +515,32 @@ async function main() {
   // Self-host auth: when OSBORN_ENGINE_TOKEN is set (always on public
   // deployments — Fly exposes the control port), every request must carry it.
   const TOKEN = process.env.OSBORN_ENGINE_TOKEN
+  // PUBLIC EVIDENCE LINKS — proof an agent can actually paste into an issue.
+  // /clip and /artifact need the engine token, so a link to them is a 401 for
+  // every reader (and for GitHub's image proxy): testers "had" evidence but
+  // could not attach it. Each task now also gets signed, token-free URLs
+  //   /media/<run>/<n>.jpg | .mp4 | .txt ?s=<signature>
+  // that anyone holding the link can open, for as long as the run is kept
+  // (newest OSBORN_KEEP_RUNS runs on the volume — they survive restarts). The
+  // signature is an HMAC over run+file, so links cannot be guessed or walked.
+  const SHARE_SECRET = process.env.OSBORN_SHARE_SECRET || (TOKEN ? createHmac('sha256', TOKEN).update('osborn-share-links').digest('hex') : randomBytes(24).toString('hex'))
+  const shareSig = (run: string, file: string) => createHmac('sha256', SHARE_SECRET).update(`${run}/${file}`).digest('hex').slice(0, 24)
+  const evidenceFor = (base: string, run: string, n: number, has: { clip?: boolean; shot?: boolean }) => {
+    const u = (file: string) => `${base}/media/${run}/${file}?s=${shareSig(run, file)}`
+    const screenshot = has.shot ? u(`${n}.jpg`) : null
+    const clip = has.clip ? u(`${n}.mp4`) : null
+    const log = u(`${n}.txt`)
+    return {
+      run, task: n, public: true, screenshot, clip, log,
+      // Paste-ready: the image renders inline on GitHub, the rest are links.
+      markdown: [screenshot ? `![task ${n} screenshot](${screenshot})` : null, clip ? `[task ${n} clip (mp4)](${clip})` : null, `[task ${n} console + network log](${log})`].filter(Boolean).join('\n'),
+      note: `public links, no token needed; kept while run ${run} is among the newest ${KEEP_RUNS} runs — GET /evidence?run=${run}&n=${n} re-issues them`,
+    }
+  }
+  const loadRunTasks = (run: string): any[] | null => {
+    if (run === RUN_STAMP) return tasks as any[]
+    try { return JSON.parse(readFileSync(join(RUNS_ROOT, run.replace(/[^A-Za-z0-9T:-]/g, ''), 'manifest.json'), 'utf8')).tasks ?? [] } catch { return null }
+  }
   let ending = false
   let lastActivity = Date.now()
 
@@ -630,6 +706,29 @@ async function main() {
   const server = createServer(async (req, res) => {
     try {
       const path = (req.url || '').split('?')[0]
+      // Media/result URLs in responses are ABSOLUTE when the request came in
+      // through the stream-port passthrough (it tells us the public base), so
+      // a remote agent can fetch them as-is instead of guessing what a
+      // relative "/clip?n=1" is relative to. Direct :8781 callers get the
+      // same relative paths as before.
+      const mediaBase = String(req.headers['x-control-base'] || '')
+      if (req.method === 'GET' && path.startsWith('/media/')) {
+        // Signed public evidence — checked BEFORE the token gate on purpose.
+        const m = path.match(/^\/media\/([A-Za-z0-9T:-]+)\/(\d+)\.(jpg|mp4|txt)$/)
+        const sig = new URL(req.url || '', 'http://x').searchParams.get('s') || ''
+        if (!m || sig !== shareSig(m[1], `${m[2]}.${m[3]}`)) return json(res, { error: 'bad or missing evidence signature' }, 403)
+        const t = (loadRunTasks(m[1]) ?? []).find((t: any) => t.n === Number(m[2]))
+        if (!t) return json(res, { error: `run ${m[1]} task ${m[2]} is no longer stored (runs are pruned to the newest ${KEEP_RUNS})` }, 404)
+        if (m[3] === 'txt') {
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' })
+          return res.end(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`)
+        }
+        const file = m[3] === 'mp4' ? t.clip : t.artifact
+        if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}` }, 404)
+        res.writeHead(200, { 'Content-Type': m[3] === 'mp4' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size, 'Cache-Control': 'public, max-age=86400' })
+        createReadStream(file).pipe(res)
+        return
+      }
       if (TOKEN && req.headers['x-engine-token'] !== TOKEN) return json(res, { error: 'unauthorized — x-engine-token required' }, 401)
       // Any authenticated director command counts as activity for idle-stop.
       // /status is excluded (pollers/health checks must not keep it awake).
@@ -656,7 +755,7 @@ async function main() {
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
           agentUrl: AGENT_URL || null, agentUnreachable,
-          brain: brainAlive ? 'ready' : 'dead', brainError: brainAlive ? null : brainError, useAuth, live: live?.url,
+          brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
           // #120: previousRun is set when THIS process adopted a journey from a
@@ -665,6 +764,7 @@ async function main() {
           // and reach the pre-restart media via /clip?run=<previousRun>.
           previousRun: restoredFromRun, restartRecovered: restoredFromRun != null,
           depth: depthNow(),
+          takeovers: [...takeovers.entries()].map(([p, t]) => ({ i: context.pages().indexOf(p), by: t.by, prevOwner: t.prevOwner, since: t.since })),
           drivers: [...driverActive.keys()], tabsByOwner: context.pages().map((p,i)=>({i, owner: ownerOf(p)})),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: context.pages().indexOf(active), url: active.url() },
@@ -736,11 +836,45 @@ async function main() {
         createReadStream(mp3).pipe(res)
         return
       }
+      if (req.method === 'GET' && path === '/evidence') {
+        // Re-issue the public evidence links for any stored task — today's run
+        // or an earlier one — so evidence can be attached long after the action.
+        // No n → every task of the run.
+        const q = new URL(req.url || '', 'http://x').searchParams
+        const run = q.get('run') || RUN_STAMP
+        const list = loadRunTasks(run)
+        if (!list) return json(res, { ok: false, code: 'no_run', error: `run ${run} is not stored — GET /runs lists runs` }, 404)
+        const wanted = q.get('n') ? list.filter((t: any) => t.n === Number(q.get('n'))) : list
+        if (!wanted.length) return json(res, { ok: false, code: 'no_task', error: `no task ${q.get('n')} in run ${run}` }, 404)
+        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(mediaBase, run, t.n, { clip: !!t.clip, shot: !!t.artifact }) })) })
+      }
       if (req.method === 'GET' && path === '/tasks') {
         // This run's task index — same data as manifest.json on disk.
         return json(res, { run: RUN_STAMP, runDir: RUN_DIR, model: 'per-task video; rel0/rel1 are ms on the audio-capture timeline', recordingStartedAt: tCapture, tasks })
       }
       const body = await readBody(req)
+      // LONG ACTIONS WITHOUT A HELD-OPEN REQUEST: {"async":true} on /act or
+      // /say answers 202 with a job id at once and runs the action in the
+      // background; GET /result?id=<job> returns pending or the exact response
+      // the synchronous call would have given. Proxies in front of an agent
+      // commonly cut requests at ~30s — the action kept running, the caller got
+      // a 502, and a blind retry performed it twice.
+      if (req.method === 'GET' && path === '/result') {
+        const id = new URL(req.url || '', 'http://x').searchParams.get('id') || ''
+        const j = jobs.get(id)
+        if (!j) return json(res, { ok: false, code: 'no_job', error: `no job "${id}" in this run` }, 404)
+        if (!j.done) return json(res, { ok: true, done: false, job: id, path: j.path, runningSec: Math.round((Date.now() - j.startedAt) / 1000) }, 202)
+        return json(res, { done: true, job: id, status: j.code, ...(j.body as object) }, 200)
+      }
+      if (body.async === true && (path === '/act' || path === '/say')) {
+        const id = `job-${RUN_STAMP.slice(-8)}-${++jobN}`
+        jobs.set(id, { done: false, path, startedAt: Date.now() })
+        if (jobs.size > 200) jobs.delete(jobs.keys().next().value as string)
+        json(res, { ok: true, async: true, job: id, resultUrl: `${mediaBase}/result?id=${id}` }, 202)
+        // Everything below now writes its response into the job record.
+        let code = 200
+        res = { writeHead: (c: number) => { code = c }, end: (b: string) => { let parsed: unknown = {}; try { parsed = JSON.parse(b) } catch { /* ignore */ } jobs.set(id, { done: true, path, startedAt: jobs.get(id)!.startedAt, code, body: parsed }) }, headersSent: false } as any
+      }
       if (path === '/webhook-sink') {
         if (req.method === 'POST') { webhookSink.push(body); if (webhookSink.length > 20) webhookSink.shift(); return json(res, { ok: true }) }
         return json(res, { received: webhookSink })
@@ -759,32 +893,84 @@ async function main() {
         return await withLock(async () => {
           await focusDriverTab(driver)  // this driver acts on ITS tab, front + focused
           const owned = guardOwnership(driver)
-          if (owned) return json(res, { error: owned }, 409)
+          if (owned) return json(res, owned, 409)
           if (typeof body.instruction !== 'string' || !body.instruction.trim()) return json(res, { ok: false, code: 'bad_request', error: '/act needs {"instruction": "<what to do>"}' }, 400)
           if (!brainAlive) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
           const t0 = Date.now()
           await updateTabHud()
           // A model/API failure (quota, 429, 5xx, bad key) is an ANSWER, not a
           // crash: say what the provider said so the director can act on it.
-          let r: unknown
+          // GROUND TRUTH AROUND THE ACTION: `ok:true` only ever meant "the brain
+          // did not throw". Snapshot the page before and after so the response
+          // says what actually changed (url, title, scroll, form/text signature).
+          const snap = () => Promise.race([
+            active.evaluate(() => {
+              const v = [...document.querySelectorAll('input,textarea,select')].slice(0, 200).map((e: any) => `${(e.value || '').length}:${e.checked ? 1 : 0}`).join(',')
+              return { url: location.href, title: document.title, scrollY: Math.round(window.scrollY), sig: `${(document.body?.innerText || '').length}|${v}|${document.activeElement?.tagName || ''}` }
+            }),
+            new Promise<null>((r) => setTimeout(() => r(null), 3000)),
+          ]).catch(() => null) as Promise<{ url: string; title: string; scrollY: number; sig: string } | null>
+          const before = await snap()
+          let r: any
           try { r = await brain(body.instruction) }
-          catch (e) {
-            const msg = ((e as Error).message || String(e)).slice(0, 300)
-            mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
-            return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, brain: brainAlive ? 'ready' : 'dead' }, brainAlive ? 502 : 503)
+          catch (e0) {
+            let e = e0
+            // The provider itself refused (credits ran out, key revoked, rate
+            // limit) AFTER boot: re-pick a provider and retry the action once,
+            // so a key dying mid-session heals itself instead of failing every
+            // /act until someone POSTs /brain.
+            const providerDown = /credit|quota|billing|RESOURCE_EXHAUSTED|rate.?limit|api.?key|unauthori|\b(401|402|403|429)\b/i.test(String((e0 as Error).message || e0))
+            let healed = false
+            if (providerDown) {
+              const before = brainModel
+              mark(`act[${driver}]: provider refused on ${before} — re-picking a brain provider`)
+              try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
+              await initBrain().catch(() => {})
+              if (brainAlive && brainModel !== before) {
+                try { r = await brain(body.instruction); healed = true } catch (e1) { e = e1 }
+              }
+            }
+            if (!healed) {
+              const msg = ((e as Error).message || String(e)).slice(0, 300)
+              mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
+              // A failed act is still a task: it must not vanish from the run.
+              const fn = ++reqN
+              const fshot = await reqShot(fn, 'act')
+              stampTask(fn, 'act', t0, null, fshot, body.instruction)
+              return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
+            }
           }
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
           await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
+          const after = await snap()
+          const changed = !before || !after ? null : (before.url !== after.url || before.title !== after.title || before.scrollY !== after.scrollY || before.sig !== after.sig)
+          const effect = {
+            changed, noop: !!r?.noop,
+            urlBefore: before?.url ?? null, urlAfter: after?.url ?? null,
+            titleAfter: after?.title ?? null, scrollBefore: before?.scrollY ?? null, scrollAfter: after?.scrollY ?? null,
+          }
+          // Nothing observable changed: say so, and never keep the cached
+          // recipe for it (a cached no-op was being replayed as a "success").
+          let warning: string | null = null
+          if (r?.noop) warning = 'the brain found nothing on the page matching this instruction — no action was performed'
+          else if (changed === false) {
+            warning = 'the action ran but nothing observable changed on the page (url, title, scroll, form values, text length) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction'
+            if (before) forgetCached(before.url, String(body.instruction))
+          }
+          if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
           const prevTask = tasks[tasks.length - 1]
           const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit()
           const n = ++reqN
-          const { clip, clipError } = await reqClip(n, 'act', body.clipSeconds ?? 20)
+          // The clip covers THIS action (start → now, +2s lead), capped by
+          // clipSeconds. It used to be "the last 20s of screen", which pulled
+          // in footage from before the action — including other drivers' tabs.
+          const { clip, clipError } = await reqClip(n, 'act', Math.min(body.clipSeconds ?? 30, Math.ceil((Date.now() - t0) / 1000) + 2))
           const shot = await reqShot(n, 'act')
           const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
           scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
-          return json(res, { ok: true, result: r, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, audioClipUrl: `/clip?n=${n}&audio=1`, artifactUrl: shot ? `/artifact?n=${n}` : null, nag, driver, window })
+          return json(res, { ok: true, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
         })
       }
       if (path === '/say') {
@@ -792,7 +978,7 @@ async function main() {
         return await withLock(async () => {
           await focusDriverTab(driver)
           const ownedSay = guardOwnership(driver)
-          if (ownedSay) return json(res, { error: ownedSay }, 409)
+          if (ownedSay) return json(res, ownedSay, 409)
           if (typeof body.text !== 'string' || !body.text.trim()) return json(res, { ok: false, code: 'bad_request', error: '/say needs {"text": "<what to speak>"}' }, 400)
           const t0 = Date.now(); await updateTabHud()
           // ERROR PARITY (#102): /say is a drive action and must surface WHY it
@@ -834,17 +1020,17 @@ async function main() {
               error: noMic
                 ? `this page has no open microphone — Say needs a Voice Native /chat tab (open one first). (${msg})`
                 : `could not speak: ${msg}`,
-              artifact: fshot, artifactUrl: fshot ? `/artifact?n=${fn}` : null, driver,
+              artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null, driver,
             }, noMic ? 422 : 502)
           }
           mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
           const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
           const n = ++reqN
-          const { clip, clipError } = await reqClip(n, 'say', body.clipSeconds ?? 14)
+          const { clip, clipError } = await reqClip(n, 'say', Math.min(body.clipSeconds ?? 30, Math.ceil((Date.now() - t0) / 1000) + 2))
           const shot = await reqShot(n, 'say')
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
           scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
-          return json(res, { ok: true, clip, clipError, artifact: shot, clipUrl: `/clip?n=${n}`, audioClipUrl: `/clip?n=${n}&audio=1`, artifactUrl: shot ? `/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         })
       }
       if (path === '/hear') {
@@ -861,7 +1047,7 @@ async function main() {
         return await withLock(async () => {
         await focusDriverTab(driver)
         const owned = guardOwnership(driver)
-        if (owned) return json(res, { error: owned }, 409)
+        if (owned) return json(res, owned, 409)
         if (typeof body.expression !== 'string' || !body.expression.trim()) return json(res, { ok: false, code: 'bad_request', error: '/eval needs {"expression": "<js>"}' }, 400)
         try {
           const value = await Promise.race([
@@ -885,9 +1071,9 @@ async function main() {
         // as an explicit override.
         const driver = driverId(req)
         if (body.owner == null) body.owner = driver
-        const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'list']
+        const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'list']
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
-        if (['switch', 'close', 'claim', 'release'].includes(body.op) && !context.pages()[body.i])
+        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !context.pages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${context.pages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Serialized with /act and /say: a /tab landing mid-action used to swap
         // the shared `active` under it, so the action's screenshot, clip and
@@ -945,7 +1131,38 @@ async function main() {
           if (o && o !== body.owner) return json(res, { error: `tab ${body.i} already claimed by "${o}"` }, 409)
           tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() }); mark(`tab claim: ${body.i} by ${body.owner}`)
         }
-        else if (body.op === 'release') { const target = context.pages()[body.i]; if (target) tabOwners.delete(target); mark(`tab release: ${body.i}`) }
+        else if (body.op === 'release') {
+          // Only the owner may release. (It used to be open to anyone, which
+          // made "release then claim" a silent way to steal a tab — use
+          // takeover/handback for that, which the owner is told about.)
+          const target = context.pages()[body.i]
+          const o = ownerOf(target)
+          if (o && o !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: o, error: `tab ${body.i} is owned by "${o}" — only its owner can release it; use {"op":"takeover"} to borrow it` }, 409)
+          tabOwners.delete(target); takeovers.delete(target); mark(`tab release: ${body.i}`)
+        }
+        else if (body.op === 'takeover') {
+          const target = context.pages()[body.i]
+          const prev = ownerOf(target)
+          if (takeovers.has(target)) return json(res, { ok: false, code: 'already_taken_over', by: takeovers.get(target)!.by, error: `tab ${body.i} is already taken over by "${takeovers.get(target)!.by}"` }, 409)
+          if (prev === body.owner) return json(res, { ok: false, code: 'bad_request', error: `tab ${body.i} is already yours` }, 400)
+          takeovers.set(target, { by: String(body.owner), prevOwner: prev, since: Date.now() })
+          tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() })
+          active = target; driverActive.set(driver, target); touchTab(target)
+          await target.bringToFront().catch(() => {}); await live?.retarget(target).catch(() => {})
+          mark(`tab TAKEOVER: ${body.i} by ${body.owner}${prev ? ` (from ${prev})` : ''}`)
+          notify('takeover', { i: body.i, by: body.owner, prevOwner: prev })
+        }
+        else if (body.op === 'handback') {
+          const target = context.pages()[body.i]
+          const tk = takeovers.get(target)
+          if (!tk) return json(res, { ok: false, code: 'not_taken_over', error: `tab ${body.i} is not under a takeover` }, 400)
+          if (tk.by !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: tk.by, error: `tab ${body.i} was taken over by "${tk.by}" — only they can hand it back` }, 409)
+          takeovers.delete(target)
+          if (tk.prevOwner) tabOwners.set(target, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(target)
+          driverActive.delete(driver)
+          mark(`tab HANDBACK: ${body.i} by ${body.owner}${tk.prevOwner ? ` → ${tk.prevOwner}` : ''}`)
+          notify('handback', { i: body.i, by: body.owner, owner: tk.prevOwner, url: target.url() })
+        }
         // Tab ops are journey steps too — a recipe missing "open the mobile
         // tab" is not a recipe (first saved journey had steps:1 for this).
         if (['open', 'switch', 'close', 'navigate'].includes(body.op)) {
@@ -996,7 +1213,7 @@ async function main() {
         try { await initBrain() }
         catch { mark(`brain re-init failed — ${brainError}`); return json(res, { ok: false, brain: 'dead', code: 'brain_unavailable', error: brainDownMsg() }, 503) }
         mark('brain re-initialized')
-        return json(res, { ok: true, brain: 'ready' })
+        return json(res, { ok: true, brain: 'ready', brainModel })
       }
       if (path === '/recover') {
         // Under the action lock, on the CALLER's tab: it used to reload the
@@ -1006,7 +1223,7 @@ async function main() {
         return await withLock(async () => {
           await focusDriverTab(driver)
           const owned = guardOwnership(driver)
-          if (owned) return json(res, { error: owned }, 409)
+          if (owned) return json(res, owned, 409)
           await active.reload({ timeout: 45000 }).catch(() => {})
           await active.waitForTimeout(4000)
           const shot = join(RUN_DIR, `recover-${Date.now()}.jpg`)
@@ -1020,7 +1237,7 @@ async function main() {
         void gracefulEnd('end requested')
         return
       }
-      json(res, { error: 'unknown', paths: ['/status', '/tasks', '/clip?n=N', '/clip?n=N&audio=1', '/artifact?n=N', '/audio', '/logs', '/runs', '/events', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
+      json(res, { error: 'unknown', paths: ['/evidence?run=RUN&n=N', '/media/RUN/N.jpg|mp4|txt?s=SIG', '/result?id=JOB', '/status', '/tasks', '/clip?n=N', '/clip?n=N&audio=1', '/artifact?n=N', '/audio', '/logs', '/runs', '/events', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
     } catch (e) { json(res, { error: (e as Error).message, brain: brainAlive ? 'ready' : 'dead' }, 500) }
   })
   server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))

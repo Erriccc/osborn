@@ -72,6 +72,10 @@ export function BrowserPanel() {
   // Set when a drive/output action comes back 401 from the engine (token missing
   // or mismatched server-side) — drives the same banner as engineTokenConfigured.
   const [tokenError, setTokenError] = useState(false)
+  // #138: the proxy answers 401 "Not authenticated" to a signed-out visitor.
+  // That is NOT an unreachable engine — say "sign in" and stop polling, instead
+  // of a red "engine unreachable" badge and an endless "Waking…" spinner.
+  const [signedOut, setSignedOut] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamKickRef = useRef(0)
 
@@ -79,19 +83,23 @@ export function BrowserPanel() {
   // itself can't be reached (proxy/network down), say so explicitly rather than
   // leaving a stale/"unknown" badge (#81).
   const refreshEngineState = useCallback(async () => {
-    const s = await jget<EngineState>('engine-state')
+    let r: Response | null = null
+    try { r = await fetch(api('engine-state'), { cache: 'no-store' }) } catch { /* network down → unreachable below */ }
+    if (r?.status === 401 && /Not authenticated/.test(await r.clone().text().catch(() => ''))) { setSignedOut(true); return }
+    const s = r?.ok ? ((await r.json().catch(() => null)) as EngineState | null) : null
     setEngine(s ?? { configured: true, state: null, machineId: null, unreachable: true })
   }, [])
 
   useEffect(() => {
+    if (signedOut) return
     refreshEngineState()
     const id = setInterval(refreshEngineState, 15000)
     return () => clearInterval(id)
-  }, [refreshEngineState])
+  }, [refreshEngineState, signedOut])
 
   // Status polling runs only while watching (it wakes/holds the engine).
   useEffect(() => {
-    if (!watching) {
+    if (!watching || signedOut) {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
       return
     }
@@ -106,7 +114,8 @@ export function BrowserPanel() {
       if (!r.ok) {
         if (r.status === 401) {
           const t = await r.text().catch(() => '')
-          if (!/Not authenticated/.test(t)) setTokenError(true)
+          if (/Not authenticated/.test(t)) { setSignedOut(true); setWatching(false) }
+          else setTokenError(true)
         }
         return
       }
@@ -116,7 +125,7 @@ export function BrowserPanel() {
     tick()
     pollRef.current = setInterval(tick, 3000)
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
-  }, [watching])
+  }, [watching, signedOut])
 
   const refreshTasks = useCallback(async () => {
     const t = await jget<{ tasks?: Task[] } | Task[]>('tasks')
@@ -199,6 +208,21 @@ export function BrowserPanel() {
 
   const copyShare = async () => {
     try { await navigator.clipboard.writeText(window.location.href); setNote('Link copied') } catch { setNote('Copy failed') }
+  }
+
+  if (signedOut) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-950 px-6 py-12 text-center text-neutral-200">
+        <span className="text-2xl">🎥</span>
+        <h2 className="text-base font-semibold text-neutral-100">Sign in to watch and drive the browser engine</h2>
+        <p className="max-w-md text-sm text-neutral-400">
+          The live browser view and its controls are available to signed-in accounts.
+        </p>
+        <a href="/login" className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-black hover:bg-amber-400">
+          Sign in
+        </a>
+      </div>
+    )
   }
 
   return (

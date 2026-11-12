@@ -140,7 +140,7 @@ export default function Home() {
     e?.preventDefault()
     const email = guestEmail.trim().toLowerCase()
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-      setGateError('Enter a valid email address.')
+      setGateError('An email is required to continue — enter a valid address.')
       return
     }
     setGateError(null)
@@ -378,12 +378,13 @@ export default function Home() {
                           inputMode="email"
                           autoComplete="email"
                           placeholder="you@example.com"
+                          aria-label="Email (required)"
                           value={guestEmail}
                           onChange={(e) => { setGuestEmail(e.target.value); if (gateError) setGateError(null) }}
                           className="w-full h-11 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[15px] px-3 outline-none focus:border-[var(--accent)]"
                         />
                         <p className="text-[var(--text-muted)] text-[11px] leading-relaxed">
-                          No account needed — your email just saves this session so you can pick it back up later.
+                          No password or account — just an email (required), so you can pick this session back up later.
                         </p>
                         <button type="submit" disabled={gateBusy}
                           className="w-full h-11 rounded-xl font-semibold text-[15px] tracking-[-0.01em] transition-all duration-150 active:scale-[0.98] disabled:opacity-60"
@@ -392,7 +393,7 @@ export default function Home() {
                             color: 'var(--background)',
                             boxShadow: '0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
                           }}>
-                          {gateBusy ? 'Starting…' : 'Start building — free'}
+                          {gateBusy ? 'Starting…' : 'Start talking — free'}
                         </button>
                         <button type="button" onClick={() => { setShowEmailGate(false); setGateError(null); setGuestEmail('') }}
                           className="text-[var(--text-muted)] text-xs hover:text-[var(--text-secondary)] transition-colors self-center py-1">

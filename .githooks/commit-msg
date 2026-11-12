@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refuse commit messages that carry a session link or AI attribution.
+# Enabled by `git config core.hooksPath .githooks` (the repo's Claude Code
+# SessionStart hook sets it; run it yourself in a plain checkout).
+if grep -Eiq 'claude\.ai/code/session_|^[[:space:]]*Claude-Session[[:space:]]*:|^[[:space:]]*Co-Authored-By[[:space:]]*:.*(claude|anthropic)|Generated (with|by) \[?Claude' "$1"; then
+  echo "commit-msg: session links and AI attribution are not allowed in this repo (see CLAUDE.md, Attribution rules)." >&2
+  exit 1
+fi
+exit 0

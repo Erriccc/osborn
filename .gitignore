@@ -31,6 +31,8 @@ npm-debug.log*
 
 # Claude Code — ignore local state but version the skills
 .claude/*
+!.claude/settings.json
+!.claude/hooks/
 !.claude/skills/
 .claude/skills/*/settings.local.json
 

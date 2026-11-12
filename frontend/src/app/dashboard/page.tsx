@@ -1704,16 +1704,25 @@ export default function Dashboard() {
               </div>
               <p className="text-[var(--text-muted)] text-sm">
                 {isCloud
-                  ? sandboxStatus === 'stopped' ? 'Cloud workspace is stopped' : 'Cloud workspace is offline'
+                  ? !user && !loading ? 'You’re not signed in'
+                    : sandboxStatus === 'stopped' ? 'Cloud workspace is stopped' : 'Cloud workspace is offline'
                   : 'Local agent is offline'}
               </p>
               <p className="text-[var(--text-muted)] text-xs mt-1 opacity-60">
                 {isCloud
-                  ? sandboxStatus === 'stopped'
+                  ? !user && !loading ? 'Sign in to use your cloud workspace'
+                    : sandboxStatus === 'stopped'
                     ? 'Open Settings → Resume to start it again'
                     : 'Open Settings to manage your workspace'
                   : `Check that your agent is running at ${agentUrl}`}
               </p>
+              {/* #140: signed-out visitors saw "Cloud workspace is offline" with
+                  no way to sign in. */}
+              {isCloud && !user && !loading && (
+                <a href="/login" className="inline-block mt-4 px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--background)] text-sm font-medium hover:opacity-90 transition-opacity">
+                  Sign in
+                </a>
+              )}
             </div>
           )}
 

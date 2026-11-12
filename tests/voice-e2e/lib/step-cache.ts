@@ -68,7 +68,7 @@ export async function actWithCache(
   stagehand: { observe: (i: string) => Promise<any>; act: (a: any) => Promise<any> },
   page: Page,
   instruction: string,
-): Promise<{ cached: boolean; healed: boolean }> {
+): Promise<{ cached: boolean; healed: boolean; noop?: boolean; did?: string | null }> {
   const url = new URL(page.url())
   const key = `${url.pathname} :: ${instruction}`
   const store = loadStore(url.hostname)
@@ -102,7 +102,7 @@ export async function actWithCache(
         hit.lastUsedAt = new Date().toISOString()
         saveStore(url.hostname, store)
         console.log(`[step-cache] HIT (${url.hostname}) — 0 LLM calls: "${instruction.slice(0, 60)}"`)
-        return { cached: true, healed: false }
+        return { cached: true, healed: false, did: describeAction(hit.action) }
       } catch {
         console.log(`[step-cache] cached action broke — re-resolving via LLM (self-heal)`)
       }
@@ -116,7 +116,7 @@ export async function actWithCache(
     // resolve to no action — that's a no-op, not a failure. If the action was
     // truly required, downstream assertions catch its absence.
     console.log(`[step-cache] NO-OP (${url.hostname}) — nothing to do for: "${instruction.slice(0, 60)}"`)
-    return { cached: false, healed: false }
+    return { cached: false, healed: false, noop: true, did: null }
   }
   await stagehand.act(action)
   const newSel = (action as { selector?: string })?.selector
@@ -131,5 +131,22 @@ export async function actWithCache(
   }
   saveStore(url.hostname, store)
   console.log(`[step-cache] ${hit ? 'HEALED' : 'MISS'} (${url.hostname}) — resolved + cached: "${instruction.slice(0, 60)}"`)
-  return { cached: false, healed: !!hit }
+  return { cached: false, healed: !!hit, did: describeAction(action) }
+}
+
+/** What the brain decided to do, in one line — returned to the director. */
+function describeAction(action: any): string | null {
+  if (!action || typeof action !== 'object') return null
+  const parts = [action.method, action.description, Array.isArray(action.arguments) && action.arguments.length ? `(${action.arguments.join(', ').slice(0, 60)})` : null].filter(Boolean)
+  return parts.length ? parts.join(' ').slice(0, 200) : null
+}
+
+/** Drop a cached recipe (called when replaying or resolving it had no visible effect). */
+export function forgetCached(pageUrl: string, instruction: string): void {
+  try {
+    const url = new URL(pageUrl)
+    const store = loadStore(url.hostname)
+    const key = `${url.pathname} :: ${instruction}`
+    if (store[key]) { delete store[key]; saveStore(url.hostname, store); console.log(`[step-cache] FORGOT (no visible effect): "${instruction.slice(0, 60)}"`) }
+  } catch { /* ignore */ }
 }
