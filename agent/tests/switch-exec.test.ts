@@ -151,8 +151,7 @@ await t('index: performSessionSwitch uses the guard and replies switch_in_progre
   const d = src.slice(src.indexOf('async function requestSessionSwitch('), src.indexOf('async function performSessionSwitch('))
   assert.ok(/void requestSessionSwitch\([^)]*\)\.catch\(/.test(d), 'deferred re-request needs .catch')
 })
-// decodeSlug stands in for config.ts slugToPath: the lossy reverse, '' when the
-// decoded path does not exist. readCwd stands in for extractCwd.
+// decodeSlug = config.ts slugToPath ('' when the decode misses); readCwd = extractCwd.
 const noCwd = async () => ''
 await t('scanSlugCwd: decoded path that does not exist is not returned (no mkdir of scan paths)', async () => {
   const jsonl = (slug: string) => '/p/' + slug + '/' + B + '.jsonl'
@@ -166,8 +165,8 @@ await t('scanSlugCwd: decoded path that does not exist is not returned (no mkdir
   assert.equal(await scanSlugCwd(B, '/missing', { ...fsx, readdir: () => [], exists: () => false }), null)
 })
 await t('scanSlugCwd: lossy slug (project dir whose name contains "-") falls back to the JSONL cwd', async () => {
-  // `-w-my-app` decodes to /w/my/app, which does not exist, so slugToPath
-  // returns ''. This is the one case the full session-list sweep recovered.
+  // `-w-my-app` decodes to /w/my/app, which does not exist → slugToPath ''.
+  // The one case the full session-list sweep recovered.
   const base = {
     readdir: () => ['-w-my-app'], exists: (p: string) => p === '/p' || p === '/p/-w-my-app/' + B + '.jsonl',
     decodeSlug: () => '', readCwd: noCwd,

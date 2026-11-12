@@ -3760,20 +3760,11 @@ async function main() {
   // agent_ready (preSelectedSessionId = A) doesn't reset the UI back to A.
   let stopReadyRetries: (() => void) | null = null
 
-  // THE one place that explains why this resolve is built the way it is.
-  //
-  // The connect path awaits it for a pre-selected session, so every lookup must
-  // be CHEAP. It used to consult listAllClaudeSessions() first: a full
-  // cross-project sweep (readdir+stat of every project slug, then a metadata
-  // pass over up to 1000 JSONLs) whose in-memory cache is empty after every
-  // machine start — blocking disk work in front of the room coming up, which is
-  // exactly why the agent_ready path keeps that same sweep in the background.
-  // scanSlugCwd answers the same question for ONE session: one readdir of the
-  // projects dir, an existsSync per slug, and at most one file read when the
-  // slug decode is lossy. Both of the list's cwd sources are preserved — the
-  // validated slug decode (slugToPath) then the JSONL's own cwd (extractCwd),
-  // the same `slugPath || cwd` precedence the list used — and it covers
-  // strictly more, since the list drops sub-2-message and subagent sessions.
+  // Every lookup here must be CHEAP: the connect path awaits this for a
+  // pre-selected session. It used to consult listAllClaudeSessions() first — the
+  // same full cross-project sweep that agent_ready deliberately keeps in the
+  // background. scanSlugCwd answers it for ONE session, reusing both of the
+  // list's cwd sources in the list's own `slugPath || cwd` order (config.ts).
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
@@ -5163,18 +5154,12 @@ async function main() {
         const c = Number(metadata.clickTs)
         if (Number.isFinite(c) && c > 0) connectTiming.clickTs = c
       }
-      // Working directory for this connection (resume-mismatch fix, #112).
-      //
-      // The client's workingDirectory is only a HINT. When a session is pre-
-      // selected, the agent is AUTHORITATIVE about where that session lives:
-      // resolve its real project dir (the only dir whose slug holds the
-      // session's JSONL) and boot there, so `--resume <id>` finds it instead of
-      // coming up in /workspace root — or silently as a different session —
-      // when the hint is stale or empty (e.g. a switch rewrote the URL without
-      // a cwd). The resolve is cheap by construction — see resolveCwdForSession
-      // — so it never blocks the connect; it returns null only when the JSONL
-      // exists nowhere yet (fresh sprite / brand-new project), in which case the
-      // hint is honoured and created so the SDK spawn still has a valid cwd.
+      // Working directory for this connection (resume-mismatch fix, #112). The
+      // client's workingDirectory is only a HINT; for a pre-selected session the
+      // agent is AUTHORITATIVE about where that session lives, so `--resume`
+      // finds its JSONL instead of coming up in the workspace root — or as a
+      // different session — on a stale or empty hint. null = the JSONL is
+      // nowhere yet (fresh sprite / new project), so the hint stands.
       const wdHint = (typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
         ? metadata.workingDirectory
         : null
@@ -5184,11 +5169,9 @@ async function main() {
         catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e) }
       }
       workingDir = resolvedConnectCwd || wdHint || defaultWorkingDir
-      // Only the HINT is ever created. Recursive mkdirSync is a no-op when the
-      // dir exists, but the guard is on the hint specifically: a resolved cwd can
-      // come from the JSONL of an imported session and name a path from another
-      // machine, and creating that tree here would boot the agent in an empty
-      // directory (scanSlugCwd never creates dirs for scan-derived paths either).
+      // Only the HINT is ever created: a resolved cwd can come from an imported
+      // session's JSONL and name another machine's path, and creating that tree
+      // would boot the agent in an empty dir (scanSlugCwd won't either).
       if (workingDir === wdHint && !existsSync(workingDir)) {
         mkdirSync(workingDir, { recursive: true })
         console.log(`📁 Created project directory: ${workingDir}`)

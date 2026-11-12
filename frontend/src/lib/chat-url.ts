@@ -15,16 +15,11 @@ const ONE_SHOT_PARAMS = ['prompt', 'seed']
  * The /chat URL (path + query + hash, same origin) that pins `sessionId`, or
  * null when the URL already pins it (or the id is not a real session id).
  * `cwd`, when known, replaces `workingDirectory`; otherwise the existing one is
- * KEPT, even across a session change.
- *
- * Keeping a possibly-stale hint is deliberate. Against a current agent it costs
- * nothing: `workingDirectory` is only a hint there, and the agent resolves the
- * session's real project dir from its id (#112). But this bundle ships
- * independently of the agent image, so a reload can land on an older agent that
- * still trusts the hint raw — and for that agent "no hint" is the worse answer,
- * because it falls back to the workspace ROOT and reproduces #112 for everyone.
- * A stale PROJECT dir at least keeps the user in the project they were working
- * in; the root keeps nobody anywhere.
+ * KEPT, even across a session change. A current agent validates the hint and
+ * resolves the session's real dir from its id (#112), so a stale one is inert —
+ * but this bundle ships independently of the agent image, and an agent that
+ * trusts the hint raw falls back to the workspace ROOT when there is none,
+ * which is #112 for everyone. A stale project dir degrades better than that.
  */
 export function chatUrlForSession(href: string, sessionId: string, cwd?: string | null): string | null {
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return null

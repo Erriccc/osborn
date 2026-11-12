@@ -1838,10 +1838,8 @@ function VoiceRoomInner({
           setSessionGateCompleted(true)
           const presetId = preSelectedSessionId || data.preSelectedSessionId
           setCurrentSessionId(presetId)
-          // Adopt the dir the agent RESOLVED for this session (#112). Without it
-          // pinnedSessionCwd has nothing until the session list carries the id —
-          // a window in which the URL rewrite would pin the session with no
-          // project hint, which is the only hint a brand-new session has.
+          // Adopt the dir the agent RESOLVED (#112): current_session reports one
+          // only from the first turn, and the list has no brand-new id yet.
           if (presetId && data.workingDirectory) setReportedCwd({ sessionId: presetId, cwd: data.workingDirectory })
         }
         // No preselected session = fresh conversation. Start immediately,
