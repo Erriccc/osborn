@@ -87,6 +87,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   const CAPTURE_FPS = DISPLAY ? 5 : 12
   const SCREENCAST = { format: 'jpeg' as const, quality: 55, everyNthFrame: 1, maxWidth: 1280, maxHeight: 720 }
   let cdp: CDPSession | null = null
+  let target: Page | null = null  // the tab the screencast is attached to
   const pushFrame = (buf: Buffer) => {
     latest = buf
     const now = Date.now()
@@ -139,7 +140,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     startDisplayGrab()
   } else {
     if (!page) throw new Error('CDP capture mode requires a page (display mode does not)')
-    cdp = await attach(page)
+    cdp = await attach(page); target = page
     // HEARTBEAT — CDP screencast only emits on PAINT, so a static page starves
     // the ring (observed: a 1.25s "clip" for a whole multi-tab choreography).
     // When no frame has arrived for HEARTBEAT_MS, capture a screenshot and push
@@ -336,10 +337,10 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     setNotice: (text: string | null) => { notice = text },
     retarget: async (p: Page) => {
       // Display mode captures the whole window — tab focus IS the retarget.
-      if (DISPLAY) return
+      if (DISPLAY || p === target) return  // already on that tab: re-attaching would flicker it
       try { await cdp?.send('Page.stopScreencast') } catch { /* already gone */ }
       try { await cdp?.detach() } catch { /* already gone */ }
-      cdp = await attach(p)
+      cdp = await attach(p); target = p
       console.log('[live-stream] retargeted screencast to active tab')
     },
     stop: async () => {

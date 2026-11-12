@@ -12,7 +12,7 @@
 //   reply), stop the engine.
 // - Per-run links: this run's tasks with clip / clip+audio / logs, plus a
 //   shareable link to this in-app view.
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from 'react'
 
 type EngineState = {
   configured: boolean
@@ -28,6 +28,8 @@ type EngineState = {
   // Server-side only reports whether OSBORN_ENGINE_TOKEN is set — never the value.
   // false ⇒ every drive/output action will 401; the live stream still works.
   engineTokenConfigured?: boolean
+  // This person's driver id on the engine (set server-side by the proxy).
+  driver?: string
 }
 type Status = {
   roomReady?: boolean
@@ -36,6 +38,7 @@ type Status = {
   idlePaused?: boolean
   brain?: { ready?: boolean; dead?: boolean } | string
   tabsByOwner?: Array<{ i: number; owner: string | null }>
+  takeovers?: Array<{ i: number; by: string; prevOwner: string | null; since: number }>
   // The engine reports the active tab as { i, url }; older shapes used a bare
   // number/string. Handle both so the readout never renders "[object Object]".
   activeTab?: number | string | { i?: number; url?: string }
@@ -98,6 +101,10 @@ export function BrowserPanel() {
   const [signedOut, setSignedOut] = useState(false)
   const [unresponsivePolls, setUnresponsivePolls] = useState(0)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const imgRef = useRef<HTMLImageElement | null>(null)
+  const typedRef = useRef<{ text: string; timer: ReturnType<typeof setTimeout> | null }>({ text: '', timer: null })
+  const scrollRef = useRef<{ dy: number; timer: ReturnType<typeof setTimeout> | null }>({ dy: 0, timer: null })
+  const inputChain = useRef<Promise<unknown>>(Promise.resolve())
   const streamKickRef = useRef(0)
 
   // No-wake awake/asleep probe (Fly Machines API via the proxy). If the probe
@@ -218,6 +225,54 @@ export function BrowserPanel() {
     if (activeI != null && !(await post('tab', { op: 'switch', i: activeI }, 'reload tab'))) return
     await post('recover', {}, 'reload tab')
   }
+  const takeControl = () => activeI != null && post('tab', { op: 'takeover', i: activeI }, 'take control')
+  // A takeover is handed back to the agent; a tab you opened is released.
+  const handBack = () => activeI != null && post('tab', { op: shownTakeover ? 'handback' : 'release', i: activeI }, 'hand back')
+  // One request at a time, in order: a click then fast typing must not race.
+  const sendNow = (body: Record<string, unknown>) => {
+    inputChain.current = inputChain.current.then(() => fetch(api('input'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(async (r) => { if (!r.ok) { const d = await r.json().catch(() => ({})); setNote(d?.error || `input failed: ${r.status}`) } })
+      .catch(() => setNote('input failed: engine unreachable')))
+  }
+  const flushTyped = () => {
+    const t = typedRef.current
+    if (t.timer) { clearTimeout(t.timer); t.timer = null }
+    if (t.text) { const text = t.text; t.text = ''; sendNow({ type: 'type', text }) }
+  }
+  // Anything but more typing first sends the text still held back.
+  const sendInput = (body: Record<string, unknown>) => { flushTyped(); sendNow(body) }
+  const onPictureClick = (e: MouseEvent<HTMLDivElement>) => {
+    const img = imgRef.current
+    if (!inControl || !img?.naturalWidth) return
+    e.currentTarget.focus()
+    // object-contain letterboxes the frame: map the click into the picture itself.
+    const box = img.getBoundingClientRect()
+    const scale = Math.min(box.width / img.naturalWidth, box.height / img.naturalHeight)
+    const w = img.naturalWidth * scale, h = img.naturalHeight * scale
+    const x = (e.clientX - box.left - (box.width - w) / 2) / w
+    const y = (e.clientY - box.top - (box.height - h) / 2) / h
+    if (x < 0 || x > 1 || y < 0 || y > 1) return
+    sendInput({ type: 'click', x, y })
+  }
+  const onPictureKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!inControl || e.metaKey || e.ctrlKey) return
+    e.preventDefault()
+    const t = typedRef.current
+    if (e.key.length === 1) {
+      t.text += e.key
+      if (t.timer) clearTimeout(t.timer)
+      t.timer = setTimeout(flushTyped, 150)
+    } else if (['Enter', 'Backspace', 'Tab', 'Escape', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+      sendInput({ type: 'key', key: e.key })
+    }
+  }
+  // Trackpads fire ~60 wheel events a second: add them up, send every 200ms.
+  const onPictureWheel = (e: WheelEvent<HTMLDivElement>) => {
+    if (!inControl) return
+    const sc = scrollRef.current
+    sc.dy += e.deltaY
+    if (!sc.timer) sc.timer = setTimeout(() => { const dy = Math.round(sc.dy); sc.dy = 0; sc.timer = null; if (Math.abs(dy) > 2) sendInput({ type: 'scroll', dy }) }, 200)
+  }
   const stopEngine = async () => {
     if (!confirm('Stop the browser engine? Any in-flight run ends and the machine sleeps.')) return
     await post('end', {}, 'stop')
@@ -246,9 +301,23 @@ export function BrowserPanel() {
   // Two polls in a row: one 'unresponsive' is often just a page mid-navigation.
   const frozen = watching && unresponsivePolls >= 2
   const shownOwner = status?.tabsByOwner?.find((o) => o.i === activeI)?.owner ?? null
+  const me = engine?.driver
+  const shownTakeover = status?.takeovers?.find((t) => t.i === activeI) ?? null
+  // In control: you took the tab over, or it is simply yours (you opened it).
+  const inControl = !!me && (shownTakeover ? shownTakeover.by === me : shownOwner === me)
+  const label = (d: string | null | undefined) => (d && d === me ? 'you' : d?.replace(/^person:/, '') ?? '')
   const blank = watching && !!status && blankPage(status.pageUrl)
 
 
+  // Closing the page while in control hands the tab back instead of leaving the
+  // agent paused (the engine also hands back after 10 idle minutes).
+  useEffect(() => {
+    if (!inControl || !shownTakeover || activeI == null) return
+    const i = activeI
+    const bye = () => navigator.sendBeacon(api('tab'), new Blob([JSON.stringify({ op: 'handback', i })], { type: 'application/json' }))
+    window.addEventListener('pagehide', bye)
+    return () => window.removeEventListener('pagehide', bye)
+  }, [inControl, shownTakeover, activeI])
   const copyShare = async () => {
     try { await navigator.clipboard.writeText(window.location.href); setNote('Link copied') } catch { setNote('Copy failed') }
   }
@@ -331,22 +400,46 @@ export function BrowserPanel() {
             const owner = status?.tabsByOwner?.find((o) => o.i === t.i)?.owner
             const on = t.i === activeI
             return (
-              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || !!owner} title={owner ? `${t.url} (driven by ${owner})` : t.url}
+              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || (!!owner && owner !== me)} title={owner ? `${t.url} (driven by ${label(owner)})` : t.url}
                 className={`flex min-w-0 max-w-[14rem] items-center gap-1 rounded-t-lg border px-2 py-1 text-xs ${on ? 'border-amber-500/70 bg-neutral-800 text-neutral-100' : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}>
                 <span className="truncate">{shortUrl(t.url)}</span>
-                {owner && <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">{owner}</span>}
+                {owner && <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">{label(owner)}</span>}
               </button>
             )
           })}
         </div>
       )}
 
+      {/* Control: who drives the shown tab, and taking over / handing back. */}
+      {watching && activeI != null && status && (
+        inControl ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
+            <span><span className="font-semibold">You have control.</span> Click, type and scroll in the picture.{shownTakeover?.prevOwner ? ` ${label(shownTakeover.prevOwner)} is paused until you hand back.` : ''}</span>
+            <button onClick={handBack} disabled={!!busy} className="rounded-lg bg-emerald-500 px-3 py-1 font-medium text-black hover:bg-emerald-400 disabled:opacity-50">{shownTakeover ? 'I’m done, hand back' : 'Let agents use this tab'}</button>
+          </div>
+        ) : shownTakeover ? (
+          <div className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">{label(shownTakeover.by)} has control of this tab.</div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">
+            <span>{shownOwner ? `${label(shownOwner)} ${shownOwner === me ? 'are' : 'is'} driving this tab. Taking control pauses it until you hand back.` : 'Nobody is driving this tab.'}</span>
+            <button onClick={takeControl} disabled={!!busy} className="rounded-lg border border-neutral-600 px-3 py-1 text-neutral-200 hover:bg-neutral-800 disabled:opacity-50">Take control</button>
+          </div>
+        )
+      )}
+
       {/* Live view */}
-      <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-neutral-800 bg-black">
+      <div
+        tabIndex={inControl ? 0 : -1}
+        onClick={onPictureClick}
+        onKeyDown={onPictureKey}
+        onWheel={onPictureWheel}
+        className={`relative aspect-video w-full overflow-hidden rounded-xl border bg-black outline-none ${inControl ? 'cursor-crosshair border-emerald-600' : 'border-neutral-800'}`}>
         {watching ? (
           <>
             {/* key kicks a reload when we retry a broken/waking stream */}
             <img
+              ref={imgRef}
+              draggable={false}
               key={streamKickRef.current}
               src={api('stream', `?t=${streamKickRef.current}`)}
               alt="Live browser stream"
@@ -370,8 +463,8 @@ export function BrowserPanel() {
             {frozen && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 px-6 text-center text-sm text-neutral-300">
                 <div>This tab stopped responding, so there is nothing to show.</div>
-                {shownOwner ? (
-                  <div className="text-xs text-neutral-400">It is driven by {shownOwner}, which has to reload it.</div>
+                {shownOwner && shownOwner !== me ? (
+                  <div className="text-xs text-neutral-400">It is driven by {label(shownOwner)}, which has to reload it. Take control above to reload it yourself.</div>
                 ) : (
                   <button onClick={reloadTab} disabled={!!busy} className="rounded-lg bg-amber-500 px-3 py-1.5 font-medium text-black hover:bg-amber-400 disabled:opacity-50">Reload tab</button>
                 )}

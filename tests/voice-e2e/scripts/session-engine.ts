@@ -603,7 +603,19 @@ async function main() {
   // tab and hands it back. While borrowed, the original driver's requests get
   // a 409 that says "paused, retry" (not "open your own tab"), and handback
   // restores its ownership so it resumes exactly where the supervisor left it.
-  const takeovers = new Map<Page, { by: string; prevOwner: string | null; since: number }>()
+  const takeovers = new Map<Page, { by: string; prevOwner: string | null; since: number; seen?: number }>()
+  // A person who closes the panel while in control must not pause the agent
+  // forever: a takeover with no input for 10 minutes is handed back.
+  const TAKEOVER_IDLE_MS = 10 * 60 * 1000
+  setInterval(() => {
+    for (const [p, tk] of takeovers) {
+      if (Date.now() - (tk.seen ?? tk.since) < TAKEOVER_IDLE_MS) continue
+      takeovers.delete(p)
+      if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+      mark(`tab HANDBACK (idle takeover by ${tk.by}): ${context.pages().indexOf(p)}`)
+      notify('handback', { i: context.pages().indexOf(p), by: tk.by, owner: tk.prevOwner, url: p.url(), reason: 'idle' })
+    }
+  }, 60000).unref()
   const guardOwnership = (driver: string): Record<string, unknown> | null => {
     const t = driverActive.get(driver) ?? active
     const o = tabOwners.get(t)?.owner
@@ -1488,6 +1500,34 @@ async function main() {
         mark('brain re-initialized')
         await probeStt()
         return json(res, { ok: true, brain: 'ready', brainModel, stt: sttHealth })
+      }
+      if (path === '/input') {
+        // A person driving by hand from the live view (x,y = fractions of the streamed frame).
+        const driver = driverId(req)
+        return await withLock(async () => {
+          await focusDriverTab(driver)
+          const owned = guardOwnership(driver)
+          if (owned) return json(res, owned, 409)
+          const page = active
+          const kind = String(body.type || '')
+          if (kind === 'click') {
+            const fx = Number(body.x), fy = Number(body.y)
+            if (!(fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1)) return json(res, { ok: false, code: 'bad_request', error: 'click needs x and y as fractions 0..1 of the frame' }, 400)
+            const win = await page.evaluate(() => ({ ow: window.outerWidth, oh: window.outerHeight, iw: window.innerWidth, ih: window.innerHeight })).catch(() => null)
+            if (!win) return json(res, { ok: false, code: 'unresponsive', error: 'the page did not answer; reload the tab' }, 409)
+            const frameW = DISPLAY_MODE ? win.ow : win.iw, frameH = DISPLAY_MODE ? win.oh : win.ih
+            const x = fx * frameW - (DISPLAY_MODE ? (win.ow - win.iw) / 2 : 0)
+            const y = fy * frameH - (DISPLAY_MODE ? win.oh - win.ih : 0)
+            if (y < 0) return json(res, { ok: false, code: 'browser_bar', error: 'that is the browser bar; use the address box or the tab bar instead' }, 400)
+            await page.mouse.click(x, y)
+          } else if (kind === 'type') await page.keyboard.type(String(body.text ?? '').slice(0, 2000))
+          else if (kind === 'key') await page.keyboard.press(String(body.key || '').slice(0, 40))
+          else if (kind === 'scroll') await page.mouse.wheel(0, Math.max(-5000, Math.min(5000, Number(body.dy) || 0)))
+          else return json(res, { ok: false, code: 'bad_request', error: 'type must be click | type | key | scroll' }, 400)
+          touchTab(page)
+          const tk = takeovers.get(page); if (tk) tk.seen = Date.now()
+          return json(res, { ok: true, driver, url: page.url() })
+        })
       }
       if (path === '/recover') {
         // Under the action lock, on the CALLER's tab: it used to reload the

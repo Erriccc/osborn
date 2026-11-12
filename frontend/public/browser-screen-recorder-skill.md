@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 29
+Version: 30
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v30
+- A person can take control of a tab from the in-app Browser and hand it back. While they hold it, your actions on that tab answer `paused_by_supervisor`: wait and retry. `POST /input` (click / type / key / scroll) is how a person drives by hand.
 
 ## What's new in v29
 - `/status.build` says which engine build is answering (commit, skill version, start time).
