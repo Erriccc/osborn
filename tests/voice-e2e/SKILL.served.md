@@ -211,6 +211,17 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
   transcription provider with `ok` and the HTTP status of a live key check (at
   boot and on `POST /brain`). When transcription fails, the `/say` warning now
   names every provider that failed and why, not just the last one.
+- **Drivers no longer wait on each other.** Every tab is recorded on its own,
+  so the action lock is held only for the input itself (focus + the action, or
+  focus + speaking). Listening, clip cutting, transcription and audio mixing
+  run after it is released. Measured with two drivers: while one listened for
+  15s, the other's /eval returned in ~0.03s and its /act in ~1s; each clip
+  showed only its own tab.
+- **Spoken-turn clips are reviewable by a person.** Players autoplay video
+  muted, so the clip shows its sound: a waveform strip along the bottom, a
+  "TESTER SAID" caption while the question plays, and the transcript of the
+  reply (or "no speech transcribed") afterwards. Audio is stereo and
+  loudness-normalised. Unmute to hear both sides.
 
 ## What's new in v24
 - **`ok:true` is no longer the whole story.** Every `/act` returns `effect`
