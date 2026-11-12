@@ -94,63 +94,98 @@ function getSandboxImage(version?: string): string {
     // the registry path, while still flipping the tag to the explicit
     // version we just resolved.
     const base = process.env.FLY_SANDBOX_IMAGE || 'registry.fly.io/osborn-sandbox/agent:latest'
-    return base.replace(/:[^/:]+$/, `:${version}`)
+    return sandboxImageWithTag(base, version)
   }
   return process.env.FLY_SANDBOX_IMAGE || 'registry.fly.io/osborn-sandbox/agent:latest'
 }
 
 /**
+ * Split an image reference into registry host and repository, tolerating the
+ * shapes FLY_SANDBOX_IMAGE has had: `host/repo:tag`, `host/repo` (no tag),
+ * `host/repo@sha256:…`, `host:5000/repo:tag`, and stray whitespace. Pure.
+ */
+export function parseImageRef(ref: string): { host: string; repo: string } | null {
+  const clean = ref.trim().replace(/@sha256:[0-9a-f]+$/i, '')
+  const slash = clean.indexOf('/')
+  if (slash <= 0) return null
+  const host = clean.slice(0, slash)
+  // A tag is a `:…` after the LAST slash (a `:` before it is a registry port).
+  const repo = clean.slice(slash + 1).replace(/:[^/:]+$/, '')
+  return host && repo ? { host, repo } : null
+}
+
+/** `ref` re-pointed at `version`, whatever tag/digest (or none) it carried. Pure. */
+export function sandboxImageWithTag(ref: string, version: string): string {
+  const p = parseImageRef(ref)
+  return p ? `${p.host}/${p.repo}:${version}` : ref
+}
+
+function parseVersion(v: unknown): [number, number, number] | null {
+  const m = typeof v === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(v.trim()) : null
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+}
+const cmpVersion = (a: [number, number, number], b: [number, number, number]) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
+
+/**
  * Highest plain `x.y.z` tag in a registry tag list, or null when there is none.
+ * With `ceiling` (the version npm calls latest), tags ABOVE it are ignored, so
+ * a mislabelled or half-released build can never be handed to new sign-ups.
  * Pure — exported for tests. Ignores `latest`, pre-release and non-version tags.
  */
-export function pickNewestVersionTag(tags: readonly unknown[]): string | null {
+export function pickNewestVersionTag(tags: readonly unknown[], ceiling?: string | null): string | null {
+  const cap = ceiling ? parseVersion(ceiling) : null
   let best: [number, number, number] | null = null
   for (const t of tags) {
-    const m = typeof t === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(t.trim()) : null
-    if (!m) continue
-    const v: [number, number, number] = [Number(m[1]), Number(m[2]), Number(m[3])]
-    if (!best || v[0] > best[0] || (v[0] === best[0] && (v[1] > best[1] || (v[1] === best[1] && v[2] > best[2])))) best = v
+    const v = parseVersion(t)
+    if (!v || (cap && cmpVersion(v, cap) > 0)) continue
+    if (!best || cmpVersion(v, best) > 0) best = v
   }
   return best ? best.join('.') : null
 }
 
-let newestImageCache: { image: string; at: number } | null = null
+let newestImageCache: { image: string; at: number; ttl: number } | null = null
+/** Test hook: forget the cached lookup. */
+export function resetNewestSandboxImageCache(): void { newestImageCache = null }
 
 /**
- * The image a NEW machine should be created from: the newest version-tagged
- * build in the sandbox registry, pinned by tag.
+ * The image a NEW machine (fresh create, or a warm-pool spare being claimed)
+ * should run: the newest version-tagged build in the sandbox registry that npm
+ * also calls released, pinned by tag.
  *
  * Why not FLY_SANDBOX_IMAGE as-is: it is `...:latest`, and the manual release
  * path (`fly deploy --image-label X.Y.Z`) never moves `:latest`. On 2026-11-12
  * `:latest` was 0.9.272 while existing machines ran 0.9.277, so every brand-new
  * account was provisioned five releases behind — without the no-Claude fallback
- * — and sat on "Connecting" at a mandatory Claude sign-in (#87). Existing
- * machines were fine, which is why nobody noticed.
+ * (first released in 0.9.275) — and sat on "Connecting" at a mandatory Claude
+ * sign-in (#87). Existing machines were fine, which is why nobody noticed.
  *
- * Falls back to the configured image when the registry can't be read, so a
- * registry blip degrades to the old behaviour instead of blocking sign-ups.
+ * Never throws. Any failure (registry down, bad token, nothing eligible) falls
+ * back to the configured image and is cached briefly, so an outage degrades to
+ * the old behaviour instead of adding a timeout to every sign-up.
  */
 export async function resolveNewestSandboxImage(now: number = Date.now()): Promise<string> {
-  const fallback = getSandboxImage()
-  if (newestImageCache && now - newestImageCache.at < 5 * 60 * 1000) return newestImageCache.image
+  const fallback = getSandboxImage().trim()
+  if (newestImageCache && now - newestImageCache.at < newestImageCache.ttl) return newestImageCache.image
+  const settle = (image: string, ttl: number) => { newestImageCache = { image, at: now, ttl }; return image }
   try {
-    const m = /^([^/]+)\/(.+?)(?::[^/:]+)?$/.exec(fallback)
-    const token = process.env.FLY_API_TOKEN
-    if (!m || !token) return fallback
-    const res = await fetch(`https://${m[1]}/v2/${m[2]}/tags/list`, {
+    const ref = parseImageRef(fallback)
+    const token = (process.env.FLY_API_TOKEN || '').trim()
+    if (!ref || !token) return settle(fallback, 60_000)
+    const res = await fetch(`https://${ref.host}/v2/${ref.repo}/tags/list?n=1000`, {
       headers: { Authorization: `Basic ${Buffer.from(`x:${token}`).toString('base64')}` },
       signal: AbortSignal.timeout(8000),
     })
-    if (!res.ok) { console.warn(`[machines] newest-image lookup HTTP ${res.status} — using ${fallback}`); return fallback }
+    if (!res.ok) { console.warn(`[machines] newest-image lookup HTTP ${res.status} — using ${fallback}`); return settle(fallback, 60_000) }
     const body = (await res.json()) as { tags?: unknown[] }
-    const newest = pickNewestVersionTag(Array.isArray(body.tags) ? body.tags : [])
-    if (!newest) return fallback
-    const image = getSandboxImage(newest)
-    newestImageCache = { image, at: now }
-    return image
+    // Ceiling = what npm calls latest. If npm can't be reached, take the newest
+    // tag as-is rather than fall back to a `:latest` known to go stale.
+    const ceiling = await resolveOsbornLatest().catch(() => null)
+    const newest = pickNewestVersionTag(Array.isArray(body.tags) ? body.tags : [], ceiling)
+    if (!newest) { console.warn(`[machines] no released version tag in registry — using ${fallback}`); return settle(fallback, 60_000) }
+    return settle(sandboxImageWithTag(fallback, newest), 5 * 60_000)
   } catch (err) {
     console.warn(`[machines] newest-image lookup failed (${(err as Error).message}) — using ${fallback}`)
-    return fallback
+    return settle(fallback, 60_000)
   }
 }
 
@@ -807,8 +842,12 @@ export async function repointAndStartSandbox(
     // Strip host-only secrets (SUPABASE_SERVICE_ROLE_KEY, FLY_API_TOKEN, ...)
     // that older provisioning baked into the existing env — see MACHINE_ENV_DENYLIST.
     stripDeniedMachineEnv(cleanedEnv)
+    // A spare keeps the image it was created with, so a pool filled before a
+    // release hands new users the OLD agent. Re-point it at the current image
+    // on claim — this POST already replaces the config and restarts the machine.
+    const image = await resolveNewestSandboxImage()
     await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, {
-      config: { ...existingConfig, env: cleanedEnv },
+      config: { ...existingConfig, image, env: cleanedEnv },
     })
 
     const settled = await waitForReplacementComplete(appName, machine.id, 300)

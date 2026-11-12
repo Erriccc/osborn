@@ -261,15 +261,22 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     if (frames.length < 2) { console.log(`[live-stream] clip skipped — ${frames.length} frame(s)`); return null }
     const dir = mkdtempSync(join(tmpdir(), 'osbclip-'))
     try {
+      // Thin bursts instead of padding them: frames closer than one output
+      // frame (100ms at 10fps) to the previous kept frame are dropped. A
+      // minimum-duration floor here stretched a burst of 2400 frames 5ms apart
+      // (12s of wall clock) into a 48s clip.
+      const MIN_GAP_MS = 100
+      const kept: typeof frames = []
+      for (const f of frames) if (!kept.length || f.t - kept[kept.length - 1].t >= MIN_GAP_MS) kept.push(f)
       const lines: string[] = ['ffconcat version 1.0']
-      frames.forEach((f, i) => {
+      kept.forEach((f, i) => {
         const name = `f${String(i).padStart(5, '0')}.jpg`
         writeFileSync(join(dir, name), f.buf)
-        const next = i + 1 < frames.length ? frames[i + 1].t : toMs
-        lines.push(`file '${name}'`, `duration ${(Math.max(20, next - f.t) / 1000).toFixed(3)}`)
+        const next = i + 1 < kept.length ? kept[i + 1].t : toMs
+        lines.push(`file '${name}'`, `duration ${(Math.max(1, next - f.t) / 1000).toFixed(3)}`)
       })
       // The concat demuxer ignores the last duration unless the file repeats.
-      lines.push(`file 'f${String(frames.length - 1).padStart(5, '0')}.jpg'`)
+      lines.push(`file 'f${String(kept.length - 1).padStart(5, '0')}.jpg'`)
       writeFileSync(join(dir, 'list.txt'), lines.join('\n') + '\n')
       const ok = await new Promise<boolean>((resolve) => {
         const ff = spawn('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', join(dir, 'list.txt'),

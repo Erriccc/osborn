@@ -377,21 +377,38 @@ async function main() {
   // time via the recording's OWN start (startedAt = now - sinceStartMs), NOT
   // tCapture — raw manifest rel0/rel1 are on tCapture's timeline and misalign by
   // the anchor gap (proven: rel-based slicing returned silence).
-  const peekAudioToWav = async (): Promise<{ wav: string; startedAt: number } | null> => {
+  // `startedAt` is the WALL-CLOCK instant of the recording file's time zero.
+  // That is NOT when capture was armed: the recorder's timeline begins at the
+  // first tapped audio source (the anchor), which can be many seconds later
+  // (on the boot tab, the whole room-join gap). It is computed BEFORE the
+  // decode, which for a long recording takes seconds and used to skew it.
+  // `page` defaults to the active tab; callers outside the action lock must
+  // pass the tab they mean. Temp files are per call (two muxes used to share
+  // `_peek.*` and could read each other's half-written audio).
+  let peekSeq = 0
+  const peekAudioToWav = async (page: Page = active, maxMs = 30 * 60 * 1000): Promise<{ wav: string; startedAt: number; durationMs: number } | null> => {
     try {
-      const { base64, sinceStartMs } = await peekCapture(active)
+      const { base64, sinceStartMs, anchorOffsetMs } = await peekCapture(page)
+      const startedAt = Date.now() - sinceStartMs + anchorOffsetMs
       if (!base64) return null
-      const webm = join(RUN_DIR, '_peek.webm')
+      // Decoding the whole recording on every turn does not scale (a 2h
+      // capture is ~30s of ffmpeg and ~700MB of wav). Past the cap, proof
+      // clips go without the page-audio track rather than stall every /say.
+      if (sinceStartMs > maxMs) { mark(`page-audio track skipped — recording is ${Math.round(sinceStartMs / 60000)}min long`); return null }
+      const id = ++peekSeq
+      const webm = join(RUN_DIR, `_peek-${id}.webm`)
       writeFileSync(webm, Buffer.from(base64, 'base64'))
-      const wav = join(RUN_DIR, '_peek.wav')
+      const wav = join(RUN_DIR, `_peek-${id}.wav`)
       // Full decode → wav: MediaRecorder opus can't be seeked directly (bad
       // packet headers — proven), so decode once and trim the wav reliably.
       await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav])
-      return { wav, startedAt: Date.now() - sinceStartMs }
+      try { rmSync(webm, { force: true }) } catch { /* ignore */ }
+      const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wav]).catch(() => ({ stdout: '0' }))
+      return { wav, startedAt, durationMs: Math.round((Number(String(probe.stdout).trim()) || 0) * 1000) }
     } catch { return null }
   }
-  const muxClipAudio = async (videoPath: string, endMs: number, n: number): Promise<string | null> => {
-    const a = await peekAudioToWav()
+  const muxClipAudio = async (videoPath: string, endMs: number, n: number, page: Page = active): Promise<string | null> => {
+    const a = await peekAudioToWav(page)
     if (!a) return null
     try {
       const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', videoPath])
@@ -418,10 +435,12 @@ async function main() {
         return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length }
       }),
       new Promise<null>((r) => setTimeout(() => r(null), 3000)),
-    ]).catch(() => null)) ?? { armed: false, startedAt: null, audioElements: 0, playing: 0 }
+    ]).catch(() => null)) ?? { armed: false, startedAt: null, audioElements: 0, playing: 0, unknown: true }
   const ensureEars = async (p: Page) => {
-    const before = await earsState(p)
-    if (before.armed) return { ...before, armedNow: false }
+    const before = await earsState(p) as Awaited<ReturnType<typeof earsState>> & { unknown?: boolean }
+    // A page too busy to answer is NOT "unarmed": arming again would replace
+    // the existing recording and orphan its recorder. Only arm on a clear no.
+    if (before.armed || before.unknown) return { ...before, armedNow: false }
     await startElementCapture(p).catch(() => {})
     return { ...(await earsState(p)), armedNow: true }
   }
@@ -436,23 +455,33 @@ async function main() {
     let idx = 1
     const said = !!saidWav && existsSync(saidWav) && playStartMs > 0
     if (said) {
-      const d = Math.max(0, Math.round(playStartMs - clip.startMs))
-      args.push('-i', saidWav!); filters.push(`[${idx}:a]aresample=48000,adelay=${d}:all=1[s]`); labels.push('[s]'); idx++
+      const d = Math.round(playStartMs - clip.startMs)
+      // d < 0: the clip starts AFTER the utterance began (a turn longer than
+      // the frame buffer) — skip that much of the wav instead of pinning the
+      // whole utterance to the start of the clip.
+      if (d < 0) args.push('-ss', (-d / 1000).toFixed(3))
+      args.push('-i', saidWav!); filters.push(`[${idx}:a]aresample=48000${d > 0 ? `,adelay=${d}:all=1` : ''}[s]`); labels.push('[s]'); idx++
     }
     const a = await peekAudioToWav()
-    if (a) {
-      const off = (clip.startMs - a.startedAt) / 1000
+    // Only a slice that actually overlaps the clip counts as a heard track: a
+    // seek past the end of the recording muxes silence and must not be
+    // reported as page audio.
+    const off = a ? (clip.startMs - a.startedAt) / 1000 : 0
+    const heard = !!a && off * 1000 < a.durationMs - 100 && a.startedAt < clip.endMs
+    if (a && heard) {
       if (off >= 0) args.push('-ss', off.toFixed(3))
       args.push('-i', a.wav)
       filters.push(`[${idx}:a]aresample=48000${off < 0 ? `,adelay=${Math.round(-off * 1000)}:all=1` : ''}[h]`); labels.push('[h]'); idx++
     }
-    if (!labels.length) return null
+    const cleanup = () => { if (a) { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } } }
+    if (!labels.length) { cleanup(); return null }
     const out = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say-av.mp4`)
     filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest,apad[a]`)
     try {
       await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
-      return existsSync(out) ? { path: out, said, heard: !!a } : null
+      return existsSync(out) ? { path: out, said, heard } : null
     } catch (e) { mark(`audio mux failed: ${(e as Error).message.slice(0, 100)}`); return null }
+    finally { cleanup() }
   }
   // TAB HUD — ONLY for headless/CDP capture, where the screencast has no
   // browser chrome and tabs would be invisible. In full-window (display) mode
@@ -857,7 +886,14 @@ async function main() {
         // Current run only (past runs' recording is gone).
         if (path === '/clip' && q.get('audio') === '1' && !runParam && file) {
           const t3 = tasks.find((t) => t.n === n) as any
-          if (t3?.endMs) { const m = await muxClipAudio(file, t3.endMs, n); if (m) file = m }
+          // A spoken-turn clip already carries both sides of the audio, aligned
+          // when it was cut — re-muxing it here dropped the tester's track and
+          // shifted the page audio by the transcription time. Serve it as is.
+          const alreadyAudible = t3?.clipAudio && (t3.clipAudio.said || t3.clipAudio.heard)
+          // Otherwise mux from the tab the task ran on, not whichever tab
+          // another driver has fronted since.
+          const taskPage = context.pages().find((p) => p.url() === t3?.tab?.url && ownerOf(p) === (t3?.tab?.owner ?? null))
+          if (t3?.endMs && !alreadyAudible) { const m = await muxClipAudio(file, t3.endMs, n, taskPage ?? active); if (m) file = m }
         }
         if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs` }, 404)
         res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })
@@ -1068,6 +1104,7 @@ async function main() {
             const msg = sayErr.message || 'speak failed'
             const noMic = /mic/i.test(msg)
             mark(`say[${driver}] FAILED after ${MAX_SAY_ATTEMPTS} attempt(s): ${msg.slice(0, 80)}`)
+            try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
             const fn = ++reqN
             const fshot = await reqShot(fn, 'say')
             stampTask(fn, 'say', t0, null, fshot, body.text)
@@ -1101,12 +1138,14 @@ async function main() {
           const earsAfter = await earsState(active)
           const sayWarning = heard ? null
             : hearError ? `nothing transcribed: ${hearError}`
+            : !(optionalEnvKey('SONIOX_API_KEY') || optionalEnvKey('DEEPGRAM_API_KEY') || optionalEnvKey('OPENAI_API_KEY')) ? 'nothing transcribed: the engine has no speech-to-text key (SONIOX_API_KEY / DEEPGRAM_API_KEY) — listen to the clip instead'
             : earsAfter.audioElements === 0 ? 'nothing was heard, and the page has no audio/video element — no agent audio track is attached (the agent is probably not connected or not speaking)'
             : earsAfter.playing === 0 ? 'nothing was heard: the page has audio elements but none is playing'
             : ears.armedNow ? 'nothing was heard; the ears were armed on this tab just before speaking, so audio that started earlier was not captured'
             : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say')
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
+          ;(window as any).clipAudio = audio; writeManifest()
           scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
           return json(res, { ok: true, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         })
