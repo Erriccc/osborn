@@ -309,13 +309,8 @@ export function RoomsSidebar({
             {/* Recent — grouped by project. */}
             {idleByProject.map(({ project, rooms: group }) => (
               <div key={project} className="pt-1.5">
-                {/* No group colour dot (#129 review): each row hashes
-                    roomIdentityLabel, which for the "workspace" and "Other"
-                    buckets is the row's own TITLE — so those rows deliberately
-                    have per-row colours and NO single header colour can match
-                    them. The dot hashed the raw bucket key and disagreed with
-                    its own rows; seeding it through roomIdentityLabel would
-                    have changed nothing (with no title the label IS the key). */}
+                {/* No group colour dot: rows in the "workspace"/"Other" buckets
+                    hash their own title, so no one colour can match them all. */}
                 <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
                 {group.map((room) => (
                   <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />

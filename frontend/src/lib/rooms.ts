@@ -70,8 +70,7 @@ export function sameSession(a: string, b: string): boolean {
   return a === b || (a.length === 8 && b.startsWith(a)) || (b.length === 8 && a.startsWith(b))
 }
 
-/** Last path segment of a directory ('' / undefined → undefined). */
-export function projectName(cwd: string | undefined): string | undefined {
+function projectName(cwd: string | undefined): string | undefined {
   if (!cwd) return undefined
   const seg = cwd.replace(/\/+$/, '').split('/').filter(Boolean)
   return seg.length ? seg[seg.length - 1] : undefined
@@ -194,8 +193,6 @@ export interface RoomColor {
   bg: string
   /** Avatar foreground (the initial). */
   fg: string
-  /** A lighter same-hue ring, for optional emphasis. */
-  ring: string
 }
 
 type IdentityFields = { project?: string; title?: string }
@@ -247,7 +244,6 @@ export function roomColor(seed: string): RoomColor {
   return {
     bg: `hsl(${hue} 52% 38%)`,
     fg: `hsl(${hue} 85% 92%)`,
-    ring: `hsl(${hue} 60% 55%)`,
   }
 }
 

@@ -15,32 +15,13 @@
 //                         task notification. Only the markers the agent itself
 //                         emits count, so an opt-in toggle can hide them.
 //
-// Deliberately NOT here any more:
-//   • Prompt-text classification. Guessing "this is a sub-agent run" from the
-//     preview matched real human sessions ("can you run the tester on that?",
-//     "what does the sub-agent cost?") and hid them from BOTH lists. The field
-//     it read, `lastMessage`, is the session's LAST user turn (see
-//     agent/src/config.ts), not its first, so even the `^`-anchored patterns
-//     were reading the wrong text. A list that hides real work is worse than a
-//     list with noise in it.
-//   • Fork collapse. Keying on firstTs + the 6-word derived title merged
-//     genuinely different sessions ("Review the quarterly budget spreadsheet
-//     for marketing" vs "…for engineering" truncate to the same title) and the
-//     collapsed ids were rendered nowhere, so the dropped session had no path
-//     back. Removing a row with no way to reach it is not an acceptable
-//     default.
-//
-// `prepareSessions` runs the pass and is what both surfaces call. Everything
-// here is a pure function of its inputs so it can be unit-tested without a
-// browser (tests/session-list.test.ts).
+// Do NOT add prompt-text classification back (it hid real sessions, and
+// `lastMessage` is the LAST user turn, not the first) or fork collapse (it
+// merged different sessions on a 6-word title and left no path to the one it
+// dropped). `prepareSessions` runs the pass and is what both surfaces call.
 
-import { sameSession, projectName } from './rooms'
-import {
-  deriveSessionTitle,
-  prettySessionPreview,
-  sessionActivityMs,
-  type SessionListFields,
-} from './sessions'
+import { sameSession } from './rooms'
+import { prettySessionPreview, sessionActivityMs, type SessionListFields } from './sessions'
 
 /** The shape the hygiene helpers read. Every extra field is optional so the
  * dashboard's SessionInfo, the rail's RoomSessionInput and partial shapes all
@@ -79,10 +60,8 @@ function isSystemSession(s: SessionListItem): boolean {
  * message count) and then the most recently active, so the surviving row has
  * the best title/time/project. First-seen order is otherwise preserved.
  *
- * Identity uses `sameSession` (lib/rooms) — the same rule the Rooms rows use
- * when matching a slot id to a session — so a row the rail considers already
- * taken is also the row this pass folds away. Candidates are bucketed by their
- * 8-char prefix so this stays linear.
+ * Identity is `sameSession` (lib/rooms), the same rule the rows use, bucketed
+ * by id prefix to stay linear — so the two can't drift apart.
  */
 function dedupeSessions<T extends SessionListItem>(sessions: T[]): T[] {
   const order: string[] = []
@@ -117,20 +96,16 @@ function preferCopy(a: SessionListItem, b: SessionListItem): boolean {
 }
 
 // ── Search over title / preview / project ─────────────────────────────────
-/** Case-insensitive match of `query` against the session's title, cleaned
- * preview text, raw last message, project and id. Blank query matches all. The
- * one session-search predicate in the app (SessionBrowser's list).
- *
- * `lastMessage` is in the haystack on purpose: `deriveSessionTitle` caps at 6
- * words and `prettySessionPreview().text` prefers the agent-supplied title, so
- * on a modern agent (title always set) the message body would otherwise not be
- * searchable at all — narrower than the hand-rolled filter this replaced. */
+/** Case-insensitive match of `query` against the session's cleaned preview,
+ * raw last message, project directory and id. Blank query matches all. The one
+ * session-search predicate in the app (SessionBrowser's list). `lastMessage` is
+ * needed because `prettySessionPreview().text` prefers the agent title, so on a
+ * modern agent the message body would otherwise not be searchable at all. */
 export function sessionMatchesQuery(s: SessionListItem, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
   const pv = prettySessionPreview(s)
-  const dir = s.projectPath || s.cwd || ''
-  const hay = [deriveSessionTitle(s), pv.text, pv.label, s.lastMessage, projectName(dir), dir, s.sessionId]
+  const hay = [pv.text, pv.label, s.lastMessage, s.projectPath || s.cwd, s.sessionId]
     .join(' \u0001 ')
     .toLowerCase()
   return hay.includes(q)
