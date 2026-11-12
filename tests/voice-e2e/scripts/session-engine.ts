@@ -142,7 +142,9 @@ const writeScenario = () => {
 // inside the brain library, a CDP call on a closed tab) must never take down
 // the engine every driver shares. Log it, mark it, keep serving.
 process.on('unhandledRejection', (e) => { mark(`unhandled rejection (engine kept alive): ${String((e as Error)?.message ?? e).slice(0, 160)}`) })
-process.on('uncaughtException', (e) => { mark(`uncaught exception (engine kept alive): ${String(e?.message ?? e).slice(0, 160)}`) })
+// A synchronous throw leaves the process in an unknown state: exit, so the
+// machine restarts on the next request instead of answering as a zombie.
+process.on('uncaughtException', (e) => { mark(`uncaught exception — exiting: ${String(e?.message ?? e).slice(0, 160)}`); writeManifest(); process.exit(1) })
 
 async function main() {
   // Which voice-native test account the engine drives. Default osborn-tester
@@ -339,11 +341,18 @@ async function main() {
   const brain = async (i: string) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
-    try { return await actWithCache(stagehand, active, i) }
+    const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS ?? 120000)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        actWithCache(stagehand, active, i),
+        new Promise<never>((_, rej) => { timer = setTimeout(() => { brainAlive = false; brainError = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`; rej(new Error(brainError)) }, BRAIN_TIMEOUT_MS) }),
+      ])
+    }
     catch (e) {
       if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
       throw e
-    }
+    } finally { clearTimeout(timer) }
   }
 
   const chatUrl = `${APP_URL}/chat?provider=gemini&voiceArch=pipeline&agent=claude&agentUrl=${encodeURIComponent(AGENT_URL)}`
@@ -443,6 +452,7 @@ async function main() {
         '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
       return existsSync(out) ? out : null
     } catch { return null }
+    finally { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } }
   }
   // EARS ON ANY TAB. Page-audio capture used to be armed only by the boot
   // room-join on tab 0, so a voice session in any other tab was deaf: /say
@@ -739,7 +749,7 @@ async function main() {
   const saveJourneyState = (status: 'active' | 'ended') => {
     try {
       if (!journey) return
-      const pj: PersistedJourney = { name: journey.name, goal: journey.goal, owner: journey.owner, startUrl: journey.startUrl, startedAt: journey.startedAt }
+      const pj: PersistedJourney = { name: journey.name, goal: journey.goal, owner: journey.owner, startUrl: journey.startUrl, startedAt: journey.startedAt, steps: scenarioSteps.slice(journey.startStep) }
       writeFileSync(JOURNEY_STATE, JSON.stringify(buildJourneyState(RUN_STAMP, status, pj, reqN, tasks.length, Date.now()), null, 2))
     } catch { /* never block the journey on a persistence miss */ }
   }
@@ -752,7 +762,12 @@ async function main() {
         // indices belonged to the dead process) and preserve identity + owner
         // (the mission lock survives too). Re-save under the new run id so a
         // SECOND restart chains from here, not from the stale run.
-        journey = { name: decision.journey.name, goal: decision.journey.goal, owner: decision.journey.owner, startStep: scenarioSteps.length, startTaskN: reqN, startUrl: decision.journey.startUrl, startedAt: decision.journey.startedAt }
+        // Steps done before the restart are carried over so /journey end can
+        // still save them. The mission lock (owner) is NOT restored: a crash or
+        // redeploy must not lock other drivers out for up to 2h.
+        const startStep = scenarioSteps.length
+        scenarioSteps.push(...(decision.journey.steps ?? []))
+        journey = { name: decision.journey.name, goal: decision.journey.goal, owner: undefined, startStep, startTaskN: reqN, startUrl: decision.journey.startUrl, startedAt: decision.journey.startedAt }
         restoredFromRun = decision.previousRun ?? null
         manifest.previousRun = restoredFromRun
         saveJourneyState('active')
@@ -958,6 +973,7 @@ async function main() {
         const mp3 = join(RUN_DIR, '_run-audio.mp3')
         try { await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', a.wav, '-c:a', 'libmp3lame', '-q:a', '4', mp3]) }
         catch (e) { return json(res, { error: 'transcode failed: ' + (e as Error).message }, 500) }
+        finally { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } }
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': statSync(mp3).size })
         createReadStream(mp3).pipe(res)
         return
@@ -1320,9 +1336,9 @@ async function main() {
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !context.pages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${context.pages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
-        // Serialized with /act and /say: a /tab landing mid-action used to swap
-        // the shared `active` under it, so the action's screenshot, clip and
-        // task record described ANOTHER driver's tab.
+        // Read-only: no need to queue behind a running action.
+        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
+        // Serialized with /act and /say so a tab change never lands mid-action.
         return await withLock(async () => {
         // After ANY change of active tab the screencast is retargeted so the
         // live stream + clips show the tab work actually happens on.
@@ -1545,6 +1561,7 @@ async function main() {
         // The join flow still failed (agent died mid-flow, gate wedge, …).
         // Surface it the same way so passive stream viewers see WHY; the engine
         // stays drivable (/recover, /act) instead of a silent spinner.
+        joinedRoom = true  // the agent may already be seated; let shutdown tell it to leave
         agentUnreachable = `room join failed: ${(e as Error).message.slice(0, 120)}`
         live?.setNotice(`agent chat failed to join — ${(e as Error).message.slice(0, 120)}`)
         mark(`room join FAILED: ${(e as Error).message.slice(0, 120)} — engine still drivable; use /recover or /act to steer`)

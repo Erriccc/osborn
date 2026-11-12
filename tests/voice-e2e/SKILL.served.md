@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 26
+Version: 27
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,17 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v27
+- **No more engine zombies or stuck locks.** A crash exits (the machine
+  restarts on the next request) instead of answering as a half-dead engine; a
+  brain call that hangs past `OSBORN_BRAIN_TIMEOUT_MS` (120s) fails the action
+  and frees the lock; `/tab {"op":"list"}` no longer waits behind an action.
+- **A journey recovered after a restart keeps its steps** (so `/journey end`
+  can still save them) and **no longer keeps its mission lock**, so a crash or
+  redeploy never locks other drivers out.
+- Temporary audio files from `/clip?audio=1` and `/audio` are deleted, so a
+  long run no longer fills the disk.
 
 ## What's new in v26
 - **Speech-to-text health is visible.** `/status.stt` lists each configured
