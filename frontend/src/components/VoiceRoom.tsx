@@ -4081,13 +4081,8 @@ function VoiceRoomInner({
             <ModelBadge provider={mainProvider} version={agentVersion} connected={agentConnected} />
 
             {/* #87 gap 3 — surface a SILENT failure the session would otherwise
-                hide: an agent too old for the demo-model fallback (version floor),
-                or a failed key self-test. resolveAgentHealth owns which sessions
-                that applies to: the auth modal having opened at least once
-                (claudeAuthEverRequired — the pre-fallback/old-agent path) OR a
-                declared house-tier provider (the smooth fallback path never opens
-                the modal), while a claude/anthropic provider rules it out. Same
-                real /health signals as the badge; never fabricates a status. */}
+                hide: an agent too old for the demo-model fallback, or a failed key
+                self-test. resolveAgentHealth owns which sessions that applies to. */}
             <AgentHealthNotice
               version={agentVersion}
               relyingOnFallback={claudeAuthEverRequired}

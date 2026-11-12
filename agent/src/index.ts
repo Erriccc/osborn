@@ -318,8 +318,7 @@ let agentActiveProvider: ActiveProvider | null = null
 let agentKeyHealth: KeyHealthEntry[] | null = null
 
 /**
- * (Re)derive the active model tier from applyAuthFallback() — the single source of
- * truth, since the tier is known at decision time — and publish it to /health +
+ * (Re)derive the active tier from applyAuthFallback() and publish it to /health +
  * agent_ready. Re-running it after a mid-session sign-in is also self-healing: if
  * the sign-in did NOT land, the redirect the auth path cleared is re-applied.
  */
@@ -331,11 +330,10 @@ function refreshActiveProvider(): ActiveProvider {
 }
 
 /**
- * HOUSE-tier key self-test (#87): ONE tiny real request, fire-and-forget, so it
- * costs the connect path nothing. House tiers only — a user's OWN Anthropic key is
- * their concern and the SDK surfaces its failures directly. Always clears the
- * previous tier's verdict first, so a sign-in that swaps tiers cannot leave a
- * stale "No working model" on screen.
+ * House-tier key self-test (#87), fire-and-forget so it costs the connect path
+ * nothing. A user's OWN Anthropic key is skipped — the SDK surfaces its failures
+ * directly. Always clears the previous tier's verdict first, so a sign-in that
+ * swaps tiers cannot leave a stale "No working model" on screen.
  */
 function startKeyHealthProbe(provider: ActiveProvider): void {
   agentKeyHealth = null
@@ -824,9 +822,8 @@ function startApiServer(workingDir: string, port: number): void {
         // Whole-machine memory — what the OOM killer watches. All values in MB.
         memory: { totalMb, usedMb, availableMb, usedPct, processRssMb },
         // #87: the tier actually answering + its key self-test. `provider` is the
-        // LIVE reading (agent_ready fires once, so it goes stale the moment a
-        // mid-session sign-in swaps the tier); keyHealth is absent until the probe
-        // lands. The frontend shows "No working model" when every entry failed.
+        // LIVE reading — agent_ready fires once, so it goes stale the moment a
+        // mid-session sign-in swaps the tier.
         ...(agentActiveProvider ? { provider: agentActiveProvider } : {}),
         ...(agentKeyHealth ? { keyHealth: agentKeyHealth } : {}),
       }))
@@ -5231,8 +5228,7 @@ async function main() {
     // set before the first query() spawn inherits process.env. No-op for
     // tier-1 (real Claude login) and tier-2 (user's own ANTHROPIC_API_KEY).
     // #87: refreshActiveProvider() also records WHICH tier it selected, driving
-    // agent_ready.provider + /health so the badge names the real model instead of
-    // the old hardcoded 'claude'. Its key self-test fires after session start.
+    // agent_ready.provider + /health. Its key self-test fires after session start.
     const activeProvider: ActiveProvider = refreshActiveProvider()
 
     // Create session based on voice mode (from frontend or config)

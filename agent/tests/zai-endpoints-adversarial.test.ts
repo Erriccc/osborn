@@ -11,10 +11,9 @@ const { applyAuthFallback, clearAuthFallbackIfActive, classifyProbeStatus, probe
 const { resolveFastBrainProvider } = await import('../src/pipeline-fastbrain.js')
 
 let pass = 0, fail = 0
-function t(name: string, fn: () => void) {
-  try { fn(); pass++; console.log('ok   ', name) } catch (e: any) { fail++; console.log('FAIL ', name, String(e?.message || e).slice(0, 400)) }
-}
-async function ta(name: string, fn: () => Promise<void>) {
+// Sync cases are fire-and-forget — their bodies run in order and only the tally
+// is deferred to a microtask; the awaited async cases at the bottom drain those.
+async function t(name: string, fn: () => unknown) {
   try { await fn(); pass++; console.log('ok   ', name) } catch (e: any) { fail++; console.log('FAIL ', name, String(e?.message || e).slice(0, 400)) }
 }
 const KEYS = ['OSBORN_DEMO_PASS','Z_AI_PERSONAL_API_KEY','ZAI_API_KEY','OSBORN_DEMO_FAST_MODEL','OSBORN_DEMO_MODEL','OSBORN_DEMO_BASE_URL',
@@ -103,10 +102,10 @@ t('(f) classifyProbeStatus: 400/403/404/5xx fabricate nothing', () => {
   for (const s of [400, 403, 404, 500, 503]) assert.equal(classifyProbeStatus(s), null, `${s} -> null`)
 })
 
-await ta('(g) probeActiveProviderKey: no credential -> null', async () => {
+await t('(g) probeActiveProviderKey: no credential -> null', async () => {
   reset(); assert.equal(await probeActiveProviderKey('zai'), null)
 })
-await ta('(g) probeActiveProviderKey: classifies the live endpoint conservatively', async () => {
+await t('(g) probeActiveProviderKey: classifies the live endpoint conservatively', async () => {
   reset()
   process.env.ANTHROPIC_AUTH_TOKEN = 'zai-key'
   process.env.ANTHROPIC_BASE_URL = 'https://api.z.ai/api/anthropic'
