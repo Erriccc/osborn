@@ -297,18 +297,18 @@ export function inFlightAuthBlocksJoin(env: NodeJS.ProcessEnv, force = false): b
  * subprocess inherits process.env at spawn time and reads auth/model config
  * once at cold start.
  */
-export function applyAuthFallback(): void {
+export function applyAuthFallback(): ActiveProvider {
   // Tier 1: real Claude login (expiry-aware — NOT hasOAuthTokenEnv, which
   // would treat an expired token as active and let the SDK fail downstream).
   if (isClaudeAuthenticated()) {
-    return
+    return 'claude'
   }
 
   // Tier 2: user's own Anthropic key.
   const anthropicKey = cleanEnvKey(process.env.ANTHROPIC_API_KEY)
   if (anthropicKey !== '') {
     process.env.ANTHROPIC_API_KEY = anthropicKey
-    return
+    return 'anthropic'
   }
 
   // Tier 3: HOUSE DEMO PASS - z.ai GLM coding subscription (flat/shared, not
@@ -340,7 +340,7 @@ export function applyAuthFallback(): void {
     process.env.OSBORN_DEMO_PASS = 'zai'
     fallbackTierActive = true
     console.log(`[auth-fallback] using house demo pass (z.ai), model=${demoModel}, fast=${demoFastModel}`)
-    return
+    return 'zai'
   }
 
   // Tier 4: central OpenRouter key (pay-per-use fallback of the fallback).
@@ -372,41 +372,28 @@ export function applyAuthFallback(): void {
     process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '131072'
     fallbackTierActive = true
     console.log(`[auth-fallback] using central OpenRouter tier, model=${FALLBACK_MODEL}`)
-    return
+    return 'openrouter'
+  }
+
+  // A user's own Anthropic-compatible gateway (ANTHROPIC_AUTH_TOKEN + their own
+  // ANTHROPIC_BASE_URL) is left untouched above and still answers — label it as
+  // their own (anthropic) rather than a dead end.
+  if (cleanEnvKey(process.env.ANTHROPIC_AUTH_TOKEN) !== '') {
+    return 'anthropic'
   }
 
   // Tier 4 fail: no fallback key at all — do NOT throw.
   console.warn('[auth-fallback] no Claude login, no ANTHROPIC_API_KEY, no Z_AI key, and no OPENROUTER_API_KEY — agent may be unauthenticated')
-}
-
-/** The model backend the agent is actually answering on. */
-export type ActiveProvider = 'claude' | 'anthropic' | 'zai' | 'openrouter' | 'none'
-
-/**
- * Resolve which backend the agent will REALLY answer on, in the same tier order
- * as applyAuthFallback() picks it. Must be called AFTER applyAuthFallback() so the
- * fallback env redirects are already in place; it then reads them back.
- *
- * Drives agent_ready.provider (the model badge) so the UI names what is actually
- * answering — z.ai GLM, OpenRouter, the user's own key, or nothing — instead of
- * the old hardcoded 'claude' (issue #87). Pure read of auth state + env; the
- * normal Claude path is unaffected (a live login short-circuits to 'claude').
- */
-export function resolveActiveProvider(env: NodeJS.ProcessEnv = process.env): ActiveProvider {
-  // Tier 1: a live Claude login wins (expiry-aware, same check applyAuthFallback uses).
-  if (isClaudeAuthenticated()) return 'claude'
-  // Tier 3: house demo pass — applyAuthFallback sets OSBORN_DEMO_PASS='zai'.
-  if (cleanEnvKey(env.OSBORN_DEMO_PASS) === 'zai') return 'zai'
-  // Tier 4: OpenRouter redirect — base URL points at openrouter.ai.
-  if (/openrouter\.ai/i.test(cleanEnvKey(env.ANTHROPIC_BASE_URL))) return 'openrouter'
-  // Tier 2: user's own Anthropic key, or their own Anthropic-compatible gateway
-  // (AUTH_TOKEN with a non-fallback base URL). Either way the backend is a
-  // first-party Anthropic-shaped endpoint the user configured.
-  if (cleanEnvKey(env.ANTHROPIC_API_KEY) !== '') return 'anthropic'
-  if (cleanEnvKey(env.ANTHROPIC_AUTH_TOKEN) !== '') return 'anthropic'
-  // Nothing configured — applyAuthFallback warned; the session cannot answer.
   return 'none'
 }
+
+/**
+ * The model backend the agent is actually answering on, as returned by
+ * applyAuthFallback() (single source of truth — the tier is known at decision
+ * time). Drives agent_ready.provider so the model badge names what is really
+ * answering instead of the old hardcoded 'claude' (issue #87).
+ */
+export type ActiveProvider = 'claude' | 'anthropic' | 'zai' | 'openrouter' | 'none'
 
 /**
  * Clear the fallback redirect (z.ai house pass or OpenRouter) — but ONLY if

@@ -1,6 +1,6 @@
-// #87: the active provider the agent declares (agent_ready.provider) and the
-// per-key self-test must be HONEST — the real tier, and only a definitive
-// auth/billing failure counts as a dead key.
+// #87: the active provider applyAuthFallback() declares (→ agent_ready.provider)
+// and the per-key self-test must be HONEST — the real tier it selected, and only
+// a definitive auth/billing failure counts as a dead key.
 // Run: npx tsx agent/tests/key-health.test.ts
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
@@ -14,64 +14,72 @@ const fakeHome = mkdtempSync(join(tmpdir(), 'osb-keyhealth-'))
 process.env.HOME = fakeHome
 process.env.CLAUDE_CONFIG_DIR = join(fakeHome, '.claude')
 
+// Every var any tier reads as a trigger OR writes as a redirect — cleared
+// between cases so no case leaks into the next.
 const PROVIDER_VARS = [
-  'CLAUDE_CODE_OAUTH_TOKEN', 'OSBORN_DEMO_PASS', 'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL',
+  'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL', 'OSBORN_DEMO_PASS', 'Z_AI_PERSONAL_API_KEY', 'ZAI_API_KEY',
+  'OPENROUTER_API_KEY', 'OSBORN_FORCE_CLAUDE_LOGIN', 'ANTHROPIC_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL_FORCE', 'CLAUDE_CODE_MAX_CONTEXT_TOKENS',
 ]
 const clearProviderEnv = () => { for (const k of PROVIDER_VARS) delete process.env[k] }
 clearProviderEnv()
 
-const { resolveActiveProvider } = await import('../src/claude-auth.js')
+const { applyAuthFallback, clearAuthFallbackIfActive } = await import('../src/claude-auth.js')
 const { classifyProbeStatus, probeActiveProviderKey } = await import('../src/key-health.js')
 
 let passed = 0
 const ok = (label: string) => { passed++; console.log(`  ✓ ${label}`) }
 
-// ── resolveActiveProvider — mirrors applyAuthFallback's tier order ──
-console.log('resolveActiveProvider:')
+// ── applyAuthFallback return value — the active provider, single source of truth ──
+console.log('applyAuthFallback → active provider:')
 {
-  clearProviderEnv()
-  assert.equal(resolveActiveProvider(), 'none', 'nothing configured → none')
+  // clearAuthFallbackIfActive undoes a z.ai/openrouter redirect + restores model
+  // env; clearProviderEnv then wipes the trigger keys. Order matters.
+  const reset = () => { clearAuthFallbackIfActive(); clearProviderEnv() }
+
+  reset()
+  assert.equal(applyAuthFallback(), 'none', 'nothing configured → none')
   ok('nothing configured → none')
 
-  clearProviderEnv()
+  reset()
   process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-xyz'
-  assert.equal(resolveActiveProvider(), 'claude', 'Claude login → claude')
+  assert.equal(applyAuthFallback(), 'claude', 'Claude login → claude')
   ok('Claude login → claude')
 
-  // Claude wins over any fallback key (tier 1 short-circuit).
-  process.env.OSBORN_DEMO_PASS = 'zai'
+  // Claude wins over a configured fallback key (tier 1 short-circuit, no redirect).
+  process.env.Z_AI_PERSONAL_API_KEY = 'zai-key'
   process.env.ANTHROPIC_API_KEY = 'sk-test'
-  assert.equal(resolveActiveProvider(), 'claude', 'Claude beats a configured fallback')
-  ok('Claude beats a configured fallback')
+  assert.equal(applyAuthFallback(), 'claude', 'Claude beats a configured fallback')
+  assert.equal(process.env.ANTHROPIC_BASE_URL, undefined, 'Claude path applies no redirect')
+  ok('Claude beats a configured fallback (no redirect)')
 
-  clearProviderEnv()
-  process.env.OSBORN_DEMO_PASS = 'zai'
-  assert.equal(resolveActiveProvider(), 'zai', 'house demo pass → zai')
-  ok('house demo pass → zai')
-
-  clearProviderEnv()
-  process.env.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
-  process.env.ANTHROPIC_AUTH_TOKEN = 'or-key'
-  assert.equal(resolveActiveProvider(), 'openrouter', 'openrouter base URL → openrouter')
-  ok('openrouter base URL → openrouter')
-
-  clearProviderEnv()
+  reset()
   process.env.ANTHROPIC_API_KEY = 'sk-user-own'
-  assert.equal(resolveActiveProvider(), 'anthropic', "user's own Anthropic key → anthropic")
+  assert.equal(applyAuthFallback(), 'anthropic', "user's own Anthropic key → anthropic")
   ok("user's own Anthropic key → anthropic")
 
-  clearProviderEnv()
+  reset()
+  process.env.Z_AI_PERSONAL_API_KEY = 'zai-key'
+  assert.equal(applyAuthFallback(), 'zai', 'z.ai house pass → zai')
+  assert.equal(process.env.OSBORN_DEMO_PASS, 'zai', 'z.ai redirect applied')
+  ok('z.ai house pass → zai (redirect applied)')
+
+  reset()
+  process.env.OPENROUTER_API_KEY = 'or-key'
+  assert.equal(applyAuthFallback(), 'openrouter', 'OpenRouter key → openrouter')
+  ok('OpenRouter key → openrouter')
+
+  reset()
+  // User's OWN Anthropic-compatible gateway (AUTH_TOKEN + their own base URL),
+  // left untouched by every tier — labelled as their own, not a dead end.
   process.env.ANTHROPIC_AUTH_TOKEN = 'gateway-tok'
   process.env.ANTHROPIC_BASE_URL = 'https://my-gateway.example.com'
-  assert.equal(resolveActiveProvider(), 'anthropic', 'own Anthropic-compatible gateway → anthropic')
+  assert.equal(applyAuthFallback(), 'anthropic', 'own Anthropic-compatible gateway → anthropic')
   ok('own Anthropic-compatible gateway → anthropic')
 
-  // Quote-stripping: a demo pass value with surrounding quotes still resolves.
-  clearProviderEnv()
-  process.env.OSBORN_DEMO_PASS = '"zai"'
-  assert.equal(resolveActiveProvider(), 'zai', 'quoted OSBORN_DEMO_PASS still → zai')
-  ok('quoted OSBORN_DEMO_PASS still → zai')
+  reset()
 }
 
 // ── classifyProbeStatus — only definitive failures count ──

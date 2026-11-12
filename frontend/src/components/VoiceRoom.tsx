@@ -4021,15 +4021,16 @@ function VoiceRoomInner({
 
             {/* #87 gap 3 — surface a SILENT failure the session would otherwise
                 hide: an agent too old for the demo-model fallback (version floor),
-                or a failed key self-test. Shows for a no-Claude session relying on
-                the fallback — either because Claude sign-in was prompted at least
-                once (claudeAuthEverRequired, the pre-fallback/old-agent path) OR
-                because the agent declared a real non-Claude provider (the smooth
-                fallback path, which never opens the auth modal). Same real
+                or a failed key self-test. Shows for a session on the HOUSE demo
+                tier — either because Claude sign-in was prompted at least once
+                (claudeAuthEverRequired, the pre-fallback/old-agent path) OR because
+                the agent declared a house-tier provider (zai / openrouter; the
+                smooth fallback path never opens the auth modal). A user's OWN key
+                (anthropic) is not a demo-tier concern, so it is excluded. Same real
                 /health signals as the badge; never fabricates a status. */}
             <AgentHealthNotice
               version={agentVersion}
-              relyingOnFallback={claudeAuthEverRequired || (!!mainProvider && mainProvider.trim().toLowerCase() !== 'claude')}
+              relyingOnFallback={claudeAuthEverRequired || ['zai', 'z.ai', 'openrouter'].includes((mainProvider || '').trim().toLowerCase())}
               keyHealth={agentKeyHealth}
             />
 

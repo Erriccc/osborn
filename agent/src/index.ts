@@ -49,7 +49,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
-import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, resolveActiveProvider, type ActiveProvider } from './claude-auth.js'
+import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, type ActiveProvider } from './claude-auth.js'
 import { probeActiveProviderKey, type KeyHealthEntry } from './key-health.js'
 import { statusManager } from './status-manager.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, pickConnectWorkingDir } from './session-switch.js'
@@ -5197,13 +5197,11 @@ async function main() {
     // BEFORE session creation so the OpenRouter redirect env vars (tier 3) are
     // set before the first query() spawn inherits process.env. No-op for
     // tier-1 (real Claude login) and tier-2 (user's own ANTHROPIC_API_KEY).
-    applyAuthFallback()
-
-    // #87: record the provider the agent is ACTUALLY answering on (claude / zai /
-    // openrouter / anthropic / none), resolved from the tier applyAuthFallback
-    // just applied. Drives agent_ready.provider so the model badge names the real
-    // model instead of the old hardcoded 'claude'.
-    const activeProvider: ActiveProvider = resolveActiveProvider()
+    // #87: it also RETURNS the provider it selected (claude / zai / openrouter /
+    // anthropic / none) — the single source of truth, since the tier is known at
+    // decision time. Drives agent_ready.provider so the model badge names the
+    // real model instead of the old hardcoded 'claude'.
+    const activeProvider: ActiveProvider = applyAuthFallback()
     console.log(`🧭 Active model provider: ${activeProvider}`)
 
     // #87: HOUSE-tier key self-test. Presence of a key ≠ validity (the test
