@@ -24,6 +24,7 @@ import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle,
 import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
 import { cacheTranscript, readCachedTranscript } from '@/lib/transcript-cache'
 import { agentReadUrl } from '@/lib/agent-read'
+import { redactSecrets } from '@/lib/redactSecrets'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
@@ -1973,7 +1974,9 @@ function VoiceRoomInner({
               // Carry the full result so the Running tab can show it readable + expandable (#86).
               // Cap only at a generous ceiling to guard against a pathological payload — the
               // drawer handles preview/expand from the full text, so no mid-sentence truncation.
-              ? { ...f, status: 'completed', artifact: data.last_assistant_message?.slice(0, 4000) ?? f.artifact }
+              // Secrets are masked HERE as well as at render: a sub-agent result can quote a
+              // file or env block, and nothing secret-looking should enter client state at all.
+              ? { ...f, status: 'completed', artifact: data.last_assistant_message != null ? redactSecrets(data.last_assistant_message.slice(0, 4000)) : f.artifact }
               : f
           )
         )
