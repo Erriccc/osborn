@@ -248,9 +248,11 @@ export function BrowserPanel() {
     if (activeI != null && !(await post('tab', { op: 'switch', i: activeI }, 'reload tab'))) return
     await post('recover', {}, 'reload tab')
   }
-  const takeControl = () => activeI != null && post('tab', { op: 'takeover', i: activeI }, 'take control')
+  // Control changes wait for queued input, so a hand-back can't overtake keystrokes sent just before it.
+  const afterInput = <T,>(fn: () => Promise<T>) => { flushPending(); const run = inputChain.current.then(fn, fn); inputChain.current = run.catch(() => {}); return run }
+  const takeControl = () => activeI != null && afterInput(() => post('tab', { op: 'takeover', i: activeI }, 'take control'))
   // A takeover is handed back to the agent; a tab you opened is released.
-  const handBack = () => activeI != null && post('tab', { op: shownTakeover ? 'handback' : 'release', i: activeI }, 'hand back')
+  const handBack = () => activeI != null && afterInput(() => post('tab', { op: shownTakeover ? 'handback' : 'release', i: activeI }, 'hand back'))
   // One request at a time, in order: a click then fast typing must not race.
   const sendNow = (body: Record<string, unknown>) => {
     inputChain.current = inputChain.current.then(() => fetch(api('input'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -262,8 +264,15 @@ export function BrowserPanel() {
     if (t.timer) { clearTimeout(t.timer); t.timer = null }
     if (t.text) { const text = t.text; t.text = ''; sendNow({ type: 'type', text }) }
   }
-  // Anything but more typing first sends the text still held back.
-  const sendInput = (body: Record<string, unknown>) => { flushTyped(); sendNow(body) }
+  const flushScroll = () => {
+    const sc = scrollRef.current
+    if (sc.timer) { clearTimeout(sc.timer); sc.timer = null }
+    const dy = Math.round(sc.dy); sc.dy = 0
+    if (Math.abs(dy) > 2) sendNow({ type: 'scroll', dy })
+  }
+  // Anything else first sends the scrolling and typing still held back, in order.
+  const flushPending = () => { flushScroll(); flushTyped() }
+  const sendInput = (body: Record<string, unknown>) => { flushPending(); sendNow(body) }
   const onPictureClick = (e: MouseEvent<HTMLDivElement>) => {
     const img = imgRef.current
     if (!inControl || !img?.naturalWidth) return
@@ -278,14 +287,16 @@ export function BrowserPanel() {
     sendInput({ type: 'click', x, y })
   }
   const onPictureKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (!inControl || e.metaKey || e.ctrlKey) return
+    // Tab and Escape stay with this page, so the keyboard can always leave the picture (#196).
+    if (!inControl || e.metaKey || e.ctrlKey || e.key === 'Tab') return
+    if (e.key === 'Escape') { e.currentTarget.blur(); return }
     e.preventDefault()
     const t = typedRef.current
     if (e.key.length === 1) {
       t.text += e.key
       if (t.timer) clearTimeout(t.timer)
       t.timer = setTimeout(flushTyped, 150)
-    } else if (['Enter', 'Backspace', 'Tab', 'Escape', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+    } else if (['Enter', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
       sendInput({ type: 'key', key: e.key })
     }
   }
@@ -294,7 +305,7 @@ export function BrowserPanel() {
     if (!inControl) return
     const sc = scrollRef.current
     sc.dy += e.deltaY
-    if (!sc.timer) sc.timer = setTimeout(() => { const dy = Math.round(sc.dy); sc.dy = 0; sc.timer = null; if (Math.abs(dy) > 2) sendInput({ type: 'scroll', dy }) }, 200)
+    if (!sc.timer) sc.timer = setTimeout(flushScroll, 200)
   }
   const stopEngine = async () => {
     const drivers = (status?.tabsByOwner ?? []).map((o) => o.owner).filter((o, k, all): o is string => !!o && o !== me && all.indexOf(o) === k)
