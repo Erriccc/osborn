@@ -22,7 +22,11 @@ const ok = (c: any, m: string) => { if (!c) throw new Error(m) }
 // "API" + ~12 chars, a quoted token is often truncated): a floor tuned to long
 // values prints the short ones in full, which is how this helper regressed once.
 const SAMPLES = [
-  'sk-ant-' + 'A'.repeat(8), 'sk-or-' + 'B'.repeat(8), 'sk-' + 'C'.repeat(24),
+  // Realistic bodies: a real sk-ant / sk-or key runs 60-95 chars, so an 8-char
+  // sample was pinning a floor no vendor needs — and that floor also rewrote
+  // prose and regexes that merely MENTION `sk-ant-oat01-`.
+  'sk-ant-api03-aB3dE5gH7jK9mN1pQ3rS5tU7vW9xY1zA3bC5dE7fG9hJ1kL3mN5p',
+  'sk-or-v1-aB3dE5gH7jK9mN1pQ3rS5tU7vW9xY1zA3bC5dE7fG9hJ1kL3mN5p', 'sk-' + 'C'.repeat(24),
   // Prefixed keys, bare and inside an assignment — the product's own key shape.
   // A value guard ending in a plain `\b` silently skipped every one of these,
   // because `\b` fires before the hyphen.
@@ -39,6 +43,10 @@ const SAMPLES = [
   'OPENAI_API_KEY=' + 'O'.repeat(24), 'LIVEKIT_API_KEY=APIu8vQj3xyzAb',
   'DB_PASSWORD=hunter2x', 'API_KEY=abc1234x',
   'ghp_16C7e42F292c6912E7710c838347Ae178B4a', 'github_pat_11ABCDE_' + 'F'.repeat(40),
+  // This product's own secret names, from platform-env.ts. A name list of only
+  // *_API_KEY / *_SECRET / *_TOKEN misses all three.
+  'SUPABASE_SERVICE_ROLE_KEY=sb_secret_aAbB1122ccDD3344', 'PUSHOVER_USER_KEY=uQiRzpo4DXghDmr9QzzfQu27cmVRsG',
+  'OSBORN_DEMO_PASS=zaiSecretValue123',
   // Colon form — a YAML/JSON block, not a .env line. Narrowing the assignment
   // rule to "=" alone once un-masked every one of these.
   'SUPABASE_SERVICE_ROLE_SECRET: "' + 'Q'.repeat(24) + '"', 'MY_TOKEN: ' + 'R'.repeat(24), 'password: hunter2x',
@@ -82,6 +90,11 @@ t('code, diffs and prose are left byte-identical', () => {
     'const apiKey = process.env.OPENAI_API_KEY',
     'TOKEN: expired, re-run the login flow', 'Authorization: required for this endpoint', 'x-api-key: header',
     'password: $DB_PASSWORD', 'Set TOKEN=$MY_VAR before running',
+    // Real lines from this repo, all rewritten by an earlier version of the rule.
+    'const apiSecret = process.env.LIVEKIT_API_SECRET', 'token={token}',
+    'hasToken: !!token, error: !!err', 'return { base, token: (inst?.sync_token as string | null) ?? null }',
+    'Authorization: Bearer <access_token>', 'TOKEN=<paste-here>',
+    'match(/sk-ant-oat01-[A-Za-z0-9_-]+/)', '_authToken=[REDACTED-NPM-AUTH]',
     'const ghp_token_name = 1', 'let ghs_installation_cache = {}', 'the risk-ant-icipation of failure',
     'Auth header uses Bearer formatting now', 'the sk-ant- prefix identifies Anthropic keys',
     'GATE: PASS on fix/activity-log-redaction', '**VERDICT: REJECT**', 'ran `npm test` — 12 passed', '2 * 3 = 6',

@@ -35,8 +35,11 @@
 export function redactSecrets(s: string | undefined | null): string {
   if (!s) return s ?? ''
   return s
-    .replace(/(?<![A-Za-z0-9])sk-(?:ant|or)-[A-Za-z0-9_-]{6,}/g, 'sk-••••')
-    .replace(/\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}/g, 'sk-••••')
+    // One rule for every prefixed provider key. The floor of 12 is set by the
+    // vendors' own body lengths (60-95 chars), not by how prose reads, so it
+    // cannot miss a real key — and it stops a doc comment or a regex that merely
+    // MENTIONS `sk-ant-oat01-` from being rewritten.
+    .replace(/(?<![A-Za-z0-9])sk-(?:ant|or|proj|svcacct)-[A-Za-z0-9_-]{12,}/g, 'sk-••••')
     .replace(/(?<![A-Za-z0-9])sk-[A-Za-z0-9]{20,}/g, 'sk-••••')
     .replace(/sbp_[A-Za-z0-9]{10,}/g, 'sbp_••••')
     // Two rules at the agent's floor of 30, not one folded rule: folding them
@@ -51,10 +54,16 @@ export function redactSecrets(s: string | undefined | null): string {
     .replace(/(?<![A-Za-z0-9])(?:fm[12]|fo1)_[A-Za-z0-9/+_=-]{20,}/g, 'fly_••••')
     // Two segments, short header: a truncated JWT is still a credential.
     .replace(/eyJ[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}/g, 'eyJ••••')
-    .replace(/(\b(?:x-goog-|x-)?api-key["'`]?\s*[:=]\s*["'`]?)(?!\$)(?![A-Za-z]{1,11}(?![\w+/=-]))[^\s"'`,;}]{8,}/gi, '$1••••')
-    .replace(/(Authorization["'`]?\s*:\s*["'`]?(?:(?:Bearer|Basic|Token)\s+)?)(?!\$)(?![A-Za-z]{1,11}(?![\w+/=-]))[^\s"'`,;}]{8,}/gi, '$1••••')
+    // `<` is excluded from every value class below: `Authorization: Bearer
+    // <access_token>` and `TOKEN=<paste-here>` are placeholders, not credentials.
+    .replace(/(\b(?:x-goog-|x-)?api-key["'`]?\s*[:=]\s*["'`]?)(?!\$)(?![A-Za-z]{1,11}(?![\w+/=-]))[^\s"'`,;}<]{8,}/gi, '$1••••')
+    .replace(/(Authorization["'`]?\s*:\s*["'`]?(?:(?:Bearer|Basic|Token)\s+)?)(?!\$)(?![A-Za-z]{1,11}(?![\w+/=-]))[^\s"'`,;}<]{8,}/gi, '$1••••')
     .replace(/(Bearer\s+)[A-Za-z0-9._\-+/=]{20,}/gi, '$1••••')
-    // The last guard spares a TS/Python type annotation (`token: AccessTokenPayload
-    // = decode(raw)`), which only the assignment rule can run into.
-    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|PRIVATE[_-]?KEY|TOKEN))(["']?\s*[=:]\s*["']?)(?!\$)(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])[^\s"']{6,}/gi, '$1$2••••')
+    // `[_-]KEY` and `[_-]PASS` cover this product's own names
+    // (SUPABASE_SERVICE_ROLE_KEY, PUSHOVER_USER_KEY, OSBORN_DEMO_PASS) while the
+    // separator keeps `MONKEY=` out. The value class matches its siblings above,
+    // so JSX and TS forms — `token={token}`, `token: (row?.sync_token as string)`
+    // — are left alone, and the final guard spares a type annotation
+    // (`token: AccessTokenPayload = decode(raw)`) that only this rule can reach.
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|[_-]KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|[_-]PASS|PRIVATE[_-]?KEY|TOKEN))(["']?\s*[=:]\s*["']?)(?=[A-Za-z0-9])(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])[^\s"'(){}<]{6,}/gi, '$1$2••••')
 }
