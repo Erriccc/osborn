@@ -910,8 +910,6 @@ async function main() {
           drivers: [...driverActive.keys()], tabsByOwner: context.pages().map((p,i)=>({i, owner: ownerOf(p)})),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: context.pages().indexOf(active), url: active.url() },
-          // Whether the shown page has its mic open (the panel only offers Speak then).
-          micOpen: await Promise.race([active.evaluate(() => !!(window as any).__mic?.ready).catch(() => false), new Promise<boolean>((r) => setTimeout(() => r(false), 1500))]),
           tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
         })
       }
@@ -1546,7 +1544,8 @@ async function main() {
     const openNeutral = async (reason: string) => {
       try { await active.goto(APP_URL, { timeout: 60000 }) } catch (e) { mark(`neutral page goto failed: ${(e as Error).message.slice(0, 80)}`) }
       roomReady = true
-      live?.setNotice(`${reason} — opened ${APP_URL} for plain browsing; set OSBORN_AGENT_URL to a reachable agent to auto-join a chat`)
+      // No agent configured is plain browsing, not a fault: no banner for it.
+      if (AGENT_URL) live?.setNotice(`${reason} — opened ${APP_URL} for plain browsing`)
       mark(`no room join — ${reason}; ${APP_URL} open for browsing`)
       notify('agent_unreachable', { agentUrl: AGENT_URL || null, reason })
     }

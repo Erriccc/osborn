@@ -35,7 +35,6 @@ type Status = {
   pageState?: string
   idlePaused?: boolean
   brain?: { ready?: boolean; dead?: boolean } | string
-  micOpen?: boolean
   tabsByOwner?: Array<{ i: number; owner: string | null }>
   // The engine reports the active tab as { i, url }; older shapes used a bare
   // number/string. Handle both so the readout never renders "[object Object]".
@@ -54,11 +53,12 @@ const api = (action: string, qs = '') => `/api/browser/${action}${qs}`
 
 // Whatever was typed or pasted ("URL https://x.com", "x.com/path", "https://…"),
 // the address to open: the first http(s) URL, else the first domain-like word.
-export function toAddress(input: string): string | null {
+function toAddress(input: string): string | null {
   const url = input.match(/https?:\/\/\S+/i)?.[0]
   if (url) return url
-  const host = input.split(/\s+/).find((w) => /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(w))
-  return host ? `https://${host}` : null
+  const host = input.split(/\s+/).find((w) => /^(localhost|[\w-]+(\.[\w-]+)+)(:\d+)?([/?#]\S*)?$/i.test(w))
+  if (!host) return null
+  return /^(localhost|127\.|\d+\.\d+\.\d+\.\d+)/i.test(host) ? `http://${host}` : `https://${host}`
 }
 const blankPage = (u?: string) => !u || u === 'about:blank' || u.startsWith('chrome://newtab')
 const shortUrl = (u: string) => u.replace(/^https?:\/\/(www\.)?/, '').slice(0, 40) || 'New tab'
@@ -96,6 +96,7 @@ export function BrowserPanel() {
   // That is NOT an engine problem — say "sign in" and stop polling, instead of a
   // state badge and an endless "Waking…" spinner.
   const [signedOut, setSignedOut] = useState(false)
+  const [unresponsivePolls, setUnresponsivePolls] = useState(0)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamKickRef = useRef(0)
 
@@ -147,6 +148,7 @@ export function BrowserPanel() {
       }
       const s = (await r.json().catch(() => null)) as Status | null
       setStatus(s); if (s) setTokenError(false)
+      setUnresponsivePolls((n) => (s?.pageState === 'unresponsive' ? n + 1 : 0))
     }
     tick()
     pollRef.current = setInterval(tick, 3000)
@@ -211,7 +213,11 @@ export function BrowserPanel() {
   }
   const openStarter = (u: string) => post('tab', { op: 'open', url: u, reuse: true }, 'open')
   const switchTab = (i: number) => post('tab', { op: 'switch', i }, 'switch tab')
-  const reloadTab = () => post('recover', {}, 'reload tab')
+  // Reload acts on the panel's own tab, so make the shown tab ours first.
+  const reloadTab = async () => {
+    if (activeI != null && !(await post('tab', { op: 'switch', i: activeI }, 'reload tab'))) return
+    await post('recover', {}, 'reload tab')
+  }
   const stopEngine = async () => {
     if (!confirm('Stop the browser engine? Any in-flight run ends and the machine sleeps.')) return
     await post('end', {}, 'stop')
@@ -229,17 +235,19 @@ export function BrowserPanel() {
     return String(a)
   })()
   // #81: the engine tells us when the auto-joined chat agent is unreachable.
-  const agentUnreachable = watching ? status?.agentUnreachable ?? null : null
+  // Only a configured agent can be unreachable; none configured is plain browsing.
+  const agentUnreachable = watching && status?.agentUrl ? status?.agentUnreachable ?? null : null
   // The server is missing the engine token if it says so up front, or if a drive
   // action just came back 401. Either way, every control/output action will fail.
   const tokenMisconfigured = engine?.engineTokenConfigured === false || tokenError
   const brainReady = typeof status?.brain === 'object' ? status?.brain?.ready && !status?.brain?.dead
     : typeof status?.brain === 'string' ? status.brain === 'ready' : undefined
   const activeI = typeof status?.activeTab === 'object' ? status.activeTab?.i : undefined
-  const frozen = watching && status?.pageState === 'unresponsive'
+  // Two polls in a row: one 'unresponsive' is often just a page mid-navigation.
+  const frozen = watching && unresponsivePolls >= 2
+  const shownOwner = status?.tabsByOwner?.find((o) => o.i === activeI)?.owner ?? null
   const blank = watching && !!status && blankPage(status.pageUrl)
-  // Older engines don't report micOpen: keep Speak available there.
-  const micClosed = status?.micOpen === false
+
 
   const copyShare = async () => {
     try { await navigator.clipboard.writeText(window.location.href); setNote('Link copied') } catch { setNote('Copy failed') }
@@ -323,7 +331,7 @@ export function BrowserPanel() {
             const owner = status?.tabsByOwner?.find((o) => o.i === t.i)?.owner
             const on = t.i === activeI
             return (
-              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on} title={t.url}
+              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || !!owner} title={owner ? `${t.url} (driven by ${owner})` : t.url}
                 className={`flex min-w-0 max-w-[14rem] items-center gap-1 rounded-t-lg border px-2 py-1 text-xs ${on ? 'border-amber-500/70 bg-neutral-800 text-neutral-100' : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}>
                 <span className="truncate">{shortUrl(t.url)}</span>
                 {owner && <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">{owner}</span>}
@@ -362,10 +370,11 @@ export function BrowserPanel() {
             {frozen && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 px-6 text-center text-sm text-neutral-300">
                 <div>This tab stopped responding, so there is nothing to show.</div>
-                <div className="flex gap-2">
+                {shownOwner ? (
+                  <div className="text-xs text-neutral-400">It is driven by {shownOwner}, which has to reload it.</div>
+                ) : (
                   <button onClick={reloadTab} disabled={!!busy} className="rounded-lg bg-amber-500 px-3 py-1.5 font-medium text-black hover:bg-amber-400 disabled:opacity-50">Reload tab</button>
-                  {(status?.tabs?.length ?? 0) > 1 && <span className="self-center text-xs text-neutral-500">or pick another tab above</span>}
-                </div>
+                )}
               </div>
             )}
             {!frozen && blank && (
@@ -422,14 +431,13 @@ export function BrowserPanel() {
         <div className="flex flex-wrap items-center gap-2">
           <input
             title="Synthesized speech played into the page's microphone, for testing voice apps. It does not steer the agent."
-            disabled={micClosed}
             value={sayText}
             onChange={(e) => setSayText(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') say() }}
-            placeholder={micClosed ? 'Speak: this page is not listening to a microphone' : 'Speak into this page’s microphone (voice apps)…'}
+            placeholder="Speak into the page’s microphone (only for pages that listen)…"
             className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500"
           />
-          <button onClick={say} disabled={!!busy || micClosed} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Speak</button>
+          <button onClick={say} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Speak</button>
           <button onClick={stopEngine} disabled={!!busy} className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">Stop engine</button>
         </div>
         {heard && <p className="rounded bg-neutral-950 px-3 py-1.5 text-xs text-neutral-300"><span className="text-neutral-500">heard: </span>{heard}</p>}

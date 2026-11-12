@@ -143,7 +143,9 @@ export async function checkHarnessDeploy(): Promise<void> {
     // 4. Remote build + roll the machine.
     ensureFlyctl()
     const flyBin = resolveFlyBin()
-    const args = ['deploy', '--remote-only', '--image-label', tag, '--app', APP, '--config', join(ctx, 'fly.toml')]
+    // The engine reports this in /status.build.commit, so a test can prove which build answered.
+    const sha = (process.env.RAILWAY_GIT_COMMIT_SHA || '').slice(0, 7) || `bundle-v${bundle.version}`
+    const args = ['deploy', '--remote-only', '--image-label', tag, '--app', APP, '--config', join(ctx, 'fly.toml'), '--build-arg', `HARNESS_SHA=${sha}`]
     log(`Running: ${flyBin} ${args.join(' ')}`)
     const result = await spawnAsync(flyBin, args, { cwd: ctx, env: buildEnvWithFlyPath(), timeoutMs: 900000 })
     if (result.stdout) console.log('[harness fly deploy stdout]\n' + result.stdout.slice(-2000))
