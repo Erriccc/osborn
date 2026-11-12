@@ -25,6 +25,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash|mcp__github__create_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pre-pr-gate.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }

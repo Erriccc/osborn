@@ -106,17 +106,29 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   // Soniox async STT — upload the recorded clip, poll the job, keep tokens whose
   // start_ms falls after the window. Word timestamps come back by default; no
   // OpenAI/Deepgram key needed.
+  // Name every provider that failed, not just the last one (#151).
+  const failures: string[] = []
   const soniox = optionalEnvKey('SONIOX_API_KEY')
   if (soniox) {
     try {
       return await sonioxTranscribeSince(audio, fileSinceMs, soniox)
     } catch (e) {
-      console.warn('[converse] Soniox STT error — trying Deepgram:', e)
+      const msg = ((e as Error).message || String(e)).slice(0, 140)
+      failures.push(`Soniox: ${msg}`)
+      console.warn('[converse] Soniox STT error — trying Deepgram:', msg)
     }
   }
 
   const dg = optionalEnvKey('DEEPGRAM_API_KEY')
-  if (!dg) return ''
+  if (!dg) {
+    if (failures.length) throw new Error(failures.join('; '))
+    return ''
+  }
+  try { return await deepgramTranscribeSince(audio, fileSinceMs, dg) }
+  catch (e) { failures.push(`Deepgram: ${((e as Error).message || String(e)).slice(0, 140)}`); throw new Error(failures.join('; ')) }
+}
+
+async function deepgramTranscribeSince(audio: Buffer, fileSinceMs: number, dg: string): Promise<string> {
   const res = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', {
     method: 'POST',
     headers: { Authorization: `Token ${dg}`, 'Content-Type': 'audio/webm' },
@@ -137,23 +149,27 @@ async function sonioxTranscribeSince(audio: Buffer, sinceMs: number, apiKey: str
   const H = { Authorization: `Bearer ${apiKey}` }
   const fd = new FormData()
   fd.append('file', new Blob([new Uint8Array(audio)], { type: 'audio/webm' }), 'clip.webm')
-  const up = await fetch('https://api.soniox.com/v1/files', { method: 'POST', headers: H, body: fd as any })
-  if (!up.ok) throw new Error(`soniox upload ${up.status}`)
+  const up = await fetch('https://api.soniox.com/v1/files', { method: 'POST', headers: H, body: fd as any, signal: AbortSignal.timeout(30000) })
+  if (!up.ok) throw new Error(`upload HTTP ${up.status} ${(await up.text().catch(() => '')).slice(0, 80)} (${Math.round(audio.length / 1024)} KB)`)
   const fileId = (await up.json() as any).id
   try {
     const cr = await fetch('https://api.soniox.com/v1/transcriptions', {
       method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_id: fileId, model: 'stt-async-v3' }),
     })
-    if (!cr.ok) throw new Error(`soniox transcribe ${cr.status}`)
+    if (!cr.ok) throw new Error(`create-transcription HTTP ${cr.status} ${(await cr.text().catch(() => '')).slice(0, 80)}`)
     const jobId = (await cr.json() as any).id
     try {
-      for (let i = 0; i < 40; i++) {
+      // An unfinished job is an error, not silence.
+      const deadline = Date.now() + 60000
+      let done = false
+      while (Date.now() < deadline) {
         const st: any = await (await fetch(`https://api.soniox.com/v1/transcriptions/${jobId}`, { headers: H })).json()
-        if (st.status === 'completed') break
-        if (st.status === 'error' || st.status === 'failed') throw new Error(`soniox job ${st.status}: ${st.error_message ?? ''}`)
-        await new Promise((r) => setTimeout(r, 400))
+        if (st.status === 'completed') { done = true; break }
+        if (st.status === 'error' || st.status === 'failed') throw new Error(`job ${st.status}: ${st.error_message ?? ''}`)
+        await new Promise((r) => setTimeout(r, 500))
       }
+      if (!done) throw new Error('job did not finish within 60s')
       const tx: any = await (await fetch(`https://api.soniox.com/v1/transcriptions/${jobId}/transcript`, { headers: H })).json()
       const tokens: Array<{ text?: string; start_ms?: number }> = tx?.tokens ?? []
       // Only what was spoken inside the window. This used to fall back to the

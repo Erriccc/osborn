@@ -33,6 +33,7 @@ npm-debug.log*
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
+!.claude/agents/
 !.claude/skills/
 .claude/skills/*/settings.local.json
 
