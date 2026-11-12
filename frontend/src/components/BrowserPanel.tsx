@@ -19,8 +19,7 @@ type EngineState = {
   state: string | null
   machineId: string | null
   // The HOSTNAME the proxy targets (e.g. osborn-voice-e2e-n.fly.dev — not a Fly
-  // app name). Named in the "engine unreachable" badge so a down/unresolving
-  // host is legible instead of a silent, endless "Waking…" (#62/#49).
+  // app name), so an engine failure can name the host it hit (#62/#49).
   host?: string | null
   // Set by the server when the Fly Machines API itself couldn't be reached, so
   // `state` is null because we failed to read it — surfaced as an explicit amber
