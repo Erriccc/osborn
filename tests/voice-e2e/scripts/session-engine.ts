@@ -346,7 +346,7 @@ async function main() {
     try {
       return await Promise.race([
         actWithCache(stagehand, active, i),
-        new Promise<never>((_, rej) => { timer = setTimeout(() => { brainAlive = false; brainError = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`; rej(new Error(brainError)) }, BRAIN_TIMEOUT_MS) }),
+        new Promise<never>((_, rej) => { timer = setTimeout(() => { brainAlive = false; brainError = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`; void stagehand?.close().catch(() => {}); rej(new Error(brainError)) }, BRAIN_TIMEOUT_MS) }),
       ])
     }
     catch (e) {
@@ -419,6 +419,7 @@ async function main() {
   // `_peek.*` and could read each other's half-written audio).
   let peekSeq = 0
   const peekAudioToWav = async (page: Page = active, maxMs = 30 * 60 * 1000): Promise<{ wav: string; startedAt: number; durationMs: number } | null> => {
+    let cleanup: string[] = []
     try {
       const { base64, sinceStartMs, anchorOffsetMs } = await peekCapture(page)
       const startedAt = Date.now() - sinceStartMs + anchorOffsetMs
@@ -431,13 +432,15 @@ async function main() {
       const webm = join(RUN_DIR, `_peek-${id}.webm`)
       writeFileSync(webm, Buffer.from(base64, 'base64'))
       const wav = join(RUN_DIR, `_peek-${id}.wav`)
+      cleanup = [webm, wav]
       // Full decode → wav: MediaRecorder opus can't be seeked directly (bad
       // packet headers — proven), so decode once and trim the wav reliably.
       await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav])
-      try { rmSync(webm, { force: true }) } catch { /* ignore */ }
       const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wav]).catch(() => ({ stdout: '0' }))
+      cleanup = [webm]
       return { wav, startedAt, durationMs: Math.round((Number(String(probe.stdout).trim()) || 0) * 1000) }
     } catch { return null }
+    finally { for (const f of cleanup) try { rmSync(f, { force: true }) } catch { /* ignore */ } }
   }
   const muxClipAudio = async (videoPath: string, endMs: number, n: number, page: Page = active): Promise<string | null> => {
     const a = await peekAudioToWav(page)
@@ -753,15 +756,15 @@ async function main() {
       writeFileSync(JOURNEY_STATE, JSON.stringify(buildJourneyState(RUN_STAMP, status, pj, reqN, tasks.length, Date.now()), null, 2))
     } catch { /* never block the journey on a persistence miss */ }
   }
+  const addStep = (kind: string, value: string) => { scenarioSteps.push({ kind, value }); writeScenario(); saveJourneyState('active') }
   if (process.env.OSBORN_RECOVER_JOURNEY !== '0') {
     try {
       const persisted = existsSync(JOURNEY_STATE) ? (JSON.parse(readFileSync(JOURNEY_STATE, 'utf8')) as JourneyStateFile) : null
       const decision = decideRecovery(persisted, { now: Date.now(), currentRun: RUN_STAMP })
       if (decision.recover && decision.journey) {
         // Re-home the step/task counters onto THIS process (the persisted
-        // indices belonged to the dead process) and preserve identity + owner
-        // (the mission lock survives too). Re-save under the new run id so a
-        // SECOND restart chains from here, not from the stale run.
+        // indices belonged to the dead process). Re-save under the new run id
+        // so a SECOND restart chains from here, not from the stale run.
         // Steps done before the restart are carried over so /journey end can
         // still save them. The mission lock (owner) is NOT restored: a crash or
         // redeploy must not lock other drivers out for up to 2h.
@@ -860,7 +863,7 @@ async function main() {
         const file = m[3] === 'mp4' ? t.clip : t.artifact
         if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}` }, 404)
         res.writeHead(200, { 'Content-Type': m[3] === 'mp4' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size, 'Cache-Control': 'public, max-age=86400' })
-        createReadStream(file).pipe(res)
+        createReadStream(file).on('error', () => res.destroy()).pipe(res)
         return
       }
       if (TOKEN && req.headers['x-engine-token'] !== TOKEN) return json(res, { error: 'unauthorized — x-engine-token required' }, 401)
@@ -952,7 +955,7 @@ async function main() {
         }
         if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs` }, 404)
         res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })
-        createReadStream(file).pipe(res)
+        createReadStream(file).on('error', () => res.destroy()).pipe(res)
         return
       }
       if (req.method === 'GET' && path === '/logs') {
@@ -975,7 +978,7 @@ async function main() {
         catch (e) { return json(res, { error: 'transcode failed: ' + (e as Error).message }, 500) }
         finally { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } }
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': statSync(mp3).size })
-        createReadStream(mp3).pipe(res)
+        createReadStream(mp3).on('error', () => res.destroy()).pipe(res)
         return
       }
       if (req.method === 'GET' && path === '/evidence') {
@@ -1194,7 +1197,7 @@ async function main() {
         if (clip) mark(`clip: ${clip}`)
         const shot = await reqShot(n, 'act', page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
-        scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
+        addStep('act', String(body.instruction))
         return json(res, { ok: true, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
@@ -1288,7 +1291,7 @@ async function main() {
           const shot = await reqShot(n, 'say', page)
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard, page)
           ;(window as any).clipAudio = audio; writeManifest()
-          scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
+          addStep('say', String(body.text))
           return json(res, { ok: true, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
@@ -1319,7 +1322,7 @@ async function main() {
           touchTab(active)
           // Evals are journey steps too — the cloud meeting run saved a
           // 0-step recipe because it was driven entirely via /eval.
-          scenarioSteps.push({ kind: 'eval', value: String(body.expression).slice(0, 140) }); writeScenario()
+          addStep('eval', String(body.expression).slice(0, 140))
           return json(res, { ok: true, value, driver })
         } catch (e) { return json(res, { ok: false, error: (e as Error).message }) }
         })
@@ -1337,7 +1340,7 @@ async function main() {
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !context.pages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${context.pages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
-        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
+        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(driverActive.get(driver) ?? active), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
         // Serialized with /act and /say so a tab change never lands mid-action.
         return await withLock(async () => {
         // After ANY change of active tab the screencast is retargeted so the
@@ -1427,7 +1430,7 @@ async function main() {
         // Tab ops are journey steps too — a recipe missing "open the mobile
         // tab" is not a recipe (first saved journey had steps:1 for this).
         if (['open', 'switch', 'close', 'navigate'].includes(body.op)) {
-          scenarioSteps.push({ kind: 'tab', value: `${body.op}${body.url ? ' ' + body.url : ''}${body.viewport ? ' viewport=mobile' : ''}${body.i != null ? ' i=' + body.i : ''}` })
+          addStep('tab', `${body.op}${body.url ? ' ' + body.url : ''}${body.viewport ? ' viewport=mobile' : ''}${body.i != null ? ' i=' + body.i : ''}`)
           writeScenario()
         }
         await updateTabHud(); saveTabState()

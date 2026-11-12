@@ -186,8 +186,8 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v27
-- **No more engine zombies or stuck locks.** A crash exits (the machine
-  restarts on the next request) instead of answering as a half-dead engine; a
+- **No more engine zombies or stuck locks.** A crash exits (on Fly the
+  machine restarts on the next request) instead of answering as a half-dead engine; a
   brain call that hangs past `OSBORN_BRAIN_TIMEOUT_MS` (120s) fails the action
   and frees the lock; `/tab {"op":"list"}` no longer waits behind an action.
 - **A journey recovered after a restart keeps its steps** (so `/journey end`
