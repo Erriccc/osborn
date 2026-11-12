@@ -1836,11 +1836,11 @@ function VoiceRoomInner({
             (preSelectedSessionId || data.preSelectedSessionId)) {
           console.log('📂 Pre-selected session — skipping session gate')
           setSessionGateCompleted(true)
-          const presetId = preSelectedSessionId || data.preSelectedSessionId
-          setCurrentSessionId(presetId)
-          // Adopt the dir the agent RESOLVED (#112): current_session reports one
-          // only from the first turn, and the list has no brand-new id yet.
-          if (presetId && data.workingDirectory) setReportedCwd({ sessionId: presetId, cwd: data.workingDirectory })
+          // No reportedCwd here: agent_ready.workingDirectory is the agent's BOOT
+          // dir, which falls back to the workspace root, and pinning that into the
+          // URL is the #112 failure itself. current_session reports the resolved
+          // dir from the first turn; until then the URL keeps its own hint.
+          setCurrentSessionId(preSelectedSessionId || data.preSelectedSessionId)
         }
         // No preselected session = fresh conversation. Start immediately,
         // no gate. The dashboard is the session picker now — "Continue where

@@ -155,8 +155,7 @@ export function planSwitch(decision: SessionSwitchDecision, ctx: SwitchPlanConte
 export interface SessionCwdDeps {
   /** sessionExists(id, projectPath) from config.ts. */
   exists: (sessionId: string, cwd: string) => boolean
-  /** Find ONE session's project dir (scanSlugCwd), or null. Deliberately a
-   *  single CHEAP lookup — see resolveCwdForSession in index.ts. */
+  /** Find ONE session's project dir (scanSlugCwd), or null. */
   lookupCwd: (sessionId: string) => Promise<string | null | undefined>
 }
 
