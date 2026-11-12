@@ -1836,10 +1836,6 @@ function VoiceRoomInner({
             (preSelectedSessionId || data.preSelectedSessionId)) {
           console.log('📂 Pre-selected session — skipping session gate')
           setSessionGateCompleted(true)
-          // No reportedCwd here: agent_ready.workingDirectory is the agent's BOOT
-          // dir, which falls back to the workspace root, and pinning that into the
-          // URL is the #112 failure itself. current_session reports the resolved
-          // dir from the first turn; until then the URL keeps its own hint.
           setCurrentSessionId(preSelectedSessionId || data.preSelectedSessionId)
         }
         // No preselected session = fresh conversation. Start immediately,
@@ -2262,8 +2258,6 @@ function VoiceRoomInner({
         // that is actually running, so they stay: only the prior-/cached rows go.
         if (data.actualSessionId) setMessages(prev => prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache))
         addMessageRef.current?.('system', `⚠️ Couldn't restore the session you picked — it's no longer available. You're now in a different conversation, not the one you selected.`)
-        // No reportedCwd needed: onSessionId fires before this event, so
-        // current_session above has already recorded the fallback id's cwd.
         if (data.actualSessionId) setCurrentSessionId(data.actualSessionId)
       } else if (data.type === 'session_switch_pending') {
         // #74: the live session is busy — the agent will switch when its current
