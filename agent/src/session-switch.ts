@@ -259,11 +259,9 @@ export function createSwitchGuard() {
  * The decoding is lossy, so only a decoded path that EXISTS is returned — the
  * switch executor never creates directories for scan-derived paths.
  *
- * When no slug decodes to a real dir — which is exactly what happens when the
- * project dir's OWN name contains `-`, since the decode turns that into `/` —
- * `readCwd` reads the cwd recorded inside the session's JSONL. That path gets
- * the same existence check, because an imported session's JSONL can record a
- * cwd from another machine and sessionExists() only looks at the slug.
+ * The `readCwd` fallback gets that same existence check, because an imported
+ * session's JSONL can record a cwd from another machine while sessionExists()
+ * only looks at the slug.
  */
 export async function scanSlugCwd(
   sessionId: string,

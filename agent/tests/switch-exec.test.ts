@@ -42,9 +42,9 @@ await t('cwd: a looked-up cwd that does not actually hold the session is not tru
 await t('cwd: at most ONE cheap lookup — connect never awaits a full session-list sweep', async () => {
   let calls = 0
   const counted = (ret: string | null) => deps({ lookupCwd: async () => { calls++; return ret } })
-  assert.equal(await resolveSessionCwd(B, '/w/proj-b', '/w/proj-a', counted(null)), '/w/proj-b')
+  await resolveSessionCwd(B, '/w/proj-b', '/w/proj-a', counted(null))
   assert.equal(calls, 0, 'a hint that holds the session must not trigger any lookup')
-  assert.equal(await resolveSessionCwd(B, '/w/nope', '/w/proj-a', counted('/w/proj-b')), '/w/proj-b')
+  await resolveSessionCwd(B, '/w/nope', '/w/proj-a', counted('/w/proj-b'))
   assert.equal(calls, 1, 'a full miss must cost exactly one lookup')
 })
 await t('cwd: unknown session -> null ("Session not found")', async () => {

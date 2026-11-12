@@ -3760,10 +3760,7 @@ async function main() {
   // agent_ready (preSelectedSessionId = A) doesn't reset the UI back to A.
   let stopReadyRetries: (() => void) | null = null
 
-  // Every lookup here must stay CHEAP — the connect path awaits this. Do NOT
-  // reach for listAllClaudeSessions(): that is the full cross-project sweep
-  // agent_ready keeps in the background. scanSlugCwd answers it for ONE
-  // session, reusing both of that list's cwd sources in its own order.
+  // Connect AWAITS this, so keep every lookup cheap: no listAllClaudeSessions().
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
