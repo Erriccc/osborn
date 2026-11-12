@@ -195,11 +195,8 @@ export function RoomsSidebar({
   }
 
   // #107: fold duplicate copies of one session into one row, then build the rows.
-  // A search filters the idle rows through `sessionMatchesQuery` (the app's one
-  // matcher) and raises the idle cap, so a match past the 12 most recent stays
-  // reachable. buildRoomRows applies `match` to the idle rows ONLY, so the live
-  // and background rows keep their real title/project/count — and "which session
-  // is live, which slot is focused" stays decided in one place.
+  // Searching goes through `sessionMatchesQuery` (the app's one matcher) as
+  // buildRoomRows' idle-row `match` (see lib/rooms), and raises the idle cap.
   //
   // The collapsed rail has no input and no clear button, so it is never
   // filtered: collapsing with a query live would otherwise leave a short rail
@@ -218,10 +215,6 @@ export function RoomsSidebar({
   const topRooms = rooms.filter((r) => r.status !== 'idle')
   const idleRooms = rooms.filter((r) => r.status === 'idle')
   const idleByProject = useMemo(() => groupRoomsByProject(idleRooms), [idleRooms])
-  // Search is find-and-jump: clear it on the jump. The rail stays mounted for
-  // the life of the page, so a query left behind would keep it filtered long
-  // after the user got where they were going.
-  const switchRoom = (room: Room) => { setQuery(''); onSwitchRoom(room) }
 
   if (collapsed) {
     return (
@@ -245,7 +238,7 @@ export function RoomsSidebar({
             return (
               <button
                 key={room.id}
-                onClick={() => room.status !== 'live' && !disabled && switchRoom(room)}
+                onClick={() => room.status !== 'live' && !disabled && onSwitchRoom(room)}
                 title={`${room.title}${identity ? ` · ${identity}` : ''} · ${STATUS_LABEL[room.status]}`}
                 aria-label={`${room.title}${identity ? `, ${identity}` : ''} (${STATUS_LABEL[room.status]})`}
                 className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center transition-colors ${
@@ -342,35 +335,29 @@ export function RoomsSidebar({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
-        {rooms.length === 0 ? (
+        {/* Live + Running — pinned above the grouped recents. */}
+        {topRooms.map((room) => (
+          <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+        ))}
+        {/* One empty state. A query only filters the IDLE rows, so judge it on
+            those — a live session makes `rooms` non-empty, which would both
+            suppress "no matches" and claim the user has no sessions. */}
+        {(q ? idleRooms.length === 0 : rooms.length === 0) && (
           <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
-            No other sessions yet. Start one with “New room”.
+            {q ? 'No sessions match your search.' : 'No other sessions yet. Start one with “New room”.'}
           </p>
-        ) : (
-          <>
-            {/* Live + Running — pinned above the grouped recents. */}
-            {topRooms.map((room) => (
-              <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={switchRoom} />
-            ))}
-            {/* A query only ever filters the idle rows, and the live row is
-                always present, so "no matches" has to be judged on those —
-                keyed off `rooms.length` it could never fire during a session. */}
-            {q && idleRooms.length === 0 && (
-              <p className="text-[11px] text-gray-500 text-center py-5 px-2">No sessions match your search.</p>
-            )}
-            {/* Recent — grouped by project. */}
-            {idleByProject.map(({ project, rooms: group }) => (
-              <div key={project} className="pt-1.5">
-                {/* No group colour dot: rows in the "workspace"/"Other" buckets
-                    hash their own title, so no one colour can match them all. */}
-                <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
-                {group.map((room) => (
-                  <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={switchRoom} />
-                ))}
-              </div>
-            ))}
-          </>
         )}
+        {/* Recent — grouped by project. */}
+        {idleByProject.map(({ project, rooms: group }) => (
+          <div key={project} className="pt-1.5">
+            {/* No group colour dot: rows in the "workspace"/"Other" buckets
+                hash their own title, so no one colour can match them all. */}
+            <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
+            {group.map((room) => (
+              <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+            ))}
+          </div>
+        ))}
       </div>
 
       <div className="p-2 border-t border-gray-800/60 shrink-0 space-y-1.5">
