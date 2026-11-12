@@ -52,7 +52,6 @@ export interface TranscriptInput {
   timestamp?: Date | string | number | null
   compaction?: unknown
   isStreaming?: boolean
-  fromCache?: boolean
 }
 
 function keyFor(sessionId: string): string {
@@ -72,6 +71,10 @@ export function serializeTranscript(messages: TranscriptInput[]): CachedMessage[
   const out: CachedMessage[] = []
   for (const m of messages) {
     if (!m || !m.id || m.isStreaming) continue
+    // Skip the synthetic day / "── Today ──" dividers: they are time-relative,
+    // so a cached "Today" would mislead on a later-day reload. buildPriorItems
+    // regenerates them from the real timestamps when the live replay reconciles.
+    if (m.id.startsWith('prior-day-') || m.id.startsWith('prior-sep-')) continue
     const content = typeof m.content === 'string' ? m.content : ''
     // A normal bubble needs text; a compaction marker is kept even when empty.
     if (!content && !m.compaction) continue

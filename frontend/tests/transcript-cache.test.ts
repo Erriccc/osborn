@@ -49,6 +49,16 @@ t('serialize drops streaming + empty, keeps compaction markers', () => {
   eq((items[2] as any).compaction, { trigger: 'auto' }, 'compaction passed through')
 })
 
+t('serialize drops synthetic day/Today dividers, keeps real messages', () => {
+  const items = serializeTranscript([
+    msg({ id: 'prior-day-Nov 11-sess', role: 'system', content: '── Nov 11 ──' }),
+    msg({ id: 'prior-0-sess', role: 'user', content: 'real question' }),
+    msg({ id: 'prior-sep-sess', role: 'system', content: '── Today ──' }),
+    msg({ id: 'live-1', role: 'assistant', content: 'live answer' }),
+  ])
+  eq(items.map(i => i.id), ['prior-0-sess', 'live-1'], 'dividers dropped, messages kept')
+})
+
 t('round-trips through storage keyed by session id', () => {
   const s = fakeStorage()
   cacheTranscript('sessA', [msg({ id: 'u1', content: 'hi A' })], s)
