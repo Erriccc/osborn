@@ -7,8 +7,14 @@ import {
 } from '../src/components/panel/registry'
 import {
   PANEL_STORAGE_KEY, DEFAULT_PANEL_STATE, MIN_PANEL_WIDTH_PCT, MAX_PANEL_WIDTH_PCT,
+  PANEL_DESKTOP_MIN_WIDTH, PANEL_SHEET_QUERY, isPanelSheet,
   parsePanelState, serializePanelState, clampPanelWidth,
 } from '../src/lib/panel-state'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const SRC = join(__dirname, '..', 'src')
+const readSrc = (p: string) => readFileSync(join(SRC, p), 'utf8')
 
 const results: [string, boolean, string?][] = []
 function t(name: string, fn: () => void) {
@@ -97,6 +103,37 @@ t('panel state: corrupt or partial storage never throws and falls back per field
   eq(parsePanelState('{"widthPct":5}').widthPct, MIN_PANEL_WIDTH_PCT, 'too narrow clamped')
   eq(parsePanelState('{"widthPct":500}').widthPct, MAX_PANEL_WIDTH_PCT, 'too wide clamped')
   eq(clampPanelWidth(NaN), DEFAULT_PANEL_STATE.widthPct, 'NaN width -> default')
+})
+
+// --- sheet breakpoint and tablet layout (issue #118 follow-up) --------------
+
+t('sheet breakpoint is named once and matches Tailwind xl', () => {
+  eq(PANEL_DESKTOP_MIN_WIDTH, 1280, 'xl')
+  eq(PANEL_SHEET_QUERY, '(max-width: 1279px)', 'media query')
+  eq([isPanelSheet(390), isPanelSheet(834), isPanelSheet(1279), isPanelSheet(1280), isPanelSheet(1440)],
+    [true, true, true, false, false], 'phone/tablet are sheet, xl+ is drawer')
+})
+
+t('RightPanel reads the breakpoint from panel-state, never a literal query', () => {
+  const src = readSrc('components/panel/RightPanel.tsx')
+  ok(src.includes('PANEL_SHEET_QUERY'), 'RightPanel should import PANEL_SHEET_QUERY')
+  ok(!/matchMedia\(\s*['"`]/.test(src), 'matchMedia called with a literal query string (it can drift from the xl: classes)')
+})
+
+t('the panel anchor exists at every width below xl, not only on the phone', () => {
+  const src = readSrc('components/VoiceRoom.tsx')
+  const anchor = src.split('\n').find(l => l.includes('PANEL_ANCHOR_ATTR') && l.includes('<div'))
+  ok(!!anchor, 'no element carries PANEL_ANCHOR_ATTR in VoiceRoom')
+  // `sm:hidden` / `md:hidden` here means no layout box at tablet widths, which
+  // is exactly how the sheet ended up overlaying the composer on an iPad.
+  ok(!/\b(sm|md|lg):hidden\b/.test(anchor!), 'the panel anchor is hidden below xl, so the sheet has no edge to sit above')
+})
+
+t('the chat column can still shrink at the xl boundary (no horizontal overflow)', () => {
+  const src = readSrc('components/VoiceRoom.tsx')
+  const col = src.split('\n').find(l => l.includes('flex-1 min-w-0') && l.includes('flex flex-col bg-gray-900'))
+  ok(!!col, 'chat column not found')
+  ok(!/\bxl:min-w-\[/.test(col!), 'chat column has an xl min-width floor; with the 15rem rail and a 70% shrink-0 aside the row cannot fit 1280px')
 })
 
 const failed = results.filter(r => !r[1])

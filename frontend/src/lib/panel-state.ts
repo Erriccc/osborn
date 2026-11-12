@@ -6,6 +6,19 @@ export const PANEL_STORAGE_KEY = 'vn-panel'
 export const MIN_PANEL_WIDTH_PCT = 28
 export const MAX_PANEL_WIDTH_PCT = 70
 
+// The panel is an inline drawer at Tailwind `xl` and up, and a bottom-sheet
+// overlay below it. The CSS side of that switch is the `xl:` class set on the
+// aside; the JS side is a matchMedia query that decides whether to measure a
+// bottom offset at all. Naming the breakpoint once keeps the two from drifting
+// (same reason as LANDING_DESKTOP_QUERY in lib/nav-scroll-lock).
+export const PANEL_DESKTOP_MIN_WIDTH = 1280
+export const PANEL_SHEET_QUERY = `(max-width: ${PANEL_DESKTOP_MIN_WIDTH - 1}px)`
+
+/** True when the panel renders as the bottom-sheet overlay (below `xl`). */
+export function isPanelSheet(viewportWidth: number): boolean {
+  return Number.isFinite(viewportWidth) && viewportWidth < PANEL_DESKTOP_MIN_WIDTH
+}
+
 export interface PanelState {
   open: boolean
   tab: string
