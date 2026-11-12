@@ -9,7 +9,6 @@ import path from 'node:path'
 import {
   buildRoomRows,
   groupRoomsByProject,
-  railIdleCap,
   roomAvatar,
   roomColor,
   roomIdentityLabel,
@@ -127,18 +126,11 @@ t('RoomsRail renders from buildRoomRows and shows the time', () => {
   assert.ok(/\.time\b/.test(src), 'RoomsRail must render the relative time')
 })
 
-// ── The rail's search cap ──────────────────────────────────────────────────
-// Browsing caps idle rows at 12; typing raises the cap so a match outside the
-// 12 most recent is still reachable from /chat (leaving it at 12 made those
-// sessions silently unreachable). The raised value must stay a BOUND — the rail
-// is a switcher, not a full list — so both ends are pinned here.
-t('typing raises the idle cap; blank/whitespace keeps the browsing cap', () => {
-  assert.equal(railIdleCap(''), 12)
-  assert.equal(railIdleCap('   '), 12, 'whitespace is not a search')
-  assert.equal(railIdleCap('budget'), SEARCH_IDLE_CAP)
-  assert.ok(SEARCH_IDLE_CAP > 12 && Number.isFinite(SEARCH_IDLE_CAP), 'raised but finite')
-})
-
+// ── The rail's search path ─────────────────────────────────────────────────
+// Browsing caps idle rows at 12 (pinned above). Typing raises the cap, because
+// leaving it at 12 made a match outside the 12 most recent silently unreachable
+// from /chat. The raised value stays a BOUND, which is what the first test pins:
+// the rail is a switcher, not a full list.
 t('the typing path is bounded: far more matches than the cap still stop at it', () => {
   // 300 sessions that ALL match the query — the pathological one-character case.
   const many = Array.from({ length: 300 }, (_, i) => ({
@@ -149,25 +141,52 @@ t('the typing path is bounded: far more matches than the cap still stop at it', 
   }))
   const matching = many.filter((s) => sessionMatchesQuery(s, 'budget'))
   assert.equal(matching.length, 300, 'the query really does match them all')
-  const rows = buildRoomRows(matching, null, { now: NOW, maxIdle: railIdleCap('budget') })
+  const rows = buildRoomRows(matching, null, { now: NOW, maxIdle: SEARCH_IDLE_CAP })
   assert.equal(rows.filter((r) => r.status === 'idle').length, SEARCH_IDLE_CAP)
+  assert.ok(SEARCH_IDLE_CAP > 12 && Number.isFinite(SEARCH_IDLE_CAP), 'raised but finite')
 })
 
 t('a match outside the browsing cap becomes reachable once you type', () => {
   const many = Array.from({ length: 30 }, (_, i) => ({
     sessionId: `s${String(i).padStart(2, '0')}`,
-    // s29 is the least recent, so it sits outside the default 12.
+    // s29 is the least recent, so it sits outside the browsing cap.
     lastMessage: i === 29 ? 'the quarterly budget spreadsheet' : `topic ${i}`,
     timestamp: ago(i * MIN),
     messageCount: 1,
   }))
-  const browsing = buildRoomRows(many, null, { now: NOW, maxIdle: railIdleCap('') })
+  const browsing = buildRoomRows(many, null, { now: NOW }) // no query -> default cap
   assert.ok(!browsing.some((r) => r.id === 's29'), 'hidden below the fold while browsing')
 
-  const q = 'quarterly'
-  const matching = many.filter((s) => sessionMatchesQuery(s, q))
-  const searched = buildRoomRows(matching, null, { now: NOW, maxIdle: railIdleCap(q) })
+  const matching = many.filter((s) => sessionMatchesQuery(s, 'quarterly'))
+  const searched = buildRoomRows(matching, null, { now: NOW, maxIdle: SEARCH_IDLE_CAP })
   assert.deepEqual(searched.map((r) => r.id), ['s29'], 'typing reaches it')
+})
+
+// Searching must not degrade the PINNED rows. The live room and the background
+// slots are status, not search results: if the rail filtered them out of the
+// input, buildRoomRows would fall back to a bare "Current session" /
+// "Background session <id>" row with no project, time or message count.
+t('the live and background rows keep their data when the query misses them', () => {
+  const live = { sessionId: 'live-1', title: 'Refactor the voice pipeline', timestamp: ago(MIN), messageCount: 40, cwd: '/home/sprite/workspace/osborn' }
+  const slot = { sessionId: 'slot-1', title: 'Draft the invoice', timestamp: ago(2 * MIN), messageCount: 7, cwd: '/home/sprite/workspace/beta' }
+  const other = { sessionId: 'other-1', title: 'The quarterly budget', timestamp: ago(3 * MIN), messageCount: 3 }
+  const all = [live, slot, other]
+  const slots = [{ id: 'slot-1', isFocused: false, hasSession: true }]
+
+  const q = 'quarterly' // matches `other` only
+  // What the rail passes in: matches PLUS the pinned sessions.
+  const pinned = (id: string) => id === 'live-1' || slots.some((s) => s.id === id)
+  const input = all.filter((s) => pinned(s.sessionId) || sessionMatchesQuery(s, q))
+  const rows = buildRoomRows(input, 'live-1', { now: NOW, slots, maxIdle: SEARCH_IDLE_CAP })
+
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]))
+  assert.equal(byId['live-1'].title, 'Refactor the voice pipeline', 'not "Current session"')
+  assert.equal(byId['live-1'].project, 'osborn')
+  assert.equal(byId['live-1'].messageCount, 40)
+  assert.equal(byId['slot-1'].title, 'Draft the invoice', 'not "Background session …"')
+  assert.equal(byId['slot-1'].messageCount, 7)
+  // …and the actual match is still there, as the only idle row.
+  assert.deepEqual(rows.filter((r) => r.status === 'idle').map((r) => r.id), ['other-1'])
 })
 
 // ============================================================

@@ -26,8 +26,9 @@
 // squeeze, issue #118) and nothing else changes.
 
 import { useEffect, useMemo, useState } from 'react'
-import { buildRoomRows, groupRoomsByProject, railIdleCap, roomAvatar, roomIdentityLabel, type RoomRow, type RoomStatus } from '@/lib/rooms'
+import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, SEARCH_IDLE_CAP, type RoomRow, type RoomStatus } from '@/lib/rooms'
 import { prepareSessions, sessionMatchesQuery } from '@/lib/session-list'
+import { sameSession } from '@/lib/sessions'
 import type { SessionInfo, SlotInfo } from './shared'
 
 export type { RoomStatus }
@@ -194,21 +195,27 @@ export function RoomsSidebar({
     })
   }
 
-  // #107: fold duplicate copies of the same session into one row (and, only if
-  // the user asked, drop machine-written meeting/task rows), then build the
-  // switchable rows. Searching filters through `sessionMatchesQuery` — the one
-  // matcher in the app, shared with SessionBrowser — and raises the idle cap, so
-  // a match outside the 12 most recent is still reachable from /chat.
+  // #107: fold duplicate copies of one session into one row, then build the rows.
+  // Searching filters through `sessionMatchesQuery` (the app's one matcher) and
+  // raises the idle cap, so a match past the 12 most recent stays reachable.
+  //
+  // The live room and the background slots are exempt: they are pinned status,
+  // not search results. Filtering them out of the INPUT would make buildRoomRows
+  // fall back to a bare "Current session" / "Background session <id>" row — no
+  // project, time or message count — so typing would degrade the top of the rail.
   const prepared = useMemo(() => prepareSessions(sessions, { hideSystem }), [sessions, hideSystem])
-  const matching = useMemo(
-    () => prepared.sessions.filter((s) => sessionMatchesQuery(s, query)),
-    [prepared.sessions, query],
-  )
+  const matching = useMemo(() => {
+    const q = query.trim()
+    if (!q) return prepared.sessions
+    const pinned = (id: string) =>
+      sameSession(id, currentSessionId ?? '') || slots.some((sl) => sl.hasSession && sameSession(id, sl.id))
+    return prepared.sessions.filter((s) => pinned(s.sessionId) || sessionMatchesQuery(s, q))
+  }, [prepared.sessions, query, currentSessionId, slots])
   const rooms = buildRoomRows(matching, currentSessionId, {
     slots,
     liveFallbackTitle: liveTitle,
     pendingId,
-    maxIdle: railIdleCap(query),
+    maxIdle: query.trim() ? SEARCH_IDLE_CAP : undefined,
   })
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
   // Live + Running stay pinned at the top; Recent (idle) rows group by project.
@@ -305,8 +312,7 @@ export function RoomsSidebar({
         </div>
       </div>
 
-      {/* Search — the only session-search input in the app's signed-in surfaces.
-          Without it the rail's idle cap made anything past the 12 most recent
+      {/* Search — without it the idle cap made anything past the 12 most recent
           unreachable from /chat. */}
       <div className="px-2 py-2 border-b border-gray-800/60 shrink-0">
         <div className="relative">
