@@ -1,24 +1,12 @@
-// ============================================================
-// SESSION-LIST HYGIENE (#107) — pure, client-safe (no React, no Node imports)
-// ============================================================
-// One shared, testable core for the two human-facing session lists (the Rooms
-// rail in /chat and the dashboard Projects panel). It does two things only:
-//
-//   1. dedupeSessions   — collapse rows that are the SAME session (same id, or
-//                         the 8-char short form of it) into one, keeping the
-//                         copy `--resume` actually opens. This is the fix for
-//                         the "three identical Rooms rows" complaint: 1092
-//                         duplicate ids on the owner's machine, one per slug
-//                         folder the session was filed under.
-//   2. isSystemSession  — recognise the sessions the MACHINE wrote rather than
-//                         a person: a bot meeting transcript or a background
-//                         task notification. Only the markers the agent itself
-//                         emits count, so an opt-in toggle can hide them.
+// SESSION-LIST HYGIENE (#107) — pure, client-safe (no React, no Node imports).
+// The shared core behind the two human-facing session lists (the Rooms rail and
+// the dashboard Projects panel): fold duplicate copies of one session into one
+// row, and optionally hide the rows the MACHINE wrote.
 //
 // Do NOT add prompt-text classification back (it hid real sessions, and
 // `lastMessage` is the LAST user turn, not the first) or fork collapse (it
 // merged different sessions on a 6-word title and left no path to the one it
-// dropped). `prepareSessions` runs the pass and is what both surfaces call.
+// dropped). tests/session-list.test.ts pins both.
 
 import { prettySessionPreview, sameSession, sessionActivityMs, type SessionListFields } from './sessions'
 
@@ -30,22 +18,6 @@ export interface SessionListItem extends SessionListFields {
   messageCount?: number
   /** Slug-derived cwd — where Claude Code's `--resume` looks the session up. */
   cwd?: string
-}
-
-// ── System / machine-written session detection ────────────────────────────
-/**
- * True when the session was written by the machine rather than opened by a
- * person: a bot meeting transcript (`[MEETING — <botId>]:`, `[SYSTEM] … in a
- * meeting`) or a background task notification (`<task-notification>`).
- *
- * This reads ONLY the markers the agent emits itself — classified by
- * `prettySessionPreview`, which is also what the row renders — so a human
- * conversation can never be caught by it. It does not try to infer intent from
- * prompt wording.
- */
-function isSystemSession(s: SessionListItem): boolean {
-  const kind = prettySessionPreview(s).kind
-  return kind === 'meeting' || kind === 'task'
 }
 
 // ── Dedupe copies (same session under several slug folders) ────────────────
@@ -126,13 +98,16 @@ export interface PreparedList<T> {
 }
 
 /** Hygiene pass shared by the rail and the dashboard: dedupe, then optionally
- * hide machine-written sessions. */
+ * hide machine-written sessions. "Machine-written" is exactly the non-`chat`
+ * half of `prettySessionPreview`'s kind — a bot meeting transcript or a
+ * background task notification, both recognised from markers the agent emits
+ * itself. Nothing here infers intent from what the user typed. */
 export function prepareSessions<T extends SessionListItem>(
   sessions: T[],
   opts: PrepareOptions = {},
 ): PreparedList<T> {
   const deduped = dedupeSessions(sessions)
-  const kept = deduped.filter((s) => !isSystemSession(s)) // one classify pass
+  const kept = deduped.filter((s) => prettySessionPreview(s).kind === 'chat')
   return {
     sessions: opts.hideSystem ? kept : deduped,
     systemCount: deduped.length - kept.length,

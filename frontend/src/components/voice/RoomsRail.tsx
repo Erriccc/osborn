@@ -296,9 +296,7 @@ export function RoomsSidebar({
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
         {rooms.length === 0 ? (
           <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
-            {hideSystem
-              ? 'No sessions shown. Turn off “Hide system sessions” to see every room.'
-              : 'No other sessions yet. Start one with “New room”.'}
+            No other sessions yet. Start one with “New room”.
           </p>
         ) : (
           <>

@@ -196,25 +196,9 @@ t('same project → same colour; so a folder reads as one colour across its rows
   )
 })
 
-// #129 review: the group header hashed the RAW bucket key while its rows hashed
-// roomIdentityLabel, so for the "workspace" and "Other" buckets — which hold
-// every workspace-root and project-less session — the header dot and its rows
-// showed DIFFERENT colours. No header colour CAN match them, so the dot is gone
-// rather than lying about it. Routing the header through roomIdentityLabel, the
-// other option, would have been a pure no-op: that is what this pins.
-t('no group colour dot: the degenerate buckets have per-row colours', () => {
-  // A bucket key carries no title, so roomIdentityLabel returns it verbatim.
-  for (const bucket of ['alpha', 'workspace', 'Other']) {
-    assert.equal(roomIdentityLabel({ project: bucket }), bucket)
-    assert.deepEqual(roomColor(roomIdentityLabel({ project: bucket })), roomColor(bucket))
-  }
-  // Two rows in the workspace bucket genuinely differ, because a workspace-root
-  // row hashes its own title to stay distinguishable.
-  assert.notDeepEqual(
-    roomAvatar({ project: 'workspace', title: 'Draft the invoice' }).color,
-    roomAvatar({ project: 'workspace', title: 'Review the contract' }).color,
-  )
-})
+// The rail renders NO group colour dot (#129): a workspace-root row hashes its
+// own title (the identity-label tests above), so the "workspace"/"Other" buckets
+// have per-row colours and no one header colour can match them.
 
 // ── roomAvatar (the one call the UI makes) ─────────────────────────────────
 t('roomAvatar bundles the initial + colour consistently', () => {
