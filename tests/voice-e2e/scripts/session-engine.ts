@@ -320,10 +320,7 @@ async function main() {
   // with). Boot brainless: /eval /tab /shot /recover keep working, /act says
   // why it can't, and POST /brain retries once the key/CDP problem is fixed.
   await initBrain().catch(() => mark(`brain unavailable — ${brainError} — engine still drivable (/eval /tab /shot); POST /brain to retry`))
-  // EARS HEALTH (#151): the cloud engine's speech-to-text was dead for hours
-  // (Soniox failing, Deepgram key revoked) and nothing said so until a tester
-  // read a warning closely. Probe every configured STT key at boot and on
-  // POST /brain, and report it on /status like the brain.
+  // Speech-to-text key health, checked at boot and on POST /brain (#151).
   type SttHealth = { provider: string; ok: boolean; status: number | string }
   let sttHealth: SttHealth[] = []
   const probeStt = async () => {
@@ -504,14 +501,9 @@ async function main() {
     const cleanup = () => { if (a) { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } } }
     if (!labels.length) { cleanup(); return null }
     const out = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say-av.mp4`)
-    // Bounded audio: an unbounded apad never ends once the video is
-    // re-encoded through a filter graph (-shortest does not stop it there).
+    // Bounded: an unbounded apad never ends once video is re-encoded.
     const clipDur = Math.max(1, (clip.endMs - clip.startMs) / 1000)
-    // REVIEWABLE BY A HUMAN. Clips "looked muted" in review: players autoplay
-    // video muted, and a turn is mostly silence with a few seconds of speech.
-    // So the clip now SHOWS its sound — a waveform strip along the bottom and
-    // captions for what the tester said and what was heard back — and the
-    // audio is stereo and loudness-normalised so it is audible once unmuted.
+    // Players autoplay muted, so the clip SHOWS its sound: waveform + captions.
     filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest,apad=whole_dur=${clipDur.toFixed(3)},atrim=0:${clipDur.toFixed(3)},loudnorm=I=-18:TP=-2,aformat=channel_layouts=stereo,asplit=2[a][aw]`)
     filters.push(`[aw]showwaves=s=1280x90:mode=cline:colors=0x46d38a,format=rgba,colorchannelmixer=aa=0.85[wav]`)
     let vchain = `[0:v]scale=1280:-2,pad=1280:ih+90:0:0:black[base];[base][wav]overlay=0:H-90:shortest=1`
@@ -1027,11 +1019,7 @@ async function main() {
       }
       if (path === '/act') {
         const driver = driverId(req)
-        // LOCK SCOPE: the action lock covers only what needs the shared
-        // browser — focusing the tab, the brain's action, the settle and the
-        // before/after snapshots. Cutting the clip, the screenshot and the
-        // task record run AFTER the lock is released, from this tab's own
-        // recording, so one driver's encoding never makes another wait.
+        // The lock covers the action only; clip, screenshot and record run after it.
         const post = await withLock(async () => {
           await focusDriverTab(driver)  // this driver acts on ITS tab, front + focused
           const page = active
@@ -1185,8 +1173,6 @@ async function main() {
         })
         if (!post) return  // answered inside the lock (refused, invalid, or failed)
         const { page, n, t0, r, effect, warning, nag } = post
-        // The clip covers THIS action (start → end, +1.5s lead), capped by
-        // clipSeconds, cut from THIS tab's own recording.
         const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000)
         const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page).catch(() => null) : null
         const clip = actRange?.path ?? null
@@ -1199,12 +1185,7 @@ async function main() {
       }
       if (path === '/say') {
         const driver = driverId(req)
-        // LOCK SCOPE: held only while the tab is focused and the utterance is
-        // played into its mic. The listen window, the clip, the audio mux and
-        // the transcription — easily minutes — run after it is released, on
-        // this tab only (its own recording and its own ears). A spoken turn
-        // used to hold the lock for all of it: under two drivers one /say took
-        // 402s to return and the other driver's calls timed out meanwhile.
+        // The lock covers speaking only; listening, clip and transcript run after it.
         const spoken = await withLock(async () => {
           await focusDriverTab(driver)
           const page = active

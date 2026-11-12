@@ -40,10 +40,7 @@ export type LiveStream = {
   // and the returned startMs/endMs are the wall-clock span it covers — what an
   // audio track must be aligned against.
   clipRange: (outPath: string, fromMs: number, toMs?: number, page?: Page) => Promise<{ path: string; startMs: number; endMs: number } | null>
-  // Record a tab on its own, whatever is in front. Clips cut with `page` come
-  // from that tab's recording, so a driver's proof never shows another
-  // driver's tab — which is what lets the engine release its action lock while
-  // a driver is still listening or encoding.
+  // Record a tab on its own; clipRange(..., page) cuts from that recording.
   trackPage: (page: Page) => void
   // Epoch ms of the most recent screencast frame (null before the first one).
   // A growing age means the page has stopped painting — ground truth for /status.
@@ -104,11 +101,11 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       } catch { clients.delete(res) }
     }
   }
-  const attach = async (p: Page): Promise<CDPSession> => {
+  const attach = async (p: Page, push: (b: Buffer) => void = pushFrame): Promise<CDPSession> => {
     const s = await p.context().newCDPSession(p)
     s.on('Page.screencastFrame', async (f: any) => {
       try { await s.send('Page.screencastFrameAck', { sessionId: f.sessionId }) } catch { /* page gone */ }
-      pushFrame(Buffer.from(f.data, 'base64'))
+      push(Buffer.from(f.data, 'base64'))
     })
     await s.send('Page.startScreencast', SCREENCAST)
     return s
@@ -261,41 +258,25 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   // in it lined up with the clock (or with an audio track). Each frame now
   // carries its real on-screen duration, taken from its capture timestamp, and
   // the encoder resamples to a constant rate — 1s of clip is 1s of wall clock.
-  // PER-TAB RECORDERS. A background tab keeps rendering and screencasting at
-  // the full rate while another tab is in front (measured headless and on Xvfb:
-  // ~10 fps each, both tabs at once), so each tab gets its own CDP screencast
-  // and ring. Smaller frames than the live view: these are proof, not a stream.
-  const TAB_BUFFER_MS = 120_000, TAB_MAX_FRAMES = 1200
-  const tabRecs = new Map<Page, { ring: Array<{ t: number; buf: Buffer }>; last: number; s: CDPSession | null; hb: ReturnType<typeof setInterval> | null }>()
+  // One recording per tab (background tabs keep rendering), so clips show
+  // only the acting tab and the engine can release its lock early.
+  const tabRecs = new Map<Page, { ring: Array<{ t: number; buf: Buffer }>; last: number }>()
   const trackPage = (p: Page) => {
     if (tabRecs.has(p) || p.isClosed()) return
-    const rec = { ring: [] as Array<{ t: number; buf: Buffer }>, last: 0, s: null as CDPSession | null, hb: null as ReturnType<typeof setInterval> | null }
+    const rec = { ring: [] as Array<{ t: number; buf: Buffer }>, last: 0 }
     tabRecs.set(p, rec)
     const push = (buf: Buffer) => {
-      const now = Date.now(); rec.last = now
-      rec.ring.push({ t: now, buf })
-      const cutoff = now - TAB_BUFFER_MS
-      while (rec.ring.length && (rec.ring[0].t < cutoff || rec.ring.length > TAB_MAX_FRAMES)) rec.ring.shift()
+      rec.last = Date.now(); rec.ring.push({ t: rec.last, buf })
+      while (rec.ring.length && (rec.ring[0].t < rec.last - BUFFER_MS || rec.ring.length > MAX_FRAMES)) rec.ring.shift()
     }
-    void (async () => {
-      try {
-        const s = await p.context().newCDPSession(p); rec.s = s
-        s.on('Page.screencastFrame', async (f: any) => {
-          try { await s.send('Page.screencastFrameAck', { sessionId: f.sessionId }) } catch { /* page gone */ }
-          push(Buffer.from(f.data, 'base64'))
-        })
-        await s.send('Page.startScreencast', { format: 'jpeg', quality: 50, everyNthFrame: 1, maxWidth: 1280, maxHeight: 800 })
-        // Same heartbeat as the live view: a static page emits no frames.
-        let beating = false
-        rec.hb = setInterval(async () => {
-          if (beating || p.isClosed() || Date.now() - rec.last < 500) return
-          beating = true
-          try { const r: any = await s.send('Page.captureScreenshot', { format: 'jpeg', quality: 50 }); push(Buffer.from(r.data, 'base64')) } catch { /* navigating */ }
-          beating = false
-        }, 500)
-      } catch (e) { console.log(`[live-stream] tab recorder failed: ${(e as Error).message.slice(0, 80)}`) }
-    })()
-    p.once('close', () => { if (rec.hb) clearInterval(rec.hb); tabRecs.delete(p) })
+    attach(p, push).then((s) => {
+      // A static page emits no frames: same heartbeat as the live view.
+      const hb = setInterval(async () => {
+        if (Date.now() - rec.last < 500) return
+        try { push(Buffer.from((await s.send('Page.captureScreenshot', { format: 'jpeg', quality: 50 }) as any).data, 'base64')) } catch { /* navigating */ }
+      }, 500)
+      p.once('close', () => { clearInterval(hb); tabRecs.delete(p) })
+    }).catch((e) => console.log(`[live-stream] tab recorder failed: ${(e as Error).message.slice(0, 80)}`))
   }
 
   const clipRange = async (outPath: string, fromMs: number, toMs = Date.now(), page?: Page): Promise<{ path: string; startMs: number; endMs: number } | null> => {
@@ -353,7 +334,6 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     },
     stop: async () => {
       if (heartbeat) clearInterval(heartbeat)
-      for (const r of tabRecs.values()) if (r.hb) clearInterval(r.hb)
       try { grabber?.kill('SIGKILL') } catch { /* ignore */ }
       try { await cdp?.send('Page.stopScreencast') } catch { /* ignore */ }
       for (const res of clients) { try { res.end() } catch { /* ignore */ } }

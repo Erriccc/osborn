@@ -106,9 +106,7 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   // Soniox async STT — upload the recorded clip, poll the job, keep tokens whose
   // start_ms falls after the window. Word timestamps come back by default; no
   // OpenAI/Deepgram key needed.
-  // Every provider that fails is remembered, so the final error names ALL of
-  // them (#151: "nothing transcribed: deepgram 401" hid the Soniox failure
-  // that came first, and made a two-provider outage look like a Deepgram one).
+  // Name every provider that failed, not just the last one (#151).
   const failures: string[] = []
   const soniox = optionalEnvKey('SONIOX_API_KEY')
   if (soniox) {
@@ -162,8 +160,7 @@ async function sonioxTranscribeSince(audio: Buffer, sinceMs: number, apiKey: str
     if (!cr.ok) throw new Error(`create-transcription HTTP ${cr.status} ${(await cr.text().catch(() => '')).slice(0, 80)}`)
     const jobId = (await cr.json() as any).id
     try {
-      // Time-bounded, and a job that never completes is an ERROR — it used to
-      // fall through after 16s and read an unfinished transcript as "nothing said".
+      // An unfinished job is an error, not silence.
       const deadline = Date.now() + 60000
       let done = false
       while (Date.now() < deadline) {
