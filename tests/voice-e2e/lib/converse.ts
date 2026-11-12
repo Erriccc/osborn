@@ -105,8 +105,8 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), 'hear-'))
   try {
     const raw = Buffer.from(base64, 'base64'); writeFileSync(join(dir, 'in.webm'), raw)
-    const cut = await cutTurn(join(dir, 'in.webm'), Math.max(0, sinceMs - anchorOffsetMs), false)
-    return await transcribeTurn(cut ?? { audio: raw, fileSinceMs: Math.max(0, sinceMs - anchorOffsetMs), wav: false })
+    const fileSinceMs = Math.max(0, sinceMs - anchorOffsetMs)
+    return await transcribeTurn((await cutTurn(join(dir, 'in.webm'), fileSinceMs, false)) ?? { audio: raw, fileSinceMs, wav: false })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 

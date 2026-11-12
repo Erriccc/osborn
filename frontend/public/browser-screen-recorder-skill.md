@@ -186,9 +186,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v28
-- `/say` decodes the page recording once per turn and uses it for both the
-  transcript and the clip's audio (it used to decode it twice), so a long run
-  slows `/say` down less.
+- `/say` stays faster late in a long run (the recording is decoded once per turn).
 
 ## What's new in v27
 - **No more engine zombies or stuck locks.** A crash exits (on Fly the
