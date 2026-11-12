@@ -90,36 +90,68 @@ export async function screenTail(page: Page): Promise<string> {
 /**
  * ALWAYS-LISTENING comprehension: transcribe the live recording (without
  * stopping it) and return only the words spoken AFTER `sinceMs`
- * (capture-relative). Uses Deepgram word timestamps. Works on ANY app —
+ * (capture-relative). Uses the provider's word timestamps (Soniox, then Deepgram). Works on ANY app —
  * even ones with no text transcript in the UI.
  */
 export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const { peekCapture } = await import('./audio-capture')
   const { optionalEnvKey } = await import('./env')
   const { base64, anchorOffsetMs } = await peekCapture(page)
-  const audio = Buffer.from(base64, 'base64')
   // word.start is file-relative (timeline begins at the first tapped source,
   // NOT capture start — verified 38.3s skew, 2026-07-31); convert the wall-clock
   // window into file time via the anchor.
-  const fileSinceMs = Math.max(0, sinceMs - anchorOffsetMs)
+  const { audio, fileSinceMs, wav } = await turnWindow(Buffer.from(base64, 'base64'), Math.max(0, sinceMs - anchorOffsetMs))
 
   // Soniox async STT — upload the recorded clip, poll the job, keep tokens whose
   // start_ms falls after the window. Word timestamps come back by default; no
   // OpenAI/Deepgram key needed.
+  // Name every provider that failed, not just the last one (#151).
+  if (wav && audio.length < 3200) return ''  // the cut landed past the end: nothing new to hear
+  const failures: string[] = []
   const soniox = optionalEnvKey('SONIOX_API_KEY')
   if (soniox) {
     try {
-      return await sonioxTranscribeSince(audio, fileSinceMs, soniox)
+      return await sonioxTranscribeSince(audio, fileSinceMs, soniox, wav)
     } catch (e) {
-      console.warn('[converse] Soniox STT error — trying Deepgram:', e)
+      const msg = ((e as Error).message || String(e)).slice(0, 140)
+      failures.push(`Soniox: ${msg}`)
+      console.warn('[converse] Soniox STT error — trying Deepgram:', msg)
     }
   }
 
   const dg = optionalEnvKey('DEEPGRAM_API_KEY')
-  if (!dg) return ''
+  if (!dg) {
+    if (failures.length) throw new Error(failures.join('; '))
+    return ''
+  }
+  try { return await deepgramTranscribeSince(audio, fileSinceMs, dg, wav) }
+  catch (e) { failures.push(`Deepgram: ${((e as Error).message || String(e)).slice(0, 140)}`); throw new Error(failures.join('; ')) }
+}
+
+/** Only the current turn goes to STT, as a 16 kHz mono wav cut from just before `sinceMs` (falls back to the raw webm). */
+async function turnWindow(raw: Buffer, sinceMs: number): Promise<{ audio: Buffer; fileSinceMs: number; wav: boolean }> {
+  const { execFile } = await import('node:child_process')
+  const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const cut = Math.max(0, sinceMs - 1000)
+  const dir = mkdtempSync(join(tmpdir(), 'hear-'))
+  try {
+    writeFileSync(join(dir, 'in.webm'), raw)
+    await new Promise<void>((ok, fail) => execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', join(dir, 'in.webm'), '-ss', String(cut / 1000),
+      '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', join(dir, 'out.wav')], { timeout: 60000 }, (e) => (e ? fail(e) : ok())))
+    return { audio: readFileSync(join(dir, 'out.wav')), fileSinceMs: sinceMs - cut, wav: true }
+  } catch (e) {
+    console.warn('[converse] could not cut the turn, sending the whole recording:', String((e as Error).message ?? e).slice(0, 120))
+    return { audio: raw, fileSinceMs: sinceMs, wav: false }
+  }
+  finally { rmSync(dir, { recursive: true, force: true }) }
+}
+
+async function deepgramTranscribeSince(audio: Buffer, fileSinceMs: number, dg: string, wav: boolean): Promise<string> {
   const res = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', {
     method: 'POST',
-    headers: { Authorization: `Token ${dg}`, 'Content-Type': 'audio/webm' },
+    headers: { Authorization: `Token ${dg}`, 'Content-Type': wav ? 'audio/wav' : 'audio/webm' },
     body: audio,
   })
   if (!res.ok) throw new Error(`deepgram ${res.status}`)
@@ -133,27 +165,31 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
 }
 
 /** Soniox async file transcription: the text spoken after `sinceMs` (file time). */
-async function sonioxTranscribeSince(audio: Buffer, sinceMs: number, apiKey: string): Promise<string> {
+async function sonioxTranscribeSince(audio: Buffer, sinceMs: number, apiKey: string, wav: boolean): Promise<string> {
   const H = { Authorization: `Bearer ${apiKey}` }
   const fd = new FormData()
-  fd.append('file', new Blob([new Uint8Array(audio)], { type: 'audio/webm' }), 'clip.webm')
-  const up = await fetch('https://api.soniox.com/v1/files', { method: 'POST', headers: H, body: fd as any })
-  if (!up.ok) throw new Error(`soniox upload ${up.status}`)
+  fd.append('file', new Blob([new Uint8Array(audio)], { type: wav ? 'audio/wav' : 'audio/webm' }), wav ? 'clip.wav' : 'clip.webm')
+  const up = await fetch('https://api.soniox.com/v1/files', { method: 'POST', headers: H, body: fd as any, signal: AbortSignal.timeout(30000) })
+  if (!up.ok) throw new Error(`upload HTTP ${up.status} ${(await up.text().catch(() => '')).slice(0, 80)} (${Math.round(audio.length / 1024)} KB)`)
   const fileId = (await up.json() as any).id
   try {
     const cr = await fetch('https://api.soniox.com/v1/transcriptions', {
       method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_id: fileId, model: 'stt-async-v3' }),
     })
-    if (!cr.ok) throw new Error(`soniox transcribe ${cr.status}`)
+    if (!cr.ok) throw new Error(`create-transcription HTTP ${cr.status} ${(await cr.text().catch(() => '')).slice(0, 80)}`)
     const jobId = (await cr.json() as any).id
     try {
-      for (let i = 0; i < 40; i++) {
+      // An unfinished job is an error, not silence.
+      const deadline = Date.now() + 60000
+      let done = false
+      while (Date.now() < deadline) {
         const st: any = await (await fetch(`https://api.soniox.com/v1/transcriptions/${jobId}`, { headers: H })).json()
-        if (st.status === 'completed') break
-        if (st.status === 'error' || st.status === 'failed') throw new Error(`soniox job ${st.status}: ${st.error_message ?? ''}`)
-        await new Promise((r) => setTimeout(r, 400))
+        if (st.status === 'completed') { done = true; break }
+        if (st.status === 'error' || st.status === 'failed') throw new Error(`job ${st.status}: ${st.error_message ?? ''}`)
+        await new Promise((r) => setTimeout(r, 500))
       }
+      if (!done) throw new Error('job did not finish within 60s')
       const tx: any = await (await fetch(`https://api.soniox.com/v1/transcriptions/${jobId}/transcript`, { headers: H })).json()
       const tokens: Array<{ text?: string; start_ms?: number }> = tx?.tokens ?? []
       // Only what was spoken inside the window. This used to fall back to the

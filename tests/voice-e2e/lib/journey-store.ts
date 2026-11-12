@@ -30,6 +30,8 @@ export interface PersistedJourney {
   owner?: string
   startUrl: string
   startedAt: number
+  /** Scenario steps done in this journey before the restart. */
+  steps?: Array<{ kind: string; value: string }>
 }
 
 /** The on-disk journey-state record (journey-state.json in the results dir). */

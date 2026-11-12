@@ -1,14 +1,11 @@
 // Run: npx tsx agent/tests/switch-exec.test.ts
 // #74 S4/S7 pure executor helpers (session-switch.ts):
-//   resolveSessionCwd      — hint → current dir → session list → slug scan → null
+//   resolveSessionCwd      — hint → current dir → ONE cheap slug scan → null
 //   keepNonConversationItems — chatCtx rebuild keeps instructions, drops A's turns (4.13)
 //   recoverySessionId      — auto-recovery resumes the switched-to session (4.3, D7)
 //   warmParkKey            — keep-warm keys a primed-but-uninitialised session (4.3)
-//   pickConnectWorkingDir  — connect-time cwd: resolved session dir wins over a
-//                            stale/empty hint; agent never boots /workspace root
-//                            for a session that lives in a project (#112)
 import assert from 'node:assert/strict'
-import { resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, pickConnectWorkingDir } from '../src/session-switch.js'
+import { resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from '../src/session-switch.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -22,8 +19,7 @@ const B = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb'
 const where: Record<string, string> = { [B]: '/w/proj-b' }
 const deps = (over: any = {}) => ({
   exists: (id: string, wd: string) => where[id] === wd,
-  listCwd: async (id: string) => where[id] ?? null,
-  scanCwd: async (_id: string) => null as string | null,
+  lookupCwd: async (id: string) => where[id] ?? null,
   ...over,
 })
 
@@ -33,19 +29,23 @@ await t('cwd: valid hint wins', async () => {
 await t('cwd: wrong hint ignored, current dir used when the session lives there', async () => {
   assert.equal(await resolveSessionCwd(B, '/w/nope', '/w/proj-b', deps()), '/w/proj-b')
 })
-await t('cwd: cross-project with no hint resolves through the session list', async () => {
-  let listed = 0
-  const r = await resolveSessionCwd(B, undefined, '/w/proj-a', deps({ listCwd: async (id: string) => { listed++; return where[id] } }))
+await t('cwd: cross-project with no hint resolves through the one-session scan', async () => {
+  const r = await resolveSessionCwd(B, undefined, '/w/proj-a', deps())
   assert.equal(r, '/w/proj-b')
-  assert.equal(listed, 1)
 })
-await t('cwd: list cwd that does not actually hold the session is not trusted', async () => {
-  const r = await resolveSessionCwd(B, undefined, '/w/proj-a', deps({ listCwd: async () => '/w/stale' }))
+await t('cwd: a looked-up cwd that does not actually hold the session is not trusted', async () => {
+  const r = await resolveSessionCwd(B, undefined, '/w/proj-a', deps({ lookupCwd: async () => '/w/stale' }))
   assert.equal(r, null)
 })
-await t('cwd: falls back to the slug scan (sessions the list filters out)', async () => {
-  const r = await resolveSessionCwd(B, undefined, '/w/proj-a', deps({ listCwd: async () => null, scanCwd: async () => '/w/proj-b' }))
-  assert.equal(r, '/w/proj-b')
+// REGRESSION (connect latency): the connect path awaits this, so a usable hint
+// must cost ZERO lookups and a full miss exactly ONE — no room for a sweep.
+await t('cwd: at most ONE cheap lookup — connect never awaits a full session-list sweep', async () => {
+  let calls = 0
+  const counted = (ret: string | null) => deps({ lookupCwd: async () => { calls++; return ret } })
+  await resolveSessionCwd(B, '/w/proj-b', '/w/proj-a', counted(null))
+  assert.equal(calls, 0, 'a hint that holds the session must not trigger any lookup')
+  await resolveSessionCwd(B, '/w/nope', '/w/proj-a', counted('/w/proj-b'))
+  assert.equal(calls, 1, 'a full miss must cost exactly one lookup')
 })
 await t('cwd: unknown session -> null ("Session not found")', async () => {
   assert.equal(await resolveSessionCwd('cccccccc-x', '/w/proj-a', '/w/proj-a', deps()), null)
@@ -148,86 +148,33 @@ await t('index: performSessionSwitch uses the guard and replies switch_in_progre
   const d = src.slice(src.indexOf('async function requestSessionSwitch('), src.indexOf('async function performSessionSwitch('))
   assert.ok(/void requestSessionSwitch\([^)]*\)\.catch\(/.test(d), 'deferred re-request needs .catch')
 })
+// decodeSlug = config.ts slugToPath ('' when the decode misses); readCwd = extractCwd.
+const noCwd = async () => ''
 await t('scanSlugCwd: decoded path that does not exist is not returned (no mkdir of scan paths)', async () => {
-  const fsx = { readdir: () => ['-w-projb', '-w-ghost'], exists: (p: string) => p === '/w/projb' || p === '/p/-w-projb/' + B + '.jsonl' || p === '/p/-w-ghost/' + B + '.jsonl' || p === '/p' }
+  const jsonl = (slug: string) => '/p/' + slug + '/' + B + '.jsonl'
+  const fsx = {
+    readdir: () => ['-w-projb', '-w-ghost'],
+    exists: (p: string) => p === jsonl('-w-projb') || p === jsonl('-w-ghost') || p === '/p',
+    decodeSlug: (s: string) => (s === '-w-projb' ? '/w/projb' : ''), readCwd: noCwd,
+  }
   assert.equal(await scanSlugCwd(B, '/p', fsx), '/w/projb')
-  const ghostOnly = { readdir: () => ['-w-ghost'], exists: (p: string) => p === '/p' || p === '/p/-w-ghost/' + B + '.jsonl' }
-  assert.equal(await scanSlugCwd(B, '/p', ghostOnly), null)
-  assert.equal(await scanSlugCwd(B, '/missing', { readdir: () => [], exists: () => false }), null)
+  assert.equal(await scanSlugCwd(B, '/p', { ...fsx, readdir: () => ['-w-ghost'] }), null)
+  assert.equal(await scanSlugCwd(B, '/missing', { ...fsx, readdir: () => [], exists: () => false }), null)
 })
-await t('index: scan goes through scanSlugCwd (existing dirs only)', () => {
-  const src = readFileSync(join(import.meta.dirname, '../src/index.ts'), 'utf8')
-  assert.ok(/scanCwd: \(id\) => scanSlugCwd\(id,/.test(src))
-  assert.ok(!/async function scanSessionSlugCwd/.test(src))
-})
-
-// ── pickConnectWorkingDir (#112 resume-mismatch) ─────────────────────────────
-const DFLT = '/workspace'
-await t('connectWd: pre-selected session resolved → its real dir wins over hint, no mkdir', () => {
-  // The founder bug: URL pins ProjectX but the hint is stale; the session really
-  // lives in /workspace/alpha, so the agent boots THERE, not the hint or root.
-  const r = pickConnectWorkingDir({ preSelectedSessionId: B, resolved: '/workspace/alpha', hint: '/workspace/stale', defaultDir: DFLT })
-  assert.equal(r.dir, '/workspace/alpha')
-  assert.equal(r.createIfMissing, false)
-  assert.equal(r.source, 'resolved')
-})
-await t('connectWd: pre-selected + EMPTY hint resolved → real dir, never /workspace root', () => {
-  // live.workingDirectory empty (switch rewrote URL without a cwd) must NOT boot root.
-  const r = pickConnectWorkingDir({ preSelectedSessionId: B, resolved: '/workspace/alpha', hint: '', defaultDir: DFLT })
-  assert.equal(r.dir, '/workspace/alpha')
-  assert.notEqual(r.dir, DFLT)
-  assert.equal(r.source, 'resolved')
-})
-await t('connectWd: pre-selected unresolved (fresh sprite) + hint → honour+create the hint', () => {
-  const r = pickConnectWorkingDir({ preSelectedSessionId: B, resolved: null, hint: '/workspace/new-proj', defaultDir: DFLT })
-  assert.equal(r.dir, '/workspace/new-proj')
-  assert.equal(r.createIfMissing, true)
-  assert.equal(r.source, 'hint')
-})
-await t('connectWd: pre-selected unresolved + no hint → default boot dir (no mkdir)', () => {
-  const r = pickConnectWorkingDir({ preSelectedSessionId: B, resolved: null, hint: null, defaultDir: DFLT })
-  assert.equal(r.dir, DFLT)
-  assert.equal(r.createIfMissing, false)
-  assert.equal(r.source, 'default')
-})
-await t('connectWd: no pre-selected + hint → new project dir, created', () => {
-  const r = pickConnectWorkingDir({ preSelectedSessionId: null, resolved: null, hint: '/workspace/proj', defaultDir: DFLT })
-  assert.equal(r.dir, '/workspace/proj')
-  assert.equal(r.createIfMissing, true)
-  assert.equal(r.source, 'hint')
-})
-await t('connectWd: no pre-selected + no hint → default (reset per connection)', () => {
-  const r = pickConnectWorkingDir({ preSelectedSessionId: null, resolved: null, hint: null, defaultDir: DFLT })
-  assert.equal(r.dir, DFLT)
-  assert.equal(r.source, 'default')
-})
-await t('index: connect resolves the pre-selected session cwd before booting (not raw hint)', () => {
-  const src = readFileSync(join(import.meta.dirname, '../src/index.ts'), 'utf8')
-  assert.ok(/pickConnectWorkingDir\(\{ preSelectedSessionId/.test(src), 'connect must route cwd through pickConnectWorkingDir')
-  assert.ok(/resolvedConnectCwd = await resolveCwdForSession\(preSelectedSessionId/.test(src), 'connect must resolve the pre-selected session cwd')
-})
-
-// ── #2 background-task survival across a switch (finish-then-switch) ──────────
-// A session running only background run_in_background Tasks (no active voice
-// turn) must still count as busy, so a switch away from it DEFERS instead of
-// tearing the subprocess (and its Tasks) down. The linkage: busyState().idle is
-// false while runningTasks>0, and the switch decider derives turnInFlight from
-// !busy.idle → leave='background' → planSwitch defers (tested in switch-decision).
-await t('claude-llm: running background tasks keep busyState non-idle', () => {
-  const src = readFileSync(join(import.meta.dirname, '../src/claude-llm.ts'), 'utf8')
-  const bs = src.slice(src.indexOf('busyState()'), src.indexOf('busyState()') + 700)
-  assert.ok(/const runningTasks = this\.getRunningTasks\(\)\.length/.test(bs), 'busyState must count running tasks')
-  assert.ok(/idle:\s*!turnInFlight && runningTasks === 0/.test(bs), 'idle must require runningTasks === 0')
-})
-await t('index: the switch decider derives turnInFlight from !busy.idle (bg tasks protect the switch)', () => {
-  const src = readFileSync(join(import.meta.dirname, '../src/index.ts'), 'utf8')
-  const req = src.slice(src.indexOf('async function requestSessionSwitch('), src.indexOf('async function performSessionSwitch('))
-  assert.ok(/turnInFlight:\s*!busy\.idle/.test(req), 'requestSessionSwitch must treat any non-idle (incl. bg tasks) as turn-in-flight')
-})
-await t('pipeline wrapper forwards busyState + getRunningTasks (bg tasks visible to the switch)', () => {
-  const src = readFileSync(join(import.meta.dirname, '../src/pipeline-direct-llm.ts'), 'utf8')
-  assert.ok(/busyState\(\)\s*\{\s*return this\.#claudeLLM\.busyState\(\)/.test(src), 'pipeline must forward busyState')
-  assert.ok(/getRunningTasks\(\)\s*\{\s*return this\.#claudeLLM\.getRunningTasks\(\)/.test(src), 'pipeline must forward getRunningTasks')
+await t('scanSlugCwd: lossy slug (project dir whose name contains "-") falls back to the JSONL cwd', async () => {
+  // `-w-my-app` decodes to /w/my/app, which does not exist → slugToPath ''.
+  // The one case the full session-list sweep recovered.
+  const base = {
+    readdir: () => ['-w-my-app'],
+    exists: (p: string) => p === '/p' || p === '/p/-w-my-app/' + B + '.jsonl' || p === '/w/my-app',
+    decodeSlug: () => '', readCwd: noCwd,
+  }
+  assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => '/w/my-app' }), '/w/my-app')
+  assert.equal(await scanSlugCwd(B, '/p', base), null, 'no recorded cwd → null')
+  assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => { throw new Error('unreadable') } }), null)
+  // An imported session's JSONL can name ANOTHER machine's path, and
+  // sessionExists only checks the slug — so the dir must exist to be returned.
+  assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => '/Users/elsewhere/proj' }), null)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

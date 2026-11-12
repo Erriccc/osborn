@@ -43,16 +43,15 @@ import { createGunzip } from 'node:zlib'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, slugToPath, getClaudeProjectsDir, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
 import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
-import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, type ActiveProvider } from './claude-auth.js'
-import { probeActiveProviderKey, type KeyHealthEntry } from './key-health.js'
+import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, pickConnectWorkingDir } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
@@ -311,12 +310,33 @@ let bugReportHook: ((reportId: string, payload: BugReportPayload) => void) | nul
 let codeServerStartHook: (() => Promise<void>) | null = null
 
 // ── Model-provider health (module scope — shared between startApiServer + main) ──
-// #87: the per-key self-test result for the ACTIVE fallback provider, written by
-// main()'s connect path (probeActiveProviderKey) and read by startApiServer's
-// GET /health so a dead/expired key surfaces as "No working model" instead of a
-// silent non-reply. Null until the async probe lands (or never, on the Claude
-// path / an ambiguous result) — never a fabricated verdict.
+// #87: the tier the agent is really answering on + that tier's key self-test. Both
+// ride GET /health, so the badge names the real model and a dead key surfaces as
+// "No working model" instead of a silent non-reply. Null = not known yet (or an
+// ambiguous probe) — never a fabricated verdict.
+let agentActiveProvider: ActiveProvider | null = null
 let agentKeyHealth: KeyHealthEntry[] | null = null
+
+/**
+ * House-tier key self-test (#87) for whichever tier is active, fire-and-forget so
+ * it costs the connect path nothing. A user's OWN Anthropic key is skipped — the
+ * SDK surfaces its failures directly. Always clears the previous tier's verdict
+ * first, so a tier swap cannot leave a stale "No working model" on screen.
+ */
+function startKeyHealthProbe(): void {
+  const provider = agentActiveProvider
+  agentKeyHealth = null
+  if (provider !== 'zai' && provider !== 'openrouter') return
+  void probeActiveProviderKey(provider)
+    .then((entry) => {
+      // The tier may have changed while this 8s probe was in flight (a sign-in
+      // mid-session) — a late verdict for the tier we left is not news.
+      if (!entry || agentActiveProvider !== provider) return
+      agentKeyHealth = [entry]
+      console.log(`${entry.status === 'ok' ? '✅' : '⚠️'} [key-health] ${entry.provider} self-test: ${entry.status}`)
+    })
+    .catch(() => { /* probe is best-effort — never breaks the session */ })
+}
 
 // ── IDE reverse-proxy (module scope — shared between startApiServer + main) ──
 // code-server runs on 127.0.0.1:8300; the agent proxies it through its own
@@ -792,9 +812,10 @@ function startApiServer(workingDir: string, port: number): void {
         },
         // Whole-machine memory — what the OOM killer watches. All values in MB.
         memory: { totalMb, usedMb, availableMb, usedPct, processRssMb },
-        // #87: per-key self-test for the active fallback provider. Absent until
-        // the async probe lands (and omitted entirely on the Claude path); the
-        // frontend surfaces "No working model" when every entry failed/expired.
+        // #87: the tier actually answering + its key self-test. `provider` is the
+        // LIVE reading — agent_ready fires once, so it goes stale the moment a
+        // mid-session sign-in swaps the tier.
+        ...(agentActiveProvider ? { provider: agentActiveProvider } : {}),
         ...(agentKeyHealth ? { keyHealth: agentKeyHealth } : {}),
       }))
       return
@@ -3739,11 +3760,14 @@ async function main() {
   // agent_ready (preSelectedSessionId = A) doesn't reset the UI back to A.
   let stopReadyRetries: (() => void) | null = null
 
+  // Connect AWAITS this, so keep every lookup cheap: no listAllClaudeSessions().
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
-      listCwd: async (id) => (await listAllClaudeSessions()).find(s => s.sessionId === id)?.cwd ?? null,
-      scanCwd: (id) => scanSlugCwd(id, join(homedir(), '.claude', 'projects'), { readdir: (d) => readdirSync(d), exists: (p) => existsSync(p) }),
+      lookupCwd: (id) => scanSlugCwd(id, getClaudeProjectsDir(), {
+        readdir: (d) => readdirSync(d), exists: (p) => existsSync(p),
+        decodeSlug: (s) => slugToPath(s), readCwd: (p) => extractCwd(p),
+      }),
     })
   }
 
@@ -5126,35 +5150,29 @@ async function main() {
         const c = Number(metadata.clickTs)
         if (Number.isFinite(c) && c > 0) connectTiming.clickTs = c
       }
-      // Working directory for this connection (resume-mismatch fix, #112).
-      //
-      // The client's workingDirectory is only a HINT. When a session is pre-
-      // selected, the agent is AUTHORITATIVE about where that session lives:
-      // resolve its real project dir (the only dir whose slug holds the
-      // session's JSONL) and boot there, so `--resume <id>` finds it instead of
-      // coming up in /workspace root — or silently as a different session —
-      // when the hint is stale or empty (e.g. a switch rewrote the URL without
-      // a cwd). resolveCwdForSession returns null only when the JSONL exists
-      // nowhere yet (fresh sprite / brand-new project), in which case the hint
-      // is honoured and created so the SDK spawn still has a valid cwd.
-      const wdHint = (metadata.workingDirectory && typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
+      // Working directory for this connection (resume-mismatch fix, #112). The
+      // client's workingDirectory is only a HINT; for a pre-selected session the
+      // agent is AUTHORITATIVE about where that session lives, so `--resume`
+      // finds its JSONL instead of coming up in the workspace root — or as a
+      // different session — on a stale or empty hint. null = the JSONL is
+      // nowhere yet (fresh sprite / new project), so the hint stands.
+      const wdHint = (typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
         ? metadata.workingDirectory
         : null
       let resolvedConnectCwd: string | null = null
       if (preSelectedSessionId) {
         try { resolvedConnectCwd = await resolveCwdForSession(preSelectedSessionId, wdHint) }
-        catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e); resolvedConnectCwd = null }
+        catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e) }
       }
-      const connectWd = pickConnectWorkingDir({ preSelectedSessionId, resolved: resolvedConnectCwd, hint: wdHint, defaultDir: defaultWorkingDir })
-      // Recursive mkdirSync is a no-op when the dir already exists; only the
-      // hint path (new project / fresh sprite) needs creating — the resolved
-      // dir exists by construction, the default is the agent's own boot dir.
-      if (connectWd.createIfMissing && !existsSync(connectWd.dir)) {
-        mkdirSync(connectWd.dir, { recursive: true })
-        console.log(`📁 Created project directory: ${connectWd.dir}`)
+      workingDir = resolvedConnectCwd || wdHint || defaultWorkingDir
+      // Only the HINT is ever created: a resolved cwd can come from an imported
+      // session's JSONL and name another machine's path, and creating that tree
+      // would boot the agent in an empty dir (scanSlugCwd won't either).
+      if (workingDir === wdHint && !existsSync(workingDir)) {
+        mkdirSync(workingDir, { recursive: true })
+        console.log(`📁 Created project directory: ${workingDir}`)
       }
-      workingDir = connectWd.dir
-      console.log(`📂 Working directory (${connectWd.source}): ${workingDir}`)
+      console.log(`📂 Working directory: ${workingDir}`)
     } catch (err) {
       console.log('⚠️ Could not parse participant metadata, using config voiceMode:', voiceMode)
     }
@@ -5197,33 +5215,11 @@ async function main() {
     // BEFORE session creation so the OpenRouter redirect env vars (tier 3) are
     // set before the first query() spawn inherits process.env. No-op for
     // tier-1 (real Claude login) and tier-2 (user's own ANTHROPIC_API_KEY).
-    // #87: it also RETURNS the provider it selected (claude / zai / openrouter /
-    // anthropic / none) — the single source of truth, since the tier is known at
-    // decision time. Drives agent_ready.provider so the model badge names the
-    // real model instead of the old hardcoded 'claude'.
-    const activeProvider: ActiveProvider = applyAuthFallback()
+    // #87: record WHICH tier it selected — that drives agent_ready.provider and
+    // /health. The key self-test for it fires after session start.
+    const activeProvider = applyAuthFallback()
+    agentActiveProvider = activeProvider === 'none' ? null : activeProvider
     console.log(`🧭 Active model provider: ${activeProvider}`)
-
-    // #87: HOUSE-tier key self-test. Presence of a key ≠ validity (the test
-    // account's z.ai key failed and its OpenRouter key had expired, yet the
-    // session showed "Listening" and never replied — the #70 symptom). Fire ONE
-    // tiny real request, fire-and-forget, AFTER the session starts below, so it
-    // adds ZERO latency to the connect path. Scoped to the house fallback tiers
-    // (zai / openrouter) — a user's OWN Anthropic key is their concern and the
-    // SDK surfaces its failures directly; we never ping it per connect. The
-    // result rides GET /health; a definitive failure surfaces "No working model"
-    // instead of a silent non-reply.
-    agentKeyHealth = null
-    if (activeProvider === 'zai' || activeProvider === 'openrouter') {
-      void probeActiveProviderKey(activeProvider)
-        .then((entry) => {
-          if (!entry) return
-          agentKeyHealth = [entry]
-          if (entry.status === 'ok') console.log(`✅ [key-health] ${entry.provider} self-test: ok`)
-          else console.warn(`⚠️ [key-health] ${entry.provider} self-test: ${entry.status}`)
-        })
-        .catch(() => { /* probe is best-effort — never breaks the connect */ })
-    }
 
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession
@@ -5297,6 +5293,9 @@ async function main() {
     }
     currentSession = session
     currentAgent = agent  // Store for updateChatCtx() context injection
+
+    // #87: the session is live — NOW run the house-tier key self-test.
+    startKeyHealthProbe()
 
     // CLICK-TIME OVERLAP (default-ON; OSBORN_CONNECT_OVERLAP=off): for a resumed
     // session, kick the JSONL replay NOW (fire-and-forget) so it overlaps the
@@ -5877,10 +5876,11 @@ async function main() {
           type: 'agent_ready',
           // #87: the REAL active provider (claude / zai / openrouter / anthropic),
           // not a hardcoded 'claude' — so the model badge is honest on a fallback
-          // session. 'none' (no model configured at all) is emitted as null so the
-          // badge stays neutral instead of rendering a literal "none" pill; that
-          // dead-end is surfaced by the Claude sign-in flow, not the badge.
-          provider: activeProvider === 'none' ? null : activeProvider,
+          // session. Null when no model is configured at all, so the badge stays
+          // neutral instead of rendering a literal "none" pill; that dead-end is
+          // surfaced by the Claude sign-in flow. /health re-serves this live, which
+          // is what keeps it true after a sign-in (agent_ready fires only once).
+          provider: agentActiveProvider,
           voiceMode: sessionVoiceMode,
           hasRecentSession,
           recentSessionId,
@@ -6180,7 +6180,16 @@ async function main() {
               // Only when a fallback redirect was actually active: live persistent
               // sessions restart BEFORE their next turn (deferred — a streaming
               // turn finishes normally), resuming the same sessionId on Claude.
-              if (fallbackCleared) requestAuthRestart()
+              if (!fallbackCleared) return
+              // Publish the new tier and drop the dead one's verdict BEFORE the
+              // respawn, or /health keeps serving {provider:'zai', status:'expired'}
+              // and the UI claims "The session can't answer" while Claude answers
+              // fine. fallbackCleared is only reachable once Claude auth really
+              // exists (every other outcome of the flow rejects), including the
+              // CLI/Keychain case that isClaudeAuthenticated() cannot see.
+              agentActiveProvider = 'claude'
+              startKeyHealthProbe()
+              requestAuthRestart()
             })
           }
         }

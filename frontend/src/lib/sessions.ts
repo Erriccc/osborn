@@ -70,14 +70,23 @@ export function sessionActivityTime(s: SessionListFields): string {
   return s.timestamp || ''
 }
 
-function activityMs(s: SessionListFields): number {
+/** Do two ids name the same session? A slot id may be the full sessionId OR an
+ * 8-char prefix of it, so the Rooms rows and the session-list dedupe both fold
+ * by this one rule instead of two that have to be kept in step. */
+export function sameSession(a: string, b: string): boolean {
+  if (!a || !b) return false
+  return a === b || (a.length === 8 && b.startsWith(a)) || (b.length === 8 && a.startsWith(b))
+}
+
+/** `sessionActivityTime` as a sortable epoch, 0 when unknown/unparseable. */
+export function sessionActivityMs(s: SessionListFields): number {
   const ms = new Date(sessionActivityTime(s)).getTime()
   return Number.isNaN(ms) ? 0 : ms
 }
 
 /** New array, most recently active first. Does not mutate the input. */
 export function sortSessionsByActivity<T extends SessionListFields>(sessions: T[]): T[] {
-  return [...sessions].sort((a, b) => activityMs(b) - activityMs(a))
+  return [...sessions].sort((a, b) => sessionActivityMs(b) - sessionActivityMs(a))
 }
 
 /**

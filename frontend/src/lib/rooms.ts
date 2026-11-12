@@ -8,7 +8,7 @@
 // last-activity time, the project and message count, and a single LIVE marker
 // on the session the agent is actually running.
 
-import { deriveSessionTitle, formatTime, sessionActivityTime, sortSessionsByActivity, type SessionListFields } from './sessions'
+import { deriveSessionTitle, formatTime, sameSession, sessionActivityTime, sortSessionsByActivity, type SessionListFields } from './sessions'
 
 export type RoomStatus = 'live' | 'background' | 'idle'
 
@@ -45,8 +45,6 @@ export interface RoomRow {
   messageCount?: number
   /** 8-char id hint (only real disambiguator for identical titles). */
   shortId: string
-  /** Sibling forks collapsed under this row (#107); 0/undefined when none. */
-  forkCount?: number
 }
 
 export interface BuildRoomRowsOptions {
@@ -60,17 +58,9 @@ export interface BuildRoomRowsOptions {
   maxIdle?: number
   /** Session a deferred switch is waiting to open (session_switch_pending). */
   pendingId?: string | null
-  /** sessionId → collapsed fork count, from prepareSessions (#107). */
-  forkCountById?: Map<string, number>
 }
 
 const short = (id: string) => (id ? id.substring(0, 8) : '')
-
-/** A slot id may be the full sessionId OR an 8-char prefix. */
-function sameSession(a: string, b: string): boolean {
-  if (!a || !b) return false
-  return a === b || (a.length === 8 && b.startsWith(a)) || (b.length === 8 && a.startsWith(b))
-}
 
 function projectName(cwd: string | undefined): string | undefined {
   if (!cwd) return undefined
@@ -83,7 +73,6 @@ function sessionRow(
   status: RoomStatus,
   now: number,
   id = s.sessionId,
-  forks?: Map<string, number>,
 ): RoomRow {
   const timeIso = sessionActivityTime(s)
   const valid = timeIso && !Number.isNaN(new Date(timeIso).getTime())
@@ -99,7 +88,6 @@ function sessionRow(
     cwd: s.cwd,
     messageCount: typeof s.messageCount === 'number' ? s.messageCount : undefined,
     shortId: short(s.sessionId),
-    forkCount: forks?.get(s.sessionId) || undefined,
   }
 }
 
@@ -116,7 +104,6 @@ export function buildRoomRows(
   const now = opts.now ?? Date.now()
   const slots = opts.slots ?? []
   const maxIdle = opts.maxIdle ?? 12
-  const forks = opts.forkCountById
   const sorted = sortSessionsByActivity(sessions.filter((s) => s && s.sessionId))
   const rows: RoomRow[] = []
   const taken: string[] = []
@@ -126,7 +113,7 @@ export function buildRoomRows(
   if (liveId) {
     const match = sorted.find((s) => sameSession(s.sessionId, liveId))
     const row = match
-      ? sessionRow(match, 'live', now, liveId, forks)
+      ? sessionRow(match, 'live', now, liveId)
       : {
           id: liveId,
           title: opts.liveFallbackTitle ? deriveSessionTitle(opts.liveFallbackTitle) : 'Current session',
@@ -147,7 +134,7 @@ export function buildRoomRows(
     const match = sorted.find((s) => sameSession(s.sessionId, slot.id))
     const status: RoomStatus = slot.status === 'error' ? 'idle' : 'background'
     const row: RoomRow = match
-      ? { ...sessionRow(match, status, now, slot.id, forks), cwd: match.cwd ?? slot.workingDir, project: projectName(match.cwd ?? slot.workingDir) }
+      ? { ...sessionRow(match, status, now, slot.id), cwd: match.cwd ?? slot.workingDir, project: projectName(match.cwd ?? slot.workingDir) }
       : {
           id: slot.id,
           title: `Background session ${short(slot.id)}`,
@@ -169,7 +156,7 @@ export function buildRoomRows(
   for (const s of sorted) {
     if (idle >= maxIdle) break
     if (isTaken(s.sessionId)) continue
-    rows.push(sessionRow(s, 'idle', now, s.sessionId, forks))
+    rows.push(sessionRow(s, 'idle', now, s.sessionId))
     taken.push(s.sessionId)
     idle++
   }
@@ -194,14 +181,10 @@ export function buildRoomRows(
 const WORKSPACE_ROOT = 'workspace'
 
 export interface RoomColor {
-  /** 0–359 hue the label hashes to (stable across renders and reloads). */
-  hue: number
   /** Avatar fill. */
   bg: string
   /** Avatar foreground (the initial). */
   fg: string
-  /** A lighter same-hue ring, for optional emphasis. */
-  ring: string
 }
 
 type IdentityFields = { project?: string; title?: string }
@@ -251,17 +234,14 @@ export function roomColor(seed: string): RoomColor {
   }
   const hue = (h >>> 0) % 360
   return {
-    hue,
     bg: `hsl(${hue} 52% 38%)`,
     fg: `hsl(${hue} 85% 92%)`,
-    ring: `hsl(${hue} 60% 55%)`,
   }
 }
 
-/** One call for the UI: a row's label, avatar initial and colour together. */
-export function roomAvatar(row: IdentityFields): { label: string; initial: string; color: RoomColor } {
-  const label = roomIdentityLabel(row)
-  return { label, initial: roomInitial(row), color: roomColor(label) }
+/** One call for the UI: a row's avatar initial and colour together. */
+export function roomAvatar(row: IdentityFields): { initial: string; color: RoomColor } {
+  return { initial: roomInitial(row), color: roomColor(roomIdentityLabel(row)) }
 }
 
 /**

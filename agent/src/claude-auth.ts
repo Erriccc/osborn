@@ -395,6 +395,75 @@ export function applyAuthFallback(): ActiveProvider {
  */
 export type ActiveProvider = 'claude' | 'anthropic' | 'zai' | 'openrouter' | 'none'
 
+/** One fallback key's self-test result, as served on GET /health. */
+export interface KeyHealthEntry {
+  provider: string
+  status: 'ok' | 'failed' | 'expired'
+}
+
+/**
+ * A /v1/messages probe's HTTP status → key-health verdict, or null when the
+ * outcome is ambiguous: only a DEFINITIVE credential/billing failure earns a
+ * negative verdict, because a transient blip must never fabricate "No working
+ * model". 403 is deliberately ambiguous — a WAF/edge block or gateway throttle in
+ * front of api.z.ai or openrouter.ai answers 403 for a perfectly good key.
+ */
+export function classifyProbeStatus(httpStatus: number): 'ok' | 'failed' | 'expired' | null {
+  if (httpStatus >= 200 && httpStatus < 300) return 'ok'
+  if (httpStatus === 429) return 'ok'
+  if (httpStatus === 401) return 'expired'
+  if (httpStatus === 402) return 'failed'
+  return null
+}
+
+/**
+ * Fire ONE minimal request against the ACTIVE provider endpoint to confirm the
+ * configured key can really answer (#87, gap 5) — applyAuthFallback() picks a tier
+ * on key PRESENCE, which is not validity. Reads the env that function just set, so
+ * it tests exactly what query() will use; every fallback tier speaks native
+ * Anthropic Messages, so one request shape covers them. Returns null when there
+ * was nothing to test or the outcome was ambiguous — never a fabricated failure.
+ */
+export async function probeActiveProviderKey(
+  provider: string,
+  env: NodeJS.ProcessEnv = process.env,
+  timeoutMs = 8000,
+): Promise<KeyHealthEntry | null> {
+  const base = (cleanEnvKey(env.ANTHROPIC_BASE_URL) || 'https://api.anthropic.com').replace(/\/$/, '')
+  const authToken = cleanEnvKey(env.ANTHROPIC_AUTH_TOKEN)
+  const apiKey = cleanEnvKey(env.ANTHROPIC_API_KEY)
+  // Nothing to test — no credential configured for the active endpoint.
+  if (!authToken && !apiKey) return null
+
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    'anthropic-version': '2023-06-01',
+  }
+  // Fallback redirects (z.ai / OpenRouter) authenticate with a bearer AUTH_TOKEN;
+  // a user's own Anthropic key uses x-api-key. applyAuthFallback sets exactly one.
+  if (authToken) headers['authorization'] = `Bearer ${authToken}`
+  else headers['x-api-key'] = apiKey
+
+  const body = JSON.stringify({
+    model: cleanEnvKey(env.ANTHROPIC_MODEL),
+    max_tokens: 1,
+    messages: [{ role: 'user', content: 'hi' }],
+  })
+  try {
+    const r = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers,
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const verdict = classifyProbeStatus(r.status)
+    return verdict ? { provider, status: verdict } : null
+  } catch {
+    // Network error / timeout — ambiguous, never a fabricated verdict.
+    return null
+  }
+}
+
 /**
  * Clear the fallback redirect (z.ai house pass or OpenRouter) — but ONLY if
  * applyAuthFallback() set it. Called from the auth onComplete path so a user who later finishes real

@@ -29,8 +29,8 @@ any size are welcome, from a typo fix to a new voice mode.
 
 ## Local setup
 
-See **[QUICKSTART.md](QUICKSTART.md)** for the full agent + frontend setup (LiveKit,
-Anthropic/Google keys) — both the zero-setup and run-it-locally paths. The fastest
+See **Local Development** in the [README](README.md#option-2-local-development) for
+the full agent + frontend setup (LiveKit, Anthropic/Google keys). The fastest
 way to *try* the product without any setup is to just
 [talk to it live](https://www.voice-native.com).
 

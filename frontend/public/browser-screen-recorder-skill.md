@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 25
+Version: 27
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -185,6 +185,41 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
+## What's new in v27
+- **No more engine zombies or stuck locks.** A crash exits (on Fly the
+  machine restarts on the next request) instead of answering as a half-dead engine; a
+  brain call that hangs past `OSBORN_BRAIN_TIMEOUT_MS` (120s) fails the action
+  and frees the lock; `/tab {"op":"list"}` no longer waits behind an action.
+- **A journey recovered after a restart keeps its steps** (so `/journey end`
+  can still save them) and **no longer keeps its mission lock**, so a crash or
+  redeploy never locks other drivers out.
+- Temporary audio files from `/clip?audio=1` and `/audio` are deleted, so a
+  long run no longer fills the disk.
+- **Hearing no longer slows down over a run, and Soniox stops rejecting it.**
+  `/say` and `/hear` now send speech-to-text only the current turn (a short
+  16 kHz wav), not the whole raw recording, so a reply takes seconds even
+  late in a long run.
+
+## What's new in v26
+- **Speech-to-text health is visible.** `/status.stt` lists each configured
+  transcription provider with `ok` and the HTTP status of a live key check (at
+  boot and on `POST /brain`). When transcription fails, the `/say` warning now
+  names every provider that failed and why, not just the last one.
+- **Drivers no longer wait on each other.** Every tab is recorded on its own,
+  so the action lock is held only for the input itself (focus + the action, or
+  focus + speaking). Listening, clip cutting, transcription and audio mixing
+  run after it is released. Measured with two drivers: while one listened for
+  15s, the other's /eval returned in ~0.03s and its /act in ~1s; each clip
+  showed only its own tab. Recording starts on a tab's first action and keeps
+  its last 60s. On a display-mode engine the live view still shows the whole
+  window, but task clips show the page content of the acting tab only (no tab
+  strip or URL bar): the right tab matters more than the browser chrome.
+- **Spoken-turn clips are reviewable by a person.** Players autoplay video
+  muted, so the clip shows its sound: a waveform strip along the bottom, a
+  "TESTER SAID" caption while the question plays, and the transcript of the
+  reply (or "no speech transcribed") afterwards. Audio is stereo and
+  loudness-normalised. Unmute to hear both sides.
+
 ## What's new in v25
 - **Clips play in true time.** Each frame is held for as long as it was really
   on screen, so one second of clip is one second of wall clock (a 30s window
@@ -207,7 +242,6 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
   instruction is judged on scroll position alone, and when the brain's scroll
   moves nothing the engine retries it as a mouse-wheel gesture
   (`effect.fallback: "mouse-wheel"`).
-
 ## What's new in v24
 - **`ok:true` is no longer the whole story.** Every `/act` returns `effect`
   (`changed`, `noop`, URL/scroll before and after, title), `result.did` (what

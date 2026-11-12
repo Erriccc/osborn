@@ -18,13 +18,12 @@ type EngineState = {
   configured: boolean
   state: string | null
   machineId: string | null
-  // The engine host the proxy targets (e.g. osborn-voice-e2e-n.fly.dev). Named in
-  // the "engine unreachable — <host>" state so a down/unresolving host is legible
-  // instead of a silent, endless "Waking…" (#62/#49).
+  // The HOSTNAME the proxy targets (e.g. osborn-voice-e2e-n.fly.dev — not a Fly
+  // app name), so an engine failure can name the host it hit (#62/#49).
   host?: string | null
   // Set by the server when the Fly Machines API itself couldn't be reached, so
-  // `state` is null because we failed to read it — surfaced as an explicit
-  // "engine unreachable" badge instead of a bare "unknown" (#81).
+  // `state` is null because we failed to read it — surfaced as an explicit amber
+  // "state unreadable" badge instead of a bare "unknown" (#81).
   unreachable?: boolean
   // Server-side only reports whether OSBORN_ENGINE_TOKEN is set — never the value.
   // false ⇒ every drive/output action will 401; the live stream still works.
@@ -77,8 +76,8 @@ export function BrowserPanel() {
   // or mismatched server-side) — drives the same banner as engineTokenConfigured.
   const [tokenError, setTokenError] = useState(false)
   // #138: the proxy answers 401 "Not authenticated" to a signed-out visitor.
-  // That is NOT an unreachable engine — say "sign in" and stop polling, instead
-  // of a red "engine unreachable" badge and an endless "Waking…" spinner.
+  // That is NOT an engine problem — say "sign in" and stop polling, instead of a
+  // state badge and an endless "Waking…" spinner.
   const [signedOut, setSignedOut] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamKickRef = useRef(0)
@@ -91,7 +90,9 @@ export function BrowserPanel() {
     try { r = await fetch(api('engine-state'), { cache: 'no-store' }) } catch { /* network down → unreachable below */ }
     if (r?.status === 401 && /Not authenticated/.test(await r.clone().text().catch(() => ''))) { setSignedOut(true); return }
     const s = r?.ok ? ((await r.json().catch(() => null)) as EngineState | null) : null
-    setEngine(s ?? { configured: true, state: null, machineId: null, unreachable: true })
+    // When the PROXY fetch itself threw there is no reply to read the host from,
+    // so keep the last host the server named rather than reporting none (#62/#49).
+    setEngine(prev => s ?? { configured: true, state: null, machineId: null, host: prev?.host ?? null, unreachable: true })
   }, [])
 
   useEffect(() => {
@@ -116,6 +117,10 @@ export function BrowserPanel() {
       let r: Response | null = null
       try { r = await fetch(api('status'), { cache: 'no-store' }) } catch { return }
       if (!r.ok) {
+        // Drop the last status: the badge reads a held-over status object as a live
+        // engine, so one that idle-stopped mid-watch stayed green "live". A thrown
+        // fetch above never reached our proxy — hold last-known there.
+        setStatus(null)
         if (r.status === 401) {
           const t = await r.text().catch(() => '')
           if (/Not authenticated/.test(t)) { setSignedOut(true); setWatching(false) }
@@ -124,7 +129,7 @@ export function BrowserPanel() {
         return
       }
       const s = (await r.json().catch(() => null)) as Status | null
-      if (s) { setStatus(s); setTokenError(false) }
+      setStatus(s); if (s) setTokenError(false)
     }
     tick()
     pollRef.current = setInterval(tick, 3000)
@@ -273,18 +278,6 @@ export function BrowserPanel() {
         </div>
       )}
 
-      {/* Engine-unreachable notice (#62/#49) — the engine's OWN control API didn't
-          answer (host down or no longer resolves). Distinct from the signed-out
-          "sign in" card above: this is a reachability failure, so name the failing
-          host instead of a silent, endless "Waking…"/"Connecting…". */}
-      {engine?.unreachable && (
-        <div className="rounded-lg border border-red-800/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-200">
-          <span className="font-semibold">Engine unreachable{engine.host ? ` — ${engine.host}` : ''}.</span>{' '}
-          The browser engine isn’t answering — its host may be down or no longer resolve.
-          Check the engine machine (Fly app <code className="rounded bg-black/40 px-1 font-mono text-red-100">{engine.host || 'unknown'}</code>) is running, then press {asleep ? '“Wake & watch”' : '“Watch”'} again.
-        </div>
-      )}
-
       {/* Agent-unreachable notice (#81) — the engine is up and drivable, but the
           auto-joined chat agent can't be reached, so the streamed /chat tab would
           sit on "Connecting…". Say so explicitly instead of a silent "unknown". */}
@@ -312,10 +305,9 @@ export function BrowserPanel() {
             />
             {streamBroken && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-sm text-neutral-300">
-                {/* #62/#49: only claim "Waking…" while the engine could actually be
-                    booting. When it's known-unreachable the red banner above already
-                    names the host — don't contradict it with an endless "Waking…". */}
-                {!engine?.unreachable && <div>Waking the browser engine… (first pixels take ~40s)</div>}
+                {/* `unreachable` only means the Fly state couldn't be READ, so it is
+                    no reason to blank this out — that left a bare Retry button (#62/#49). */}
+                <div>Waking the browser engine… (first pixels take ~40s)</div>
                 <button
                   onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(false); setTimeout(() => setWatching(true), 50) }}
                   className="rounded-lg border border-neutral-600 px-3 py-1.5 hover:bg-neutral-800"
@@ -426,27 +418,26 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: 'w
 function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreachable }: { engine: EngineState | null; watching: boolean; status: Status | null; tokenMisconfigured?: boolean; agentUnreachable?: string | null }) {
   let label = 'unknown'
   let cls = 'bg-neutral-700 text-neutral-200'
-  // A live /status response is direct, authoritative proof the engine is
-  // reachable — even if the no-wake Fly machine-state probe couldn't read
-  // awake/asleep. Treat it as "up" so a management-API blip (wrong app name /
-  // token scope) never shows red "engine unreachable" over a healthy engine (#115).
+  // A live /status response is direct proof the engine is up, even when the
+  // no-wake Fly read couldn't tell us awake/asleep (wrong app name / token
+  // scope) — so a healthy engine reads green, not unreadable (#115).
   const up = engine?.state === 'started' || (watching && !!status)
   // Agent-unreachable wins while watching: the engine is up (we have status) but
   // the chat agent it should join isn't answering (#81).
   if (watching && agentUnreachable) {
     label = 'agent unreachable'; cls = 'bg-amber-600/80 text-black'
+  } else if (watching && tokenMisconfigured) {
+    // Without the engine token the status poll 401s, so `status` never arrives —
+    // don't sit on a misleading "connecting", whatever the Fly state says (#80).
+    label = 'no token'; cls = 'bg-amber-600/80 text-black'
   } else if (up) {
-    // Without the engine token the status poll 401s, so `status` never
-    // arrives — don't sit on a misleading "connecting" (#80).
-    if (watching && tokenMisconfigured) { label = 'no token'; cls = 'bg-amber-600/80 text-black' }
-    else { label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white' }
+    label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white'
   } else if (engine && engine.state) {
     // State is readable but not 'started' → the machine is asleep/stopping.
     label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300'
   } else if (engine && engine.unreachable) {
-    // The engine's OWN control API didn't answer (not merely a management-API
-    // read miss) — explicit genuine-down, not "unknown" (#81/#115).
-    label = 'engine unreachable'; cls = 'bg-red-700/80 text-white'
+    // Our own proxy can also fail to answer; either way it is a read failure (#81/#115).
+    label = 'state unreadable'; cls = 'bg-amber-600/80 text-black'
   } else if (engine && !engine.configured) {
     label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'
   } else if (!engine) {

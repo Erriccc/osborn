@@ -837,7 +837,7 @@ export interface ClaudeSessionEntry {
  * The primary source of cwd is `extractCwd()` which reads the actual cwd from
  * the JSONL file. This function is only reached when that fails.
  */
-function slugToPath(slug: string): string {
+export function slugToPath(slug: string): string {
   // Naive reverse: leading `-` → `/`, `--` → `/.`, remaining `-` → `/`.
   // The `--` → `/.` pass handles dot-prefixed directories like `.claude`.
   const guess = slug
@@ -866,7 +866,7 @@ const UUID_JSONL_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
  * `assistant` / `system` entry in a Claude JSONL session carries `cwd`, so the
  * scan finishes in the first few KB of any normal session).
  */
-async function extractCwd(filePath: string): Promise<string> {
+export async function extractCwd(filePath: string): Promise<string> {
   return new Promise((resolve) => {
     const fileStream = createReadStream(filePath)
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity })

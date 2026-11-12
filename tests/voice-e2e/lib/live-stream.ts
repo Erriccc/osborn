@@ -39,7 +39,9 @@ export type LiveStream = {
   // REAL TIME (each frame is held for as long as it was actually on screen),
   // and the returned startMs/endMs are the wall-clock span it covers — what an
   // audio track must be aligned against.
-  clipRange: (outPath: string, fromMs: number, toMs?: number) => Promise<{ path: string; startMs: number; endMs: number } | null>
+  clipRange: (outPath: string, fromMs: number, toMs?: number, page?: Page) => Promise<{ path: string; startMs: number; endMs: number } | null>
+  // Record a tab on its own; clipRange(..., page) cuts from that recording.
+  trackPage: (page: Page) => void
   // Epoch ms of the most recent screencast frame (null before the first one).
   // A growing age means the page has stopped painting — ground truth for /status.
   lastFrameAt: () => number | null
@@ -48,7 +50,7 @@ export type LiveStream = {
   viewerCount: () => number
   // Latest frame as base64 jpeg — inline keyframes in act/say responses so
   // the director can review-and-relay without downloading the clip first.
-  latestFrame: () => string | null
+  latestFrame: (page?: Page) => string | null
   // Re-bind the screencast to a different tab (the engine's active page).
   retarget: (page: Page) => Promise<void>
   // A passive-view notice (e.g. "agent unreachable: <host>") shown as a banner
@@ -99,11 +101,11 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       } catch { clients.delete(res) }
     }
   }
-  const attach = async (p: Page): Promise<CDPSession> => {
+  const attach = async (p: Page, push: (b: Buffer) => void = pushFrame): Promise<CDPSession> => {
     const s = await p.context().newCDPSession(p)
     s.on('Page.screencastFrame', async (f: any) => {
       try { await s.send('Page.screencastFrameAck', { sessionId: f.sessionId }) } catch { /* page gone */ }
-      pushFrame(Buffer.from(f.data, 'base64'))
+      push(Buffer.from(f.data, 'base64'))
     })
     await s.send('Page.startScreencast', SCREENCAST)
     return s
@@ -183,7 +185,11 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       const upstream = httpRequest({
         host: '127.0.0.1', port: Number(process.env.SESSION_ENGINE_PORT ?? 8781),
         method: req.method, path: (pathName.slice('/control'.length) || '/') + reqUrl.search, headers: fwdHeaders,
-      }, (up) => { res.writeHead(up.statusCode || 502, up.headers); up.pipe(res) })
+      }, (up) => {
+        // Hop-by-hop headers describe the upstream connection, not this one.
+        const h = { ...up.headers }; for (const k of ['connection', 'keep-alive', 'transfer-encoding']) delete h[k]
+        res.writeHead(up.statusCode || 502, h); up.pipe(res)
+      })
       upstream.on('error', () => { if (!res.headersSent) sendJson(503, { error: 'engine control API is not up yet — the engine is still booting; retry in a few seconds', code: 'engine_booting' }); else res.end() })
       res.on('close', () => upstream.destroy())
       req.pipe(upstream)
@@ -256,8 +262,36 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   // in it lined up with the clock (or with an audio track). Each frame now
   // carries its real on-screen duration, taken from its capture timestamp, and
   // the encoder resamples to a constant rate — 1s of clip is 1s of wall clock.
-  const clipRange = async (outPath: string, fromMs: number, toMs = Date.now()): Promise<{ path: string; startMs: number; endMs: number } | null> => {
-    const frames = ring.filter((f) => f.t >= fromMs && f.t <= toMs)
+  // Per-tab recordings, started on a tab's first action (background tabs keep
+  // rendering), so a clip shows only the acting tab and the engine can
+  // release its lock early. 60s each, shared heartbeat guard.
+  const TAB_MS = 60_000, TAB_FRAMES = 600
+  const tabRecs = new Map<Page, { ring: Array<{ t: number; buf: Buffer }>; last: number }>()
+  const trackPage = (p: Page) => {
+    if (tabRecs.has(p) || p.isClosed()) return
+    const rec = { ring: [] as Array<{ t: number; buf: Buffer }>, last: 0 }
+    tabRecs.set(p, rec)
+    const push = (buf: Buffer) => {
+      rec.last = Date.now(); rec.ring.push({ t: rec.last, buf })
+      while (rec.ring.length && (rec.ring[0].t < rec.last - TAB_MS || rec.ring.length > TAB_FRAMES)) rec.ring.shift()
+    }
+    attach(p, push).then((s) => {
+      let beating = false
+      const hb = setInterval(async () => {
+        if (beating || Date.now() - rec.last < 500) return
+        beating = true
+        try { push(Buffer.from((await s.send('Page.captureScreenshot', { format: 'jpeg', quality: 50 }) as any).data, 'base64')) } catch { /* navigating */ }
+        beating = false
+      }, 500)
+      p.once('close', () => { clearInterval(hb); tabRecs.delete(p) })
+    }).catch((e) => { tabRecs.delete(p); console.log(`[live-stream] tab recorder failed: ${(e as Error).message.slice(0, 80)}`) })
+  }
+
+  const clipRange = async (outPath: string, fromMs: number, toMs = Date.now(), page?: Page): Promise<{ path: string; startMs: number; endMs: number } | null> => {
+    const inRange = (r: Array<{ t: number; buf: Buffer }>) => r.filter((f) => f.t >= fromMs && f.t <= toMs)
+    const own = page ? inRange(tabRecs.get(page)?.ring ?? []) : []
+    // A recorder that only just started has too few frames: use the main ring.
+    const frames = own.length >= 2 ? own : inRange(ring)
     if (frames.length < 2) { console.log(`[live-stream] clip skipped — ${frames.length} frame(s)`); return null }
     const dir = mkdtempSync(join(tmpdir(), 'osbclip-'))
     try {
@@ -295,9 +329,10 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     url: publicUrl,
     clip,
     clipRange,
+    trackPage,
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
-    latestFrame: () => (latest ? latest.toString('base64') : null),
+    latestFrame: (p?: Page) => { const r = p ? tabRecs.get(p)?.ring : undefined; const b = r?.length ? r[r.length - 1].buf : latest; return b ? b.toString('base64') : null },
     setNotice: (text: string | null) => { notice = text },
     retarget: async (p: Page) => {
       // Display mode captures the whole window — tab focus IS the retarget.

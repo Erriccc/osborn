@@ -14,12 +14,12 @@ const ONE_SHOT_PARAMS = ['prompt', 'seed']
 /**
  * The /chat URL (path + query + hash, same origin) that pins `sessionId`, or
  * null when the URL already pins it (or the id is not a real session id).
- * `cwd`, when known, replaces `workingDirectory`. When the cwd is unknown and
- * the session is CHANGING, the old `workingDirectory` is dropped rather than
- * carried onto the new session (#112): a stale project dir for the wrong
- * session makes a reload resume in /workspace root or the wrong conversation.
- * The agent resolves the session's real cwd from its id, so no hint is safer
- * than a wrong one. For the SAME session an unknown cwd keeps the existing one.
+ * `cwd`, when known, replaces `workingDirectory`; otherwise the existing one is
+ * KEPT, even across a session change. A current agent validates the hint and
+ * resolves the session's real dir from its id (#112), so a stale one is inert —
+ * but this bundle ships independently of the agent image, and an agent that
+ * trusts the hint raw falls back to the workspace ROOT when there is none,
+ * which is #112 for everyone. A stale project dir degrades better than that.
  */
 export function chatUrlForSession(href: string, sessionId: string, cwd?: string | null): string | null {
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return null
@@ -27,13 +27,11 @@ export function chatUrlForSession(href: string, sessionId: string, cwd?: string 
   try { url = new URL(href, 'http://localhost') } catch { return null }
   const p = url.searchParams
   const sameSession = p.get('session') === sessionId
-  const dropStaleCwd = !cwd && !sameSession && p.has('workingDirectory')
   const sameCwd = !cwd || p.get('workingDirectory') === cwd
   const hasOneShot = ONE_SHOT_PARAMS.some((k) => p.has(k))
   if (sameSession && sameCwd && !hasOneShot) return null
   p.set('session', sessionId)
   if (cwd) p.set('workingDirectory', cwd)
-  else if (dropStaleCwd) p.delete('workingDirectory')
   for (const k of ONE_SHOT_PARAMS) p.delete(k)
   const qs = p.toString()
   return `${url.pathname}${qs ? `?${qs}` : ''}${url.hash}`
@@ -96,11 +94,6 @@ export function clearKeysByPrefix(storage: KeyedStorage, prefix: string): void {
     if (k && (k === prefix || k.startsWith(`${prefix}:`))) keys.push(k)
   }
   for (const k of keys) storage.removeItem(k)
-}
-
-/** Remove every live-session record (all users). Called on sign-out. */
-export function clearLiveSessionRecords(storage: KeyedStorage): void {
-  clearKeysByPrefix(storage, LIVE_SESSION_KEY)
 }
 
 /** URL to adopt on take-over, or null (first mount, same session, stale or bad record). */
