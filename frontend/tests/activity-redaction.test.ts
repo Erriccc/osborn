@@ -23,7 +23,15 @@ const ok = (c: any, m: string) => { if (!c) throw new Error(m) }
 // values prints the short ones in full, which is how this helper regressed once.
 const SAMPLES = [
   'sk-ant-' + 'A'.repeat(8), 'sk-or-' + 'B'.repeat(8), 'sk-' + 'C'.repeat(24),
-  'sbp_' + 'D'.repeat(12), 'ghp_' + 'E'.repeat(12), 'github_pat_' + 'F'.repeat(22),
+  // Prefixed keys, bare and inside an assignment — the product's own key shape.
+  // A value guard ending in a plain `\b` silently skipped every one of these,
+  // because `\b` fires before the hyphen.
+  'sk-proj-aAbB1122ccDD3344eeFFgg', 'OPENAI_API_KEY=sk-proj-aAbB1122ccDD3344eeFF',
+  'OPENAI_API_KEY=sk-svcacct-aAbB1122ccDD3344', 'SLACK_TOKEN=xoxb-1234567890-abcdefghij',
+  'GITLAB_TOKEN=glpat-aAbB1122ccDD3344', 'TOKEN=key-1234567890123456',
+  'MY_SECRET=abcd+1234567890123456', 'MY_SECRET=abcd/1234567890123456',
+  'x-api-key: abc-1234567890123456', 'DB_PASSWORD=correcthorsebatterystaple',
+  'sbp_' + 'D'.repeat(12), 'gho_16C7e42F292c6912E7710c838347Ae178B4a',
   'FlyV1 fm2_' + 'G'.repeat(22) + ',fm2_' + 'H'.repeat(22), 'fm2_' + 'I'.repeat(22), 'fo1_' + 'I'.repeat(22),
   'eyJ' + 'J'.repeat(14) + '.' + 'K'.repeat(14), 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0',
   'Bearer ' + 'L'.repeat(24), 'x-api-key: ' + 'M'.repeat(12),
@@ -37,6 +45,9 @@ const SAMPLES = [
   // Quoted NAME — JSON and `fly secrets` output. A separator that cannot cross
   // the name's closing quote leaked every one of these.
   '{"MY_TOKEN": "abcdef1234567890xyz9"}', '{"OPENAI_API_KEY": "' + 'S'.repeat(24) + '"}', '{"DB_PASSWORD": "hunter2xyz9"}',
+  // Truncated mid-string, as a drawer body routinely is: requiring a CLOSING
+  // quote to match the opening one leaked both of these.
+  'MY_TOKEN: "abcdef1234567890xyz9', 'MY_TOKEN="abcdef1234567890xyz9',
 ]
 
 t('every credential shape is masked in bare text', () => {
@@ -66,6 +77,9 @@ t('code, diffs and prose are left byte-identical', () => {
     'interface Cfg { apiKey: string; token: string }', '-  password: string', 'let token: number = 0',
     'TOKEN: string | null', 'api_key: Optional[str] = None', 'secret: boolean',
     '{ "apiKey": "string" }', '{"token": "string"}', '{"password": "required"}',
+    'const token: AccessTokenPayload = decode(raw)', 'const secret: EncryptedCredentialBundle = load()',
+    'let password: ReadonlyArray<string> = []', 'see docs/api-key: rotation.md',
+    'const apiKey = process.env.OPENAI_API_KEY',
     'TOKEN: expired, re-run the login flow', 'Authorization: required for this endpoint', 'x-api-key: header',
     'password: $DB_PASSWORD', 'Set TOKEN=$MY_VAR before running',
     'const ghp_token_name = 1', 'let ghs_installation_cache = {}', 'the risk-ant-icipation of failure',
@@ -91,6 +105,10 @@ t('both sub-agent-authored bodies in the drawer pass through the gate', () => {
   const body = src.slice(src.indexOf('function FlowResultText')).split('\n}\n')[0]
   ok(/redactSecrets\(text\)/.test(body), 'the finished result must be redacted at render')
   ok(/redactSecrets\(flow\.lastMessage \|\| flow\.task\)/.test(src), 'the live row must redact its text')
+  // The over-masking sibling of the same bug: stripping or slicing markdown
+  // rewrote a quoted patch. The result collapses by height, so it never slices.
+  ok(!/stripResultMarkdown/.test(src), 'stripResultMarkdown must stay deleted')
+  ok(!/BODY_PREVIEW_CHARS\)/.test(body), 'the result must collapse by height, never slice markdown')
 })
 
 const failed = results.filter((r) => !r[1])
