@@ -37,13 +37,9 @@ await t('cwd: a looked-up cwd that does not actually hold the session is not tru
   const r = await resolveSessionCwd(B, undefined, '/w/proj-a', deps({ lookupCwd: async () => '/w/stale' }))
   assert.equal(r, null)
 })
-// REGRESSION (connect latency): the connect path awaits this whenever the URL
-// pins a session, so it must never fan out to listAllClaudeSessions() — a full
-// cross-project metadata sweep, cold after every machine start, which is what
-// made resuming a specific session on a freshly-rolled machine take tens of
-// seconds. Two pins: a usable hint does ZERO lookups, and a miss does exactly
-// ONE (SessionCwdDeps has a single lookup slot, so there is nowhere to hang a
-// sweep behind it).
+// REGRESSION (connect latency): a usable hint must cost ZERO lookups and a full
+// miss exactly ONE, so no cross-project sweep can reappear behind this resolve
+// on the connect path. Why that matters: index.ts resolveCwdForSession.
 await t('cwd: at most ONE cheap lookup — connect never awaits a full session-list sweep', async () => {
   let calls = 0
   const counted = (ret: string | null) => deps({ lookupCwd: async () => { calls++; return ret } })
@@ -155,21 +151,30 @@ await t('index: performSessionSwitch uses the guard and replies switch_in_progre
   const d = src.slice(src.indexOf('async function requestSessionSwitch('), src.indexOf('async function performSessionSwitch('))
   assert.ok(/void requestSessionSwitch\([^)]*\)\.catch\(/.test(d), 'deferred re-request needs .catch')
 })
+// decodeSlug stands in for config.ts slugToPath: the lossy reverse, '' when the
+// decoded path does not exist. readCwd stands in for extractCwd.
+const noCwd = async () => ''
 await t('scanSlugCwd: decoded path that does not exist is not returned (no mkdir of scan paths)', async () => {
-  const fsx = { readdir: () => ['-w-projb', '-w-ghost'], exists: (p: string) => p === '/w/projb' || p === '/p/-w-projb/' + B + '.jsonl' || p === '/p/-w-ghost/' + B + '.jsonl' || p === '/p' }
+  const jsonl = (slug: string) => '/p/' + slug + '/' + B + '.jsonl'
+  const fsx = {
+    readdir: () => ['-w-projb', '-w-ghost'],
+    exists: (p: string) => p === jsonl('-w-projb') || p === jsonl('-w-ghost') || p === '/p',
+    decodeSlug: (s: string) => (s === '-w-projb' ? '/w/projb' : ''), readCwd: noCwd,
+  }
   assert.equal(await scanSlugCwd(B, '/p', fsx), '/w/projb')
-  const ghostOnly = { readdir: () => ['-w-ghost'], exists: (p: string) => p === '/p' || p === '/p/-w-ghost/' + B + '.jsonl' }
-  assert.equal(await scanSlugCwd(B, '/p', ghostOnly), null)
-  assert.equal(await scanSlugCwd(B, '/missing', { readdir: () => [], exists: () => false }), null)
+  assert.equal(await scanSlugCwd(B, '/p', { ...fsx, readdir: () => ['-w-ghost'] }), null)
+  assert.equal(await scanSlugCwd(B, '/missing', { ...fsx, readdir: () => [], exists: () => false }), null)
 })
 await t('scanSlugCwd: lossy slug (project dir whose name contains "-") falls back to the JSONL cwd', async () => {
-  // `-w-my-app` decodes to /w/my/app, which does not exist. This is the single
-  // case the full session-list sweep used to recover; one file read replaces it.
-  const base = { readdir: () => ['-w-my-app'], exists: (p: string) => p === '/p' || p === '/p/-w-my-app/' + B + '.jsonl' }
+  // `-w-my-app` decodes to /w/my/app, which does not exist, so slugToPath
+  // returns ''. This is the one case the full session-list sweep recovered.
+  const base = {
+    readdir: () => ['-w-my-app'], exists: (p: string) => p === '/p' || p === '/p/-w-my-app/' + B + '.jsonl',
+    decodeSlug: () => '', readCwd: noCwd,
+  }
   assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => '/w/my-app' }), '/w/my-app')
-  assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => '' }), null)
+  assert.equal(await scanSlugCwd(B, '/p', base), null, 'no recorded cwd → null')
   assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => { throw new Error('unreadable') } }), null)
-  assert.equal(await scanSlugCwd(B, '/p', base), null, 'no reader → no fallback')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -155,15 +155,8 @@ export function planSwitch(decision: SessionSwitchDecision, ctx: SwitchPlanConte
 export interface SessionCwdDeps {
   /** sessionExists(id, projectPath) from config.ts. */
   exists: (sessionId: string, cwd: string) => boolean
-  /**
-   * Find ONE session's project dir on disk (scanSlugCwd), or null.
-   *
-   * Deliberately a single CHEAP lookup. This resolve runs on the voice connect
-   * path, where it used to await listAllClaudeSessions() first — a full
-   * cross-project metadata sweep whose cache is cold after every machine start.
-   * A one-session scan answers the same question, so there is nowhere left to
-   * hang a sweep on the critical path.
-   */
+  /** Find ONE session's project dir (scanSlugCwd), or null. Deliberately a
+   *  single CHEAP lookup — see resolveCwdForSession in index.ts. */
   lookupCwd: (sessionId: string) => Promise<string | null | undefined>
 }
 
@@ -269,9 +262,8 @@ export function createSwitchGuard() {
  *
  * When no slug decodes to a real dir — which is exactly what happens when the
  * project dir's OWN name contains `-`, since the decode turns that into `/` —
- * `readCwd` reads the cwd recorded inside the session's JSONL. That is the one
- * case listAllClaudeSessions() used to recover, at the cost of crawling every
- * session on the machine; here it costs a single file read.
+ * `readCwd` reads the cwd recorded inside the session's JSONL. The caller still
+ * validates whatever comes back.
  */
 export async function scanSlugCwd(
   sessionId: string,
@@ -279,7 +271,10 @@ export async function scanSlugCwd(
   fsx: {
     readdir: (dir: string) => string[]
     exists: (path: string) => boolean
-    readCwd?: (filePath: string) => Promise<string | null | undefined>
+    /** slugToPath(slug) from config.ts: the lossy reverse, '' when it misses. */
+    decodeSlug: (slug: string) => string
+    /** extractCwd(filePath) from config.ts: the cwd the JSONL itself records. */
+    readCwd: (filePath: string) => Promise<string | null | undefined>
   },
 ): Promise<string | null> {
   if (!sessionId || !fsx.exists(projectsDir)) return null
@@ -290,9 +285,9 @@ export async function scanSlugCwd(
     const filePath = `${projectsDir}/${slug}/${sessionId}.jsonl`
     if (!fsx.exists(filePath)) continue
     if (!firstMatch) firstMatch = filePath
-    const recovered = slug.replace(/^-/, '/').replace(/--/g, '/.').replace(/-/g, '/')
-    if (recovered && recovered !== '/' && fsx.exists(recovered)) return recovered
+    const recovered = fsx.decodeSlug(slug)
+    if (recovered && recovered !== '/') return recovered
   }
-  if (!firstMatch || !fsx.readCwd) return null
+  if (!firstMatch) return null
   try { return (await fsx.readCwd(firstMatch)) || null } catch { return null }
 }

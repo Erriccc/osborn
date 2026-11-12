@@ -43,7 +43,7 @@ import { createGunzip } from 'node:zlib'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, slugToPath, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
 import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
@@ -3760,21 +3760,26 @@ async function main() {
   // agent_ready (preSelectedSessionId = A) doesn't reset the UI back to A.
   let stopReadyRetries: (() => void) | null = null
 
-  // The connect path awaits this for a pre-selected session, so every lookup
-  // here must be CHEAP. It used to consult listAllClaudeSessions() first: a
-  // full cross-project sweep (readdir+stat of every slug, then metadata reads
-  // of up to 1000 JSONLs) whose in-memory cache is COLD after every machine
-  // start — seconds of blocking disk work before the room comes up, which is
-  // why the agent_ready path deliberately keeps that same sweep in the
-  // background. scanSlugCwd answers the same question for ONE session: one
-  // readdir of the projects dir, an existsSync per slug, and at most one file
-  // read (readCwd) when the slug decode is lossy. It also covers strictly more
-  // than the list did, which drops sub-2-message and subagent sessions.
+  // THE one place that explains why this resolve is built the way it is.
+  //
+  // The connect path awaits it for a pre-selected session, so every lookup must
+  // be CHEAP. It used to consult listAllClaudeSessions() first: a full
+  // cross-project sweep (readdir+stat of every project slug, then a metadata
+  // pass over up to 1000 JSONLs) whose in-memory cache is empty after every
+  // machine start — blocking disk work in front of the room coming up, which is
+  // exactly why the agent_ready path keeps that same sweep in the background.
+  // scanSlugCwd answers the same question for ONE session: one readdir of the
+  // projects dir, an existsSync per slug, and at most one file read when the
+  // slug decode is lossy. Both of the list's cwd sources are preserved — the
+  // validated slug decode (slugToPath) then the JSONL's own cwd (extractCwd),
+  // the same `slugPath || cwd` precedence the list used — and it covers
+  // strictly more, since the list drops sub-2-message and subagent sessions.
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
       lookupCwd: (id) => scanSlugCwd(id, join(homedir(), '.claude', 'projects'), {
-        readdir: (d) => readdirSync(d), exists: (p) => existsSync(p), readCwd: (p) => extractCwd(p),
+        readdir: (d) => readdirSync(d), exists: (p) => existsSync(p),
+        decodeSlug: (s) => slugToPath(s), readCwd: (p) => extractCwd(p),
       }),
     })
   }
@@ -4689,11 +4694,6 @@ async function main() {
         type: 'session_resume_failed',
         requestedSessionId: data.requestedSessionId,
         actualSessionId: data.actualSessionId,
-        // The fallback session lives in the dir the agent is running in, and the
-        // frontend is about to repoint its URL at that id — without this it would
-        // pin a session with no project hint at all (the session list doesn't
-        // carry a brand-new id yet).
-        workingDirectory: workingDir,
       })
     })
 
@@ -5171,11 +5171,10 @@ async function main() {
       // session's JSONL) and boot there, so `--resume <id>` finds it instead of
       // coming up in /workspace root — or silently as a different session —
       // when the hint is stale or empty (e.g. a switch rewrote the URL without
-      // a cwd). resolveCwdForSession is cheap by construction (one readdir, at
-      // most one file read — see its comment) so this never blocks the connect;
-      // it returns null only when the JSONL exists nowhere yet (fresh sprite /
-      // brand-new project), in which case the hint is honoured and created so
-      // the SDK spawn still has a valid cwd.
+      // a cwd). The resolve is cheap by construction — see resolveCwdForSession
+      // — so it never blocks the connect; it returns null only when the JSONL
+      // exists nowhere yet (fresh sprite / brand-new project), in which case the
+      // hint is honoured and created so the SDK spawn still has a valid cwd.
       const wdHint = (typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
         ? metadata.workingDirectory
         : null
@@ -5185,10 +5184,12 @@ async function main() {
         catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e) }
       }
       workingDir = resolvedConnectCwd || wdHint || defaultWorkingDir
-      // Recursive mkdirSync is a no-op when the dir already exists; only the
-      // hint (new project / fresh sprite) can be missing — a resolved dir exists
-      // by construction and the default is the agent's own boot dir.
-      if (!existsSync(workingDir)) {
+      // Only the HINT is ever created. Recursive mkdirSync is a no-op when the
+      // dir exists, but the guard is on the hint specifically: a resolved cwd can
+      // come from the JSONL of an imported session and name a path from another
+      // machine, and creating that tree here would boot the agent in an empty
+      // directory (scanSlugCwd never creates dirs for scan-derived paths either).
+      if (workingDir === wdHint && !existsSync(workingDir)) {
         mkdirSync(workingDir, { recursive: true })
         console.log(`📁 Created project directory: ${workingDir}`)
       }

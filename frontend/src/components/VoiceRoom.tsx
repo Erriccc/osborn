@@ -2240,7 +2240,6 @@ function VoiceRoomInner({
         if (data.success) {
           console.log('🔄 Session resume set:', data.sessionId)
           setCurrentSessionId(data.sessionId)
-          if (data.sessionId && data.workingDirectory) setReportedCwd({ sessionId: data.sessionId, cwd: data.workingDirectory })
           dispatchResumeChip({ type: 'start', label: resumeChipLabel(), now: Date.now() })
         } else {
           console.log('❌ Session resume failed:', data.error)
@@ -2265,12 +2264,9 @@ function VoiceRoomInner({
         // that is actually running, so they stay: only the prior-/cached rows go.
         if (data.actualSessionId) setMessages(prev => prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache))
         addMessageRef.current?.('system', `⚠️ Couldn't restore the session you picked — it's no longer available. You're now in a different conversation, not the one you selected.`)
-        if (data.actualSessionId) {
-          setCurrentSessionId(data.actualSessionId)
-          // The fallback session is brand new, so the session list can't name its
-          // dir; the agent reports the dir it is actually running in (#112).
-          if (data.workingDirectory) setReportedCwd({ sessionId: data.actualSessionId, cwd: data.workingDirectory })
-        }
+        // No reportedCwd needed: onSessionId fires before this event, so
+        // current_session above has already recorded the fallback id's cwd.
+        if (data.actualSessionId) setCurrentSessionId(data.actualSessionId)
       } else if (data.type === 'session_switch_pending') {
         // #74: the live session is busy — the agent will switch when its current
         // step finishes. Nothing is lost; the user can Switch now or Cancel.
