@@ -91,6 +91,13 @@ const CDP_PORT = 9280
 const OUT_DIR = process.env.OSBORN_RESULTS_DIR || join(__dirname, '..', 'test-results', 'session-engine')
 const RUNS_ROOT = join(OUT_DIR, 'runs')
 const RUN_STAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+// Which build is answering (#172): the commit baked in at deploy, the skill
+// version it ships, and when this process started.
+const ENGINE_BUILD = {
+  commit: process.env.HARNESS_SHA || 'dev',
+  skillVersion: (() => { try { return readFileSync(join(__dirname, '..', 'SKILL.served.md'), 'utf8').match(/^Version: (\d+)/m)?.[1] ?? null } catch { return null } })(),
+  startedAt: new Date().toISOString(),
+}
 const RUN_DIR = join(RUNS_ROOT, RUN_STAMP)
 mkdirSync(RUN_DIR, { recursive: true })
 
@@ -341,7 +348,7 @@ async function main() {
   const brain = async (i: string) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
-    const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS ?? 120000)
+    const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) > 0 ? Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) : 120000
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await Promise.race([
@@ -885,7 +892,7 @@ async function main() {
         } catch { /* page dead */ }
         const lastFrame = live?.lastFrameAt() ?? null
         return json(res, {
-          run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
+          build: ENGINE_BUILD, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
           // #49: the in-app Browser panel (PR #51 proxy) and any watcher can see
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
