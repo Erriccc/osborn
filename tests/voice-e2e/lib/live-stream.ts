@@ -1,5 +1,5 @@
 import type { Page, CDPSession } from '@playwright/test'
-import { createServer, type Server } from 'http'
+import { createServer, request as httpRequest, type Server } from 'http'
 import { spawn } from 'child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -158,6 +158,30 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   const server: Server = createServer((req, res) => {
     const reqUrl = new URL(req.url || '/', 'http://x')
     const pathName = reqUrl.pathname
+    // CONTROL API ON THE STREAM PORT — /control/<action> forwards to the
+    // engine's control server (default :8781). Many agent sandboxes and
+    // corporate proxies only allow outbound 443, so a control API that lives
+    // solely on :8781 is unreachable for exactly the browser agents this tool
+    // is for. Same auth as the direct port (x-engine-token, checked by the
+    // engine); refused outright when no engine token is configured so an open
+    // control API is never published on the public stream port. Responses are
+    // piped, so SSE (/control/events) and media (/control/clip) work as-is.
+    if (pathName === '/control' || pathName.startsWith('/control/')) {
+      const sendJson = (code: number, body: Record<string, unknown>) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+      if (!process.env.OSBORN_ENGINE_TOKEN) return sendJson(403, { error: 'control API over the stream port is disabled — set OSBORN_ENGINE_TOKEN on the engine to enable it' })
+      const fwdHeaders: Record<string, string> = {}
+      for (const h of ['x-engine-token', 'x-driver-id', 'content-type', 'content-length', 'accept']) {
+        const v = req.headers[h]; if (typeof v === 'string') fwdHeaders[h] = v
+      }
+      const upstream = httpRequest({
+        host: '127.0.0.1', port: Number(process.env.SESSION_ENGINE_PORT ?? 8781),
+        method: req.method, path: (pathName.slice('/control'.length) || '/') + reqUrl.search, headers: fwdHeaders,
+      }, (up) => { res.writeHead(up.statusCode || 502, up.headers); up.pipe(res) })
+      upstream.on('error', () => { if (!res.headersSent) sendJson(503, { error: 'engine control API is not up yet — the engine is still booting; retry in a few seconds', code: 'engine_booting' }); else res.end() })
+      res.on('close', () => upstream.destroy())
+      req.pipe(upstream)
+      return
+    }
     if (STREAM_TOKEN && pathName !== '/ready' && reqUrl.searchParams.get('key') !== STREAM_TOKEN) {
       res.writeHead(403, { 'Content-Type': 'text/plain' })
       res.end('stream locked — append ?key=<OSBORN_STREAM_TOKEN>')

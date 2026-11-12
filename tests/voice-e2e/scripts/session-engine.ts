@@ -71,7 +71,7 @@ import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
 import { attachDevtools, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
-import { envKey } from '../lib/env'
+import { optionalEnvKey } from '../lib/env'
 import { buildJourneyState, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -137,6 +137,12 @@ const writeScenario = () => {
   } catch { /* ignore */ }
 }
 
+// LAST-RESORT SAFETY NET: one stray rejection (a model API error surfacing from
+// inside the brain library, a CDP call on a closed tab) must never take down
+// the engine every driver shares. Log it, mark it, keep serving.
+process.on('unhandledRejection', (e) => { mark(`unhandled rejection (engine kept alive): ${String((e as Error)?.message ?? e).slice(0, 160)}`) })
+process.on('uncaughtException', (e) => { mark(`uncaught exception (engine kept alive): ${String(e?.message ?? e).slice(0, 160)}`) })
+
 async function main() {
   // Which voice-native test account the engine drives. Default osborn-tester
   // (osborn-tester@voice-native.com — the email/password account, so its
@@ -173,8 +179,13 @@ async function main() {
   // DevTools ON CAMERA: OSBORN_DEVTOOLS=1 auto-opens the DevTools panel for
   // every tab — console/network visible in the stream and clips.
   if (process.env.OSBORN_DEVTOOLS) launchArgs.push('--auto-open-devtools-for-tabs')
+  // OSBORN_CHROMIUM_PATH: use an existing Chromium/Chrome binary instead of
+  // Playwright's own download — for hosts whose preinstalled browser doesn't
+  // match this package's pinned Playwright build ("Executable doesn't exist").
+  const CHROMIUM_PATH = process.env.OSBORN_CHROMIUM_PATH || null
   const browser: Browser = await chromium.launch({
-    ...(IN_CONTAINER ? { headless: !DISPLAY_MODE } : { channel: 'chrome', headless: false }),
+    ...(CHROMIUM_PATH ? { executablePath: CHROMIUM_PATH, headless: IN_CONTAINER ? !DISPLAY_MODE : false }
+      : IN_CONTAINER ? { headless: !DISPLAY_MODE } : { channel: 'chrome', headless: false }),
     args: launchArgs,
   })
   const context: BrowserContext = await browser.newContext({
@@ -238,22 +249,38 @@ async function main() {
   // of the session; now POST /brain rebuilds it over the same CDP endpoint.
   let stagehand: Stagehand | null = null
   let brainAlive = false
+  // WHY the brain is down (missing key, bad key, CDP attach failure) — carried
+  // on /status and every refused /act so a director never has to guess.
+  let brainError: string | null = null
   const initBrain = async () => {
-    const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
-    stagehand = new Stagehand({
-      env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-      model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
-    })
-    await stagehand.init()
-    brainAlive = true
+    brainAlive = false
+    try {
+      const key = optionalEnvKey('GOOGLE_API_KEY') || optionalEnvKey('GEMINI_API_KEY')
+      if (!key) throw new Error('no Gemini key — set GOOGLE_API_KEY (or GEMINI_API_KEY)')
+      const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = key
+      stagehand = new Stagehand({
+        env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
+        model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: key }, verbose: 0,
+      })
+      await stagehand.init()
+      brainAlive = true; brainError = null
+    } catch (e) {
+      brainError = ((e as Error).message || String(e)).slice(0, 200)
+      throw e
+    }
   }
-  await initBrain()
+  // A brain that can't start must NEVER take the whole engine down (it used to
+  // be a fatal boot error: no control API, no stream, nothing to diagnose
+  // with). Boot brainless: /eval /tab /shot /recover keep working, /act says
+  // why it can't, and POST /brain retries once the key/CDP problem is fixed.
+  await initBrain().catch(() => mark(`brain unavailable — ${brainError} — engine still drivable (/eval /tab /shot); POST /brain to retry`))
+  const brainDownMsg = () => `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string) => {
-    if (!stagehand || !brainAlive) throw new Error('brain dead — POST /brain to re-init')
+    if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
     try { return await actWithCache(stagehand, active, i) }
     catch (e) {
-      if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; mark('brain detached — POST /brain to re-init') }
+      if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
       throw e
     }
   }
@@ -266,6 +293,9 @@ async function main() {
   // did exactly that: no /status, no /shot, no way to see or steer the boot.
   let tCapture = Date.now()
   let roomReady = false
+  // True only after the voice-room join actually succeeded (NOT for
+  // OSBORN_ENTRY=none or the agent-unreachable neutral page).
+  let joinedRoom = false
   // AGENT REACHABILITY (#49): null while the configured agent is reachable (or
   // before a join is attempted); set to a short "agent unreachable: <host>"
   // reason when the boot chat can't be joined, so /status and the live view say
@@ -572,7 +602,13 @@ async function main() {
     if (await meetingActive()) {
       mark('shutdown WITHOUT disconnect — meeting active; drop rides the agent leave-grace')
       notify('engine_stopping_meeting_active', { reason })
-    } else {
+    } else if (joinedRoom) {
+      // ONLY when a voice room was joined, and ONLY on the room tab (tab 0).
+      // This used to run on every shutdown against whatever tab was active, so
+      // an idle-stop on a third-party site told the brain to click that site's
+      // "Leave"/"Disconnect"-looking button.
+      const roomTab = context.pages()[0]
+      if (roomTab && !roomTab.isClosed()) active = roomTab
       await bounded(brain('Click the Disconnect or Leave button to end the voice session').catch(() => null), 12000)
       await active.waitForTimeout(2000).catch(() => {})
       await bounded(fetch(`${AGENT_URL}/leave-room`, { method: 'POST' }), 5000)
@@ -620,7 +656,7 @@ async function main() {
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
           agentUrl: AGENT_URL || null, agentUnreachable,
-          brain: brainAlive ? 'ready' : 'dead', useAuth, live: live?.url,
+          brain: brainAlive ? 'ready' : 'dead', brainError: brainAlive ? null : brainError, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
           // #120: previousRun is set when THIS process adopted a journey from a
@@ -720,13 +756,23 @@ async function main() {
       }
       if (path === '/act') {
         const driver = driverId(req)
-        return withLock(async () => {
+        return await withLock(async () => {
           await focusDriverTab(driver)  // this driver acts on ITS tab, front + focused
           const owned = guardOwnership(driver)
           if (owned) return json(res, { error: owned }, 409)
+          if (typeof body.instruction !== 'string' || !body.instruction.trim()) return json(res, { ok: false, code: 'bad_request', error: '/act needs {"instruction": "<what to do>"}' }, 400)
+          if (!brainAlive) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
           const t0 = Date.now()
           await updateTabHud()
-          const r = await brain(body.instruction)
+          // A model/API failure (quota, 429, 5xx, bad key) is an ANSWER, not a
+          // crash: say what the provider said so the director can act on it.
+          let r: unknown
+          try { r = await brain(body.instruction) }
+          catch (e) {
+            const msg = ((e as Error).message || String(e)).slice(0, 300)
+            mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
+            return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, brain: brainAlive ? 'ready' : 'dead' }, brainAlive ? 502 : 503)
+          }
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
           await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
@@ -743,10 +789,11 @@ async function main() {
       }
       if (path === '/say') {
         const driver = driverId(req)
-        return withLock(async () => {
+        return await withLock(async () => {
           await focusDriverTab(driver)
           const ownedSay = guardOwnership(driver)
           if (ownedSay) return json(res, { error: ownedSay }, 409)
+          if (typeof body.text !== 'string' || !body.text.trim()) return json(res, { ok: false, code: 'bad_request', error: '/say needs {"text": "<what to speak>"}' }, 400)
           const t0 = Date.now(); await updateTabHud()
           // ERROR PARITY (#102): /say is a drive action and must surface WHY it
           // failed — like /hear and /eval do — instead of throwing into the
@@ -802,17 +849,20 @@ async function main() {
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
+        // The CALLER's tab, not whichever tab another driver fronted last.
+        const hearTab = driverActive.get(driverId(req)); const hearPage = hearTab && !hearTab.isClosed() ? hearTab : active
         const since = Date.now() - tCapture - (body.lastMs ?? 20000)
-        try { return json(res, { heard: await hearSince(active, Math.max(0, since)) }) }
+        try { return json(res, { heard: await hearSince(hearPage, Math.max(0, since)) }) }
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
-      if (path === '/shot') { const driver = driverId(req); return withLock(async () => { await focusDriverTab(driver); const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64'), driver }) }) }
+      if (path === '/shot') { const driver = driverId(req); return await withLock(async () => { await focusDriverTab(driver); const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64'), driver }) }) }
       if (path === '/eval') {
         const driver = driverId(req)
-        return withLock(async () => {
+        return await withLock(async () => {
         await focusDriverTab(driver)
         const owned = guardOwnership(driver)
         if (owned) return json(res, { error: owned }, 409)
+        if (typeof body.expression !== 'string' || !body.expression.trim()) return json(res, { ok: false, code: 'bad_request', error: '/eval needs {"expression": "<js>"}' }, 400)
         try {
           const value = await Promise.race([
             active.evaluate((expr: string) => { const r = (0, eval)(expr); return typeof r === 'object' ? JSON.stringify(r)?.slice(0, 4000) : String(r) }, String(body.expression)),
@@ -835,6 +885,14 @@ async function main() {
         // as an explicit override.
         const driver = driverId(req)
         if (body.owner == null) body.owner = driver
+        const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'list']
+        if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
+        if (['switch', 'close', 'claim', 'release'].includes(body.op) && !context.pages()[body.i])
+          return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${context.pages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
+        // Serialized with /act and /say: a /tab landing mid-action used to swap
+        // the shared `active` under it, so the action's screenshot, clip and
+        // task record described ANOTHER driver's tab.
+        return await withLock(async () => {
         // After ANY change of active tab the screencast is retargeted so the
         // live stream + clips show the tab work actually happens on.
         if (body.op === 'open') {
@@ -868,7 +926,11 @@ async function main() {
           active = target; touchTab(active)
           await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
         }
-        else if (body.op === 'switch') { active = await switchTab(context, body.i); driverActive.set(driver, active); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`) }
+        else if (body.op === 'switch') {
+          const so = ownerOf(context.pages()[body.i])
+          if (so && so !== body.owner) return json(res, { error: `tab ${body.i} is owned by "${so}" — you are "${body.owner}"` }, 409)
+          active = await switchTab(context, body.i); driverActive.set(driver, active); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`)
+        }
         else if (body.op === 'close') {
           const target = context.pages()[body.i]
           const o = target ? ownerOf(target) : null
@@ -893,6 +955,7 @@ async function main() {
         await updateTabHud(); saveTabState()
         notify('tab', { op: body.op, activeTab: activeTab(), tabCount: context.pages().length })
         return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
+        })
       }
       if (path === '/journey') {
         const host = (() => { try { return new URL(active.url()).hostname } catch { return 'unknown' } })()
@@ -930,17 +993,27 @@ async function main() {
       if (path === '/brain') {
         // Recover a detached Stagehand without restarting the whole engine.
         try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
-        await initBrain()
+        try { await initBrain() }
+        catch { mark(`brain re-init failed — ${brainError}`); return json(res, { ok: false, brain: 'dead', code: 'brain_unavailable', error: brainDownMsg() }, 503) }
         mark('brain re-initialized')
         return json(res, { ok: true, brain: 'ready' })
       }
       if (path === '/recover') {
-        await active.reload({ timeout: 45000 }).catch(() => {})
-        await active.waitForTimeout(4000)
-        const shot = join(RUN_DIR, `recover-${Date.now()}.jpg`)
-        await active.screenshot({ path: shot, type: 'jpeg', quality: 60 }).catch(() => {})
-        mark('recovered (page reloaded)')
-        return json(res, { ok: true, artifact: shot, brain: brainAlive ? 'ready' : 'dead' })
+        // Under the action lock, on the CALLER's tab: it used to reload the
+        // global active tab — i.e. whatever another driver fronted last, even
+        // mid-/act — so one driver's recover could wipe another's page.
+        const driver = driverId(req)
+        return await withLock(async () => {
+          await focusDriverTab(driver)
+          const owned = guardOwnership(driver)
+          if (owned) return json(res, { error: owned }, 409)
+          await active.reload({ timeout: 45000 }).catch(() => {})
+          await active.waitForTimeout(4000)
+          const shot = join(RUN_DIR, `recover-${Date.now()}.jpg`)
+          await active.screenshot({ path: shot, type: 'jpeg', quality: 60 }).catch(() => {})
+          mark(`recovered[${driver}] (page reloaded)`)
+          return json(res, { ok: true, artifact: shot, brain: brainAlive ? 'ready' : 'dead', driver, activeTab: activeTab() })
+        })
       }
       if (path === '/end') {
         json(res, { ok: true, msg: 'shutting down' })
@@ -1001,7 +1074,7 @@ async function main() {
         const { captureStartedAt } = await enterFreshRoom(active, brain, useAuth ? chatUrl : url, { earsOn: true, agentUrl: AGENT_URL })
         await ensureSessionLive(active, brain, chatUrl, { agentUrl: AGENT_URL })
         tCapture = captureStartedAt ?? Date.now()
-        roomReady = true
+        roomReady = true; joinedRoom = true
         live?.setNotice(null)
         mark('in room — awaiting direction')
         notify('room_ready', {})
