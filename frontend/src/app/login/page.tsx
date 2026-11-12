@@ -9,7 +9,7 @@ import type { User } from '@supabase/supabase-js'
 import SessionBrowser from '@/components/SessionBrowser'
 import SetupWizard from '@/components/SetupWizard'
 import EmailOtpLogin from '@/components/EmailOtpLogin'
-import { clearLiveSessionRecords } from '@/lib/chat-url'
+import { clearSignOutLocalState } from '@/lib/transcript-cache'
 
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'realtime' | 'pipelined' | 'direct' | 'pipeline'
@@ -76,8 +76,8 @@ export default function Home() {
 
   const signOut = async () => {
     await supabase.auth.signOut()
-    // The /chat live-session records (take-over adoption) belong to this account.
-    try { clearLiveSessionRecords(localStorage) } catch {}
+    // The /chat live-session records + cached transcripts belong to this account.
+    try { clearSignOutLocalState(localStorage) } catch {}
     setUser(null)
     autoConnectAttempted.current = false
   }

@@ -217,7 +217,9 @@ t('S13 wiring: keyed reads/writes; every sign-out clears the records', () => {
   assert.ok(/localStorage\.getItem\(liveSessionKey\(/.test(prov))
   for (const f of ['../src/app/settings/page.tsx', '../src/app/dashboard/page.tsx', '../src/app/login/page.tsx']) {
     const src = fs.readFileSync(path.join(__dirname, f), 'utf8')
-    assert.ok(/clearLiveSessionRecords\(/.test(src), f)
+    // Sign-out wipes the live-session records via clearSignOutLocalState, which
+    // wraps clearLiveSessionRecords + clearCachedTranscripts (lib/transcript-cache).
+    assert.ok(/clearSignOutLocalState\(/.test(src), f)
   }
 })
 
