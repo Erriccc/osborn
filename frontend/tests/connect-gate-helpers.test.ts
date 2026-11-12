@@ -1,7 +1,6 @@
 // Unit tests for the #87 / #53 / #78 connect-gate helpers — the "Connecting…"
 // watchdog state machine + the fresh-account Claude-auth prompt discipline.
-// Run:  cd frontend && npx tsx src/lib/connect-gate.test.ts
-//   (or, with Node 22+ type-stripping: node --experimental-strip-types src/lib/connect-gate.test.ts)
+// Run:  cd frontend && npx tsx tests/connect-gate-helpers.test.ts
 
 import assert from 'node:assert/strict'
 import {
@@ -14,7 +13,7 @@ import {
   shouldAutoOpenAuthModal,
   CONNECT_WATCHDOG_MS,
   type ConnectWaitState,
-} from './connect-gate'
+} from '../src/lib/connect-gate'
 
 let passed = 0
 function check(name: string, fn: () => void) {

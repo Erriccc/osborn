@@ -49,7 +49,9 @@ t('client pages set their own title', () => {
   const want: Record<string, string> = {
     'dashboard/page.tsx': 'Dashboard',
     'settings/page.tsx': 'Settings',
-    'library/page.tsx': 'Library',
+    // /library's page.tsx is a thin server wrapper since the shareable
+    // /library/[id] split; the hook lives in the client view both routes render.
+    'library/library-view.tsx': 'Library',
     'login/page.tsx': 'Sign in',
     'admin/page.tsx': 'Admin',
     'browser-screen-recorder/page.tsx': 'Browser Screen Recorder',

@@ -1,9 +1,8 @@
 // Unit tests for the #87 model/provider badge helpers.
-// Run:  cd frontend && npx tsx src/lib/modelBadge.test.ts
-//   (or, with Node 22+ type-stripping: node --experimental-strip-types src/lib/modelBadge.test.ts)
+// Run:  cd frontend && npx tsx tests/model-badge.test.ts
 
 import assert from 'node:assert/strict'
-import { providerLabel, normalizeVersion, resolveModelBadge, fastBrainLabel } from './modelBadge'
+import { providerLabel, normalizeVersion, resolveModelBadge, fastBrainLabel } from '../src/lib/modelBadge'
 
 let passed = 0
 function check(name: string, fn: () => void) {

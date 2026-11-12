@@ -1,9 +1,8 @@
 // Unit tests for the Auto-review risk classifier.
-// Run:  cd frontend && npx tsx src/lib/riskTier.test.ts
-//   (or, with Node 22+ type-stripping: node --experimental-strip-types src/lib/riskTier.test.ts)
+// Run:  cd frontend && npx tsx tests/risk-tier.test.ts
 
 import assert from 'node:assert/strict'
-import { classifyRisk, canAutoApprove, isInWorkspace } from './riskTier'
+import { classifyRisk, canAutoApprove, isInWorkspace } from '../src/lib/riskTier'
 
 let passed = 0
 function check(name: string, fn: () => void) {

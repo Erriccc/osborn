@@ -1,9 +1,8 @@
 // Unit tests for the #86 Activity-log categoriser helpers.
-// Run:  cd frontend && npx tsx src/lib/activityCategory.test.ts
-//   (or, with Node 22+ type-stripping: node --experimental-strip-types src/lib/activityCategory.test.ts)
+// Run:  cd frontend && npx tsx tests/activity-category.test.ts
 
 import assert from 'node:assert/strict'
-import { categorizeTool, categoryStyle, stripResultMarkdown, type ActivityCategory } from './activityCategory'
+import { categorizeTool, categoryStyle, stripResultMarkdown, type ActivityCategory } from '../src/lib/activityCategory'
 
 let passed = 0
 function check(name: string, fn: () => void) {

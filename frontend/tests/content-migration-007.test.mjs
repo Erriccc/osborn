@@ -1,8 +1,12 @@
-// Run: PGLITE=/tmp/pgl/node_modules/@electric-sql/pglite/dist/index.js node frontend/tests/content-migration-007.test.mjs
+// Run: cd frontend && npx tsx tests/content-migration-007.test.mjs
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-const { PGlite } = await import(pathToFileURL(process.env.PGLITE || '/tmp/pgl/node_modules/@electric-sql/pglite/dist/index.js').href)
+// pglite is a frontend devDependency, so `npm ci` is enough to run this in CI.
+// PGLITE= still overrides with an explicit dist/index.js path for ad-hoc runs.
+const { PGlite } = process.env.PGLITE
+  ? await import(pathToFileURL(process.env.PGLITE).href)
+  : await import('@electric-sql/pglite')
 const here = path.dirname(fileURLToPath(import.meta.url))
 const dir = path.join(here, '../supabase/migrations')
 const m001 = fs.readFileSync(path.join(dir, '001_initial_schema.sql'), 'utf8')
