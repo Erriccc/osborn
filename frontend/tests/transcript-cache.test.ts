@@ -51,8 +51,8 @@ t('serialize drops streaming + empty, keeps compaction markers', () => {
 
 t('round-trips through storage keyed by session id', () => {
   const s = fakeStorage()
-  cacheTranscript('sessA', [msg({ id: 'u1', content: 'hi A' })], 1000, s)
-  cacheTranscript('sessB', [msg({ id: 'u1', content: 'hi B' })], 1000, s)
+  cacheTranscript('sessA', [msg({ id: 'u1', content: 'hi A' })], s)
+  cacheTranscript('sessB', [msg({ id: 'u1', content: 'hi B' })], s)
   eq(readCachedTranscript('sessA', s).map(m => m.content), ['hi A'], 'A isolated')
   eq(readCachedTranscript('sessB', s).map(m => m.content), ['hi B'], 'B isolated')
   eq(readCachedTranscript('missing', s), [], 'unknown session → empty')
@@ -60,9 +60,9 @@ t('round-trips through storage keyed by session id', () => {
 
 t('never clobbers a good cache with an empty transcript', () => {
   const s = fakeStorage()
-  cacheTranscript('sess', [msg({ id: 'u1', content: 'real' })], 1000, s)
-  cacheTranscript('sess', [], 2000, s) // e.g. the setMessages([]) during a switch
-  cacheTranscript('sess', [msg({ id: 's1', isStreaming: true })], 3000, s) // only streaming
+  cacheTranscript('sess', [msg({ id: 'u1', content: 'real' })], s)
+  cacheTranscript('sess', [], s) // e.g. the setMessages([]) during a switch
+  cacheTranscript('sess', [msg({ id: 's1', isStreaming: true })], s) // only streaming
   eq(readCachedTranscript('sess', s).map(m => m.content), ['real'], 'kept the real cache')
 })
 
@@ -71,16 +71,16 @@ t('content is capped and tail is bounded', () => {
   const many: TranscriptInput[] = []
   for (let i = 0; i < 200; i++) many.push(msg({ id: `m${i}`, content: `msg ${i}` }))
   many.push(msg({ id: 'big', content: 'x'.repeat(10000) }))
-  cacheTranscript('sess', many, 1000, s)
+  cacheTranscript('sess', many, s)
   const out = readCachedTranscript('sess', s)
   ok(out.length <= 60, `bounded to <=60, got ${out.length}`)
   ok(out[out.length - 1].content.length <= 4000, 'per-item content capped')
   eq(out[out.length - 1].id, 'big', 'keeps the tail (most recent)')
 })
 
-t('evicts least-recently-written sessions beyond the cap', () => {
+t('evicts oldest sessions beyond the cap', () => {
   const s = fakeStorage()
-  for (let i = 0; i < 12; i++) cacheTranscript(`sess${i}`, [msg({ id: 'u', content: `c${i}` })], 1000 + i, s)
+  for (let i = 0; i < 12; i++) cacheTranscript(`sess${i}`, [msg({ id: 'u', content: `c${i}` })], s)
   const keys = Array.from(s.map.keys()).filter(k => k.startsWith(`${TRANSCRIPT_CACHE_PREFIX}:`))
   ok(keys.length <= 8, `kept <=8 sessions, got ${keys.length}`)
   eq(readCachedTranscript('sess11', s).map(m => m.content), ['c11'], 'newest retained')
@@ -89,7 +89,7 @@ t('evicts least-recently-written sessions beyond the cap', () => {
 
 t('clear removes only transcript keys, not other app storage', () => {
   const s = fakeStorage()
-  cacheTranscript('sessA', [msg({ id: 'u', content: 'a' })], 1000, s)
+  cacheTranscript('sessA', [msg({ id: 'u', content: 'a' })], s)
   s.setItem('vn-chat-live-session:user1', 'keep-me')
   clearCachedTranscripts(s)
   eq(readCachedTranscript('sessA', s), [], 'transcript gone')

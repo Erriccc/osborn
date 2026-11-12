@@ -15,21 +15,21 @@
 // and it is cleared on sign-out. All reads/writes are wrapped so a blocked or
 // full localStorage degrades to "no cache" rather than throwing.
 
+import { clearKeysByPrefix, type KeyedStorage } from './chat-url'
+
 export const TRANSCRIPT_CACHE_PREFIX = 'vn-chat-transcript'
 
-// Keep the footprint small: at most the last N sessions, the last N items of
-// each, and a per-item content cap (a long paste should not blow the quota).
+// Keep the footprint small so the cache never crowds other features out of the
+// localStorage quota: at most the last N sessions, the last N items of each,
+// and a per-item content cap (a long paste should not blow the quota).
 const MAX_SESSIONS = 8
 const MAX_ITEMS = 60
 const MAX_CONTENT = 4000
 
-/** Minimal Storage surface — satisfied by window.localStorage and by test fakes. */
-export interface CacheStorage {
-  readonly length: number
-  key(i: number): string | null
+/** Read/write storage surface — window.localStorage and test fakes satisfy it. */
+export interface CacheStorage extends KeyedStorage {
   getItem(k: string): string | null
   setItem(k: string, v: string): void
-  removeItem(k: string): void
 }
 
 /** A message as cached (JSON-serializable). `compaction` is passed through
@@ -53,12 +53,6 @@ export interface TranscriptInput {
   compaction?: unknown
   isStreaming?: boolean
   fromCache?: boolean
-}
-
-interface CacheEntry {
-  /** When this entry was last written (ms) — drives LRU eviction. */
-  at: number
-  items: CachedMessage[]
 }
 
 function keyFor(sessionId: string): string {
@@ -100,23 +94,16 @@ function resolveStorage(storage?: CacheStorage): CacheStorage | null {
   return null
 }
 
-/** Evict least-recently-written entries beyond MAX_SESSIONS (keeps newest). */
-function evict(storage: CacheStorage): void {
-  const entries: Array<{ k: string; at: number }> = []
-  for (let i = 0; i < storage.length; i++) {
-    const k = storage.key(i)
-    if (!k || !k.startsWith(`${TRANSCRIPT_CACHE_PREFIX}:`)) continue
-    let at = 0
-    try {
-      const parsed = JSON.parse(storage.getItem(k) || '{}')
-      at = typeof parsed?.at === 'number' ? parsed.at : 0
-    } catch { /* unparseable — treat as oldest so it is dropped first */ }
-    entries.push({ k, at })
+/** Drop the oldest transcript keys (insertion order) beyond MAX_SESSIONS so the
+ * cache can't grow without bound and starve other features of the quota. */
+function capSessions(store: CacheStorage): void {
+  const keys: string[] = []
+  for (let i = 0; i < store.length; i++) {
+    const k = store.key(i)
+    if (k && k.startsWith(`${TRANSCRIPT_CACHE_PREFIX}:`)) keys.push(k)
   }
-  if (entries.length <= MAX_SESSIONS) return
-  entries.sort((a, b) => b.at - a.at) // newest first
-  for (const { k } of entries.slice(MAX_SESSIONS)) {
-    try { storage.removeItem(k) } catch { /* ignore */ }
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_SESSIONS))) {
+    try { store.removeItem(k) } catch { /* ignore */ }
   }
 }
 
@@ -124,7 +111,6 @@ function evict(storage: CacheStorage): void {
 export function cacheTranscript(
   sessionId: string | null | undefined,
   messages: TranscriptInput[],
-  now: number = Date.now(),
   storage?: CacheStorage,
 ): void {
   if (!sessionId) return
@@ -132,16 +118,13 @@ export function cacheTranscript(
   if (!store) return
   const items = serializeTranscript(messages)
   if (items.length === 0) return // never clobber a good cache with nothing
-  const entry: CacheEntry = { at: now, items }
   try {
-    store.setItem(keyFor(sessionId), JSON.stringify(entry))
-    evict(store)
+    store.setItem(keyFor(sessionId), JSON.stringify(items))
+    capSessions(store)
   } catch {
-    // Quota or serialization failure — try trimming once, else give up quietly.
-    try {
-      const trimmed: CacheEntry = { at: now, items: items.slice(-20) }
-      store.setItem(keyFor(sessionId), JSON.stringify(trimmed))
-    } catch { /* give up — the live replay will still hydrate */ }
+    // Quota or serialization failure — trim once, else give up quietly (the
+    // live replay still hydrates the transcript on connect).
+    try { store.setItem(keyFor(sessionId), JSON.stringify(items.slice(-20))) } catch { /* give up */ }
   }
 }
 
@@ -157,8 +140,7 @@ export function readCachedTranscript(
   try { raw = store.getItem(keyFor(sessionId)) } catch { return [] }
   if (!raw) return []
   try {
-    const parsed = JSON.parse(raw)
-    const items = parsed?.items
+    const items = JSON.parse(raw)
     if (!Array.isArray(items)) return []
     return items.filter(
       (m): m is CachedMessage =>
@@ -172,15 +154,5 @@ export function readCachedTranscript(
 /** Remove every cached transcript (all sessions). Called on sign-out. */
 export function clearCachedTranscripts(storage?: CacheStorage): void {
   const store = resolveStorage(storage)
-  if (!store) return
-  const keys: string[] = []
-  try {
-    for (let i = 0; i < store.length; i++) {
-      const k = store.key(i)
-      if (k && k.startsWith(`${TRANSCRIPT_CACHE_PREFIX}:`)) keys.push(k)
-    }
-  } catch { return }
-  for (const k of keys) {
-    try { store.removeItem(k) } catch { /* ignore */ }
-  }
+  if (store) clearKeysByPrefix(store, TRANSCRIPT_CACHE_PREFIX)
 }

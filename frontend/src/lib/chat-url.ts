@@ -85,14 +85,22 @@ export function liveSessionRecord(sessionId: string, cwd: string | null | undefi
   return JSON.stringify({ sessionId, cwd: cwd || undefined, at: now, userId: userId || undefined })
 }
 
-/** Remove every live-session record (all users). Called on sign-out. */
-export function clearLiveSessionRecords(storage: { readonly length: number; key(i: number): string | null; removeItem(k: string): void }): void {
+/** Minimal localStorage surface for the prefix-clearing sign-out helpers. */
+export type KeyedStorage = { readonly length: number; key(i: number): string | null; removeItem(k: string): void }
+
+/** Remove every stored key equal to `prefix` or beginning `${prefix}:`. */
+export function clearKeysByPrefix(storage: KeyedStorage, prefix: string): void {
   const keys: string[] = []
   for (let i = 0; i < storage.length; i++) {
     const k = storage.key(i)
-    if (k && (k === LIVE_SESSION_KEY || k.startsWith(`${LIVE_SESSION_KEY}:`))) keys.push(k)
+    if (k && (k === prefix || k.startsWith(`${prefix}:`))) keys.push(k)
   }
   for (const k of keys) storage.removeItem(k)
+}
+
+/** Remove every live-session record (all users). Called on sign-out. */
+export function clearLiveSessionRecords(storage: KeyedStorage): void {
+  clearKeysByPrefix(storage, LIVE_SESSION_KEY)
 }
 
 /** URL to adopt on take-over, or null (first mount, same session, stale or bad record). */
