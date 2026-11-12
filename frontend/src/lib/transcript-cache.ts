@@ -126,9 +126,8 @@ export function cacheTranscript(
     store.setItem(keyFor(sessionId), JSON.stringify(items))
     capSessions(store)
   } catch {
-    // Quota or serialization failure — trim once, else give up quietly (the
-    // live replay still hydrates the transcript on connect).
-    try { store.setItem(keyFor(sessionId), JSON.stringify(items.slice(-20))) } catch { /* give up */ }
+    // Quota / serialization failure — give up quietly. The item/content/session
+    // caps keep writes small, and the live replay still hydrates on connect.
   }
 }
 
