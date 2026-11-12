@@ -54,7 +54,7 @@ Candidate values (email, password, phone, address, work history, education) are 
 ### Step 0 — Check the helper, then open the browser
 Run `node ~/.claude/skills/browser-apply/fill.mjs check` first. It prints variable names (including an `extra:` line listing every other `CANDIDATE_*` key the user set — work history, education, anything else) and `cdp: reachable` or `cdp: unreachable`, never values.
 - File missing / refused: point the user at "One-time setup" step 1 and wait.
-- `cdp: unreachable`: you can still navigate and fill the non-secret fields with the MCP tools, but for every secret field (email, password, phone, address) ask the user to type it into the browser themselves.
+- `cdp: unreachable`: you can still navigate and click with the MCP tools, but every value from the secret file — email, password, phone, address, and every work-history and education field — must be typed by the user themselves. You have no copy of any of them; do not reconstruct one.
 
 Use: `mcp__playwright__browser_navigate` with the applyManually URL
 
@@ -123,8 +123,9 @@ Personal values are NOT stored in this skill. They live in a local secret file t
 
 Work history and education go through the SAME mechanism as the fields above,
 with `N` starting at 1 (`CANDIDATE_JOB_1_TITLE`, `CANDIDATE_JOB_2_TITLE`, …).
-This skill ships NO employment or education values of its own, and you must
-never supply one:
+This skill ships NO employment or education values of its own (an earlier
+version carried a literal list; it was removed because it made the skill submit
+an employer that was not the user's), and you must never supply one:
 
 - Run `fill.mjs check` and read its `extra:` line: that is exactly which
   `CANDIDATE_JOB_*` / `CANDIDATE_EDUCATION_*` keys the user actually set. It

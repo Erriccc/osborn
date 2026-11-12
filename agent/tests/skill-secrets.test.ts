@@ -118,9 +118,9 @@ await t('scanner flags an employment history in a Candidate Data block only', ()
   const doc = [
     '## Candidate Data',                       // 1
     'Jobs:',                                   // 2
-    '1. Senior Engineer at Nowhere Corp — April 2024 to Present', // 3: numbered + résumé
-    '2. Contractor, self-employed',            // 4: numbered
-    '- Degree: B.S. Psychology',               // 5: résumé
+    '1. Synth Operator at Fixture Ltd — Feb 1999 to Present', // 3: numbered + résumé
+    '2. Second Fixture Role, no dates',        // 4: numbered
+    '- Degree: M.A. Fixture Studies',          // 5: résumé
     '| Job N title | `$CANDIDATE_JOB_N_TITLE` |', // 6: the parameterised form
     '### Filling secret fields',               // 7: heading ends the block
     '1. Read the hostname of the current page', // 8: instructions, outside

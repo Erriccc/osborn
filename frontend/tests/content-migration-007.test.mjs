@@ -1,16 +1,13 @@
-// Run: cd frontend && npm i --no-save --no-package-lock @electric-sql/pglite@0.5.16
-//      cd frontend && npx tsx tests/content-migration-007.test.mjs
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+// Run: cd frontend && npx tsx tests/content-migration-007.test.mjs
 // pglite is deliberately NOT a dependency: Railway builds with `npm install`
 // (devDeps included), so declaring it would ship 26MB of wasm Postgres into
 // every production image for two test files. CI installs it --no-save right
-// before `npm test` (.github/workflows/frontend-lint.yml); locally, run the
-// install line above once. PGLITE= overrides with an explicit dist/index.js.
-const { PGlite } = process.env.PGLITE
-  ? await import(pathToFileURL(process.env.PGLITE).href)
-  : await import('@electric-sql/pglite')
+// before `npm test` (.github/workflows/frontend-lint.yml); locally, the
+// install line is in CONTRIBUTING.md.
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { PGlite } from '@electric-sql/pglite'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const dir = path.join(here, '../supabase/migrations')
 const m001 = fs.readFileSync(path.join(dir, '001_initial_schema.sql'), 'utf8')
