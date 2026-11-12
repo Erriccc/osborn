@@ -120,7 +120,9 @@ export async function checkHarnessDeploy(): Promise<void> {
     const skill = readFileSync(join(publicDir, 'browser-screen-recorder-skill.md'), 'utf8')
     const version = skill.match(/^Version: (\d+)$/m)?.[1]
     if (!version) { log('no Version: line in served skill — skipping'); return }
-    const tag = `v${version}`
+    // Own namespace: manual `fly deploy --image-label vNN` runs reuse plain vNN
+    // labels, and a clash made this check think the engine was already current.
+    const tag = `bundle-v${version}`
 
     // 2. Registry staleness check.
     if (await imageTagExists(tag, FLY_API_TOKEN, APP)) {
