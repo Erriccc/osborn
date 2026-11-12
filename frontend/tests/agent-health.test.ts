@@ -1,6 +1,5 @@
 // Unit tests for the #87 gap-3 agent-health helpers (version floor + key health).
-// Run:  cd frontend && npx tsx src/lib/agent-health.test.ts
-//   (or, with Node 22+ type-stripping: node --experimental-strip-types src/lib/agent-health.test.ts)
+// Run:  cd frontend && npx tsx tests/agent-health.test.ts
 
 import assert from 'node:assert/strict'
 import {
@@ -9,7 +8,7 @@ import {
   resolveAgentHealth,
   FALLBACK_VERSION_FLOOR,
   type KeyHealthEntry,
-} from './agent-health'
+} from '../src/lib/agent-health'
 
 let passed = 0
 function check(name: string, fn: () => void) {

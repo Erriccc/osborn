@@ -29,7 +29,7 @@ This approach catches rendering issues, unexpected fields, and errors before the
 
 ## One-time setup (user does this once per machine)
 
-Secret fields (email, password, phone, address) are filled by the `fill.mjs` helper, not by the MCP tools. The helper and the Playwright MCP must drive the SAME browser, which means both attach to one Chrome over CDP on loopback.
+Candidate values (email, password, phone, address, work history, education) are filled by the `fill.mjs` helper, not by the MCP tools. The helper and the Playwright MCP must drive the SAME browser, which means both attach to one Chrome over CDP on loopback.
 
 1. Secret file. The user creates it and types the values in their own editor (never ask for the values in chat, never write them yourself):
    ```bash
@@ -52,9 +52,9 @@ Secret fields (email, password, phone, address) are filled by the `fill.mjs` hel
 ## Step-by-Step Execution Pattern
 
 ### Step 0 — Check the helper, then open the browser
-Run `node ~/.claude/skills/browser-apply/fill.mjs check` first. It prints variable names and `cdp: reachable` or `cdp: unreachable`, never values.
+Run `node ~/.claude/skills/browser-apply/fill.mjs check` first. It prints variable names (including an `extra:` line listing every other `CANDIDATE_*` key the user set — work history, education, anything else) and `cdp: reachable` or `cdp: unreachable`, never values.
 - File missing / refused: point the user at "One-time setup" step 1 and wait.
-- `cdp: unreachable`: you can still navigate and fill the non-secret fields with the MCP tools, but for every secret field (email, password, phone, address) ask the user to type it into the browser themselves.
+- `cdp: unreachable`: you can still navigate and click with the MCP tools, but every value from the secret file — email, password, phone, address, and every work-history and education field — must be typed by the user themselves. You have no copy of any of them; do not reconstruct one.
 
 Use: `mcp__playwright__browser_navigate` with the applyManually URL
 
@@ -81,8 +81,11 @@ Fields to fill:
 - Sponsorship: No
 
 ### Step 4 — My Experience
-Snapshot → click Add for each job entry → fill title/company/dates/description → save each → screenshot.
-Then add education entries.
+Snapshot → click Add for each job entry → fill title/company/dates/description
+with the helper from `CANDIDATE_JOB_N_*` (see "Candidate Data") → save each →
+screenshot. Then add education entries from `CANDIDATE_EDUCATION_N_*`.
+Never type a job, employer, school or date you were not given by the helper; if
+one is missing, ask the user rather than filling anything.
 Ask user before clicking Next.
 
 ### Step 5 — Application Questions
@@ -113,14 +116,30 @@ Personal values are NOT stored in this skill. They live in a local secret file t
 | Phone | `$CANDIDATE_PHONE` |
 | Address line 1 | `$CANDIDATE_ADDRESS_LINE1` |
 | City / State / Zip | `$CANDIDATE_CITY` / `$CANDIDATE_STATE` / `$CANDIDATE_ZIP` |
+| Job N title / employer | `$CANDIDATE_JOB_N_TITLE` / `$CANDIDATE_JOB_N_COMPANY` |
+| Job N dates | `$CANDIDATE_JOB_N_START` / `$CANDIDATE_JOB_N_END` |
+| Job N description | `$CANDIDATE_JOB_N_DESCRIPTION` |
+| Education N | `$CANDIDATE_EDUCATION_N_SCHOOL` / `$CANDIDATE_EDUCATION_N_DEGREE` / `$CANDIDATE_EDUCATION_N_FIELD` |
 
-Jobs:
-1. Senior Engineer at Acme Corp — April 2024 to Present
-2. Full Stack Developer, Freelance — January 2016 to Present
+Work history and education go through the SAME mechanism as the fields above,
+with `N` starting at 1 (`CANDIDATE_JOB_1_TITLE`, `CANDIDATE_JOB_2_TITLE`, …).
+This skill ships NO employment or education values of its own (an earlier
+version carried a literal list; it was removed because it made the skill submit
+an employer that was not the user's), and you must never supply one:
 
-Education:
-1. A.S. Information Systems
-2. B.S. Psychology
+- Run `fill.mjs check` and read its `extra:` line: that is exactly which
+  `CANDIDATE_JOB_*` / `CANDIDATE_EDUCATION_*` keys the user actually set. It
+  prints names only, never values.
+- Fill every one of them with the helper, exactly like the other fields — never
+  by typing a value through `mcp__playwright__browser_type` / `browser_fill_form`.
+- If a job or education entry the form asks for is not in the secret file, STOP
+  and ask the user to type that entry themselves or add the key. Do NOT invent,
+  infer, or carry over an employer, title, school, degree or date from anywhere
+  — not from the user's repo, résumé file, an earlier application, or your own
+  guess. A wrong employer on a submitted application is a false statement to
+  that employer.
+- Numbers are not contiguous promises: stop at the first N with no
+  `CANDIDATE_JOB_N_TITLE`, and ask before adding more entries than the file has.
 
 ### Filling secret fields
 Use the helper `fill.mjs` next to this SKILL.md (normally `~/.claude/skills/browser-apply/fill.mjs`). It reads `~/.osborn/candidate.env` itself (regular file, owned by you, mode 600) and attaches to the loopback CDP browser from "One-time setup". It fills only on an https page whose host EXACTLY equals `--confirm-host`. Inside the page, right before each field, it checks again that the field's own frame is https on that host. The password goes only into an `<input type="password">`. It prints `about to fill NAME on HOST` before each field and `filled NAME -> selector` after, never a value.
@@ -157,9 +176,9 @@ Rules:
 | Address | `[data-automation-id="addressSection_addressLine1"]` | `CANDIDATE_ADDRESS_LINE1` (helper) |
 | City | `[data-automation-id="addressSection_city"]` | `CANDIDATE_CITY` (helper) |
 | Zip | `[data-automation-id="addressSection_postalCode"]` | `CANDIDATE_ZIP` (helper) |
-| Job title | `[data-automation-id="jobTitle"]` | Jobs list above |
-| Company | `[data-automation-id="company"]` | Jobs list above |
-| Description | `[data-automation-id="description"]` | Jobs list above |
+| Job title | `[data-automation-id="jobTitle"]` | `CANDIDATE_JOB_N_TITLE` (helper) |
+| Company | `[data-automation-id="company"]` | `CANDIDATE_JOB_N_COMPANY` (helper) |
+| Description | `[data-automation-id="description"]` | `CANDIDATE_JOB_N_DESCRIPTION` (helper) |
 | Next button | `[data-automation-id="bottom-navigation-next-btn"]` | - |
 | Create Account | `[data-automation-id="click_filter"][aria-label="Create Account"]` | - |
 

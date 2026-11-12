@@ -269,8 +269,16 @@ export async function checkReport(path, fileEnv, fetchImpl = fetch) {
   const set = EXPECTED_VARS.filter(k => fileEnv[k])
   const missing = EXPECTED_VARS.filter(k => !fileEnv[k])
   const cdp = cdpFrom(fileEnv)
+  // Anything else the user put in the file: work history, education, and any
+  // key a future form needs. Per-entry and open-ended, so deliberately not in
+  // EXPECTED_VARS (one job and no degree must not read as "missing"); listed by
+  // NAME so the model can see what it may fill and never invents an employer.
+  const extra = Object.keys(fileEnv)
+    .filter(k => k.startsWith('CANDIDATE_') && fileEnv[k] && !EXPECTED_VARS.includes(k) && !CONFIG_KEYS.includes(k))
+    .sort()
   const lines = [`ok: ${path} is a regular file owned by you, mode 600`, `set: ${set.join(', ') || '(none)'}`]
   if (missing.length) lines.push(`missing: ${missing.join(', ')}`)
+  lines.push(`extra: ${extra.join(', ') || '(none — ask the user for any work history, education or other field the form needs)'}`)
   lines.push(`cdp: ${(await probeCdp(cdp, fetchImpl)) ? 'reachable' : 'unreachable'} (${cdp})`)
   return lines
 }

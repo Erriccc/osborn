@@ -7,8 +7,14 @@ import {
 } from '../src/components/panel/registry'
 import {
   PANEL_STORAGE_KEY, DEFAULT_PANEL_STATE, MIN_PANEL_WIDTH_PCT, MAX_PANEL_WIDTH_PCT,
+  PANEL_SHEET_QUERY,
   parsePanelState, serializePanelState, clampPanelWidth,
 } from '../src/lib/panel-state'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const SRC = join(__dirname, '..', 'src')
+const readSrc = (p: string) => readFileSync(join(SRC, p), 'utf8')
 
 const results: [string, boolean, string?][] = []
 function t(name: string, fn: () => void) {
@@ -97,6 +103,24 @@ t('panel state: corrupt or partial storage never throws and falls back per field
   eq(parsePanelState('{"widthPct":5}').widthPct, MIN_PANEL_WIDTH_PCT, 'too narrow clamped')
   eq(parsePanelState('{"widthPct":500}').widthPct, MAX_PANEL_WIDTH_PCT, 'too wide clamped')
   eq(clampPanelWidth(NaN), DEFAULT_PANEL_STATE.widthPct, 'NaN width -> default')
+})
+
+// --- sheet breakpoint and tablet layout (issue #118 follow-up) --------------
+
+t('RightPanel reads the breakpoint from panel-state, never a literal query', () => {
+  eq(PANEL_SHEET_QUERY, '(max-width: 1279px)', 'sheet range must end one pixel below Tailwind xl')
+  const src = readSrc('components/panel/RightPanel.tsx')
+  ok(src.includes('PANEL_SHEET_QUERY'), 'RightPanel should import PANEL_SHEET_QUERY')
+  ok(!/matchMedia\(\s*['"`]/.test(src), 'matchMedia called with a literal query string (it can drift from the xl: classes)')
+})
+
+t('the panel anchor exists at every width below xl, not only on the phone', () => {
+  const src = readSrc('components/VoiceRoom.tsx')
+  const anchor = src.split('\n').find(l => l.includes('PANEL_ANCHOR_ATTR') && l.includes('<div'))
+  ok(!!anchor, 'no element carries PANEL_ANCHOR_ATTR in VoiceRoom')
+  // `sm:hidden` / `md:hidden` here means no layout box at tablet widths, which
+  // is exactly how the sheet ended up overlaying the composer on an iPad.
+  ok(!/\b(sm|md|lg):hidden\b/.test(anchor!), 'the panel anchor is hidden below xl, so the sheet has no edge to sit above')
 })
 
 const failed = results.filter(r => !r[1])

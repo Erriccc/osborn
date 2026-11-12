@@ -12,8 +12,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import './builtin-tabs'
 import { getTabs, resolveTabId, type PanelTabDef } from './registry'
 import { usePanelData, type PanelData } from './PanelDataContext'
+import { PANEL_SHEET_QUERY } from '@/lib/panel-state'
 
-/** Element (in VoiceRoom) whose top edge the mobile sheet must stay above. */
+/**
+ * Element (in VoiceRoom) whose top edge the sheet must stay above: the bottom
+ * composer area, which exists at every width (the phone-only mic strip inside
+ * it does not, so anchoring on that left the sheet over the tablet composer).
+ */
 export const PANEL_ANCHOR_ATTR = 'data-panel-anchor'
 
 function renderIcon(icon: PanelTabDef['icon']) {
@@ -74,13 +79,13 @@ function useMobileSheetBottom(enabled: boolean): number {
   useEffect(() => {
     if (!enabled || typeof window === 'undefined') return
     // Overlay for everything below the xl desktop breakpoint (phone + tablet).
-    const mq = window.matchMedia('(max-width: 1279px)')
+    // PANEL_SHEET_QUERY is the same breakpoint as the aside's `xl:` classes.
+    const mq = window.matchMedia(PANEL_SHEET_QUERY)
     const measure = () => {
       if (!mq.matches) { setBottom(0); return }
       const anchor = document.querySelector(`[${PANEL_ANCHOR_ATTR}]`) as HTMLElement | null
-      // The anchor (mobile mic / hang-up strip) is display:none at tablet
-      // widths, so it has no layout box — fall back to the viewport bottom and
-      // let the sheet sit as a plain bottom overlay there.
+      // Only if the anchor is missing entirely (another surface, SSR, a future
+      // layout) does the sheet fall back to the plain viewport bottom.
       if (!anchor || anchor.getClientRects().length === 0) { setBottom(0); return }
       const top = anchor.getBoundingClientRect().top
       setBottom(Math.max(0, Math.round(window.innerHeight - top)))

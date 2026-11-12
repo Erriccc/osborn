@@ -4004,7 +4004,17 @@ function VoiceRoomInner({
         liveTitle={firstUserMessage}
         pendingId={switchPending?.sessionId ?? null}
       />
-      <div className="flex-1 min-w-0 xl:min-w-[24rem] flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
+      {/* Chat column. No xl:min-w floor: at the 1280px xl boundary the 240px
+          rooms rail plus a shrink-0 aside dragged to MAX_PANEL_WIDTH_PCT (70%,
+          896px) leaves ~120px here, so a 24rem floor could not be honoured and
+          turned a deliberate panel resize into a horizontal page scroll that
+          broke the whole row, the resize handle included. min-w-0 lets the
+          column give way instead. The trade-off is explicit: past ~49% at
+          exactly 1280px the conversation does get narrow, and dragging the
+          panel back is the remedy. Lowering the 70% cap is NOT the fix — 70%
+          is fine from 1440px up; only a pixel-aware clamp on the drag would
+          serve both, and that is a bigger change than this bug needs. */}
+      <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Persistent Anthropic sign-in gate (issue #53/#78). The agent blocks
             before creating the voice session until Claude OAuth completes, so a
             fresh account that dismisses the modal would otherwise sit on a
@@ -4702,12 +4712,22 @@ function VoiceRoomInner({
           />
         )}
 
+        {/* Bottom composer area — the panel anchor. The Outputs bottom sheet
+            overlays everything below xl, so it must stay above WHATEVER sits at
+            the bottom of the chat column. The anchor used to be the mic strip
+            below, which is phone-only (sm:hidden): at tablet widths it has no
+            layout box, the sheet fell back to the viewport bottom, and it
+            covered the composer (issue #118 follow-up). Anchoring the whole
+            area instead gives the sheet a real edge at EVERY width without
+            showing the phone pills on tablet, and its ResizeObserver now also
+            tracks the composer growing as the textarea autosizes. */}
+        <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="shrink-0">
         {/* Mobile composer control strip — 3-6-9 rule (2026-10-24): the voice
             screen's primary actionables are exactly Mic + End (+ the composer
             input itself). Everything that used to live here — Auto/Ask,
             Agents, Skills, Filter — collapsed into the burger sheet (tray
             rule), which sits at 8 rows ≤ the technical-9 cap. */}
-        <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="sm:hidden flex items-center justify-end gap-2 px-3 pt-2 pb-1 bg-gray-900/50 backdrop-blur-sm">
+        <div className="sm:hidden flex items-center justify-end gap-2 px-3 pt-2 pb-1 bg-gray-900/50 backdrop-blur-sm">
           <button
             onClick={toggleMute}
             className={`flex items-center gap-1.5 min-h-11 px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
@@ -4752,6 +4772,7 @@ function VoiceRoomInner({
           approvalMode={approvalMode}
           onApprovalModeChange={setApprovalMode}
         />
+        </div>
       </div>
 
       {/* Right-side living panel (L4): Outputs and future tabs. Replaces the

@@ -1,12 +1,13 @@
-// Run: node frontend/tests/content-migration-007-ensure-profile.test.mjs
+// Run: cd frontend && npx tsx tests/content-migration-007-ensure-profile.test.mjs
 // Legacy-profiles invariants for 007. (Filename kept from the retired
 // ensure_profile design so existing references still resolve.) Proves 007
 // reuses the prod-like legacy public.profiles WITHOUT changing its rows,
 // columns, indexes, constraints, policies, triggers, trigger functions or ACLs.
+// pglite is deliberately not a dependency — see content-migration-007.test.mjs.
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-const { PGlite } = await import(pathToFileURL(process.env.PGLITE || '/tmp/pgl/node_modules/@electric-sql/pglite/dist/index.js').href)
+import { fileURLToPath } from 'node:url'
+import { PGlite } from '@electric-sql/pglite'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const dir = path.join(here, '../supabase/migrations')
 const m001 = fs.readFileSync(path.join(dir, '001_initial_schema.sql'), 'utf8')

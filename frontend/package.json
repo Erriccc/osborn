@@ -8,7 +8,8 @@
     "icons": "node scripts/generate-icons.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@daytonaio/sdk": "^0.161.0",

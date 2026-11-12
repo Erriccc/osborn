@@ -18,6 +18,15 @@ const HELPER = join(ROOT, 'agent/.claude/skills/browser-apply/fill.mjs')
 // Covers `password: x`, `"password": "x"`, `PASSWORD='x'`, `pwd = x`, `| Password | x |`.
 const PASSWORD_RE = /(password|passwd|pwd)["'`]?\s*(?:[:=]|\|)\s*["'`]?([^\s"'`|]{6,})/i
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
+// A skill that fills forms types whatever its Candidate Data block says, so a
+// literal employment history there is a false statement submitted under the
+// user's name. Two shapes, both only inside that block: a résumé literal (a
+// month-year date, a company suffix, a school, a degree abbreviation) and a
+// numbered value entry, which is how such a list is written.
+// (A trailing \b cannot follow `B.S.` — a period is not a word char — so the
+// degree arm ends in a negative lookahead instead.)
+const RESUME_RE = /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b|\b(?:Inc|LLC|Ltd|Corp|Corporation|GmbH|University|College)\b|\b[ABM]\.[SA]\.(?!\w)/
+const NUMBERED_ENTRY_RE = /^\s*[0-9]+\.\s+\S/
 // Anchored: the WHOLE value (trailing , ; stripped) must be a placeholder or an env reference.
 const PLACEHOLDER_RE = /^(<[^<>]*>|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\}|process\.env\.[A-Za-z_]\w*|YOUR_[A-Z0-9_]*|(example|placeholder|changeme)[\w.-]*)$/i
 const isPlaceholder = (v: string): boolean => PLACEHOLDER_RE.test(v.replace(/[,;]+$/, ''))
@@ -57,6 +66,8 @@ export function scanText(file: string, text: string, allow: Record<string, Set<s
     if (inCandidate) {
       const em = EMAIL_RE.exec(line)
       if (em && !/example\.(com|org|net)$/i.test(em[0])) out.push({ file, line: i + 1, reason: 'email literal in Candidate Data block (value masked)', hash })
+      if (RESUME_RE.test(line)) out.push({ file, line: i + 1, reason: 'résumé literal (employer/school/date) in Candidate Data block', hash })
+      if (NUMBERED_ENTRY_RE.test(line)) out.push({ file, line: i + 1, reason: 'numbered value entry in Candidate Data block', hash })
     }
   }
   return out
@@ -101,6 +112,22 @@ await t('scanner flags a synthetic password literal and a candidate email litera
   const f = scanText('synthetic.md', doc, {})
   assert.deepEqual(f.map(x => [x.line, x.reason.split(' ')[0]]), [[3, 'email'], [4, 'password-like']])
   for (const x of f) assert.ok(!x.reason.includes(SYN.password) && !x.reason.includes(SYN.email))
+})
+
+await t('scanner flags an employment history in a Candidate Data block only', () => {
+  const doc = [
+    '## Candidate Data',                       // 1
+    'Jobs:',                                   // 2
+    '1. Synth Operator at Fixture Ltd — Feb 1999 to Present', // 3: numbered + résumé
+    '2. Second Fixture Role, no dates',        // 4: numbered
+    '- Degree: M.A. Fixture Studies',          // 5: résumé
+    '| Job N title | `$CANDIDATE_JOB_N_TITLE` |', // 6: the parameterised form
+    '### Filling secret fields',               // 7: heading ends the block
+    '1. Read the hostname of the current page', // 8: instructions, outside
+    'Apply through a university careers portal', // 9: prose, outside
+  ].join('\n')
+  assert.deepEqual(scanText('synthetic.md', doc, {}).map(x => [x.line, x.reason.split(' ')[0]]),
+    [[3, 'résumé'], [3, 'numbered'], [4, 'numbered'], [5, 'résumé']])
 })
 
 await t('scanner flags quoted, assignment and table forms', () => {
@@ -168,6 +195,17 @@ await t('every allowlist entry still matches a real line (no stale entries)', ()
     const have = new Set(readFileSync(p, 'utf8').split('\n').map(lineHash))
     for (const h of hashes) assert.ok(have.has(h), `${file}: allowlist hash ${h} matches no line`)
   }
+})
+
+// browser-apply types what it is given into REAL job applications, so a literal
+// employer, school or date in the shipped skill is a false statement submitted
+// to that employer — even an invented one. Work history must go through the
+// same $CANDIDATE_* secret file as the name, email and address.
+// The literals themselves are caught by the scanner above, for every skill.
+// What only this skill can state is that the fields exist at all, as keys.
+await t('browser-apply routes work history and education through CANDIDATE_* keys', () => {
+  const src = readFileSync(join(ROOT, 'agent/.claude/skills/browser-apply/SKILL.md'), 'utf8')
+  assert.ok(/CANDIDATE_JOB_N_TITLE/.test(src) && /CANDIDATE_EDUCATION_N_/.test(src), 'work history is not routed through CANDIDATE_* keys')
 })
 
 // ---- helper: fixed secret file, no env overrides, loopback CDP, confirmed host, field types -----
@@ -249,6 +287,20 @@ if (existsSync(HELPER)) {
       noLeak(out)
       assert.match(out, /set: CANDIDATE_EMAIL, CANDIDATE_PASSWORD, CANDIDATE_PHONE/)
       assert.match(out, /cdp: unreachable/)
+      // Work history and any other CANDIDATE_* key are reported by NAME, so the
+      // model never has to invent one; empty says so instead of looking like
+      // "nothing to fill". CANDIDATE_CDP_URL is config, not a value to fill.
+      assert.match(out, /extra: \(none/)
+      const withJob = {
+        ...fileEnv,
+        CANDIDATE_JOB_1_COMPANY: 'Synthetic Fixture Employer',
+        CANDIDATE_EDUCATION_1_SCHOOL: 'Synthetic Fixture School',
+        CANDIDATE_CDP_URL: 'http://127.0.0.1:9222',
+      }
+      const jobOut: string = (await helper.checkReport('/x/candidate.env', withJob, down)).join('\n')
+      assert.match(jobOut, /extra: CANDIDATE_EDUCATION_1_SCHOOL, CANDIDATE_JOB_1_COMPANY\n/)
+      assert.ok(!jobOut.includes('Synthetic Fixture'), 'check leaked an extra value')
+      assert.doesNotMatch(jobOut, /missing: .*CANDIDATE_JOB/, 'extra keys must not be reported as missing')
       const up = async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' }) })
       assert.match((await helper.checkReport('/x', fileEnv, up)).join('\n'), /cdp: reachable/)
       await assert.rejects(helper.checkReport('/x', { ...fileEnv, CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' }, up), /loopback/)

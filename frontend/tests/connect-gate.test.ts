@@ -10,9 +10,11 @@ import {
   CONNECT_WATCHDOG_MS,
   connectTimeoutMessage,
   isAuthGateTerminal,
+  isAuthPromptMessage,
   isAwaitingAgent,
   isOAuthInProgress,
   nextAuthRequired,
+  shouldAutoOpenAuthModal,
   type ConnectWaitState,
 } from '../src/lib/connect-gate'
 
@@ -105,6 +107,20 @@ t('auth gate is NOT terminal while the sign-in modal is open', () => {
 
 t('auth gate is not terminal before sign-in was ever required', () => {
   eq(isAuthGateTerminal(false, 'none'), false, 'never required → no banner')
+})
+
+// ── #87 §5/§6 prompt discipline (merged in from the former src/lib copy) ──
+t('isAuthPromptMessage: only the three opening messages', () => {
+  for (const m of ['claude_auth_required', 'claude_auth_url', 'claude_auth_waiting_code']) eq(isAuthPromptMessage(m), true, m)
+  for (const m of ['claude_auth_submitting', 'claude_auth_complete', 'agent_ready']) eq(isAuthPromptMessage(m), false, m)
+})
+
+t('shouldAutoOpenAuthModal: opens on a prompt message, never after a dismissal', () => {
+  eq(shouldAutoOpenAuthModal('claude_auth_required', false), true, 'required opens')
+  eq(shouldAutoOpenAuthModal('claude_auth_url', false), true, 'url opens')
+  // The #87 §5 bug: a dismissed modal must not re-open on the next prompt.
+  for (const m of ['claude_auth_required', 'claude_auth_url', 'claude_auth_waiting_code']) eq(shouldAutoOpenAuthModal(m, true), false, `dismissed: ${m}`)
+  for (const m of ['claude_auth_submitting', 'agent_ready']) eq(shouldAutoOpenAuthModal(m, false), false, `non-prompt: ${m}`)
 })
 
 // ── Wiring guards: cheap static checks so a refactor can't silently drop the fix.
