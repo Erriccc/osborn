@@ -28,7 +28,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, SEARCH_IDLE_CAP, type RoomRow, type RoomStatus } from '@/lib/rooms'
 import { prepareSessions, sessionMatchesQuery } from '@/lib/session-list'
-import { sameSession } from '@/lib/sessions'
 import type { SessionInfo, SlotInfo } from './shared'
 
 export type { RoomStatus }
@@ -196,32 +195,33 @@ export function RoomsSidebar({
   }
 
   // #107: fold duplicate copies of one session into one row, then build the rows.
-  // Searching filters through `sessionMatchesQuery` (the app's one matcher) and
-  // raises the idle cap, so a match past the 12 most recent stays reachable.
+  // A search filters the idle rows through `sessionMatchesQuery` (the app's one
+  // matcher) and raises the idle cap, so a match past the 12 most recent stays
+  // reachable. buildRoomRows applies `match` to the idle rows ONLY, so the live
+  // and background rows keep their real title/project/count — and "which session
+  // is live, which slot is focused" stays decided in one place.
   //
-  // The live room and the background slots are exempt: they are pinned status,
-  // not search results. Filtering them out of the INPUT would make buildRoomRows
-  // fall back to a bare "Current session" / "Background session <id>" row — no
-  // project, time or message count — so typing would degrade the top of the rail.
+  // The collapsed rail has no input and no clear button, so it is never
+  // filtered: collapsing with a query live would otherwise leave a short rail
+  // with no way back, the exact unreachability this search exists to remove.
+  const q = collapsed ? '' : query.trim()
   const prepared = useMemo(() => prepareSessions(sessions, { hideSystem }), [sessions, hideSystem])
-  const matching = useMemo(() => {
-    const q = query.trim()
-    if (!q) return prepared.sessions
-    const pinned = (id: string) =>
-      sameSession(id, currentSessionId ?? '') || slots.some((sl) => sl.hasSession && sameSession(id, sl.id))
-    return prepared.sessions.filter((s) => pinned(s.sessionId) || sessionMatchesQuery(s, q))
-  }, [prepared.sessions, query, currentSessionId, slots])
-  const rooms = buildRoomRows(matching, currentSessionId, {
+  const rooms = buildRoomRows(prepared.sessions, currentSessionId, {
     slots,
     liveFallbackTitle: liveTitle,
     pendingId,
-    maxIdle: query.trim() ? SEARCH_IDLE_CAP : undefined,
+    maxIdle: q ? SEARCH_IDLE_CAP : undefined,
+    match: q ? (s) => sessionMatchesQuery(s, q) : undefined,
   })
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
   // Live + Running stay pinned at the top; Recent (idle) rows group by project.
   const topRooms = rooms.filter((r) => r.status !== 'idle')
   const idleRooms = rooms.filter((r) => r.status === 'idle')
   const idleByProject = useMemo(() => groupRoomsByProject(idleRooms), [idleRooms])
+  // Search is find-and-jump: clear it on the jump. The rail stays mounted for
+  // the life of the page, so a query left behind would keep it filtered long
+  // after the user got where they were going.
+  const switchRoom = (room: Room) => { setQuery(''); onSwitchRoom(room) }
 
   if (collapsed) {
     return (
@@ -245,7 +245,7 @@ export function RoomsSidebar({
             return (
               <button
                 key={room.id}
-                onClick={() => room.status !== 'live' && !disabled && onSwitchRoom(room)}
+                onClick={() => room.status !== 'live' && !disabled && switchRoom(room)}
                 title={`${room.title}${identity ? ` · ${identity}` : ''} · ${STATUS_LABEL[room.status]}`}
                 aria-label={`${room.title}${identity ? `, ${identity}` : ''} (${STATUS_LABEL[room.status]})`}
                 className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center transition-colors ${
@@ -344,16 +344,20 @@ export function RoomsSidebar({
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
         {rooms.length === 0 ? (
           <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
-            {query.trim()
-              ? 'No sessions match your search.'
-              : 'No other sessions yet. Start one with “New room”.'}
+            No other sessions yet. Start one with “New room”.
           </p>
         ) : (
           <>
             {/* Live + Running — pinned above the grouped recents. */}
             {topRooms.map((room) => (
-              <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+              <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={switchRoom} />
             ))}
+            {/* A query only ever filters the idle rows, and the live row is
+                always present, so "no matches" has to be judged on those —
+                keyed off `rooms.length` it could never fire during a session. */}
+            {q && idleRooms.length === 0 && (
+              <p className="text-[11px] text-gray-500 text-center py-5 px-2">No sessions match your search.</p>
+            )}
             {/* Recent — grouped by project. */}
             {idleByProject.map(({ project, rooms: group }) => (
               <div key={project} className="pt-1.5">
@@ -361,7 +365,7 @@ export function RoomsSidebar({
                     hash their own title, so no one colour can match them all. */}
                 <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
                 {group.map((room) => (
-                  <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+                  <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={switchRoom} />
                 ))}
               </div>
             ))}

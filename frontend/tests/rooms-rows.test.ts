@@ -157,27 +157,31 @@ t('a match outside the browsing cap becomes reachable once you type', () => {
   const browsing = buildRoomRows(many, null, { now: NOW }) // no query -> default cap
   assert.ok(!browsing.some((r) => r.id === 's29'), 'hidden below the fold while browsing')
 
-  const matching = many.filter((s) => sessionMatchesQuery(s, 'quarterly'))
-  const searched = buildRoomRows(matching, null, { now: NOW, maxIdle: SEARCH_IDLE_CAP })
+  const searched = buildRoomRows(many, null, {
+    now: NOW,
+    maxIdle: SEARCH_IDLE_CAP,
+    match: (s) => sessionMatchesQuery(s, 'quarterly'),
+  })
   assert.deepEqual(searched.map((r) => r.id), ['s29'], 'typing reaches it')
 })
 
-// Searching must not degrade the PINNED rows. The live room and the background
-// slots are status, not search results: if the rail filtered them out of the
-// input, buildRoomRows would fall back to a bare "Current session" /
-// "Background session <id>" row with no project, time or message count.
-t('the live and background rows keep their data when the query misses them', () => {
-  const live = { sessionId: 'live-1', title: 'Refactor the voice pipeline', timestamp: ago(MIN), messageCount: 40, cwd: '/home/sprite/workspace/osborn' }
-  const slot = { sessionId: 'slot-1', title: 'Draft the invoice', timestamp: ago(2 * MIN), messageCount: 7, cwd: '/home/sprite/workspace/beta' }
-  const other = { sessionId: 'other-1', title: 'The quarterly budget', timestamp: ago(3 * MIN), messageCount: 3 }
-  const all = [live, slot, other]
-  const slots = [{ id: 'slot-1', isFocused: false, hasSession: true }]
-
-  const q = 'quarterly' // matches `other` only
-  // What the rail passes in: matches PLUS the pinned sessions.
-  const pinned = (id: string) => id === 'live-1' || slots.some((s) => s.id === id)
-  const input = all.filter((s) => pinned(s.sessionId) || sessionMatchesQuery(s, q))
-  const rows = buildRoomRows(input, 'live-1', { now: NOW, slots, maxIdle: SEARCH_IDLE_CAP })
+// `match` is consulted for the IDLE rows only. The live room and the background
+// slots are status, not search results — filtering them out would make
+// buildRoomRows fall back to a bare "Current session" / "Background session
+// <id>" row with no project, time or message count, so typing would degrade the
+// top of the rail. Keeping the rule here rather than in the caller also means
+// the caller never has to re-derive which slot is focused.
+t('match filters only the idle rows; live and background keep their data', () => {
+  const all = [
+    { sessionId: 'live-1', title: 'Refactor the voice pipeline', timestamp: ago(MIN), messageCount: 40, cwd: '/home/sprite/workspace/osborn' },
+    { sessionId: 'slot-1', title: 'Draft the invoice', timestamp: ago(2 * MIN), messageCount: 7, cwd: '/home/sprite/workspace/beta' },
+    { sessionId: 'other-1', title: 'The quarterly budget', timestamp: ago(3 * MIN), messageCount: 3 },
+  ]
+  const rows = buildRoomRows(all, 'live-1', {
+    now: NOW,
+    slots: [{ id: 'slot-1', isFocused: false, hasSession: true }],
+    match: (s) => sessionMatchesQuery(s, 'quarterly'), // matches `other-1` only
+  })
 
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]))
   assert.equal(byId['live-1'].title, 'Refactor the voice pipeline', 'not "Current session"')
@@ -185,8 +189,22 @@ t('the live and background rows keep their data when the query misses them', () 
   assert.equal(byId['live-1'].messageCount, 40)
   assert.equal(byId['slot-1'].title, 'Draft the invoice', 'not "Background session …"')
   assert.equal(byId['slot-1'].messageCount, 7)
-  // …and the actual match is still there, as the only idle row.
+  // …and the actual match is the only idle row.
   assert.deepEqual(rows.filter((r) => r.status === 'idle').map((r) => r.id), ['other-1'])
+})
+
+t('a focused slot is not resurrected as a Recent row by a missing match', () => {
+  // buildRoomRows skips focused slots. A caller filtering the INPUT instead had
+  // to know that rule too, and got it wrong: the session fell through to the
+  // idle loop and rendered as a non-matching "Recent" row.
+  const rows = buildRoomRows(
+    [{ sessionId: 'focused-1', title: 'Plan the offsite', timestamp: ago(MIN), messageCount: 5 }],
+    'focused-1',
+    { now: NOW, slots: [{ id: 'focused-1', isFocused: true, hasSession: true }], match: () => false },
+  )
+  assert.deepEqual(rows.map((r) => r.id), ['focused-1'])
+  assert.equal(rows[0].status, 'live')
+  assert.equal(rows[0].title, 'Plan the offsite')
 })
 
 // ============================================================

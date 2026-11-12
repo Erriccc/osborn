@@ -58,6 +58,12 @@ export interface BuildRoomRowsOptions {
   maxIdle?: number
   /** Session a deferred switch is waiting to open (session_switch_pending). */
   pendingId?: string | null
+  /** Filter for the idle (recent/resumable) rows only — the rail's search box.
+   * The live room and the background slots are pinned STATUS, not search
+   * results, so they are never filtered: this function is consulted in the idle
+   * loop alone, which keeps "which session is live" and "which slot is focused"
+   * decided in exactly one place instead of being re-derived by the caller. */
+  match?: (s: RoomSessionInput) => boolean
 }
 
 /** `maxIdle` while searching: raised off the browsing default so a match
@@ -156,11 +162,12 @@ export function buildRoomRows(
     taken.push(slot.id)
   }
 
-  // 3) Recent resumable sessions.
+  // 3) Recent resumable sessions — the only rows a search filters.
   let idle = 0
   for (const s of sorted) {
     if (idle >= maxIdle) break
     if (isTaken(s.sessionId)) continue
+    if (opts.match && !opts.match(s)) continue
     rows.push(sessionRow(s, 'idle', now, s.sessionId))
     taken.push(s.sessionId)
     idle++
