@@ -2238,6 +2238,15 @@ function VoiceRoomInner({
         // against a session the agent isn't running.
         console.warn('⚠️ Session resume verification failed:', data)
         dispatchResumeChip({ type: 'clear' })
+        // The history on screen belongs to the session that FAILED to restore,
+        // so drop it before relabelling — the switch path above does the same.
+        // It is not cosmetic: the transcript-cache write effect keys on
+        // currentSessionId, so leaving those rows up wrote session A's
+        // transcript under session B's key, and B's own (empty) replay never
+        // reconciled them away — they re-cached on every reload (#149 review).
+        // The user's OWN live turns in this connection belong to the session
+        // that is actually running, so they stay: only the prior-/cached rows go.
+        if (data.actualSessionId) setMessages(prev => prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache))
         addMessageRef.current?.('system', `⚠️ Couldn't restore the session you picked — it's no longer available. You're now in a different conversation, not the one you selected.`)
         if (data.actualSessionId) setCurrentSessionId(data.actualSessionId)
       } else if (data.type === 'session_switch_pending') {
