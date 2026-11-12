@@ -1,7 +1,8 @@
 'use client'
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { categorizeTool, categoryStyle, stripResultMarkdown } from '../lib/activityCategory'
+import { redactSecrets } from '../lib/redactSecrets'
+import { MarkdownMessage } from './MarkdownMessage'
 
 // ---------------------------------------------------------------------------
 // Machine-chip health thresholds — edit these to calibrate live
@@ -125,7 +126,10 @@ interface LogsDrawerProps {
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
 // the log reads like a changelog ("Edited VoiceRoom.tsx", "Ran build").
-function toolVisual(tool: string): { verb: string; icon: React.ReactNode } {
+// `isCommand` marks the shell tools, whose body gets a terminal affordance — the
+// only per-kind presentation difference the card needs, so the kind is derived
+// here from the tool name rather than in a second switch that must stay in sync.
+function toolVisual(tool: string): { verb: string; icon: React.ReactNode; isCommand?: boolean } {
   const t = tool.toLowerCase()
   const stroke = { fill: 'none' as const, viewBox: '0 0 24 24', stroke: 'currentColor', strokeWidth: 2 }
   if (t === 'read' || t === 'notebookread') return {
@@ -143,6 +147,7 @@ function toolVisual(tool: string): { verb: string; icon: React.ReactNode } {
   if (t === 'bash') return {
     verb: 'Ran',
     icon: <svg className="w-3.5 h-3.5" {...stroke}><path strokeLinecap="round" strokeLinejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>,
+    isCommand: true,
   }
   if (t === 'grep' || t === 'glob') return {
     verb: 'Searched',
@@ -160,24 +165,6 @@ function toolVisual(tool: string): { verb: string; icon: React.ReactNode } {
 
 // Render a unified diff (createPatch output) with red/green line coloring,
 // like Claude's Edit review. Header lines are dropped; @@ hunks are dimmed.
-// Mask secret-looking substrings before anything reaches the UI or the clipboard.
-// A tool command or ingest script can embed a token (provider API key, Bearer,
-// Supabase PAT, GitHub PAT, JWT, or a sensitive env assignment); the Activity
-// log must never surface it. (Audit §16 flagged a credential-like string shown
-// inside a temporary ingest script.)
-function redactSecrets(s: string | undefined | null): string {
-  if (!s) return s ?? ''
-  return s
-    .replace(/sk-ant-[A-Za-z0-9_-]{6,}/g, 'sk-ant-••••')
-    .replace(/sk-or-[A-Za-z0-9_-]{6,}/g, 'sk-or-••••')
-    .replace(/sk-[A-Za-z0-9]{20,}/g, 'sk-••••')
-    .replace(/sbp_[A-Za-z0-9]{10,}/g, 'sbp_••••')
-    .replace(/ghp_[A-Za-z0-9]{10,}/g, 'ghp_••••')
-    .replace(/eyJ[A-Za-z0-9._-]{18,}\.[A-Za-z0-9._-]{10,}/g, 'eyJ••••')
-    .replace(/(Bearer\s+)[A-Za-z0-9._-]{8,}/gi, '$1••••')
-    .replace(/((?:[A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY))["'\s]*[=:]\s*["']?)([^\s"']{6,})/gi, '$1••••')
-}
-
 function DiffView({ diff }: { diff: string }) {
   const lines = diff.split('\n').filter((l) => {
     return !(l.startsWith('Index:') || l.startsWith('===') || l.startsWith('--- ') || l.startsWith('+++ '))
@@ -219,15 +206,8 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   const [bookmarked, setBookmarked] = useState(false)
   const [copied, setCopied] = useState(false)
   const meta = msg.toolMeta!
-  const { verb, icon } = toolVisual(meta.tool)
+  const { verb, icon, isCommand } = toolVisual(meta.tool)
   const running = meta.status === 'running'
-
-  // Categorise the row from the one field already on it — the tool name (#86) — so
-  // the card can say at a glance what KIND of thing this is (a shell command vs a
-  // file op vs a search vs a web fetch) and format the body accordingly.
-  const category = categorizeTool(meta.tool)
-  const catStyle = categoryStyle(category)
-  const isCommand = category === 'command'
 
   // The primary display target: prefer the human-readable name/description,
   // fall back to command/pattern/url. Used in the card body and copy payload.
@@ -338,15 +318,6 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
         {/* Tool icon + verb — immediately after agent chip; amber tint when running */}
         <span className={`shrink-0 ${running ? 'text-amber-400' : 'text-gray-400'}`}>{icon}</span>
         <span className="text-[11px] font-semibold text-gray-300 shrink-0">{verb}</span>
-
-        {/* Category chip — a quiet classifier so the row's KIND is legible at a glance (#86) */}
-        <span
-          title={`${catStyle.label} — ${isCommand ? 'a shell command the agent ran' : category === 'file' ? 'a file the agent read or changed' : category === 'search' ? 'a codebase search' : category === 'web' ? 'a web fetch or search' : 'an activity log entry'}`}
-          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-medium leading-none whitespace-nowrap shrink-0 ${catStyle.chipClass}`}
-        >
-          <span className={`w-1 h-1 rounded-full shrink-0 ${catStyle.dotClass}`} />
-          {catStyle.label}
-        </span>
         {running && (
           <svg className="w-3 h-3 animate-spin text-amber-400/70 shrink-0" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
@@ -380,7 +351,9 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
             {isCommand ? (
               <pre className="flex gap-2 rounded-md bg-gray-950/70 border border-gray-800 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-emerald-200/90 whitespace-pre-wrap break-all">
                 <span className="select-none text-gray-500 shrink-0" aria-hidden="true">$</span>
-                <span className="min-w-0">{shownBody}</span>
+                {/* Clamp the text span, not the flex row: line-clamp forces
+                    display:-webkit-box, which would fight the row's own flex. */}
+                <span className={`min-w-0 ${!bodyExpanded && bodyNeedsExpand ? 'line-clamp-6' : ''}`}>{shownBody}</span>
               </pre>
             ) : (
               <pre className={`font-mono text-[11px] leading-relaxed text-gray-200 whitespace-pre-wrap break-all ${!bodyExpanded && bodyNeedsExpand ? 'line-clamp-6' : ''}`}>
@@ -493,28 +466,34 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   )
 }
 
-// Preview thresholds for a finished flow's result in the Running tab.
-const RESULT_PREVIEW_LINES = 4
-const RESULT_PREVIEW_CHARS = 240
-
 // FlowResultText — a finished sub-agent's result, shown readable instead of
-// truncated to one line mid-sentence (#86). Markdown emphasis/verdict markers are
-// stripped so `**GATE: PASS**` reads as "GATE: PASS"; long results collapse to a
-// few lines with a "Show full result" affordance, with its own expand state so
-// each row expands independently.
+// truncated to one line mid-sentence (#86).
+//
+// SECURITY: the result is agent-authored text that can quote a file, a command or
+// an env block, so it goes through redactSecrets like every other body in this
+// drawer. Redaction happens HERE, at render, so a result already carried in state
+// from an earlier turn is masked too — not only newly stored ones.
+//
+// Markdown is RENDERED (the agent writes markdown), not stripped: stripping
+// mangled a quoted patch by eating the leading `-` of every removal line, and ate
+// one backtick of each fence. The collapse is by HEIGHT, not by slicing the text:
+// slicing markdown cuts fences open, so a long result rendered its tail as a
+// stray code block and a cut ```mermaid fence rendered a syntax-error box while
+// still collapsed. The Log tab's own preview thresholds decide only whether the
+// affordance appears, with their own expand state per row.
 function FlowResultText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
-  const clean = stripResultMarkdown(text)
-  const lineCount = clean.split('\n').length
-  const needsExpand = clean.length > RESULT_PREVIEW_CHARS || lineCount > RESULT_PREVIEW_LINES
-  const preview = needsExpand
-    ? clean.split('\n').slice(0, RESULT_PREVIEW_LINES).join('\n').slice(0, RESULT_PREVIEW_CHARS)
-    : clean
-  const shown = expanded ? clean : preview
+  const safe = redactSecrets(text)
+  const needsExpand = safe.length > BODY_PREVIEW_CHARS || safe.split('\n').length > BODY_PREVIEW_LINES
+  const collapsed = needsExpand && !expanded
   return (
     <div className="mt-1">
-      <div className={`text-[11px] leading-relaxed text-gray-300 whitespace-pre-wrap break-words ${!expanded && needsExpand ? 'line-clamp-4' : ''}`}>
-        {shown}
+      {/* Scale the shared markdown renderer down to this drawer's 11px type. */}
+      <div
+        title={collapsed ? safe : undefined}
+        className={`text-[11px] leading-relaxed [&_p]:my-1 [&_p]:text-[11px] [&_li]:text-[11px] [&_ul]:my-1 [&_ol]:my-1 [&_h1]:text-[13px] [&_h2]:text-[12px] [&_h3]:text-[11px] [&_h1]:mt-1 [&_h2]:mt-1 [&_h3]:mt-1 ${collapsed ? 'max-h-28 overflow-hidden' : ''}`}
+      >
+        <MarkdownMessage content={safe} />
       </div>
       {needsExpand && (
         <button
@@ -829,7 +808,8 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                   // stream) if we have it, else the dispatch task. Status is transient here,
                   // so one truncated line is fine; the Stop control sits inline on the right.
                   if (isRunning) {
-                    const text = flow.lastMessage || flow.task
+                    // Redacted like every other agent-authored body in this drawer.
+                    const text = redactSecrets(flow.lastMessage || flow.task)
                     const isLive = !!flow.lastMessage
                     const cls = isLive ? 'text-amber-300/90' : 'text-gray-500 italic'
                     return (
@@ -856,9 +836,12 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                     )
                   }
 
-                  // DONE: the result is the point — show it in full, markdown cleaned, wrapping,
-                  // with an expand affordance instead of a mid-sentence one-line truncation (#86).
-                  const result = flow.artifact || flow.task
+                  // DONE: the result is the point — show it rendered, wrapping, with an
+                  // expand affordance instead of a mid-sentence one-line truncation (#86).
+                  // FlowResultText redacts; see its SECURITY note.
+                  // Trimmed: MarkdownMessage renders nothing for whitespace-only
+                  // content, so a blank result must take the fallback below.
+                  const result = (flow.artifact || flow.task)?.trim()
                   return (
                     <div
                       key={flow.agentId}
@@ -881,18 +864,6 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
               className="overflow-y-auto overflow-x-hidden px-3 py-2 space-y-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent bg-gray-900/50"
               style={{ height: drawerHeight }}
             >
-              {/* Plain-language frame — this tab is host/developer diagnostics, not a
-                  product feature every user must interpret. Says what the surface IS
-                  and that it is safe to ignore, in a quiet style (#86). */}
-              <div className="flex items-start gap-2 rounded-md border border-gray-700/40 bg-gray-800/30 px-2.5 py-1.5">
-                <svg className="shrink-0 w-3.5 h-3.5 mt-px text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                </svg>
-                <span className="text-[10px] leading-relaxed text-gray-500">
-                  Host diagnostics — technical details about the machine running your session (memory, processes, the code editor). Nothing here needs your attention.
-                </span>
-              </div>
-
               {/* Editor row — Codespaces-style status row with lifecycle controls */}
               {(() => {
                 const isRunning = ideState === 'running'
