@@ -35,12 +35,14 @@
 export function redactSecrets(s: string | undefined | null): string {
   if (!s) return s ?? ''
   return s
-    // One rule for every prefixed provider key. The floor of 12 is set by the
-    // vendors' own body lengths (60-95 chars), not by how prose reads, so it
+    // One rule for every provider key. The floor of 12 on a prefixed body is set
+    // by the vendors' own lengths (60-95 chars), not by how prose reads, so it
     // cannot miss a real key — and it stops a doc comment or a regex that merely
     // MENTIONS `sk-ant-oat01-` from being rewritten.
-    .replace(/(?<![A-Za-z0-9])sk-(?:ant|or|proj|svcacct)-[A-Za-z0-9_-]{12,}/g, 'sk-••••')
-    .replace(/(?<![A-Za-z0-9])sk-[A-Za-z0-9]{20,}/g, 'sk-••••')
+    // NB `([^A-Za-z0-9]|^)…$1` rather than a lookbehind: this module is bundled
+    // for the browser, and a lookbehind literal is a PARSE error on Safari < 16.4
+    // — it would take down the whole chunk, not just redaction.
+    .replace(/([^A-Za-z0-9]|^)sk-(?:(?:ant|or|proj|svcacct)-[A-Za-z0-9_-]{12,}|[A-Za-z0-9]{20,})/g, '$1sk-••••')
     .replace(/sbp_[A-Za-z0-9]{10,}/g, 'sbp_••••')
     // Two rules at the agent's floor of 30, not one folded rule: folding them
     // lets the `_` the fine-grained class needs match an identifier like
@@ -51,7 +53,7 @@ export function redactSecrets(s: string | undefined | null): string {
     // A real Fly macaroon is a comma-separated list of segments; redact the
     // whole list, not just the first one.
     .replace(/FlyV1\s+fm[12]_[A-Za-z0-9/+_=-]+(?:\s*,\s*fm[12]_[A-Za-z0-9/+_=-]+)*/g, 'FlyV1 ••••')
-    .replace(/(?<![A-Za-z0-9])(?:fm[12]|fo1)_[A-Za-z0-9/+_=-]{20,}/g, 'fly_••••')
+    .replace(/([^A-Za-z0-9]|^)(?:fm[12]|fo1)_[A-Za-z0-9/+_=-]{20,}/g, '$1fly_••••')
     // Two segments, short header: a truncated JWT is still a credential.
     .replace(/eyJ[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}/g, 'eyJ••••')
     // `<` is excluded from every value class below: `Authorization: Bearer
