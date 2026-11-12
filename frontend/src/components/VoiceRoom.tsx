@@ -13,6 +13,7 @@ import { MarkdownMessage } from './MarkdownMessage'
 import LiveClock from './LiveClock'
 import ModelBadge from './ModelBadge'
 import AgentHealthNotice from './AgentHealthNotice'
+import type { KeyHealthEntry } from '@/lib/agent-health'
 import { fastBrainLabel } from '@/lib/modelBadge'
 import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
@@ -376,6 +377,10 @@ function VoiceRoomInner({
   // provider); `agentVersion` ← GET /health → { version } (already polled below).
   const [mainProvider, setMainProvider] = useState<string | null>(null)
   const [agentVersion, setAgentVersion] = useState<string | null>(null)
+  // #87: per-key self-test results from GET /health (agent probes the active
+  // fallback key). Drives AgentHealthNotice's "No working model" when every
+  // configured key failed/expired. Absent on the Claude path / older agents.
+  const [agentKeyHealth, setAgentKeyHealth] = useState<KeyHealthEntry[] | undefined>(undefined)
   // Multi-instance slots panel
   const [slots, setSlots] = useState<SlotInfo[]>([])
   const [spawnPending, setSpawnPending] = useState(false)
@@ -775,6 +780,11 @@ function VoiceRoomInner({
           // indicator for the model badge. Older agents omit it (stays null).
           if (!cancelled && typeof d?.version === 'string' && d.version.trim()) {
             setAgentVersion(d.version)
+          }
+          // #87: /health carries the active fallback key's self-test result when
+          // the agent probed it. Older agents omit it (stays undefined → no notice).
+          if (!cancelled && Array.isArray(d?.keyHealth)) {
+            setAgentKeyHealth(d.keyHealth as KeyHealthEntry[])
           }
         }
       } catch { /* network error / timeout — keep previous reading */ }
@@ -4011,10 +4021,18 @@ function VoiceRoomInner({
 
             {/* #87 gap 3 — surface a SILENT failure the session would otherwise
                 hide: an agent too old for the demo-model fallback (version floor),
-                or a failed key self-test. Only shows for a no-Claude session that
-                is relying on the fallback (claude_auth_everRequired). Same real
-                /health version signal as the badge; never fabricates a status. */}
-            <AgentHealthNotice version={agentVersion} relyingOnFallback={claudeAuthEverRequired} />
+                or a failed key self-test. Shows for a session on the HOUSE demo
+                tier — either because Claude sign-in was prompted at least once
+                (claudeAuthEverRequired, the pre-fallback/old-agent path) OR because
+                the agent declared a house-tier provider (zai / openrouter; the
+                smooth fallback path never opens the auth modal). A user's OWN key
+                (anthropic) is not a demo-tier concern, so it is excluded. Same real
+                /health signals as the badge; never fabricates a status. */}
+            <AgentHealthNotice
+              version={agentVersion}
+              relyingOnFallback={claudeAuthEverRequired || ['zai', 'openrouter'].includes((mainProvider || '').trim().toLowerCase())}
+              keyHealth={agentKeyHealth}
+            />
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
