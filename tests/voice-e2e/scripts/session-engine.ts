@@ -282,8 +282,13 @@ async function main() {
       return { model: 'anthropic/glm-4.7', opts: { apiKey: z, baseURL: 'https://api.z.ai/api/anthropic/v1' } }
     throw new Error(tried.length ? `no working brain key — ${tried.join(', ')}` : 'no brain key — set GOOGLE_API_KEY (or GEMINI_API_KEY), ANTHROPIC_API_KEY or Z_AI_API_KEY')
   }
+  // TEST SEAM: OSBORN_BRAIN_STUB=1 swaps the brain for one that "acts" by
+  // doing nothing. It exists to exercise everything AROUND the brain — effect
+  // detection, warnings, the scroll fallback, clips — without a model key.
+  const BRAIN_STUB = process.env.OSBORN_BRAIN_STUB === '1'
   const initBrain = async () => {
     brainAlive = false
+    if (BRAIN_STUB) { brainAlive = true; brainError = null; brainModel = 'stub (does nothing)'; mark('brain STUB active — /act performs no action'); return }
     try {
       const picked = await pickBrainModel()
       const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
@@ -315,6 +320,7 @@ async function main() {
   await initBrain().catch(() => mark(`brain unavailable — ${brainError} — engine still drivable (/eval /tab /shot); POST /brain to retry`))
   const brainDownMsg = () => `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string) => {
+    if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
     try { return await actWithCache(stagehand, active, i) }
     catch (e) {
@@ -430,7 +436,7 @@ async function main() {
   const earsState = async (p: Page): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number }> =>
     (await Promise.race([
       p.evaluate(() => {
-        const c = (window as any).__osbornCapture
+        const c = (globalThis as any).__osbornCapture
         const els = [...document.querySelectorAll('audio,video')] as HTMLMediaElement[]
         return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length }
       }),
@@ -992,11 +998,31 @@ async function main() {
           const snap = () => Promise.race([
             active.evaluate(() => {
               const v = [...document.querySelectorAll('input,textarea,select')].slice(0, 200).map((e: any) => `${(e.value || '').length}:${e.checked ? 1 : 0}`).join(',')
-              return { url: location.href, title: document.title, scrollY: Math.round(window.scrollY), sig: `${(document.body?.innerText || '').length}|${v}|${document.activeElement?.tagName || ''}` }
+              // Scroll position of inner scroll containers too (a page whose
+              // window never scrolls can still scroll a panel).
+              let inner = 0
+              for (const e of Array.from(document.querySelectorAll('*')).slice(0, 4000)) { const t = (e as HTMLElement).scrollTop; if (t) inner += Math.round(t) }
+              return {
+                url: location.href, title: document.title, scrollY: Math.round((globalThis as any).scrollY || 0), innerScroll: inner,
+                // Two signatures, kept apart: `form` (field values + focus) only
+                // moves when something acts on the page; `text` (visible text
+                // length) also moves by itself on animated pages.
+                form: `${v}|${document.activeElement?.tagName || ''}`,
+                text: (document.body?.innerText || '').length,
+              }
             }),
             new Promise<null>((r) => setTimeout(() => r(null), 3000)),
-          ]).catch(() => null) as Promise<{ url: string; title: string; scrollY: number; sig: string } | null>
+          ]).catch((e) => { console.log(`[engine] page snapshot failed: ${String((e as Error)?.message ?? e).slice(0, 160)}`); return null }) as Promise<{ url: string; title: string; scrollY: number; innerScroll: number; form: string; text: number } | null>
+          // VOLATILITY BASELINE (#146): sample the page twice BEFORE acting. If
+          // its text changes with nobody touching it (a live widget, a ticker,
+          // a typing animation), text is not evidence of anything and is left
+          // out of the comparison. Without this an animated landing page made a
+          // scroll that never moved report changed:true, with no warning, and
+          // the dead recipe stayed in the action cache.
+          const pre = await snap()
+          await active.waitForTimeout(350).catch(() => {})
           const before = await snap()
+          const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
           try { r = await brain(body.instruction) }
           catch (e0) {
@@ -1029,10 +1055,37 @@ async function main() {
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
           await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
-          const after = await snap()
-          const changed = !before || !after ? null : (before.url !== after.url || before.title !== after.title || before.scrollY !== after.scrollY || before.sig !== after.sig)
+          let after = await snap()
+          const moved = (a: typeof before, b: typeof before) => !!a && !!b && (a.scrollY !== b.scrollY || a.innerScroll !== b.innerScroll)
+          // SCROLL FALLBACK (#146): on some pages the brain's scroll action
+          // resolves to an element that does not scroll, and nothing moves. A
+          // scroll instruction that moved nothing is retried once as a real
+          // mouse-wheel gesture over the viewport, which is what a person does.
+          const scrollIntent = /\bscroll/i.test(String(body.instruction))
+          let fallback: string | null = null
+          if (scrollIntent && before && after && before.url === after.url && !moved(before, after) && !r?.noop) {
+            const ins = String(body.instruction).toLowerCase()
+            const vp = active.viewportSize() ?? { width: 1280, height: 720 }
+            const dy = /\b(top|beginning|start)\b/.test(ins) ? -1e6 : /\b(bottom|end)\b/.test(ins) ? 1e6 : (/\bup\b/.test(ins) ? -1 : 1) * Math.round(vp.height * 0.9)
+            try {
+              await active.mouse.move(Math.round(vp.width / 2), Math.round(vp.height / 2))
+              await active.mouse.wheel(0, dy)
+              await active.waitForTimeout(700)
+              const again = await snap()
+              if (moved(before, again)) { after = again; fallback = 'mouse-wheel' ; mark(`act[${driver}]: brain scroll moved nothing — mouse-wheel fallback scrolled the page`) }
+            } catch { /* keep the original result */ }
+          }
+          const structural = !!before && !!after && (before.url !== after.url || before.title !== after.title || moved(before, after) || before.form !== after.form)
+          const textChanged = !!before && !!after && before.text !== after.text
+          const changed = !before || !after ? null
+            // A scroll instruction is judged on scroll position (or navigation) alone.
+            : scrollIntent ? (before.url !== after.url || moved(before, after))
+            : structural || (textChanged && !textVolatile)
           const effect = {
-            changed, noop: !!r?.noop,
+            changed, noop: !!r?.noop, fallback,
+            // true when the page's text was already changing on its own before
+            // the action, so text was not used as evidence of an effect.
+            textVolatile,
             urlBefore: before?.url ?? null, urlAfter: after?.url ?? null,
             titleAfter: after?.title ?? null, scrollBefore: before?.scrollY ?? null, scrollAfter: after?.scrollY ?? null,
           }
@@ -1041,9 +1094,12 @@ async function main() {
           let warning: string | null = null
           if (r?.noop) warning = 'the brain found nothing on the page matching this instruction — no action was performed'
           else if (changed === false) {
-            warning = 'the action ran but nothing observable changed on the page (url, title, scroll, form values, text length) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction'
+            warning = scrollIntent
+              ? 'the scroll did not move the page or any scrollable panel (also tried a mouse-wheel gesture) — the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll'
+              : `the action ran but nothing observable changed on the page (url, title, scroll, form values${textVolatile ? '; visible text was ignored because this page animates on its own' : ', text length'}) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction`
             if (before) forgetCached(before.url, String(body.instruction))
           }
+          if (fallback && before) forgetCached(before.url, String(body.instruction))
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
           const prevTask = tasks[tasks.length - 1]
           const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null

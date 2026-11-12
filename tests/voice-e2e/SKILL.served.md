@@ -201,6 +201,12 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
   audioElements, playing}`; `/say` adds `heardAnything` and a `warning` that
   says WHY nothing was heard (no audio element, nothing playing, ears only
   just armed, or a late reply). `/hear` no longer throws on an unarmed tab.
+- **`effect.changed` is no longer fooled by animated pages.** The page is
+  sampled twice before each action; if its text changes by itself
+  (`effect.textVolatile`), text is not counted as evidence. A scroll
+  instruction is judged on scroll position alone, and when the brain's scroll
+  moves nothing the engine retries it as a mouse-wheel gesture
+  (`effect.fallback: "mouse-wheel"`).
 
 ## What's new in v24
 - **`ok:true` is no longer the whole story.** Every `/act` returns `effect`
