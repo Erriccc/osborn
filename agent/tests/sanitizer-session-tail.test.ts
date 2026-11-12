@@ -153,7 +153,7 @@ const manifestPath = join(HOME, '.claude', 'session-manifest.json')
 const manifestRaw = readFileSync(manifestPath, 'utf-8')
 const manifest = JSON.parse(manifestRaw)
 const e1 = manifest.entries[join(projDir, `${SID}.jsonl`)]
-ok('manifest: version bumped to 2', manifest.v === 2, String(manifest.v))
+// The manifest version pin lives in tests/regression/session-manifest.ts (M1d).
 ok('manifest: entry carries title/lastActivityAt/firstTs', e1?.title === s1?.title && e1?.lastActivityAt === ts(11) && e1?.firstTs === ts(1))
 ok('manifest export: no <session_tail / wrapper text', !LEAK_RE.test(manifestRaw))
 invalidateSessionListCache()

@@ -916,12 +916,8 @@ interface SessionManifestEntry {
   title?: string; firstTs?: string; lastActivityAt?: string
 }
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
-// v2: sanitized lastMessage, title, firstTs, lastActivityAt, corrected turn count.
-// A v1 manifest is discarded on load (its previews carry raw wrapper text).
-// 3: the large-file messageCount estimate changed. Cached entries are reused
-// whenever mtime+size are unchanged, and an archived transcript never changes,
-// so without this bump every already-cached `messageCount: 0` would survive and
-// the fix would be a no-op on exactly the sessions it targets.
+// Older manifests are discarded on load. v2: sanitized preview fields. v3: the
+// large-file messageCount estimate changed, and unchanged files are never re-read.
 const SESSION_MANIFEST_VERSION = 3
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')

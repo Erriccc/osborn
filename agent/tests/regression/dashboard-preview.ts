@@ -9,12 +9,9 @@
  *   D4  exclude empty / sub-2-message sessions
  *   D5  NOT read the whole large file (bounded) — asserted by timing + by the
  *       last-message coming from the tail, not a full scan
- *   D6  clear the gate for a COMPACTED large session, whose head holds no
- *       countable turn at all (compact_boundary + one oversized tool record).
- *       Counting the head alone reported 0 here and hid the session entirely.
- *   D7  accepted trade-off: a large transcript with no countable turn in
- *       EITHER sample now surfaces rather than vanishing. Losing a real
- *       conversation is the worse failure, so the floor is deliberate.
+ *   D6  clear the gate for a COMPACTED large session (no countable turn in the head)
+ *   D7  a large transcript with no countable turn in EITHER sample surfaces
+ *       rather than vanishing — deliberate: losing a real conversation is worse
  */
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -90,7 +87,6 @@ check('D4', !byId.has(uuid(3)) && !byId.has(uuid(4)), 'empty + sub-2-message ses
 check('D5', ms < 2000, `listSessions bounded/fast even with a 400KB+ file (${ms}ms)`)
 
 const cp = byId.get(compacted)
-check('D6a', !!cp, 'COMPACTED large session is listed (head has no countable turn)')
 check('D6b', !!cp && cp.messageCount > 2, `compacted session clears >2 gate (got ${cp?.messageCount})`)
 check('D6c', !!cp && cp.lastMessage === 'COMPACTED-TAIL-USER-MSG', `compacted last user message via TAIL (got ${JSON.stringify(cp?.lastMessage)})`)
 check('D7', byId.has(toolOnly), 'tool-only large transcript surfaces rather than vanishing (accepted trade-off)')
