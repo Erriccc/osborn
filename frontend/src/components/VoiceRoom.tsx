@@ -806,24 +806,25 @@ function VoiceRoomInner({
   // gates the real replay. These rows are flagged `fromCache` and are dropped
   // the moment the authoritative /session-messages (or prior_messages) replay
   // lands below — the cache never wins over the live data, it only fills the gap.
+  // Keyed per account, so one account's transcript is never painted for the
+  // next one on this browser (#149 review) — skipped until the id is known.
   useEffect(() => {
-    if (!preSelectedSessionId) return
-    const cached = readCachedTranscript(preSelectedSessionId)
+    if (!preSelectedSessionId || liveUserId === undefined) return
+    const cached = readCachedTranscript(liveUserId, preSelectedSessionId)
     if (cached.length === 0) return
-    const items: ChatMessage[] = cached.map(c => ({
-      id: c.id,
-      role: c.role,
-      content: c.content,
-      timestamp: c.ts ? new Date(c.ts) : new Date(),
-      ...(c.compaction ? { compaction: c.compaction as CompactionMarker } : {}),
-      fromCache: true,
-    }))
+    // Same mapping as the live replay (timestamps, role coercion, day dividers,
+    // compaction placement), so the cached paint is identical to what replaces it.
+    const items: ChatMessage[] = buildPriorItems(
+      preSelectedSessionId,
+      cached.filter(c => !c.compaction).map(c => ({ role: c.role, content: c.content, ts: c.ts })),
+      cached.flatMap(c => (c.compaction ? [c.compaction] : [])),
+    ).map(m => ({ ...m, fromCache: true }))
     setMessages(prev => {
       // Never overwrite anything real that already arrived (fast reconnect).
       if (prev.some(m => m.fromCache || m.id.startsWith('prior-'))) return prev
       return [...items, ...prev]
     })
-  }, [preSelectedSessionId])
+  }, [preSelectedSessionId, liveUserId])
 
   // PRIOR-CONVERSATION HYDRATION — fetch the resumed session's recent messages
   // over plain HTTP at MOUNT, in parallel with the LiveKit connect, so the
@@ -838,10 +839,13 @@ function VoiceRoomInner({
       // A reloaded/resumed session often hits a COLD machine (idle-stopped), so
       // the first fetch can time out or return empty before the agent is up —
       // leaving only a fresh greeting in the pane (audit §16.4 reload quirk).
-      // Keep retrying across the whole cold-boot window (connects were measured
-      // at 60-90s in #136/#143), not just ~25s, or the authoritative replay
-      // never lands and the optimistic cache paint is never reconciled.
-      const delays = [0, 1500, 3000, 5000, 8000, 12000, 15000, 15000, 20000, 20000, 25000]
+      // Retry with backoff until the prior messages actually paint. Deliberately
+      // NOT widened to cover the whole 60-90s cold boot (#149 review): a fresh
+      // agent boot pushes the same rows over the data channel as prior_messages
+      // the moment it is up, so the long tail bought nothing — and a loop still
+      // polling after the user has spoken prepends history containing those
+      // turns while the live rows are kept, duplicating the last turn.
+      const delays = [0, 2000, 4000, 7000, 12000]
       for (const wait of delays) {
         if (cancelled) return
         if (wait) await new Promise(res => setTimeout(res, wait))
@@ -873,10 +877,10 @@ function VoiceRoomInner({
   // Debounced so streaming tokens don't thrash localStorage; keyed by the live
   // session so a switch caches each room separately (also speeds switch-back).
   useEffect(() => {
-    if (!currentSessionId || messages.length === 0) return
-    const id = setTimeout(() => cacheTranscript(currentSessionId, messages), 600)
+    if (!currentSessionId || messages.length === 0 || liveUserId === undefined) return
+    const id = setTimeout(() => cacheTranscript(liveUserId, currentSessionId, messages), 600)
     return () => clearTimeout(id)
-  }, [currentSessionId, messages])
+  }, [currentSessionId, messages, liveUserId])
   // #74 S9: after an in-place switch, paint the TARGET's own history from the
   // agent's /session-messages (with its cwd), the same path as mount hydration.
   // Falls back to the session_switched payload's history (older agents / store
@@ -2244,6 +2248,15 @@ function VoiceRoomInner({
         // against a session the agent isn't running.
         console.warn('⚠️ Session resume verification failed:', data)
         dispatchResumeChip({ type: 'clear' })
+        // The history on screen belongs to the session that FAILED to restore,
+        // so drop it before relabelling — the switch path above does the same.
+        // It is not cosmetic: the transcript-cache write effect keys on
+        // currentSessionId, so leaving those rows up wrote session A's
+        // transcript under session B's key, and B's own (empty) replay never
+        // reconciled them away — they re-cached on every reload (#149 review).
+        // The user's OWN live turns in this connection belong to the session
+        // that is actually running, so they stay: only the prior-/cached rows go.
+        if (data.actualSessionId) setMessages(prev => prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache))
         addMessageRef.current?.('system', `⚠️ Couldn't restore the session you picked — it's no longer available. You're now in a different conversation, not the one you selected.`)
         if (data.actualSessionId) setCurrentSessionId(data.actualSessionId)
       } else if (data.type === 'session_switch_pending') {

@@ -98,11 +98,6 @@ export function clearKeysByPrefix(storage: KeyedStorage, prefix: string): void {
   for (const k of keys) storage.removeItem(k)
 }
 
-/** Remove every live-session record (all users). Called on sign-out. */
-export function clearLiveSessionRecords(storage: KeyedStorage): void {
-  clearKeysByPrefix(storage, LIVE_SESSION_KEY)
-}
-
 /** URL to adopt on take-over, or null (first mount, same session, stale or bad record). */
 export function takeoverSessionUrl(href: string, stored: string | null, prevRole: string, now: number = Date.now(), userId?: string | null): string | null {
   if (!stored || prevRole === 'probing' || prevRole === 'active') return null

@@ -12,10 +12,7 @@ export function engineApp(): string {
   return (process.env.FLY_HARNESS_APP || DEFAULT_APP).trim()
 }
 
-// The engine host the proxy targets. Exported so an "engine unreachable — <host>"
-// state can name the failing host in the panel and in /status (#62/#49), instead
-// of a silent, indefinite "Connecting…"/"Waking…".
-export function engineHost(): string {
+function engineHost(): string {
   // Explicit override wins; otherwise derive the Fly hostname from the app name.
   const override = (process.env.BROWSER_ENGINE_HOST || '').trim()
   return override || `${engineApp()}.fly.dev`
@@ -86,6 +83,10 @@ export type EngineMachineState = {
   configured: boolean
   state: string | null // 'started' | 'stopped' | 'starting' | … | null when unknown
   machineId: string | null
+  // The host the proxy targets (e.g. <app>.fly.dev). Part of the state so the
+  // "engine unreachable" badge can name the failing host (#62/#49) instead of
+  // leaving a silent, indefinite "Waking…" — a hostname, not a Fly app name.
+  host: string
   // True ONLY when the ENGINE itself is unreachable — its control API didn't
   // answer. A failure to read the Fly Machines *management* API (wrong app name,
   // mis-scoped FLY_API_TOKEN, Fly outage) is NOT this: that says nothing about
@@ -131,11 +132,12 @@ export async function engineControlReachable(): Promise<boolean> {
 // report `unreachable` from THAT (#115). A reachable-but-unreadable engine reads
 // as 'started' (it is demonstrably up; we just can't read precise awake/asleep).
 export async function engineMachineState(): Promise<EngineMachineState> {
+  const host = engineHost()
   const flyToken = (process.env.FLY_API_TOKEN || '').trim()
   // No Fly token → the no-wake management read is unavailable. That's a config
   // gap, not an unreachable engine: keep the existing neutral "state n/a" (no
   // probe, no wake) rather than a scary red badge.
-  if (!flyToken) return { configured: false, state: null, machineId: null, unreachable: false }
+  if (!flyToken) return { configured: false, state: null, machineId: null, host, unreachable: false }
   try {
     const res = await fetch(`https://api.machines.dev/v1/apps/${engineApp()}/machines`, {
       headers: { Authorization: `Bearer ${flyToken}`, 'Content-Type': 'application/json' },
@@ -146,14 +148,14 @@ export async function engineMachineState(): Promise<EngineMachineState> {
       // The MANAGEMENT API failed (wrong app/org, mis-scoped token, Fly outage) —
       // ask the engine directly before declaring it unreachable (#115).
       const up = await engineControlReachable()
-      return { configured: true, state: up ? 'started' : null, machineId: null, unreachable: !up }
+      return { configured: true, state: up ? 'started' : null, machineId: null, host, unreachable: !up }
     }
     const machines = (await res.json()) as Array<{ id: string; state: string }>
     const m = Array.isArray(machines) && machines.length ? machines[0] : null
-    return { configured: true, state: m?.state ?? 'destroyed', machineId: m?.id ?? null, unreachable: false }
+    return { configured: true, state: m?.state ?? 'destroyed', machineId: m?.id ?? null, host, unreachable: false }
   } catch {
     const up = await engineControlReachable()
-    return { configured: true, state: up ? 'started' : null, machineId: null, unreachable: !up }
+    return { configured: true, state: up ? 'started' : null, machineId: null, host, unreachable: !up }
   }
 }
 
