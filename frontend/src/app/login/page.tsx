@@ -60,17 +60,27 @@ export default function Home() {
     return () => subscription.unsubscribe()
   }, [])
 
-  // Redirect authenticated users to dashboard
+  // Back to where sign-in was asked for (?next=/browser), else the dashboard.
+  // Same-site paths only, so the link can't send anyone elsewhere.
+  const nextPath = () => {
+    const n = new URLSearchParams(window.location.search).get('next')
+    if (!n) return '/dashboard'
+    try {
+      const u = new URL(n, window.location.origin)
+      return u.origin === window.location.origin ? u.pathname + u.search + u.hash : '/dashboard'
+    } catch { return '/dashboard' }
+  }
+
   useEffect(() => {
     if (user && !authLoading) {
-      window.location.href = '/dashboard'
+      window.location.href = nextPath()
     }
   }, [user, authLoading])
 
   const signInWithProvider = async (p: 'google' | 'github') => {
     await supabase.auth.signInWithOAuth({
       provider: p,
-      options: { redirectTo: `${window.location.origin}/auth/callback?next=/dashboard` },
+      options: { redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath())}` },
     })
   }
 

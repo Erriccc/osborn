@@ -100,6 +100,8 @@ export function BrowserPanel() {
   // state badge and an endless "Waking…" spinner.
   const [signedOut, setSignedOut] = useState(false)
   const [unresponsivePolls, setUnresponsivePolls] = useState(0)
+  const [brokenSince, setBrokenSince] = useState<number | null>(null)
+  const [micOpen, setMicOpen] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const imgRef = useRef<HTMLImageElement | null>(null)
   const typedRef = useRef<{ text: string; timer: ReturnType<typeof setTimeout> | null }>({ text: '', timer: null })
@@ -167,6 +169,27 @@ export function BrowserPanel() {
     const list = Array.isArray(t) ? t : t?.tasks
     if (Array.isArray(list)) setTasks(list)
   }, [])
+
+  // Re-render every second while the stream is down, so the waiting time counts up.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!streamBroken) return
+    const id = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [streamBroken])
+
+  // Inside the engine's own (automated) browser the live view would show
+  // itself, then itself again: an endless mirror that freezes the tab.
+  const [inEngine, setInEngine] = useState(false)
+  useEffect(() => { setInEngine(!!(window as any).__osbornEngine) }, [])
+
+  // The task list keeps itself current while watching.
+  useEffect(() => {
+    if (!watching || signedOut) return
+    refreshTasks()
+    const id = setInterval(refreshTasks, 15000)
+    return () => clearInterval(id)
+  }, [watching, signedOut, refreshTasks])
 
   const post = useCallback(async (action: string, body: unknown, label: string) => {
     setBusy(label); setNote(null); setTokenError(false)
@@ -274,21 +297,13 @@ export function BrowserPanel() {
     if (!sc.timer) sc.timer = setTimeout(() => { const dy = Math.round(sc.dy); sc.dy = 0; sc.timer = null; if (Math.abs(dy) > 2) sendInput({ type: 'scroll', dy }) }, 200)
   }
   const stopEngine = async () => {
-    if (!confirm('Stop the browser engine? Any in-flight run ends and the machine sleeps.')) return
-    await post('end', {}, 'stop')
-    setWatching(false)
+    const drivers = (status?.tabsByOwner ?? []).map((o) => o.owner).filter((o, k, all): o is string => !!o && o !== me && all.indexOf(o) === k)
+    if (!confirm(`Shut down the browser engine? It ends every run on it, for everyone${drivers.length ? ` (now driving: ${drivers.map(label).join(', ')})` : ''}, and the machine sleeps.`)) return
+    if (await post('end', {}, 'shut down')) setWatching(false)
   }
 
   const taskN = (t: Task, i: number) => (typeof t.n === 'number' ? t.n : typeof t.index === 'number' ? t.index : i)
   const asleep = engine?.state && engine.state !== 'started'
-  // The engine reports activeTab as { i, url } now — render the index, never a
-  // stringified object ("Tab [object Object]", #102).
-  const activeTabLabel = (() => {
-    const a = status?.activeTab
-    if (a == null) return '—'
-    if (typeof a === 'object') return a.i != null ? String(a.i) : '—'
-    return String(a)
-  })()
   // #81: the engine tells us when the auto-joined chat agent is unreachable.
   // Only a configured agent can be unreachable; none configured is plain browsing.
   const agentUnreachable = watching && status?.agentUrl ? status?.agentUnreachable ?? null : null
@@ -307,7 +322,6 @@ export function BrowserPanel() {
   const inControl = !!me && (shownTakeover ? shownTakeover.by === me : shownOwner === me)
   const label = (d: string | null | undefined) => (d && d === me ? 'you' : d?.replace(/^person:/, '') ?? '')
   const blank = watching && !!status && blankPage(status.pageUrl)
-
 
   // Closing the page while in control hands the tab back instead of leaving the
   // agent paused (the engine also hands back after 10 idle minutes).
@@ -330,7 +344,7 @@ export function BrowserPanel() {
         <p className="max-w-md text-sm text-neutral-400">
           The live browser view and its controls are available to signed-in accounts.
         </p>
-        <a href="/login" className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-black hover:bg-amber-400">
+        <a href="/login?next=/browser" className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-black hover:bg-amber-400">
           Sign in
         </a>
       </div>
@@ -347,14 +361,7 @@ export function BrowserPanel() {
           <StateBadge engine={engine} watching={watching} status={status} tokenMisconfigured={tokenMisconfigured} agentUnreachable={agentUnreachable} />
         </div>
         <div className="flex items-center gap-2">
-          {!watching ? (
-            <button
-              onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(true) }}
-              className="rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-medium text-black hover:bg-amber-400"
-            >
-              {asleep ? 'Wake & watch' : 'Watch'}
-            </button>
-          ) : (
+          {watching && (
             <button
               onClick={() => setWatching(false)}
               className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800"
@@ -363,10 +370,17 @@ export function BrowserPanel() {
             </button>
           )}
           <button onClick={copyShare} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800">
-            Copy link
+            Copy viewer link
           </button>
+          {watching && (
+            <button onClick={stopEngine} disabled={!!busy} title="Ends every run on the engine, for everyone, and puts it to sleep" className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">
+              Shut down engine
+            </button>
+          )}
         </div>
       </div>
+
+      {!watching && note && <p className="text-xs text-neutral-400">{note}</p>}
 
       {/* Engine-token misconfiguration banner — makes the server-side token
           problem legible instead of a cryptic per-action 401. */}
@@ -410,6 +424,21 @@ export function BrowserPanel() {
         </div>
       )}
 
+      {/* Address bar, where a browser has it. */}
+      {watching && (
+        <div className="flex items-center gap-2">
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') openUrl() }}
+            placeholder={status?.pageUrl && !blank ? status.pageUrl : 'Address, e.g. example.com'}
+            className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-500 outline-none focus:border-amber-500"
+          />
+          <label className="flex shrink-0 items-center gap-1 text-xs text-neutral-400"><input type="checkbox" checked={newTab} onChange={(e) => setNewTab(e.target.checked)} /> new tab</label>
+          <button onClick={openUrl} disabled={!!busy} className="shrink-0 rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Go</button>
+        </div>
+      )}
+
       {/* Control: who drives the shown tab, and taking over / handing back. */}
       {watching && activeI != null && status && (
         inControl ? (
@@ -436,7 +465,11 @@ export function BrowserPanel() {
         className={`relative aspect-video w-full overflow-hidden rounded-xl border bg-black outline-none ${inControl ? 'cursor-crosshair border-emerald-600' : 'border-neutral-800'}`}>
         {watching ? (
           <>
-            {/* key kicks a reload when we retry a broken/waking stream */}
+            {inEngine ? (
+              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-400">
+                This page is open inside the browser engine itself, so the live view is hidden here: it would show itself endlessly. Watch from your own browser.
+              </div>
+            ) : (
             <img
               ref={imgRef}
               draggable={false}
@@ -444,23 +477,28 @@ export function BrowserPanel() {
               src={api('stream', `?t=${streamKickRef.current}`)}
               alt="Live browser stream"
               className="h-full w-full object-contain"
-              onError={() => setStreamBroken(true)}
-              onLoad={() => setStreamBroken(false)}
+              onError={() => { setStreamBroken(true); setBrokenSince((t) => t ?? Date.now()) }}
+              onLoad={() => { setStreamBroken(false); setBrokenSince(null) }}
             />
+            )}
             {streamBroken && !frozen && !blank && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-sm text-neutral-300">
                 {/* `unreachable` only means the Fly state couldn't be READ, so it is
                     no reason to blank this out — that left a bare Retry button (#62/#49). */}
-                <div>Waking the browser engine… (first pixels take ~40s)</div>
+                <div>
+                  {status ? 'Reconnecting to the stream…'
+                    : brokenSince && Date.now() - brokenSince > 90000 ? 'Still not up after 90 seconds.'
+                    : `Waking the browser engine…${brokenSince ? ` ${Math.round((Date.now() - brokenSince) / 1000)}s` : ''} (about 40s)`}
+                </div>
                 <button
-                  onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(false); setTimeout(() => setWatching(true), 50) }}
+                  onClick={() => { setStreamBroken(false); setBrokenSince(null); streamKickRef.current++; setWatching(false); setTimeout(() => setWatching(true), 50) }}
                   className="rounded-lg border border-neutral-600 px-3 py-1.5 hover:bg-neutral-800"
                 >
                   Retry
                 </button>
               </div>
             )}
-            {frozen && (
+            {!inEngine && frozen && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 px-6 text-center text-sm text-neutral-300">
                 <div>This tab stopped responding, so there is nothing to show.</div>
                 {shownOwner && shownOwner !== me ? (
@@ -470,9 +508,9 @@ export function BrowserPanel() {
                 )}
               </div>
             )}
-            {!frozen && blank && (
+            {!inEngine && !frozen && blank && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950 px-6 text-center text-sm text-neutral-300">
-                <div>Nothing is open in this tab. Type an address below, or start with:</div>
+                <div>Nothing is open in this tab. Type an address above, or start with:</div>
                 <div className="flex flex-wrap justify-center gap-2">
                   {STARTERS.map((s) => (
                     <button key={s.url} onClick={() => openStarter(s.url)} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 disabled:opacity-50">{s.label}</button>
@@ -482,8 +520,11 @@ export function BrowserPanel() {
             )}
           </>
         ) : (
-          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-500">
-            {asleep ? 'Engine is asleep. Press “Wake & watch” to boot it and stream the live view (~40s).' : 'Press “Watch” to stream the live browser view here.'}
+          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm text-neutral-400">
+            <button onClick={() => { setStreamBroken(false); setBrokenSince(null); setStatus(null); streamKickRef.current++; setWatching(true) }} className="rounded-lg bg-amber-500 px-5 py-2.5 text-base font-medium text-black hover:bg-amber-400">
+              {asleep ? 'Wake & watch' : 'Watch'}
+            </button>
+            <div>{asleep ? 'The engine is asleep; waking it takes about 40 seconds.' : 'Shows the live browser, and lets you drive it.'}</div>
           </div>
         )}
       </div>
@@ -497,55 +538,42 @@ export function BrowserPanel() {
           Status, Page, Tab, Brain and Stream are unavailable — engine token not configured.
         </div>
       )}
-      {watching && !tokenMisconfigured && (
+      {watching && !tokenMisconfigured && (!status || (status.pageState && status.pageState !== 'complete') || brainReady === false || (status.lastFrameAgeMs ?? 0) > 5000 || status.journey) && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400 sm:grid-cols-4">
-          <Field label="Page" value={status?.pageState || (status ? '—' : 'connecting…')} />
-          <Field label="Tab" value={activeTabLabel} />
-          <Field label="Brain" value={brainReady == null ? '—' : brainReady ? 'ready' : 'not ready'} tone={brainReady === false ? 'warn' : undefined} />
-          <Field label="Stream" value={status?.lastFrameAgeMs != null ? `${Math.round(status.lastFrameAgeMs / 1000)}s ago` : '—'} tone={(status?.lastFrameAgeMs ?? 0) > 10000 ? 'warn' : undefined} />
-          {status?.pageUrl && <div className="col-span-2 truncate sm:col-span-4"><span className="text-neutral-500">URL </span><span className="text-neutral-300">{status.pageUrl}</span></div>}
+          {!status && <Field label="Engine" value="connecting…" />}
+          {status?.pageState && status.pageState !== 'complete' && <Field label="Page" value={status.pageState === 'interactive' ? 'loading' : status.pageState} tone={status.pageState === 'unresponsive' ? 'warn' : undefined} />}
+          {brainReady === false && <Field label="Agent clicks" value="unavailable (brain down)" tone="warn" />}
+          {(status?.lastFrameAgeMs ?? 0) > 5000 && <Field label="Last frame" value={`${Math.round(status!.lastFrameAgeMs! / 1000)}s ago`} tone="warn" />}
           {status?.journey && <div className="col-span-2 sm:col-span-4"><span className="text-neutral-500">Journey </span><span className="text-neutral-300">{typeof status.journey === 'string' ? status.journey : status.journey?.name || status.journey?.goal || '—'}</span></div>}
         </div>
       )}
 
-      {/* Controls */}
-      <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') openUrl() }}
-            placeholder="Address, e.g. example.com"
-            className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500"
-          />
-          <label className="flex items-center gap-1 text-xs text-neutral-400"><input type="checkbox" checked={newTab} onChange={(e) => setNewTab(e.target.checked)} /> new tab</label>
-          <button onClick={openUrl} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Open</button>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Mic input + action feedback */}
+      {watching && (heard || busy || note || !blank) && <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+        {!blank && !micOpen && (
+          <button onClick={() => setMicOpen(true)} className="self-start text-xs text-neutral-400 hover:text-neutral-200">Mic input: play speech into this page’s microphone (for voice apps) ▸</button>
+        )}
+        {!blank && micOpen && <div className="flex flex-wrap items-center gap-2">
           <input
             title="Synthesized speech played into the page's microphone, for testing voice apps. It does not steer the agent."
             value={sayText}
             onChange={(e) => setSayText(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') say() }}
-            placeholder="Speak into the page’s microphone (only for pages that listen)…"
+            placeholder="What to say into the page’s microphone…"
             className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500"
           />
           <button onClick={say} disabled={!!busy} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">Speak</button>
-          <button onClick={stopEngine} disabled={!!busy} className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">Stop engine</button>
-        </div>
+        </div>}
         {heard && <p className="rounded bg-neutral-950 px-3 py-1.5 text-xs text-neutral-300"><span className="text-neutral-500">heard: </span>{heard}</p>}
         {busy && <p className="text-xs text-amber-400">{busy}…</p>}
         {note && <p className="text-xs text-neutral-400">{note}</p>}
-      </div>
+      </div>}
 
       {/* Per-run links */}
       <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-medium text-neutral-200">This run’s tasks</h3>
-          <button onClick={refreshTasks} className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800">Refresh</button>
-        </div>
+        <h3 className="mb-2 text-sm font-medium text-neutral-200">This run’s tasks</h3>
         {tasks.length === 0 ? (
-          <p className="text-xs text-neutral-500">No tasks yet — recorded tasks appear here with clip + log links once a run produces them.</p>
+          <p className="text-xs text-neutral-500">Nothing recorded yet. Each action an agent takes shows up here with its clip and screenshot.</p>
         ) : (
           <ul className="flex flex-col gap-1">
             {tasks.map((t, i) => {
@@ -564,7 +592,7 @@ export function BrowserPanel() {
         )}
         <div className="mt-2 flex gap-3 text-xs">
           <a className="text-neutral-400 hover:underline" href={api('logs')} target="_blank" rel="noreferrer">console + network logs</a>
-          <a className="text-neutral-400 hover:underline" href={api('audio')} target="_blank" rel="noreferrer">run audio</a>
+          {tasks.length > 0 && <a className="text-neutral-400 hover:underline" href={api('audio')} target="_blank" rel="noreferrer">run audio</a>}
         </div>
       </div>
     </div>
