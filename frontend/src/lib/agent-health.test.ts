@@ -130,6 +130,7 @@ check("resolveAgentHealth: a user's own anthropic key is not a demo-tier concern
   assert.equal(resolveAgentHealth({ version: '0.9.278', relyingOnFallback: true, mainProvider: 'ANTHROPIC', keyHealth: DEAD }).show, false)
 })
 check('resolveAgentHealth: unknown provider leaves the sticky flag in charge', () => {
+  assert.equal(resolveAgentHealth({ version: '0.9.278', mainProvider: null, keyHealth: DEAD }).show, false)
   assert.equal(resolveAgentHealth({ version: '0.9.278', relyingOnFallback: true, mainProvider: null, keyHealth: DEAD }).level, 'keys-failed')
 })
 

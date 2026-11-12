@@ -49,7 +49,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
-import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, isClaudeAuthenticated, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
+import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, pickConnectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -5220,7 +5220,7 @@ async function main() {
     // tier-1 (real Claude login) and tier-2 (user's own ANTHROPIC_API_KEY).
     // #87: record WHICH tier it selected — that drives agent_ready.provider and
     // /health. The key self-test for it fires after session start.
-    const activeProvider: ActiveProvider = applyAuthFallback()
+    const activeProvider = applyAuthFallback()
     agentActiveProvider = activeProvider === 'none' ? null : activeProvider
     console.log(`🧭 Active model provider: ${activeProvider}`)
 
@@ -6187,11 +6187,10 @@ async function main() {
               // Publish the new tier and drop the dead one's verdict BEFORE the
               // respawn, or /health keeps serving {provider:'zai', status:'expired'}
               // and the UI claims "The session can't answer" while Claude answers
-              // fine. OBSERVED via the same expiry-aware predicate applyAuthFallback
-              // uses for tier 1 — asserting 'claude' would lie if the flow completed
-              // without a usable token, and re-running applyAuthFallback would
-              // re-apply the very redirect the auth path just cleared.
-              agentActiveProvider = isClaudeAuthenticated() ? 'claude' : null
+              // fine. fallbackCleared is only reachable once Claude auth really
+              // exists (every other outcome of the flow rejects), including the
+              // CLI/Keychain case that isClaudeAuthenticated() cannot see.
+              agentActiveProvider = 'claude'
               startKeyHealthProbe()
               requestAuthRestart()
             })
