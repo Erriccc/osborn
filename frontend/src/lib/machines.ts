@@ -99,6 +99,61 @@ function getSandboxImage(version?: string): string {
   return process.env.FLY_SANDBOX_IMAGE || 'registry.fly.io/osborn-sandbox/agent:latest'
 }
 
+/**
+ * Highest plain `x.y.z` tag in a registry tag list, or null when there is none.
+ * Pure — exported for tests. Ignores `latest`, pre-release and non-version tags.
+ */
+export function pickNewestVersionTag(tags: readonly unknown[]): string | null {
+  let best: [number, number, number] | null = null
+  for (const t of tags) {
+    const m = typeof t === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(t.trim()) : null
+    if (!m) continue
+    const v: [number, number, number] = [Number(m[1]), Number(m[2]), Number(m[3])]
+    if (!best || v[0] > best[0] || (v[0] === best[0] && (v[1] > best[1] || (v[1] === best[1] && v[2] > best[2])))) best = v
+  }
+  return best ? best.join('.') : null
+}
+
+let newestImageCache: { image: string; at: number } | null = null
+
+/**
+ * The image a NEW machine should be created from: the newest version-tagged
+ * build in the sandbox registry, pinned by tag.
+ *
+ * Why not FLY_SANDBOX_IMAGE as-is: it is `...:latest`, and the manual release
+ * path (`fly deploy --image-label X.Y.Z`) never moves `:latest`. On 2026-11-12
+ * `:latest` was 0.9.272 while existing machines ran 0.9.277, so every brand-new
+ * account was provisioned five releases behind — without the no-Claude fallback
+ * — and sat on "Connecting" at a mandatory Claude sign-in (#87). Existing
+ * machines were fine, which is why nobody noticed.
+ *
+ * Falls back to the configured image when the registry can't be read, so a
+ * registry blip degrades to the old behaviour instead of blocking sign-ups.
+ */
+export async function resolveNewestSandboxImage(now: number = Date.now()): Promise<string> {
+  const fallback = getSandboxImage()
+  if (newestImageCache && now - newestImageCache.at < 5 * 60 * 1000) return newestImageCache.image
+  try {
+    const m = /^([^/]+)\/(.+?)(?::[^/:]+)?$/.exec(fallback)
+    const token = process.env.FLY_API_TOKEN
+    if (!m || !token) return fallback
+    const res = await fetch(`https://${m[1]}/v2/${m[2]}/tags/list`, {
+      headers: { Authorization: `Basic ${Buffer.from(`x:${token}`).toString('base64')}` },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) { console.warn(`[machines] newest-image lookup HTTP ${res.status} — using ${fallback}`); return fallback }
+    const body = (await res.json()) as { tags?: unknown[] }
+    const newest = pickNewestVersionTag(Array.isArray(body.tags) ? body.tags : [])
+    if (!newest) return fallback
+    const image = getSandboxImage(newest)
+    newestImageCache = { image, at: now }
+    return image
+  } catch (err) {
+    console.warn(`[machines] newest-image lookup failed (${(err as Error).message}) — using ${fallback}`)
+    return fallback
+  }
+}
+
 export function isMachinesConfigured(): boolean {
   return !!process.env.FLY_API_TOKEN
 }
@@ -427,8 +482,10 @@ export async function createSandboxRaw(
 
     // Step 4: Create machine
     const envVars = getPlatformEnvVars(userId, options?.syncToken)
+    const sandboxImage = await resolveNewestSandboxImage()
+    console.log(`[machines] createSandbox image: ${sandboxImage}`)
     const machineConfig: Record<string, unknown> = {
-      image: getSandboxImage(),
+      image: sandboxImage,
       init: { exec: ['/entrypoint.sh'] },
       env: envVars,
       // performance-2x: 2 dedicated vCPUs + 8GB RAM.

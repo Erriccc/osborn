@@ -64,7 +64,7 @@ import { fileURLToPath } from 'url'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
-import { saveCapture, peekCapture } from '../lib/audio-capture'
+import { saveCapture, peekCapture, startElementCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
@@ -403,6 +403,56 @@ async function main() {
         '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
       return existsSync(out) ? out : null
     } catch { return null }
+  }
+  // EARS ON ANY TAB. Page-audio capture used to be armed only by the boot
+  // room-join on tab 0, so a voice session in any other tab was deaf: /say
+  // "succeeded" with an empty transcript and /hear threw. The ears now arm
+  // themselves on whichever tab is spoken to or listened on, and every answer
+  // says what state they were in, so "the agent was silent" can be told apart
+  // from "nobody was listening".
+  const earsState = async (p: Page): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number }> =>
+    (await Promise.race([
+      p.evaluate(() => {
+        const c = (window as any).__osbornCapture
+        const els = [...document.querySelectorAll('audio,video')] as HTMLMediaElement[]
+        return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length }
+      }),
+      new Promise<null>((r) => setTimeout(() => r(null), 3000)),
+    ]).catch(() => null)) ?? { armed: false, startedAt: null, audioElements: 0, playing: 0 }
+  const ensureEars = async (p: Page) => {
+    const before = await earsState(p)
+    if (before.armed) return { ...before, armedNow: false }
+    await startElementCapture(p).catch(() => {})
+    return { ...(await earsState(p)), armedNow: true }
+  }
+  // AUDIBLE PROOF for a spoken turn: the true-time video clip plus BOTH sides
+  // of the audio — what the tester said (the synthesized utterance, placed at
+  // the instant it was played into the mic) and what the page played back
+  // (the ears' recording, aligned by wall clock). Returns null when there is
+  // no audio at all to add.
+  const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
+    const args = ['-y', '-loglevel', 'error', '-i', clip.path]
+    const filters: string[] = []; const labels: string[] = []
+    let idx = 1
+    const said = !!saidWav && existsSync(saidWav) && playStartMs > 0
+    if (said) {
+      const d = Math.max(0, Math.round(playStartMs - clip.startMs))
+      args.push('-i', saidWav!); filters.push(`[${idx}:a]aresample=48000,adelay=${d}:all=1[s]`); labels.push('[s]'); idx++
+    }
+    const a = await peekAudioToWav()
+    if (a) {
+      const off = (clip.startMs - a.startedAt) / 1000
+      if (off >= 0) args.push('-ss', off.toFixed(3))
+      args.push('-i', a.wav)
+      filters.push(`[${idx}:a]aresample=48000${off < 0 ? `,adelay=${Math.round(-off * 1000)}:all=1` : ''}[h]`); labels.push('[h]'); idx++
+    }
+    if (!labels.length) return null
+    const out = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say-av.mp4`)
+    filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest,apad[a]`)
+    try {
+      await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
+      return existsSync(out) ? { path: out, said, heard: !!a } : null
+    } catch (e) { mark(`audio mux failed: ${(e as Error).message.slice(0, 100)}`); return null }
   }
   // TAB HUD — ONLY for headless/CDP capture, where the screencast has no
   // browser chrome and tabs would be invisible. In full-window (display) mode
@@ -966,7 +1016,11 @@ async function main() {
           // The clip covers THIS action (start → now, +2s lead), capped by
           // clipSeconds. It used to be "the last 20s of screen", which pulled
           // in footage from before the action — including other drivers' tabs.
-          const { clip, clipError } = await reqClip(n, 'act', Math.min(body.clipSeconds ?? 30, Math.ceil((Date.now() - t0) / 1000) + 2))
+          const actFrom = Math.max(t0 - 1500, Date.now() - (body.clipSeconds ?? 45) * 1000)
+          const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom).catch(() => null) : null
+          const clip = actRange?.path ?? null
+          const clipError = clip ? null : (live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session')
+          if (clip) mark(`clip: ${clip}`)
           const shot = await reqShot(n, 'act')
           const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
           scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
@@ -993,10 +1047,13 @@ async function main() {
           // PRECONDITION failure is NOT retried — it will not fix itself (the
           // tab never opened a getUserMedia mic). (A full process death can't be
           // retried here; the caller's re-attach — see drive.sh — covers that.)
+          const ears = await ensureEars(active)
+          const saidWav = join(RUN_DIR, `said-${Date.now()}.wav`)
+          let playStartMs = 0
           const MAX_SAY_ATTEMPTS = Math.max(1, Number(process.env.OSBORN_SAY_RETRIES ?? 2))
           let sayErr: Error | null = null
           for (let attempt = 1; attempt <= MAX_SAY_ATTEMPTS; attempt++) {
-            try { await speakText(active, body.text); sayErr = null; break }
+            try { await speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { playStartMs = Date.now() } }); sayErr = null; break }
             catch (e) {
               sayErr = e as Error
               const m = sayErr.message || ''
@@ -1023,22 +1080,45 @@ async function main() {
               artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null, driver,
             }, noMic ? 422 : 502)
           }
-          mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
-          const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
+          mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(body.listenMs ?? 6000)
           const n = ++reqN
-          const { clip, clipError } = await reqClip(n, 'say', Math.min(body.clipSeconds ?? 30, Math.ceil((Date.now() - t0) / 1000) + 2))
+          // Cut the clip NOW — speak start to end of the listen window — before
+          // the (slow) transcription, so the spoken moment is always in it. It
+          // used to be "the last 30s", which for a long turn showed only the tail.
+          let clip: string | null = null; let clipError: string | null = null
+          let audio: { said: boolean; heard: boolean } = { said: false, heard: false }
+          const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000).catch(() => null) : null
+          if (!range) clipError = live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session'
+          else {
+            clip = range.path
+            const av = await muxSayAudio(range, saidWav, playStartMs, n)
+            if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
+            mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
+          }
+          try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
+          let hearError: string | null = null
+          const heard = await hearSince(active, Math.max(0, t0 - (ears.startedAt ?? tCapture))).catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
+          const earsAfter = await earsState(active)
+          const sayWarning = heard ? null
+            : hearError ? `nothing transcribed: ${hearError}`
+            : earsAfter.audioElements === 0 ? 'nothing was heard, and the page has no audio/video element — no agent audio track is attached (the agent is probably not connected or not speaking)'
+            : earsAfter.playing === 0 ? 'nothing was heard: the page has audio elements but none is playing'
+            : ears.armedNow ? 'nothing was heard; the ears were armed on this tab just before speaking, so audio that started earlier was not captured'
+            : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say')
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
           scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
-          return json(res, { ok: true, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         })
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
         // The CALLER's tab, not whichever tab another driver fronted last.
         const hearTab = driverActive.get(driverId(req)); const hearPage = hearTab && !hearTab.isClosed() ? hearTab : active
-        const since = Date.now() - tCapture - (body.lastMs ?? 20000)
-        try { return json(res, { heard: await hearSince(hearPage, Math.max(0, since)) }) }
+        const hearEars = await ensureEars(hearPage)
+        if (hearEars.armedNow) return json(res, { heard: '', ears: hearEars, warning: 'the ears were not armed on this tab until this call, so nothing earlier was recorded — have the page play audio again (or /say), then call /hear' })
+        const since = Date.now() - (hearEars.startedAt ?? tCapture) - (body.lastMs ?? 20000)
+        try { const heard = await hearSince(hearPage, Math.max(0, since)); return json(res, { heard, ears: hearEars, warning: heard ? null : (hearEars.playing === 0 ? 'nothing heard: no audio element on the page is playing' : null) }) }
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
       if (path === '/shot') { const driver = driverId(req); return await withLock(async () => { await focusDriverTab(driver); const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64'), driver }) }) }
