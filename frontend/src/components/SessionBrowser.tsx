@@ -122,9 +122,7 @@ export default function SessionBrowser({
     }
   }
 
-  // Filter sessions by search query — the one shared matcher (lib/session-list),
-  // so this list searches the same fields the rows actually display (cleaned
-  // title/preview + project folder) instead of the raw stored strings.
+  // Filter sessions by search query — the one shared matcher (lib/session-list).
   const filteredSessions = useMemo(
     () => sessions.filter((s) => sessionMatchesQuery(s, searchQuery)),
     [sessions, searchQuery],
