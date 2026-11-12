@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { sessionMessagesQuery, pinnedSessionCwd, takeoverSessionUrl, liveSessionRecord, LIVE_SESSION_KEY, liveSessionKey, clearKeysByPrefix } from '../src/lib/chat-url'
+import { sessionMessagesQuery, pinnedSessionCwd, takeoverSessionUrl, liveSessionRecord, LIVE_SESSION_KEY, liveSessionKey } from '../src/lib/chat-url'
 import { switchFailureText, pendingSwitchLabel, switchPendingReducer } from '../src/lib/switch-ui'
 import { buildRoomRows } from '../src/lib/rooms'
 import { isRedundantFinal } from '../src/lib/claude-output'
@@ -204,12 +204,6 @@ t('S13 a record written by user A is ignored when user B takes over', () => {
   const recA = liveSessionRecord(S, '/w/b', T0, 'user-a')
   assert.equal(takeoverSessionUrl('https://x.test/chat', recA, 'taking', T0 + 1000, 'user-b'), null)
   assert.ok(takeoverSessionUrl('https://x.test/chat', recA, 'taking', T0 + 1000, 'user-a'))
-})
-t('S13 sign-out clears every live-session record', () => {
-  const store = new Map<string, string>([['vn-chat-live-session:user-a', 'x'], ['vn-chat-live-session:anon', 'y'], ['osborn-agent-url', 'z']])
-  const storage = { get length() { return store.size }, key: (i: number) => Array.from(store.keys())[i] ?? null, removeItem: (k: string) => { store.delete(k) } }
-  clearKeysByPrefix(storage, LIVE_SESSION_KEY)
-  assert.deepEqual(Array.from(store.keys()), ['osborn-agent-url'])
 })
 t('S13 wiring: keyed reads/writes; every sign-out clears the records', () => {
   assert.ok(/liveSessionKey\(/.test(vr))

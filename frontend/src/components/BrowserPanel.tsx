@@ -416,6 +416,7 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: 'w
 function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreachable }: { engine: EngineState | null; watching: boolean; status: Status | null; tokenMisconfigured?: boolean; agentUnreachable?: string | null }) {
   let label = 'unknown'
   let cls = 'bg-neutral-700 text-neutral-200'
+  let hint: string | undefined
   // A live /status response is direct, authoritative proof the engine is
   // reachable — even if the no-wake Fly machine-state probe couldn't read
   // awake/asleep. Treat it as "up" so a management-API blip (wrong app name /
@@ -435,14 +436,15 @@ function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreach
     label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300'
   } else if (engine && engine.unreachable) {
     // The engine's OWN control API didn't answer (not merely a management-API
-    // read miss) — explicit genuine-down, not "unknown" (#81/#115), and it
-    // names the host that isn't answering (#62/#49) when the server got to say.
-    label = `engine unreachable${engine.host ? ` — ${engine.host}` : ''}`; cls = 'bg-red-700/80 text-white'
+    // read miss) — explicit genuine-down, not "unknown" (#81/#115). The host
+    // that isn't answering rides the tooltip (#62/#49) — in the pill it would
+    // be a ~45-character badge.
+    label = 'engine unreachable'; cls = 'bg-red-700/80 text-white'; hint = engine.host || undefined
   } else if (engine && !engine.configured) {
     label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'
   } else if (!engine) {
     // Still probing on first paint — honest "unknown" until the first result.
     label = 'unknown'; cls = 'bg-neutral-700 text-neutral-200'
   }
-  return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{label}</span>
+  return <span title={hint} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{label}</span>
 }

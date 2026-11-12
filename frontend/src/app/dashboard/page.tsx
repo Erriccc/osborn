@@ -414,14 +414,14 @@ export default function Dashboard() {
     // an authenticated user back with a full page reload. It only stops the
     // spinner, and the screen it lands on carries the Sign in link.
     // The redirect is gated on isSupabaseConfigured() because a self-hosted
-    // build has no /login to send anyone to (mirrors the ChatSessionProvider
-    // gate) and getBrowserUser() returns null for a transient failure too.
+    // build has no /login to send anyone to, and getBrowserUser() returns null
+    // for a transient auth failure too.
     const timeout = setTimeout(() => setLoading(false), 3000)
-    getBrowserUser(supabase).then((u) => {
+    getBrowserUser(supabase).then((user) => {
       clearTimeout(timeout)
-      setUser(u)
+      setUser(user)
       setLoading(false)
-      if (!u && isSupabaseConfigured()) router.replace('/login')
+      if (!user && isSupabaseConfigured()) router.replace('/login')
     }).catch(() => { clearTimeout(timeout); setLoading(false) })
   }, [])
 

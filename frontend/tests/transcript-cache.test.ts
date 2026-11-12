@@ -38,18 +38,33 @@ const msg = (over: Partial<ChatMessage>): ChatMessage => ({
   id: 'm1', role: 'user', content: 'hello', timestamp: new Date('2026-11-11T19:00:00Z'), ...over,
 })
 
-t('serialize drops streaming, empty, already-cached and local system rows', () => {
+t('serialize drops streaming, empty and local system rows; keeps cached history', () => {
   const items = serializeTranscript([
     msg({ id: 'u1', role: 'user', content: 'first question' }),
     msg({ id: 'a1', role: 'assistant', content: 'an answer' }),
     msg({ id: 's1', role: 'assistant', content: 'still typing', isStreaming: true }),
     msg({ id: 'e1', role: 'assistant', content: '' }),
+    // Still the history on screen during a cold boot: re-serialized, or the
+    // first live turn would overwrite the key and destroy it.
     msg({ id: 'r1', role: 'assistant', content: 'painted from cache', fromCache: true }),
     msg({ id: 'n1', role: 'system', content: '⚠️ local-only notice' }),
     msg({ id: 'c1', role: 'system', content: '', compaction: { skillNames: [], skillsWritten: 0, at: 1 } }),
   ])
-  eq(items.map(i => i.id), ['u1', 'a1', 'c1'], 'kept ids')
-  eq(items[2].compaction, { skillNames: [], skillsWritten: 0, at: 1 }, 'compaction passed through')
+  eq(items.map(i => i.id), ['u1', 'a1', 'r1', 'c1'], 'kept ids')
+  eq(items[3].compaction, { skillNames: [], skillsWritten: 0, at: 1 }, 'compaction passed through')
+})
+
+t('a cold boot that speaks before the replay keeps its cached history', () => {
+  const s = fakeStorage()
+  cacheTranscript('u1', 'sess', [msg({ id: 'p1', role: 'user', content: 'yesterday' })], s)
+  const painted = readCachedTranscript('u1', 'sess', s)
+  eq(painted.map(m => m.content), ['yesterday'], 'painted from cache')
+  // The paint effect re-adds those rows flagged fromCache; the user then speaks.
+  cacheTranscript('u1', 'sess', [
+    ...painted.map(m => msg({ id: m.id, role: m.role, content: m.content, fromCache: true })),
+    msg({ id: 'live1', role: 'user', content: 'today' }),
+  ], s)
+  eq(readCachedTranscript('u1', 'sess', s).map(m => m.content), ['yesterday', 'today'], 'history survives')
 })
 
 t('serialize drops synthetic day/Today dividers, keeps real messages', () => {

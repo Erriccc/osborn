@@ -64,9 +64,10 @@ export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
   const out: CachedMessage[] = []
   for (const m of messages) {
     if (!m || !m.id || m.isStreaming) continue
-    // A cache row must never be re-cached: that is what let a transcript cached
-    // under the wrong key (a failed resume) survive every reload (#149 review).
-    if (m.fromCache) continue
+    // NOTE: fromCache rows are deliberately re-serialized. They are the history
+    // on screen until the replay lands, and on the 60-90s cold boot this cache
+    // exists for the user can speak first — skipping them would overwrite the
+    // key with those one or two live turns and destroy the history.
     // Skip the synthetic day / "── Today ──" dividers: they are time-relative,
     // so a cached "Today" would mislead on a later-day reload. buildPriorItems
     // regenerates them from the real timestamps on both paint paths.

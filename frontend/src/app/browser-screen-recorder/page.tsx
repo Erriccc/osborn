@@ -27,8 +27,7 @@ export default function BrowserScreenRecorderLanding() {
     // reachable only by direct URL. Wrap it in the standard marketing chrome so
     // it carries the Voice Native header (wordmark → home) and footer.
     <MarketingShell>
-    {/* No bg-black / min-h-screen here: the shell owns the full-height
-        background, so a black panel just ended mid-viewport over it. */}
+    {/* No bg-black: the shell owns the full-height background. */}
     <div className="text-gray-200 flex flex-col items-center px-6 py-16">
       <div className="max-w-2xl w-full space-y-10">
         <header className="space-y-3 text-center">
