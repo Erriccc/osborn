@@ -471,13 +471,19 @@ async function main() {
   // themselves on whichever tab is spoken to or listened on, and every answer
   // says what state they were in, so "the agent was silent" can be told apart
   // from "nobody was listening".
-  const earsState = async (p: Page): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number }> =>
+  // `heardSince`: did the ears detect sound (speech-start, or still sounding)
+  // since that time? `tapped`: was any page audio source ever recorded?
+  const earsState = async (p: Page, since = 0): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number; tapped?: boolean; heardSince?: boolean }> =>
     (await Promise.race([
-      p.evaluate(() => {
-        const c = (globalThis as any).__osbornCapture
+      p.evaluate((since) => {
+        const g = globalThis as any
+        const c = g.__osbornCapture
         const els = [...document.querySelectorAll('audio,video')] as HTMLMediaElement[]
-        return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length }
-      }),
+        const ev: Array<{ type: string; t: number }> = g.__osbornEars ?? []
+        const last = ev[ev.length - 1]
+        return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length,
+          tapped: !!g.__osbornAudioAnchor, heardSince: ev.some((e) => e.type === 'speech-start' && e.t >= since) || last?.type === 'speech-start' }
+      }, since),
       new Promise<null>((r) => setTimeout(() => r(null), 3000)),
     ]).catch(() => null)) ?? { armed: false, startedAt: null, audioElements: 0, playing: 0, unknown: true }
   const ensureEars = async (p: Page) => {
@@ -1221,6 +1227,9 @@ async function main() {
       }
       if (path === '/say') {
         const driver = driverId(req)
+        // Where the turn's time went, returned to the caller (#201).
+        const tReq = Date.now(); const timings: Record<string, number> = {}
+        let tStep = tReq; const lap = (name: string) => { const now = Date.now(); timings[name] = now - tStep; tStep = now }
         // The lock covers speaking only; listening, clip and transcript run after it.
         const spoken = await withLock(async () => {
           await focusDriverTab(driver)
@@ -1281,26 +1290,38 @@ async function main() {
         })
         if (!spoken) return  // answered inside the lock (refused, invalid, or no mic)
         const { page, t0, ears, saidWav, playStartMs, n } = spoken
-        const turnDeadline = t0 + 80000
+        lap('speak')
+        // One deadline for the whole request, under the panel's 90s cut-off (#201).
+        const turnDeadline = tReq + 80000
         {
           await page.waitForTimeout(body.listenMs ?? 6000).catch(() => {})
+          lap('listen')
           // Cut the clip NOW — speak start to end of the listen window — before
           // the (slow) transcription, so the spoken moment is always in it. It
           // used to be "the last 30s", which for a long turn showed only the tail.
           let clip: string | null = null; let clipError: string | null = null
           let audio: { said: boolean; heard: boolean } = { said: false, heard: false }
           const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, Date.now(), page).catch(() => null) : null
+          lap('clip')
           let hearError: string | null = null
+          // Skip decoding and hearing when the ears clearly heard nothing this
+          // turn: no page audio ever tapped, or no sound since speaking (#201).
+          // A page too busy to answer is not "silent".
+          const earsNow = await earsState(page, t0) as Awaited<ReturnType<typeof earsState>> & { unknown?: boolean }
+          const nothingToHear = !earsNow.unknown && (!earsNow.tapped || !earsNow.heardSince)
           // Decode the recording once; the transcript and the clip's audio both use it (#165).
           // One deadline for the turn, under the panel's 90s cut-off (#199): each
           // step gets what is left, so a stuck page means "nothing heard", not a hang.
           const left = (min: number) => Math.max(min, turnDeadline - Date.now())
-          const decoded = await peekAudioToWav(page)  // its ffmpeg decode is capped at 30s
+          // Decoding is skipped when under 15s of the turn is left.
+          const decoded = nothingToHear || left(0) < 15000 ? null : await peekAudioToWav(page)
+          lap('decode')
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
           const budget = left(5000)
-          const heard = await Promise.race([decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw(),
+          const heard = nothingToHear ? '' : await Promise.race([decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw(),
             new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)), budget))])
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
+          lap('hear')
           if (!range) clipError = live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session'
           else {
             clip = range.path
@@ -1308,6 +1329,7 @@ async function main() {
             if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
             mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
           }
+          lap('mix')
           for (const f of [saidWav, decoded?.wav]) if (f) try { rmSync(f, { force: true }) } catch { /* ignore */ }
           const earsAfter = await earsState(page)
           const sayWarning = heard ? null
@@ -1321,7 +1343,8 @@ async function main() {
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard, page)
           ;(window as any).clipAudio = audio; writeManifest()
           addStep('say', String(body.text))
-          return json(res, { ok: true, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          timings.total = Date.now() - tReq
+          return json(res, { ok: true, timings, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {
