@@ -629,11 +629,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         ? sessionParamsFromSearch(window.location.search)
         : { sessionId: null, workingDirectory: '' }
       const connectSessionId = live.sessionId || preSelectedSessionId
-      // Never send an EMPTY cwd when one is known: an empty hint makes the agent
-      // boot /workspace root (#112). The live URL's cwd wins; if a switch left it
-      // empty, fall back to the cwd the page launched with. The agent treats this
-      // purely as a hint and resolves the session's real project dir regardless.
-      const connectWorkingDirectory = (live.sessionId ? live.workingDirectory : workingDirectory) || workingDirectory
+      // Never send an EMPTY cwd when one is known: an older agent still trusts
+      // this hint raw, and an empty one boots it in the workspace ROOT (#112).
+      // The live URL's cwd wins; if a switch left it empty, fall back to the cwd
+      // the page launched with.
+      const connectWorkingDirectory = live.workingDirectory || workingDirectory
       if (connectSessionId)
         url += `&sessionId=${encodeURIComponent(connectSessionId)}`
       // Forward the session's cwd into the token metadata so the agent boots with

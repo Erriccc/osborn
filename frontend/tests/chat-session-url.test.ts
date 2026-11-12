@@ -35,25 +35,16 @@ t('switch: session param replaced, other params kept, cwd updated', () => {
   assert.equal(u.searchParams.get('provider'), 'gemini')
 })
 
-t('switch to a DIFFERENT session with unknown cwd DROPS the stale workingDirectory (#112)', () => {
-  // The previous session's project dir must not ride onto the new session: a
-  // reload would then boot the agent in the wrong dir (/workspace root or the
-  // old project) and resume the wrong conversation. No hint is safer than a
-  // wrong one — the agent resolves the session's real cwd from its id.
+t('switch with unknown cwd KEEPS a workingDirectory (safe against an older agent)', () => {
+  // This bundle ships independently of the agent image. A current agent treats
+  // workingDirectory as a hint and resolves the session's real dir from its id
+  // (#112), so a stale hint costs nothing; an OLDER agent trusts the hint raw,
+  // and with no hint at all it boots the workspace ROOT — #112 for everyone.
+  // A stale project dir degrades better than no dir.
   const next = chatUrlForSession(`https://x.test/chat?session=${S1}&workingDirectory=%2Fw%2Fa`, S2)!
-  assert.equal(new URL(next, 'https://x.test').searchParams.get('workingDirectory'), null)
-  assert.equal(new URL(next, 'https://x.test').searchParams.get('session'), S2)
-})
-
-t('SAME session with unknown cwd keeps its workingDirectory (reload hint survives)', () => {
-  // A reload of the live session with cwd momentarily unknown must not lose the
-  // URL's own correct cwd — only a session CHANGE drops it.
-  assert.equal(chatUrlForSession(`https://x.test/chat?session=${S1}&workingDirectory=%2Fw%2Fa`, S1), null)
-})
-
-t('switch with a KNOWN cwd replaces the stale one (not dropped)', () => {
-  const next = chatUrlForSession(`https://x.test/chat?session=${S1}&workingDirectory=%2Fw%2Fa`, S2, '/w/b')!
-  assert.equal(new URL(next, 'https://x.test').searchParams.get('workingDirectory'), '/w/b')
+  const u = new URL(next, 'https://x.test')
+  assert.equal(u.searchParams.get('workingDirectory'), '/w/a')
+  assert.equal(u.searchParams.get('session'), S2)
 })
 
 t('one-shot seed params are dropped so a reload never re-seeds', () => {
@@ -88,12 +79,6 @@ t('VoiceRoom writes the live session into the URL with replaceState', () => {
 t('provider: preSelectedSessionId is fixed for the page life; reconnects read the live URL', () => {
   assert.ok(/useState(<[^>]*>)?\(\s*\(\)\s*=>\s*params\.get\('session'\)/.test(prov), 'preSelectedSessionId must be captured once (useState initializer)')
   assert.ok(/sessionParamsFromSearch\(/.test(prov), 'connect() must read the current URL session')
-})
-t('provider: connect never forwards an EMPTY cwd when one is known (#112)', () => {
-  // live.workingDirectory || workingDirectory — an empty live cwd must fall back
-  // to the launch cwd so the agent never boots /workspace root for a known dir.
-  assert.ok(/live\.sessionId \? live\.workingDirectory : workingDirectory\)\s*\|\|\s*workingDirectory/.test(prov),
-    'connectWorkingDirectory must fall back to the launch workingDirectory when the live cwd is empty')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
