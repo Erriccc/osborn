@@ -453,8 +453,8 @@ export function BrowserPanel() {
       {/* Control: who drives the shown tab, and taking over / handing back. */}
       {watching && activeI != null && status && (
         inControl ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
-            <span><span className="font-semibold">You have control.</span> Click, type and scroll in the picture.{shownTakeover?.prevOwner ? ` ${label(shownTakeover.prevOwner)} is paused until you hand back.` : ''}</span>
+          <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
+            <span><span className="font-semibold">You have control.</span> Click, type and scroll in the picture; Escape leaves it.{shownTakeover?.prevOwner ? ` ${label(shownTakeover.prevOwner)} is paused until you hand back.` : ''}</span>
             <button onClick={handBack} disabled={!!busy} className="rounded-lg bg-emerald-500 px-3 py-1 font-medium text-black hover:bg-emerald-400 disabled:opacity-50">{shownTakeover ? 'I’m done, hand back' : 'Let agents use this tab'}</button>
           </div>
         ) : shownTakeover ? (
@@ -470,6 +470,9 @@ export function BrowserPanel() {
       {/* Live view */}
       <div
         tabIndex={inControl ? 0 : -1}
+        // Screen readers: what this is, and how to leave control mode (#202).
+        role={inControl ? 'application' : 'img'}
+        aria-label={inControl ? 'Remote browser, you have control: clicks and typing go to the page. Press Escape to leave, Tab to move on.' : 'Live view of the remote browser'}
         onClick={onPictureClick}
         onKeyDown={onPictureKey}
         onWheel={onPictureWheel}

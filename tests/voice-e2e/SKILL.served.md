@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 33
+Version: 34
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,10 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v34
+- `/say` returns `timings` (speak, listen, clip, decode, hear, mix, total in ms), so a slow turn shows which step was slow.
+- On a page with no audio or video element, `/say` skips hearing and answers "nothing heard" straight away. The turn deadline now runs from the request, not from speaking.
 
 ## What's new in v33
 - **A tab's owner is always your `x-driver-id`.** An `owner` field in a `/tab` body is ignored, so nobody can act as another driver. Set `x-driver-id` on every call.
