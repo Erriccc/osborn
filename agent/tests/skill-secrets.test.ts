@@ -18,6 +18,15 @@ const HELPER = join(ROOT, 'agent/.claude/skills/browser-apply/fill.mjs')
 // Covers `password: x`, `"password": "x"`, `PASSWORD='x'`, `pwd = x`, `| Password | x |`.
 const PASSWORD_RE = /(password|passwd|pwd)["'`]?\s*(?:[:=]|\|)\s*["'`]?([^\s"'`|]{6,})/i
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
+// A skill that fills forms types whatever its Candidate Data block says, so a
+// literal employment history there is a false statement submitted under the
+// user's name. Two shapes, both only inside that block: a résumé literal (a
+// month-year date, a company suffix, a school, a degree abbreviation) and a
+// numbered value entry, which is how such a list is written.
+// (A trailing \b cannot follow `B.S.` — a period is not a word char — so the
+// degree arm ends in a negative lookahead instead.)
+const RESUME_RE = /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b|\b(?:Inc|LLC|Ltd|Corp|Corporation|GmbH|University|College)\b|\b[ABM]\.[SA]\.(?!\w)/
+const NUMBERED_ENTRY_RE = /^\s*[0-9]+\.\s+\S/
 // Anchored: the WHOLE value (trailing , ; stripped) must be a placeholder or an env reference.
 const PLACEHOLDER_RE = /^(<[^<>]*>|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\}|process\.env\.[A-Za-z_]\w*|YOUR_[A-Z0-9_]*|(example|placeholder|changeme)[\w.-]*)$/i
 const isPlaceholder = (v: string): boolean => PLACEHOLDER_RE.test(v.replace(/[,;]+$/, ''))
@@ -57,6 +66,8 @@ export function scanText(file: string, text: string, allow: Record<string, Set<s
     if (inCandidate) {
       const em = EMAIL_RE.exec(line)
       if (em && !/example\.(com|org|net)$/i.test(em[0])) out.push({ file, line: i + 1, reason: 'email literal in Candidate Data block (value masked)', hash })
+      if (RESUME_RE.test(line)) out.push({ file, line: i + 1, reason: 'résumé literal (employer/school/date) in Candidate Data block', hash })
+      if (NUMBERED_ENTRY_RE.test(line)) out.push({ file, line: i + 1, reason: 'numbered value entry in Candidate Data block', hash })
     }
   }
   return out
@@ -101,6 +112,22 @@ await t('scanner flags a synthetic password literal and a candidate email litera
   const f = scanText('synthetic.md', doc, {})
   assert.deepEqual(f.map(x => [x.line, x.reason.split(' ')[0]]), [[3, 'email'], [4, 'password-like']])
   for (const x of f) assert.ok(!x.reason.includes(SYN.password) && !x.reason.includes(SYN.email))
+})
+
+await t('scanner flags an employment history in a Candidate Data block only', () => {
+  const doc = [
+    '## Candidate Data',                       // 1
+    'Jobs:',                                   // 2
+    '1. Senior Engineer at Nowhere Corp — April 2024 to Present', // 3: numbered + résumé
+    '2. Contractor, self-employed',            // 4: numbered
+    '- Degree: B.S. Psychology',               // 5: résumé
+    '| Job N title | `$CANDIDATE_JOB_N_TITLE` |', // 6: the parameterised form
+    '### Filling secret fields',               // 7: heading ends the block
+    '1. Read the hostname of the current page', // 8: instructions, outside
+    'Apply through a university careers portal', // 9: prose, outside
+  ].join('\n')
+  assert.deepEqual(scanText('synthetic.md', doc, {}).map(x => [x.line, x.reason.split(' ')[0]]),
+    [[3, 'résumé'], [3, 'numbered'], [4, 'numbered'], [5, 'résumé']])
 })
 
 await t('scanner flags quoted, assignment and table forms', () => {
@@ -174,23 +201,11 @@ await t('every allowlist entry still matches a real line (no stale entries)', ()
 // employer, school or date in the shipped skill is a false statement submitted
 // to that employer — even an invented one. Work history must go through the
 // same $CANDIDATE_* secret file as the name, email and address.
-await t('browser-apply ships no work-history or education values of its own', () => {
+// The literals themselves are caught by the scanner above, for every skill.
+// What only this skill can state is that the fields exist at all, as keys.
+await t('browser-apply routes work history and education through CANDIDATE_* keys', () => {
   const src = readFileSync(join(ROOT, 'agent/.claude/skills/browser-apply/SKILL.md'), 'utf8')
   assert.ok(/CANDIDATE_JOB_N_TITLE/.test(src) && /CANDIDATE_EDUCATION_N_/.test(src), 'work history is not routed through CANDIDATE_* keys')
-  const section = src.split(/^## /m).find(s => /^Candidate Data/.test(s)) ?? ''
-  assert.ok(section, 'Candidate Data section missing')
-  // The regression shipped as a numbered value list ("1. <title> at <employer>")
-  // under Candidate Data. Instructions there are prose or `-` bullets; a
-  // numbered entry is how a value list looks.
-  const head = section.split(/^### /m)[0].split('\n').map((line, i) => [i + 1, line] as const)
-  const numbered = head.filter(([, line]) => /^\s*[0-9]+\.\s+\S/.test(line))
-  assert.equal(numbered.length, 0, `Candidate Data has a numbered value list at section line(s) ${numbered.map(([i]) => i).join(', ')}`)
-  // Résumé-shaped literals in that same block: a month-year date, a company
-  // suffix, a school, or a degree abbreviation. Scoped to Candidate Data so
-  // ordinary prose elsewhere ("a university careers portal") stays legal.
-  const RESUME_LITERAL = /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b|\b(?:Inc|LLC|Ltd|Corp|Corporation|GmbH|University|College)\b|\b[ABM]\.[SA]\.\b/
-  const resume = head.filter(([, line]) => RESUME_LITERAL.test(line))
-  assert.equal(resume.length, 0, `résumé-shaped literal under Candidate Data at section line(s) ${resume.map(([i]) => i).join(', ')}`)
 })
 
 // ---- helper: fixed secret file, no env overrides, loopback CDP, confirmed host, field types -----

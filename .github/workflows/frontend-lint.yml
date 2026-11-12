@@ -10,6 +10,7 @@ on:
       - 'frontend/**'
       - 'tests/voice-e2e/**'
       - 'agent/.claude/skills/**'
+      - '.claude/skills/**'
       - 'agent/tests/skill-secrets.test.ts'
       - '.github/workflows/frontend-lint.yml'
   push:
@@ -18,6 +19,7 @@ on:
       - 'frontend/**'
       - 'tests/voice-e2e/**'
       - 'agent/.claude/skills/**'
+      - '.claude/skills/**'
       - 'agent/tests/skill-secrets.test.ts'
 
 concurrency:
@@ -55,13 +57,14 @@ jobs:
           git diff --exit-code -- public/browser-screen-recorder-skill.md public/browser-screen-recorder-bundle.json public/voice-e2e-bundle.json \
             || { echo "::error::frontend/public skill/bundle is stale. Run 'node frontend/scripts/build-harness-bundle.mjs' and commit the result."; exit 1; }
 
-      # The two content-migration suites run the migrations against wasm
-      # Postgres. pglite is deliberately NOT a devDependency: Railway's build
-      # is `cd frontend && npm install` (nixpacks.toml), devDeps included, so
-      # declaring it would ship 26MB of wasm into every production image for
-      # two test files. Pinned exactly, installed only here.
-      - name: Test-only wasm Postgres
-        run: npm i --no-save --no-package-lock @electric-sql/pglite@0.5.16
+      # Neither of these is a devDependency: Railway's build is `cd frontend &&
+      # npm install` (nixpacks.toml), devDeps included, so declaring them would
+      # ship tsx + 26 esbuild platform packages and 26MB of wasm Postgres into
+      # every production image to serve test files only. Pinned exactly and
+      # installed nowhere but here; --no-save keeps package.json and the
+      # lockfile untouched.
+      - name: Test-only deps (tsx runner, wasm Postgres)
+        run: npm i --no-save --no-package-lock tsx@4.23.15 @electric-sql/pglite@0.5.16
 
       # Every file under frontend/tests/ is a standalone node:assert script
       # (CONTRIBUTING.md). Nothing ran them until now, so assertions landed in
@@ -74,7 +77,7 @@ jobs:
       # literal password, email or employment history and a skill that types it
       # into real sites. It was as unexecuted as the frontend suites.
       - name: Shipped-skill secret scanner
-        run: npx tsx ../agent/tests/skill-secrets.test.ts
+        run: npx --no-install tsx ../agent/tests/skill-secrets.test.ts
 
       # NOTE: no `next lint` here — the repo has no ESLint config and next lint
       # drops into its interactive setup prompt on CI (kills the job). tsc is

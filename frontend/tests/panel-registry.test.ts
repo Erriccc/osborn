@@ -107,11 +107,8 @@ t('panel state: corrupt or partial storage never throws and falls back per field
 
 // --- sheet breakpoint and tablet layout (issue #118 follow-up) --------------
 
-t('sheet breakpoint is named once and matches Tailwind xl', () => {
-  eq(PANEL_SHEET_QUERY, '(max-width: 1279px)', 'media query')
-})
-
 t('RightPanel reads the breakpoint from panel-state, never a literal query', () => {
+  eq(PANEL_SHEET_QUERY, '(max-width: 1279px)', 'sheet range must end one pixel below Tailwind xl')
   const src = readSrc('components/panel/RightPanel.tsx')
   ok(src.includes('PANEL_SHEET_QUERY'), 'RightPanel should import PANEL_SHEET_QUERY')
   ok(!/matchMedia\(\s*['"`]/.test(src), 'matchMedia called with a literal query string (it can drift from the xl: classes)')

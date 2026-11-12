@@ -36,7 +36,7 @@ way to *try* the product without any setup is to just
 
 ## Before you open a PR
 
-This repo has no monorepo test runner — checks are per-app and lightweight:
+Checks are per-app and lightweight (there is no monorepo-wide runner):
 
 - **Type-check** the app(s) you touched:
   ```bash
@@ -48,6 +48,12 @@ This repo has no monorepo test runner — checks are per-app and lightweight:
   cd frontend && npx tsx tests/<name>.test.ts
   cd agent && npx tsx tests/<name>.test.ts
   ```
+  `cd frontend && npm test` runs the whole frontend suite, and CI runs it on
+  every PR touching `frontend/**`, so a failure there blocks the merge. The
+  runner and two of the suites need deps that are deliberately NOT in
+  `package.json` (they would ship to production for test-only use) — install
+  them once with
+  `cd frontend && npm i --no-save --no-package-lock tsx@4.23.15 @electric-sql/pglite@0.5.16`.
   Add a test in the same style (`node:assert`, a tiny `t()` harness) when you change
   behavior — see `frontend/tests/bug-report.test.ts` for the pattern.
 - CI runs `frontend-lint` (tsc + lint) on every PR, and the iOS workflows run build

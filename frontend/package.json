@@ -43,7 +43,6 @@
     "postcss": "^8.4.0",
     "sharp": "^0.35.5",
     "tailwindcss": "^3.4.0",
-    "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   },
   "engines": {
