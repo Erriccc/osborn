@@ -60,6 +60,21 @@ export interface BuildRoomRowsOptions {
   pendingId?: string | null
 }
 
+/**
+ * How many idle (resumable) rows the rail may show for a given search box.
+ *
+ * Browsing shows 12 — enough to recognise recent work without turning the rail
+ * into a wall. Typing raises the cap, because otherwise a match outside the 12
+ * most recent is unreachable from /chat, which is the same silent-
+ * unreachability we deleted fork-collapse over. The raised value is an explicit
+ * BOUND, not "unlimited": the rail stays a switcher, so a one-character query
+ * on a machine with thousands of sessions cannot render all of them.
+ */
+export const SEARCH_IDLE_CAP = 100
+export function railIdleCap(query: string): number {
+  return query.trim() ? SEARCH_IDLE_CAP : 12
+}
+
 const short = (id: string) => (id ? id.substring(0, 8) : '')
 
 function projectName(cwd: string | undefined): string | undefined {

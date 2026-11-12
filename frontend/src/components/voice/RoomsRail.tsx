@@ -26,8 +26,8 @@
 // squeeze, issue #118) and nothing else changes.
 
 import { useEffect, useMemo, useState } from 'react'
-import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, type RoomRow, type RoomStatus } from '@/lib/rooms'
-import { prepareSessions } from '@/lib/session-list'
+import { buildRoomRows, groupRoomsByProject, railIdleCap, roomAvatar, roomIdentityLabel, type RoomRow, type RoomStatus } from '@/lib/rooms'
+import { prepareSessions, sessionMatchesQuery } from '@/lib/session-list'
 import type { SessionInfo, SlotInfo } from './shared'
 
 export type { RoomStatus }
@@ -171,6 +171,7 @@ export function RoomsSidebar({
   pendingId,
 }: RoomsProps) {
   const [collapsed, setCollapsed] = useState(false)
+  const [query, setQuery] = useState('')
   const [hideSystem, setHideSystem] = useState(false)
   useEffect(() => {
     try {
@@ -195,9 +196,20 @@ export function RoomsSidebar({
 
   // #107: fold duplicate copies of the same session into one row (and, only if
   // the user asked, drop machine-written meeting/task rows), then build the
-  // switchable rows.
+  // switchable rows. Searching filters through `sessionMatchesQuery` — the one
+  // matcher in the app, shared with SessionBrowser — and raises the idle cap, so
+  // a match outside the 12 most recent is still reachable from /chat.
   const prepared = useMemo(() => prepareSessions(sessions, { hideSystem }), [sessions, hideSystem])
-  const rooms = buildRoomRows(prepared.sessions, currentSessionId, { slots, liveFallbackTitle: liveTitle, pendingId })
+  const matching = useMemo(
+    () => prepared.sessions.filter((s) => sessionMatchesQuery(s, query)),
+    [prepared.sessions, query],
+  )
+  const rooms = buildRoomRows(matching, currentSessionId, {
+    slots,
+    liveFallbackTitle: liveTitle,
+    pendingId,
+    maxIdle: railIdleCap(query),
+  })
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
   // Live + Running stay pinned at the top; Recent (idle) rows group by project.
   const topRooms = rooms.filter((r) => r.status !== 'idle')
@@ -293,10 +305,42 @@ export function RoomsSidebar({
         </div>
       </div>
 
+      {/* Search — the only session-search input in the app's signed-in surfaces.
+          Without it the rail's idle cap made anything past the 12 most recent
+          unreachable from /chat. */}
+      <div className="px-2 py-2 border-b border-gray-800/60 shrink-0">
+        <div className="relative">
+          <svg className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+          </svg>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search sessions"
+            aria-label="Search sessions"
+            className="w-full pl-7 pr-7 py-1.5 rounded-lg bg-gray-800/60 border border-gray-800 text-[12px] text-gray-200 placeholder-gray-500 outline-none focus:border-amber-500/40"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-500 hover:text-gray-200"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
         {rooms.length === 0 ? (
           <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
-            No other sessions yet. Start one with “New room”.
+            {query.trim()
+              ? 'No sessions match your search.'
+              : 'No other sessions yet. Start one with “New room”.'}
           </p>
         ) : (
           <>

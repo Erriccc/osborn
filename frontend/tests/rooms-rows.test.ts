@@ -9,11 +9,14 @@ import path from 'node:path'
 import {
   buildRoomRows,
   groupRoomsByProject,
+  railIdleCap,
   roomAvatar,
   roomColor,
   roomIdentityLabel,
   roomInitial,
+  SEARCH_IDLE_CAP,
 } from '../src/lib/rooms'
+import { sessionMatchesQuery } from '../src/lib/session-list'
 import { UNTITLED_SESSION } from '../src/lib/sessions'
 
 let pass = 0, fail = 0
@@ -122,6 +125,49 @@ t('RoomsRail renders from buildRoomRows and shows the time', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/components/voice/RoomsRail.tsx'), 'utf8')
   assert.ok(/buildRoomRows\(/.test(src), 'RoomsRail must use buildRoomRows')
   assert.ok(/\.time\b/.test(src), 'RoomsRail must render the relative time')
+})
+
+// ── The rail's search cap ──────────────────────────────────────────────────
+// Browsing caps idle rows at 12; typing raises the cap so a match outside the
+// 12 most recent is still reachable from /chat (leaving it at 12 made those
+// sessions silently unreachable). The raised value must stay a BOUND — the rail
+// is a switcher, not a full list — so both ends are pinned here.
+t('typing raises the idle cap; blank/whitespace keeps the browsing cap', () => {
+  assert.equal(railIdleCap(''), 12)
+  assert.equal(railIdleCap('   '), 12, 'whitespace is not a search')
+  assert.equal(railIdleCap('budget'), SEARCH_IDLE_CAP)
+  assert.ok(SEARCH_IDLE_CAP > 12 && Number.isFinite(SEARCH_IDLE_CAP), 'raised but finite')
+})
+
+t('the typing path is bounded: far more matches than the cap still stop at it', () => {
+  // 300 sessions that ALL match the query — the pathological one-character case.
+  const many = Array.from({ length: 300 }, (_, i) => ({
+    sessionId: `s${String(i).padStart(4, '0')}`,
+    lastMessage: `budget review ${i}`,
+    timestamp: ago(i * MIN),
+    messageCount: 1,
+  }))
+  const matching = many.filter((s) => sessionMatchesQuery(s, 'budget'))
+  assert.equal(matching.length, 300, 'the query really does match them all')
+  const rows = buildRoomRows(matching, null, { now: NOW, maxIdle: railIdleCap('budget') })
+  assert.equal(rows.filter((r) => r.status === 'idle').length, SEARCH_IDLE_CAP)
+})
+
+t('a match outside the browsing cap becomes reachable once you type', () => {
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    sessionId: `s${String(i).padStart(2, '0')}`,
+    // s29 is the least recent, so it sits outside the default 12.
+    lastMessage: i === 29 ? 'the quarterly budget spreadsheet' : `topic ${i}`,
+    timestamp: ago(i * MIN),
+    messageCount: 1,
+  }))
+  const browsing = buildRoomRows(many, null, { now: NOW, maxIdle: railIdleCap('') })
+  assert.ok(!browsing.some((r) => r.id === 's29'), 'hidden below the fold while browsing')
+
+  const q = 'quarterly'
+  const matching = many.filter((s) => sessionMatchesQuery(s, q))
+  const searched = buildRoomRows(matching, null, { now: NOW, maxIdle: railIdleCap(q) })
+  assert.deepEqual(searched.map((r) => r.id), ['s29'], 'typing reaches it')
 })
 
 // ============================================================
