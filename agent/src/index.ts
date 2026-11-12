@@ -340,7 +340,9 @@ function startKeyHealthProbe(provider: ActiveProvider): void {
   if (provider !== 'zai' && provider !== 'openrouter') return
   void probeActiveProviderKey(provider)
     .then((entry) => {
-      if (!entry) return
+      // The tier may have changed while this 8s probe was in flight (a sign-in
+      // mid-session) — a late verdict for the tier we left is not news.
+      if (!entry || agentActiveProvider !== provider) return
       agentKeyHealth = [entry]
       console.log(`${entry.status === 'ok' ? '✅' : '⚠️'} [key-health] ${entry.provider} self-test: ${entry.status}`)
     })

@@ -374,8 +374,8 @@ function VoiceRoomInner({
   useEffect(() => () => onAuthInProgressRef.current?.(false), [])
   const [agentConnected, setAgentConnected] = useState(false)
   // #87 model/provider badge — driven by REAL server signals, never the agent's
-  // prose self-report. `mainProvider` ← agent_ready.provider (declared main-brain
-  // provider); `agentVersion` ← GET /health → { version } (already polled below).
+  // prose self-report. `mainProvider` ← agent_ready.provider, then kept live by
+  // the GET /health → { provider } poll below; `agentVersion` ← that same /health.
   const [mainProvider, setMainProvider] = useState<string | null>(null)
   const [agentVersion, setAgentVersion] = useState<string | null>(null)
   // #87: per-key self-test results from GET /health (agent probes the active
