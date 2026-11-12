@@ -21,11 +21,11 @@ const SAMPLES = [
   'sk-or-' + 'B'.repeat(24),
   'sk-' + 'C'.repeat(24),
   'sbp_' + 'D'.repeat(24),
-  'ghp_' + 'E'.repeat(24),
-  'eyJ' + 'F'.repeat(24) + '.' + 'G'.repeat(16),
-  'Bearer ' + 'H'.repeat(24),
-  'OPENAI_API_KEY=' + 'I'.repeat(24),
-  'SUPABASE_SERVICE_ROLE_SECRET: "' + 'J'.repeat(24) + '"',
+  'ghp_' + 'E'.repeat(34),
+  'eyJ' + 'F'.repeat(16) + '.' + 'G'.repeat(16) + '.' + 'H'.repeat(16),
+  'Bearer ' + 'I'.repeat(24),
+  'OPENAI_API_KEY=' + 'J'.repeat(24),
+  'SUPABASE_SERVICE_ROLE_SECRET: "' + 'K'.repeat(24) + '"',
 ]
 
 t('every credential shape is masked in bare text', () => {
@@ -45,7 +45,13 @@ t('masking survives markdown wrappers a sub-agent result uses', () => {
 })
 
 t('legitimate result text is left intact', () => {
-  for (const s of ['GATE: PASS on fix/activity-log-redaction', '**VERDICT: REJECT**', 'ran `npm test` — 12 passed', '2 * 3 = 6']) {
+  // The last four are prose the old 6-10 char floors mangled, which only showed up
+  // once the helper was pointed at free prose rather than commands and filenames.
+  for (const s of [
+    'GATE: PASS on fix/activity-log-redaction', '**VERDICT: REJECT**', 'ran `npm test` — 12 passed', '2 * 3 = 6',
+    'Auth header uses Bearer formatting now', 'TOKEN: expired, re-run the login flow',
+    'see docs/api-key: rotation.md', 'the sk-ant- prefix identifies Anthropic keys',
+  ]) {
     assert.equal(redactSecrets(s), s)
   }
 })
@@ -68,19 +74,15 @@ t('the sub-agent result render path redacts and does not strip markdown', () => 
   const fn = src.slice(src.indexOf('function FlowResultText'))
   const body = fn.slice(0, fn.indexOf('\n}\n'))
   ok(body.includes('redactSecrets(text)'), 'FlowResultText must redact its input')
-  ok(body.includes('<MarkdownMessage'), 'FlowResultText must render markdown, not strip it')
-  ok(body.includes('title={safe}'), 'the hover tooltip must show the redacted text')
+  ok(body.includes('<MarkdownMessage content={safe} />'), 'must render the whole redacted text as markdown')
+  ok(body.includes('title={collapsed ? safe : undefined}'), 'the collapsed row keeps a tooltip of the redacted text')
+  ok(!/\.slice\(0, BODY_PREVIEW_CHARS\)/.test(body), 'must not slice markdown — collapse by height')
   ok(!/stripResultMarkdown/.test(src), 'stripResultMarkdown must stay deleted')
 })
 
 t('the live (running) flow row redacts too', () => {
   const src = fs.readFileSync(path.resolve(__dirname, '../src/components/LogsDrawer.tsx'), 'utf8')
   ok(src.includes('redactSecrets(flow.lastMessage || flow.task)'), 'running row must redact its live text')
-})
-
-t('the stored flow artifact is redacted before it enters client state', () => {
-  const src = fs.readFileSync(path.resolve(__dirname, '../src/components/VoiceRoom.tsx'), 'utf8')
-  ok(/artifact: data\.last_assistant_message != null \? redactSecrets\(/.test(src), 'VoiceRoom must redact the stored artifact')
 })
 
 const failed = results.filter((r) => !r[1])

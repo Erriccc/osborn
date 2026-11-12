@@ -476,23 +476,24 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
 //
 // Markdown is RENDERED (the agent writes markdown), not stripped: stripping
 // mangled a quoted patch by eating the leading `-` of every removal line, and ate
-// one backtick of each fence. Long results collapse with the same preview
-// thresholds the Log tab's bodies use, with their own expand state per row.
+// one backtick of each fence. The collapse is by HEIGHT, not by slicing the text:
+// slicing markdown cuts fences open, so a long result rendered its tail as a
+// stray code block and a cut ```mermaid fence rendered a syntax-error box while
+// still collapsed. The Log tab's own preview thresholds decide only whether the
+// affordance appears, with their own expand state per row.
 function FlowResultText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
   const safe = redactSecrets(text)
   const needsExpand = safe.length > BODY_PREVIEW_CHARS || safe.split('\n').length > BODY_PREVIEW_LINES
-  const shown = expanded || !needsExpand
-    ? safe
-    : safe.split('\n').slice(0, BODY_PREVIEW_LINES).join('\n').slice(0, BODY_PREVIEW_CHARS)
+  const collapsed = needsExpand && !expanded
   return (
     <div className="mt-1">
       {/* Scale the shared markdown renderer down to this drawer's 11px type. */}
       <div
-        title={safe}
-        className="text-[11px] leading-relaxed [&_p]:my-1 [&_p]:text-[11px] [&_li]:text-[11px] [&_ul]:my-1 [&_ol]:my-1 [&_h1]:text-[13px] [&_h2]:text-[12px] [&_h3]:text-[11px] [&_h1]:mt-1 [&_h2]:mt-1 [&_h3]:mt-1"
+        title={collapsed ? safe : undefined}
+        className={`text-[11px] leading-relaxed [&_p]:my-1 [&_p]:text-[11px] [&_li]:text-[11px] [&_ul]:my-1 [&_ol]:my-1 [&_h1]:text-[13px] [&_h2]:text-[12px] [&_h3]:text-[11px] [&_h1]:mt-1 [&_h2]:mt-1 [&_h3]:mt-1 ${collapsed ? 'max-h-28 overflow-hidden' : ''}`}
       >
-        <MarkdownMessage content={shown} />
+        <MarkdownMessage content={safe} />
       </div>
       {needsExpand && (
         <button
@@ -838,7 +839,9 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                   // DONE: the result is the point — show it rendered, wrapping, with an
                   // expand affordance instead of a mid-sentence one-line truncation (#86).
                   // FlowResultText redacts; see its SECURITY note.
-                  const result = flow.artifact || flow.task
+                  // Trimmed: MarkdownMessage renders nothing for whitespace-only
+                  // content, so a blank result must take the fallback below.
+                  const result = (flow.artifact || flow.task)?.trim()
                   return (
                     <div
                       key={flow.agentId}
