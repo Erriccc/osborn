@@ -56,6 +56,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from '@playwri
 import { Stagehand } from '@browserbasehq/stagehand'
 import { createServer } from 'http'
 import { execFile } from 'child_process'
+import { createHmac, randomBytes } from 'crypto'
 import { promisify } from 'util'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync } from 'fs'
 import { join, dirname } from 'path'
@@ -95,7 +96,7 @@ mkdirSync(RUN_DIR, { recursive: true })
 
 // Retention: keep the newest OSBORN_KEEP_RUNS run folders (counting this one),
 // prune the rest at startup so the artifact dir can't balloon.
-const KEEP_RUNS = Number(process.env.OSBORN_KEEP_RUNS ?? 10)
+const KEEP_RUNS = Number(process.env.OSBORN_KEEP_RUNS ?? 30)
 try {
   const old = readdirSync(RUNS_ROOT).filter((d) => d !== RUN_STAMP).sort()
   for (const d of old.slice(0, Math.max(0, old.length - (KEEP_RUNS - 1))))
@@ -514,6 +515,32 @@ async function main() {
   // Self-host auth: when OSBORN_ENGINE_TOKEN is set (always on public
   // deployments — Fly exposes the control port), every request must carry it.
   const TOKEN = process.env.OSBORN_ENGINE_TOKEN
+  // PUBLIC EVIDENCE LINKS — proof an agent can actually paste into an issue.
+  // /clip and /artifact need the engine token, so a link to them is a 401 for
+  // every reader (and for GitHub's image proxy): testers "had" evidence but
+  // could not attach it. Each task now also gets signed, token-free URLs
+  //   /media/<run>/<n>.jpg | .mp4 | .txt ?s=<signature>
+  // that anyone holding the link can open, for as long as the run is kept
+  // (newest OSBORN_KEEP_RUNS runs on the volume — they survive restarts). The
+  // signature is an HMAC over run+file, so links cannot be guessed or walked.
+  const SHARE_SECRET = process.env.OSBORN_SHARE_SECRET || (TOKEN ? createHmac('sha256', TOKEN).update('osborn-share-links').digest('hex') : randomBytes(24).toString('hex'))
+  const shareSig = (run: string, file: string) => createHmac('sha256', SHARE_SECRET).update(`${run}/${file}`).digest('hex').slice(0, 24)
+  const evidenceFor = (base: string, run: string, n: number, has: { clip?: boolean; shot?: boolean }) => {
+    const u = (file: string) => `${base}/media/${run}/${file}?s=${shareSig(run, file)}`
+    const screenshot = has.shot ? u(`${n}.jpg`) : null
+    const clip = has.clip ? u(`${n}.mp4`) : null
+    const log = u(`${n}.txt`)
+    return {
+      run, task: n, public: true, screenshot, clip, log,
+      // Paste-ready: the image renders inline on GitHub, the rest are links.
+      markdown: [screenshot ? `![task ${n} screenshot](${screenshot})` : null, clip ? `[task ${n} clip (mp4)](${clip})` : null, `[task ${n} console + network log](${log})`].filter(Boolean).join('\n'),
+      note: `public links, no token needed; kept while run ${run} is among the newest ${KEEP_RUNS} runs — GET /evidence?run=${run}&n=${n} re-issues them`,
+    }
+  }
+  const loadRunTasks = (run: string): any[] | null => {
+    if (run === RUN_STAMP) return tasks as any[]
+    try { return JSON.parse(readFileSync(join(RUNS_ROOT, run.replace(/[^A-Za-z0-9T:-]/g, ''), 'manifest.json'), 'utf8')).tasks ?? [] } catch { return null }
+  }
   let ending = false
   let lastActivity = Date.now()
 
@@ -685,6 +712,23 @@ async function main() {
       // relative "/clip?n=1" is relative to. Direct :8781 callers get the
       // same relative paths as before.
       const mediaBase = String(req.headers['x-control-base'] || '')
+      if (req.method === 'GET' && path.startsWith('/media/')) {
+        // Signed public evidence — checked BEFORE the token gate on purpose.
+        const m = path.match(/^\/media\/([A-Za-z0-9T:-]+)\/(\d+)\.(jpg|mp4|txt)$/)
+        const sig = new URL(req.url || '', 'http://x').searchParams.get('s') || ''
+        if (!m || sig !== shareSig(m[1], `${m[2]}.${m[3]}`)) return json(res, { error: 'bad or missing evidence signature' }, 403)
+        const t = (loadRunTasks(m[1]) ?? []).find((t: any) => t.n === Number(m[2]))
+        if (!t) return json(res, { error: `run ${m[1]} task ${m[2]} is no longer stored (runs are pruned to the newest ${KEEP_RUNS})` }, 404)
+        if (m[3] === 'txt') {
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' })
+          return res.end(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`)
+        }
+        const file = m[3] === 'mp4' ? t.clip : t.artifact
+        if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}` }, 404)
+        res.writeHead(200, { 'Content-Type': m[3] === 'mp4' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size, 'Cache-Control': 'public, max-age=86400' })
+        createReadStream(file).pipe(res)
+        return
+      }
       if (TOKEN && req.headers['x-engine-token'] !== TOKEN) return json(res, { error: 'unauthorized — x-engine-token required' }, 401)
       // Any authenticated director command counts as activity for idle-stop.
       // /status is excluded (pollers/health checks must not keep it awake).
@@ -791,6 +835,18 @@ async function main() {
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': statSync(mp3).size })
         createReadStream(mp3).pipe(res)
         return
+      }
+      if (req.method === 'GET' && path === '/evidence') {
+        // Re-issue the public evidence links for any stored task — today's run
+        // or an earlier one — so evidence can be attached long after the action.
+        // No n → every task of the run.
+        const q = new URL(req.url || '', 'http://x').searchParams
+        const run = q.get('run') || RUN_STAMP
+        const list = loadRunTasks(run)
+        if (!list) return json(res, { ok: false, code: 'no_run', error: `run ${run} is not stored — GET /runs lists runs` }, 404)
+        const wanted = q.get('n') ? list.filter((t: any) => t.n === Number(q.get('n'))) : list
+        if (!wanted.length) return json(res, { ok: false, code: 'no_task', error: `no task ${q.get('n')} in run ${run}` }, 404)
+        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(mediaBase, run, t.n, { clip: !!t.clip, shot: !!t.artifact }) })) })
       }
       if (req.method === 'GET' && path === '/tasks') {
         // This run's task index — same data as manifest.json on disk.
@@ -914,7 +970,7 @@ async function main() {
           const shot = await reqShot(n, 'act')
           const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
           scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
-          return json(res, { ok: true, result: r, effect, warning, brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+          return json(res, { ok: true, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
         })
       }
       if (path === '/say') {
@@ -974,7 +1030,7 @@ async function main() {
           const shot = await reqShot(n, 'say')
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
           scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
-          return json(res, { ok: true, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         })
       }
       if (path === '/hear') {
@@ -1181,7 +1237,7 @@ async function main() {
         void gracefulEnd('end requested')
         return
       }
-      json(res, { error: 'unknown', paths: ['/result?id=JOB', '/status', '/tasks', '/clip?n=N', '/clip?n=N&audio=1', '/artifact?n=N', '/audio', '/logs', '/runs', '/events', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
+      json(res, { error: 'unknown', paths: ['/evidence?run=RUN&n=N', '/media/RUN/N.jpg|mp4|txt?s=SIG', '/result?id=JOB', '/status', '/tasks', '/clip?n=N', '/clip?n=N&audio=1', '/artifact?n=N', '/audio', '/logs', '/runs', '/events', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
     } catch (e) { json(res, { error: (e as Error).message, brain: brainAlive ? 'ready' : 'dead' }, 500) }
   })
   server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))

@@ -205,6 +205,13 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
   shows `brainModel`/`brainError`. The engine no longer dies on a model error
   and boots without a brain (`/eval`, `/tab`, `/shot` keep working).
 - **Clips cover the action's own time window**, not the last 20s of screen.
+- **Public evidence links.** `/clip` and `/artifact` need the engine token, so
+  a link to them is a 401 for anyone reading an issue. Every `/act` and `/say`
+  now returns `evidence` with token-free signed links (`screenshot`, `clip`,
+  `log`) and a paste-ready `markdown` block — use THOSE in issues, PRs and
+  reports. They last while the run is among the newest 30 on the volume;
+  `GET /evidence?run=<run>&n=<N>` re-issues them later (omit `n` for the
+  whole run).
 - **Tester mode** — see references/tester-mode.md.
 
 ## What's new in v23

@@ -29,7 +29,7 @@ more than three or four actions.
 ## <n> <HH:MM:SS UTC> <TYPE>     TYPE: STEP | FINDING | STUCK | STEER-ACK | GOAL-CHECK
 - did: what you asked the browser to do
 - observed: ground truth — effect.changed, urlAfter, what /eval showed
-- evidence: clipUrl and/or media/step-<n>.jpg
+- evidence: the `evidence.markdown` block from the response (public links)
 - (FINDING) severity P0–P3, one-line repro, does it block the goal
 - (STUCK) what you need; the fallback you are taking; then KEEP GOING
 - (STEER-ACK) "msg <n>": the instruction, and your plan to return to the goal

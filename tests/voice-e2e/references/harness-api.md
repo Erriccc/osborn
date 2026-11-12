@@ -64,3 +64,7 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   (`GOOGLE_API_KEY`/`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `Z_AI_API_KEY`);
   `/status.brainModel`, `/status.brainError`; `POST /brain` re-picks.
 - **Env**: `OSBORN_CHROMIUM_PATH` uses an existing Chromium binary.
+- **Public evidence**: `/act` and `/say` return `evidence {run, task, screenshot, clip, log, markdown, note}` —
+  signed `/media/<run>/<n>.jpg|mp4|txt?s=<sig>` URLs that need no token. `GET /evidence?run=&n=` (token)
+  re-issues them for any stored run. `OSBORN_SHARE_SECRET` overrides the signing secret (default: derived
+  from the engine token). `OSBORN_KEEP_RUNS` default is now 30.
