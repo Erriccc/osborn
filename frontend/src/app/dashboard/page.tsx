@@ -241,6 +241,11 @@ export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false)
   const [adminChecked, setAdminChecked] = useState(false)
   useEffect(() => {
+    // #140: never probe the admin endpoint for a signed-out visitor — it just
+    // 401s and the Admin entry is irrelevant to a guest. Wait for a resolved
+    // user before checking (mirrors the sandbox effects below, which gate on
+    // `user`), so an anonymous dashboard load makes no /api/admin/users call.
+    if (!user) { setIsAdmin(false); setAdminChecked(false); return }
     let cancelled = false
     const probe = async (retry: boolean): Promise<void> => {
       try {
@@ -260,7 +265,7 @@ export default function Dashboard() {
     }
     probe(true)
     return () => { cancelled = true }
-  }, []) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
+  }, [user]) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
 
   // Session sharing (0.9.123) — Share modal + "Shared with me".
   const [shareTarget, setShareTarget] = useState<{ sessionId: string; title: string } | null>(null)
@@ -1400,6 +1405,36 @@ export default function Dashboard() {
     return (
       <main className="min-h-screen bg-[var(--background)] flex items-center justify-center">
         <div className="w-5 h-5 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
+      </main>
+    )
+  }
+
+  // #140: a signed-out visitor used to get the full dashboard shell ("Working
+  // late…", New session, Record a note, "Cloud workspace is offline") and a
+  // chat↔dashboard loop with no way to sign in. Show a clear sign-in screen
+  // instead of the app shell. (The data effects above already gate on `user`,
+  // so a guest makes no sandbox or admin calls.)
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center gap-6 p-8 text-center">
+        <Link href="/" title="Home" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+          <div className="w-8 h-8 rounded-full flex items-center justify-center"
+            style={{ background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--background)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            </svg>
+          </div>
+          <span className="font-display text-[var(--text-primary)] font-semibold text-[18px] tracking-tight">Voice Native</span>
+        </Link>
+        <div>
+          <p className="text-[var(--text-primary)] text-lg font-medium">Sign in to open your workspace</p>
+          <p className="text-[var(--text-muted)] text-sm mt-1">Your sessions, cloud agent and library are tied to your account.</p>
+        </div>
+        <a href="/login"
+          className="px-5 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--background)] text-sm font-semibold hover:opacity-90 transition-opacity">
+          Sign in
+        </a>
       </main>
     )
   }
