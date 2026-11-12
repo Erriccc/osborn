@@ -466,21 +466,12 @@ function ToolLogCard({ msg, onCircleBack, onLike, onDislike }: { msg: LogMessage
   )
 }
 
-// FlowResultText — a finished sub-agent's result, shown readable instead of
-// truncated to one line mid-sentence (#86).
+// FlowResultText — a finished sub-agent's result (#86).
 //
-// SECURITY: the result is agent-authored text that can quote a file, a command or
-// an env block, so it goes through redactSecrets like every other body in this
-// drawer. Redaction happens HERE, at render, so a result already carried in state
-// from an earlier turn is masked too — not only newly stored ones.
-//
-// Markdown is RENDERED (the agent writes markdown), not stripped: stripping
-// mangled a quoted patch by eating the leading `-` of every removal line, and ate
-// one backtick of each fence. The collapse is by HEIGHT, not by slicing the text:
-// slicing markdown cuts fences open, so a long result rendered its tail as a
-// stray code block and a cut ```mermaid fence rendered a syntax-error box while
-// still collapsed. The Log tab's own preview thresholds decide only whether the
-// affordance appears, with their own expand state per row.
+// SECURITY: agent-authored text that can quote a file or an env block, so it goes
+// through redactSecrets like every other body here. At RENDER, so a result
+// already in state from an earlier turn is masked too.
+// Collapse is by HEIGHT, not by slicing: slicing markdown cuts fences open.
 function FlowResultText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
   const safe = redactSecrets(text)

@@ -16,23 +16,39 @@ function t(name: string, fn: () => void) {
 const ok = (c: any, m: string) => { if (!c) throw new Error(m) }
 
 // A placeholder-shaped stand-in per pattern — never a usable credential.
+// Bodies are deliberately SHORT wherever a real credential can be short (LiveKit
+// keys are "API" + ~12 chars, a quoted token is often truncated): a floor tuned
+// to long values prints the short ones in full, which is how this helper
+// regressed once already. Never raise a floor to make prose read better.
 const SAMPLES = [
-  'sk-ant-' + 'A'.repeat(24),
-  'sk-or-' + 'B'.repeat(24),
+  'sk-ant-' + 'A'.repeat(8),
+  'sk-or-' + 'B'.repeat(8),
   'sk-' + 'C'.repeat(24),
-  'sbp_' + 'D'.repeat(24),
-  'ghp_' + 'E'.repeat(34),
-  'eyJ' + 'F'.repeat(16) + '.' + 'G'.repeat(16) + '.' + 'H'.repeat(16),
-  'Bearer ' + 'I'.repeat(24),
-  'OPENAI_API_KEY=' + 'J'.repeat(24),
-  'SUPABASE_SERVICE_ROLE_SECRET: "' + 'K'.repeat(24) + '"',
+  'sbp_' + 'D'.repeat(12),
+  'ghp_' + 'E'.repeat(12),
+  'github_pat_' + 'F'.repeat(22),
+  'FlyV1 fm2_' + 'G'.repeat(22) + ',fm2_' + 'H'.repeat(22),
+  'fm2_' + 'I'.repeat(22),
+  'eyJ' + 'J'.repeat(14) + '.' + 'K'.repeat(14),
+  'Bearer ' + 'L'.repeat(24),
+  'x-api-key: ' + 'M'.repeat(12),
+  'Authorization: Token ' + 'N'.repeat(12),
+  'OPENAI_API_KEY=' + 'O'.repeat(24),
+  'LIVEKIT_API_KEY=API' + 'p'.repeat(11),
+  'DB_PASSWORD=hunter2x',
+  // Colon form — a YAML/JSON block, not a .env line. Narrowing the assignment
+  // rule to "=" alone once un-masked every one of these.
+  'SUPABASE_SERVICE_ROLE_SECRET: "' + 'Q'.repeat(24) + '"',
+  'MY_TOKEN: ' + 'R'.repeat(24),
 ]
 
 t('every credential shape is masked in bare text', () => {
   for (const s of SAMPLES) {
     const out = redactSecrets(s)
-    ok(out.includes('••••'), `not masked: ${s.slice(0, 12)}…`)
-    ok(!out.includes('A'.repeat(24)) || !s.startsWith('sk-ant-'), 'raw body survived')
+    ok(out.includes('••••'), `not masked: ${s.slice(0, 16)}…`)
+    // Every filler letter used above, so no sample's raw body can slip through
+    // unasserted — the gap that let a coverage regression pass green once.
+    for (const ch of 'ABCDEFGHIJKLMNOpQR') ok(!out.includes(ch.repeat(8)), `raw body survived in ${out.slice(0, 24)}`)
   }
 })
 
@@ -45,22 +61,24 @@ t('masking survives markdown wrappers a sub-agent result uses', () => {
 })
 
 t('legitimate result text is left intact', () => {
-  // The last four are prose the old 6-10 char floors mangled, which only showed up
-  // once the helper was pointed at free prose rather than commands and filenames.
+  // Only prose that costs nothing to keep. Where a rule has to choose, it
+  // over-masks on purpose: "TOKEN: expired, re-run …", "Authorization: required …"
+  // and "x-api-key: header" all DO get masked. Narrowing any of those rules to
+  // spare the sentence is what leaks real colon-form credentials, so the sentence
+  // loses. Assert the direction, not the prettier output.
   for (const s of [
     'GATE: PASS on fix/activity-log-redaction', '**VERDICT: REJECT**', 'ran `npm test` — 12 passed', '2 * 3 = 6',
-    'Auth header uses Bearer formatting now', 'TOKEN: expired, re-run the login flow',
-    'see docs/api-key: rotation.md', 'the sk-ant- prefix identifies Anthropic keys',
+    'Auth header uses Bearer formatting now', 'the sk-ant- prefix identifies Anthropic keys',
+    'Diff:\n```diff\n- const a = 1\n+ const a = 2\n```', 'Reviewed 4 files; verdict SHIP',
   ]) {
     assert.equal(redactSecrets(s), s)
   }
 })
 
-t('a quoted patch is preserved verbatim (no bullet/fence mangling)', () => {
-  // The deleted stripResultMarkdown ate the leading "-" of removal lines, turning a
-  // quoted diff into a misleading one, and ate one backtick of each fence.
-  const patch = 'Diff:\n```diff\n- const a = 1\n+ const a = 2\n```'
-  assert.equal(redactSecrets(patch), patch)
+t('where a rule must choose, it over-masks rather than leak', () => {
+  for (const s of ['TOKEN: expired, re-run the login flow', 'Authorization: required for this endpoint', 'x-api-key: header']) {
+    ok(redactSecrets(s).includes('••••'), `expected the safe direction for: ${s}`)
+  }
 })
 
 t('nullish / empty input is safe', () => {
@@ -69,20 +87,14 @@ t('nullish / empty input is safe', () => {
   assert.equal(redactSecrets(null), '')
 })
 
-t('the sub-agent result render path redacts and does not strip markdown', () => {
+t('both sub-agent-authored bodies in the drawer pass through the gate', () => {
+  // The one structural pin worth keeping: this is the invariant that broke in
+  // #125, and a type checker cannot express "this text was redacted first".
+  // Only the redaction calls are pinned, not the markup around them.
   const src = fs.readFileSync(path.resolve(__dirname, '../src/components/LogsDrawer.tsx'), 'utf8')
-  const fn = src.slice(src.indexOf('function FlowResultText'))
-  const body = fn.slice(0, fn.indexOf('\n}\n'))
-  ok(body.includes('redactSecrets(text)'), 'FlowResultText must redact its input')
-  ok(body.includes('<MarkdownMessage content={safe} />'), 'must render the whole redacted text as markdown')
-  ok(body.includes('title={collapsed ? safe : undefined}'), 'the collapsed row keeps a tooltip of the redacted text')
-  ok(!/\.slice\(0, BODY_PREVIEW_CHARS\)/.test(body), 'must not slice markdown — collapse by height')
-  ok(!/stripResultMarkdown/.test(src), 'stripResultMarkdown must stay deleted')
-})
-
-t('the live (running) flow row redacts too', () => {
-  const src = fs.readFileSync(path.resolve(__dirname, '../src/components/LogsDrawer.tsx'), 'utf8')
-  ok(src.includes('redactSecrets(flow.lastMessage || flow.task)'), 'running row must redact its live text')
+  const body = src.slice(src.indexOf('function FlowResultText')).split('\n}\n')[0]
+  ok(/redactSecrets\(text\)/.test(body), 'the finished result must be redacted at render')
+  ok(/redactSecrets\(flow\.lastMessage \|\| flow\.task\)/.test(src), 'the live row must redact its text')
 })
 
 const failed = results.filter((r) => !r[1])
