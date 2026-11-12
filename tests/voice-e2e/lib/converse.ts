@@ -97,11 +97,10 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const { peekCapture } = await import('./audio-capture')
   const { optionalEnvKey } = await import('./env')
   const { base64, anchorOffsetMs } = await peekCapture(page)
-  const audio = Buffer.from(base64, 'base64')
   // word.start is file-relative (timeline begins at the first tapped source,
   // NOT capture start — verified 38.3s skew, 2026-07-31); convert the wall-clock
   // window into file time via the anchor.
-  const fileSinceMs = Math.max(0, sinceMs - anchorOffsetMs)
+  const { audio, fileSinceMs } = await turnWindow(Buffer.from(base64, 'base64'), Math.max(0, sinceMs - anchorOffsetMs))
 
   // Soniox async STT — upload the recorded clip, poll the job, keep tokens whose
   // start_ms falls after the window. Word timestamps come back by default; no
@@ -128,10 +127,33 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   catch (e) { failures.push(`Deepgram: ${((e as Error).message || String(e)).slice(0, 140)}`); throw new Error(failures.join('; ')) }
 }
 
+/**
+ * Only the current turn goes to STT (#164, #165). The raw MediaRecorder webm
+ * has no seek headers (Soniox can reject it as invalid) and grows for the
+ * whole run, so uploading it made every turn slower. Decode once, keep from
+ * just before `sinceMs`, and send a 16 kHz mono wav; timestamps are then
+ * relative to the cut. Falls back to the raw file if ffmpeg fails.
+ */
+async function turnWindow(raw: Buffer, sinceMs: number): Promise<{ audio: Buffer; fileSinceMs: number }> {
+  const { execFile } = await import('node:child_process')
+  const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const cut = Math.max(0, sinceMs - 1000)
+  const dir = mkdtempSync(join(tmpdir(), 'hear-'))
+  try {
+    writeFileSync(join(dir, 'in.webm'), raw)
+    await new Promise<void>((ok, fail) => execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', join(dir, 'in.webm'), '-ss', String(cut / 1000),
+      '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', join(dir, 'out.wav')], { timeout: 60000 }, (e) => (e ? fail(e) : ok())))
+    return { audio: readFileSync(join(dir, 'out.wav')), fileSinceMs: sinceMs - cut }
+  } catch { return { audio: raw, fileSinceMs: sinceMs } }
+  finally { rmSync(dir, { recursive: true, force: true }) }
+}
+
 async function deepgramTranscribeSince(audio: Buffer, fileSinceMs: number, dg: string): Promise<string> {
   const res = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', {
     method: 'POST',
-    headers: { Authorization: `Token ${dg}`, 'Content-Type': 'audio/webm' },
+    headers: { Authorization: `Token ${dg}`, 'Content-Type': audio.subarray(0, 4).toString() === 'RIFF' ? 'audio/wav' : 'audio/webm' },
     body: audio,
   })
   if (!res.ok) throw new Error(`deepgram ${res.status}`)
@@ -148,7 +170,8 @@ async function deepgramTranscribeSince(audio: Buffer, fileSinceMs: number, dg: s
 async function sonioxTranscribeSince(audio: Buffer, sinceMs: number, apiKey: string): Promise<string> {
   const H = { Authorization: `Bearer ${apiKey}` }
   const fd = new FormData()
-  fd.append('file', new Blob([new Uint8Array(audio)], { type: 'audio/webm' }), 'clip.webm')
+  const wav = audio.subarray(0, 4).toString() === 'RIFF'
+  fd.append('file', new Blob([new Uint8Array(audio)], { type: wav ? 'audio/wav' : 'audio/webm' }), wav ? 'clip.wav' : 'clip.webm')
   const up = await fetch('https://api.soniox.com/v1/files', { method: 'POST', headers: H, body: fd as any, signal: AbortSignal.timeout(30000) })
   if (!up.ok) throw new Error(`upload HTTP ${up.status} ${(await up.text().catch(() => '')).slice(0, 80)} (${Math.round(audio.length / 1024)} KB)`)
   const fileId = (await up.json() as any).id

@@ -195,6 +195,10 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
   redeploy never locks other drivers out.
 - Temporary audio files from `/clip?audio=1` and `/audio` are deleted, so a
   long run no longer fills the disk.
+- **Hearing no longer slows down over a run, and Soniox stops rejecting it.**
+  `/say` and `/hear` now send speech-to-text only the current turn (a short
+  16 kHz wav), not the whole raw recording, so a reply takes seconds even
+  late in a long run.
 
 ## What's new in v26
 - **Speech-to-text health is visible.** `/status.stt` lists each configured
