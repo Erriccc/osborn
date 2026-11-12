@@ -2,7 +2,9 @@
 // Spec (auto-retag of the sandbox image's :latest after a versioned build):
 //  - After a SUCCESSFUL `fly deploy --build-only --push --image-label <ver>`,
 //    checkImageBuild re-tags <app>:latest to <ver> (registry manifest copy).
-//  - Build failure (throw) -> no retag. Tag already exists -> no build, no retag.
+//  - Build failure (throw) -> no retag. Tag already exists -> no build, but :latest is
+//    still retagged (forward-only): a manual `fly deploy --image-label` release creates
+//    the tag without moving :latest, which left it five releases stale on 2026-11-12.
 //  - compareVersions: numeric per-segment compare, null for non-versions.
 //  - retagLatest copies the manifest byte-for-byte (GET by version, PUT to
 //    latest, same Content-Type), forward-only: never moves :latest to an older
@@ -173,10 +175,11 @@ async function main() {
     ok(!steps.some(s => s.startsWith('retag')), 'retag ran after failed build')
     ok(errors.some(e => e.includes('fly deploy exited')), 'build failure not logged')
   })
-  await t('checkImageBuild: tag already exists -> no build, no retag', async () => {
+  await t('checkImageBuild: tag already exists -> no build, :latest still retagged', async () => {
     reset(); steps.length = 0
     await checkImageBuild(deps({ exists: true }))
-    ok(!steps.some(s => s.startsWith('build') || s.startsWith('retag')), steps.join(','))
+    ok(!steps.some(s => s.startsWith('build') || s.startsWith('flyctl')), steps.join(','))
+    ok(steps.join(',') === 'version,exists,retag:0.9.273:tok-test:osborn-sandbox3', steps.join(','))
   })
   await t('checkImageBuild: a throwing retag still never throws out', async () => {
     reset(); steps.length = 0

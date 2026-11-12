@@ -490,6 +490,11 @@ export async function checkImageBuild(overrides: Partial<ImageBuildCheckDeps> = 
     if (exists) {
       log(`Image tag ${version} already exists in registry — nothing to do`)
       console.log(`[image-build-check] image tag ${version} exists in Fly registry — skipping build`)
+      // The tag can exist because someone released by hand (`fly deploy
+      // --image-label`), which never moves `:latest`. Returning here left
+      // `:latest` five releases stale (2026-11-12). The retag is forward-only
+      // and never throws, so it is safe to run on every check.
+      await deps.retag(version, FLY_API_TOKEN, FLY_SANDBOX_APP)
       return
     }
 

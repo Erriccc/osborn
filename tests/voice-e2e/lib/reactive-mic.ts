@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { execSync } from 'child_process'
-import { readFileSync, rmSync } from 'fs'
+import { readFileSync, rmSync, copyFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -122,11 +122,15 @@ export async function speakWav(page: Page, wavPath: string) {
  *  2. macOS `say`
  *  3. espeak-ng (Linux)
  */
-export async function speakText(page: Page, text: string) {
+export async function speakText(page: Page, text: string, opts?: { keepWav?: string; onPlayStart?: () => void }) {
   const base = join(tmpdir(), `osborn-utt-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
   const wav = `${base}.wav`
   try {
     await synthesize(text, base)
+    // keepWav: a copy of exactly what was spoken, so proof clips can carry the
+    // tester's side of the conversation (the mic feed never reaches speakers).
+    if (opts?.keepWav) { try { copyFileSync(wav, opts.keepWav) } catch { /* proof is best-effort */ } }
+    opts?.onPlayStart?.()
     await speakWav(page, wav)
   } finally {
     rmSync(`${base}.aiff`, { force: true })

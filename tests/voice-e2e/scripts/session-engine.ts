@@ -64,7 +64,7 @@ import { fileURLToPath } from 'url'
 import { installReactiveMic, speakText } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
-import { saveCapture, peekCapture } from '../lib/audio-capture'
+import { saveCapture, peekCapture, startElementCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
@@ -282,8 +282,13 @@ async function main() {
       return { model: 'anthropic/glm-4.7', opts: { apiKey: z, baseURL: 'https://api.z.ai/api/anthropic/v1' } }
     throw new Error(tried.length ? `no working brain key — ${tried.join(', ')}` : 'no brain key — set GOOGLE_API_KEY (or GEMINI_API_KEY), ANTHROPIC_API_KEY or Z_AI_API_KEY')
   }
+  // TEST SEAM: OSBORN_BRAIN_STUB=1 swaps the brain for one that "acts" by
+  // doing nothing. It exists to exercise everything AROUND the brain — effect
+  // detection, warnings, the scroll fallback, clips — without a model key.
+  const BRAIN_STUB = process.env.OSBORN_BRAIN_STUB === '1'
   const initBrain = async () => {
     brainAlive = false
+    if (BRAIN_STUB) { brainAlive = true; brainError = null; brainModel = 'stub (does nothing)'; mark('brain STUB active — /act performs no action'); return }
     try {
       const picked = await pickBrainModel()
       const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
@@ -315,6 +320,7 @@ async function main() {
   await initBrain().catch(() => mark(`brain unavailable — ${brainError} — engine still drivable (/eval /tab /shot); POST /brain to retry`))
   const brainDownMsg = () => `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string) => {
+    if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
     try { return await actWithCache(stagehand, active, i) }
     catch (e) {
@@ -377,21 +383,38 @@ async function main() {
   // time via the recording's OWN start (startedAt = now - sinceStartMs), NOT
   // tCapture — raw manifest rel0/rel1 are on tCapture's timeline and misalign by
   // the anchor gap (proven: rel-based slicing returned silence).
-  const peekAudioToWav = async (): Promise<{ wav: string; startedAt: number } | null> => {
+  // `startedAt` is the WALL-CLOCK instant of the recording file's time zero.
+  // That is NOT when capture was armed: the recorder's timeline begins at the
+  // first tapped audio source (the anchor), which can be many seconds later
+  // (on the boot tab, the whole room-join gap). It is computed BEFORE the
+  // decode, which for a long recording takes seconds and used to skew it.
+  // `page` defaults to the active tab; callers outside the action lock must
+  // pass the tab they mean. Temp files are per call (two muxes used to share
+  // `_peek.*` and could read each other's half-written audio).
+  let peekSeq = 0
+  const peekAudioToWav = async (page: Page = active, maxMs = 30 * 60 * 1000): Promise<{ wav: string; startedAt: number; durationMs: number } | null> => {
     try {
-      const { base64, sinceStartMs } = await peekCapture(active)
+      const { base64, sinceStartMs, anchorOffsetMs } = await peekCapture(page)
+      const startedAt = Date.now() - sinceStartMs + anchorOffsetMs
       if (!base64) return null
-      const webm = join(RUN_DIR, '_peek.webm')
+      // Decoding the whole recording on every turn does not scale (a 2h
+      // capture is ~30s of ffmpeg and ~700MB of wav). Past the cap, proof
+      // clips go without the page-audio track rather than stall every /say.
+      if (sinceStartMs > maxMs) { mark(`page-audio track skipped — recording is ${Math.round(sinceStartMs / 60000)}min long`); return null }
+      const id = ++peekSeq
+      const webm = join(RUN_DIR, `_peek-${id}.webm`)
       writeFileSync(webm, Buffer.from(base64, 'base64'))
-      const wav = join(RUN_DIR, '_peek.wav')
+      const wav = join(RUN_DIR, `_peek-${id}.wav`)
       // Full decode → wav: MediaRecorder opus can't be seeked directly (bad
       // packet headers — proven), so decode once and trim the wav reliably.
       await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav])
-      return { wav, startedAt: Date.now() - sinceStartMs }
+      try { rmSync(webm, { force: true }) } catch { /* ignore */ }
+      const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wav]).catch(() => ({ stdout: '0' }))
+      return { wav, startedAt, durationMs: Math.round((Number(String(probe.stdout).trim()) || 0) * 1000) }
     } catch { return null }
   }
-  const muxClipAudio = async (videoPath: string, endMs: number, n: number): Promise<string | null> => {
-    const a = await peekAudioToWav()
+  const muxClipAudio = async (videoPath: string, endMs: number, n: number, page: Page = active): Promise<string | null> => {
+    const a = await peekAudioToWav(page)
     if (!a) return null
     try {
       const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', videoPath])
@@ -403,6 +426,68 @@ async function main() {
         '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
       return existsSync(out) ? out : null
     } catch { return null }
+  }
+  // EARS ON ANY TAB. Page-audio capture used to be armed only by the boot
+  // room-join on tab 0, so a voice session in any other tab was deaf: /say
+  // "succeeded" with an empty transcript and /hear threw. The ears now arm
+  // themselves on whichever tab is spoken to or listened on, and every answer
+  // says what state they were in, so "the agent was silent" can be told apart
+  // from "nobody was listening".
+  const earsState = async (p: Page): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number }> =>
+    (await Promise.race([
+      p.evaluate(() => {
+        const c = (globalThis as any).__osbornCapture
+        const els = [...document.querySelectorAll('audio,video')] as HTMLMediaElement[]
+        return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length }
+      }),
+      new Promise<null>((r) => setTimeout(() => r(null), 3000)),
+    ]).catch(() => null)) ?? { armed: false, startedAt: null, audioElements: 0, playing: 0, unknown: true }
+  const ensureEars = async (p: Page) => {
+    const before = await earsState(p) as Awaited<ReturnType<typeof earsState>> & { unknown?: boolean }
+    // A page too busy to answer is NOT "unarmed": arming again would replace
+    // the existing recording and orphan its recorder. Only arm on a clear no.
+    if (before.armed || before.unknown) return { ...before, armedNow: false }
+    await startElementCapture(p).catch(() => {})
+    return { ...(await earsState(p)), armedNow: true }
+  }
+  // AUDIBLE PROOF for a spoken turn: the true-time video clip plus BOTH sides
+  // of the audio — what the tester said (the synthesized utterance, placed at
+  // the instant it was played into the mic) and what the page played back
+  // (the ears' recording, aligned by wall clock). Returns null when there is
+  // no audio at all to add.
+  const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
+    const args = ['-y', '-loglevel', 'error', '-i', clip.path]
+    const filters: string[] = []; const labels: string[] = []
+    let idx = 1
+    const said = !!saidWav && existsSync(saidWav) && playStartMs > 0
+    if (said) {
+      const d = Math.round(playStartMs - clip.startMs)
+      // d < 0: the clip starts AFTER the utterance began (a turn longer than
+      // the frame buffer) — skip that much of the wav instead of pinning the
+      // whole utterance to the start of the clip.
+      if (d < 0) args.push('-ss', (-d / 1000).toFixed(3))
+      args.push('-i', saidWav!); filters.push(`[${idx}:a]aresample=48000${d > 0 ? `,adelay=${d}:all=1` : ''}[s]`); labels.push('[s]'); idx++
+    }
+    const a = await peekAudioToWav()
+    // Only a slice that actually overlaps the clip counts as a heard track: a
+    // seek past the end of the recording muxes silence and must not be
+    // reported as page audio.
+    const off = a ? (clip.startMs - a.startedAt) / 1000 : 0
+    const heard = !!a && off * 1000 < a.durationMs - 100 && a.startedAt < clip.endMs
+    if (a && heard) {
+      if (off >= 0) args.push('-ss', off.toFixed(3))
+      args.push('-i', a.wav)
+      filters.push(`[${idx}:a]aresample=48000${off < 0 ? `,adelay=${Math.round(-off * 1000)}:all=1` : ''}[h]`); labels.push('[h]'); idx++
+    }
+    const cleanup = () => { if (a) { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } } }
+    if (!labels.length) { cleanup(); return null }
+    const out = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say-av.mp4`)
+    filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest,apad[a]`)
+    try {
+      await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
+      return existsSync(out) ? { path: out, said, heard } : null
+    } catch (e) { mark(`audio mux failed: ${(e as Error).message.slice(0, 100)}`); return null }
+    finally { cleanup() }
   }
   // TAB HUD — ONLY for headless/CDP capture, where the screencast has no
   // browser chrome and tabs would be invisible. In full-window (display) mode
@@ -807,7 +892,14 @@ async function main() {
         // Current run only (past runs' recording is gone).
         if (path === '/clip' && q.get('audio') === '1' && !runParam && file) {
           const t3 = tasks.find((t) => t.n === n) as any
-          if (t3?.endMs) { const m = await muxClipAudio(file, t3.endMs, n); if (m) file = m }
+          // A spoken-turn clip already carries both sides of the audio, aligned
+          // when it was cut — re-muxing it here dropped the tester's track and
+          // shifted the page audio by the transcription time. Serve it as is.
+          const alreadyAudible = t3?.clipAudio && (t3.clipAudio.said || t3.clipAudio.heard)
+          // Otherwise mux from the tab the task ran on, not whichever tab
+          // another driver has fronted since.
+          const taskPage = context.pages().find((p) => p.url() === t3?.tab?.url && ownerOf(p) === (t3?.tab?.owner ?? null))
+          if (t3?.endMs && !alreadyAudible) { const m = await muxClipAudio(file, t3.endMs, n, taskPage ?? active); if (m) file = m }
         }
         if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs` }, 404)
         res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })
@@ -906,11 +998,31 @@ async function main() {
           const snap = () => Promise.race([
             active.evaluate(() => {
               const v = [...document.querySelectorAll('input,textarea,select')].slice(0, 200).map((e: any) => `${(e.value || '').length}:${e.checked ? 1 : 0}`).join(',')
-              return { url: location.href, title: document.title, scrollY: Math.round(window.scrollY), sig: `${(document.body?.innerText || '').length}|${v}|${document.activeElement?.tagName || ''}` }
+              // Scroll position of inner scroll containers too (a page whose
+              // window never scrolls can still scroll a panel).
+              let inner = 0
+              for (const e of Array.from(document.querySelectorAll('*')).slice(0, 4000)) { const t = (e as HTMLElement).scrollTop; if (t) inner += Math.round(t) }
+              return {
+                url: location.href, title: document.title, scrollY: Math.round((globalThis as any).scrollY || 0), innerScroll: inner,
+                // Two signatures, kept apart: `form` (field values + focus) only
+                // moves when something acts on the page; `text` (visible text
+                // length) also moves by itself on animated pages.
+                form: `${v}|${document.activeElement?.tagName || ''}`,
+                text: (document.body?.innerText || '').length,
+              }
             }),
             new Promise<null>((r) => setTimeout(() => r(null), 3000)),
-          ]).catch(() => null) as Promise<{ url: string; title: string; scrollY: number; sig: string } | null>
+          ]).catch((e) => { console.log(`[engine] page snapshot failed: ${String((e as Error)?.message ?? e).slice(0, 160)}`); return null }) as Promise<{ url: string; title: string; scrollY: number; innerScroll: number; form: string; text: number } | null>
+          // VOLATILITY BASELINE (#146): sample the page twice BEFORE acting. If
+          // its text changes with nobody touching it (a live widget, a ticker,
+          // a typing animation), text is not evidence of anything and is left
+          // out of the comparison. Without this an animated landing page made a
+          // scroll that never moved report changed:true, with no warning, and
+          // the dead recipe stayed in the action cache.
+          const pre = await snap()
+          await active.waitForTimeout(350).catch(() => {})
           const before = await snap()
+          const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
           try { r = await brain(body.instruction) }
           catch (e0) {
@@ -943,10 +1055,37 @@ async function main() {
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
           await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
-          const after = await snap()
-          const changed = !before || !after ? null : (before.url !== after.url || before.title !== after.title || before.scrollY !== after.scrollY || before.sig !== after.sig)
+          let after = await snap()
+          const moved = (a: typeof before, b: typeof before) => !!a && !!b && (a.scrollY !== b.scrollY || a.innerScroll !== b.innerScroll)
+          // SCROLL FALLBACK (#146): on some pages the brain's scroll action
+          // resolves to an element that does not scroll, and nothing moves. A
+          // scroll instruction that moved nothing is retried once as a real
+          // mouse-wheel gesture over the viewport, which is what a person does.
+          const scrollIntent = /\bscroll/i.test(String(body.instruction))
+          let fallback: string | null = null
+          if (scrollIntent && before && after && before.url === after.url && !moved(before, after) && !r?.noop) {
+            const ins = String(body.instruction).toLowerCase()
+            const vp = active.viewportSize() ?? { width: 1280, height: 720 }
+            const dy = /\b(top|beginning|start)\b/.test(ins) ? -1e6 : /\b(bottom|end)\b/.test(ins) ? 1e6 : (/\bup\b/.test(ins) ? -1 : 1) * Math.round(vp.height * 0.9)
+            try {
+              await active.mouse.move(Math.round(vp.width / 2), Math.round(vp.height / 2))
+              await active.mouse.wheel(0, dy)
+              await active.waitForTimeout(700)
+              const again = await snap()
+              if (moved(before, again)) { after = again; fallback = 'mouse-wheel' ; mark(`act[${driver}]: brain scroll moved nothing — mouse-wheel fallback scrolled the page`) }
+            } catch { /* keep the original result */ }
+          }
+          const structural = !!before && !!after && (before.url !== after.url || before.title !== after.title || moved(before, after) || before.form !== after.form)
+          const textChanged = !!before && !!after && before.text !== after.text
+          const changed = !before || !after ? null
+            // A scroll instruction is judged on scroll position (or navigation) alone.
+            : scrollIntent ? (before.url !== after.url || moved(before, after))
+            : structural || (textChanged && !textVolatile)
           const effect = {
-            changed, noop: !!r?.noop,
+            changed, noop: !!r?.noop, fallback,
+            // true when the page's text was already changing on its own before
+            // the action, so text was not used as evidence of an effect.
+            textVolatile,
             urlBefore: before?.url ?? null, urlAfter: after?.url ?? null,
             titleAfter: after?.title ?? null, scrollBefore: before?.scrollY ?? null, scrollAfter: after?.scrollY ?? null,
           }
@@ -955,9 +1094,12 @@ async function main() {
           let warning: string | null = null
           if (r?.noop) warning = 'the brain found nothing on the page matching this instruction — no action was performed'
           else if (changed === false) {
-            warning = 'the action ran but nothing observable changed on the page (url, title, scroll, form values, text length) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction'
+            warning = scrollIntent
+              ? 'the scroll did not move the page or any scrollable panel (also tried a mouse-wheel gesture) — the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll'
+              : `the action ran but nothing observable changed on the page (url, title, scroll, form values${textVolatile ? '; visible text was ignored because this page animates on its own' : ', text length'}) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction`
             if (before) forgetCached(before.url, String(body.instruction))
           }
+          if (fallback && before) forgetCached(before.url, String(body.instruction))
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
           const prevTask = tasks[tasks.length - 1]
           const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
@@ -966,7 +1108,11 @@ async function main() {
           // The clip covers THIS action (start → now, +2s lead), capped by
           // clipSeconds. It used to be "the last 20s of screen", which pulled
           // in footage from before the action — including other drivers' tabs.
-          const { clip, clipError } = await reqClip(n, 'act', Math.min(body.clipSeconds ?? 30, Math.ceil((Date.now() - t0) / 1000) + 2))
+          const actFrom = Math.max(t0 - 1500, Date.now() - (body.clipSeconds ?? 45) * 1000)
+          const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom).catch(() => null) : null
+          const clip = actRange?.path ?? null
+          const clipError = clip ? null : (live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session')
+          if (clip) mark(`clip: ${clip}`)
           const shot = await reqShot(n, 'act')
           const window = stampTask(n, 'act', t0, clip, shot, body.instruction)
           scenarioSteps.push({ kind: 'act', value: String(body.instruction) }); writeScenario()
@@ -993,10 +1139,13 @@ async function main() {
           // PRECONDITION failure is NOT retried — it will not fix itself (the
           // tab never opened a getUserMedia mic). (A full process death can't be
           // retried here; the caller's re-attach — see drive.sh — covers that.)
+          const ears = await ensureEars(active)
+          const saidWav = join(RUN_DIR, `said-${Date.now()}.wav`)
+          let playStartMs = 0
           const MAX_SAY_ATTEMPTS = Math.max(1, Number(process.env.OSBORN_SAY_RETRIES ?? 2))
           let sayErr: Error | null = null
           for (let attempt = 1; attempt <= MAX_SAY_ATTEMPTS; attempt++) {
-            try { await speakText(active, body.text); sayErr = null; break }
+            try { await speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { playStartMs = Date.now() } }); sayErr = null; break }
             catch (e) {
               sayErr = e as Error
               const m = sayErr.message || ''
@@ -1011,6 +1160,7 @@ async function main() {
             const msg = sayErr.message || 'speak failed'
             const noMic = /mic/i.test(msg)
             mark(`say[${driver}] FAILED after ${MAX_SAY_ATTEMPTS} attempt(s): ${msg.slice(0, 80)}`)
+            try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
             const fn = ++reqN
             const fshot = await reqShot(fn, 'say')
             stampTask(fn, 'say', t0, null, fshot, body.text)
@@ -1023,22 +1173,47 @@ async function main() {
               artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null, driver,
             }, noMic ? 422 : 502)
           }
-          mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(6000)
-          const heard = await hearSince(active, Math.max(0, t0 - tCapture)).catch(() => '')
+          mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`); await active.waitForTimeout(body.listenMs ?? 6000)
           const n = ++reqN
-          const { clip, clipError } = await reqClip(n, 'say', Math.min(body.clipSeconds ?? 30, Math.ceil((Date.now() - t0) / 1000) + 2))
+          // Cut the clip NOW — speak start to end of the listen window — before
+          // the (slow) transcription, so the spoken moment is always in it. It
+          // used to be "the last 30s", which for a long turn showed only the tail.
+          let clip: string | null = null; let clipError: string | null = null
+          let audio: { said: boolean; heard: boolean } = { said: false, heard: false }
+          const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000).catch(() => null) : null
+          if (!range) clipError = live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session'
+          else {
+            clip = range.path
+            const av = await muxSayAudio(range, saidWav, playStartMs, n)
+            if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
+            mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
+          }
+          try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
+          let hearError: string | null = null
+          const heard = await hearSince(active, Math.max(0, t0 - (ears.startedAt ?? tCapture))).catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
+          const earsAfter = await earsState(active)
+          const sayWarning = heard ? null
+            : hearError ? `nothing transcribed: ${hearError}`
+            : !(optionalEnvKey('SONIOX_API_KEY') || optionalEnvKey('DEEPGRAM_API_KEY') || optionalEnvKey('OPENAI_API_KEY')) ? 'nothing transcribed: the engine has no speech-to-text key (SONIOX_API_KEY / DEEPGRAM_API_KEY) — listen to the clip instead'
+            : earsAfter.audioElements === 0 ? 'nothing was heard, and the page has no audio/video element — no agent audio track is attached (the agent is probably not connected or not speaking)'
+            : earsAfter.playing === 0 ? 'nothing was heard: the page has audio elements but none is playing'
+            : ears.armedNow ? 'nothing was heard; the ears were armed on this tab just before speaking, so audio that started earlier was not captured'
+            : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say')
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard)
+          ;(window as any).clipAudio = audio; writeManifest()
           scenarioSteps.push({ kind: 'say', value: String(body.text) }); writeScenario()
-          return json(res, { ok: true, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         })
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
         // The CALLER's tab, not whichever tab another driver fronted last.
         const hearTab = driverActive.get(driverId(req)); const hearPage = hearTab && !hearTab.isClosed() ? hearTab : active
-        const since = Date.now() - tCapture - (body.lastMs ?? 20000)
-        try { return json(res, { heard: await hearSince(hearPage, Math.max(0, since)) }) }
+        const hearEars = await ensureEars(hearPage)
+        if (hearEars.armedNow) return json(res, { heard: '', ears: hearEars, warning: 'the ears were not armed on this tab until this call, so nothing earlier was recorded — have the page play audio again (or /say), then call /hear' })
+        const since = Date.now() - (hearEars.startedAt ?? tCapture) - (body.lastMs ?? 20000)
+        try { const heard = await hearSince(hearPage, Math.max(0, since)); return json(res, { heard, ears: hearEars, warning: heard ? null : (hearEars.playing === 0 ? 'nothing heard: no audio element on the page is playing' : null) }) }
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
       if (path === '/shot') { const driver = driverId(req); return await withLock(async () => { await focusDriverTab(driver); const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64'), driver }) }) }

@@ -156,8 +156,12 @@ async function sonioxTranscribeSince(audio: Buffer, sinceMs: number, apiKey: str
       }
       const tx: any = await (await fetch(`https://api.soniox.com/v1/transcriptions/${jobId}/transcript`, { headers: H })).json()
       const tokens: Array<{ text?: string; start_ms?: number }> = tx?.tokens ?? []
-      const picked = tokens.filter((t) => (t.start_ms ?? 0) >= sinceMs).map((t) => t.text ?? '').join('')
-      return (picked || tx?.text || '').trim()
+      // Only what was spoken inside the window. This used to fall back to the
+      // WHOLE recording's text when nothing was new, so a silent turn reported
+      // an earlier reply as freshly heard. With no token timings at all the
+      // window can't be applied, and only then is the full text returned.
+      if (!tokens.length) return (tx?.text || '').trim()
+      return tokens.filter((t) => (t.start_ms ?? 0) >= sinceMs).map((t) => t.text ?? '').join('').trim()
     } finally {
       fetch(`https://api.soniox.com/v1/transcriptions/${jobId}`, { method: 'DELETE', headers: H }).catch(() => {})
     }

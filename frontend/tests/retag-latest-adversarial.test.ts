@@ -147,10 +147,13 @@ async function main() {
     await checkImageBuild({ ...base, build: async () => { throw new Error('build broke') }, retag: async () => { n++ } })
     ok(n === 0, 'retag called')
   })
-  await t('tag exists -> neither build nor retag', async () => {
+  await t('tag exists -> no build, but :latest is retagged once (manual releases never move it)', async () => {
     let b = 0, r = 0
     await checkImageBuild({ ...base, tagExists: async () => true, build: async () => { b++ }, retag: async () => { r++ } })
-    ok(b === 0 && r === 0, 'called')
+    ok(b === 0 && r === 1, `build=${b} retag=${r}`)
+  })
+  await t('tag exists + retag rejects -> still does not throw', async () => {
+    await checkImageBuild({ ...base, tagExists: async () => true, build: async () => {}, retag: async () => { throw new Error('x') } })
   })
   await t('retag rejecting inside checkImageBuild does not throw', async () => {
     await checkImageBuild({ ...base, build: async () => {}, retag: async () => { throw new Error('x') } })

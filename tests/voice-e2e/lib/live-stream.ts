@@ -35,6 +35,11 @@ export type LiveStream = {
   // Dump the last ~N seconds of screencast frames to an mp4 clip. Returns the
   // path, or null if too few frames / ffmpeg unavailable.
   clip: (outPath: string, seconds?: number) => Promise<string | null>
+  // Cut the frames captured between two wall-clock instants. The clip plays in
+  // REAL TIME (each frame is held for as long as it was actually on screen),
+  // and the returned startMs/endMs are the wall-clock span it covers — what an
+  // audio track must be aligned against.
+  clipRange: (outPath: string, fromMs: number, toMs?: number) => Promise<{ path: string; startMs: number; endMs: number } | null>
   // Epoch ms of the most recent screencast frame (null before the first one).
   // A growing age means the page has stopped painting — ground truth for /status.
   lastFrameAt: () => number | null
@@ -246,28 +251,50 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     : `http://${host}:${port}/`
   console.log(`[live-stream] watch live at ${publicUrl}`)
 
-  const clip = async (outPath: string, seconds = 20): Promise<string | null> => {
-    const since = Date.now() - seconds * 1000
-    const frames = ring.filter((f) => f.t >= since)
+  // TRUE-TIME CLIPS. Frames used to be encoded at a fixed rate, so any dropped
+  // or late frame shortened the clip: a 30s window came out as 23s and nothing
+  // in it lined up with the clock (or with an audio track). Each frame now
+  // carries its real on-screen duration, taken from its capture timestamp, and
+  // the encoder resamples to a constant rate — 1s of clip is 1s of wall clock.
+  const clipRange = async (outPath: string, fromMs: number, toMs = Date.now()): Promise<{ path: string; startMs: number; endMs: number } | null> => {
+    const frames = ring.filter((f) => f.t >= fromMs && f.t <= toMs)
     if (frames.length < 2) { console.log(`[live-stream] clip skipped — ${frames.length} frame(s)`); return null }
     const dir = mkdtempSync(join(tmpdir(), 'osbclip-'))
     try {
-      frames.forEach((f, i) => writeFileSync(join(dir, `f${String(i).padStart(5, '0')}.jpg`), f.buf))
+      // Thin bursts instead of padding them: frames closer than one output
+      // frame (100ms at 10fps) to the previous kept frame are dropped. A
+      // minimum-duration floor here stretched a burst of 2400 frames 5ms apart
+      // (12s of wall clock) into a 48s clip.
+      const MIN_GAP_MS = 100
+      const kept: typeof frames = []
+      for (const f of frames) if (!kept.length || f.t - kept[kept.length - 1].t >= MIN_GAP_MS) kept.push(f)
+      const lines: string[] = ['ffconcat version 1.0']
+      kept.forEach((f, i) => {
+        const name = `f${String(i).padStart(5, '0')}.jpg`
+        writeFileSync(join(dir, name), f.buf)
+        const next = i + 1 < kept.length ? kept[i + 1].t : toMs
+        lines.push(`file '${name}'`, `duration ${(Math.max(1, next - f.t) / 1000).toFixed(3)}`)
+      })
+      // The concat demuxer ignores the last duration unless the file repeats.
+      lines.push(`file 'f${String(kept.length - 1).padStart(5, '0')}.jpg'`)
+      writeFileSync(join(dir, 'list.txt'), lines.join('\n') + '\n')
       const ok = await new Promise<boolean>((resolve) => {
-        // Encode at the capture rate → display-mode clips play in REAL TIME.
-        const ff = spawn('ffmpeg', ['-y', '-framerate', String(CAPTURE_FPS), '-pattern_type', 'glob', '-i', join(dir, 'f*.jpg'),
-          '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { stdio: 'ignore' })
+        const ff = spawn('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', join(dir, 'list.txt'),
+          '-vf', 'fps=10,pad=ceil(iw/2)*2:ceil(ih/2)*2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { stdio: 'ignore' })
         ff.on('error', () => resolve(false)); ff.on('close', (c) => resolve(c === 0))
       })
       if (!ok) { console.log('[live-stream] clip failed — ffmpeg unavailable'); return null }
-      console.log(`[live-stream] clip saved: ${outPath} (${frames.length} frames)`)
-      return outPath
+      console.log(`[live-stream] clip saved: ${outPath} (${frames.length} frames, ${((toMs - frames[0].t) / 1000).toFixed(1)}s)`)
+      return { path: outPath, startMs: frames[0].t, endMs: toMs }
     } finally { try { rmSync(dir, { recursive: true, force: true }) } catch {} }
   }
+  const clip = async (outPath: string, seconds = 20): Promise<string | null> =>
+    (await clipRange(outPath, Date.now() - seconds * 1000))?.path ?? null
 
   return {
     url: publicUrl,
     clip,
+    clipRange,
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
     latestFrame: () => (latest ? latest.toString('base64') : null),
