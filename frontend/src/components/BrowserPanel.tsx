@@ -115,10 +115,11 @@ export function BrowserPanel() {
       // explanation (#80). Inspect the status instead and flag the misconfig so
       // the banner + the explicit "unavailable" fields show.
       let r: Response | null = null
-      // Clear `status` on every failure: the badge reads a held-over status object
-      // as a live engine, so one that idle-stops mid-watch would stay green "live".
-      try { r = await fetch(api('status'), { cache: 'no-store' }) } catch { setStatus(null); return }
+      try { r = await fetch(api('status'), { cache: 'no-store' }) } catch { return }
       if (!r.ok) {
+        // Drop the last status: the badge reads a held-over status object as a live
+        // engine, so one that idle-stops mid-watch stayed green "live". A thrown
+        // fetch above is a blip on OUR proxy, not the engine — hold last-known there.
         setStatus(null)
         if (r.status === 401) {
           const t = await r.text().catch(() => '')
@@ -128,8 +129,7 @@ export function BrowserPanel() {
         return
       }
       const s = (await r.json().catch(() => null)) as Status | null
-      setStatus(s)
-      if (s) setTokenError(false)
+      if (s) { setStatus(s); setTokenError(false) }
     }
     tick()
     pollRef.current = setInterval(tick, 3000)
