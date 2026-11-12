@@ -13,6 +13,7 @@ import { MarkdownMessage } from './MarkdownMessage'
 import LiveClock from './LiveClock'
 import ModelBadge from './ModelBadge'
 import AgentHealthNotice from './AgentHealthNotice'
+import type { KeyHealthEntry } from '@/lib/agent-health'
 import { fastBrainLabel } from '@/lib/modelBadge'
 import { LogsDrawer, type MachineData } from './LogsDrawer'
 import { FilesExplorerModal } from './FilesExplorerModal'
@@ -21,6 +22,7 @@ import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
+import { cacheTranscript, readCachedTranscript } from '@/lib/transcript-cache'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -376,6 +378,10 @@ function VoiceRoomInner({
   // provider); `agentVersion` ← GET /health → { version } (already polled below).
   const [mainProvider, setMainProvider] = useState<string | null>(null)
   const [agentVersion, setAgentVersion] = useState<string | null>(null)
+  // #87: per-key self-test results from GET /health (agent probes the active
+  // fallback key). Drives AgentHealthNotice's "No working model" when every
+  // configured key failed/expired. Absent on the Claude path / older agents.
+  const [agentKeyHealth, setAgentKeyHealth] = useState<KeyHealthEntry[] | undefined>(undefined)
   // Multi-instance slots panel
   const [slots, setSlots] = useState<SlotInfo[]>([])
   const [spawnPending, setSpawnPending] = useState(false)
@@ -776,6 +782,11 @@ function VoiceRoomInner({
           if (!cancelled && typeof d?.version === 'string' && d.version.trim()) {
             setAgentVersion(d.version)
           }
+          // #87: /health carries the active fallback key's self-test result when
+          // the agent probed it. Older agents omit it (stays undefined → no notice).
+          if (!cancelled && Array.isArray(d?.keyHealth)) {
+            setAgentKeyHealth(d.keyHealth as KeyHealthEntry[])
+          }
         }
       } catch { /* network error / timeout — keep previous reading */ }
     }
@@ -783,6 +794,31 @@ function VoiceRoomInner({
     const id = setInterval(poll, 15_000)
     return () => { cancelled = true; clearInterval(id) }
   }, [agentUrl])
+  // OPTIMISTIC CACHE PAINT (#136) — repaint the resumed session's last-known
+  // transcript from localStorage the instant the page mounts, so the pane is
+  // not blank (or greeting-only) during the 60-90s cold-machine connect that
+  // gates the real replay. These rows are flagged `fromCache` and are dropped
+  // the moment the authoritative /session-messages (or prior_messages) replay
+  // lands below — the cache never wins over the live data, it only fills the gap.
+  useEffect(() => {
+    if (!preSelectedSessionId) return
+    const cached = readCachedTranscript(preSelectedSessionId)
+    if (cached.length === 0) return
+    const items: ChatMessage[] = cached.map(c => ({
+      id: c.id,
+      role: c.role,
+      content: c.content,
+      timestamp: c.ts ? new Date(c.ts) : new Date(),
+      ...(c.compaction ? { compaction: c.compaction as CompactionMarker } : {}),
+      fromCache: true,
+    }))
+    setMessages(prev => {
+      // Never overwrite anything real that already arrived (fast reconnect).
+      if (prev.some(m => m.fromCache || m.id.startsWith('prior-'))) return prev
+      return [...items, ...prev]
+    })
+  }, [preSelectedSessionId])
+
   // PRIOR-CONVERSATION HYDRATION — fetch the resumed session's recent messages
   // over plain HTTP at MOUNT, in parallel with the LiveKit connect, so the
   // transcript paints immediately instead of after the voice handshake. The
@@ -796,8 +832,10 @@ function VoiceRoomInner({
       // A reloaded/resumed session often hits a COLD machine (idle-stopped), so
       // the first fetch can time out or return empty before the agent is up —
       // leaving only a fresh greeting in the pane (audit §16.4 reload quirk).
-      // Retry with backoff until the prior messages actually paint.
-      const delays = [0, 2000, 4000, 7000, 12000]
+      // Keep retrying across the whole cold-boot window (connects were measured
+      // at 60-90s in #136/#143), not just ~25s, or the authoritative replay
+      // never lands and the optimistic cache paint is never reconciled.
+      const delays = [0, 1500, 3000, 5000, 8000, 12000, 15000, 15000, 20000, 20000, 25000]
       for (const wait of delays) {
         if (cancelled) return
         if (wait) await new Promise(res => setTimeout(res, wait))
@@ -813,13 +851,26 @@ function VoiceRoomInner({
           if (!Array.isArray(d?.messages) || d.messages.length === 0) continue
           console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length} (+${Array.isArray(d.compactions) ? d.compactions.length : 0} compaction markers)`)
           const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined)
-          setMessages(prev => (prev.some(m => m.id.startsWith('prior-')) ? prev : [...priorItems, ...prev]))
+          // Reconcile: if an authoritative replay already painted, leave it;
+          // otherwise drop the optimistic cache rows and show the live history.
+          setMessages(prev => (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)
+            ? prev
+            : [...priorItems, ...prev.filter(m => !m.fromCache)]))
           return // painted — stop retrying
         } catch { /* cold machine / network — retry */ }
       }
     })()
     return () => { cancelled = true }
   }, [agentUrl, preSelectedSessionId, launchCwd])
+
+  // Persist the live transcript so a reload can paint it instantly (above).
+  // Debounced so streaming tokens don't thrash localStorage; keyed by the live
+  // session so a switch caches each room separately (also speeds switch-back).
+  useEffect(() => {
+    if (!currentSessionId || messages.length === 0) return
+    const id = setTimeout(() => cacheTranscript(currentSessionId, messages), 600)
+    return () => clearTimeout(id)
+  }, [currentSessionId, messages])
   // #74 S9: after an in-place switch, paint the TARGET's own history from the
   // agent's /session-messages (with its cwd), the same path as mount hydration.
   // Falls back to the session_switched payload's history (older agents / store
@@ -830,7 +881,7 @@ function VoiceRoomInner({
     const paint = (msgs: Array<{ role: string; content: string; ts?: string | number | null }>, compactions?: PriorCompaction[]) => {
       if (currentSessionIdRef.current && currentSessionIdRef.current !== sessionId) return
       const items = buildPriorItems(sessionId, msgs, compactions)
-      setMessages(prev => [...items, ...prev.filter(m => !m.id.startsWith('prior-'))])
+      setMessages(prev => [...items, ...prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache)])
     }
     ;(async () => {
       try {
@@ -2715,9 +2766,10 @@ function VoiceRoomInner({
           console.log(`💬 prior_messages received: ${data.messages.length} messages (+${Array.isArray(data.compactions) ? data.compactions.length : 0} compaction markers)`)
           const priorItems = buildPriorItems(data.sessionId ?? 'x', data.messages, Array.isArray(data.compactions) ? data.compactions : undefined)
           setMessages(prev => {
-            // Don't double-inject: skip if we already have prior- prefixed messages
-            if (prev.some(m => m.id.startsWith('prior-'))) return prev
-            return [...priorItems, ...prev]
+            // Don't double-inject: skip if an authoritative replay already painted.
+            if (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)) return prev
+            // Drop the optimistic cache rows (#136) and show the live history.
+            return [...priorItems, ...prev.filter(m => !m.fromCache)]
           })
         }
       } else if (data.type === 'checkpoint_captured' || data.type === 'tts_chunks') {
@@ -4011,10 +4063,18 @@ function VoiceRoomInner({
 
             {/* #87 gap 3 — surface a SILENT failure the session would otherwise
                 hide: an agent too old for the demo-model fallback (version floor),
-                or a failed key self-test. Only shows for a no-Claude session that
-                is relying on the fallback (claude_auth_everRequired). Same real
-                /health version signal as the badge; never fabricates a status. */}
-            <AgentHealthNotice version={agentVersion} relyingOnFallback={claudeAuthEverRequired} />
+                or a failed key self-test. Shows for a session on the HOUSE demo
+                tier — either because Claude sign-in was prompted at least once
+                (claudeAuthEverRequired, the pre-fallback/old-agent path) OR because
+                the agent declared a house-tier provider (zai / openrouter; the
+                smooth fallback path never opens the auth modal). A user's OWN key
+                (anthropic) is not a demo-tier concern, so it is excluded. Same real
+                /health signals as the badge; never fabricates a status. */}
+            <AgentHealthNotice
+              version={agentVersion}
+              relyingOnFallback={claudeAuthEverRequired || ['zai', 'openrouter'].includes((mainProvider || '').trim().toLowerCase())}
+              keyHealth={agentKeyHealth}
+            />
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}

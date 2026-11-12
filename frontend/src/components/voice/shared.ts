@@ -179,6 +179,10 @@ export interface ChatMessage {
   // Id sent with a typed message (user_text) and echoed back on its
   // user_transcript, so the echo is deduped (bug d9bb78b2).
   clientMsgId?: string
+  // Painted optimistically from the localStorage transcript cache on reload
+  // (#136): rendered like any bubble, but dropped and replaced the moment the
+  // authoritative /session-messages (or prior_messages) replay lands.
+  fromCache?: boolean
 }
 
 export interface SpeakingChunk {
