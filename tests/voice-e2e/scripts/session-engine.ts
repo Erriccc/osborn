@@ -233,17 +233,69 @@ async function main() {
   // of the session; now POST /brain rebuilds it over the same CDP endpoint.
   let stagehand: Stagehand | null = null
   let brainAlive = false
+  let brainModel = ''
+  // CRASH GUARD (2026-11-11): a depleted model key surfaced as an unhandled
+  // AI_APICallError from Stagehand's internals and killed the whole engine
+  // process (exit 1; restart policy "never" → engine down for every driver).
+  // The engine must outlive any provider failure: log + mark, never exit.
+  process.on('unhandledRejection', (e: any) => {
+    try { mark(`unhandledRejection: ${String(e?.message ?? e).slice(0, 120)}`) } catch { /* ignore */ }
+    console.error('[engine] unhandledRejection (survived):', e)
+  })
+  process.on('uncaughtException', (e: any) => {
+    try { mark(`uncaughtException: ${String(e?.message ?? e).slice(0, 120)}`) } catch { /* ignore */ }
+    console.error('[engine] uncaughtException (survived):', e)
+  })
+  // BRAIN PROVIDER FALLBACK (2026-11-11): the Gemini prepay ran dry (402
+  // RESOURCE_EXHAUSTED) and took /act down. Probe each configured key with a
+  // 1-token real completion and build the brain on the first provider that
+  // actually answers: Gemini → Anthropic → z.ai (Anthropic-compatible API).
+  const pickBrainModel = async (): Promise<{ model: string; opts: Record<string, string> }> => {
+    const g = process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY
+    if (g) {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${g}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } }),
+      }).catch(() => null)
+      if (r?.ok) return { model: 'google/gemini-2.5-flash', opts: { apiKey: g } }
+      mark(`brain: gemini probe failed (${r ? r.status : 'network'}) — falling back`)
+    }
+    const a = process.env.ANTHROPIC_API_KEY
+    if (a) {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', headers: { 'x-api-key': a, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-haiku-5-5', max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] }),
+      }).catch(() => null)
+      if (r?.ok) return { model: 'anthropic/claude-haiku-5-5', opts: { apiKey: a } }
+      mark(`brain: anthropic probe failed (${r ? r.status : 'network'}) — falling back`)
+    }
+    const z = process.env.Z_AI_API_KEY || process.env.ZAI_API_KEY
+    if (z) {
+      const r = await fetch('https://api.z.ai/api/anthropic/v1/messages', {
+        method: 'POST', headers: { 'x-api-key': z, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'glm-4.7', max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] }),
+      }).catch(() => null)
+      if (r?.ok) return { model: 'anthropic/glm-4.7', opts: { apiKey: z, baseURL: 'https://api.z.ai/api/anthropic' } }
+      mark(`brain: z.ai probe failed (${r ? r.status : 'network'}) — falling back`)
+    }
+    throw new Error('no working brain key — gemini/anthropic/z.ai probes all failed')
+  }
   const initBrain = async () => {
     const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
+    const picked = await pickBrainModel()
+    if (picked.model.startsWith('google/')) process.env.GOOGLE_GENERATIVE_AI_API_KEY = picked.opts.apiKey
     stagehand = new Stagehand({
       env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-      model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
+      model: picked.model as any, modelClientOptions: picked.opts, verbose: 0,
     })
     await stagehand.init()
     brainAlive = true
+    brainModel = picked.model
+    mark(`brain ready on ${picked.model}`)
   }
-  await initBrain()
+  // Boot must survive a dead brain (plain driving /tab //shot //eval still
+  // works) — /act reports "brain dead", POST /brain retries the init.
+  await initBrain().catch((e) => { brainAlive = false; mark(`brain init failed: ${String((e as Error).message).slice(0, 110)}`) })
   const brain = async (i: string) => {
     if (!stagehand || !brainAlive) throw new Error('brain dead — POST /brain to re-init')
     try { return await actWithCache(stagehand, active, i) }
@@ -571,7 +623,7 @@ async function main() {
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
           agentUrl: AGENT_URL || null, agentUnreachable,
-          brain: brainAlive ? 'ready' : 'dead', useAuth, live: live?.url,
+          brain: brainAlive ? 'ready' : 'dead', brainModel: brainModel || null, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
           depth: depthNow(),
@@ -672,7 +724,19 @@ async function main() {
           if (owned) return json(res, { error: owned }, 409)
           const t0 = Date.now()
           await updateTabHud()
-          const r = await brain(body.instruction)
+          // /act surfaces brain failures structurally (like /say and /hear) —
+          // a provider error (e.g. 402 credits-depleted) must name itself, not
+          // bubble into an opaque 5xx (issue #102 family).
+          let r: Awaited<ReturnType<typeof brain>>
+          try {
+            r = await brain(body.instruction)
+          } catch (e) {
+            const raw = (e as Error).message || String(e)
+            mark(`act failed[${driver}]: ${raw.slice(0, 90)}`)
+            const nf = ++reqN
+            stampTask(nf, 'act', t0, null, null, body.instruction, '')
+            return json(res, { ok: false, error: raw, brain: brainAlive ? 'ready' : 'dead', brainModel: brainModel || null, driver })
+          }
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
           await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
