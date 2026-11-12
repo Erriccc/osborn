@@ -106,8 +106,6 @@ export async function engineMachineState(): Promise<EngineMachineState> {
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
     })
-    // Read failed (wrong app/org, mis-scoped token, Fly outage) → state unreadable.
-    // No engine-side fallback probe: it would wake the machine on every poll (#115).
     if (!res.ok) return { configured: true, state: null, machineId: null, host, unreachable: true }
     const machines = (await res.json()) as Array<{ id: string; state: string }>
     const m = Array.isArray(machines) && machines.length ? machines[0] : null

@@ -76,8 +76,8 @@ export function BrowserPanel() {
   // or mismatched server-side) — drives the same banner as engineTokenConfigured.
   const [tokenError, setTokenError] = useState(false)
   // #138: the proxy answers 401 "Not authenticated" to a signed-out visitor.
-  // That is NOT an unreachable engine — say "sign in" and stop polling, instead
-  // of a red "engine unreachable" badge and an endless "Waking…" spinner.
+  // That is NOT an engine problem — say "sign in" and stop polling, instead of a
+  // state badge and an endless "Waking…" spinner.
   const [signedOut, setSignedOut] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamKickRef = useRef(0)
@@ -118,8 +118,8 @@ export function BrowserPanel() {
       try { r = await fetch(api('status'), { cache: 'no-store' }) } catch { return }
       if (!r.ok) {
         // Drop the last status: the badge reads a held-over status object as a live
-        // engine, so one that idle-stopped mid-watch stayed green "live" (it answers
-        // 502 here). A thrown fetch above never reached our proxy — hold last-known.
+        // engine, so one that idle-stopped mid-watch stayed green "live". A thrown
+        // fetch above never reached our proxy — hold last-known there.
         setStatus(null)
         if (r.status === 401) {
           const t = await r.text().catch(() => '')
@@ -129,7 +129,7 @@ export function BrowserPanel() {
         return
       }
       const s = (await r.json().catch(() => null)) as Status | null
-      setStatus(s); if (s) setTokenError(false) // an unparseable 200 is not a live engine either
+      setStatus(s); if (s) setTokenError(false)
     }
     tick()
     pollRef.current = setInterval(tick, 3000)
@@ -426,18 +426,17 @@ function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreach
   // the chat agent it should join isn't answering (#81).
   if (watching && agentUnreachable) {
     label = 'agent unreachable'; cls = 'bg-amber-600/80 text-black'
+  } else if (watching && tokenMisconfigured) {
+    // Without the engine token the status poll 401s, so `status` never arrives —
+    // don't sit on a misleading "connecting", whatever the Fly state says (#80).
+    label = 'no token'; cls = 'bg-amber-600/80 text-black'
   } else if (up) {
-    // Without the engine token the status poll 401s, so `status` never
-    // arrives — don't sit on a misleading "connecting" (#80).
-    if (watching && tokenMisconfigured) { label = 'no token'; cls = 'bg-amber-600/80 text-black' }
-    else { label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white' }
+    label = watching ? (status ? 'live' : 'connecting') : 'awake'; cls = 'bg-emerald-600/80 text-white'
   } else if (engine && engine.state) {
     // State is readable but not 'started' → the machine is asleep/stopping.
     label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300'
   } else if (engine && engine.unreachable) {
-    // We couldn't READ awake/asleep (Fly Machines API / our own proxy) — that says
-    // nothing about engine health, so it's an amber "can't tell", not a red
-    // engine-is-down claim. Explicit rather than a bare "unknown" (#81/#115).
+    // Our own proxy can also fail to answer; either way it is a read failure (#81/#115).
     label = 'state unreadable'; cls = 'bg-amber-600/80 text-black'
   } else if (engine && !engine.configured) {
     label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'
