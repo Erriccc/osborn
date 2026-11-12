@@ -833,10 +833,13 @@ function VoiceRoomInner({
       // A reloaded/resumed session often hits a COLD machine (idle-stopped), so
       // the first fetch can time out or return empty before the agent is up —
       // leaving only a fresh greeting in the pane (audit §16.4 reload quirk).
-      // Keep retrying across the whole cold-boot window (connects were measured
-      // at 60-90s in #136/#143), not just ~25s, or the authoritative replay
-      // never lands and the optimistic cache paint is never reconciled.
-      const delays = [0, 1500, 3000, 5000, 8000, 12000, 15000, 15000, 20000, 20000, 25000]
+      // Retry with backoff until the prior messages actually paint. Deliberately
+      // NOT widened to cover the whole 60-90s cold boot (#149 review): a fresh
+      // agent boot pushes the same rows over the data channel as prior_messages
+      // the moment it is up, so the long tail bought nothing — and a loop still
+      // polling after the user has spoken prepends history containing those
+      // turns while the live rows are kept, duplicating the last turn.
+      const delays = [0, 2000, 4000, 7000, 12000]
       for (const wait of delays) {
         if (cancelled) return
         if (wait) await new Promise(res => setTimeout(res, wait))
