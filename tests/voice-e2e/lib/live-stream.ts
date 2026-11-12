@@ -173,6 +173,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       for (const h of ['x-engine-token', 'x-driver-id', 'content-type', 'content-length', 'accept']) {
         const v = req.headers[h]; if (typeof v === 'string') fwdHeaders[h] = v
       }
+      const pubHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+      if (pubHost) fwdHeaders['x-control-base'] = `${String(req.headers['x-forwarded-proto'] || 'http').split(',')[0]}://${pubHost}/control`
       const upstream = httpRequest({
         host: '127.0.0.1', port: Number(process.env.SESSION_ENGINE_PORT ?? 8781),
         method: req.method, path: (pathName.slice('/control'.length) || '/') + reqUrl.search, headers: fwdHeaders,
