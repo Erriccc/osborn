@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 23
+Version: 25
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -50,6 +50,11 @@ delivered to the user. No silent runs.
   MJPEG into canvas `stream` mode. NO tunnels. → references/streaming.md
 - **Exploring/researching any site?** → RESEARCH: `OSBORN_ENTRY=none` +
   `OSBORN_APP_URL=<site>`; save what you learn as journeys.
+- **Testing a PR / deploy / journey that takes more than 3–4 actions?** →
+  TESTER MODE: hand the goal to a background tester agent that logs every
+  step to a ledger, reads an inbox for steering, and files what it trips over
+  as findings — you stay free and nothing is lost if it gets stuck.
+  → references/tester-mode.md
 - **Voice flow testing?** → VOICE: `/say` a riddle, `/hear` the reply —
   comprehension from AUDIO, never from the DOM.
 - **User/operator says "can't hear / can't see / looks weird"?** → SYMPTOM:
@@ -177,7 +182,60 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 ## References (in the harness dir — read the one your workflow needs)
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
+- `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v25
+- **Clips play in true time.** Each frame is held for as long as it was really
+  on screen, so one second of clip is one second of wall clock (a 30s window
+  used to come out as ~23s). `/act` clips start at the action; `/say` clips run
+  from just before speaking to the end of the listen window (`listenMs`,
+  default 6000) and are cut before transcription, so the spoken moment is
+  always in the clip.
+- **Spoken-turn clips have sound — both sides.** The `/say` clip carries what
+  the tester said (placed at the instant it went into the mic) and what the
+  page played back. `clipAudio: {said, heard}` says which tracks made it in.
+- **Ears arm themselves on any tab.** Page-audio capture used to exist only on
+  the boot tab, so a voice session in another tab was deaf. `/say` and `/hear`
+  now arm the ears on the caller's tab and report `ears: {armed, armedNow,
+  audioElements, playing}`; `/say` adds `heardAnything` and a `warning` that
+  says WHY nothing was heard (no audio element, nothing playing, ears only
+  just armed, or a late reply). `/hear` no longer throws on an unarmed tab.
+- **`effect.changed` is no longer fooled by animated pages.** The page is
+  sampled twice before each action; if its text changes by itself
+  (`effect.textVolatile`), text is not counted as evidence. A scroll
+  instruction is judged on scroll position alone, and when the brain's scroll
+  moves nothing the engine retries it as a mouse-wheel gesture
+  (`effect.fallback: "mouse-wheel"`).
+
+## What's new in v24
+- **`ok:true` is no longer the whole story.** Every `/act` returns `effect`
+  (`changed`, `noop`, URL/scroll before and after, title), `result.did` (what
+  the brain chose to do) and a `warning` when nothing observable changed or
+  nothing matched. A recipe with no visible effect is dropped from the action
+  cache, not replayed.
+- **Long actions are pollable.** `{"async":true}` on `/act` or `/say` answers
+  202 with `job` + `resultUrl`; `GET /result?id=` returns pending or the exact
+  synchronous response. Never blind-retry a timed-out action.
+- **Control API on 443.** `https://<app>.fly.dev/control/<action>` reaches the
+  whole API with the same `x-engine-token`, for agents that cannot reach
+  `:8781`. Through it, `clipUrl`/`artifactUrl`/`resultUrl` are absolute.
+- **Supervisor takeover.** `/tab {"op":"takeover"|"handback","i":N}`; the
+  borrowed driver gets `409 paused_by_supervisor` with `retryAfterSec` and gets
+  its tab back. `/tab release` is owner-only.
+- **Brain provider fallback.** Gemini → Anthropic → z.ai, picked by a live
+  probe at boot and re-picked when a provider refuses mid-session; `/status`
+  shows `brainModel`/`brainError`. The engine no longer dies on a model error
+  and boots without a brain (`/eval`, `/tab`, `/shot` keep working).
+- **Clips cover the action's own time window**, not the last 20s of screen.
+- **Public evidence links.** `/clip` and `/artifact` need the engine token, so
+  a link to them is a 401 for anyone reading an issue. Every `/act` and `/say`
+  now returns `evidence` with token-free signed links (`screenshot`, `clip`,
+  `log`) and a paste-ready `markdown` block — use THOSE in issues, PRs and
+  reports. They last while the run is among the newest 30 on the volume;
+  `GET /evidence?run=<run>&n=<N>` re-issues them later (omit `n` for the
+  whole run).
+- **Tester mode** — see references/tester-mode.md.
 
 ## What's new in v23
 - **Hear the agent — audio, not just video.** Clips + the MJPEG stream are

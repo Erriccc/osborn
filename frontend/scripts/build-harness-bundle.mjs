@@ -50,7 +50,19 @@ for (const dir of INCLUDE_DIRS) {
 // reactive mic synthesizes speech.
 files['fixtures/.keep'] = '# placeholder — WAV fixtures are optional; the reactive mic synthesizes speech at runtime\n'
 mkdirSync(dirname(out), { recursive: true })
-const payload = JSON.stringify({ version: HARNESS_VERSION, generatedAt: new Date().toISOString(), files })
+// DETERMINISTIC OUTPUT: keep the previous generatedAt when nothing changed, so
+// re-running this on an up-to-date tree produces no diff. That is what lets CI
+// assert the committed copies are current (see frontend-lint.yml). It matters
+// because Railway builds without the repo's tests/ directory: this script then
+// keeps whatever is committed in public/, so a stale committed copy IS what
+// production serves. The live site served skill v23 from 2026-08-11 until
+// 2026-11-12 for exactly that reason — the source had moved on, public/ had not.
+let generatedAt = new Date().toISOString()
+try {
+  const prev = JSON.parse(readFileSync(out, 'utf8'))
+  if (prev.version === HARNESS_VERSION && JSON.stringify(prev.files) === JSON.stringify(files)) generatedAt = prev.generatedAt
+} catch { /* no previous bundle */ }
+const payload = JSON.stringify({ version: HARNESS_VERSION, generatedAt, files })
 writeFileSync(out, payload)
 writeFileSync(legacyOut, payload) // legacy alias for /api/test-skill/bundle
 console.log(`[harness-bundle] wrote ${Object.keys(files).length} files to public/browser-screen-recorder-bundle.json (+ legacy voice-e2e-bundle.json)`)
