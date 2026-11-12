@@ -212,7 +212,6 @@ async function main() {
   const tabLastUsed = new Map<Page, number>()
   const touchTab = (p: Page) => tabLastUsed.set(p, Date.now())
   const watchPage = (p: Page) => {
-    live?.trackPage?.(p)
     if (devtoolsBufs.has(p)) return
     devtoolsBufs.set(p, attachDevtools(p))
     touchTab(p)
@@ -242,7 +241,6 @@ async function main() {
   await installReactiveMic(active)
   await installActionVisualizer(active)
   if (!live) live = await startLiveStream(active).catch(() => null)
-  for (const p of context.pages()) live?.trackPage?.(p)
   manifest.live = live?.url ?? null
   manifest.captureMode = DISPLAY_MODE ? 'display (full browser window)' : 'page (CDP)'
   mark(`browser up (${useAuth ? 'auth' : 'guest'}${IN_CONTAINER ? ', container' : ''}, capture: ${DISPLAY_MODE ? 'full-window' : 'page'}) — live: ${live?.url ?? 'n/a'}`)
@@ -391,7 +389,7 @@ async function main() {
     // FALLBACK (diag 2026-08-05: page.screenshot fails in headful display mode
     // → artifact:null → /artifact 404s). Use the live x11grab frame so the
     // screenshot field is NEVER null when a stream exists.
-    try { const b64 = live?.latestFrame(); if (b64) { writeFileSync(p, Buffer.from(b64, 'base64')); return p } } catch { /* ignore */ }
+    try { const b64 = live?.latestFrame(page); if (b64) { writeFileSync(p, Buffer.from(b64, 'base64')); return p } } catch { /* ignore */ }
     return null
   }
   // ── AUDIO MUX (v23) ─────────────────────────────────────────────────────
@@ -521,10 +519,9 @@ async function main() {
     filters.push(`${vchain}[v]`)
     try {
       await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-movflags', '+faststart', '-shortest', out])
-      for (const f of capFiles) { try { rmSync(f, { force: true }) } catch { /* ignore */ } }
       return existsSync(out) ? { path: out, said, heard } : null
     } catch (e) { mark(`audio mux failed: ${(e as Error).message.slice(0, 100)}`); return null }
-    finally { cleanup() }
+    finally { cleanup(); for (const f of capFiles) { try { rmSync(f, { force: true }) } catch { /* ignore */ } } }
   }
   // TAB HUD — ONLY for headless/CDP capture, where the screencast has no
   // browser chrome and tabs would be invisible. In full-window (display) mode
@@ -1023,6 +1020,7 @@ async function main() {
         const post = await withLock(async () => {
           await focusDriverTab(driver)  // this driver acts on ITS tab, front + focused
           const page = active
+          live?.trackPage?.(page)
           const owned = guardOwnership(driver)
           if (owned) return json(res, owned, 409)
           if (typeof body.instruction !== 'string' || !body.instruction.trim()) return json(res, { ok: false, code: 'bad_request', error: '/act needs {"instruction": "<what to do>"}' }, 400)
@@ -1189,6 +1187,7 @@ async function main() {
         const spoken = await withLock(async () => {
           await focusDriverTab(driver)
           const page = active
+          live?.trackPage?.(page)
           const ownedSay = guardOwnership(driver)
           if (ownedSay) return json(res, ownedSay, 409)
           if (typeof body.text !== 'string' || !body.text.trim()) return json(res, { ok: false, code: 'bad_request', error: '/say needs {"text": "<what to speak>"}' }, 400)
@@ -1240,13 +1239,12 @@ async function main() {
             }, noMic ? 422 : 502)
           }
           mark(`say[${driver}]: ${String(body.text).slice(0, 50)}`)
-          return { page, t0, ears, saidWav, playStartMs }
+          return { page, t0, ears, saidWav, playStartMs, n: ++reqN }
         })
         if (!spoken) return  // answered inside the lock (refused, invalid, or no mic)
-        const { page, t0, ears, saidWav, playStartMs } = spoken
+        const { page, t0, ears, saidWav, playStartMs, n } = spoken
         {
           await page.waitForTimeout(body.listenMs ?? 6000).catch(() => {})
-          const n = ++reqN
           // Cut the clip NOW — speak start to end of the listen window — before
           // the (slow) transcription, so the spoken moment is always in it. It
           // used to be "the last 30s", which for a long turn showed only the tail.
@@ -1266,7 +1264,7 @@ async function main() {
           const earsAfter = await earsState(page)
           const sayWarning = heard ? null
             : hearError ? `nothing transcribed: ${hearError}`
-            : !(optionalEnvKey('SONIOX_API_KEY') || optionalEnvKey('DEEPGRAM_API_KEY') || optionalEnvKey('OPENAI_API_KEY')) ? 'nothing transcribed: the engine has no speech-to-text key (SONIOX_API_KEY / DEEPGRAM_API_KEY) — listen to the clip instead'
+            : !(optionalEnvKey('SONIOX_API_KEY') || optionalEnvKey('DEEPGRAM_API_KEY')) ? 'nothing transcribed: the engine has no speech-to-text key (SONIOX_API_KEY / DEEPGRAM_API_KEY) — listen to the clip instead'
             : earsAfter.audioElements === 0 ? 'nothing was heard, and the page has no audio/video element — no agent audio track is attached (the agent is probably not connected or not speaking)'
             : earsAfter.playing === 0 ? 'nothing was heard: the page has audio elements but none is playing'
             : ears.armedNow ? 'nothing was heard; the ears were armed on this tab just before speaking, so audio that started earlier was not captured'
