@@ -470,9 +470,8 @@ export function BrowserPanel() {
       {/* Live view */}
       <div
         tabIndex={inControl ? 0 : -1}
-        // Screen readers: what this is, and how to leave control mode (#202).
-        role={inControl ? 'application' : 'img'}
-        aria-label={inControl ? 'Remote browser, you have control: clicks and typing go to the page. Press Escape to leave, Tab to move on.' : 'Live view of the remote browser'}
+        role={inControl ? 'application' : undefined}
+        aria-label={inControl ? 'Remote browser, you have control: clicks and typing go to the page. Press Escape to leave, Tab to move on.' : undefined}
         onClick={onPictureClick}
         onKeyDown={onPictureKey}
         onWheel={onPictureWheel}

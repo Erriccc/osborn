@@ -471,13 +471,19 @@ async function main() {
   // themselves on whichever tab is spoken to or listened on, and every answer
   // says what state they were in, so "the agent was silent" can be told apart
   // from "nobody was listening".
-  const earsState = async (p: Page): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number }> =>
+  // `heardSince`: did the ears detect sound (speech-start, or still sounding)
+  // since that time? `tapped`: was any page audio source ever recorded?
+  const earsState = async (p: Page, since = 0): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number; tapped?: boolean; heardSince?: boolean }> =>
     (await Promise.race([
-      p.evaluate(() => {
-        const c = (globalThis as any).__osbornCapture
+      p.evaluate((since) => {
+        const g = globalThis as any
+        const c = g.__osbornCapture
         const els = [...document.querySelectorAll('audio,video')] as HTMLMediaElement[]
-        return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length }
-      }),
+        const ev: Array<{ type: string; t: number }> = g.__osbornEars ?? []
+        const last = ev[ev.length - 1]
+        return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length,
+          tapped: !!g.__osbornAudioAnchor, heardSince: ev.some((e) => e.type === 'speech-start' && e.t >= since) || last?.type === 'speech-start' }
+      }, since),
       new Promise<null>((r) => setTimeout(() => r(null), 3000)),
     ]).catch(() => null)) ?? { armed: false, startedAt: null, audioElements: 0, playing: 0, unknown: true }
   const ensureEars = async (p: Page) => {
@@ -1298,15 +1304,17 @@ async function main() {
           const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, Date.now(), page).catch(() => null) : null
           lap('clip')
           let hearError: string | null = null
-          // No audio or video element on the page: nothing could have played
-          // back, so skip decoding and hearing altogether (#201).
-          const earsNow = await earsState(page)
-          const nothingToHear = earsNow.audioElements === 0
+          // Skip decoding and hearing when the ears clearly heard nothing this
+          // turn: no page audio ever tapped, or no sound since speaking (#201).
+          // A page too busy to answer is not "silent".
+          const earsNow = await earsState(page, t0) as Awaited<ReturnType<typeof earsState>> & { unknown?: boolean }
+          const nothingToHear = !earsNow.unknown && (!earsNow.tapped || !earsNow.heardSince)
           // Decode the recording once; the transcript and the clip's audio both use it (#165).
           // One deadline for the turn, under the panel's 90s cut-off (#199): each
           // step gets what is left, so a stuck page means "nothing heard", not a hang.
           const left = (min: number) => Math.max(min, turnDeadline - Date.now())
-          const decoded = nothingToHear ? null : await peekAudioToWav(page)  // its ffmpeg decode is capped at 30s
+          // Decoding is skipped when under 15s of the turn is left.
+          const decoded = nothingToHear || left(0) < 15000 ? null : await peekAudioToWav(page)
           lap('decode')
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
           const budget = left(5000)
