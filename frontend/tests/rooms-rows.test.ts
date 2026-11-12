@@ -189,18 +189,27 @@ t('match filters only the idle rows; live and background keep their data', () =>
   assert.deepEqual(rows.filter((r) => r.status === 'idle').map((r) => r.id), ['other-1'])
 })
 
-t('a focused slot is not resurrected as a Recent row by a missing match', () => {
-  // buildRoomRows skips focused slots. A caller filtering the INPUT instead had
-  // to know that rule too, and got it wrong: the session fell through to the
-  // idle loop and rendered as a non-matching "Recent" row.
-  const rows = buildRoomRows(
-    [{ sessionId: 'focused-1', title: 'Plan the offsite', timestamp: ago(MIN), messageCount: 5 }],
-    'focused-1',
-    { now: NOW, slots: [{ id: 'focused-1', isFocused: true, hasSession: true }], match: () => false },
+t('a focused slot whose id is not the live one is filtered, not resurrected', () => {
+  // The agent's focused slot id can differ from the frontend's currentSessionId.
+  // Such a session is claimed by neither the live branch nor the slot loop (that
+  // one skips focused slots), so it reaches the idle loop — where a caller that
+  // filtered the INPUT instead had pinned it as "a slot", rendering it as a
+  // non-matching "Recent" row. NOTE: liveId must differ from the slot id or the
+  // live branch claims the row first and this asserts nothing.
+  const sessions = [
+    { sessionId: 'focused-1', title: 'Plan the offsite', timestamp: ago(MIN), messageCount: 5 },
+    { sessionId: 'live-2', title: 'Refactor the voice pipeline', timestamp: ago(2 * MIN), messageCount: 9 },
+  ]
+  const slots = [{ id: 'focused-1', isFocused: true, hasSession: true }]
+  assert.deepEqual(
+    buildRoomRows(sessions, 'live-2', { now: NOW, slots }).map((r) => [r.id, r.status]),
+    [['live-2', 'live'], ['focused-1', 'idle']],
+    'unfiltered, it does reach the idle loop — so the filter below is load-bearing',
   )
-  assert.deepEqual(rows.map((r) => r.id), ['focused-1'])
-  assert.equal(rows[0].status, 'live')
-  assert.equal(rows[0].title, 'Plan the offsite')
+  assert.deepEqual(
+    buildRoomRows(sessions, 'live-2', { now: NOW, slots, match: () => false }).map((r) => r.id),
+    ['live-2'],
+  )
 })
 
 // ============================================================
