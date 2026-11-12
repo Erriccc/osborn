@@ -106,7 +106,10 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   try {
     const raw = Buffer.from(base64, 'base64'); writeFileSync(join(dir, 'in.webm'), raw)
     const fileSinceMs = Math.max(0, sinceMs - anchorOffsetMs)
-    return await transcribeTurn((await cutTurn(join(dir, 'in.webm'), fileSinceMs, false)) ?? { audio: raw, fileSinceMs, wav: false })
+    const cut = await cutTurn(join(dir, 'in.webm'), fileSinceMs, false)
+    // Nothing decodable and next to nothing recorded: the page played nothing.
+    if (!cut && raw.length < 16000) return ''
+    return await transcribeTurn(cut ?? { audio: raw, fileSinceMs, wav: false })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 
@@ -124,6 +127,9 @@ async function transcribeTurn({ audio, fileSinceMs, wav }: { audio: Buffer; file
   // OpenAI/Deepgram key needed.
   // Name every provider that failed, not just the last one (#151).
   if (wav && audio.length < 3200) return ''  // the cut landed past the end: nothing new to hear
+  // A page that played nothing leaves a silent clip, and Soniox rejects pure
+  // silence as an invalid file (#164): that is "nothing heard", not an error.
+  if (wav && peakLevel(audio) < 200) return ''
   const failures: string[] = []
   const soniox = optionalEnvKey('SONIOX_API_KEY')
   if (soniox) {
@@ -143,6 +149,14 @@ async function transcribeTurn({ audio, fileSinceMs, wav }: { audio: Buffer; file
   }
   try { return await deepgramTranscribeSince(audio, fileSinceMs, dg, wav) }
   catch (e) { failures.push(`Deepgram: ${((e as Error).message || String(e)).slice(0, 140)}`); throw new Error(failures.join('; ')) }
+}
+
+/** Loudest 16-bit sample in a PCM wav; 0..32767. ffmpeg adds a LIST chunk, so find 'data'. */
+export function peakLevel(wav: Buffer): number {
+  const d = wav.indexOf('data')
+  let peak = 0
+  for (let i = d >= 0 ? d + 8 : 44; i + 1 < wav.length; i += 2) { const v = Math.abs(wav.readInt16LE(i)); if (v > peak) peak = v }
+  return peak
 }
 
 /**
