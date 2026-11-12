@@ -182,15 +182,15 @@ await t('browser-apply ships no work-history or education values of its own', ()
   // The regression shipped as a numbered value list ("1. <title> at <employer>")
   // under Candidate Data. Instructions there are prose or `-` bullets; a
   // numbered entry is how a value list looks.
-  const numbered = section.split(/^### /m)[0].split('\n')
-    .map((line, i) => [i + 1, line] as const)
-    .filter(([, line]) => /^\s*[0-9]+\.\s+\S/.test(line))
+  const head = section.split(/^### /m)[0].split('\n').map((line, i) => [i + 1, line] as const)
+  const numbered = head.filter(([, line]) => /^\s*[0-9]+\.\s+\S/.test(line))
   assert.equal(numbered.length, 0, `Candidate Data has a numbered value list at section line(s) ${numbered.map(([i]) => i).join(', ')}`)
-  // Résumé-shaped literals anywhere in the skill: a month-year date, a company
-  // suffix, a school, or a degree abbreviation.
+  // Résumé-shaped literals in that same block: a month-year date, a company
+  // suffix, a school, or a degree abbreviation. Scoped to Candidate Data so
+  // ordinary prose elsewhere ("a university careers portal") stays legal.
   const RESUME_LITERAL = /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b|\b(?:Inc|LLC|Ltd|Corp|Corporation|GmbH|University|College)\b|\b[ABM]\.[SA]\.\b/
-  const resume = src.split('\n').map((line, i) => [i + 1, line] as const).filter(([, line]) => RESUME_LITERAL.test(line))
-  assert.equal(resume.length, 0, `résumé-shaped literal at SKILL.md line(s) ${resume.map(([i]) => i).join(', ')}`)
+  const resume = head.filter(([, line]) => RESUME_LITERAL.test(line))
+  assert.equal(resume.length, 0, `résumé-shaped literal under Candidate Data at section line(s) ${resume.map(([i]) => i).join(', ')}`)
 })
 
 // ---- helper: fixed secret file, no env overrides, loopback CDP, confirmed host, field types -----
@@ -272,14 +272,20 @@ if (existsSync(HELPER)) {
       noLeak(out)
       assert.match(out, /set: CANDIDATE_EMAIL, CANDIDATE_PASSWORD, CANDIDATE_PHONE/)
       assert.match(out, /cdp: unreachable/)
-      // Work history is reported by NAME so the model never has to invent one,
-      // and an empty history says so instead of looking like "nothing to fill".
-      assert.match(out, /history: \(none/)
-      const withJob = { ...fileEnv, CANDIDATE_JOB_1_COMPANY: 'Synthetic Fixture Employer', CANDIDATE_EDUCATION_1_SCHOOL: 'Synthetic Fixture School' }
+      // Work history and any other CANDIDATE_* key are reported by NAME, so the
+      // model never has to invent one; empty says so instead of looking like
+      // "nothing to fill". CANDIDATE_CDP_URL is config, not a value to fill.
+      assert.match(out, /extra: \(none/)
+      const withJob = {
+        ...fileEnv,
+        CANDIDATE_JOB_1_COMPANY: 'Synthetic Fixture Employer',
+        CANDIDATE_EDUCATION_1_SCHOOL: 'Synthetic Fixture School',
+        CANDIDATE_CDP_URL: 'http://127.0.0.1:9222',
+      }
       const jobOut: string = (await helper.checkReport('/x/candidate.env', withJob, down)).join('\n')
-      assert.match(jobOut, /history: CANDIDATE_EDUCATION_1_SCHOOL, CANDIDATE_JOB_1_COMPANY/)
-      assert.ok(!jobOut.includes('Synthetic Fixture'), 'check leaked a history value')
-      assert.doesNotMatch(jobOut, /missing: .*CANDIDATE_JOB/, 'history keys must not be reported as missing')
+      assert.match(jobOut, /extra: CANDIDATE_EDUCATION_1_SCHOOL, CANDIDATE_JOB_1_COMPANY\n/)
+      assert.ok(!jobOut.includes('Synthetic Fixture'), 'check leaked an extra value')
+      assert.doesNotMatch(jobOut, /missing: .*CANDIDATE_JOB/, 'extra keys must not be reported as missing')
       const up = async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' }) })
       assert.match((await helper.checkReport('/x', fileEnv, up)).join('\n'), /cdp: reachable/)
       await assert.rejects(helper.checkReport('/x', { ...fileEnv, CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' }, up), /loopback/)

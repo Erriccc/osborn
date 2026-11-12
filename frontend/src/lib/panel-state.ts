@@ -14,11 +14,6 @@ export const MAX_PANEL_WIDTH_PCT = 70
 export const PANEL_DESKTOP_MIN_WIDTH = 1280
 export const PANEL_SHEET_QUERY = `(max-width: ${PANEL_DESKTOP_MIN_WIDTH - 1}px)`
 
-/** True when the panel renders as the bottom-sheet overlay (below `xl`). */
-export function isPanelSheet(viewportWidth: number): boolean {
-  return Number.isFinite(viewportWidth) && viewportWidth < PANEL_DESKTOP_MIN_WIDTH
-}
-
 export interface PanelState {
   open: boolean
   tab: string

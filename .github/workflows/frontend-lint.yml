@@ -9,12 +9,16 @@ on:
     paths:
       - 'frontend/**'
       - 'tests/voice-e2e/**'
+      - 'agent/.claude/skills/**'
+      - 'agent/tests/skill-secrets.test.ts'
       - '.github/workflows/frontend-lint.yml'
   push:
     branches: [main]
     paths:
       - 'frontend/**'
       - 'tests/voice-e2e/**'
+      - 'agent/.claude/skills/**'
+      - 'agent/tests/skill-secrets.test.ts'
 
 concurrency:
   group: frontend-lint-${{ github.ref }}
@@ -51,11 +55,26 @@ jobs:
           git diff --exit-code -- public/browser-screen-recorder-skill.md public/browser-screen-recorder-bundle.json public/voice-e2e-bundle.json \
             || { echo "::error::frontend/public skill/bundle is stale. Run 'node frontend/scripts/build-harness-bundle.mjs' and commit the result."; exit 1; }
 
+      # The two content-migration suites run the migrations against wasm
+      # Postgres. pglite is deliberately NOT a devDependency: Railway's build
+      # is `cd frontend && npm install` (nixpacks.toml), devDeps included, so
+      # declaring it would ship 26MB of wasm into every production image for
+      # two test files. Pinned exactly, installed only here.
+      - name: Test-only wasm Postgres
+        run: npm i --no-save --no-package-lock @electric-sql/pglite@0.5.16
+
       # Every file under frontend/tests/ is a standalone node:assert script
       # (CONTRIBUTING.md). Nothing ran them until now, so assertions landed in
       # PRs and never executed. The runner fails the job if any file fails.
       - name: Frontend tests
         run: npm test
+
+      # This job already owns shipped-skill integrity (see the bundle-sync step
+      # above), and the skill scanner is the only thing standing between a
+      # literal password, email or employment history and a skill that types it
+      # into real sites. It was as unexecuted as the frontend suites.
+      - name: Shipped-skill secret scanner
+        run: npx tsx ../agent/tests/skill-secrets.test.ts
 
       # NOTE: no `next lint` here — the repo has no ESLint config and next lint
       # drops into its interactive setup prompt on CI (kills the job). tsc is

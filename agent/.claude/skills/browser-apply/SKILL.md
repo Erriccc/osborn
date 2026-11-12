@@ -52,7 +52,7 @@ Candidate values (email, password, phone, address, work history, education) are 
 ## Step-by-Step Execution Pattern
 
 ### Step 0 — Check the helper, then open the browser
-Run `node ~/.claude/skills/browser-apply/fill.mjs check` first. It prints variable names (including a `history:` line with the `CANDIDATE_JOB_*` / `CANDIDATE_EDUCATION_*` keys the user set) and `cdp: reachable` or `cdp: unreachable`, never values.
+Run `node ~/.claude/skills/browser-apply/fill.mjs check` first. It prints variable names (including an `extra:` line listing every other `CANDIDATE_*` key the user set — work history, education, anything else) and `cdp: reachable` or `cdp: unreachable`, never values.
 - File missing / refused: point the user at "One-time setup" step 1 and wait.
 - `cdp: unreachable`: you can still navigate and fill the non-secret fields with the MCP tools, but for every secret field (email, password, phone, address) ask the user to type it into the browser themselves.
 
@@ -126,8 +126,9 @@ with `N` starting at 1 (`CANDIDATE_JOB_1_TITLE`, `CANDIDATE_JOB_2_TITLE`, …).
 This skill ships NO employment or education values of its own, and you must
 never supply one:
 
-- Run `fill.mjs check` to see which `CANDIDATE_JOB_*` / `CANDIDATE_EDUCATION_*`
-  keys the user actually set. It prints names only, never values.
+- Run `fill.mjs check` and read its `extra:` line: that is exactly which
+  `CANDIDATE_JOB_*` / `CANDIDATE_EDUCATION_*` keys the user actually set. It
+  prints names only, never values.
 - Fill every one of them with the helper, exactly like the other fields — never
   by typing a value through `mcp__playwright__browser_type` / `browser_fill_form`.
 - If a job or education entry the form asks for is not in the secret file, STOP

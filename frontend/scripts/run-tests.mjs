@@ -3,10 +3,8 @@
 // frontend/tests/ is a standalone node:assert script run with tsx (see
 // CONTRIBUTING.md). Nothing invoked them in CI, so 40+ suites of assertions
 // were decorative. This walks tests/, runs each file in its own process, and
-// exits non-zero if any file fails.
-//
-//   node scripts/run-tests.mjs            # every test file
-//   node scripts/run-tests.mjs chat       # only files whose path contains "chat"
+// exits non-zero if any file fails. A single file is still `npx tsx tests/<f>`
+// (CONTRIBUTING.md), so this takes no arguments.
 import { spawnSync } from 'node:child_process'
 import { readdirSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
@@ -27,11 +25,9 @@ function collect(dir) {
   return out.sort()
 }
 
-const filters = process.argv.slice(2)
-const files = collect(TESTS).filter((f) => !filters.length || filters.some((s) => f.includes(s)))
-
+const files = collect(TESTS)
 if (!files.length) {
-  console.error(filters.length ? `no test files match: ${filters.join(', ')}` : `no test files under ${TESTS}`)
+  console.error(`no test files under ${TESTS}`)
   process.exit(1)
 }
 

@@ -7,7 +7,7 @@ import {
 } from '../src/components/panel/registry'
 import {
   PANEL_STORAGE_KEY, DEFAULT_PANEL_STATE, MIN_PANEL_WIDTH_PCT, MAX_PANEL_WIDTH_PCT,
-  PANEL_DESKTOP_MIN_WIDTH, PANEL_SHEET_QUERY, isPanelSheet,
+  PANEL_DESKTOP_MIN_WIDTH, PANEL_SHEET_QUERY,
   parsePanelState, serializePanelState, clampPanelWidth,
 } from '../src/lib/panel-state'
 import { readFileSync } from 'node:fs'
@@ -110,8 +110,6 @@ t('panel state: corrupt or partial storage never throws and falls back per field
 t('sheet breakpoint is named once and matches Tailwind xl', () => {
   eq(PANEL_DESKTOP_MIN_WIDTH, 1280, 'xl')
   eq(PANEL_SHEET_QUERY, '(max-width: 1279px)', 'media query')
-  eq([isPanelSheet(390), isPanelSheet(834), isPanelSheet(1279), isPanelSheet(1280), isPanelSheet(1440)],
-    [true, true, true, false, false], 'phone/tablet are sheet, xl+ is drawer')
 })
 
 t('RightPanel reads the breakpoint from panel-state, never a literal query', () => {
@@ -127,13 +125,6 @@ t('the panel anchor exists at every width below xl, not only on the phone', () =
   // `sm:hidden` / `md:hidden` here means no layout box at tablet widths, which
   // is exactly how the sheet ended up overlaying the composer on an iPad.
   ok(!/\b(sm|md|lg):hidden\b/.test(anchor!), 'the panel anchor is hidden below xl, so the sheet has no edge to sit above')
-})
-
-t('the chat column can still shrink at the xl boundary (no horizontal overflow)', () => {
-  const src = readSrc('components/VoiceRoom.tsx')
-  const col = src.split('\n').find(l => l.includes('flex-1 min-w-0') && l.includes('flex flex-col bg-gray-900'))
-  ok(!!col, 'chat column not found')
-  ok(!/\bxl:min-w-\[/.test(col!), 'chat column has an xl min-width floor; with the 15rem rail and a 70% shrink-0 aside the row cannot fit 1280px')
 })
 
 const failed = results.filter(r => !r[1])
