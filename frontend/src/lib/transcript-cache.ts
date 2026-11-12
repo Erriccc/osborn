@@ -131,6 +131,11 @@ export function cacheTranscript(
   if (!sessionId) return
   const store = resolveStorage(storage)
   if (!store) return
+  // An optimistic paint is still on screen: the cache already holds exactly
+  // those rows and serializeTranscript drops them, so writing now would replace
+  // this session's items with just the turns taken since — on the 60-90s cold
+  // boot this cache exists for, that destroyed the history it was showing.
+  if (messages.some(m => m?.fromCache)) return
   const items = serializeTranscript(messages)
   if (items.length === 0) return // never clobber a good cache with nothing
   // Re-appended at the end, so the session touched longest ago is evicted.
