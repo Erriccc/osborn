@@ -22,7 +22,6 @@
  * in agent-health.test.ts.
  */
 
-import { providerLabel } from './modelBadge'
 
 /**
  * First osborn release whose agent applies the demo-model fallback
@@ -121,13 +120,13 @@ const OK: AgentHealthView = { level: 'ok', label: null, title: '', show: false }
 export function resolveAgentHealth(input: AgentHealthInput): AgentHealthView {
   const floor = input.floor || FALLBACK_VERSION_FLOOR
   // Only surface fallback-health problems to a user actually on the fallback path.
-  // providerLabel is the badge's own provider vocabulary, so the notice and the
-  // badge can never disagree about what counts as Claude (it maps a user's own
-  // 'anthropic' key there too) — and a declared Claude tier overrules the sticky
-  // "sign-in was asked once" flag, which a mid-session sign-in never clears.
-  const label = providerLabel(input.mainProvider)
-  if (label === 'Claude') return OK
-  if (input.relyingOnFallback !== true && label !== 'z.ai GLM' && label !== 'OpenRouter') return OK
+  // Gated on the WIRE provider keys (agent_ready / GET /health), not modelBadge's
+  // display labels — a presentation rename must not silence a health notice. A
+  // declared Claude tier (or the user's own key) overrules the sticky "sign-in was
+  // asked once" flag, which a mid-session sign-in never clears.
+  const p = String(input.mainProvider || '').trim().toLowerCase()
+  if (p === 'claude' || p === 'anthropic') return OK
+  if (input.relyingOnFallback !== true && p !== 'zai' && p !== 'openrouter') return OK
 
   // 1. Version floor — the most fundamental: no fallback can run at all.
   if (isBelowFallbackFloor(input.version, floor)) {
