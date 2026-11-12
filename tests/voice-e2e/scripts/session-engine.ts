@@ -910,6 +910,8 @@ async function main() {
           drivers: [...driverActive.keys()], tabsByOwner: context.pages().map((p,i)=>({i, owner: ownerOf(p)})),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: context.pages().indexOf(active), url: active.url() },
+          // Whether the shown page has its mic open (the panel only offers Speak then).
+          micOpen: await Promise.race([active.evaluate(() => !!(window as any).__mic?.ready).catch(() => false), new Promise<boolean>((r) => setTimeout(() => r(false), 1500))]),
           tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
         })
       }
