@@ -12,7 +12,7 @@
 //
 // The cache is a convenience, never a source of truth: it holds only what the
 // agent would re-serve anyway, it is always reconciled against the live replay,
-// and it is cleared on sign-out. All reads/writes are wrapped so a blocked or
+// and it is cleared on sign-out. Every read/write is wrapped, so a blocked or
 // full localStorage degrades to "no cache" rather than throwing.
 
 import type { ChatMessage, CompactionMarker } from '../components/voice/shared'
@@ -57,15 +57,12 @@ interface CachedSession {
 /**
  * Per-account storage key. Transcript text is the most sensitive thing this app
  * keeps in localStorage, and a browser-global key hands it to the next account
- * that signs in on this browser — exactly the leak #57 fixed for pinned files.
- * So it is namespaced by signed-in user id, like its siblings liveSessionKey()
- * and favoritesStorageKey(); guests share one local key.
- *
- * ONE key per user holds every cached session, so eviction order is explicit in
- * the value instead of relying on `Storage.key(i)` being insertion-ordered
- * (the Web Storage spec leaves that order implementation-defined). The `u:`
- * segment also means this can never collide with a legacy
- * `vn-chat-transcript:<sessionId>` key — session ids are 6+ characters.
+ * that signs in here — the leak #57 fixed for pinned files. So it is namespaced
+ * by user id like its siblings liveSessionKey()/favoritesStorageKey(); guests
+ * share one key. ONE key per user holds every cached session, so eviction order
+ * is explicit in the value rather than relying on `Storage.key(i)` being
+ * insertion-ordered (the Web Storage spec leaves that implementation-defined).
+ * The `u:` segment can never collide with a legacy `<prefix>:<sessionId>` key.
  */
 export function transcriptCacheKey(userId: string | null | undefined): string {
   return `${TRANSCRIPT_CACHE_PREFIX}:${userId || 'anon'}`
@@ -84,9 +81,9 @@ export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
     // so a cached "Today" would mislead on a later-day reload. buildPriorItems
     // regenerates them from the real timestamps on both paint paths.
     if (m.id.startsWith('prior-day-') || m.id.startsWith('prior-sep-')) continue
-    // Only what the replay itself returns: user/assistant turns, plus the
-    // durable compaction markers. A local system notice has no counterpart in
-    // the replay, so caching it would paint a row nothing can reconcile.
+    // Only what the replay returns: user/assistant turns plus durable
+    // compaction markers. A local system notice has no counterpart there, so
+    // caching it would paint a row nothing can reconcile.
     if (m.role === 'system' && !m.compaction) continue
     const content = typeof m.content === 'string' ? m.content : ''
     // A normal bubble needs text; a compaction marker is kept even when empty.
@@ -141,8 +138,7 @@ export function cacheTranscript(
   try {
     store.setItem(transcriptCacheKey(userId), JSON.stringify(all.slice(-MAX_SESSIONS)))
   } catch {
-    // Quota / serialization failure — give up quietly. The item/content/session
-    // caps keep writes small, and the live replay still hydrates on connect.
+    // Quota / serialization failure — give up quietly; the replay still hydrates.
   }
 }
 
@@ -164,11 +160,10 @@ export function readCachedTranscript(
   )
 }
 
-/** Wipe everything scoped to the signed-in account in localStorage: the
- * live-session take-over records and every cached transcript (this browser's
- * accounts, plus any pre-namespacing residue). One call so a sign-out site
- * can't clear one and forget the other (and the next per-account cache is added
- * here, not at three pages). Called from every sign-out path. */
+/** Wipe every account-scoped record in localStorage: the live-session take-over
+ * records and every cached transcript (including pre-namespacing residue). One
+ * call, so a sign-out site can't clear one and forget the other — and the next
+ * per-account cache is added here, not at three pages. */
 export function clearSignOutLocalState(storage?: CacheStorage): void {
   const store = resolveStorage(storage)
   if (!store) return
