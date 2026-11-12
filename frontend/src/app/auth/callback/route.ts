@@ -22,9 +22,11 @@ function getPublicOrigin(request: Request, h: Headers): string {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const code = searchParams.get('code')
-  const next = searchParams.get('next') ?? '/'
   const h = await headers()
   const origin = getPublicOrigin(request, h)
+  // Same-site paths only: a raw `next` glued onto the origin can leave the site.
+  let next = '/'
+  try { const u = new URL(searchParams.get('next') ?? '/', origin); if (u.origin === new URL(origin).origin) next = u.pathname + u.search + u.hash } catch { /* keep '/' */ }
 
   if (code) {
     const cookieStore = await cookies()

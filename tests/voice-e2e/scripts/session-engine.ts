@@ -443,7 +443,7 @@ async function main() {
       cleanup = [webm, wav]
       // Full decode → wav: MediaRecorder opus can't be seeked directly (bad
       // packet headers — proven), so decode once and trim the wav reliably.
-      await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav])
+      await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav], { timeout: 30000 })
       const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wav]).catch(() => ({ stdout: '0' }))
       cleanup = [webm]
       return { wav, startedAt, durationMs: Math.round((Number(String(probe.stdout).trim()) || 0) * 1000) }
@@ -493,7 +493,7 @@ async function main() {
   // the instant it was played into the mic) and what the page played back
   // (the ears' recording, aligned by wall clock). Returns null when there is
   // no audio at all to add.
-  const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number, captions: { said: string; heard: string }, a: Awaited<ReturnType<typeof peekAudioToWav>>): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
+  const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number, captions: { said: string; heard: string }, a: Awaited<ReturnType<typeof peekAudioToWav>>, timeoutMs = 45000): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
     const args = ['-y', '-loglevel', 'error', '-i', clip.path]
     const filters: string[] = []; const labels: string[] = []
     let idx = 1
@@ -538,7 +538,7 @@ async function main() {
     }
     filters.push(`${vchain}[v]`)
     try {
-      await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-movflags', '+faststart', '-shortest', out])
+      await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-movflags', '+faststart', '-shortest', out], { timeout: timeoutMs })
       return existsSync(out) ? { path: out, said, heard } : null
     } catch (e) { mark(`audio mux failed: ${(e as Error).message.slice(0, 100)}`); return null }
     finally { for (const f of capFiles) { try { rmSync(f, { force: true }) } catch { /* ignore */ } } }
@@ -614,7 +614,7 @@ async function main() {
       if (Date.now() - (tk.seen ?? tk.since) < TAKEOVER_IDLE_MS) continue
       takeovers.delete(p)
       if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
-      mark(`tab HANDBACK (idle takeover by ${tk.by}): ${context.pages().indexOf(p)}`)
+      mark(`tab HANDBACK (idle takeover by ${tk.by}): ${context.pages().indexOf(p)}`); saveTabState()
       notify('handback', { i: context.pages().indexOf(p), by: tk.by, owner: tk.prevOwner, url: p.url(), reason: 'idle' })
     }
   }, 60000).unref()
@@ -1281,6 +1281,7 @@ async function main() {
         })
         if (!spoken) return  // answered inside the lock (refused, invalid, or no mic)
         const { page, t0, ears, saidWav, playStartMs, n } = spoken
+        const turnDeadline = t0 + 80000
         {
           await page.waitForTimeout(body.listenMs ?? 6000).catch(() => {})
           // Cut the clip NOW — speak start to end of the listen window — before
@@ -1291,14 +1292,19 @@ async function main() {
           const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, Date.now(), page).catch(() => null) : null
           let hearError: string | null = null
           // Decode the recording once; the transcript and the clip's audio both use it (#165).
-          const decoded = await peekAudioToWav(page)
+          // One deadline for the turn, under the panel's 90s cut-off (#199): each
+          // step gets what is left, so a stuck page means "nothing heard", not a hang.
+          const left = (min: number) => Math.max(min, turnDeadline - Date.now())
+          const decoded = await peekAudioToWav(page)  // its ffmpeg decode is capped at 30s
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
-          const heard = await (decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw())
+          const budget = left(5000)
+          const heard = await Promise.race([decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw(),
+            new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)), budget))])
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           if (!range) clipError = live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session'
           else {
             clip = range.path
-            const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded).catch(() => null)
+            const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, left(10000)).catch(() => null)
             if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
             mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
           }
@@ -1354,10 +1360,10 @@ async function main() {
         // open | switch | close | claim | release | list. RESILIENCE (v22):
         // the OWNER defaults to the calling driver (x-driver-id) — opening a
         // tab auto-owns it for you and makes it your active tab, so drivers
-        // don't fight over one global active. `owner` in the body still works
-        // as an explicit override.
+        // don't fight over one global active. The owner is always the caller's
+        // own driver id: a body `owner` could claim to be someone else (#193).
         const driver = driverId(req)
-        if (body.owner == null) body.owner = driver
+        body.owner = driver
         const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'list']
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !context.pages()[body.i])
@@ -1408,7 +1414,7 @@ async function main() {
           const target = context.pages()[body.i]
           const o = target ? ownerOf(target) : null
           if (o && body.owner !== o) return json(res, { error: `tab ${body.i} is claimed by "${o}" — pass matching owner to close` }, 409)
-          if (target) tabOwners.delete(target)
+          if (target) { tabOwners.delete(target); takeovers.delete(target) }
           active = await closeTab(context, body.i); await live?.retarget(active).catch(() => {}); mark(`tab close: ${body.i}`)
         }
         else if (body.op === 'claim') {
@@ -1462,6 +1468,7 @@ async function main() {
         })
       }
       if (path === '/journey') {
+        body.owner = driverId(req)  // the mission owner is the caller, like a tab's (#193)
         const host = (() => { try { return new URL(active.url()).hostname } catch { return 'unknown' } })()
         if (body.op === 'start') {
           if (journey && journey.owner && body.owner !== journey.owner) return json(res, { error: `mission "${journey.name}" is active (owner: ${journey.owner}) — coordinate or wait for journey end`, mission: { name: journey.name, owner: journey.owner, startedAt: journey.startedAt } }, 409)
@@ -1511,6 +1518,8 @@ async function main() {
           const owned = guardOwnership(driver)
           if (owned) return json(res, owned, 409)
           const page = active
+          // Never type or click into a tab the caller didn't open or take over (#198).
+          if (ownerOf(page) !== driver) return json(res, { ok: false, code: 'not_your_tab', error: 'take control of a tab (or open your own) before sending input' }, 409)
           const kind = String(body.type || '')
           if (kind === 'click') {
             const fx = Number(body.x), fy = Number(body.y)
@@ -1519,11 +1528,13 @@ async function main() {
             if (!win) return json(res, { ok: false, code: 'unresponsive', error: 'the page did not answer; reload the tab' }, 409)
             // Display mode streams the whole virtual screen (the window sits at 0,0); the
             // page starts after the window border and the browser's top bar.
-            const [dw, dh] = (process.env.OSBORN_DISPLAY_SIZE || '1280x800').split('x').map(Number)
+            const parsed = (process.env.OSBORN_DISPLAY_SIZE || '').split('x').map(Number)
+            const [dw, dh] = parsed.length === 2 && parsed.every((n) => n > 0) ? parsed : [1280, 800]
             const border = DISPLAY_MODE ? (win.ow - win.iw) / 2 : 0
             const x = fx * (DISPLAY_MODE ? dw : win.iw) - border
             const y = fy * (DISPLAY_MODE ? dh : win.ih) - (DISPLAY_MODE ? win.oh - win.ih - border : 0)
             if (y < 0) return json(res, { ok: false, code: 'browser_bar', error: 'that is the browser bar; use the address box or the tab bar instead' }, 400)
+            if (!(x >= 0 && x < win.iw && y < win.ih)) return json(res, { ok: false, code: 'outside_page', error: 'that point is outside the page' }, 400)
             await page.mouse.click(x, y)
           } else if (kind === 'type') await page.keyboard.type(String(body.text ?? '').slice(0, 2000))
           else if (kind === 'key') await page.keyboard.press(String(body.key || '').slice(0, 40))
