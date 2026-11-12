@@ -18,9 +18,9 @@ type EngineState = {
   configured: boolean
   state: string | null
   machineId: string | null
-  // The engine host the proxy targets (e.g. osborn-voice-e2e-n.fly.dev). Named in
-  // the "engine unreachable — <host>" state so a down/unresolving host is legible
-  // instead of a silent, endless "Waking…" (#62/#49).
+  // The HOSTNAME the proxy targets (e.g. osborn-voice-e2e-n.fly.dev — not a Fly
+  // app name). Named in the "engine unreachable" badge so a down/unresolving
+  // host is legible instead of a silent, endless "Waking…" (#62/#49).
   host?: string | null
   // Set by the server when the Fly Machines API itself couldn't be reached, so
   // `state` is null because we failed to read it — surfaced as an explicit
@@ -91,7 +91,9 @@ export function BrowserPanel() {
     try { r = await fetch(api('engine-state'), { cache: 'no-store' }) } catch { /* network down → unreachable below */ }
     if (r?.status === 401 && /Not authenticated/.test(await r.clone().text().catch(() => ''))) { setSignedOut(true); return }
     const s = r?.ok ? ((await r.json().catch(() => null)) as EngineState | null) : null
-    setEngine(s ?? { configured: true, state: null, machineId: null, unreachable: true })
+    // When the PROXY fetch itself threw there is no reply to read the host from,
+    // so keep the last host the server named rather than reporting none (#62/#49).
+    setEngine(prev => s ?? { configured: true, state: null, machineId: null, host: prev?.host ?? null, unreachable: true })
   }, [])
 
   useEffect(() => {
@@ -273,18 +275,6 @@ export function BrowserPanel() {
         </div>
       )}
 
-      {/* Engine-unreachable notice (#62/#49) — the engine's OWN control API didn't
-          answer (host down or no longer resolves). Distinct from the signed-out
-          "sign in" card above: this is a reachability failure, so name the failing
-          host instead of a silent, endless "Waking…"/"Connecting…". */}
-      {engine?.unreachable && (
-        <div className="rounded-lg border border-red-800/60 bg-red-950/40 px-3 py-2 text-xs leading-relaxed text-red-200">
-          <span className="font-semibold">Engine unreachable{engine.host ? ` — ${engine.host}` : ''}.</span>{' '}
-          The browser engine isn’t answering — its host may be down or no longer resolve.
-          Check the engine machine (Fly app <code className="rounded bg-black/40 px-1 font-mono text-red-100">{engine.host || 'unknown'}</code>) is running, then press {asleep ? '“Wake & watch”' : '“Watch”'} again.
-        </div>
-      )}
-
       {/* Agent-unreachable notice (#81) — the engine is up and drivable, but the
           auto-joined chat agent can't be reached, so the streamed /chat tab would
           sit on "Connecting…". Say so explicitly instead of a silent "unknown". */}
@@ -445,8 +435,9 @@ function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreach
     label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300'
   } else if (engine && engine.unreachable) {
     // The engine's OWN control API didn't answer (not merely a management-API
-    // read miss) — explicit genuine-down, not "unknown" (#81/#115).
-    label = 'engine unreachable'; cls = 'bg-red-700/80 text-white'
+    // read miss) — explicit genuine-down, not "unknown" (#81/#115), and it
+    // names the host that isn't answering (#62/#49) when the server got to say.
+    label = `engine unreachable${engine.host ? ` — ${engine.host}` : ''}`; cls = 'bg-red-700/80 text-white'
   } else if (engine && !engine.configured) {
     label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'
   } else if (!engine) {
