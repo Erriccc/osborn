@@ -410,6 +410,10 @@ export default function Dashboard() {
       clearTimeout(timeout)
       setUser(user)
       setLoading(false)
+      // #140: a signed-out visitor used to get the full dashboard shell ("Working
+      // late…", New session, "Cloud workspace is offline") and a chat↔dashboard
+      // loop with no way to sign in. Send them to /login, like /settings does.
+      if (!user) router.replace('/login')
     }).catch(() => { clearTimeout(timeout); setLoading(false) })
   }, [])
 
@@ -1409,32 +1413,14 @@ export default function Dashboard() {
     )
   }
 
-  // #140: a signed-out visitor used to get the full dashboard shell ("Working
-  // late…", New session, Record a note, "Cloud workspace is offline") and a
-  // chat↔dashboard loop with no way to sign in. Show a clear sign-in screen
-  // instead of the app shell. (The data effects above already gate on `user`,
-  // so a guest makes no sandbox or admin calls.)
+  // #140: the auth effect redirects a signed-out visitor to /login; render only
+  // a spinner until the navigation lands so the app shell never flashes. Also
+  // covers the 3s loading-timeout fallback, where loading clears before user is
+  // known. (Mirrors /settings.)
   if (!user) {
     return (
-      <main className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center gap-6 p-8 text-center">
-        <Link href="/" title="Home" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-          <div className="w-8 h-8 rounded-full flex items-center justify-center"
-            style={{ background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)' }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--background)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            </svg>
-          </div>
-          <span className="font-display text-[var(--text-primary)] font-semibold text-[18px] tracking-tight">Voice Native</span>
-        </Link>
-        <div>
-          <p className="text-[var(--text-primary)] text-lg font-medium">Sign in to open your workspace</p>
-          <p className="text-[var(--text-muted)] text-sm mt-1">Your sessions, cloud agent and library are tied to your account.</p>
-        </div>
-        <a href="/login"
-          className="px-5 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--background)] text-sm font-semibold hover:opacity-90 transition-opacity">
-          Sign in
-        </a>
+      <main className="min-h-screen bg-[var(--background)] flex items-center justify-center">
+        <div className="w-5 h-5 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
       </main>
     )
   }

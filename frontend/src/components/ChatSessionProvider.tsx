@@ -35,6 +35,7 @@ import { MIC_DENIED_EVENT, isMicDenied, reconcileMicDenied, type MicPermissionSt
 import { TAB_LOCK_NAME, TAB_LOCK_RETRY_MS, controlsEnabled, lockOutcomeAfterRestore, shouldConnectOnTransition, shouldRetryLockProbe, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
 import { CONNECT_WATCHDOG_MS, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired } from '@/lib/connect-gate'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
+import { isSupabaseConfigured } from '@/lib/supabase'
 
 interface ChatSessionContextValue {
   // ── Connection state ───────────────────────
@@ -469,8 +470,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const hasVisibleAgentParam =
         typeof window !== 'undefined' &&
         !!new URLSearchParams(window.location.search).get('agentUrl')
-      const supabaseConfigured = !!process.env.NEXT_PUBLIC_SUPABASE_URL
-      if (supabaseConfigured && sessionResolved && !prewarmedSession?.user && !hasVisibleAgentParam) {
+      if (isSupabaseConfigured() && sessionResolved && !prewarmedSession?.user && !hasVisibleAgentParam) {
         if (isCurrent()) {
           setError('Sign in to connect to your agent.')
           setConnecting(false)
