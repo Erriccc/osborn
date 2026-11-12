@@ -51,6 +51,12 @@ jobs:
           git diff --exit-code -- public/browser-screen-recorder-skill.md public/browser-screen-recorder-bundle.json public/voice-e2e-bundle.json \
             || { echo "::error::frontend/public skill/bundle is stale. Run 'node frontend/scripts/build-harness-bundle.mjs' and commit the result."; exit 1; }
 
+      # Every file under frontend/tests/ is a standalone node:assert script
+      # (CONTRIBUTING.md). Nothing ran them until now, so assertions landed in
+      # PRs and never executed. The runner fails the job if any file fails.
+      - name: Frontend tests
+        run: npm test
+
       # NOTE: no `next lint` here — the repo has no ESLint config and next lint
       # drops into its interactive setup prompt on CI (kills the job). tsc is
       # the gate. Wiring a real eslintrc is a separate cleanup for main.
