@@ -23,8 +23,8 @@ type EngineState = {
   // host is legible instead of a silent, endless "Waking…" (#62/#49).
   host?: string | null
   // Set by the server when the Fly Machines API itself couldn't be reached, so
-  // `state` is null because we failed to read it — surfaced as an explicit
-  // "engine unreachable" badge instead of a bare "unknown" (#81).
+  // `state` is null because we failed to read it — surfaced as an explicit amber
+  // "state unreadable" badge instead of a bare "unknown" (#81).
   unreachable?: boolean
   // Server-side only reports whether OSBORN_ENGINE_TOKEN is set — never the value.
   // false ⇒ every drive/output action will 401; the live stream still works.
@@ -116,8 +116,11 @@ export function BrowserPanel() {
       // explanation (#80). Inspect the status instead and flag the misconfig so
       // the banner + the explicit "unavailable" fields show.
       let r: Response | null = null
-      try { r = await fetch(api('status'), { cache: 'no-store' }) } catch { return }
+      // Clear `status` on every failure: the badge reads a held-over status object
+      // as a live engine, so one that idle-stops mid-watch would stay green "live".
+      try { r = await fetch(api('status'), { cache: 'no-store' }) } catch { setStatus(null); return }
       if (!r.ok) {
+        setStatus(null)
         if (r.status === 401) {
           const t = await r.text().catch(() => '')
           if (/Not authenticated/.test(t)) { setSignedOut(true); setWatching(false) }
@@ -126,7 +129,8 @@ export function BrowserPanel() {
         return
       }
       const s = (await r.json().catch(() => null)) as Status | null
-      if (s) { setStatus(s); setTokenError(false) }
+      setStatus(s)
+      if (s) setTokenError(false)
     }
     tick()
     pollRef.current = setInterval(tick, 3000)
@@ -434,10 +438,10 @@ function StateBadge({ engine, watching, status, tokenMisconfigured, agentUnreach
     // State is readable but not 'started' → the machine is asleep/stopping.
     label = 'asleep'; cls = 'bg-neutral-700 text-neutral-300'
   } else if (engine && engine.unreachable) {
-    // The engine's OWN control API didn't answer (not merely a management-API
-    // read miss) — explicit genuine-down, not "unknown" (#81/#115), and it
-    // names the host that isn't answering (#62/#49) when the server got to say.
-    label = `engine unreachable${engine.host ? ` — ${engine.host}` : ''}`; cls = 'bg-red-700/80 text-white'
+    // We couldn't READ awake/asleep (Fly Machines API / our own proxy) — that says
+    // nothing about engine health, so it's an amber "can't tell", not a red
+    // engine-is-down claim. Explicit rather than a bare "unknown" (#81/#115).
+    label = 'state unreadable'; cls = 'bg-amber-600/80 text-black'
   } else if (engine && !engine.configured) {
     label = 'state n/a'; cls = 'bg-neutral-700 text-neutral-400'
   } else if (!engine) {

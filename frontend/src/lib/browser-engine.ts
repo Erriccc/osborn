@@ -83,60 +83,25 @@ export type EngineMachineState = {
   configured: boolean
   state: string | null // 'started' | 'stopped' | 'starting' | … | null when unknown
   machineId: string | null
-  // The host the proxy targets (e.g. <app>.fly.dev). Part of the state so the
-  // "engine unreachable" badge can name the failing host (#62/#49) instead of
+  // The host the proxy targets (e.g. <app>.fly.dev). Part of the state so an
+  // unreachable-engine message can name the failing host (#62/#49) instead of
   // leaving a silent, indefinite "Waking…" — a hostname, not a Fly app name.
   host: string
-  // True ONLY when the ENGINE itself is unreachable — its control API didn't
-  // answer. A failure to read the Fly Machines *management* API (wrong app name,
-  // mis-scoped FLY_API_TOKEN, Fly outage) is NOT this: that says nothing about
-  // engine health, so we confirm against the engine's own /status before setting
-  // it (#115). Lets the panel show an explicit "engine unreachable" instead of a
-  // bare "unknown" (#81) — without firing while a healthy engine answers directly.
+  // True when the Fly token IS configured but the Machines API read FAILED, so
+  // `state` is null because we couldn't READ it (wrong app name, mis-scoped
+  // FLY_API_TOKEN, Fly outage) — NOT because the engine is down. The panel shows
+  // an amber "state unreadable" for this, never a red engine-down claim (#81/#115).
   unreachable: boolean
-}
-
-// Direct, authoritative reachability check: does the engine's OWN control API
-// answer? This is the source of truth for "is the engine up", and — unlike the
-// Fly Machines management API — it honors BROWSER_ENGINE_CONTROL_URL /
-// BROWSER_ENGINE_HOST, so it targets the real engine host even when the Fly app
-// name has drifted. Any HTTP reply (even a 401 token-mismatch) proves the engine
-// is reachable; only a thrown fetch (refused / timeout / dns) means it is down.
-// A reachable engine is already running, so this does not wake a stopped machine
-// in practice; the short timeout bounds the probe. Used as a fallback only when
-// the management API can't be read, so the no-wake machine-state path is unchanged
-// for the normal case.
-export async function engineControlReachable(): Promise<boolean> {
-  try {
-    const tok = engineToken()
-    const res = await fetch(`${controlBase()}/status`, {
-      headers: tok ? { 'x-engine-token': tok } : {},
-      cache: 'no-store',
-      signal: AbortSignal.timeout(5000),
-    })
-    // Drain the small body so the socket is released; any response = reachable.
-    await res.body?.cancel().catch(() => {})
-    return true
-  } catch {
-    return false
-  }
 }
 
 // Report awake/asleep WITHOUT waking the engine, by asking the Fly Machines API
 // for the app's machine state (any request to the app itself would auto-start it,
-// defeating the purpose). Best-effort — returns {configured:false} if no token.
-//
-// When the management API CAN'T be read (non-OK, or thrown), we do NOT assume the
-// engine is down — that failure is about the management API / token scope / app
-// name, not engine health. We fall back to the engine's own control /status and
-// report `unreachable` from THAT (#115). A reachable-but-unreadable engine reads
-// as 'started' (it is demonstrably up; we just can't read precise awake/asleep).
+// defeating the purpose — which is why a failed read is NEVER confirmed against
+// the engine: that probe would bill compute). Best-effort — returns
+// {configured:false} if no token.
 export async function engineMachineState(): Promise<EngineMachineState> {
   const host = engineHost()
   const flyToken = (process.env.FLY_API_TOKEN || '').trim()
-  // No Fly token → the no-wake management read is unavailable. That's a config
-  // gap, not an unreachable engine: keep the existing neutral "state n/a" (no
-  // probe, no wake) rather than a scary red badge.
   if (!flyToken) return { configured: false, state: null, machineId: null, host, unreachable: false }
   try {
     const res = await fetch(`https://api.machines.dev/v1/apps/${engineApp()}/machines`, {
@@ -144,18 +109,14 @@ export async function engineMachineState(): Promise<EngineMachineState> {
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
     })
-    if (!res.ok) {
-      // The MANAGEMENT API failed (wrong app/org, mis-scoped token, Fly outage) —
-      // ask the engine directly before declaring it unreachable (#115).
-      const up = await engineControlReachable()
-      return { configured: true, state: up ? 'started' : null, machineId: null, host, unreachable: !up }
-    }
+    // Read failed (wrong app/org, mis-scoped token, Fly outage) → state unreadable.
+    // No engine-side fallback probe: it would wake the machine on every poll (#115).
+    if (!res.ok) return { configured: true, state: null, machineId: null, host, unreachable: true }
     const machines = (await res.json()) as Array<{ id: string; state: string }>
     const m = Array.isArray(machines) && machines.length ? machines[0] : null
     return { configured: true, state: m?.state ?? 'destroyed', machineId: m?.id ?? null, host, unreachable: false }
   } catch {
-    const up = await engineControlReachable()
-    return { configured: true, state: up ? 'started' : null, machineId: null, host, unreachable: !up }
+    return { configured: true, state: null, machineId: null, host, unreachable: true }
   }
 }
 
