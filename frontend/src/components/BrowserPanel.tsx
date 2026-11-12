@@ -118,8 +118,8 @@ export function BrowserPanel() {
       try { r = await fetch(api('status'), { cache: 'no-store' }) } catch { return }
       if (!r.ok) {
         // Drop the last status: the badge reads a held-over status object as a live
-        // engine, so one that idle-stops mid-watch stayed green "live". A thrown
-        // fetch above is a blip on OUR proxy, not the engine — hold last-known there.
+        // engine, so one that idle-stopped mid-watch stayed green "live" (it answers
+        // 502 here). A thrown fetch above never reached our proxy — hold last-known.
         setStatus(null)
         if (r.status === 401) {
           const t = await r.text().catch(() => '')
