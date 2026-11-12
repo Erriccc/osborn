@@ -63,8 +63,12 @@ export default function Home() {
   // Back to where sign-in was asked for (?next=/browser), else the dashboard.
   // Same-site paths only, so the link can't send anyone elsewhere.
   const nextPath = () => {
-    const n = new URLSearchParams(window.location.search).get('next') || ''
-    return /^\/(?!\/)/.test(n) ? n : '/dashboard'
+    const n = new URLSearchParams(window.location.search).get('next')
+    if (!n) return '/dashboard'
+    try {
+      const u = new URL(n, window.location.origin)
+      return u.origin === window.location.origin ? u.pathname + u.search + u.hash : '/dashboard'
+    } catch { return '/dashboard' }
   }
 
   useEffect(() => {

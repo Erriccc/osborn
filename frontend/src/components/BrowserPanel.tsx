@@ -170,6 +170,19 @@ export function BrowserPanel() {
     if (Array.isArray(list)) setTasks(list)
   }, [])
 
+  // Re-render every second while the stream is down, so the waiting time counts up.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!streamBroken) return
+    const id = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [streamBroken])
+
+  // Inside the engine's own (automated) browser the live view would show
+  // itself, then itself again: an endless mirror that freezes the tab.
+  const [inEngine, setInEngine] = useState(false)
+  useEffect(() => { setInEngine(!!(window as any).__osbornEngine) }, [])
+
   // The task list keeps itself current while watching.
   useEffect(() => {
     if (!watching || signedOut) return
@@ -286,8 +299,7 @@ export function BrowserPanel() {
   const stopEngine = async () => {
     const drivers = (status?.tabsByOwner ?? []).map((o) => o.owner).filter((o, k, all): o is string => !!o && o !== me && all.indexOf(o) === k)
     if (!confirm(`Shut down the browser engine? It ends every run on it, for everyone${drivers.length ? ` (now driving: ${drivers.map(label).join(', ')})` : ''}, and the machine sleeps.`)) return
-    await post('end', {}, 'stop')
-    setWatching(false)
+    if (await post('end', {}, 'shut down')) setWatching(false)
   }
 
   const taskN = (t: Task, i: number) => (typeof t.n === 'number' ? t.n : typeof t.index === 'number' ? t.index : i)
@@ -368,6 +380,8 @@ export function BrowserPanel() {
           )}
         </div>
       </div>
+
+      {!watching && note && <p className="text-xs text-neutral-400">{note}</p>}
 
       {/* Engine-token misconfiguration banner — makes the server-side token
           problem legible instead of a cryptic per-action 401. */}
@@ -452,6 +466,11 @@ export function BrowserPanel() {
         className={`relative aspect-video w-full overflow-hidden rounded-xl border bg-black outline-none ${inControl ? 'cursor-crosshair border-emerald-600' : 'border-neutral-800'}`}>
         {watching ? (
           <>
+            {inEngine ? (
+              <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-400">
+                This page is open inside the browser engine itself, so the live view is hidden here: it would show itself endlessly. Watch from your own browser.
+              </div>
+            ) : <>
             {/* key kicks a reload when we retry a broken/waking stream */}
             <img
               ref={imgRef}
@@ -463,17 +482,18 @@ export function BrowserPanel() {
               onError={() => { setStreamBroken(true); setBrokenSince((t) => t ?? Date.now()) }}
               onLoad={() => { setStreamBroken(false); setBrokenSince(null) }}
             />
+            </>}
             {streamBroken && !frozen && !blank && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-sm text-neutral-300">
                 {/* `unreachable` only means the Fly state couldn't be READ, so it is
                     no reason to blank this out — that left a bare Retry button (#62/#49). */}
                 <div>
-                  {engine?.state === 'started' || status ? 'Reconnecting to the stream…'
+                  {status ? 'Reconnecting to the stream…'
                     : brokenSince && Date.now() - brokenSince > 90000 ? 'Still not up after 90 seconds.'
                     : `Waking the browser engine…${brokenSince ? ` ${Math.round((Date.now() - brokenSince) / 1000)}s` : ''} (about 40s)`}
                 </div>
                 <button
-                  onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(false); setTimeout(() => setWatching(true), 50) }}
+                  onClick={() => { setStreamBroken(false); setBrokenSince(null); streamKickRef.current++; setWatching(false); setTimeout(() => setWatching(true), 50) }}
                   className="rounded-lg border border-neutral-600 px-3 py-1.5 hover:bg-neutral-800"
                 >
                   Retry
@@ -503,7 +523,7 @@ export function BrowserPanel() {
           </>
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm text-neutral-400">
-            <button onClick={() => { setStreamBroken(false); streamKickRef.current++; setWatching(true) }} className="rounded-lg bg-amber-500 px-5 py-2.5 text-base font-medium text-black hover:bg-amber-400">
+            <button onClick={() => { setStreamBroken(false); setBrokenSince(null); streamKickRef.current++; setWatching(true) }} className="rounded-lg bg-amber-500 px-5 py-2.5 text-base font-medium text-black hover:bg-amber-400">
               {asleep ? 'Wake & watch' : 'Watch'}
             </button>
             <div>{asleep ? 'The engine is asleep; waking it takes about 40 seconds.' : 'Shows the live browser, and lets you drive it.'}</div>
@@ -532,10 +552,10 @@ export function BrowserPanel() {
 
       {/* Mic input + action feedback */}
       {watching && (heard || busy || note || !blank) && <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-        {watching && !blank && !micOpen && (
+        {!blank && !micOpen && (
           <button onClick={() => setMicOpen(true)} className="self-start text-xs text-neutral-400 hover:text-neutral-200">Mic input: play speech into this page’s microphone (for voice apps) ▸</button>
         )}
-        {watching && !blank && micOpen && <div className="flex flex-wrap items-center gap-2">
+        {!blank && micOpen && <div className="flex flex-wrap items-center gap-2">
           <input
             title="Synthesized speech played into the page's microphone, for testing voice apps. It does not steer the agent."
             value={sayText}
@@ -575,10 +595,10 @@ export function BrowserPanel() {
             })}
           </ul>
         )}
-        {tasks.length > 0 && <div className="mt-2 flex gap-3 text-xs">
+        <div className="mt-2 flex gap-3 text-xs">
           <a className="text-neutral-400 hover:underline" href={api('logs')} target="_blank" rel="noreferrer">console + network logs</a>
-          <a className="text-neutral-400 hover:underline" href={api('audio')} target="_blank" rel="noreferrer">run audio</a>
-        </div>}
+          {tasks.length > 0 && <a className="text-neutral-400 hover:underline" href={api('audio')} target="_blank" rel="noreferrer">run audio</a>}
+        </div>
       </div>
     </div>
   )

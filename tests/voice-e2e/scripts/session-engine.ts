@@ -209,6 +209,8 @@ async function main() {
   // tabs opened later (caught live by the devtools sense: "__name is not
   // defined" pageerror on tab 1's HUD evaluate).
   await context.addInitScript(() => { (globalThis as any).__name = (globalThis as any).__name || ((f: any) => f) })
+  // Lets a page know it is inside the engine (the in-app Browser hides its own live view there).
+  await context.addInitScript(() => { (globalThis as any).__osbornEngine = true })
   let active: Page = await context.newPage()
   // DEVTOOLS SENSE per tab — console, page errors, failed network, websocket
   // lifecycle. Every task response carries the active tab's summary so the
