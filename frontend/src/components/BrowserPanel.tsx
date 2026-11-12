@@ -129,7 +129,7 @@ export function BrowserPanel() {
         return
       }
       const s = (await r.json().catch(() => null)) as Status | null
-      if (s) { setStatus(s); setTokenError(false) }
+      setStatus(s); if (s) setTokenError(false) // an unparseable 200 is not a live engine either
     }
     tick()
     pollRef.current = setInterval(tick, 3000)
