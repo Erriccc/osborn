@@ -26,27 +26,12 @@
 // squeeze, issue #118) and nothing else changes.
 
 import { useEffect, useMemo, useState } from 'react'
-import { buildRoomRows, groupRoomsByProject, roomAvatar, roomColor, roomIdentityLabel, type RoomRow, type RoomStatus } from '@/lib/rooms'
+import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, type RoomRow, type RoomStatus } from '@/lib/rooms'
 import { prepareSessions } from '@/lib/session-list'
 import type { SessionInfo, SlotInfo } from './shared'
 
 export type { RoomStatus }
 export type Room = RoomRow
-
-/**
- * Compose the switchable room list from the three sources VoiceRoom tracks.
- * Thin wrapper over the pure row model (lib/rooms.ts, #75): live room first,
- * then background slots, then recent resumable sessions; one LIVE row.
- */
-export function buildRooms(
-  sessions: SessionInfo[],
-  slots: SlotInfo[],
-  currentSessionId: string | null,
-  liveFallbackTitle?: string | null,
-  pendingId?: string | null,
-): Room[] {
-  return buildRoomRows(sessions, currentSessionId, { slots, liveFallbackTitle, pendingId })
-}
 
 /** Secondary line: "3m ago · osborn · 12 msgs" (falls back to the id hint). */
 function roomMeta(room: Room): string {
@@ -212,7 +197,7 @@ export function RoomsSidebar({
   // the user asked, drop machine-written meeting/task rows), then build the
   // switchable rows.
   const prepared = useMemo(() => prepareSessions(sessions, { hideSystem }), [sessions, hideSystem])
-  const rooms = buildRooms(prepared.sessions, slots, currentSessionId, liveTitle, pendingId)
+  const rooms = buildRoomRows(prepared.sessions, currentSessionId, { slots, liveFallbackTitle: liveTitle, pendingId })
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
   // Live + Running stay pinned at the top; Recent (idle) rows group by project.
   const topRooms = rooms.filter((r) => r.status !== 'idle')
@@ -324,14 +309,14 @@ export function RoomsSidebar({
             {/* Recent — grouped by project. */}
             {idleByProject.map(({ project, rooms: group }) => (
               <div key={project} className="pt-1.5">
-                <div className="px-2 pb-0.5 flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600">
-                  <span
-                    className="w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{ backgroundColor: roomColor(roomIdentityLabel({ project })).ring }}
-                    aria-hidden="true"
-                  />
-                  <span className="truncate">{project}</span>
-                </div>
+                {/* No group colour dot (#129 review): each row hashes
+                    roomIdentityLabel, which for the "workspace" and "Other"
+                    buckets is the row's own TITLE — so those rows deliberately
+                    have per-row colours and NO single header colour can match
+                    them. The dot hashed the raw bucket key and disagreed with
+                    its own rows; seeding it through roomIdentityLabel would
+                    have changed nothing (with no title the label IS the key). */}
+                <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
                 {group.map((room) => (
                   <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
                 ))}
@@ -386,7 +371,7 @@ export function RoomsBar({
   // of its own, so a filter it hardcoded could empty the rail with no way back
   // (the desktop sidebar at least owns the toggle). Dedupe only.
   const prepared = useMemo(() => prepareSessions(sessions), [sessions])
-  const rooms = buildRooms(prepared.sessions, slots, currentSessionId, liveTitle, pendingId)
+  const rooms = buildRoomRows(prepared.sessions, currentSessionId, { slots, liveFallbackTitle: liveTitle, pendingId })
   // Keep the voice screen clean (3-6-9): no rail when there is nowhere to
   // switch to — i.e. only when the user genuinely has a single room, never
   // because a filter removed the rest. nav/switchers don't count toward the

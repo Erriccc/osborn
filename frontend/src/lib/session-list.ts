@@ -118,14 +118,19 @@ function preferCopy(a: SessionListItem, b: SessionListItem): boolean {
 
 // ── Search over title / preview / project ─────────────────────────────────
 /** Case-insensitive match of `query` against the session's title, cleaned
- * preview text and project name. Blank query matches everything. The one
- * session-search predicate in the app (SessionBrowser's list). */
+ * preview text, raw last message, project and id. Blank query matches all. The
+ * one session-search predicate in the app (SessionBrowser's list).
+ *
+ * `lastMessage` is in the haystack on purpose: `deriveSessionTitle` caps at 6
+ * words and `prettySessionPreview().text` prefers the agent-supplied title, so
+ * on a modern agent (title always set) the message body would otherwise not be
+ * searchable at all — narrower than the hand-rolled filter this replaced. */
 export function sessionMatchesQuery(s: SessionListItem, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
   const pv = prettySessionPreview(s)
   const dir = s.projectPath || s.cwd || ''
-  const hay = [deriveSessionTitle(s), pv.text, pv.label, projectName(dir), dir, s.sessionId]
+  const hay = [deriveSessionTitle(s), pv.text, pv.label, s.lastMessage, projectName(dir), dir, s.sessionId]
     .join(' \u0001 ')
     .toLowerCase()
   return hay.includes(q)
