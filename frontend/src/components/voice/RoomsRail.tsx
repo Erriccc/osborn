@@ -26,8 +26,8 @@
 // squeeze, issue #118) and nothing else changes.
 
 import { useEffect, useMemo, useState } from 'react'
-import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, type RoomRow, type RoomStatus } from '@/lib/rooms'
-import { prepareSessions } from '@/lib/session-list'
+import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, SEARCH_IDLE_CAP, type RoomRow, type RoomStatus } from '@/lib/rooms'
+import { prepareSessions, sessionMatchesQuery } from '@/lib/session-list'
 import type { SessionInfo, SlotInfo } from './shared'
 
 export type { RoomStatus }
@@ -171,6 +171,7 @@ export function RoomsSidebar({
   pendingId,
 }: RoomsProps) {
   const [collapsed, setCollapsed] = useState(false)
+  const [query, setQuery] = useState('')
   const [hideSystem, setHideSystem] = useState(false)
   useEffect(() => {
     try {
@@ -193,11 +194,22 @@ export function RoomsSidebar({
     })
   }
 
-  // #107: fold duplicate copies of the same session into one row (and, only if
-  // the user asked, drop machine-written meeting/task rows), then build the
-  // switchable rows.
+  // #107: fold duplicate copies of one session into one row, then build the rows.
+  // Searching goes through `sessionMatchesQuery` (the app's one matcher) as
+  // buildRoomRows' idle-row `match` (see lib/rooms), and raises the idle cap.
+  //
+  // The collapsed rail has no input and no clear button, so it is never
+  // filtered: collapsing with a query live would otherwise leave a short rail
+  // with no way back, the exact unreachability this search exists to remove.
+  const q = collapsed ? '' : query.trim()
   const prepared = useMemo(() => prepareSessions(sessions, { hideSystem }), [sessions, hideSystem])
-  const rooms = buildRoomRows(prepared.sessions, currentSessionId, { slots, liveFallbackTitle: liveTitle, pendingId })
+  const rooms = buildRoomRows(prepared.sessions, currentSessionId, {
+    slots,
+    liveFallbackTitle: liveTitle,
+    pendingId,
+    maxIdle: q ? SEARCH_IDLE_CAP : undefined,
+    match: q ? (s) => sessionMatchesQuery(s, q) : undefined,
+  })
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
   // Live + Running stay pinned at the top; Recent (idle) rows group by project.
   const topRooms = rooms.filter((r) => r.status !== 'idle')
@@ -293,30 +305,59 @@ export function RoomsSidebar({
         </div>
       </div>
 
+      {/* Search — without it the idle cap made anything past the 12 most recent
+          unreachable from /chat. */}
+      <div className="px-2 py-2 border-b border-gray-800/60 shrink-0">
+        <div className="relative">
+          <svg className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+          </svg>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search sessions"
+            aria-label="Search sessions"
+            className="w-full pl-7 pr-7 py-1.5 rounded-lg bg-gray-800/60 border border-gray-800 text-[12px] text-gray-200 placeholder-gray-500 outline-none focus:border-amber-500/40"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-500 hover:text-gray-200"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
-        {rooms.length === 0 ? (
+        {/* Live + Running — pinned above the grouped recents. */}
+        {topRooms.map((room) => (
+          <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+        ))}
+        {/* One empty state. A query only filters the IDLE rows, so judge it on
+            those — a live session makes `rooms` non-empty, which would both
+            suppress "no matches" and claim the user has no sessions. */}
+        {(q ? idleRooms.length === 0 : rooms.length === 0) && (
           <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
-            No other sessions yet. Start one with “New room”.
+            {q ? 'No sessions match your search.' : 'No other sessions yet. Start one with “New room”.'}
           </p>
-        ) : (
-          <>
-            {/* Live + Running — pinned above the grouped recents. */}
-            {topRooms.map((room) => (
+        )}
+        {/* Recent — grouped by project. */}
+        {idleByProject.map(({ project, rooms: group }) => (
+          <div key={project} className="pt-1.5">
+            {/* No group colour dot: rows in the "workspace"/"Other" buckets
+                hash their own title, so no one colour can match them all. */}
+            <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
+            {group.map((room) => (
               <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
             ))}
-            {/* Recent — grouped by project. */}
-            {idleByProject.map(({ project, rooms: group }) => (
-              <div key={project} className="pt-1.5">
-                {/* No group colour dot: rows in the "workspace"/"Other" buckets
-                    hash their own title, so no one colour can match them all. */}
-                <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
-                {group.map((room) => (
-                  <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
-                ))}
-              </div>
-            ))}
-          </>
-        )}
+          </div>
+        ))}
       </div>
 
       <div className="p-2 border-t border-gray-800/60 shrink-0 space-y-1.5">

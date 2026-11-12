@@ -13,7 +13,9 @@ import {
   roomColor,
   roomIdentityLabel,
   roomInitial,
+  SEARCH_IDLE_CAP,
 } from '../src/lib/rooms'
+import { sessionMatchesQuery } from '../src/lib/session-list'
 import { UNTITLED_SESSION } from '../src/lib/sessions'
 
 let pass = 0, fail = 0
@@ -122,6 +124,92 @@ t('RoomsRail renders from buildRoomRows and shows the time', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/components/voice/RoomsRail.tsx'), 'utf8')
   assert.ok(/buildRoomRows\(/.test(src), 'RoomsRail must use buildRoomRows')
   assert.ok(/\.time\b/.test(src), 'RoomsRail must render the relative time')
+})
+
+// ── The rail's search path ─────────────────────────────────────────────────
+// Leaving the cap at 12 while searching made a match outside the 12 most recent
+// silently unreachable from /chat — the regression these two tests guard. The
+// raised cap must still be a BOUND: the rail is a switcher, not a full list.
+t('the typing path is bounded: far more matches than the cap still stop at it', () => {
+  // 300 sessions that ALL match the query — the pathological one-character case.
+  const many = Array.from({ length: 300 }, (_, i) => ({
+    sessionId: `s${String(i).padStart(4, '0')}`,
+    lastMessage: `budget review ${i}`,
+    timestamp: ago(i * MIN),
+    messageCount: 1,
+  }))
+  const rows = buildRoomRows(many, null, {
+    now: NOW,
+    maxIdle: SEARCH_IDLE_CAP,
+    match: (s) => sessionMatchesQuery(s, 'budget'),
+  })
+  assert.equal(rows.filter((r) => r.status === 'idle').length, SEARCH_IDLE_CAP)
+  assert.equal(rows.length, SEARCH_IDLE_CAP, 'and nothing else is rendered')
+})
+
+t('a match outside the browsing cap becomes reachable once you type', () => {
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    sessionId: `s${String(i).padStart(2, '0')}`,
+    // s29 is the least recent, so it sits outside the browsing cap.
+    lastMessage: i === 29 ? 'the quarterly budget spreadsheet' : `topic ${i}`,
+    timestamp: ago(i * MIN),
+    messageCount: 1,
+  }))
+  const browsing = buildRoomRows(many, null, { now: NOW }) // no query -> default cap
+  assert.ok(!browsing.some((r) => r.id === 's29'), 'hidden below the fold while browsing')
+  const searched = buildRoomRows(many, null, {
+    now: NOW,
+    maxIdle: SEARCH_IDLE_CAP,
+    match: (s) => sessionMatchesQuery(s, 'quarterly'),
+  })
+  assert.deepEqual(searched.map((r) => r.id), ['s29'], 'typing reaches it')
+})
+
+// `match` is consulted for the IDLE rows only (see lib/rooms): filtering the
+// live and background rows out degrades them to a bare fallback row.
+t('match filters only the idle rows; live and background keep their data', () => {
+  const all = [
+    { sessionId: 'live-1', title: 'Refactor the voice pipeline', timestamp: ago(MIN), messageCount: 40, cwd: '/home/sprite/workspace/osborn' },
+    { sessionId: 'slot-1', title: 'Draft the invoice', timestamp: ago(2 * MIN), messageCount: 7, cwd: '/home/sprite/workspace/beta' },
+    { sessionId: 'other-1', title: 'The quarterly budget', timestamp: ago(3 * MIN), messageCount: 3 },
+  ]
+  const rows = buildRoomRows(all, 'live-1', {
+    now: NOW,
+    slots: [{ id: 'slot-1', isFocused: false, hasSession: true }],
+    match: (s) => sessionMatchesQuery(s, 'quarterly'), // matches `other-1` only
+  })
+
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]))
+  assert.equal(byId['live-1'].title, 'Refactor the voice pipeline', 'not "Current session"')
+  assert.equal(byId['live-1'].project, 'osborn')
+  assert.equal(byId['live-1'].messageCount, 40)
+  assert.equal(byId['slot-1'].title, 'Draft the invoice', 'not "Background session …"')
+  assert.equal(byId['slot-1'].messageCount, 7)
+  // …and the actual match is the only idle row.
+  assert.deepEqual(rows.filter((r) => r.status === 'idle').map((r) => r.id), ['other-1'])
+})
+
+t('a focused slot whose id is not the live one is filtered, not resurrected', () => {
+  // The agent's focused slot id can differ from the frontend's currentSessionId.
+  // Such a session is claimed by neither the live branch nor the slot loop (that
+  // one skips focused slots), so it reaches the idle loop — where a caller that
+  // filtered the INPUT instead had pinned it as "a slot", rendering it as a
+  // non-matching "Recent" row. NOTE: liveId must differ from the slot id or the
+  // live branch claims the row first and this asserts nothing.
+  const sessions = [
+    { sessionId: 'focused-1', title: 'Plan the offsite', timestamp: ago(MIN), messageCount: 5 },
+    { sessionId: 'live-2', title: 'Refactor the voice pipeline', timestamp: ago(2 * MIN), messageCount: 9 },
+  ]
+  const slots = [{ id: 'focused-1', isFocused: true, hasSession: true }]
+  assert.deepEqual(
+    buildRoomRows(sessions, 'live-2', { now: NOW, slots }).map((r) => [r.id, r.status]),
+    [['live-2', 'live'], ['focused-1', 'idle']],
+    'unfiltered, it does reach the idle loop — so the filter below is load-bearing',
+  )
+  assert.deepEqual(
+    buildRoomRows(sessions, 'live-2', { now: NOW, slots, match: () => false }).map((r) => r.id),
+    ['live-2'],
+  )
 })
 
 // ============================================================
