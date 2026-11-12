@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
@@ -26,6 +26,7 @@ import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sess
 import { prepareSessions } from '@/lib/session-list'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
+import { useIsAdmin } from '@/lib/use-is-admin'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -197,24 +198,27 @@ export default function Dashboard() {
   // project-card sessions. See the comment block above groupByProject.
   const [baseCwd, setBaseCwd] = useState<string | null>(null)
   const [sessionsLoading, setSessionsLoading] = useState(false)
-  // #107: session-list hygiene — search box + "show system sessions" toggle.
-  // The raw list is ~95% auto-spawned sub-agent/verifier runs and carries the
-  // same id under several slugs; prepareSessions dedupes, collapses forks and
-  // (by default) hides system sessions before grouping. Toggle persisted so the
-  // human list stays clean across reloads.
-  const [sessionSearch, setSessionSearch] = useState('')
-  const [showSystemSessions, setShowSystemSessions] = useState(false)
+  // #107: session-list hygiene. The same session is filed under several slug
+  // folders (1092 duplicate ids on the owner's machine — the "three identical
+  // rows" complaint), so prepareSessions folds the copies into one row before
+  // grouping. The machine-written meeting/task rows can be hidden too, but only
+  // when the user asks: an opt-IN filter can't make a row vanish on a deploy.
+  // (The key is new because the old `vn-dash-show-system` stored the inverse.)
+  const [hideSystemSessions, setHideSystemSessions] = useState(false)
   useEffect(() => {
-    try { setShowSystemSessions(localStorage.getItem('vn-dash-show-system') === '1') } catch { /* ignore */ }
+    try { setHideSystemSessions(localStorage.getItem('vn-dash-hide-system') === '1') } catch { /* ignore */ }
   }, [])
-  const toggleShowSystemSessions = () => {
-    setShowSystemSessions((v) => {
+  const toggleHideSystemSessions = () => {
+    setHideSystemSessions((v) => {
       const next = !v
-      try { localStorage.setItem('vn-dash-show-system', next ? '1' : '0') } catch { /* ignore */ }
+      try { localStorage.setItem('vn-dash-hide-system', next ? '1' : '0') } catch { /* ignore */ }
       return next
     })
   }
-  const preparedSessions = prepareSessions(sessions, { search: sessionSearch, hideSystem: !showSystemSessions })
+  const preparedSessions = useMemo(
+    () => prepareSessions(sessions, { hideSystem: hideSystemSessions }),
+    [sessions, hideSystemSessions],
+  )
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -224,49 +228,11 @@ export default function Dashboard() {
   // + mutual exclusion with the create menu, so the two can't both be open.
   useHeaderPanel('dash-account', showProfileMenu, setShowProfileMenu, profileMenuRef)
   const [showReportBug, setShowReportBug] = useState(false)
-  // Admin discoverability: /admin is standalone; surface a link only when the
-  // SERVER confirms this user is in ADMIN_EMAILS (probe once on load).
-  //
-  // #73: the account menu must show the SAME items on every open. /admin is the
-  // only entry whose presence is gated on async state, so it has to be
-  // deterministic rather than "appears once isAdmin happens to resolve". Two
-  // changes: (1) `adminChecked` marks the probe settled so the menu renders a
-  // stable loading row instead of a partial set that silently gains Admin later;
-  // (2) a transient network/5xx failure is retried once (and never silently
-  // committed to "not admin"), so a blip can't drop the entry on one visit and
-  // restore it on the next. The /api/admin/users route is the real enforcement
-  // point — this flag only decides discoverability. (The signed-in user gate
-  // itself already routes through getBrowserUser, which refreshes a stale access
-  // token — see the auth effect below — so that leg is not the source of the
-  // inconsistency.)
-  const [isAdmin, setIsAdmin] = useState(false)
-  const [adminChecked, setAdminChecked] = useState(false)
-  useEffect(() => {
-    // #140: never probe the admin endpoint for a signed-out visitor — it just
-    // 401s and the Admin entry is irrelevant to a guest. Wait for a resolved
-    // user before checking (mirrors the sandbox effects below, which gate on
-    // `user`), so an anonymous dashboard load makes no /api/admin/users call.
-    if (!user) { setIsAdmin(false); setAdminChecked(false); return }
-    let cancelled = false
-    const probe = async (retry: boolean): Promise<void> => {
-      try {
-        const r = await fetch('/api/admin/users')
-        if (cancelled) return
-        if (r.ok) { setIsAdmin(true); setAdminChecked(true); return }
-        // 401/403 is a definitive "not an admin" — settle on it.
-        if (r.status === 401 || r.status === 403) { setAdminChecked(true); return }
-        // Transient server error — retry once, then settle as non-admin.
-        if (retry) return probe(false)
-        setAdminChecked(true)
-      } catch {
-        if (cancelled) return
-        if (retry) return probe(false) // transient network blip — retry once
-        setAdminChecked(true)
-      }
-    }
-    probe(true)
-    return () => { cancelled = true }
-  }, [user]) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
+  // Admin discoverability (#73 / #140): /admin is standalone, so surface a link
+  // only when the SERVER confirms this user is in ADMIN_EMAILS. One shared probe
+  // (lib/use-is-admin) backs this menu and the settings page.
+  const isAdmin = useIsAdmin(user)
+  // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
 
   // Session sharing (0.9.123) — Share modal + "Shared with me".
   const [shareTarget, setShareTarget] = useState<{ sessionId: string; title: string } | null>(null)
@@ -1544,19 +1510,10 @@ export default function Dashboard() {
                         <p className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">{user?.email ? 'Signed in' : 'Guest session'}</p>
                         <p className="text-sm text-[var(--text-primary)] truncate">{user?.email || 'No account connected'}</p>
                       </div>
-                      {/* #73: deterministic Admin slot. Until the server probe
-                          settles we render a disabled placeholder rather than a
-                          partial set that silently gains Admin once isAdmin
-                          resolves. The probe fires on page load, so by the time
-                          this menu is opened it has almost always settled and
-                          this row is never seen. */}
-                      {!adminChecked ? (
-                        <div role="menuitem" aria-disabled="true"
-                          className="w-full text-left px-3 py-2 rounded-lg text-[13px] text-[var(--text-muted)] opacity-60 select-none flex items-center gap-2.5">
-                          <svg className="w-4 h-4 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 3a9 9 0 1 0 9 9" /></svg>
-                          Loading…
-                        </div>
-                      ) : isAdmin ? (
+                      {/* #73: the Admin entry is the only menu item gated on an
+                          async probe. The probe fires on page load, so by the
+                          time this menu can be opened it has settled. */}
+                      {isAdmin ? (
                         <button onClick={() => { setShowProfileMenu(false); router.push('/admin') }}
                           className="w-full text-left px-3 py-2 rounded-lg text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)]/50 transition-colors flex items-center gap-2.5">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
@@ -1791,46 +1748,19 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Search + hide-system toggle (#107) — only when there are sessions to sift. */}
-              {sessions.length > 0 && (
-                <div className="mb-3 space-y-2">
-                  <div className="relative">
-                    <svg className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
-                    </svg>
-                    <input
-                      type="text"
-                      value={sessionSearch}
-                      onChange={(e) => setSessionSearch(e.target.value)}
-                      placeholder="Search sessions…"
-                      aria-label="Search sessions"
-                      className="w-full pl-8 pr-8 py-2 rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none focus:border-[var(--accent)]"
-                    />
-                    {sessionSearch && (
-                      <button
-                        onClick={() => setSessionSearch('')}
-                        aria-label="Clear search"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    )}
-                  </div>
-                  {(preparedSessions.systemCount > 0 || showSystemSessions) && (
-                    <button
-                      onClick={toggleShowSystemSessions}
-                      aria-pressed={showSystemSessions}
-                      className="w-full flex items-center justify-between gap-2 px-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
-                    >
-                      <span>Show system sessions{preparedSessions.systemCount > 0 ? ` (${preparedSessions.systemCount})` : ''}</span>
-                      <span className={`shrink-0 w-8 h-[18px] rounded-full relative transition-colors ${showSystemSessions ? 'bg-[var(--accent)]' : 'bg-[var(--surface-2)]'}`}>
-                        <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all ${showSystemSessions ? 'left-[18px]' : 'left-0.5'}`} />
-                      </span>
-                    </button>
-                  )}
-                </div>
+              {/* Hide machine-written meeting/task rows (#107) — opt-in, so the
+                  list never loses a row the user didn't ask to lose. */}
+              {(preparedSessions.systemCount > 0 || hideSystemSessions) && (
+                <button
+                  onClick={toggleHideSystemSessions}
+                  aria-pressed={hideSystemSessions}
+                  className="mb-3 w-full flex items-center justify-between gap-2 px-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+                >
+                  <span>Hide system sessions{preparedSessions.systemCount > 0 ? ` (${preparedSessions.systemCount})` : ''}</span>
+                  <span className={`shrink-0 w-8 h-[18px] rounded-full relative transition-colors ${hideSystemSessions ? 'bg-[var(--accent)]' : 'bg-[var(--surface-2)]'}`}>
+                    <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all ${hideSystemSessions ? 'left-[18px]' : 'left-0.5'}`} />
+                  </span>
+                </button>
               )}
 
               {/* New Project input — shown only while naming (the trigger lives in the section header) */}
@@ -1927,9 +1857,7 @@ export default function Dashboard() {
               ) : sessions.length === 0 && agentOnline ? (
                 <p className="px-4 text-sm text-[var(--muted)]">No conversations yet</p>
               ) : preparedSessions.sessions.length === 0 && agentOnline ? (
-                <p className="px-4 text-sm text-[var(--muted)]">
-                  {sessionSearch.trim() ? 'No sessions match your search.' : 'No conversations to show.'}
-                </p>
+                <p className="px-4 text-sm text-[var(--muted)]">No conversations to show.</p>
               ) : (
                 <div className="rounded-xl border border-[var(--border-subtle)]/60 bg-[var(--surface)] divide-y divide-[var(--border-subtle)]/40">{/* Slack-style flush list: one bordered container, rows divided by hairlines — replaces the old per-project bubble cards (space-y-2 + rounded-2xl each) */}
                   {groupByProject(preparedSessions.sessions, baseCwd).map(project => (
@@ -2121,14 +2049,6 @@ export default function Dashboard() {
                                         <>
                                           <span className="opacity-40">·</span>
                                           <span className="font-mono">{s.messageCount} msgs</span>
-                                        </>
-                                      ) : null}
-                                      {preparedSessions.forkCountById.get(s.sessionId) ? (
-                                        <>
-                                          <span className="opacity-40">·</span>
-                                          <span className="px-1.5 py-px rounded-full bg-sky-500/15 text-sky-500 text-[10px] font-medium" title="Forked copies collapsed under this session">
-                                            {preparedSessions.forkCountById.get(s.sessionId)} fork{preparedSessions.forkCountById.get(s.sessionId) === 1 ? '' : 's'}
-                                          </span>
                                         </>
                                       ) : null}
                                     </div>

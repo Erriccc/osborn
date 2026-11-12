@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sessionDisplayTitle, sortSessionsByActivity, type SessionInfo } from '@/lib/sessions'
+import { sessionMatchesQuery } from '@/lib/session-list'
 import { agentReadUrl } from '@/lib/agent-read'
 import { stripSessionWrappers } from '@/lib/transcript-clean'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
@@ -121,16 +122,11 @@ export default function SessionBrowser({
     }
   }
 
-  // Filter sessions by search query
-  const filteredSessions = useMemo(() => {
-    if (!searchQuery.trim()) return sessions
-    const q = searchQuery.toLowerCase()
-    return sessions.filter(s =>
-      s.title?.toLowerCase().includes(q) ||
-      s.lastMessage?.toLowerCase().includes(q) ||
-      s.sessionId.toLowerCase().includes(q)
-    )
-  }, [sessions, searchQuery])
+  // Filter sessions by search query — the one shared matcher (lib/session-list).
+  const filteredSessions = useMemo(
+    () => sessions.filter((s) => sessionMatchesQuery(s, searchQuery)),
+    [sessions, searchQuery],
+  )
 
   // Reset page when search changes
   useEffect(() => {

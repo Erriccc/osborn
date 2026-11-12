@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
+import { useIsAdmin } from '@/lib/use-is-admin'
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
 // fall back to the uppercased code (still tells you WHERE-ish).
@@ -715,13 +716,8 @@ export default function SettingsPage() {
     finally { setHandleBusy(false) }
   }, [handleValue])
   /** Admin board discoverability: show the row only when the SERVER confirms
-   *  this email is in ADMIN_EMAILS (same probe as the dashboard menu). */
-  const [isAdminUser, setIsAdminUser] = useState(false)
-  useEffect(() => {
-    fetch('/api/admin/users')
-      .then(r => { if (r.ok) setIsAdminUser(true) })
-      .catch(() => {})
-  }, [])
+   *  this email is in ADMIN_EMAILS. Shares the dashboard menu's probe. */
+  const isAdminUser = useIsAdmin(user)
 
   if (loading) {
     return (
