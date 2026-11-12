@@ -36,6 +36,11 @@ export const EXPECTED_VARS = [
   'CANDIDATE_STATE',
   'CANDIDATE_ZIP',
 ]
+// Work history and education are per-entry and open-ended, so they are NOT part
+// of EXPECTED_VARS (one job and no degree must not read as "missing"). `check`
+// lists whichever of them the file sets, by NAME, so the model knows exactly
+// what it may fill and never has to invent an employer, school or date.
+export const HISTORY_VAR_RE = /^CANDIDATE_(?:JOB|EDUCATION)_[0-9]+_[A-Z0-9_]+$/
 export const CONFIG_KEYS = ['CANDIDATE_CDP_URL']
 export const DEFAULT_CDP_URL = 'http://127.0.0.1:9222'
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
@@ -269,8 +274,10 @@ export async function checkReport(path, fileEnv, fetchImpl = fetch) {
   const set = EXPECTED_VARS.filter(k => fileEnv[k])
   const missing = EXPECTED_VARS.filter(k => !fileEnv[k])
   const cdp = cdpFrom(fileEnv)
+  const history = Object.keys(fileEnv).filter(k => HISTORY_VAR_RE.test(k) && fileEnv[k]).sort()
   const lines = [`ok: ${path} is a regular file owned by you, mode 600`, `set: ${set.join(', ') || '(none)'}`]
   if (missing.length) lines.push(`missing: ${missing.join(', ')}`)
+  lines.push(`history: ${history.join(', ') || '(none — ask the user for any work history or education the form needs)'}`)
   lines.push(`cdp: ${(await probeCdp(cdp, fetchImpl)) ? 'reachable' : 'unreachable'} (${cdp})`)
   return lines
 }

@@ -170,6 +170,29 @@ await t('every allowlist entry still matches a real line (no stale entries)', ()
   }
 })
 
+// browser-apply types what it is given into REAL job applications, so a literal
+// employer, school or date in the shipped skill is a false statement submitted
+// to that employer — even an invented one. Work history must go through the
+// same $CANDIDATE_* secret file as the name, email and address.
+await t('browser-apply ships no work-history or education values of its own', () => {
+  const src = readFileSync(join(ROOT, 'agent/.claude/skills/browser-apply/SKILL.md'), 'utf8')
+  assert.ok(/CANDIDATE_JOB_N_TITLE/.test(src) && /CANDIDATE_EDUCATION_N_/.test(src), 'work history is not routed through CANDIDATE_* keys')
+  const section = src.split(/^## /m).find(s => /^Candidate Data/.test(s)) ?? ''
+  assert.ok(section, 'Candidate Data section missing')
+  // The regression shipped as a numbered value list ("1. <title> at <employer>")
+  // under Candidate Data. Instructions there are prose or `-` bullets; a
+  // numbered entry is how a value list looks.
+  const numbered = section.split(/^### /m)[0].split('\n')
+    .map((line, i) => [i + 1, line] as const)
+    .filter(([, line]) => /^\s*[0-9]+\.\s+\S/.test(line))
+  assert.equal(numbered.length, 0, `Candidate Data has a numbered value list at section line(s) ${numbered.map(([i]) => i).join(', ')}`)
+  // Résumé-shaped literals anywhere in the skill: a month-year date, a company
+  // suffix, a school, or a degree abbreviation.
+  const RESUME_LITERAL = /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b|\b(?:Inc|LLC|Ltd|Corp|Corporation|GmbH|University|College)\b|\b[ABM]\.[SA]\.\b/
+  const resume = src.split('\n').map((line, i) => [i + 1, line] as const).filter(([, line]) => RESUME_LITERAL.test(line))
+  assert.equal(resume.length, 0, `résumé-shaped literal at SKILL.md line(s) ${resume.map(([i]) => i).join(', ')}`)
+})
+
 // ---- helper: fixed secret file, no env overrides, loopback CDP, confirmed host, field types -----
 await t('browser-apply helper exists', () => {
   assert.ok(existsSync(HELPER), 'agent/.claude/skills/browser-apply/fill.mjs missing')
@@ -249,6 +272,14 @@ if (existsSync(HELPER)) {
       noLeak(out)
       assert.match(out, /set: CANDIDATE_EMAIL, CANDIDATE_PASSWORD, CANDIDATE_PHONE/)
       assert.match(out, /cdp: unreachable/)
+      // Work history is reported by NAME so the model never has to invent one,
+      // and an empty history says so instead of looking like "nothing to fill".
+      assert.match(out, /history: \(none/)
+      const withJob = { ...fileEnv, CANDIDATE_JOB_1_COMPANY: 'Synthetic Fixture Employer', CANDIDATE_EDUCATION_1_SCHOOL: 'Synthetic Fixture School' }
+      const jobOut: string = (await helper.checkReport('/x/candidate.env', withJob, down)).join('\n')
+      assert.match(jobOut, /history: CANDIDATE_EDUCATION_1_SCHOOL, CANDIDATE_JOB_1_COMPANY/)
+      assert.ok(!jobOut.includes('Synthetic Fixture'), 'check leaked a history value')
+      assert.doesNotMatch(jobOut, /missing: .*CANDIDATE_JOB/, 'history keys must not be reported as missing')
       const up = async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' }) })
       assert.match((await helper.checkReport('/x', fileEnv, up)).join('\n'), /cdp: reachable/)
       await assert.rejects(helper.checkReport('/x', { ...fileEnv, CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' }, up), /loopback/)
