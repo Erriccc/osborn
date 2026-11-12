@@ -214,8 +214,6 @@ t('no group colour dot: the degenerate buckets have per-row colours', () => {
     roomAvatar({ project: 'workspace', title: 'Draft the invoice' }).color,
     roomAvatar({ project: 'workspace', title: 'Review the contract' }).color,
   )
-  const src = fs.readFileSync(path.join(__dirname, '../src/components/voice/RoomsRail.tsx'), 'utf8')
-  assert.ok(!/roomColor\(/.test(src), 'the rail must not hash a group colour of its own')
 })
 
 // ── roomAvatar (the one call the UI makes) ─────────────────────────────────

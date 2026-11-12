@@ -31,8 +31,6 @@ export interface SessionListItem extends SessionListFields {
   messageCount?: number
   /** Slug-derived cwd — where Claude Code's `--resume` looks the session up. */
   cwd?: string
-  /** Original cwd from the JSONL content (display / project grouping). */
-  projectPath?: string
 }
 
 // ── System / machine-written session detection ────────────────────────────
@@ -95,17 +93,20 @@ function preferCopy(a: SessionListItem, b: SessionListItem): boolean {
   return sessionActivityMs(a) > sessionActivityMs(b)
 }
 
-// ── Search over title / preview / project ─────────────────────────────────
-/** Case-insensitive match of `query` against the session's cleaned preview,
- * raw last message, project directory and id. Blank query matches all. The one
- * session-search predicate in the app (SessionBrowser's list). `lastMessage` is
- * needed because `prettySessionPreview().text` prefers the agent title, so on a
- * modern agent the message body would otherwise not be searchable at all. */
+// ── Search over preview / message / id ────────────────────────────────────
+/** Case-insensitive match of `query` against the session's cleaned preview, its
+ * raw last message and its id. Blank query matches all. The one session-search
+ * predicate in the app (SessionBrowser's list).
+ *
+ * Only fields that DISTINGUISH one session from another belong here. `pv.label`
+ * is the literal "Chat" on every chat row and `cwd` shares a path prefix across
+ * the whole list, so either one would make "chat" or "workspace" match every
+ * row. `lastMessage` is needed because `pv.text` prefers the agent-supplied
+ * title, so on a modern agent the message body would not be searchable at all. */
 export function sessionMatchesQuery(s: SessionListItem, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
-  const pv = prettySessionPreview(s)
-  const hay = [pv.text, pv.label, s.lastMessage, s.projectPath || s.cwd, s.sessionId]
+  const hay = [prettySessionPreview(s).text, s.lastMessage, s.sessionId]
     .join(' \u0001 ')
     .toLowerCase()
   return hay.includes(q)

@@ -230,7 +230,7 @@ export function RoomsSidebar({
                 title={`${room.title}${identity ? ` · ${identity}` : ''} · ${STATUS_LABEL[room.status]}`}
                 aria-label={`${room.title}${identity ? `, ${identity}` : ''} (${STATUS_LABEL[room.status]})`}
                 className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center transition-colors ${
-                  room.status === 'live' ? 'bg-amber-500/15 ring-1 ring-amber-500/40' : 'hover:bg-gray-800/60'
+                  room.status === 'live' ? 'bg-amber-500/15' : 'hover:bg-gray-800/60'
                 }`}
               >
                 <IdentityAvatar room={room} />

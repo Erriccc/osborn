@@ -25,8 +25,10 @@ export function useIsAdmin(user: { id?: string } | null | undefined): boolean {
         const r = await fetch('/api/admin/users', { cache: 'no-store' })
         if (cancelled) return
         if (r.ok) { setIsAdmin(true); return }
-        // 401/403 is a definitive "not an admin" — settle on it.
-        if (r.status === 401 || r.status === 403) return
+        // 401/403 is a definitive "not an admin" — settle on it. Writing false
+        // matters: an admin replaced by a non-admin inside the same mount would
+        // otherwise keep the stale Admin entry.
+        if (r.status === 401 || r.status === 403) { setIsAdmin(false); return }
         if (retry) return probe(false) // transient server error — retry once
       } catch {
         if (cancelled) return

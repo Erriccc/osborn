@@ -96,13 +96,26 @@ t('nothing is hidden unless hideSystem is asked for', () => {
 })
 
 // ── Search (the one shared matcher — SessionBrowser's list) ────────────────
-t('search matches title, preview, project and id; blank matches all', () => {
-  const s: SessionListItem = { sessionId: 'abc123', title: 'Refactor voice pipeline', cwd: '/workspace/osborn' }
+t('search matches preview, message and id; blank matches all', () => {
+  const s: SessionListItem = { sessionId: 'abc123', title: 'Refactor voice pipeline', lastMessage: 'ship the orb', cwd: '/workspace/osborn' }
   assert.equal(sessionMatchesQuery(s, 'voice'), true)
-  assert.equal(sessionMatchesQuery(s, 'osborn'), true) // project leaf
+  assert.equal(sessionMatchesQuery(s, 'orb'), true) // body, not just the title
   assert.equal(sessionMatchesQuery(s, 'abc123'), true) // id
   assert.equal(sessionMatchesQuery(s, 'nope'), false)
   assert.equal(sessionMatchesQuery(s, ''), true)
+})
+
+// A term every row shares is not a search term. "Chat" is prettySessionPreview's
+// label on every chat row and the cwd prefix is common to the whole list, so
+// including either made one keystroke match the entire list.
+t('search does not match on the shared label or path prefix', () => {
+  const rows: SessionListItem[] = [
+    { sessionId: 'a', title: 'Refactor voice pipeline', cwd: '/workspace/osborn' },
+    { sessionId: 'b', title: 'Plan the offsite', cwd: '/workspace/osborn' },
+  ]
+  for (const q of ['chat', 'workspace']) {
+    assert.equal(rows.filter((r) => sessionMatchesQuery(r, q)).length, 0, q)
+  }
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -1857,9 +1857,7 @@ export default function Dashboard() {
               ) : sessions.length === 0 && agentOnline ? (
                 <p className="px-4 text-sm text-[var(--muted)]">No conversations yet</p>
               ) : preparedSessions.sessions.length === 0 && agentOnline ? (
-                <p className="px-4 text-sm text-[var(--muted)]">
-                  Every conversation is hidden — turn off “Hide system sessions” to see them.
-                </p>
+                <p className="px-4 text-sm text-[var(--muted)]">No conversations to show.</p>
               ) : (
                 <div className="rounded-xl border border-[var(--border-subtle)]/60 bg-[var(--surface)] divide-y divide-[var(--border-subtle)]/40">{/* Slack-style flush list: one bordered container, rows divided by hairlines — replaces the old per-project bubble cards (space-y-2 + rounded-2xl each) */}
                   {groupByProject(preparedSessions.sessions, baseCwd).map(project => (
