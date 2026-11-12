@@ -66,7 +66,7 @@ import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
-import { hearSince } from '../lib/converse'
+import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
 import { attachDevtools, type DevtoolsBuffer } from '../lib/devtools'
@@ -421,8 +421,7 @@ async function main() {
   const peekAudioToWav = async (page: Page = active, maxMs = 30 * 60 * 1000): Promise<{ wav: string; startedAt: number; durationMs: number } | null> => {
     let cleanup: string[] = []
     try {
-      const { base64, sinceStartMs, anchorOffsetMs } = await peekCapture(page)
-      const startedAt = Date.now() - sinceStartMs + anchorOffsetMs
+      const { base64, sinceStartMs, fileZeroAt: startedAt } = await peekCapture(page)
       if (!base64) return null
       // Decoding the whole recording on every turn does not scale (a 2h
       // capture is ~30s of ffmpeg and ~700MB of wav). Past the cap, proof
@@ -485,7 +484,7 @@ async function main() {
   // the instant it was played into the mic) and what the page played back
   // (the ears' recording, aligned by wall clock). Returns null when there is
   // no audio at all to add.
-  const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number, page: Page = active, captions?: { said: string; heard: string }): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
+  const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number, captions: { said: string; heard: string }, a: Awaited<ReturnType<typeof peekAudioToWav>>): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
     const args = ['-y', '-loglevel', 'error', '-i', clip.path]
     const filters: string[] = []; const labels: string[] = []
     let idx = 1
@@ -498,7 +497,7 @@ async function main() {
       if (d < 0) args.push('-ss', (-d / 1000).toFixed(3))
       args.push('-i', saidWav!); filters.push(`[${idx}:a]aresample=48000${d > 0 ? `,adelay=${d}:all=1` : ''}[s]`); labels.push('[s]'); idx++
     }
-    const a = await peekAudioToWav(page)
+    // `a` is the recording the caller decoded once for this turn; the caller deletes it.
     // Only a slice that actually overlaps the clip counts as a heard track: a
     // seek past the end of the recording muxes silence and must not be
     // reported as page audio.
@@ -509,8 +508,7 @@ async function main() {
       args.push('-i', a.wav)
       filters.push(`[${idx}:a]aresample=48000${off < 0 ? `,adelay=${Math.round(-off * 1000)}:all=1` : ''}[h]`); labels.push('[h]'); idx++
     }
-    const cleanup = () => { if (a) { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } } }
-    if (!labels.length) { cleanup(); return null }
+    if (!labels.length) return null
     const out = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say-av.mp4`)
     // Bounded: an unbounded apad never ends once video is re-encoded.
     const clipDur = Math.max(1, (clip.endMs - clip.startMs) / 1000)
@@ -534,7 +532,7 @@ async function main() {
       await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-movflags', '+faststart', '-shortest', out])
       return existsSync(out) ? { path: out, said, heard } : null
     } catch (e) { mark(`audio mux failed: ${(e as Error).message.slice(0, 100)}`); return null }
-    finally { cleanup(); for (const f of capFiles) { try { rmSync(f, { force: true }) } catch { /* ignore */ } } }
+    finally { for (const f of capFiles) { try { rmSync(f, { force: true }) } catch { /* ignore */ } } }
   }
   // TAB HUD — ONLY for headless/CDP capture, where the screencast has no
   // browser chrome and tabs would be invisible. In full-window (display) mode
@@ -1271,15 +1269,19 @@ async function main() {
           let audio: { said: boolean; heard: boolean } = { said: false, heard: false }
           const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, Date.now(), page).catch(() => null) : null
           let hearError: string | null = null
-          const heard = await hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture))).catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
+          // Decode the recording once; the transcript and the clip's audio both use it (#165).
+          const decoded = await peekAudioToWav(page)
+          const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
+          const heard = await (decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw())
+            .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           if (!range) clipError = live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session'
           else {
             clip = range.path
-            const av = await muxSayAudio(range, saidWav, playStartMs, n, page, { said: String(body.text), heard })
+            const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded).catch(() => null)
             if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
             mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
           }
-          try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
+          for (const f of [saidWav, decoded?.wav]) if (f) try { rmSync(f, { force: true }) } catch { /* ignore */ }
           const earsAfter = await earsState(page)
           const sayWarning = heard ? null
             : hearError ? `nothing transcribed: ${hearError}`

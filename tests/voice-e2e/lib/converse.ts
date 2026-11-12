@@ -95,13 +95,30 @@ export async function screenTail(page: Page): Promise<string> {
  */
 export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const { peekCapture } = await import('./audio-capture')
-  const { optionalEnvKey } = await import('./env')
   const { base64, anchorOffsetMs } = await peekCapture(page)
   // word.start is file-relative (timeline begins at the first tapped source,
   // NOT capture start — verified 38.3s skew, 2026-07-31); convert the wall-clock
   // window into file time via the anchor.
-  const { audio, fileSinceMs, wav } = await turnWindow(Buffer.from(base64, 'base64'), Math.max(0, sinceMs - anchorOffsetMs))
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'hear-'))
+  try {
+    const raw = Buffer.from(base64, 'base64'); writeFileSync(join(dir, 'in.webm'), raw)
+    const fileSinceMs = Math.max(0, sinceMs - anchorOffsetMs)
+    return await transcribeTurn((await cutTurn(join(dir, 'in.webm'), fileSinceMs, false)) ?? { audio: raw, fileSinceMs, wav: false })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}
 
+/** hearSince for a recording the caller already decoded to a wav (`fileSinceMs` is relative to its start). */
+export async function hearFromWav(wavPath: string, fileSinceMs: number): Promise<string> {
+  const cut = await cutTurn(wavPath, Math.max(0, fileSinceMs), true)
+  if (!cut) throw new Error('could not cut the turn from the decoded recording')
+  return transcribeTurn(cut)
+}
+
+async function transcribeTurn({ audio, fileSinceMs, wav }: { audio: Buffer; fileSinceMs: number; wav: boolean }): Promise<string> {
+  const { optionalEnvKey } = await import('./env')
   // Soniox async STT — upload the recorded clip, poll the job, keep tokens whose
   // start_ms falls after the window. Word timestamps come back by default; no
   // OpenAI/Deepgram key needed.
@@ -128,24 +145,25 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   catch (e) { failures.push(`Deepgram: ${((e as Error).message || String(e)).slice(0, 140)}`); throw new Error(failures.join('; ')) }
 }
 
-/** Only the current turn goes to STT, as a 16 kHz mono wav cut from just before `sinceMs` (falls back to the raw webm). */
-async function turnWindow(raw: Buffer, sinceMs: number): Promise<{ audio: Buffer; fileSinceMs: number; wav: boolean }> {
+/**
+ * Only the current turn goes to STT, as a 16 kHz mono wav cut from just before
+ * `sinceMs`. A raw MediaRecorder webm can't be seeked, so it is decoded up to
+ * the cut (-ss after -i); a decoded wav is seeked directly. null if ffmpeg fails.
+ */
+async function cutTurn(input: string, sinceMs: number, seekable: boolean): Promise<{ audio: Buffer; fileSinceMs: number; wav: true } | null> {
   const { execFile } = await import('node:child_process')
-  const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
-  const { tmpdir } = await import('node:os')
-  const { join } = await import('node:path')
+  const { readFileSync, rmSync } = await import('node:fs')
   const cut = Math.max(0, sinceMs - 1000)
-  const dir = mkdtempSync(join(tmpdir(), 'hear-'))
+  const out = `${input}.turn-${process.pid}-${Date.now()}.wav`
+  const ss = ['-ss', String(cut / 1000)]
   try {
-    writeFileSync(join(dir, 'in.webm'), raw)
-    await new Promise<void>((ok, fail) => execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', join(dir, 'in.webm'), '-ss', String(cut / 1000),
-      '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', join(dir, 'out.wav')], { timeout: 60000 }, (e) => (e ? fail(e) : ok())))
-    return { audio: readFileSync(join(dir, 'out.wav')), fileSinceMs: sinceMs - cut, wav: true }
+    await new Promise<void>((ok, fail) => execFile('ffmpeg', ['-y', '-loglevel', 'error', ...(seekable ? ss : []), '-i', input, ...(seekable ? [] : ss),
+      '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', out], { timeout: 60000 }, (e) => (e ? fail(e) : ok())))
+    return { audio: readFileSync(out), fileSinceMs: sinceMs - cut, wav: true }
   } catch (e) {
-    console.warn('[converse] could not cut the turn, sending the whole recording:', String((e as Error).message ?? e).slice(0, 120))
-    return { audio: raw, fileSinceMs: sinceMs, wav: false }
-  }
-  finally { rmSync(dir, { recursive: true, force: true }) }
+    console.warn('[converse] could not cut the turn:', String((e as Error).message ?? e).slice(0, 120))
+    return null
+  } finally { rmSync(out, { force: true }) }
 }
 
 async function deepgramTranscribeSince(audio: Buffer, fileSinceMs: number, dg: string, wav: boolean): Promise<string> {
