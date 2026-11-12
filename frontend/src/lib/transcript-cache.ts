@@ -131,6 +131,9 @@ export function cacheTranscript(
   if (!sessionId) return
   const store = resolveStorage(storage)
   if (!store) return
+  // The paint IS this cache: serializeTranscript drops those rows, so writing
+  // while they are on screen replaces the history with the turns taken since.
+  if (messages.some(m => m?.fromCache)) return
   const items = serializeTranscript(messages)
   if (items.length === 0) return // never clobber a good cache with nothing
   // Re-appended at the end, so the session touched longest ago is evicted.

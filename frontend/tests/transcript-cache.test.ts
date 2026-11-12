@@ -92,6 +92,9 @@ t('never clobbers a good cache with an empty transcript', () => {
   cacheTranscript('u1', 'sess', [msg({ id: 'u1', content: 'real' })], s)
   cacheTranscript('u1', 'sess', [], s) // e.g. the setMessages([]) during a switch
   cacheTranscript('u1', 'sess', [msg({ id: 's1', isStreaming: true })], s) // only streaming
+  // A cold boot the user spoke during: the optimistic paint is still on screen,
+  // so the live turn must not replace the history the paint came from.
+  cacheTranscript('u1', 'sess', [msg({ id: 'c1', content: 'real', fromCache: true }), msg({ id: 'l1', content: 'said during the boot' })], s)
   eq(readCachedTranscript('u1', 'sess', s).map(m => m.content), ['real'], 'kept the real cache')
 })
 
