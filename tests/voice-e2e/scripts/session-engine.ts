@@ -1517,9 +1517,12 @@ async function main() {
             if (!(fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1)) return json(res, { ok: false, code: 'bad_request', error: 'click needs x and y as fractions 0..1 of the frame' }, 400)
             const win = await page.evaluate(() => ({ ow: window.outerWidth, oh: window.outerHeight, iw: window.innerWidth, ih: window.innerHeight })).catch(() => null)
             if (!win) return json(res, { ok: false, code: 'unresponsive', error: 'the page did not answer; reload the tab' }, 409)
-            const frameW = DISPLAY_MODE ? win.ow : win.iw, frameH = DISPLAY_MODE ? win.oh : win.ih
-            const x = fx * frameW - (DISPLAY_MODE ? (win.ow - win.iw) / 2 : 0)
-            const y = fy * frameH - (DISPLAY_MODE ? win.oh - win.ih : 0)
+            // Display mode streams the whole virtual screen (the window sits at 0,0); the
+            // page starts after the window border and the browser's top bar.
+            const [dw, dh] = (process.env.OSBORN_DISPLAY_SIZE || '1280x800').split('x').map(Number)
+            const border = DISPLAY_MODE ? (win.ow - win.iw) / 2 : 0
+            const x = fx * (DISPLAY_MODE ? dw : win.iw) - border
+            const y = fy * (DISPLAY_MODE ? dh : win.ih) - (DISPLAY_MODE ? win.oh - win.ih - border : 0)
             if (y < 0) return json(res, { ok: false, code: 'browser_bar', error: 'that is the browser bar; use the address box or the tab bar instead' }, 400)
             await page.mouse.click(x, y)
           } else if (kind === 'type') await page.keyboard.type(String(body.text ?? '').slice(0, 2000))

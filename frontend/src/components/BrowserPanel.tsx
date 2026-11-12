@@ -323,7 +323,6 @@ export function BrowserPanel() {
   const label = (d: string | null | undefined) => (d && d === me ? 'you' : d?.replace(/^person:/, '') ?? '')
   const blank = watching && !!status && blankPage(status.pageUrl)
 
-
   // Closing the page while in control hands the tab back instead of leaving the
   // agent paused (the engine also hands back after 10 idle minutes).
   useEffect(() => {
@@ -470,8 +469,7 @@ export function BrowserPanel() {
               <div className="flex h-full items-center justify-center px-6 text-center text-sm text-neutral-400">
                 This page is open inside the browser engine itself, so the live view is hidden here: it would show itself endlessly. Watch from your own browser.
               </div>
-            ) : <>
-            {/* key kicks a reload when we retry a broken/waking stream */}
+            ) : (
             <img
               ref={imgRef}
               draggable={false}
@@ -482,7 +480,7 @@ export function BrowserPanel() {
               onError={() => { setStreamBroken(true); setBrokenSince((t) => t ?? Date.now()) }}
               onLoad={() => { setStreamBroken(false); setBrokenSince(null) }}
             />
-            </>}
+            )}
             {streamBroken && !frozen && !blank && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-center text-sm text-neutral-300">
                 {/* `unreachable` only means the Fly state couldn't be READ, so it is
@@ -500,7 +498,7 @@ export function BrowserPanel() {
                 </button>
               </div>
             )}
-            {frozen && (
+            {!inEngine && frozen && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 px-6 text-center text-sm text-neutral-300">
                 <div>This tab stopped responding, so there is nothing to show.</div>
                 {shownOwner && shownOwner !== me ? (
@@ -510,7 +508,7 @@ export function BrowserPanel() {
                 )}
               </div>
             )}
-            {!frozen && blank && (
+            {!inEngine && !frozen && blank && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950 px-6 text-center text-sm text-neutral-300">
                 <div>Nothing is open in this tab. Type an address above, or start with:</div>
                 <div className="flex flex-wrap justify-center gap-2">
@@ -523,7 +521,7 @@ export function BrowserPanel() {
           </>
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm text-neutral-400">
-            <button onClick={() => { setStreamBroken(false); setBrokenSince(null); streamKickRef.current++; setWatching(true) }} className="rounded-lg bg-amber-500 px-5 py-2.5 text-base font-medium text-black hover:bg-amber-400">
+            <button onClick={() => { setStreamBroken(false); setBrokenSince(null); setStatus(null); streamKickRef.current++; setWatching(true) }} className="rounded-lg bg-amber-500 px-5 py-2.5 text-base font-medium text-black hover:bg-amber-400">
               {asleep ? 'Wake & watch' : 'Watch'}
             </button>
             <div>{asleep ? 'The engine is asleep; waking it takes about 40 seconds.' : 'Shows the live browser, and lets you drive it.'}</div>
@@ -573,10 +571,7 @@ export function BrowserPanel() {
 
       {/* Per-run links */}
       <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-medium text-neutral-200">This run’s tasks</h3>
-
-        </div>
+        <h3 className="mb-2 text-sm font-medium text-neutral-200">This run’s tasks</h3>
         {tasks.length === 0 ? (
           <p className="text-xs text-neutral-500">Nothing recorded yet. Each action an agent takes shows up here with its clip and screenshot.</p>
         ) : (
