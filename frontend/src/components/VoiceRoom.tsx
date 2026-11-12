@@ -3985,12 +3985,16 @@ function VoiceRoomInner({
         liveTitle={firstUserMessage}
         pendingId={switchPending?.sessionId ?? null}
       />
-      {/* Chat column. No xl:min-w floor: at the 1280px xl boundary the 15rem
-          rooms rail plus a shrink-0 aside dragged to MAX_PANEL_WIDTH_PCT (70%)
-          plus a 24rem floor here cannot fit the row, so the floor turned a
-          deliberate panel resize into a horizontal page scroll. min-w-0 lets
-          the column give way instead; the panel's own 70% cap is what keeps
-          the conversation from vanishing. */}
+      {/* Chat column. No xl:min-w floor: at the 1280px xl boundary the 240px
+          rooms rail plus a shrink-0 aside dragged to MAX_PANEL_WIDTH_PCT (70%,
+          896px) leaves ~120px here, so a 24rem floor could not be honoured and
+          turned a deliberate panel resize into a horizontal page scroll that
+          broke the whole row, the resize handle included. min-w-0 lets the
+          column give way instead. The trade-off is explicit: past ~49% at
+          exactly 1280px the conversation does get narrow, and dragging the
+          panel back is the remedy. Lowering the 70% cap is NOT the fix — 70%
+          is fine from 1440px up; only a pixel-aware clamp on the drag would
+          serve both, and that is a bigger change than this bug needs. */}
       <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Persistent Anthropic sign-in gate (issue #53/#78). The agent blocks
             before creating the voice session until Claude OAuth completes, so a

@@ -1,4 +1,4 @@
-// Run: node frontend/tests/content-migration-007-ensure-profile.test.mjs
+// Run: cd frontend && npx tsx tests/content-migration-007-ensure-profile.test.mjs
 // Legacy-profiles invariants for 007. (Filename kept from the retired
 // ensure_profile design so existing references still resolve.) Proves 007
 // reuses the prod-like legacy public.profiles WITHOUT changing its rows,
@@ -6,8 +6,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-// pglite is a frontend devDependency, so `npm ci` is enough to run this in CI.
-// PGLITE= still overrides with an explicit dist/index.js path for ad-hoc runs.
+// pglite is deliberately NOT a dependency (see content-migration-007.test.mjs):
+// CI installs it --no-save before `npm test`; locally run
+// `npm i --no-save --no-package-lock @electric-sql/pglite@0.5.16` once.
+// PGLITE= overrides with an explicit dist/index.js path.
 const { PGlite } = process.env.PGLITE
   ? await import(pathToFileURL(process.env.PGLITE).href)
   : await import('@electric-sql/pglite')

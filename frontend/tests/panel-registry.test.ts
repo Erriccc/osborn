@@ -7,7 +7,7 @@ import {
 } from '../src/components/panel/registry'
 import {
   PANEL_STORAGE_KEY, DEFAULT_PANEL_STATE, MIN_PANEL_WIDTH_PCT, MAX_PANEL_WIDTH_PCT,
-  PANEL_DESKTOP_MIN_WIDTH, PANEL_SHEET_QUERY,
+  PANEL_SHEET_QUERY,
   parsePanelState, serializePanelState, clampPanelWidth,
 } from '../src/lib/panel-state'
 import { readFileSync } from 'node:fs'
@@ -108,7 +108,6 @@ t('panel state: corrupt or partial storage never throws and falls back per field
 // --- sheet breakpoint and tablet layout (issue #118 follow-up) --------------
 
 t('sheet breakpoint is named once and matches Tailwind xl', () => {
-  eq(PANEL_DESKTOP_MIN_WIDTH, 1280, 'xl')
   eq(PANEL_SHEET_QUERY, '(max-width: 1279px)', 'media query')
 })
 

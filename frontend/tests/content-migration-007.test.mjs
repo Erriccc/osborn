@@ -1,9 +1,13 @@
-// Run: cd frontend && npx tsx tests/content-migration-007.test.mjs
+// Run: cd frontend && npm i --no-save --no-package-lock @electric-sql/pglite@0.5.16
+//      cd frontend && npx tsx tests/content-migration-007.test.mjs
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-// pglite is a frontend devDependency, so `npm ci` is enough to run this in CI.
-// PGLITE= still overrides with an explicit dist/index.js path for ad-hoc runs.
+// pglite is deliberately NOT a dependency: Railway builds with `npm install`
+// (devDeps included), so declaring it would ship 26MB of wasm Postgres into
+// every production image for two test files. CI installs it --no-save right
+// before `npm test` (.github/workflows/frontend-lint.yml); locally, run the
+// install line above once. PGLITE= overrides with an explicit dist/index.js.
 const { PGlite } = process.env.PGLITE
   ? await import(pathToFileURL(process.env.PGLITE).href)
   : await import('@electric-sql/pglite')

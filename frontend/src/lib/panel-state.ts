@@ -9,10 +9,10 @@ export const MAX_PANEL_WIDTH_PCT = 70
 // The panel is an inline drawer at Tailwind `xl` and up, and a bottom-sheet
 // overlay below it. The CSS side of that switch is the `xl:` class set on the
 // aside; the JS side is a matchMedia query that decides whether to measure a
-// bottom offset at all. Naming the breakpoint once keeps the two from drifting
-// (same reason as LANDING_DESKTOP_QUERY in lib/nav-scroll-lock).
-export const PANEL_DESKTOP_MIN_WIDTH = 1280
-export const PANEL_SHEET_QUERY = `(max-width: ${PANEL_DESKTOP_MIN_WIDTH - 1}px)`
+// bottom offset at all. Naming the query once keeps the two from drifting (same
+// reason as LANDING_DESKTOP_QUERY in lib/nav-scroll-lock). Tailwind `xl` is
+// 1280px, so the sheet range ends one pixel below it.
+export const PANEL_SHEET_QUERY = '(max-width: 1279px)'
 
 export interface PanelState {
   open: boolean
