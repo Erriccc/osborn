@@ -77,8 +77,6 @@ export interface KeyHealthEntry {
   provider: string
   /** Outcome of the tiny real request the agent made at start. */
   status: 'ok' | 'failed' | 'expired'
-  /** Optional ISO timestamp of the test. */
-  checkedAt?: string
 }
 
 export type AgentHealthLevel = 'ok' | 'version-floor' | 'keys-failed'
@@ -105,6 +103,14 @@ export interface AgentHealthInput {
    * unaffected by the demo tier's health.
    */
   relyingOnFallback?: boolean
+  /**
+   * The tier the agent says it is actually answering on (GET /health → provider,
+   * seeded by agent_ready.provider). The house demo tiers ('zai' / 'openrouter')
+   * imply the fallback path even when the auth modal never opened; 'claude' or
+   * the user's own 'anthropic' key means the demo tier's health is irrelevant,
+   * whatever the modal did earlier in the session.
+   */
+  mainProvider?: string | null
   /** Per-key self-test results, once the agent emits them (absent for now). */
   keyHealth?: KeyHealthEntry[]
   /** The fallback version floor (overridable for tests). */
@@ -121,11 +127,15 @@ const OK: AgentHealthView = { level: 'ok', label: null, title: '', show: false }
  */
 export function resolveAgentHealth(input: AgentHealthInput): AgentHealthView {
   const floor = input.floor || FALLBACK_VERSION_FLOOR
-  const relying = input.relyingOnFallback === true
+  const provider = String(input.mainProvider || '').trim().toLowerCase()
 
   // Only surface fallback-health problems to a user who is actually on the
-  // fallback path. A Claude-connected session is not blocked by the demo tier.
-  if (!relying) return OK
+  // fallback path. A Claude-connected session is not blocked by the demo tier —
+  // including one that signed in mid-session, which is why a declared
+  // claude/anthropic provider overrules the sticky "sign-in was asked" flag.
+  if (provider === 'claude' || provider === 'anthropic') return OK
+  const onHouseTier = provider === 'zai' || provider === 'openrouter'
+  if (input.relyingOnFallback !== true && !onHouseTier) return OK
 
   // 1. Version floor — the most fundamental: no fallback can run at all.
   if (isBelowFallbackFloor(input.version, floor)) {

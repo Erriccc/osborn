@@ -19,13 +19,15 @@ import { resolveAgentHealth, type KeyHealthEntry } from '@/lib/agent-health'
 export default function AgentHealthNotice({
   version,
   relyingOnFallback,
+  mainProvider,
   keyHealth,
 }: {
   version?: string | null
   relyingOnFallback?: boolean
+  mainProvider?: string | null
   keyHealth?: KeyHealthEntry[]
 }) {
-  const health = resolveAgentHealth({ version, relyingOnFallback, keyHealth })
+  const health = resolveAgentHealth({ version, relyingOnFallback, mainProvider, keyHealth })
   if (!health.show) return null
 
   return (
