@@ -259,11 +259,13 @@ export default function Home() {
               </svg>
             </div>
             <div className="text-center">
+              {/* #141: the public product name is "Voice Native" — "Osborn" is
+                  the internal agent name and must not front the sign-in page. */}
               <h1 className="text-[var(--text-primary)] text-2xl font-semibold tracking-[-0.03em] group-hover:text-[var(--accent)] transition-colors">
-                Osborn
+                Voice Native
               </h1>
               <p className="text-[var(--text-secondary)] text-[13px] mt-1 tracking-wide uppercase">
-                Voice-native AI
+                The AI you talk to
               </p>
             </div>
           </a>
@@ -331,34 +333,43 @@ export default function Home() {
                   </div>
                 ) : (
                   <>
-                    {/* Primary: email OTP — no OAuth provider, no redirect, same
-                        path the native app uses (web + mobile share one auth). */}
-                    <EmailOtpLogin supabase={supabase} />
+                    {/* #139: show ONE email field at a time. Opening the guest
+                        gate below used to leave the sign-in email field (and the
+                        OAuth buttons) stacked above it — two empty email inputs on
+                        one card. Collapse the account sign-in options while the
+                        guest email gate is open. */}
+                    {!showEmailGate && (
+                      <>
+                        {/* Primary: email OTP — no OAuth provider, no redirect, same
+                            path the native app uses (web + mobile share one auth). */}
+                        <EmailOtpLogin supabase={supabase} />
 
-                    <div className="flex items-center gap-3 py-1">
-                      <div className="flex-1 h-px bg-[var(--border)]" />
-                      <span className="text-[var(--text-muted)] text-[11px] uppercase tracking-widest">or</span>
-                      <div className="flex-1 h-px bg-[var(--border)]" />
-                    </div>
+                        <div className="flex items-center gap-3 py-1">
+                          <div className="flex-1 h-px bg-[var(--border)]" />
+                          <span className="text-[var(--text-muted)] text-[11px] uppercase tracking-widest">or</span>
+                          <div className="flex-1 h-px bg-[var(--border)]" />
+                        </div>
 
-                    <button onClick={() => signInWithProvider('google')}
-                      className="flex items-center justify-center gap-2.5 w-full h-11 bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[15px] font-medium hover:bg-[var(--surface-raised)] transition-colors cursor-pointer">
-                      <svg width="18" height="18" viewBox="0 0 18 18">
-                        <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.566 2.684-3.875 2.684-6.615z" fill="#4285F4"/>
-                        <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.909-2.259c-.806.54-1.837.86-3.047.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853"/>
-                        <path d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
-                        <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
-                      </svg>
-                      Continue with Google
-                    </button>
+                        <button onClick={() => signInWithProvider('google')}
+                          className="flex items-center justify-center gap-2.5 w-full h-11 bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[15px] font-medium hover:bg-[var(--surface-raised)] transition-colors cursor-pointer">
+                          <svg width="18" height="18" viewBox="0 0 18 18">
+                            <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.566 2.684-3.875 2.684-6.615z" fill="#4285F4"/>
+                            <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.909-2.259c-.806.54-1.837.86-3.047.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853"/>
+                            <path d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
+                            <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
+                          </svg>
+                          Continue with Google
+                        </button>
 
-                    {/* GitHub sign-in removed — OAuth app not wired yet. */}
+                        {/* GitHub sign-in removed — OAuth app not wired yet. */}
 
-                    <div className="flex items-center gap-3 py-1">
-                      <div className="flex-1 h-px bg-[var(--border)]" />
-                      <span className="text-[var(--text-muted)] text-[11px] uppercase tracking-widest">or</span>
-                      <div className="flex-1 h-px bg-[var(--border)]" />
-                    </div>
+                        <div className="flex items-center gap-3 py-1">
+                          <div className="flex-1 h-px bg-[var(--border)]" />
+                          <span className="text-[var(--text-muted)] text-[11px] uppercase tracking-widest">or</span>
+                          <div className="flex-1 h-px bg-[var(--border)]" />
+                        </div>
+                      </>
+                    )}
 
                     {!showEmailGate ? (
                       <button onClick={() => { setShowEmailGate(true); setGateError(null) }}
@@ -377,6 +388,7 @@ export default function Home() {
                           type="email"
                           inputMode="email"
                           autoComplete="email"
+                          required
                           placeholder="you@example.com"
                           aria-label="Email (required)"
                           value={guestEmail}

@@ -12,7 +12,10 @@ export function engineApp(): string {
   return (process.env.FLY_HARNESS_APP || DEFAULT_APP).trim()
 }
 
-function engineHost(): string {
+// The engine host the proxy targets. Exported so an "engine unreachable — <host>"
+// state can name the failing host in the panel and in /status (#62/#49), instead
+// of a silent, indefinite "Connecting…"/"Waking…".
+export function engineHost(): string {
   // Explicit override wins; otherwise derive the Fly hostname from the app name.
   const override = (process.env.BROWSER_ENGINE_HOST || '').trim()
   return override || `${engineApp()}.fly.dev`

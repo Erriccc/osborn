@@ -241,6 +241,11 @@ export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false)
   const [adminChecked, setAdminChecked] = useState(false)
   useEffect(() => {
+    // #140: never probe the admin endpoint for a signed-out visitor — it just
+    // 401s and the Admin entry is irrelevant to a guest. Wait for a resolved
+    // user before checking (mirrors the sandbox effects below, which gate on
+    // `user`), so an anonymous dashboard load makes no /api/admin/users call.
+    if (!user) { setIsAdmin(false); setAdminChecked(false); return }
     let cancelled = false
     const probe = async (retry: boolean): Promise<void> => {
       try {
@@ -260,7 +265,7 @@ export default function Dashboard() {
     }
     probe(true)
     return () => { cancelled = true }
-  }, []) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
+  }, [user]) // avatar dropdown (the universal profile-menu anchor): Settings · Library · Sign out
 
   // Session sharing (0.9.123) — Share modal + "Shared with me".
   const [shareTarget, setShareTarget] = useState<{ sessionId: string; title: string } | null>(null)
@@ -405,6 +410,10 @@ export default function Dashboard() {
       clearTimeout(timeout)
       setUser(user)
       setLoading(false)
+      // #140: a signed-out visitor used to get the full dashboard shell ("Working
+      // late…", New session, "Cloud workspace is offline") and a chat↔dashboard
+      // loop with no way to sign in. Send them to /login, like /settings does.
+      if (!user) router.replace('/login')
     }).catch(() => { clearTimeout(timeout); setLoading(false) })
   }, [])
 
@@ -1397,6 +1406,18 @@ export default function Dashboard() {
   }
 
   if (loading) {
+    return (
+      <main className="min-h-screen bg-[var(--background)] flex items-center justify-center">
+        <div className="w-5 h-5 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
+      </main>
+    )
+  }
+
+  // #140: the auth effect redirects a signed-out visitor to /login; render only
+  // a spinner until the navigation lands so the app shell never flashes. Also
+  // covers the 3s loading-timeout fallback, where loading clears before user is
+  // known. (Mirrors /settings.)
+  if (!user) {
     return (
       <main className="min-h-screen bg-[var(--background)] flex items-center justify-center">
         <div className="w-5 h-5 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />

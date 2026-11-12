@@ -19,6 +19,7 @@ import {
   buildStreamTarget,
   engineToken,
   engineTokenConfigured,
+  engineHost,
   engineMachineState,
   startEngineMachine,
   classifyFetchError,
@@ -126,8 +127,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
   // control/output action fail with a cryptic 401.
   if (action === 'engine-state') {
     const machine = await engineMachineState()
+    // #62/#49: name the host so the panel can show "engine unreachable — <host>"
+    // (and distinguish it from the signed-out "sign in" state).
     return NextResponse.json(
-      { ...machine, engineTokenConfigured: engineTokenConfigured() },
+      { ...machine, host: engineHost(), engineTokenConfigured: engineTokenConfigured() },
       { headers: { 'Cache-Control': 'no-store' } },
     )
   }
@@ -147,7 +150,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
         },
       })
     } catch {
-      return NextResponse.json({ error: 'Engine unreachable' }, { status: 502 })
+      // #62/#49: name the failing host instead of a bare "Engine unreachable".
+      return NextResponse.json({ error: 'Engine unreachable', host: engineHost() }, { status: 502 })
     }
   }
 
@@ -190,7 +194,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
     if (cd) headers['Content-Disposition'] = cd
     return new NextResponse(await upstream.arrayBuffer(), { status: upstream.status, headers })
   } catch {
-    return NextResponse.json({ error: 'Engine unreachable' }, { status: 502 })
+    // #62/#49: on /status (and the other buffered reads) name the failing host so
+    // a down engine reads as "engine unreachable — <host>", not a silent spinner.
+    return NextResponse.json({ error: 'Engine unreachable', host: engineHost() }, { status: 502 })
   }
 }
 
