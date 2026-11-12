@@ -318,6 +318,26 @@ async function main() {
   // with). Boot brainless: /eval /tab /shot /recover keep working, /act says
   // why it can't, and POST /brain retries once the key/CDP problem is fixed.
   await initBrain().catch(() => mark(`brain unavailable — ${brainError} — engine still drivable (/eval /tab /shot); POST /brain to retry`))
+  // EARS HEALTH (#151): the cloud engine's speech-to-text was dead for hours
+  // (Soniox failing, Deepgram key revoked) and nothing said so until a tester
+  // read a warning closely. Probe every configured STT key at boot and on
+  // POST /brain, and report it on /status like the brain.
+  type SttHealth = { provider: string; ok: boolean; status: number | string }
+  let sttHealth: SttHealth[] = []
+  const probeStt = async () => {
+    const out: SttHealth[] = []
+    const check = async (provider: string, url: string, headers: Record<string, string>) => {
+      try { const r = await fetch(url, { headers, signal: AbortSignal.timeout(10000) }); out.push({ provider, ok: r.ok, status: r.status }) }
+      catch (e) { out.push({ provider, ok: false, status: String((e as Error).message).slice(0, 60) }) }
+    }
+    const sx = optionalEnvKey('SONIOX_API_KEY'); if (sx) await check('soniox', 'https://api.soniox.com/v1/files?limit=1', { Authorization: `Bearer ${sx}` })
+    const dg = optionalEnvKey('DEEPGRAM_API_KEY'); if (dg) await check('deepgram', 'https://api.deepgram.com/v1/projects', { Authorization: `Token ${dg}` })
+    sttHealth = out
+    const bad = out.filter((h) => !h.ok)
+    mark(out.length ? `ears: ${out.map((h) => `${h.provider} ${h.ok ? 'ok' : `FAILED (${h.status})`}`).join(', ')}` : 'ears: no speech-to-text key configured — /say and /hear cannot transcribe')
+    if (out.length && bad.length === out.length) notify('stt_unavailable', { providers: out })
+  }
+  void probeStt()
   const brainDownMsg = () => `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
@@ -840,7 +860,7 @@ async function main() {
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
           agentUrl: AGENT_URL || null, agentUnreachable,
-          brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, useAuth, live: live?.url,
+          brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, stt: sttHealth, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
           // #120: previousRun is set when THIS process adopted a journey from a
@@ -1413,7 +1433,8 @@ async function main() {
         try { await initBrain() }
         catch { mark(`brain re-init failed — ${brainError}`); return json(res, { ok: false, brain: 'dead', code: 'brain_unavailable', error: brainDownMsg() }, 503) }
         mark('brain re-initialized')
-        return json(res, { ok: true, brain: 'ready', brainModel })
+        await probeStt()
+        return json(res, { ok: true, brain: 'ready', brainModel, stt: sttHealth })
       }
       if (path === '/recover') {
         // Under the action lock, on the CALLER's tab: it used to reload the

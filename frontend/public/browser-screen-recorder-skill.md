@@ -207,6 +207,10 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
   instruction is judged on scroll position alone, and when the brain's scroll
   moves nothing the engine retries it as a mouse-wheel gesture
   (`effect.fallback: "mouse-wheel"`).
+- **Speech-to-text health is visible.** `/status.stt` lists each configured
+  transcription provider with `ok` and the HTTP status of a live key check (at
+  boot and on `POST /brain`). When transcription fails, the `/say` warning now
+  names every provider that failed and why, not just the last one.
 
 ## What's new in v24
 - **`ok:true` is no longer the whole story.** Every `/act` returns `effect`
