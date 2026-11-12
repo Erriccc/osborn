@@ -49,8 +49,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
-import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, type ActiveProvider } from './claude-auth.js'
-import { probeActiveProviderKey, type KeyHealthEntry } from './key-health.js'
+import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, pickConnectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -311,12 +310,44 @@ let bugReportHook: ((reportId: string, payload: BugReportPayload) => void) | nul
 let codeServerStartHook: (() => Promise<void>) | null = null
 
 // ── Model-provider health (module scope — shared between startApiServer + main) ──
-// #87: the per-key self-test result for the ACTIVE fallback provider, written by
-// main()'s connect path (probeActiveProviderKey) and read by startApiServer's
-// GET /health so a dead/expired key surfaces as "No working model" instead of a
-// silent non-reply. Null until the async probe lands (or never, on the Claude
-// path / an ambiguous result) — never a fabricated verdict.
+// #87: the tier the agent is really answering on + that tier's key self-test. Both
+// ride GET /health, so the badge names the real model and a dead key surfaces as
+// "No working model" instead of a silent non-reply. Null = not known yet (or an
+// ambiguous probe) — never a fabricated verdict.
+let agentActiveProvider: ActiveProvider | null = null
 let agentKeyHealth: KeyHealthEntry[] | null = null
+
+/**
+ * (Re)derive the active model tier from applyAuthFallback() — the single source of
+ * truth, since the tier is known at decision time — and publish it to /health +
+ * agent_ready. Re-running it after a mid-session sign-in is also self-healing: if
+ * the sign-in did NOT land, the redirect the auth path cleared is re-applied.
+ */
+function refreshActiveProvider(): ActiveProvider {
+  const provider = applyAuthFallback()
+  agentActiveProvider = provider === 'none' ? null : provider
+  console.log(`🧭 Active model provider: ${provider}`)
+  return provider
+}
+
+/**
+ * HOUSE-tier key self-test (#87): ONE tiny real request, fire-and-forget, so it
+ * costs the connect path nothing. House tiers only — a user's OWN Anthropic key is
+ * their concern and the SDK surfaces its failures directly. Always clears the
+ * previous tier's verdict first, so a sign-in that swaps tiers cannot leave a
+ * stale "No working model" on screen.
+ */
+function startKeyHealthProbe(provider: ActiveProvider): void {
+  agentKeyHealth = null
+  if (provider !== 'zai' && provider !== 'openrouter') return
+  void probeActiveProviderKey(provider)
+    .then((entry) => {
+      if (!entry) return
+      agentKeyHealth = [entry]
+      console.log(`${entry.status === 'ok' ? '✅' : '⚠️'} [key-health] ${entry.provider} self-test: ${entry.status}`)
+    })
+    .catch(() => { /* probe is best-effort — never breaks the session */ })
+}
 
 // ── IDE reverse-proxy (module scope — shared between startApiServer + main) ──
 // code-server runs on 127.0.0.1:8300; the agent proxies it through its own
@@ -792,9 +823,11 @@ function startApiServer(workingDir: string, port: number): void {
         },
         // Whole-machine memory — what the OOM killer watches. All values in MB.
         memory: { totalMb, usedMb, availableMb, usedPct, processRssMb },
-        // #87: per-key self-test for the active fallback provider. Absent until
-        // the async probe lands (and omitted entirely on the Claude path); the
-        // frontend surfaces "No working model" when every entry failed/expired.
+        // #87: the tier actually answering + its key self-test. `provider` is the
+        // LIVE reading (agent_ready fires once, so it goes stale the moment a
+        // mid-session sign-in swaps the tier); keyHealth is absent until the probe
+        // lands. The frontend shows "No working model" when every entry failed.
+        ...(agentActiveProvider ? { provider: agentActiveProvider } : {}),
         ...(agentKeyHealth ? { keyHealth: agentKeyHealth } : {}),
       }))
       return
@@ -5197,33 +5230,10 @@ async function main() {
     // BEFORE session creation so the OpenRouter redirect env vars (tier 3) are
     // set before the first query() spawn inherits process.env. No-op for
     // tier-1 (real Claude login) and tier-2 (user's own ANTHROPIC_API_KEY).
-    // #87: it also RETURNS the provider it selected (claude / zai / openrouter /
-    // anthropic / none) — the single source of truth, since the tier is known at
-    // decision time. Drives agent_ready.provider so the model badge names the
-    // real model instead of the old hardcoded 'claude'.
-    const activeProvider: ActiveProvider = applyAuthFallback()
-    console.log(`🧭 Active model provider: ${activeProvider}`)
-
-    // #87: HOUSE-tier key self-test. Presence of a key ≠ validity (the test
-    // account's z.ai key failed and its OpenRouter key had expired, yet the
-    // session showed "Listening" and never replied — the #70 symptom). Fire ONE
-    // tiny real request, fire-and-forget, AFTER the session starts below, so it
-    // adds ZERO latency to the connect path. Scoped to the house fallback tiers
-    // (zai / openrouter) — a user's OWN Anthropic key is their concern and the
-    // SDK surfaces its failures directly; we never ping it per connect. The
-    // result rides GET /health; a definitive failure surfaces "No working model"
-    // instead of a silent non-reply.
-    agentKeyHealth = null
-    if (activeProvider === 'zai' || activeProvider === 'openrouter') {
-      void probeActiveProviderKey(activeProvider)
-        .then((entry) => {
-          if (!entry) return
-          agentKeyHealth = [entry]
-          if (entry.status === 'ok') console.log(`✅ [key-health] ${entry.provider} self-test: ok`)
-          else console.warn(`⚠️ [key-health] ${entry.provider} self-test: ${entry.status}`)
-        })
-        .catch(() => { /* probe is best-effort — never breaks the connect */ })
-    }
+    // #87: refreshActiveProvider() also records WHICH tier it selected, driving
+    // agent_ready.provider + /health so the badge names the real model instead of
+    // the old hardcoded 'claude'. Its key self-test fires after session start.
+    const activeProvider: ActiveProvider = refreshActiveProvider()
 
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession
@@ -5297,6 +5307,9 @@ async function main() {
     }
     currentSession = session
     currentAgent = agent  // Store for updateChatCtx() context injection
+
+    // #87: the session is live — NOW run the house-tier key self-test.
+    startKeyHealthProbe(activeProvider)
 
     // CLICK-TIME OVERLAP (default-ON; OSBORN_CONNECT_OVERLAP=off): for a resumed
     // session, kick the JSONL replay NOW (fire-and-forget) so it overlaps the
@@ -5877,10 +5890,11 @@ async function main() {
           type: 'agent_ready',
           // #87: the REAL active provider (claude / zai / openrouter / anthropic),
           // not a hardcoded 'claude' — so the model badge is honest on a fallback
-          // session. 'none' (no model configured at all) is emitted as null so the
-          // badge stays neutral instead of rendering a literal "none" pill; that
-          // dead-end is surfaced by the Claude sign-in flow, not the badge.
-          provider: activeProvider === 'none' ? null : activeProvider,
+          // session. Null when no model is configured at all, so the badge stays
+          // neutral instead of rendering a literal "none" pill; that dead-end is
+          // surfaced by the Claude sign-in flow. /health re-serves this live, which
+          // is what keeps it true after a sign-in (agent_ready fires only once).
+          provider: agentActiveProvider,
           voiceMode: sessionVoiceMode,
           hasRecentSession,
           recentSessionId,
@@ -6180,7 +6194,13 @@ async function main() {
               // Only when a fallback redirect was actually active: live persistent
               // sessions restart BEFORE their next turn (deferred — a streaming
               // turn finishes normally), resuming the same sessionId on Claude.
-              if (fallbackCleared) requestAuthRestart()
+              if (!fallbackCleared) return
+              // The tier just changed under a live session: re-derive it and drop
+              // the old tier's verdict BEFORE the respawn, or /health keeps serving
+              // {provider:'zai', status:'expired'} and the UI claims "The session
+              // can't answer" while Claude answers fine.
+              startKeyHealthProbe(refreshActiveProvider())
+              requestAuthRestart()
             })
           }
         }

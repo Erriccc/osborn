@@ -782,10 +782,16 @@ function VoiceRoomInner({
           if (!cancelled && typeof d?.version === 'string' && d.version.trim()) {
             setAgentVersion(d.version)
           }
-          // #87: /health carries the active fallback key's self-test result when
-          // the agent probed it. Older agents omit it (stays undefined → no notice).
-          if (!cancelled && Array.isArray(d?.keyHealth)) {
-            setAgentKeyHealth(d.keyHealth as KeyHealthEntry[])
+          // #87: /health also carries the LIVE provider + the active fallback
+          // key's self-test. agent_ready.provider fires once, so after a
+          // mid-session Claude sign-in only this poll tells the truth. keyHealth
+          // is re-read every poll (never merged) so a verdict for a tier the
+          // agent has left — or one an older agent never emits — cannot linger.
+          if (!cancelled && typeof d?.provider === 'string' && d.provider.trim()) {
+            setMainProvider(d.provider)
+          }
+          if (!cancelled) {
+            setAgentKeyHealth(Array.isArray(d?.keyHealth) ? d.keyHealth as KeyHealthEntry[] : undefined)
           }
         }
       } catch { /* network error / timeout — keep previous reading */ }
@@ -4063,16 +4069,16 @@ function VoiceRoomInner({
 
             {/* #87 gap 3 — surface a SILENT failure the session would otherwise
                 hide: an agent too old for the demo-model fallback (version floor),
-                or a failed key self-test. Shows for a session on the HOUSE demo
-                tier — either because Claude sign-in was prompted at least once
-                (claudeAuthEverRequired, the pre-fallback/old-agent path) OR because
-                the agent declared a house-tier provider (zai / openrouter; the
-                smooth fallback path never opens the auth modal). A user's OWN key
-                (anthropic) is not a demo-tier concern, so it is excluded. Same real
-                /health signals as the badge; never fabricates a status. */}
+                or a failed key self-test. resolveAgentHealth owns which sessions
+                that applies to: the auth modal having opened at least once
+                (claudeAuthEverRequired — the pre-fallback/old-agent path) OR a
+                declared house-tier provider (the smooth fallback path never opens
+                the modal), while a claude/anthropic provider rules it out. Same
+                real /health signals as the badge; never fabricates a status. */}
             <AgentHealthNotice
               version={agentVersion}
-              relyingOnFallback={claudeAuthEverRequired || ['zai', 'openrouter'].includes((mainProvider || '').trim().toLowerCase())}
+              relyingOnFallback={claudeAuthEverRequired}
+              mainProvider={mainProvider}
               keyHealth={agentKeyHealth}
             />
 
