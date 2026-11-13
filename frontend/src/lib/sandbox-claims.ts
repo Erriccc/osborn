@@ -38,7 +38,7 @@ function hasRpc(client: unknown): client is Required<MaybeRpcClient> {
 }
 
 /** Postgres/PostgREST "function does not exist" (migration 012 not applied). */
-function isMissingFunction(err: { code?: string } | null | undefined): boolean {
+export function isMissingFunction(err: { code?: string } | null | undefined): boolean {
   return !!err && (err.code === 'PGRST202' || err.code === '42883')
 }
 

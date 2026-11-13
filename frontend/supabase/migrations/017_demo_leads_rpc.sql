@@ -8,14 +8,11 @@
 --
 -- Anon can call the function directly with the public anon key, so it validates
 -- its own input and writes nothing else. It cannot read the table — enumeration
--- stays closed. Same shape as content_track() in 010.
+-- stays closed.
 --
 -- Additive and idempotent. NOT APPLIED automatically; until it is, the route
 -- logs and falls through to the service-role client.
 
--- ---------------------------------------------------------------------------
--- 1. The table, as the route has always used it.
--- ---------------------------------------------------------------------------
 create table if not exists public.demo_leads (
   email text primary key,
   source text,
@@ -25,10 +22,7 @@ create table if not exists public.demo_leads (
 
 alter table public.demo_leads enable row level security;
 
--- ---------------------------------------------------------------------------
--- 2. The only write path for a guest (SECURITY DEFINER).
---    Mirrors the route's upsert: insert once, then only bump last_seen_at.
--- ---------------------------------------------------------------------------
+-- The only write path a guest's role has: insert once, then bump last_seen_at.
 create or replace function public.record_demo_lead(p_email text)
 returns void
 language plpgsql

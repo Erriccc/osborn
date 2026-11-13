@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseAnon } from '@/lib/supabase-anon'
-import { serviceClient } from '@/lib/sandbox-claims'
+import { isMissingFunction, serviceClient } from '@/lib/sandbox-claims'
 
 /**
  * POST /api/demo-access — email gate for free/demo ("Connect without account")
@@ -11,9 +11,9 @@ import { serviceClient } from '@/lib/sandbox-claims'
  * SECURITY DEFINER upsert granted to anon (migration 017) — because
  * SUPABASE_SERVICE_ROLE_KEY is not set on Railway; service-role is the fallback.
  *
- * Recording a lead must never cost the visitor the session: the login page
- * already proceeds when this route is unreachable, so a missing or failing store
- * logs and answers ok. Only a bad email (400) or the rate limit (429) refuses.
+ * Recording a lead must never cost the visitor the session, so a missing or
+ * failing store logs and answers ok. Only a bad email (400) or the rate limit
+ * (429) refuses — the login page still blocks the visitor on those.
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
@@ -44,8 +44,9 @@ async function recordLead(email: string): Promise<void> {
     if (anon) {
       const { error } = await anon.rpc('record_demo_lead', { p_email: email })
       if (!error) return
-      // Includes PGRST202/42883 — migration 017 unapplied, every lead dropped.
-      console.error('[demo-access] record_demo_lead failed:', error.message)
+      console.error(isMissingFunction(error)
+        ? '[demo-access] migration 017 is not applied; every lead is being dropped'
+        : `[demo-access] record_demo_lead failed: ${error.message}`)
     }
 
     // 2) Service-role upsert, keeping the earliest created_at. The key is unset
