@@ -15,9 +15,10 @@ try {
   writeFileSync(join(repo, 'a.ts'), 'export const a = 1\n'); sh('git add -A && git commit -qm init')
 
   // Mode and command parsing
-  assert.equal(stewardMode({}), 'advise')
+  assert.equal(stewardMode({}), 'block')
   assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'BLOCK' }), 'block')
-  assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'nonsense' }), 'advise')
+  assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'nonsense' }), 'block')
+  assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'Advise' }), 'advise')
   assert.equal(gitActions('ls -la', repo)[0], null)
   assert.equal(gitActions('git commit -m x', repo)[0]?.action, 'commit')
   assert.equal(gitActions('git add -A && git commit -m x', repo)[0]?.action, 'commit')

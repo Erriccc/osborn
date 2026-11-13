@@ -2,18 +2,18 @@
 
 import { useState, useEffect } from 'react'
 import { usePanelExclusive, useViewportClamp } from './shared'
+import { SkillStore, type SkillInfo } from '../AgentStore'
 
 // Shared skills panel — the single source of truth for the skills UI. Mounted
 // in TWO places: the first-class header SkillsPopover (primary, high-visibility)
 // and the ControlMenu Tools tab (kept for muscle memory).
 interface SkillsPanelProps {
-  skills?: { name: string; description: string; folder?: string }[]
+  skills?: SkillInfo[]
   onAddSkill?: (name: string, content: string) => void
   onViewSkill?: (folder: string) => void
   onRemoveSkill?: (folder: string) => void
+  onForkSkill?: (folder: string, newName: string) => void
   onInstallFromCatalog?: (name: string, url: string) => void
-  skillRemoveArm?: string | null
-  setSkillRemoveArm?: (v: string | null) => void
   showAddSkill?: boolean
   setShowAddSkill?: (v: boolean) => void
   newSkillName?: string
@@ -27,9 +27,8 @@ export function SkillsPanel({
   onAddSkill,
   onViewSkill,
   onRemoveSkill,
+  onForkSkill,
   onInstallFromCatalog,
-  skillRemoveArm,
-  setSkillRemoveArm,
   showAddSkill,
   setShowAddSkill,
   newSkillName,
@@ -78,41 +77,11 @@ export function SkillsPanel({
         </div>
       )}
       {skills && skills.length > 0 ? (
-        <div className="space-y-1">
-          {skills.map((skill) => {
-            const folder = skill.folder || skill.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')
-            const armed = skillRemoveArm === folder
-            return (
-            <div
-              key={folder}
-              className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-sm font-medium text-gray-200 break-words leading-snug">{skill.name}</span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => onViewSkill?.(folder)}
-                    className="text-[10px] text-amber-400 hover:text-amber-300"
-                  >View</button>
-                  <button
-                    onClick={() => {
-                      if (armed) { onRemoveSkill?.(folder) }
-                      else { setSkillRemoveArm?.(folder); setTimeout(() => setSkillRemoveArm?.(null), 4000) }
-                    }}
-                    className={`text-[10px] ${armed ? 'text-red-400 font-semibold' : 'text-gray-500 hover:text-red-400'}`}
-                  >{armed ? 'Confirm?' : 'Remove'}</button>
-                </div>
-              </div>
-              {skill.description && (
-                <p className="text-[11px] text-gray-500 truncate">{skill.description}</p>
-              )}
-            </div>
-            )
-          })}
-        </div>
+        <SkillStore skills={skills} onView={onViewSkill} onFork={onForkSkill} onRemove={onRemoveSkill} />
       ) : (
         <p className="text-[11px] text-gray-500">No skills installed</p>
       )}
+      <a href="/settings?section=agents&browse=1" target="_blank" rel="noreferrer" className="block text-[11px] text-[var(--accent)] hover:opacity-80">Browse skill catalogs ↗</a>
       {/* Catalog: one-tap official skills */}
       {skills && !skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder || sk.name)) && (
         <button
