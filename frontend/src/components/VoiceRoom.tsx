@@ -1155,7 +1155,6 @@ function VoiceRoomInner({
     const ONSET_MIN = 0.012, ONSET_MAX = 0.04
     const ONSET_HOLD_MS = 50  // sustained over onset before ducking (ignore single clicks/pops)
     const QUIET_HOLD_MS = 250 // quiet this long while ducked ⇒ false trigger ⇒ restore
-    const RELEASE = 0.7       // below 70% of the onset counts as quiet (hysteresis: echo near the line can't flutter it)
     const RAMP = 0.18         // per-frame lerp toward target → click-free ramp (~tens of ms)
     const AUDIBLE = 0.01, AUDIBLE_HOLD_MS = 300 // agent audio counts as playing for 300ms after it was heard
     const FLOOR_DOWN_MS = 300, FLOOR_UP_MS = 4000 // echo floor: quick to fall, slow to rise
@@ -1168,7 +1167,7 @@ function VoiceRoomInner({
     let lastSpeaking: boolean | null = null
     let peak = 0 // peak mic level since the last speaking edge
     let agentHeardAt = 0
-    let duckOnsetAt = 0, duckedAt = 0 // the voice burst that engaged the duck, for the timing log
+    let duckOnsetAt = 0, duckedAt = 0, duckVol = 0 // the voice burst that engaged the duck, for the timing log
     let lastFrame = performance.now()
 
     // Log a missing agent track / setVolume once per state change, not per frame.
@@ -1185,10 +1184,11 @@ function VoiceRoomInner({
 
     let agentAnalyser: { calculateVolume: () => number; analyser: AnalyserNode; cleanup: () => Promise<void> } | null = null
     let agentAnalysed: unknown = null
-    let analyserFailedFor: unknown = null
+    let analyserFailedFor: unknown = null, analyserTriedAt = 0
     const agentLevel = () => {
       const t = agentAudioTrackRef.current
-      if (t !== agentAnalysed) {
+      if (t !== agentAnalysed && performance.now() - analyserTriedAt > 1000) {
+        analyserTriedAt = performance.now()
         try { void agentAnalyser?.cleanup() } catch { /* closed */ }
         agentAnalyser = null; agentAnalysed = null
         // A new track starts at full volume: carry the current duck level over to it.
@@ -1196,11 +1196,10 @@ function VoiceRoomInner({
         try {
           if (t) {
             agentAnalyser = createAudioAnalyser(t as never, { smoothingTimeConstant: 0.2, fftSize: 512 })
-            agentAnalysed = t  // only once it worked, so a failure is retried next frame
+            agentAnalysed = t  // set only on success: a failure is retried a second later
           }
         } catch (e) {
-          if (analyserFailedFor !== t) { console.log('🦆 [duck] agent level unavailable (state only):', e); analyserFailedFor = t }
-          agentAnalysed = t  // retried when the track changes, not every frame
+          if (analyserFailedFor !== t) { console.log('🦆 [duck] agent level unavailable, retrying (state only meanwhile):', e); analyserFailedFor = t }
         }
       }
       const ctx = agentAnalyser?.analyser.context as AudioContext | undefined
@@ -1223,8 +1222,8 @@ function VoiceRoomInner({
           // Only a real barge-in (the duck engaged) gets a timing line. The agent stopped at
           // its last audible frame, if that came after the duck; otherwise we only know the edge.
           if (duckedAt) {
-            const stoppedAt = agentHeardAt >= duckOnsetAt ? agentHeardAt : now - AUDIBLE_HOLD_MS
-            console.log(`🦆 [duck] barge-in timing: duck ${Math.round(duckedAt - duckOnsetAt)}ms, agent stopped ${Math.round(stoppedAt - duckOnsetAt)}ms after your voice`)
+            const stop = agentHeardAt >= duckOnsetAt ? `agent stopped ${Math.round(agentHeardAt - duckOnsetAt)}ms after your voice` : 'agent was already quiet'
+            console.log(`🦆 [duck] barge-in timing: duck ${Math.round(duckedAt - duckOnsetAt)}ms, ${stop}`)
           }
         }
         peak = 0; duckOnsetAt = 0; duckedAt = 0
@@ -1235,6 +1234,8 @@ function VoiceRoomInner({
         targetVol = 1
         aboveSince = 0; belowSince = 0
       } else {
+        const micCtx = analyser!.analyser.context as AudioContext
+        if (micCtx.state === 'suspended') void micCtx.resume().catch(() => {})
         const vol = analyser!.calculateVolume() // instant 0..1 RMS of YOUR mic
         if (vol > peak) peak = vol
         const onset = Math.min(ONSET_MAX, Math.max(ONSET_MIN, echoFloorRef.current * 3))
@@ -1243,10 +1244,10 @@ function VoiceRoomInner({
           if (!aboveSince) aboveSince = now
           if (targetVol === 1 && now - aboveSince >= ONSET_HOLD_MS) {
             targetVol = DUCK_LEVEL
-            duckOnsetAt = aboveSince; duckedAt = now
+            duckOnsetAt = aboveSince; duckedAt = now; duckVol = vol
             console.log(`🦆 [duck] engaged: mic=${vol.toFixed(3)} onset=${onset.toFixed(3)} msSinceOnset=${Math.round(now - aboveSince)} → ${DUCK_LEVEL}`)
           }
-        } else if (vol < onset * RELEASE || targetVol === 1) {
+        } else {
           // Learn the echo only while the agent is actually playing and you are not ducking it.
           if (targetVol === 1 && agentAudible) {
             const tau = vol < echoFloorRef.current ? FLOOR_DOWN_MS : FLOOR_UP_MS
@@ -1256,6 +1257,9 @@ function VoiceRoomInner({
           if (!belowSince) belowSince = now
           if (targetVol !== 1 && now - belowSince >= QUIET_HOLD_MS) {
             targetVol = 1
+            // A duck nobody kept talking through was probably the agent's own echo: lift the
+            // onset to just above what tripped it, so the same echo cannot flicker the duck.
+            echoFloorRef.current = Math.min(ONSET_MAX / 3, Math.max(echoFloorRef.current, (duckVol * 1.2) / 3))
             duckOnsetAt = 0; duckedAt = 0
             console.log(`🦆 [duck] restore: false trigger (mic=${vol.toFixed(3)} quiet ${Math.round(now - belowSince)}ms)`)
           }
