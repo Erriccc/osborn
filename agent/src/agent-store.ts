@@ -70,7 +70,7 @@ export const ROLES: Record<Role, RoleSpec> = {
     icon: 'list', write: 'workspace', chain: ['steward', 'writer'],
   },
   writer: {
-    summary: 'Makes the code changes (you approve each write); its work is tested, stewarded and reviewed.',
+    summary: 'Makes the code changes (each write goes through your permission settings); its work is tested, stewarded and reviewed.',
     icon: 'pen', write: 'anywhere', skillInstall: true, historyFirst: true, chain: ['tester', 'steward', 'reviewer'],
   },
   tester: { summary: 'Writes and runs tests to check the work holds up. May write test files only.', icon: 'test', write: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true } },
@@ -112,7 +112,7 @@ function roleBehaviours(role: Role, isCore: boolean): string[] {
   const r = ROLES[role]
   const out: string[] = []
   if (r.write === 'workspace') out.push('Writes only in the session workspace')
-  else if (r.write === 'anywhere') out.push('Can edit files anywhere — you approve each write')
+  else if (r.write === 'anywhere') out.push('Can edit files anywhere, through your permission settings')
   else out.push(`Can write ${r.write.label} files only`)
   if (installsSkillsSilently(role, isCore)) out.push('Installs skills without asking for each file')
   if (r.historyFirst) out.push("Checks a file's history before its first edit")
