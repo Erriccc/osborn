@@ -30,10 +30,9 @@ t('REFACTORED: verdict, summary and every field', () => {
   const v = parseStewardVerdict(REFACTORED, '2026-11-13T00:00:00.000Z')!
   assert.equal(v.verdict, 'REFACTORED')
   assert.equal(v.summary, 'reused the existing marker sidecar instead of a new table')
-  assert.deepEqual(v.reuse, ['stewardPath → getStorePath (extended)'])
+  assert.equal('reuse' in v || 'regressions' in v, false)
   assert.deepEqual(v.netNew, ['parseStewardVerdict — no parser for agent returns exists'])
   assert.deepEqual(v.removed, ['duplicate path helper in index.ts (second copy of compaction-log path)'])
-  assert.deepEqual(v.regressions, ['getStorePath → session-store, compaction-log → ok'])
   assert.equal(v.lines, '+120 -10 before → +90 -10 after, excluding tests; tests +40')
   assert.deepEqual(v.history, ['churn: claude-llm.ts 14 commits / 60 days', 're-touched lines: 3 hunks checked / 0 found', 'coupled: VoiceRoom.tsx present'])
   assert.equal(v.rootCause, 'new feature, no earlier fault')

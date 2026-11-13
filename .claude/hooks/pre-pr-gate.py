@@ -38,7 +38,9 @@ if tool == "mcp__github__create_pull_request":
     def empty(name):
         text = re.sub(r"<!--.*?-->", "", sections.get(name, ""), flags=re.S).strip()
         return not text
-    missing = [h for h in ("What changed", "Why", "Net-new", "Removed", "Tested", "Steward") if empty(h)]
+    tpl = os.path.join(git("rev-parse", "--show-toplevel"), ".github", "pull_request_template.md")
+    headings = re.findall(r"^## (.+?)\s*$", open(tpl).read(), re.M) if os.path.exists(tpl) else []
+    missing = [h for h in headings if empty(h)]
     if missing:
         deny("Fill every PR template section (.github/pull_request_template.md) — empty or missing: " + ", ".join(missing) +
              ". Net-new and Removed come from the steward's lists; Steward is its verdict line.")

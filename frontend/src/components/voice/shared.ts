@@ -165,10 +165,8 @@ export interface StewardVerdict {
   summary: string
   decision?: string
   rootCause?: string
-  reuse?: string[]
   netNew?: string[]
   removed?: string[]
-  regressions?: string[]
   lines?: string
   history?: string[]
   raw?: string

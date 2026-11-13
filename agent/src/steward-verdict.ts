@@ -13,10 +13,8 @@ export interface StewardVerdict {
   /** BLOCK only: the decision a human has to make. */
   decision?: string
   rootCause?: string
-  reuse: string[]
   netNew: string[]
   removed: string[]
-  regressions: string[]
   lines?: string
   history: string[]
   /** The full return, so the card can show the whole record. */
@@ -65,10 +63,10 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
     const out = (ls.length === 1 ? ls[0].split(/;\s+/) : ls).map(strip).filter(Boolean)
     return out.length === 1 && isNone(out[0]) ? [] : out
   }
-  const reuse: string[] = [], netNew = entries('netNew')
+  // REUSE MAP and REGRESSION MAP stay in `raw` only; a NET-NEW entry inside the reuse map is lifted out.
+  const netNew = entries('netNew')
   for (const e of entries('reuse')) {
     if (/NET-NEW/i.test(e)) netNew.push(e.replace(/\s*(?:→|->|\|)?\s*NET-NEW\s*:?\s*/i, ' — ').replace(/^ — /, ''))
-    else reuse.push(e)
   }
   const joined = (k: string) => (sections[k] ?? []).join(' ').trim() || undefined
   // "For BLOCK, name the decision": a labelled DECISION line, else the free text that follows.
@@ -78,10 +76,8 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
     summary: strip(vm[2]),
     ...(decision ? { decision } : {}),
     ...(joined('rootCause') ? { rootCause: joined('rootCause') } : {}),
-    reuse,
     netNew,
     removed: entries('removed'),
-    regressions: entries('regressions'),
     ...(joined('lines') ? { lines: joined('lines') } : {}),
     history: entries('history'),
     raw: String(text).trim().slice(0, 6000),
