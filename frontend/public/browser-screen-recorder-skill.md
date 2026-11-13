@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 40
+Version: 41
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,11 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v41
+- Sign-ins in the shared profile (no `x-profile`) now survive restarts too. Profiles keep cookies and localStorage, not IndexedDB. Profile names ignore case and extra spaces.
+- `/end` also counts drivers working in unclaimed tabs, and ending a journey closes only your own tabs.
+- The engine token is the trust boundary: anyone holding it can drive any tab, so profiles separate drivers' sign-ins, not mutually untrusted callers.
 
 ## What's new in v40
 - Send `x-profile: <name>` to get your own browser profile: its sign-ins are isolated from the shared profile and from the /browser panel's people (anyone sending the same name shares it), and they survive engine restarts, so you sign in once. The /browser panel gives each signed-in person their own profile.

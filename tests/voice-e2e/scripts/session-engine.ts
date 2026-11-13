@@ -58,7 +58,7 @@ import { createServer } from 'http'
 import { execFile } from 'child_process'
 import { createHash, createHmac, randomBytes } from 'crypto'
 import { promisify } from 'util'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync, renameSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { installReactiveMic, speakText, warmUpSpeech } from '../lib/reactive-mic'
@@ -200,12 +200,20 @@ async function main() {
       : IN_CONTAINER ? { headless: !DISPLAY_MODE } : { channel: 'chrome', headless: false }),
     args: launchArgs,
   })
-  const context: BrowserContext = await browser.newContext({
-    permissions: ['microphone'],
-    ...(useAuth ? { storageState: profile } : {}),
-    // NO recordVideo — per-task clips from the live-stream ring buffer are
-    // the video record (the continuous recording grew unbounded).
+  // The shared profile's own saved sign-ins (see PROFILES below) win over the boot profile.
+  // A freshly minted/re-run boot profile is newer and wins; a bad saved file is moved aside.
+  const SHARED_PROFILE = join(OUT_DIR, 'profiles', 'shared.json')
+  const sharedState = existsSync(SHARED_PROFILE) && (!useAuth || statSync(SHARED_PROFILE).mtimeMs > statSync(profile).mtimeMs)
+    ? SHARED_PROFILE : useAuth ? profile : undefined
+  const newShared = (state?: string) => browser.newContext({ permissions: ['microphone'], ...(state ? { storageState: state } : {}) })
+  const context: BrowserContext = await newShared(sharedState).catch(async (e) => {
+    if (sharedState !== SHARED_PROFILE) throw e
+    try { renameSync(SHARED_PROFILE, `${SHARED_PROFILE}.bad`) } catch { /* ignore */ }
+    console.log(`[engine] saved shared profile unreadable (${(e as Error).message.slice(0, 80)}) — moved aside`)
+    return newShared(useAuth ? profile : undefined)
   })
+  // NO recordVideo — per-task clips from the live-stream ring buffer are
+  // the video record (the continuous recording grew unbounded).
   // tsx/esbuild injects a __name helper that isn't defined in the browser's
   // evaluate context. CONTEXT-level so EVERY page gets it — page-level missed
   // tabs opened later (caught live by the devtools sense: "__name is not
@@ -233,7 +241,7 @@ async function main() {
   trackContext(context, '')
   const allPages = () => tabOrder.filter((p) => !p.isClosed())
   const tabs = { pages: allPages } as unknown as BrowserContext  // the tab helpers only read pages()
-  const profileFile = (key: string) => join(PROFILES_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 20)}.json`)
+  const profileFile = (key: string) => key ? join(PROFILES_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 20)}.json`) : SHARED_PROFILE
   const contextFor = async (key: string): Promise<BrowserContext> => {
     const have = contexts.get(key)
     if (have) return have
@@ -244,7 +252,8 @@ async function main() {
     return c
   }
   const saveProfiles = async () => {
-    for (const [key, c] of contexts) if (key) await c.storageState({ path: profileFile(key) }).catch(() => {})
+    // Cookies and localStorage (where most sites, Supabase included, keep a sign-in); IndexedDB is not kept.
+    for (const [key, c] of contexts) await c.storageState({ path: profileFile(key) }).catch(() => {})
   }
   setInterval(() => { void saveProfiles() }, 60000)
   let active: Page = await context.newPage()
@@ -636,13 +645,17 @@ async function main() {
   // Which profile a request's new tabs open in: an explicit x-profile, else the panel's
   // signed-in person (driver id person:<email>), else the shared profile.
   const profileOf = (req: import('http').IncomingMessage): string => {
-    // Named profiles live in their own namespace: a header can never open a person's profile.
-    const named = String(req.headers['x-profile'] || '').trim().toLowerCase().slice(0, 120)
+    // Named profiles live in their own namespace: an x-profile can never open a person's profile.
+    // The engine token is the trust boundary: whoever holds it can drive any tab anyway.
+    const named = String(req.headers['x-profile'] || '').trim().toLowerCase().replace(/\s+/g, ' ')
     if (named) return `agent:${named}`
-    const d = driverId(req)
-    return d.startsWith('person:') ? d : ''
+    const d = driverId(req).trim().toLowerCase()
+    return d.startsWith('person:') && d.length > 7 ? d : ''
   }
   const driverActive = new Map<string, Page>()  // driver → its current tab
+  // When each driver last sent a command: a driver counts as still working for 10 minutes.
+  const driverSeen = new Map<string, number>()
+  const isWorking = (d: string) => Date.now() - (driverSeen.get(d) ?? 0) < 600000 && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
   let actionChain: Promise<unknown> = Promise.resolve()
   let inflight = 0  // commands running or queued; capture never pauses under one
   const withLock = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -654,6 +667,7 @@ async function main() {
   // Point the module-level `active` at the driver's tab + bring it to front.
   // Called ONLY under withLock, so mutating shared `active` is safe.
   const focusDriverTab = async (driver: string): Promise<void> => {
+    driverSeen.set(driver, Date.now())
     let tab = driverActive.get(driver)
     if (!tab || tab.isClosed()) {
       tab = [...allPages()].reverse().find((p) => tabOwners.get(p)?.owner === driver) || allPages()[0]
@@ -959,7 +973,7 @@ async function main() {
       // /status is excluded (pollers/health checks must not keep it awake).
       if (path !== '/status') lastActivity = Date.now()
       // A command resumes paused capture and holds it until its response is done.
-      if (req.method === 'POST') { live?.resume(); inflight++; res.once('close', () => { inflight-- }) }
+      if (req.method === 'POST') { live?.resume(); inflight++; res.once('close', () => { inflight-- }); if (req.headers['x-driver-id']) driverSeen.set(driverId(req), Date.now()) }
       if (req.method === 'GET' && path === '/status') {
         // GROUND TRUTH, not cached flags — the old `inRoom: true` reported a
         // healthy room while the page sat on the "Session paused" idle screen.
@@ -1602,7 +1616,11 @@ async function main() {
             try { saved = saveJourney(host, journey.name, { goal: journey.goal ?? null, startUrl: journey.startUrl, auth: useAuth ? String(manifest.profile) : 'guest', savedAt: new Date().toISOString(), steps }) } catch { /* volume issue */ }
           }
           if (body.cleanup !== false) {
-            while (allPages().length > 1) { try { active = await closeTab(tabs, allPages().length - 1) } catch { break } }
+            // This driver's tabs and unclaimed leftovers (popups), never another driver's work.
+            const me = driverId(req)
+            const busy = new Set([...driverActive.entries()].filter(([d]) => d !== me && isWorking(d)).map(([, t]) => t))
+            for (const p of allPages().slice(1)) if (ownerOf(p) === me || (!ownerOf(p) && !busy.has(p))) await p.close().catch(() => {})
+            active = allPages()[0]
             await live?.retarget(active).catch(() => {})
             try { await active.setViewportSize({ width: 1280, height: 720 }) } catch { /* ignore */ }
             saveTabState()
@@ -1684,7 +1702,8 @@ async function main() {
         // only when no other driver still has a tab open (or with {"shutdown": true}).
         const driver = driverId(req)
         const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
-        const others = [...new Set(allPages().flatMap(holders).filter((o) => o !== driver))]
+        const working = [...driverActive.keys()].filter((d) => d !== driver && isWorking(d))
+        const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
         if (others.length && body.shutdown !== true) {
           const done = await withLock(async () => {
             let closed = 0, handedBack = 0
@@ -1703,6 +1722,7 @@ async function main() {
             await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState()
             return { closed, handedBack }
           })
+          void saveProfiles()
           mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
           return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running for ${others.join(', ')} — pass {"shutdown": true} to stop it anyway`, ...done, others })
         }
@@ -1844,7 +1864,7 @@ async function main() {
     const pages = allPages()
     for (let i = pages.length - 1; i >= 1; i--) {
       const p = pages[i]
-      if (p === active) continue
+      if (p === active || [...driverActive.entries()].some(([d, t]) => t === p && isWorking(d))) continue  // someone is working in it
       if (!tabLastUsed.has(p)) { touchTab(p); continue }
       if (Date.now() - (tabLastUsed.get(p) ?? 0) <= TAB_STALE_MS) continue
       const url = p.url(); const owner = ownerOf(p)
