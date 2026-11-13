@@ -8,14 +8,14 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, sep, posix } from 'node:path'
 import { promisify } from 'node:util'
 import MiniSearch from 'minisearch'
-import { storeName, inferRole, isAgentModel, MAX_AGENT_PROMPT, type Role } from './agent-store.js'
+import { storeName, draftRole, isAgentModel, parseFrontMatter, AGENT_LIMITS, type Role } from './agent-store.js'
 
 const run = promisify(execFile)
 
-export type EntryKind = 'agent' | 'skill'
-export type Trust = 'anthropic' | 'community'
+type EntryKind = 'agent' | 'skill'
+type Trust = 'anthropic' | 'community'
 
-export interface CatalogSource {
+interface CatalogSource {
   id: string
   label: string
   repo: string            // owner/name
@@ -50,42 +50,17 @@ export interface CatalogEntry {
   path: string            // skill folder or agent file
   sha: string
   license: string
-  hasScripts: boolean
+  /** Files that can run (scripts/ or a script extension), shown before install. */
+  scripts: string[]
   trust: Trust
   plugin?: string
   category?: string
 }
 
 export interface Snapshot { sha: string; paths: string[] }
-export type Reader = (path: string) => Promise<string | null>
+type Reader = (path: string) => Promise<string | null>
 
 // ── Parsing ──────────────────────────────────────────────────────────────────
-
-/** Minimal YAML front matter: `key: value`, block scalars (| >) and `- item` lists. */
-export function parseFrontMatter(md: string): { meta: Record<string, string | string[]>; body: string } {
-  const m = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(md)
-  if (!m) return { meta: {}, body: md }
-  const meta: Record<string, string | string[]> = {}
-  let key = ''
-  for (const line of m[1].split(/\r?\n/)) {
-    const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line)
-    if (kv) {
-      key = kv[1].toLowerCase()
-      const v = kv[2].trim()
-      const unq = (x: string) => x.trim().replace(/^(['"])(.*)\1$/, '$2')
-      meta[key] = /^[|>][+-]?$/.test(v) ? ''
-        : /^\[.*\]$/.test(v) ? v.slice(1, -1).split(',').map(unq).filter(Boolean)  // flow list: [a, "b"]
-        : unq(v)
-      continue
-    }
-    if (!key) continue
-    const item = /^\s*-\s+(.*)$/.exec(line)
-    const cur = meta[key]
-    if (item && (Array.isArray(cur) || cur === '')) meta[key] = [...(Array.isArray(cur) ? cur : []), item[1].trim().replace(/^(['"])(.*)\1$/, '$2')]
-    else if (/^\s+\S/.test(line) && typeof cur === 'string') meta[key] = (cur ? cur + ' ' : '') + line.trim()
-  }
-  return { meta, body: md.slice(m[0].length) }
-}
 
 const str = (v: unknown) => (Array.isArray(v) ? v.join(', ') : String(v ?? '')).trim()
 const list = (v: unknown): string[] =>
@@ -93,7 +68,7 @@ const list = (v: unknown): string[] =>
 const SCRIPT_EXT = /\.(py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl|ps1|php)$/i
 const isHidden = (rel: string) => rel.split('/').some((s) => s.startsWith('.'))
 
-export function detectLicense(text: string | null | undefined): string | undefined {
+function detectLicense(text: string | null | undefined): string | undefined {
   if (!text) return undefined
   const head = text.slice(0, 600)
   if (/MIT License/i.test(head)) return 'MIT'
@@ -151,7 +126,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
       tools, ...(str(meta.model) ? { model: str(meta.model) } : {}),
       files, repo: src.repo, path: dir, sha: snap.sha,
       license: ownLicense ? (/LICENSE/i.test(ownLicense) ? 'See LICENSE.txt' : ownLicense.slice(0, 40)) : (files.some((f) => /^LICEN[CS]E/i.test(f)) ? 'See LICENSE.txt' : repoLicense || 'Unknown'),
-      hasScripts: files.some((f) => f.startsWith('scripts/') || SCRIPT_EXT.test(f)),
+      scripts: files.filter((f) => f.startsWith('scripts/') || SCRIPT_EXT.test(f)),
       trust: src.trust,
       ...(h.plugin ? { plugin: h.plugin, ...(market[h.plugin]?.category ? { category: market[h.plugin].category } : {}) } : {}),
     }
@@ -190,7 +165,7 @@ async function snapshotViaGit(repo: string): Promise<Snapshot> {
   } finally { rmSync(d, { recursive: true, force: true }) }
 }
 
-export async function snapshot(repo: string): Promise<Snapshot> {
+async function snapshot(repo: string): Promise<Snapshot> {
   try { return await snapshotViaApi(repo) } catch (e) {
     console.log(`[store] ${repo}: API listing failed (${e instanceof Error ? e.message : e}); trying git`)
     return snapshotViaGit(repo)
@@ -205,19 +180,19 @@ async function rawBytes(repo: string, sha: string, path: string): Promise<Buffer
   const buf = Buffer.from(await r.arrayBuffer())
   return buf.length > MAX_FILE_BYTES ? null : buf
 }
-export const rawReader = (repo: string, sha: string): Reader => async (p) => (await rawBytes(repo, sha, p))?.toString('utf-8') ?? null
+const rawReader = (repo: string, sha: string): Reader => async (p) => (await rawBytes(repo, sha, p))?.toString('utf-8') ?? null
 
 // ── Cache ────────────────────────────────────────────────────────────────────
 
 const TTL_MS = 60 * 60 * 1000
-export const cacheDir = () => join(homedir(), '.osborn', 'store-cache')
+const cacheDir = () => join(homedir(), '.osborn', 'store-cache')
 
-export interface SourceCache { source: string; repo: string; sha: string; fetchedAt: number; entries: CatalogEntry[]; bodies: Record<string, string>; error?: string }
+interface SourceCache { source: string; repo: string; sha: string; fetchedAt: number; entries: CatalogEntry[]; bodies: Record<string, string>; error?: string }
 
 const inflight = new Map<string, Promise<SourceCache>>()
 
-export async function loadSource(src: CatalogSource, opts: { refresh?: boolean; dir?: string } = {}): Promise<SourceCache> {
-  const file = join(opts.dir || cacheDir(), `${src.id}.json`)
+async function loadSource(src: CatalogSource, opts: { refresh?: boolean; dir?: string } = {}): Promise<SourceCache> {
+  const file = join(opts.dir || cacheDir(), `${src.id}.v2.json`)  // v2: entries carry scripts[]
   let cached: SourceCache | null = null
   try { cached = JSON.parse(readFileSync(file, 'utf-8')) } catch { /* none yet */ }
   if (cached && !opts.refresh && Date.now() - cached.fetchedAt < TTL_MS) return cached
@@ -263,8 +238,8 @@ export async function findEntry(id: string, opts: { dir?: string } = {}): Promis
 // ── Install ──────────────────────────────────────────────────────────────────
 
 export const PROVENANCE_FILE = '.store-provenance.json'
-export const MAX_SKILL_BYTES = 10 * 1024 * 1024
-export const MAX_SKILL_FILES = 300
+const MAX_SKILL_BYTES = 10 * 1024 * 1024
+const MAX_SKILL_FILES = 300
 
 /** A file path inside a skill: relative, no '..', no hidden segments, no backslashes. */
 export function safeRelPath(rel: string): boolean {
@@ -304,7 +279,7 @@ export async function installSkill(
     }
     writeFileSync(join(tmp, PROVENANCE_FILE), JSON.stringify({
       source: entry.source, repo: entry.repo, sha: entry.sha, path: entry.path, license: entry.license,
-      files: entry.files, hasScripts: entry.hasScripts, installedAt: new Date().toISOString(),
+      files: entry.files, scripts: entry.scripts, installedAt: new Date().toISOString(),
     }, null, 2))
     renameSync(tmp, dst)
     return { ok: true, name }
@@ -318,30 +293,41 @@ export function skillProvenance(skillsDir: string, folder: string): { source: st
   } catch { return undefined }
 }
 
-/** A user_agents draft for a catalog agent; the frontend saves it. */
+/** forked_from of an agent installed from the catalog (agent-store.ts CATALOG_ORIGIN). */
+const catalogOrigin = (e: CatalogEntry) => `${e.source}:${e.repo}@${e.sha}/${e.path}`
+/** The same catalog file at any commit. */
+const unpinned = (origin: string) => origin.replace(/@[0-9a-f]{7,40}\//, '/')
+
+/** A user_agents draft for a catalog agent; the frontend saves it. Its role starts from its tools (draftRole). */
 export function agentDraft(entry: CatalogEntry, body: string): { name: string; description: string; prompt: string; model: string; tools: string[]; role: Role; forked_from: string } {
   const tools = entry.tools.filter((t) => !/^mcp__/.test(t))
   const model = isAgentModel(entry.model) ? entry.model : 'inherit'
   return {
-    name: storeName(entry.name).slice(0, 40),
-    description: (entry.description || entry.name).slice(0, 500),
-    prompt: body.slice(0, MAX_AGENT_PROMPT),
-    model, tools, role: inferRole(tools),
-    forked_from: `${entry.source}:${entry.repo}@${entry.sha}/${entry.path}`,
+    name: storeName(entry.name).slice(0, AGENT_LIMITS.name),
+    description: (entry.description || entry.name).slice(0, AGENT_LIMITS.description),
+    prompt: body.slice(0, AGENT_LIMITS.prompt),
+    model, tools, role: draftRole(tools),
+    forked_from: catalogOrigin(entry),
   }
+}
+
+/** Ids of the entries already installed: a skill by its folder, an agent by a row installed from the same file. */
+export function installedIds(entries: CatalogEntry[], skillFolders: Set<string>, agentOrigins: string[]): Set<string> {
+  const origins = new Set(agentOrigins.map(unpinned))
+  return new Set(entries.filter((e) => (e.kind === 'skill' ? skillFolders.has(e.name) : origins.has(unpinned(catalogOrigin(e))))).map((e) => e.id))
 }
 
 // ── Recommendations ──────────────────────────────────────────────────────────
 
-export interface Signal { text: string; reason: string }
-export interface Recommendation { id: string; score: number; reason: string }
+interface Signal { text: string; reason: string }
+interface Recommendation { id: string; score: number; reason: string }
 
 const STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'use', 'when', 'from', 'into', 'your', 'you', 'are', 'how', 'what', 'can', 'not', 'any', 'all', 'about', 'have', 'will', 'should', 'agent', 'skill', 'skills', 'agents', 'using', 'used', 'user', 'users', 'make', 'help', 'need', 'want', 'let', 'please', 'also', 'just', 'like', 'get', 'new', 'one', 'out', 'more', 'some', 'its', 'our', 'was', 'were', 'has', 'had', 'did', 'does', 'then', 'than', 'them', 'they', 'there', 'here', 'which', 'who', 'why'])
 const processTerm = (t: string) => { const w = t.toLowerCase(); return w.length < 3 || STOP.has(w) || /^\d+$/.test(w) ? null : w }
 
-/** Ranks entries against what the user does (installed skills, agents, recent session titles). */
+/** Ranks entries against what the user does (installed skills, agents, recent session titles); installed ids are left out. */
 export function recommend(entries: CatalogEntry[], signals: Signal[], installed: Set<string>, limit = 8): Recommendation[] {
-  const pool = entries.filter((e) => !installed.has(e.name))
+  const pool = entries.filter((e) => !installed.has(e.id))
   if (!pool.length || !signals.length) return []
   const ms = new MiniSearch<CatalogEntry>({
     fields: ['name', 'description', 'plugin', 'category'],

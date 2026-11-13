@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
 import { parseStewardVerdict, appendStewardVerdict } from './steward-verdict.js'
-import { ROLES, CORE_AGENT_ROLES, roleOf, type Role, type WriteRule } from './agent-store.js'
+import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -335,13 +335,8 @@ function loadAllSkills(_workingDir: string): string {
 const SKILL_BODY_BUDGET = 200_000
 
 function extractSkillDescription(raw: string): string {
-  let desc = ''
-  const fm = raw.match(/^---\n([\s\S]*?)\n---/)
-  if (fm) {
-    const m = fm[1].match(/^description:\s*(.+)$/m)
-    if (m) desc = m[1].trim()
-  }
-  const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
+  const { meta, body } = parseFrontMatter(raw)
+  let desc = typeof meta.description === 'string' ? meta.description : ''
   if (!desc) {
     const when = body.match(/^\s*WHEN:\s*(.+)$/mi)
     if (when) desc = when[1].trim()
@@ -1089,9 +1084,9 @@ export function decideWrite(
 
 // ── Verifier chaining (Pattern #1) ──────────────────────────────────────────
 // Verifiers are real named Task sub-agents. The chain is a role property
-// (agent-store.ts ROLES[role].chain): parallelAtStart is enforced by the
-// orchestrator prompt; its prompts/chain-after-<role>.md reminder is pushed into the MAIN agent at
-// SubagentStop so it dispatches the next verifier(s) as real Tasks.
+// (agent-store.ts ROLES[role].chain): its prompts/chain-after-<role>.md reminder,
+// naming the agent that finished, is pushed into the MAIN agent at SubagentStop
+// so it dispatches the next verifier(s) as real Tasks.
 // Prepended to a verifier-chain reminder pushed into the MAIN agent at SubagentStop. Keeps the
 // dispatch SILENT — the model should emit ONLY the Task tool call(s), no spoken/streamed text —
 // so the chain advances without a robotic "now running the review…" narration on the voice path.
@@ -2649,8 +2644,7 @@ class ClaudeLLMStream extends llm.LLMStream {
             // Workspace-only roles are blocked by PreToolUse
             // before they ever reach canUseTool, so this check is the only path that lets a
             // skill install through silently.
-            const writeRole = roleOf(agentType as string | null, this.#opts.agentRoles)
-            if (writeRole && ROLES[writeRole].skillInstall && typeof agentType === 'string' && Object.hasOwn(CORE_AGENT_ROLES, agentType) && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
+            if (installsSkillsSilently(roleOf(agentType, this.#opts.agentRoles, NAMED_AGENTS), !!coreRole(agentType, NAMED_AGENTS)) && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
               console.log(`✅ Auto-approved writer ${toolName} to skill dir: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
@@ -2736,11 +2730,11 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
               }
 
-              // Write/Edit/MultiEdit access control — keyed by the agent's ROLE
+              // File-edit access control (agent-store.ts EDIT_TOOLS) — keyed by the agent's ROLE
               // (agent-store.ts ROLES), so forks and imports keep their role's rule.
-              if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
-                const filePath = String(toolInput.file_path || '')
-                const role = roleOf(agentType, this.#opts.agentRoles)
+              if (EDIT_TOOLS.has(toolName)) {
+                const filePath = String(toolInput.file_path || toolInput.notebook_path || '')
+                const role = roleOf(agentType, this.#opts.agentRoles, NAMED_AGENTS)
                 const historyFirst = !!(role && ROLES[role].historyFirst)
 
                 // Writer PROVENANCE REMINDER (Chesterton's Fence): on the writer's FIRST edit of
@@ -3252,7 +3246,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
               // Steward verdict card (#221): parsed, kept in the session's sidecar, sent to the chat.
-              const atRole = roleOf(at, this.#opts.agentRoles)
+              const atRole = roleOf(at, this.#opts.agentRoles, NAMED_AGENTS)
               const verdict = atRole && ROLES[atRole].verdict ? parseStewardVerdict(msg) : null
               if (verdict) {
                 try {
@@ -3269,7 +3263,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               // double-fired SubagentStop; a fresh fix-round writer has a NEW id → re-chains (the
               // intended bounded loop). Guarded on a live session so we never cold-start a query
               // just to deliver a reminder. Silent-dispatch prefix keeps it off the voice.
-              const chainReminder = atRole && ROLES[atRole].chain ? getChainReminder(atRole) : null
+              const chainReminder = atRole && ROLES[atRole].chain ? getChainReminder(atRole, at) : null
               // Dedup MUST key on the REAL agent_id, never the fabricated 'sa-<ts>' fallback used
               // above for status/emit — a synthetic id is unique every call and would defeat the
               // double-fire guard. If the SDK omits agent_id we can't dedup safely, so skip chaining.
