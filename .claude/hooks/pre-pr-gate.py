@@ -31,6 +31,17 @@ if not sha:
     sys.exit(0)
 marker = os.path.join(git("rev-parse", "--absolute-git-dir"), "pre-pr-reviewed")
 reviewed = open(marker).read().strip() if os.path.exists(marker) else ""
+# The PR body is the decision record: every template section filled, the steward's verdict included.
+body = str(inp.get("body") or "")
+if tool == "mcp__github__create_pull_request":
+    sections = dict(re.findall(r"^## (.+?)\s*$\n(.*?)(?=^## |\Z)", body, re.M | re.S))
+    def empty(name):
+        text = re.sub(r"<!--.*?-->", "", sections.get(name, ""), flags=re.S).strip()
+        return not text
+    missing = [h for h in ("What changed", "Why", "Net-new", "Removed", "Tested", "Steward") if empty(h)]
+    if missing:
+        deny("Fill every PR template section (.github/pull_request_template.md) — empty or missing: " + ", ".join(missing) +
+             ". Net-new and Removed come from the steward's lists; Steward is its verdict line.")
 steward = os.path.join(git("rev-parse", "--absolute-git-dir"), "steward-reviewed")
 if (open(steward).read().strip() if os.path.exists(steward) else "") != sha:
     deny(f"Steward sign-off required (CLAUDE.md). Run the steward agent (.claude/agents/steward.md) on "

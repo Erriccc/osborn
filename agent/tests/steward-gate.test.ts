@@ -86,6 +86,8 @@ try {
     assert.equal(gitActions(c, repo)[0]?.action, 'push', c)
   assert.equal(gitActions("eval 'git commit -m x'", repo)[0]?.action, 'commit')
   assert.equal(gitActions('env -S "git push"', repo)[0]?.action, 'push')
+  for (const c of ['setsid git push', 'setsid -f git push', 'stdbuf -oL git push', 'stdbuf -o L git push', 'doas git push', 'doas -u bob git push', 'ionice -c 3 git push'])
+    assert.equal(gitActions(c, repo)[0]?.action, 'push', c)
   assert.equal(gitActions('eval cd sub; git push', repo)[0]?.dir, join(repo, 'sub'))
   // Heredoc bodies are data: a quote inside one cannot hide what follows, and a script being written is not run
   assert.deepEqual(gitActions("cat > n.md <<'EOF'\nDon't forget\nEOF\ngit commit -am x && git push", repo).map((h) => h.action), ['commit', 'push'])
