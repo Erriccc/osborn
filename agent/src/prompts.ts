@@ -3,6 +3,7 @@ import { homedir } from 'os'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { getSessionWorkspace } from './config.js'
+import { SIGNOFF_COMMAND } from './steward-gate.js'
 
 // Directory of this module — used to locate co-located prompt markdown files.
 // Prompts that we iterate frequently (currently just direct-mode-research) live as
@@ -479,6 +480,12 @@ When a permission request appears: tell the user what action needs permission an
 //    Output must be natural spoken prose, not structured/formatted text.
 //    Technical details go to workspace files; spoken output stays conversational.
 // ═══════════════════════════════════════════════════════════════
+
+/** The steward agent's instructions: one file, read by the Osborn agent and by this repo's
+ *  Claude Code agent (.claude/agents/steward.md), so the two can never drift apart. */
+export function getStewardPrompt(): string {
+  return readFileSync(join(PROMPTS_FILE_DIR, 'steward.md'), 'utf-8').replaceAll('${SIGNOFF_COMMAND}', SIGNOFF_COMMAND)
+}
 
 export function getDirectModeResearchPrompt(workspacePath: string | null): string {
   // Read the prompt body from a co-located markdown file at every call.

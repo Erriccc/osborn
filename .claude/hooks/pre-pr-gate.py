@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""PreToolUse gate: no pull request is opened until the adversarial pre-PR
-review (.claude/agents/pre-pr-reviewer.md) has run on the exact commit being
+"""PreToolUse gate: no pull request is opened until the steward
+(.claude/agents/steward.md) and the adversarial pre-PR review
+(.claude/agents/pre-pr-reviewer.md) have both run on the exact commit being
 proposed. Record a finished review with:
     git rev-parse HEAD > "$(git rev-parse --git-dir)/pre-pr-reviewed"
 Fails open on anything unexpected, so a broken gate never blocks real work."""
@@ -30,6 +31,11 @@ if not sha:
     sys.exit(0)
 marker = os.path.join(git("rev-parse", "--absolute-git-dir"), "pre-pr-reviewed")
 reviewed = open(marker).read().strip() if os.path.exists(marker) else ""
+steward = os.path.join(git("rev-parse", "--absolute-git-dir"), "steward-reviewed")
+if (open(steward).read().strip() if os.path.exists(steward) else "") != sha:
+    deny(f"Steward sign-off required (CLAUDE.md). Run the steward agent (.claude/agents/steward.md) on "
+         f"origin/main...{sha[:8]} first; it records its CLEAN verdict in \"$(git rev-parse --git-dir)/steward-reviewed\". "
+         f"Put its NET-NEW and REMOVED lists in the PR description.")
 if reviewed != sha:
     deny(f"Pre-PR review required (CLAUDE.md). Run the pre-pr-reviewer agent (.claude/agents/pre-pr-reviewer.md) "
          f"on origin/main...{sha[:8]}, fix or answer its findings, then record it: "

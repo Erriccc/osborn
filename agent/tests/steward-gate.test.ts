@@ -81,6 +81,12 @@ try {
     'if true; then git push; fi', '{ git push; }', '! git push', 'echo `git push`', "bash -c 'git push'", 'echo $(git push)'])
     assert.equal(gitActions(c, repo)[0]?.action, 'push', c)
   assert.equal(gitActions('gh --repo o/r pr create --fill', repo)[0]?.action, 'pr')
+  // #234: eval, per-wrapper options
+  for (const c of ['eval git push', 'eval "git push"', 'time -p git push', 'command -p git push', 'xargs -a list git push', 'xargs -L 1 git push', 'nice -n 5 git push', 'timeout -s KILL 30 git push', 'sudo -u bob -g staff git push'])
+    assert.equal(gitActions(c, repo)[0]?.action, 'push', c)
+  assert.equal(gitActions("eval 'git commit -m x'", repo)[0]?.action, 'commit')
+  assert.equal(gitActions('env -S "git push"', repo)[0]?.action, 'push')
+  assert.equal(gitActions('eval cd sub; git push', repo)[0]?.dir, join(repo, 'sub'))
   // Heredoc bodies are data: a quote inside one cannot hide what follows, and a script being written is not run
   assert.deepEqual(gitActions("cat > n.md <<'EOF'\nDon't forget\nEOF\ngit commit -am x && git push", repo).map((h) => h.action), ['commit', 'push'])
   assert.deepEqual(gitActions("cat > deploy.sh <<'EOF'\ncd app && git push origin main\nEOF", repo), [])
