@@ -62,6 +62,32 @@ export function useViewportClamp<T extends HTMLElement = HTMLDivElement>(open: b
   return ref
 }
 
+// ── Header-panel geometry ────────────────────────────────────────────────
+// Below sm every panel is a viewport-anchored bottom sheet. At sm+ a panel that
+// HAS a trigger hangs under its button (`absolute right-0 top-full` inside the
+// trigger's `relative` wrapper).
+//
+// A panel opened from the burger sheet passes hideTrigger, so that wrapper
+// renders EMPTY — a zero-height box wherever it sits in the tree, with no
+// button under which to hang. `top-full`/`right-0` then anchor the panel to
+// nothing and it floats over the transcript; useViewportClamp cannot rescue it
+// because it only clamps horizontally (translateX), never vertically. Those
+// panels therefore stay viewport-anchored at every width: a bottom sheet on
+// mobile, and a centred panel below the header at sm+.
+//
+// Centring uses `inset-x-0 mx-auto` rather than `left-1/2 -translate-x-1/2`
+// because useViewportClamp writes el.style.transform, and an inline transform
+// would override a translate utility.
+export function headerPanelClass(anchored: boolean): string {
+  const base =
+    'fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto z-50 bg-gray-900 ' +
+    'border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl ' +
+    'pb-[env(safe-area-inset-bottom)] sm:pb-0'
+  return anchored
+    ? `${base} sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(26rem,calc(100vw-1.5rem))]`
+    : `${base} sm:bottom-auto sm:top-16 sm:mx-auto sm:w-[min(26rem,calc(100vw-1.5rem))]`
+}
+
 // ── Header-panel mutual exclusion ────────────────────────────────────────
 // Each header dropdown (History, Agents, Skills, Instances, More, Meeting) owns
 // its own open-state. Without coordination they STACK and overlap, and once

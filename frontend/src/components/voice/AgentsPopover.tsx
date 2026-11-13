@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import type { BackgroundFlow } from '../LogsDrawer'
-import { usePanelExclusive, useViewportClamp } from './shared'
+import { headerPanelClass, usePanelExclusive, useViewportClamp } from './shared'
 
 // Plain-language, user-facing one-liners for the built-in sub-agents. The raw
 // `description` is a system-prompt instruction full of jargon ("GROUNDED",
@@ -114,7 +114,7 @@ export function AgentsPopover({ agents, activity, disabled, onSaveAgent, onDelet
           {/* Mobile: viewport-anchored (button-anchored panels jut off-screen
               when the trigger sits mid-header — user screenshot 2026-08-01);
               sm+: anchored under the button as before. */}
-          <div ref={popRef} className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
+          <div ref={popRef} className={headerPanelClass(!hideTrigger)}>
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">🤖 Named Agents</span>
               <div className="flex items-center gap-2">
