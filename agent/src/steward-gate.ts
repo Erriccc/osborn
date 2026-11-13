@@ -31,22 +31,80 @@ export function stewardMode(env: Record<string, string | undefined> = process.en
   return m === 'block' || m === 'off' ? m : 'advise'
 }
 
-// Only a command in command position counts: not `grep "git push"` or `echo "... git commit"`.
-const AT = String.raw`(?:^|[;&|(\n]\s*)`
-const GIT_OPTS = String.raw`(?:\s+-[Cc]\s+\S+)*`
+// Split a shell command into simple commands (outside quotes) and read each one's
+// words, tracking `cd` (subshells restore it). Only a word in command position
+// counts: not `grep "git push"` or `echo "... git commit"`.
+type Hit = { action: GitAction; dir: string }
+// Words that can precede a command: keywords, wrappers, and wrappers' options.
+const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout',
+  'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}'])
+const TAKES_ARG = new Set(['-u', '-g', '-h', '-p', '-U', '-C', '-D', '-r', '-t', '-n', '-s', '-k', '--signal'])  // sudo/nice/timeout/xargs
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash'])
 
-/** The git action a shell command performs, and the directory it runs in (a leading `cd X &&` or `git -C X`). */
-export function gitAction(cmd: string, cwd: string): { action: GitAction; dir: string } | null {
-  const action: GitAction | null = new RegExp(`${AT}gh\\s+pr\\s+create\\b`).test(cmd) ? 'pr'
-    : new RegExp(`${AT}git${GIT_OPTS}\\s+push\\b`).test(cmd) ? 'push'
-    : new RegExp(`${AT}git${GIT_OPTS}\\s+commit\\b`).test(cmd) ? 'commit'
-    : null
-  if (!action) return null
-  const cd = cmd.match(/^\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*&&/)
-  const gitC = cmd.match(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/)
-  const raw = (gitC?.[1] ?? cd?.[1])?.replace(/^["']|["']$/g, '')
-  const dir = raw ? (isAbsolute(raw) ? raw : resolve(cwd, raw.replace(/^~(?=\/|$)/, process.env.HOME || '~'))) : cwd
-  return { action, dir }
+export function gitActions(cmd: string, cwd: string): Hit[] {
+  const hits: Hit[] = []
+  const home = process.env.HOME || '~'
+  const resolveDir = (base: string, raw?: string) => {
+    if (!raw) return home
+    const p = raw.replace(/^~(?=\/|$)/, home)
+    return isAbsolute(p) ? p : resolve(base, p)
+  }
+  let dir = cwd
+  const stack: string[] = []
+  let words: string[] = [], word = '', inWord = false, quote: string | null = null, inBacktick = false
+  const endWord = () => { if (inWord) words.push(word); word = ''; inWord = false }
+  const endCommand = () => {
+    endWord()
+    let w = words; words = []
+    let wrapped = false
+    while (w.length) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0]) || PREFIX.has(w[0])) { wrapped = wrapped || PREFIX.has(w[0]); w = w.slice(1) }
+      else if (wrapped && w[0].startsWith('-')) w = w.slice(TAKES_ARG.has(w[0]) ? 2 : 1)
+      else if (wrapped && /^\d+[smhd]?$/.test(w[0])) w = w.slice(1)  // timeout's duration
+      else break
+    }
+    if (!w.length) return
+    const name = w[0].split('/').pop()
+    if (name === 'cd') { dir = resolveDir(dir, w[1]); return }
+    if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { for (const h of gitActions(w[2], dir)) hits.push(h); return }
+    if (name === 'gh') {
+      const rest = w.slice(1).filter((x, j, a) => !x.startsWith('-') && !['--repo', '-R', '--hostname'].includes(a[j - 1]))
+      if (rest[0] === 'pr' && rest[1] === 'create') hits.push({ action: 'pr', dir })
+      return
+    }
+    if (name !== 'git') return
+    let gdir = dir, i = 1
+    while (i < w.length && w[i].startsWith('-')) {
+      if (w[i] === '-C') { gdir = resolveDir(gdir, w[i + 1]); i += 2 }
+      else if (w[i] === '-c' || w[i] === '--git-dir' || w[i] === '--work-tree' || w[i] === '--namespace') i += 2
+      else i += 1
+    }
+    if (w[i] === 'commit' || w[i] === 'push') hits.push({ action: w[i] as GitAction, dir: gdir })
+  }
+  for (let k = 0; k < cmd.length; k++) {
+    const c = cmd[k]
+    // Heredoc: its body is data, not commands. Skip to the line holding only the delimiter.
+    if (!quote && c === '<' && cmd[k + 1] === '<' && cmd[k + 2] !== '<') {
+      const m = cmd.slice(k).match(/^<<-?\s*(['"]?)([A-Za-z0-9_]+)\1/)
+      if (m) {
+        const nl = cmd.indexOf('\n', k)
+        const head = nl < 0 ? cmd.slice(k + m[0].length) : cmd.slice(k + m[0].length, nl)
+        const close = nl < 0 ? -1 : cmd.slice(nl + 1).search(new RegExp(`^\\s*${m[2]}\\s*$`, 'm'))
+        cmd = cmd.slice(0, k) + head + '\n' + (close < 0 ? '' : cmd.slice(nl + 1 + close).replace(/^[^\n]*\n?/, ''))
+        k -= 1; continue
+      }
+    }
+    if (quote) { if (c === quote) quote = null; else if (c === '\\' && quote === '"') word += cmd[++k] ?? ''; else word += c; continue }
+    if (c === '"' || c === "'") { quote = c; inWord = true; continue }
+    if (c === '\\') { word += cmd[++k] ?? ''; inWord = true; continue }
+    if (c === ';' || c === '&' || c === '|' || c === '\n') { endCommand(); continue }
+    if (c === '(' || (c === '`' && !inBacktick)) { endCommand(); stack.push(dir); if (c === '`') inBacktick = true; continue }
+    if (c === ')' || c === '`') { endCommand(); dir = stack.pop() ?? dir; if (c === '`') inBacktick = false; continue }
+    if (c === ' ' || c === '\t') { endWord(); continue }
+    word += c; inWord = true
+  }
+  endCommand()
+  return hits
 }
 
 const git = async (dir: string, args: string[]) => (await run('git', args, { cwd: dir })).stdout.trim()
@@ -65,18 +123,27 @@ async function signedFor(dir: string, action: GitAction, marker: string): Promis
 
 export type GateResult = { decision: 'allow' | 'advise' | 'deny'; message?: string }
 
-/** Check a Bash command against the steward sign-off. Never throws: an unreadable repo is allowed. */
+/** Check a Bash command against the steward sign-off: every git action in it, most restrictive wins. */
 export async function stewardGate(cmd: string, cwd: string, mode: StewardMode = stewardMode()): Promise<GateResult> {
   if (mode === 'off') return { decision: 'allow' }
-  const hit = gitAction(cmd, cwd)
-  if (!hit || !existsSync(hit.dir)) return { decision: 'allow' }
-  try {
-    const markerPath = join(await git(hit.dir, ['rev-parse', '--absolute-git-dir']), MARKER_FILE)
-    const marker = existsSync(markerPath) ? (await readFile(markerPath, 'utf8')).trim() : ''
-    if (marker && await signedFor(hit.dir, hit.action, marker)) return { decision: 'allow' }
-  } catch { return { decision: 'allow' } }
-  const what = hit.action === 'pr' ? 'opening this PR' : `this ${hit.action}`
-  const message = `The steward has not signed off on the code in ${what}: run the \`steward\` agent on the change first ` +
-    `(it records its sign-off for this exact content; any later edit needs a new sign-off).`
+  let unsigned: GitAction | null = null, failed: string | null = null
+  for (const hit of gitActions(cmd, cwd)) {
+    if (!existsSync(hit.dir)) continue
+    let gitDir: string
+    try { gitDir = await git(hit.dir, ['rev-parse', '--absolute-git-dir']) } catch { continue }  // not a repo
+    try {
+      const markerPath = join(gitDir, MARKER_FILE)
+      const marker = existsSync(markerPath) ? (await readFile(markerPath, 'utf8')).trim() : ''
+      if (!marker || !await signedFor(hit.dir, hit.action, marker)) { unsigned = unsigned ?? hit.action }
+    } catch (e) {
+      failed = (e as Error).message.split('\n')[0].slice(0, 160)
+      console.log(`[steward-gate] could not check ${hit.action} in ${hit.dir}: ${failed}`)
+    }
+  }
+  if (!unsigned && !failed) return { decision: 'allow' }
+  const message = unsigned
+    ? `The steward has not signed off on the code in ${unsigned === 'pr' ? 'opening this PR' : `this ${unsigned}`}: run the \`steward\` agent on the change first ` +
+      `(it records its sign-off for this exact content; any later edit needs a new sign-off).`
+    : `The steward sign-off could not be checked (${failed}).`
   return mode === 'block' ? { decision: 'deny', message } : { decision: 'advise', message }
 }

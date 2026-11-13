@@ -14,7 +14,7 @@ const AGENT_BLURBS: Record<string, string> = {
   tester: 'Runs the tests and checks that the work holds up.',
   planner: 'Breaks a task into clear, ordered steps.',
   reviewer: 'Reviews the changes for problems before they ship.',
-  steward: 'Keeps the code lean: reuses what already exists and checks nothing that depends on it breaks.',
+  steward: 'Keeps the code lean: reuses what already exists and makes sure the change breaks nothing that depends on it.',
 }
 
 // Named agents manager — mirrors the SkillsPopover pattern: first-class header
