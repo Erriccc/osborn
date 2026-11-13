@@ -34,9 +34,8 @@ export function stewardMode(env: Record<string, string | undefined> = process.en
 // Split a shell command into simple commands (outside quotes) and read each one's
 // words, tracking `cd` (subshells restore it). Only a word in command position
 // counts: not `grep "git push"` or `echo "... git commit"`.
-// `dir: null` means the shell's directory at that point could not be worked out
-// (`cd -` needs $OLDPWD, `pushd` with no operand needs the stack). stewardGate
-// reports those rather than skipping them — an unknown repo is not a safe allow.
+// `dir: null` = the shell's directory there could not be worked out, so the
+// action is skipped rather than checked against a guess.
 type Hit = { action: GitAction; dir: string | null }
 // Words that can precede a command: keywords, wrappers, and wrappers' options.
 const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout', 'setsid', 'stdbuf', 'doas', 'ionice',
@@ -67,10 +66,9 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
   const home = process.env.HOME || '~'
   const resolveDir = (base: string | null, raw?: string) => {
     if (!raw) return home
-    // A variable or command substitution is expanded by the shell, not here.
-    // Resolving it literally would invent a path like `<cwd>/$HOME/x`, so the
-    // directory is simply unknown.
-    if (/[$`]/.test(raw)) return null
+    // `-` is $OLDPWD, and a variable or command substitution is expanded by the
+    // shell, not here — resolving one literally would invent `<cwd>/$HOME/x`.
+    if (raw === '-' || /[$`]/.test(raw)) return null
     const p = raw.replace(/^~(?=\/|$)/, home)
     if (isAbsolute(p)) return p
     return base === null ? null : resolve(base, p)
@@ -116,7 +114,7 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
       // ends them. `-` alone is not an option, it is $OLDPWD.
       let j = 1
       while (j < w.length && w[j].startsWith('-') && w[j] !== '-') if (w[j++] === '--') break
-      dir = w[j] === '-' ? null : resolveDir(dir, w[j])  // $OLDPWD is unknowable
+      dir = resolveDir(dir, w[j])
       return
     }
     if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { hits.push(...scan(w[2], dir).hits); return }  // subshell: its cd does not escape
@@ -155,7 +153,7 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
     // (background job) runs its command in a SUBSHELL, so its `cd` dies with it.
     if (c === '&' || c === '|') {
       // Not a separator at all inside a redirection: `>&2`, `2>&1`, `&>log`.
-      if (c === '&' && (word.endsWith('>') || cmd[k - 1] === '>' || cmd[k + 1] === '>')) { word += c; inWord = true; continue }
+      if (c === '&' && (word.endsWith('>') || cmd[k + 1] === '>')) { word += c; inWord = true; continue }
       const chained = cmd[k + 1] === c
       endCommand()
       if (chained) k++
@@ -163,7 +161,9 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
       segDir = dir
       continue
     }
-    if (c === '(' || (c === '`' && !inBacktick)) { endCommand(); stack.push(dir); if (c === '`') inBacktick = true; continue }
+    // Save dir BEFORE ending the command: `cd `pwd`` splits here with a bare `cd`
+    // left in hand, and resolving that to $HOME would escape the repo entirely.
+    if (c === '(' || (c === '`' && !inBacktick)) { stack.push(dir); endCommand(); if (c === '`') inBacktick = true; continue }
     if (c === ')' || c === '`') { endCommand(); dir = stack.pop() ?? dir; segDir = dir; if (c === '`') inBacktick = false; continue }
     if (c === ' ' || c === '\t') { endWord(); continue }
     word += c; inWord = true

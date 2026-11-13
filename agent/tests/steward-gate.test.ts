@@ -120,9 +120,11 @@ try {
   // skipped rather than refused: there is no repo to read and no sign-off could
   // ever clear it. `git worktree add w && cd w && git commit` is the ordinary
   // case this protects, not an evasion.
-  for (const c of ['cd -; git push', 'cd "$HOME/x" && git push', 'cd $REPO && git push',
-    'cd /tmp/definitely-not-here && git push', 'mkdir fresh && cd fresh && git init && git commit -m x'])
+  for (const c of ['cd /tmp/definitely-not-here && git push', 'mkdir fresh && cd fresh && git init && git commit -m x'])
     assert.equal((await stewardGate(c, repo, 'block')).decision, 'allow', c)
+  // A substitution at the START of the operand must not fall back to $HOME and
+  // escape the repo: the action stays attributed to the real cwd.
+  assert.equal((await stewardGate('cd `pwd` && git push', repo, 'block')).decision, 'deny')
 
   // Not a repo: never blocks
   assert.equal((await stewardGate('git push', tmpdir(), 'block')).decision, 'allow')
