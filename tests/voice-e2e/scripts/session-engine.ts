@@ -178,10 +178,12 @@ async function main() {
   //  - Container without a display: headless fallback (CDP capture + HUD).
   const IN_CONTAINER = !!process.env.OSBORN_TEST_CONTAINER
   const DISPLAY_MODE = !!process.env.OSBORN_DISPLAY
+  // Recording the whole window (tab strip and address bar) is opt-in; see live-stream.ts.
+  const FULL_WINDOW = DISPLAY_MODE && process.env.OSBORN_CAPTURE === 'display'
   // Display mode: start the stream server BEFORE the browser — a wake-up
   // visitor gets the viewer page in seconds and watches Chrome itself boot.
   let live: Awaited<ReturnType<typeof startLiveStream>> | null = null
-  if (DISPLAY_MODE) live = await startLiveStream(null).catch(() => null)
+  if (FULL_WINDOW) live = await startLiveStream(null).catch(() => null)
   const launchArgs = ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
     '--autoplay-policy=no-user-gesture-required', `--remote-debugging-port=${CDP_PORT}`]
   if (IN_CONTAINER) launchArgs.push('--no-sandbox') // container runs as root
@@ -253,8 +255,8 @@ async function main() {
   await installActionVisualizer(active)
   if (!live) live = await startLiveStream(active).catch(() => null)
   manifest.live = live?.url ?? null
-  manifest.captureMode = DISPLAY_MODE ? 'display (full browser window)' : 'page (CDP)'
-  mark(`browser up (${useAuth ? 'auth' : 'guest'}${IN_CONTAINER ? ', container' : ''}, capture: ${DISPLAY_MODE ? 'full-window' : 'page'}) — live: ${live?.url ?? 'n/a'}`)
+  manifest.captureMode = FULL_WINDOW ? 'display (full browser window)' : 'page (CDP)'
+  mark(`browser up (${useAuth ? 'auth' : 'guest'}${IN_CONTAINER ? ', container' : ''}, capture: ${FULL_WINDOW ? 'full-window' : 'page'}) — live: ${live?.url ?? 'n/a'}`)
   // Load speech code and look up its provider now; the logged time shows a cold synthesis (#206).
   void warmUpSpeech().then((w) => mark(`speech warm-up: ${w.provider} in ${w.ms}ms`)).catch((e) => mark(`speech warm-up failed: ${String(e).slice(0, 80)}`))
 
@@ -561,7 +563,7 @@ async function main() {
   // the REAL tab strip is on camera, so the injected badge is clutter on the
   // page — removed per user (2026-07-31).
   const updateTabHud = async () => {
-    if (DISPLAY_MODE) {
+    if (FULL_WINDOW) {
       await Promise.all(context.pages().map((p) => p.evaluate(() => document.getElementById('__osb_tabhud')?.remove()).catch(() => {})))
       return
     }

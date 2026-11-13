@@ -89,7 +89,9 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   // the real browser — actual tab strip, tab switches, URL bar navigation —
   // at a CONSTANT fps, which also makes clips play in true real time (the CDP
   // path is paint-driven: bursts + heartbeat → timelapse/slow-mo artifacts).
-  const DISPLAY = process.env.OSBORN_DISPLAY || null
+  // Only with OSBORN_CAPTURE=display: x11grab costs most of a Fly shared CPU's
+  // allowance on its own, so by default the engine records the page via CDP.
+  const DISPLAY = process.env.OSBORN_DISPLAY && process.env.OSBORN_CAPTURE === 'display' ? process.env.OSBORN_DISPLAY : null
   const CAPTURE_FPS = DISPLAY ? 5 : 12
   const SCREENCAST = { format: 'jpeg' as const, quality: 55, everyNthFrame: 1, maxWidth: 1280, maxHeight: 720 }
   let cdp: CDPSession | null = null
