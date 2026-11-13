@@ -793,7 +793,7 @@ function startApiServer(workingDir: string, port: number): void {
           const signals = [
             ...skills.map((s) => ({ text: `${s.folder} ${s.name} ${s.description}`, reason: `because you use the ${s.folder} skill` })),
             ...myAgents.map((n) => ({ text: n, reason: `because you have the ${n} agent` })),
-            ...(await listAllClaudeSessions(40)).filter((s) => s.title).map((s) => ({ text: s.title!, reason: `because you worked on “${s.title!.slice(0, 60)}”` })),
+            ...(await listAllClaudeSessions(40)).filter((s) => s.title).map((s) => ({ text: s.title!, reason: 'related to your recent sessions' })),
           ]
           return reply(200, {
             sources: caches.map((c) => {

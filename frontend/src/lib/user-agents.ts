@@ -47,7 +47,7 @@ export function useUserAgents() {
     const name = agentName(a.name)
     const err = await withUser((sb, userId) => {
       const row = {
-        name, description: a.description.trim(), prompt: a.prompt.trim(), model: a.model, tools: a.tools,
+        name, description: a.description.trim(), prompt: a.prompt.trim(), model: a.model, tools: a.tools.map((t) => t.trim()).filter(Boolean),
         ...(a.forked_from ? { forked_from: a.forked_from } : {}),
         // Omitted unless set or cleared, so a database without migration 016 still saves.
         ...(a.role !== undefined ? { role: a.role || null } : {}),

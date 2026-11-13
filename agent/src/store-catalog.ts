@@ -8,7 +8,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, sep, posix } from 'node:path'
 import { promisify } from 'node:util'
 import MiniSearch from 'minisearch'
-import { storeName, inferRole, MAX_AGENT_PROMPT, type Role } from './agent-store.js'
+import { storeName, inferRole, isAgentModel, MAX_AGENT_PROMPT, type Role } from './agent-store.js'
 
 const run = promisify(execFile)
 
@@ -310,11 +310,10 @@ export function skillProvenance(skillsDir: string, folder: string): { source: st
   } catch { return undefined }
 }
 
-const MODEL_ALIASES = new Set(['sonnet', 'opus', 'haiku', 'fable', 'inherit'])
 /** A user_agents draft for a catalog agent; the frontend saves it. */
 export function agentDraft(entry: CatalogEntry, body: string): { name: string; description: string; prompt: string; model: string; tools: string[]; role: Role; forked_from: string } {
   const tools = entry.tools.filter((t) => !/^mcp__/.test(t))
-  const model = entry.model && (MODEL_ALIASES.has(entry.model) || /^claude-/.test(entry.model)) ? entry.model : 'inherit'
+  const model = isAgentModel(entry.model) ? entry.model : 'inherit'
   return {
     name: storeName(entry.name).slice(0, 40),
     description: (entry.description || entry.name).slice(0, 500),

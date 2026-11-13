@@ -162,6 +162,7 @@ export const CATALOG_ORIGIN = /^[a-z0-9-]+:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[0-9
 
 export const MAX_AGENT_PROMPT = 20000
 const MODELS = new Set(['sonnet', 'opus', 'haiku', 'fable', 'inherit'])
+export const isAgentModel = (m: unknown): m is string => typeof m === 'string' && (MODELS.has(m) || /^claude-/.test(m))
 
 export const storeName = (raw: unknown): string =>
   String(raw ?? '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
@@ -189,7 +190,7 @@ export function parseUserAgents(rows: unknown, core: Record<string, unknown>): {
       description,
       prompt,
       ...(tools ? { tools } : {}),
-      ...(r.model && (MODELS.has(r.model) || /^claude-/.test(r.model)) ? { model: String(r.model) } : {}),
+      ...(isAgentModel(r.model) ? { model: r.model } : {}),
     }
   }
   return { agents, forkedFrom, roles, ignored }

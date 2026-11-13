@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { agentName, type UserAgentDraft, type UserAgentRow } from '@/lib/user-agents'
-import { effectiveRole, type SkillInfo } from './AgentStore'
+import { effectiveRole, card, field, link, heading, type SkillInfo } from './AgentStore'
 
 // Browse tab of the agent & skill store: skills and named agents from trusted
 // GitHub catalogs, read by the user's machine (GET /store/catalog), never by
@@ -32,10 +32,6 @@ interface Catalog { sources: SourceInfo[]; entries: CatalogEntry[]; installed: s
 
 export type StoreRequest = (path: string, method?: 'GET' | 'POST') => Promise<{ ok: boolean; d: any }>
 
-const card = 'rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)]/60 p-2.5'
-const field = 'rounded border border-[var(--border-subtle)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none'
-const link = 'text-[11px] text-[var(--accent)] hover:opacity-80 disabled:opacity-40'
-const heading = 'mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]'
 const chip = (on: boolean) => `rounded-full border px-2 py-0.5 text-[11px] ${on ? 'border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]' : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`
 const SCRIPT = /(^scripts\/|\.(py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl|ps1|php)$)/i
 const PAGE = 60

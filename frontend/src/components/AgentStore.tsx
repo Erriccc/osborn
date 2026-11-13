@@ -62,10 +62,10 @@ const AGENT_ICONS: Record<string, typeof Robot> = { researcher: MagnifyingGlass,
 const MAX_PROMPT = 20000
 const MODELS = ['inherit', 'sonnet', 'opus', 'haiku', 'fable']
 
-const card = 'rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)]/60 p-2.5'
-const field = 'w-full rounded border border-[var(--border-subtle)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none'
-const link = 'text-[11px] text-[var(--accent)] hover:opacity-80 disabled:opacity-40'
-const heading = 'mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]'
+export const card = 'rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)]/60 p-2.5'
+export const field = 'w-full rounded border border-[var(--border-subtle)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none'
+export const link = 'text-[11px] text-[var(--accent)] hover:opacity-80 disabled:opacity-40'
+export const heading = 'mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]'
 
 function LockBadge() {
   return (
@@ -216,11 +216,11 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
             {nameError && d.name && <p className="text-[10px] text-red-400">{nameError}</p>}
             <input value={d.description} onChange={(e) => set({ description: e.target.value })} maxLength={500} placeholder="When should the orchestrator use this agent?" className={field} />
             <textarea value={d.prompt} onChange={(e) => set({ prompt: e.target.value })} rows={6} maxLength={MAX_PROMPT} placeholder="System prompt — the agent's role, workflow, and rules" className={`${field} resize-y font-mono`} />
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               <select value={d.model} onChange={(e) => set({ model: e.target.value })} className={`${field} w-auto`}>
                 {(MODELS.includes(d.model) ? MODELS : [...MODELS, d.model]).map((m) => <option key={m} value={m}>{m}</option>)}
               </select>
-              <input value={d.tools.join(', ')} onChange={(e) => set({ tools: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })} placeholder="Tools (comma-sep; empty = inherit all)" className={`${field} flex-1`} />
+              <input value={d.tools.join(', ')} onChange={(e) => set({ tools: e.target.value.split(',').map((t) => t.trim()) })} placeholder="Tools (comma-sep; empty = inherit all)" className={`${field} min-w-[12rem] flex-1`} />
             </div>
             <div>
               <select value={d.role || ''} onChange={(e) => set({ role: e.target.value || null })} className={field} aria-label="Role">
