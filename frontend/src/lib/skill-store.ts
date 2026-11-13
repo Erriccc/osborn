@@ -27,13 +27,14 @@ export interface SkillTransport {
 const q = encodeURIComponent
 const unreachable: Reply = { error: 'Could not reach your machine' }
 
-/** Settings (no LiveKit room): the agent's /skills routes, through the /api/agent proxy in the cloud. */
+/** Settings (no LiveKit room): the agent's /skills routes, through the /api/agent proxy in the cloud.
+ *  View, fork and remove only: Settings adds skills from the catalog (/store/install). */
 export function httpSkills(agentUrl: string | null | undefined): SkillTransport & { list: () => Promise<SkillInfo[] | null> } {
   const request = agentRequest(agentUrl)
   return {
     list: () => request('skills').then(({ ok, d }) => (ok && Array.isArray(d?.skills) ? d.skills : null)).catch(() => null),
     view: (folder) => request(`skills/content?name=${q(folder)}`).then(({ d }) => d).catch(() => unreachable),
-    change: (op, name, arg) => request(`skills/${op}?name=${q(name)}${op === 'fork' ? `&to=${q(arg ?? '')}` : ''}`, { method: 'POST', body: op === 'add' ? { content: arg } : {} })
+    change: (op, name, arg) => request(`skills/${op}?name=${q(name)}${op === 'fork' ? `&to=${q(arg ?? '')}` : ''}`, { method: 'POST' })
       .then(({ ok, d }) => (ok ? d : { ...d, error: d?.error || 'Request failed' })).catch(() => unreachable),
   }
 }

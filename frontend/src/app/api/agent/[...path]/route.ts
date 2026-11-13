@@ -19,7 +19,7 @@ import { createSupabaseServer } from '@/lib/supabase-server'
 
 // Agent & skill store (agent/src/index.ts): listing, prompts, skill changes and the catalog.
 const STORE_GET = ['agents', 'skills', 'skills/content', 'store/catalog', 'store/entry']
-const STORE_POST = ['skills/add', 'skills/fork', 'skills/remove', 'store/install']
+const STORE_POST = ['skills/fork', 'skills/remove', 'store/install']
 const PROXYABLE_GET = new Set(['sessions', 'session-messages', 'sessions/export-one', ...STORE_GET])
 const PROXYABLE_POST = new Set(['sessions/import', ...STORE_POST])
 // The first catalog read lists three GitHub repos; give it longer than a session read.

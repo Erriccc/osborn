@@ -146,7 +146,7 @@ const STORE_REPLY_TYPES: Record<string, string> = {
   skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
 }
 // Routes that change the machine's skills (guarded by storeWriteRefused).
-const STORE_WRITE_PATHS = new Set(['/skills/add', '/skills/fork', '/skills/remove', '/store/install'])
+const STORE_WRITE_PATHS = new Set(['/skills/fork', '/skills/remove', '/store/install'])
 
 // Skills shipped with the package (core: maintained by Voice Native).
 const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
@@ -805,7 +805,7 @@ function startApiServer(workingDir: string, port: number): void {
       return !!refusal
     }
 
-    if (url.pathname === '/skills/content' || url.pathname === '/skills/add' || url.pathname === '/skills/fork' || url.pathname === '/skills/remove') {
+    if (url.pathname === '/skills/content' || url.pathname === '/skills/fork' || url.pathname === '/skills/remove') {
       if (unauthorized()) return
       const name = url.searchParams.get('name')
       if (req.method === 'GET' && url.pathname === '/skills/content') {
@@ -814,14 +814,7 @@ function startApiServer(workingDir: string, port: number): void {
       }
       if (req.method !== 'POST' || url.pathname === '/skills/content') return reply(405, { error: 'method not allowed' })
       if (storeWriteRefused()) return
-      let content: unknown
-      if (url.pathname === '/skills/add') {
-        let body = ''
-        for await (const chunk of req) body += chunk
-        try { content = JSON.parse(body || '{}').content } catch { return reply(400, { error: 'invalid JSON body' }) }
-      }
-      const op = url.pathname === '/skills/add' ? 'add' : url.pathname === '/skills/fork' ? 'fork' : 'remove'
-      const out = changeSkill(op, name, op === 'add' ? content : url.searchParams.get('to'))
+      const out = changeSkill(url.pathname === '/skills/fork' ? 'fork' : 'remove', name, url.searchParams.get('to'))
       return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
     }
 
