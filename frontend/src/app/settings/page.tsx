@@ -1179,9 +1179,8 @@ export default function SettingsPage() {
       <SettingsSection title={`Agents${dashAgents.length ? ` (${dashAgents.length})` : ''}`} description="The specialists your voice agent can dispatch to.">
         {dashAgents.length > 0 ? (
           dashAgents.map((a) => {
-            // One normalised key for both lookups below. The icon map used the
-            // raw name while the blurb lower-cased it, so a capitalised agent
-            // ("Steward") got its blurb but the generic Robot icon.
+            // One key for both lookups: the icon map used to read the raw name
+            // while the blurb lower-cased it, so "Steward" lost its icon.
             const key = a.name?.toLowerCase()
             const Glyph = ({ researcher: MagnifyingGlass, reasoner: Brain, writer: PenNib, tester: TestTube, planner: ListChecks, steward: ShieldCheck, reviewer: Eye } as Record<string, typeof Robot>)[key] ?? Robot
             return (
