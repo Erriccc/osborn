@@ -1,0 +1,31 @@
+{
+  "sha": "0123456789abcdef0123456789abcdef01234567",
+  "paths": [
+    "LICENSE",
+    ".claude-plugin/marketplace.json",
+    "plugins/web/agents/frontend-dev.md",
+    "plugins/web/agents/mcp-user.md",
+    "plugins/web/skills/react-testing/SKILL.md",
+    "plugins/web/skills/react-testing/scripts/run.sh",
+    "plugins/web/skills/react-testing/references/guide.md",
+    "plugins/web/skills/react-testing/.hidden/secret",
+    "plugins/db/agents/sql-reviewer.md",
+    "plugins/db/skills/pg-migrations/SKILL.md",
+    "plugins/db/skills/with-mcp/SKILL.md",
+    "plugins/db/skills/with-mcp/.mcp.json",
+    "external_plugins/x/agents/ignored.md",
+    "plugins/web/README.md"
+  ],
+  "files": {
+    "LICENSE": "MIT License\n\nCopyright (c) fixture",
+    ".claude-plugin/marketplace.json": "{\"plugins\":[{\"name\":\"web\",\"category\":\"frontend\"},{\"name\":\"db\",\"category\":\"database\"}]}",
+    "plugins/web/agents/frontend-dev.md": "---\nname: frontend-dev\ndescription: Builds React components and fixes UI bugs.\ntools: Read, Edit, Write, Bash\nmodel: sonnet\ncolor: blue\n---\n\nYou are a frontend developer.\n",
+    "plugins/web/agents/mcp-user.md": "---\nname: mcp-user\ndescription: Needs MCP.\ntools: Read, mcp__github__get_issue\n---\nbody\n",
+    "plugins/web/skills/react-testing/SKILL.md": "---\nname: react-testing\ndescription: >\n  Write and run React component tests\n  with Playwright and Jest.\n---\n# React testing\n",
+    "plugins/web/skills/react-testing/scripts/run.sh": "#!/bin/sh\necho run\n",
+    "plugins/web/skills/react-testing/references/guide.md": "# Guide\n",
+    "plugins/db/agents/sql-reviewer.md": "---\nname: sql-reviewer\ndescription: Reviews SQL queries and Postgres schema migrations.\ntools:\n  - Read\n  - Grep\nmodel: claude-opus-5-5\n---\nReview SQL.\n",
+    "plugins/db/skills/pg-migrations/SKILL.md": "---\nname: pg-migrations\ndescription: Plan safe Postgres and Supabase schema migrations.\nlicense: Apache-2.0\n---\n# Migrations\n",
+    "plugins/db/skills/with-mcp/SKILL.md": "---\nname: with-mcp\ndescription: uses an MCP server\n---\n"
+  }
+}

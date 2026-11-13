@@ -48,7 +48,8 @@ import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
-import { parseUserAgents, mergeAgents, describeAgents, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, storeName, type AgentDef } from './agent-store.js'
+import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance } from './store-catalog.js'
+import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
@@ -142,11 +143,12 @@ const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
 const homeSkillsDir = () => join(homedir(), '.claude', 'skills')
 
 // Load skills list with name + description for frontend display
-function loadSkillsList(agentDir: string): { name: string; description: string; folder: string; core: boolean; forkedFrom?: string }[] {
+type SkillListing = { name: string; description: string; folder: string; core: boolean; forkedFrom?: string; installedFrom?: { source: string; repo: string; sha: string } }
+function loadSkillsList(agentDir: string): SkillListing[] {
   const skillsDir = join(agentDir, '.claude', 'skills')
   if (!existsSync(skillsDir)) return []
   const core = coreSkillNames(PKG_SKILLS_DIR)
-  const skills: { name: string; description: string; folder: string; core: boolean; forkedFrom?: string }[] = []
+  const skills: SkillListing[] = []
   try {
     for (const skillName of readdirSync(skillsDir)) {
       const skillFile = join(skillsDir, skillName, 'SKILL.md')
@@ -159,7 +161,8 @@ function loadSkillsList(agentDir: string): { name: string; description: string; 
         const descMatch = content.match(/^#[^\n]+\n+([^\n#]+)/m)
         const description = descMatch ? descMatch[1].trim() : ''
         const forkedFrom = skillForkedFrom(skillsDir, skillName)
-        skills.push({ name, description, folder: skillName, core: core.has(skillName), ...(forkedFrom ? { forkedFrom } : {}) })
+        const installedFrom = skillProvenance(skillsDir, skillName)
+        skills.push({ name, description, folder: skillName, core: core.has(skillName), ...(forkedFrom ? { forkedFrom } : {}), ...(installedFrom ? { installedFrom } : {}) })
       }
     }
   } catch (err) {
@@ -773,12 +776,58 @@ function startApiServer(workingDir: string, port: number): void {
       return reply(405, { error: 'method not allowed' })
     }
 
+    if (url.pathname.startsWith('/store/')) {
+      // Catalog browse/install for the store (same gate as /skills/*). GitHub is
+      // read here, never by the browser; installs only take entries from the
+      // agent's own cached catalog, by id.
+      if (unauthorized()) return
+      const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+      try {
+        if (req.method === 'GET' && url.pathname === '/store/catalog') {
+          const src = url.searchParams.get('source')
+          const caches = await loadCatalog(src && src !== 'all' ? src.split(',') : null, { refresh: url.searchParams.get('refresh') === '1' })
+          const entries = caches.flatMap((c) => c.entries)
+          const skills = loadSkillsList(homedir())
+          const myAgents = (url.searchParams.get('agents') || '').split(',').map(storeName).filter(Boolean).slice(0, 50)
+          const installed = new Set([...skills.map((s) => s.folder), ...myAgents])
+          const signals = [
+            ...skills.map((s) => ({ text: `${s.folder} ${s.name} ${s.description}`, reason: `because you use the ${s.folder} skill` })),
+            ...myAgents.map((n) => ({ text: n, reason: `because you have the ${n} agent` })),
+            ...(await listAllClaudeSessions(40)).filter((s) => s.title).map((s) => ({ text: s.title!, reason: `because you worked on “${s.title!.slice(0, 60)}”` })),
+          ]
+          return reply(200, {
+            sources: caches.map((c) => {
+              const s = SOURCES.find((x) => x.id === c.source)!
+              return { id: c.source, label: s.label, repo: c.repo, trust: s.trust, sha: c.sha, fetchedAt: c.fetchedAt, count: c.entries.length, ...(c.error ? { error: c.error } : {}) }
+            }),
+            entries,
+            installed: [...installed],
+            recommended: recommend(entries, signals, installed),
+          })
+        }
+        if (req.method === 'GET' && url.pathname === '/store/entry') {
+          const found = await findEntry(url.searchParams.get('id') || '')
+          return found ? reply(200, { entry: found.entry, content: found.body }) : reply(404, { error: 'not in the catalog' })
+        }
+        if (req.method === 'POST' && url.pathname === '/store/install') {
+          const found = await findEntry(url.searchParams.get('id') || '')
+          if (!found) return reply(404, { error: 'not in the catalog' })
+          if (found.entry.kind === 'agent') return reply(200, { draft: agentDraft(found.entry, found.body) })
+          const out = await installSkill(found.entry, homeSkillsDir(), coreSkillNames(PKG_SKILLS_DIR))
+          return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
+        }
+        return reply(404, { error: 'not found' })
+      } catch (e) {
+        return reply(502, { error: e instanceof Error ? e.message : 'store request failed' })
+      }
+    }
+
     if (req.method === 'GET' && url.pathname === '/agents') {
       // Core sub-agents from claude-llm.ts NAMED_AGENTS (the same object the SDK
       // query uses), with prompts so the store can show and fork them.
       const agents = describeAgents(NAMED_AGENTS, null, {}, true)
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
-      res.end(JSON.stringify({ agents }))
+      res.end(JSON.stringify({ agents, ...describeRoles() }))
       return
     }
 
@@ -2854,6 +2903,7 @@ async function main() {
   // beside the core NAMED_AGENTS, which they can never override or remove.
   let userNamedAgents: Record<string, AgentDef> | null = null
   let userAgentForks: Record<string, string> = {}
+  let userAgentRoles: Record<string, Role> = {}
   const loggedIgnoredAgents = new Set<string>()
   // Turbo mode — read from set_agents handshake (data.turbo). When true every
   // agent (main + sub-agents) runs on FAST_MODEL. Default false = perfect no-op.
@@ -4277,6 +4327,7 @@ async function main() {
       // When turbo IS on with no custom agents, undefined would skip the override —
       // ClaudeLLM handles that internally via the turbo bypass in ClaudeLLMStream.
       agents: userNamedAgents ? applyTurbo(mergeAgents<any>(NAMED_AGENTS, userNamedAgents), turboMode) : undefined,
+      agentRoles: userAgentRoles,
     })
     // Apply turbo to the freshly created LLM so the main model also picks it up.
     // PipelineDirectLLM (llmOverride path) wraps its own ClaudeLLM and may not expose setTurbo.
@@ -5929,7 +5980,7 @@ async function main() {
           enabledMcpServers: enabledMcpNames,
           workingDirectory: workingDir,
           skills: loadSkillsList(homedir()),
-          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks),
+          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks, false, userAgentRoles),
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -6717,7 +6768,7 @@ async function main() {
         })
       }
       else if (data.type === 'get_agents') {
-        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks) })
+        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks, false, userAgentRoles), ...describeRoles() })
       }
       else if (data.type === 'set_agents') {
         // Per-user named agents from the DB (frontend fetches its user_agents
@@ -6733,14 +6784,15 @@ async function main() {
         }
         userNamedAgents = Object.keys(parsed.agents).length ? parsed.agents : null
         userAgentForks = parsed.forkedFrom
+        userAgentRoles = parsed.roles
         // Turbo preference from the frontend (sourced from user_settings DB row).
         turboMode = !!data.turbo
         // applyTurbo wraps AFTER the merge so custom models also get overridden.
         const merged = applyTurbo(mergeAgents<any>(NAMED_AGENTS, userNamedAgents), turboMode)
         ;(currentLLM as any)?.setTurbo?.(turboMode)
-        ;(currentLLM as any)?.setAgents?.(userNamedAgents || turboMode ? merged : undefined)
+        ;(currentLLM as any)?.setAgents?.(userNamedAgents || turboMode ? merged : undefined, userAgentRoles)
         console.log(`🤖 set_agents: ${Object.keys(parsed.agents).length} user agent(s) → effective [${Object.keys(merged).join(', ')}]`)
-        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks) })
+        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks, false, userAgentRoles), ...describeRoles() })
       }
       else if (data.type === 'skill_add') {
         const skillName = storeName(data.name)

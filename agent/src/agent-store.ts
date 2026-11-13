@@ -13,7 +13,152 @@ export interface AgentListing {
   core: boolean
   prompt?: string
   forkedFrom?: string
+  role: Role
+  behaviours: string[]
 }
+
+// ── Roles ────────────────────────────────────────────────────────────────────
+// What an agent may do is decided by its ROLE, never its name, so a fork or an
+// imported agent carries the behaviour of the role it holds. Core agents hold
+// the role of the same name; a fork inherits its parent's; any other agent's is
+// set by its owner or inferred from its tools.
+
+/** 'workspace': session workspace only. 'anywhere': any path, through the
+ *  permission dialog. Extension rule: only matching files (fail closed). */
+export type WriteRule =
+  | 'workspace'
+  | 'anywhere'
+  | { extensions: RegExp; label: string; matchBasename?: boolean }
+
+export const ROLE_NAMES = ['reader', 'researcher', 'reasoner', 'planner', 'writer', 'tester', 'steward', 'reviewer'] as const
+export type Role = typeof ROLE_NAMES[number]
+export const isRole = (r: unknown): r is Role => typeof r === 'string' && (ROLE_NAMES as readonly string[]).includes(r)
+
+export interface RoleSpec {
+  /** One line for people choosing a role. */
+  summary: string
+  write: WriteRule
+  /** Writes into .claude/skills/<name>/ are approved without a dialog. */
+  skillInstall?: boolean
+  /** Its first edit of an existing file each turn is held once with a history reminder; its writes show in the live trace. */
+  historyFirst?: boolean
+  /** Its final message is parsed into a steward verdict card. */
+  verdict?: boolean
+  /** Its prompt records the sign-off the commit/push/PR gate checks (steward-gate.ts). */
+  signsOff?: boolean
+  /** Verifier chain: dispatched beside it (parallelAtStart) and pushed to the orchestrator when it finishes (afterReminder). */
+  chain?: { next: Role[]; parallelAtStart?: Role[]; afterReminder: string }
+}
+
+export const ROLES: Record<Role, RoleSpec> = {
+  reader: { summary: 'Reads and reports. Writes only notes in the session workspace.', write: 'workspace' },
+  researcher: {
+    summary: 'Gathers facts from code and the web; a reasoner checks its findings before they are used.',
+    write: 'workspace',
+    chain: {
+      next: ['reasoner'],
+      afterReminder:
+        'The researcher sub-agent just finished. Before you finalize, you MUST now use the Task tool to ' +
+        'dispatch the `reasoner` GATE to judge whether the research is complete and well-sourced for the ' +
+        'original question — it returns GATE: PASS or GATE: NEEDS-MORE. ' +
+        'If it returns NEEDS-MORE, dispatch the `researcher` again with the gaps it named and then re-gate — ' +
+        'at most 2 rounds, after which surface the outcome to the user rather than looping. ' +
+        "This is the research analogue of writer→reviewer: don't rely on the findings until an independent agent has vetted them.",
+    },
+  },
+  reasoner: { summary: 'Thinks through hard problems and gates research. Does not edit files.', write: 'workspace' },
+  planner: {
+    summary: 'Writes a step plan; the steward checks it for things that already exist before the writer starts.',
+    write: 'workspace',
+    chain: {
+      next: ['steward', 'writer'],
+      afterReminder:
+        'The planner sub-agent just finished. Before the writer starts, use the Task tool to dispatch the `steward` ' +
+        'in PLAN MODE on that plan: for every new function, route, module, table or feature it answers "does this already exist?". ' +
+        'Give the writer the plan WITH the steward\'s reuse map.',
+    },
+  },
+  writer: {
+    summary: 'Changes code anywhere (you approve each write); its work is tested, stewarded and reviewed.',
+    write: 'anywhere',
+    skillInstall: true,
+    historyFirst: true,
+    chain: {
+      next: ['tester', 'steward', 'reviewer'],
+      parallelAtStart: ['tester'],
+      afterReminder:
+        'The writer sub-agent just finished. Before you finalize, you MUST now use the Task tool to: ' +
+        "(1) RUN the tester's tests against the new implementation and report PASS/FAIL; " +
+        '(2) dispatch the `steward` on the diff (diff mode), passing the task and, for a fix, its root cause and evidence — it refactors toward reuse and returns CLEAN, REFACTORED or BLOCK; ' +
+        "(3) if it REFACTORED, RUN the tests again; (4) dispatch the `reviewer` on the final diff for a VERDICT. " +
+        'If the steward returns BLOCK, stop and ask the user the decision it names. ' +
+        'If tests FAIL or the reviewer REJECTs, dispatch the `writer` to fix and then re-verify (steward included) — ' +
+        'at most 2 fix rounds, after which surface the outcome to the user rather than looping. ' +
+        "In any PR description, put the steward's ROOT CAUSE under Why, and its NET-NEW and REMOVED lists under those headings.",
+    },
+  },
+  tester: { summary: 'Writes and runs tests. May write test files only.', write: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true } },
+  steward: {
+    summary: 'Guards against duplication and regressions; its verdict and sign-off unlock commits and PRs.',
+    write: 'anywhere',  // refactors the writer's diff in place
+    verdict: true,
+    signsOff: true,
+  },
+  reviewer: { summary: 'Reviews the final diff for a verdict. May write documentation files only.', write: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' } },
+}
+
+/** The built-in agents and the role each holds. */
+export const CORE_AGENT_ROLES: Record<string, Role> = {
+  researcher: 'researcher', reasoner: 'reasoner', planner: 'planner', writer: 'writer',
+  tester: 'tester', steward: 'steward', reviewer: 'reviewer',
+}
+
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+/** An agent with no role set: one that can edit is a writer, anything else a reader. */
+export const inferRole = (tools?: string[] | null): Role =>
+  (tools || []).some((t) => EDIT_TOOLS.has(String(t).trim())) ? 'writer' : 'reader'
+
+/** Role of a non-core agent: the one set on it, else its parent's, else inferred from its tools. */
+export function resolveRole(a: { role?: unknown; forkedFrom?: string; tools?: string[] }): Role {
+  if (isRole(a.role)) return a.role
+  if (a.forkedFrom && CORE_AGENT_ROLES[a.forkedFrom]) return CORE_AGENT_ROLES[a.forkedFrom]
+  return inferRole(a.tools)
+}
+
+/** The acting agent's role (null = the main orchestrator, or an agent we do not know). */
+export function roleOf(agentType: string | null | undefined, roles: Record<string, Role> = CORE_AGENT_ROLES): Role | null {
+  if (!agentType) return null
+  return roles[agentType] ?? CORE_AGENT_ROLES[agentType] ?? null
+}
+
+/** What a role unlocks, in plain words for the store. */
+export function roleBehaviours(role: Role): string[] {
+  const r = ROLES[role]
+  const out: string[] = []
+  if (r.write === 'workspace') out.push('Writes only in the session workspace')
+  else if (r.write === 'anywhere') out.push('Can edit files anywhere — you approve each write')
+  else out.push(`Can write ${r.write.label} files only`)
+  if (r.skillInstall) out.push('Installs skills without asking for each file')
+  if (r.historyFirst) out.push("Checks a file's history before its first edit")
+  if (r.verdict) out.push('Its verdict shows as a card in chat')
+  if (r.signsOff) out.push('Its sign-off unlocks commits, pushes and PRs')
+  if (r.chain?.parallelAtStart?.length) out.push(`Runs alongside the ${r.chain.parallelAtStart.join(', ')}`)
+  if (r.chain) out.push(`When it finishes: ${r.chain.next.join(' → ')}`)
+  return out
+}
+
+/** The automatic chains, e.g. ['writer', 'tester', 'steward', 'reviewer']. */
+export const roleChains = (): Role[][] =>
+  ROLE_NAMES.filter((r) => ROLES[r].chain).map((r) => [r, ...ROLES[r].chain!.next])
+
+/** Role descriptions for the store's role picker and chain strip. */
+export const describeRoles = () => ({
+  roles: ROLE_NAMES.map((role) => ({ role, summary: ROLES[role].summary, behaviours: roleBehaviours(role) })),
+  chains: roleChains(),
+})
+
+/** forked_from of an agent installed from a catalog: '<source>:<owner>/<repo>@<sha>/<path>'. */
+export const CATALOG_ORIGIN = /^[a-z0-9-]+:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[0-9a-f]{7,40}\/[A-Za-z0-9_./-]{1,200}$/
 
 export const MAX_AGENT_PROMPT = 20000
 const MODELS = new Set(['sonnet', 'opus', 'haiku', 'fable', 'inherit'])
@@ -23,9 +168,10 @@ export const storeName = (raw: unknown): string =>
 
 /** Validates user_agents rows. Disabled rows are dropped; a row named after a
  *  core agent is ignored (core agents cannot be overridden or removed). */
-export function parseUserAgents(rows: unknown, core: Record<string, unknown>): { agents: Record<string, AgentDef>; forkedFrom: Record<string, string>; ignored: string[] } {
+export function parseUserAgents(rows: unknown, core: Record<string, unknown>): { agents: Record<string, AgentDef>; forkedFrom: Record<string, string>; roles: Record<string, Role>; ignored: string[] } {
   const agents: Record<string, AgentDef> = {}
   const forkedFrom: Record<string, string> = {}
+  const roles: Record<string, Role> = {}
   const ignored: string[] = []
   for (const r of Array.isArray(rows) ? rows : []) {
     const name = storeName(r?.name)
@@ -34,16 +180,19 @@ export function parseUserAgents(rows: unknown, core: Record<string, unknown>): {
     if (!name || r?.enabled === false) continue
     if (name in core) { ignored.push(name); continue }
     if (!description || !prompt || prompt.length > MAX_AGENT_PROMPT) continue
-    const from = storeName(r.forkedFrom ?? r.forked_from)
+    const rawFrom = String(r.forkedFrom ?? r.forked_from ?? '').trim()
+    const from = CATALOG_ORIGIN.test(rawFrom) ? rawFrom : storeName(rawFrom)
     if (from) forkedFrom[name] = from
+    const tools: string[] | undefined = Array.isArray(r.tools) && r.tools.length ? r.tools.map(String) : undefined
+    roles[name] = resolveRole({ role: r.role, forkedFrom: from, tools })
     agents[name] = {
       description,
       prompt,
-      ...(Array.isArray(r.tools) && r.tools.length ? { tools: r.tools.map(String) } : {}),
+      ...(tools ? { tools } : {}),
       ...(r.model && (MODELS.has(r.model) || /^claude-/.test(r.model)) ? { model: String(r.model) } : {}),
     }
   }
-  return { agents, forkedFrom, ignored }
+  return { agents, forkedFrom, roles, ignored }
 }
 
 /** Effective agent set: every core agent, plus user agents whose names are free. */
@@ -54,11 +203,12 @@ export function mergeAgents<T>(core: Record<string, T>, user: Record<string, T> 
 }
 
 /** UI listing: core agents carry their prompt (for View and Fork). */
-export function describeAgents(core: Record<string, any>, user: Record<string, AgentDef> | null | undefined, forkedFrom: Record<string, string> = {}, withPrompts = false): AgentListing[] {
+export function describeAgents(core: Record<string, any>, user: Record<string, AgentDef> | null | undefined, forkedFrom: Record<string, string> = {}, withPrompts = false, roles: Record<string, Role> = {}): AgentListing[] {
   return Object.entries(mergeAgents<any>(core, user)).map(([name, a]) => {
     const isCore = name in core
+    const role = roleOf(name, roles) ?? resolveRole({ forkedFrom: forkedFrom[name], tools: a.tools })
     return {
-      name, description: a.description, model: a.model, tools: a.tools, core: isCore,
+      name, description: a.description, model: a.model, tools: a.tools, core: isCore, role, behaviours: roleBehaviours(role),
       ...(isCore && withPrompts ? { prompt: a.prompt } : {}),  // prompts are large: GET /agents only, never the data channel
       ...(!isCore && forkedFrom[name] ? { forkedFrom: forkedFrom[name] } : {}),
     }

@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
 import { parseStewardVerdict, appendStewardVerdict } from './steward-verdict.js'
+import { ROLES, roleOf, type Role, type WriteRule } from './agent-store.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -186,6 +187,8 @@ export interface ClaudeLLMOptions {
   // SDK constraint: agents are fixed once query() starts — changes apply on
   // the next session (cold start / resume / switch), not mid-session.
   agents?: Record<string, { description: string; prompt: string; tools?: string[]; model?: string }>
+  /** Role of each non-core agent (agent-store.ts); core agents fall back to their own. */
+  agentRoles?: Record<string, Role>
   /** Test seam: replaces the SDK `query()` for the persistent session (cold start
    * + primeResume). Production never sets it. */
   queryFn?: typeof query
@@ -671,7 +674,7 @@ export const NAMED_AGENTS = {
       'Returns structured pass/fail results with exact output — does NOT edit files.',
       'NOT GROUNDED: no session index access — runs tests with fresh eyes, adversarial validation.',
     ].join(' '),
-    tools: ['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'],  // write-gate: test files only (WRITE_RULES.tester)
+    tools: ['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'],  // write-gate: test files only (ROLES.tester.write)
     model: 'sonnet',
     prompt: [
       'You are Osborn\'s tester agent. Your job is running tests and builds, then reporting results.',
@@ -832,7 +835,7 @@ export const NAMED_AGENTS = {
       'and returns an ACCEPT or REJECT verdict with specific, actionable feedback. May write documentation files (.md etc.) only.',
       'NOT GROUNDED: no session index access — reviews with fresh eyes for unbiased adversarial check.',
     ].join(' '),
-    tools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],  // write-gate: docs only (WRITE_RULES.reviewer)
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],  // write-gate: docs only (ROLES.reviewer.write)
     model: 'opus',
     prompt: [
       'You are Osborn\'s reviewer agent. You are the VERIFY step in a generator-verifier loop.',
@@ -1039,27 +1042,10 @@ export function applyGrounding(
   return out
 }
 
-// ── Per-agent WRITE-GATE rules ──────────────────────────────────────────────
-// A plain name→rule lookup read by the PreToolUse write-gate. This is NOT a
-// field on the agent def (defs stay clean AgentDefinitions — no strip/compile
-// step), just the same behavior the old hardcoded per-role branches had,
-// gathered in one visible place. Any agent not listed defaults to 'workspace'.
-//   'workspace' → may only write inside the session workspace (main/researcher/
-//                 reasoner/planner).
-//   'anywhere'  → unrestricted; still funnels through canUseTool (writer).
-//   { extensions, label, matchBasename? } → fail-closed extension whitelist
-//                 (reviewer = docs only; tester = test files only).
-type WriteRule =
-  | 'workspace'
-  | 'anywhere'
-  | { extensions: RegExp; label: string; matchBasename?: boolean }
-
-const WRITE_RULES: Record<string, WriteRule> = {
-  writer: 'anywhere',
-  tester: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true },
-  reviewer: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' },
-  steward: 'anywhere',  // refactors the writer's diff in place
-}
+// ── Write gate ──────────────────────────────────────────────────────────────
+// Keyed by the acting agent's ROLE (agent-store.ts ROLES), not its name, so a
+// fork or an imported agent carries the rule of the role it holds. No role
+// (main orchestrator, unknown agent) → 'workspace'.
 
 /**
  * Path is inside the per-session sandbox workspace. Used by decideWrite's
@@ -1072,17 +1058,17 @@ function isWorkspacePath(filePath: string): boolean {
 }
 
 /**
- * Decide a Write/Edit/MultiEdit for the acting agent (null = main orchestrator).
- * Pure lookup against WRITE_RULES. Returns:
+ * Decide a Write/Edit/MultiEdit for the acting agent's role (null = main
+ * orchestrator or an unknown agent). Returns:
  *   'allow' → fall through (→ canUseTool workspace auto-approve, or {}).
  *   'defer' → PreToolUse 'ask' (canUseTool decides).
  *   'deny'  → hard block with reason.
  */
 export function decideWrite(
-  agentType: string | null,
+  role: Role | null,
   filePath: string,
 ): { decision: 'allow' | 'defer' | 'deny'; reason?: string } {
-  const rule: WriteRule = (agentType && WRITE_RULES[agentType]) || 'workspace'
+  const rule: WriteRule = role ? ROLES[role].write : 'workspace'
   if (rule === 'anywhere') return { decision: 'defer' }
   if (rule === 'workspace') {
     if (filePath && !isWorkspacePath(filePath)) {
@@ -1102,52 +1088,16 @@ export function decideWrite(
 }
 
 // ── Verifier chaining (Pattern #1) ──────────────────────────────────────────
-// Verifiers are real named Task sub-agents (the `agents` roster), NOT out-of-band
-// query() spawns. Two enforcement points:
-//   • parallelAtStart — verifiers the ORCHESTRATOR must dispatch IN PARALLEL with
-//     the keyed agent (enforced by the orchestrator prompt; a post-hoc hook cannot
-//     make two Tasks run concurrently). Tester is TDD: it WRITES tests from the
-//     spec in parallel with the writer, blind to the implementation.
-//   • afterReminder — injected into the MAIN agent by the PostToolUse-on-Task hook
-//     when the keyed sub-agent's Task completes, so the main agent dispatches the
-//     next verifier(s) as real Tasks (verdicts return inline). Includes RUNNING the
-//     tester's tests against the finished code. Any agent not listed chains to nothing.
+// Verifiers are real named Task sub-agents. The chain is a role property
+// (agent-store.ts ROLES[role].chain): parallelAtStart is enforced by the
+// orchestrator prompt; afterReminder is pushed into the MAIN agent at
+// SubagentStop so it dispatches the next verifier(s) as real Tasks.
 // Prepended to a verifier-chain reminder pushed into the MAIN agent at SubagentStop. Keeps the
 // dispatch SILENT — the model should emit ONLY the Task tool call(s), no spoken/streamed text —
 // so the chain advances without a robotic "now running the review…" narration on the voice path.
 export const SILENT_VERIFY_PREFIX =
   '[SYSTEM — SILENT CONTROL MESSAGE. Do NOT narrate, speak, or emit any assistant text this turn. ' +
   'Silently perform the following via the Task tool only.] '
-
-export const VERIFIER_CHAIN: Record<string, { parallelAtStart?: string[]; afterReminder?: string }> = {
-  writer: {
-    parallelAtStart: ['tester'],
-    afterReminder:
-      'The writer sub-agent just finished. Before you finalize, you MUST now use the Task tool to: ' +
-      "(1) RUN the tester's tests against the new implementation and report PASS/FAIL; " +
-      '(2) dispatch the `steward` on the diff (diff mode), passing the task and, for a fix, its root cause and evidence — it refactors toward reuse and returns CLEAN, REFACTORED or BLOCK; ' +
-      "(3) if it REFACTORED, RUN the tests again; (4) dispatch the `reviewer` on the final diff for a VERDICT. " +
-      'If the steward returns BLOCK, stop and ask the user the decision it names. ' +
-      'If tests FAIL or the reviewer REJECTs, dispatch the `writer` to fix and then re-verify (steward included) — ' +
-      'at most 2 fix rounds, after which surface the outcome to the user rather than looping. ' +
-      "In any PR description, put the steward's ROOT CAUSE under Why, and its NET-NEW and REMOVED lists under those headings.",
-  },
-  planner: {
-    afterReminder:
-      'The planner sub-agent just finished. Before the writer starts, use the Task tool to dispatch the `steward` ' +
-      'in PLAN MODE on that plan: for every new function, route, module, table or feature it answers "does this already exist?". ' +
-      'Give the writer the plan WITH the steward\'s reuse map.',
-  },
-  researcher: {
-    afterReminder:
-      'The researcher sub-agent just finished. Before you finalize, you MUST now use the Task tool to ' +
-      'dispatch the `reasoner` GATE to judge whether the research is complete and well-sourced for the ' +
-      'original question — it returns GATE: PASS or GATE: NEEDS-MORE. ' +
-      'If it returns NEEDS-MORE, dispatch the `researcher` again with the gaps it named and then re-gate — ' +
-      'at most 2 rounds, after which surface the outcome to the user rather than looping. ' +
-      "This is the research analogue of writer→reviewer: don't rely on the findings until an independent agent has vetted them.",
-  },
-}
 
 const RESEARCH_TOOLS = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -1563,8 +1513,9 @@ export class ClaudeLLM extends llm.LLM {
    * start (session start/resume/switch) — a live subprocess keeps the agents
    * it was created with.
    */
-  setAgents(agents: ClaudeLLMOptions['agents']): void {
+  setAgents(agents: ClaudeLLMOptions['agents'], roles?: Record<string, Role>): void {
     this.#opts.agents = agents
+    this.#opts.agentRoles = roles
     console.log(`🤖 Named agents ${agents ? `set (${Object.keys(agents).join(', ')})` : 'reset to built-ins'} — applies at next query cold start`)
   }
 
@@ -2689,14 +2640,15 @@ class ClaudeLLMStream extends llm.LLMStream {
               console.log(`✅ Auto-approved ${toolName} to workspace: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
-            // Auto-approve writer sub-agent writes to skill installation directories.
+            // Auto-approve skill-installing roles' (writer) writes to skill installation directories.
             // Pattern matches `.claude/skills/<skillname>/<file>` in any osborn install location
             // (npm global, dev tree, cloud sandbox), so installing a multi-file skill via the
             // writer agent doesn't blow up into a per-file permission cascade.
-            // Requires agent_type === 'writer' — main/researcher/reasoner are blocked by PreToolUse
+            // Requires a role with skillInstall (writer) — workspace-only roles are blocked by PreToolUse
             // before they ever reach canUseTool, so this check is the only path that lets a
             // skill install through silently.
-            if (agentType === 'writer' && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
+            const writeRole = roleOf(agentType as string | null, this.#opts.agentRoles)
+            if (writeRole && ROLES[writeRole].skillInstall && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
               console.log(`✅ Auto-approved writer ${toolName} to skill dir: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
@@ -2782,18 +2734,19 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
               }
 
-              // Write/Edit/MultiEdit access control — plain WRITE_RULES lookup
-              // keyed by agent name (see decideWrite). Same behavior the old
-              // hardcoded per-role branches had, now in one visible place.
+              // Write/Edit/MultiEdit access control — keyed by the agent's ROLE
+              // (agent-store.ts ROLES), so forks and imports keep their role's rule.
               if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
                 const filePath = String(toolInput.file_path || '')
+                const role = roleOf(agentType, this.#opts.agentRoles)
+                const historyFirst = !!(role && ROLES[role].historyFirst)
 
                 // Writer PROVENANCE REMINDER (Chesterton's Fence): on the writer's FIRST edit of
                 // an EXISTING (version-controlled) file this turn, deny ONCE with a reminder to
                 // review the file's git history so the change is backward-informed (root cause,
                 // prior/reverted attempts, cross-component coupling), not forward-only — then it
                 // proceeds. New files are exempt (no history). One-shot per turn so it can't loop.
-                if (agentType === 'writer' && filePath && existsSync(filePath) && !writerHistoryReminded) {
+                if (historyFirst && filePath && existsSync(filePath) && !writerHistoryReminded) {
                   writerHistoryReminded = true
                   const base = filePath.split('/').pop() || filePath
                   const gateReason = [
@@ -2808,8 +2761,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gateReason }
                 }
 
-                const { decision, reason } = decideWrite(agentType, filePath)
-                console.log(`🔎 Write gate: agent=${agentType ?? 'main'} path="${filePath || '(none)'}" → ${decision}`)
+                const { decision, reason } = decideWrite(role, filePath)
+                console.log(`🔎 Write gate: agent=${agentType ?? 'main'} role=${role ?? '-'} path="${filePath || '(none)'}" → ${decision}`)
 
                 if (decision === 'deny') {
                   this.#eventEmitter.emit('tool_blocked', { name: toolName, reason })
@@ -2819,7 +2772,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                   // Writer ('anywhere') surfaces its write in the live trace before
                   // the permission dialog; adversarial agents (reviewer/tester) do
                   // NOT emit here — parity with the prior hardcoded branches.
-                  if (agentType === 'writer') {
+                  if (historyFirst) {
                     this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main', agentId: input?.agent_id })
                   }
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
@@ -3297,7 +3250,8 @@ class ClaudeLLMStream extends llm.LLMStream {
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
               // Steward verdict card (#221): parsed, kept in the session's sidecar, sent to the chat.
-              const verdict = at === 'steward' ? parseStewardVerdict(msg) : null
+              const atRole = roleOf(at, this.#opts.agentRoles)
+              const verdict = atRole && ROLES[atRole].verdict ? parseStewardVerdict(msg) : null
               if (verdict) {
                 try {
                   if (this.#sessionId && this.#opts.workingDirectory) appendStewardVerdict(this.#sessionId, this.#opts.workingDirectory, verdict)
@@ -3308,12 +3262,12 @@ class ClaudeLLMStream extends llm.LLMStream {
               // SubagentStop fires at REAL completion. When a chained producer (writer/researcher)
               // finishes, push its afterReminder into the MAIN agent's streaming input so the main
               // agent dispatches the next verifier(s) as real Task sub-agents (verdicts return
-              // inline). Only writer/researcher are VERIFIER_CHAIN keys with afterReminder, so
-              // verifiers (reviewer/tester/reasoner) never re-chain. Dedup on agent_id guards a
+              // inline). Only roles with a chain (writer/planner/researcher) push a reminder, so
+              // verifiers (reviewer/tester/reasoner/steward) never re-chain. Dedup on agent_id guards a
               // double-fired SubagentStop; a fresh fix-round writer has a NEW id → re-chains (the
               // intended bounded loop). Guarded on a live session so we never cold-start a query
               // just to deliver a reminder. Silent-dispatch prefix keeps it off the voice.
-              const chainLink = at ? VERIFIER_CHAIN[at] : undefined
+              const chainLink = atRole ? ROLES[atRole].chain : undefined
               // Dedup MUST key on the REAL agent_id, never the fabricated 'sa-<ts>' fallback used
               // above for status/emit — a synthetic id is unique every call and would defeat the
               // double-fire guard. If the SDK omits agent_id we can't dedup safely, so skip chaining.

@@ -2,14 +2,15 @@
 
 import { useState, useEffect, useRef } from 'react'
 import type { BackgroundFlow } from '../LogsDrawer'
-import { AgentStore, type NamedAgent } from '../AgentStore'
+import { AgentStore, type NamedAgent, type RolesData } from '../AgentStore'
 import type { UserAgentDraft, UserAgentRow } from '@/lib/user-agents'
 import { usePanelExclusive, useViewportClamp } from './shared'
 
 // Agents button + popover. The panel body is the shared AgentStore (same
 // surface as Settings → Agents & Skills) with live run status per agent.
-export function AgentsPopover({ agents, yours, activity, disabled, onSaveAgent, onDeleteAgent, onSetAgentEnabled, requestOpen, hideTrigger }: {
+export function AgentsPopover({ agents, roles, yours, activity, disabled, onSaveAgent, onDeleteAgent, onSetAgentEnabled, requestOpen, hideTrigger }: {
   agents?: NamedAgent[]
+  roles?: RolesData | null
   yours?: UserAgentRow[] | null
   /** Live sub-agent runs — the same flows the Activity drawer's Running tab shows. */
   activity?: BackgroundFlow[]
@@ -90,7 +91,7 @@ export function AgentsPopover({ agents, yours, activity, disabled, onSaveAgent, 
               <span className="text-[10px] text-gray-500">{working > 0 ? `${working} working · ` : ''}{count} active</span>
             </div>
             <div className="max-h-[28rem] overflow-y-auto p-3">
-              <AgentStore agents={agents ?? []} yours={yours ?? null}
+              <AgentStore agents={agents ?? []} yours={yours ?? null} roles={roles} browseHref="/settings?section=agents&browse=1"
                 onSave={onSaveAgent} onDelete={onDeleteAgent} onSetEnabled={onSetAgentEnabled}
                 status={(name) => {
                   const live = runsOf(name).find((f) => f.status === 'running')

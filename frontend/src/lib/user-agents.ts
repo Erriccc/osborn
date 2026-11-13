@@ -14,6 +14,8 @@ export interface UserAgentDraft {
   model: string
   tools: string[]
   forked_from?: string | null
+  /** Null = inherit the parent's role or infer it from the tools (agent-store.ts). */
+  role?: string | null
 }
 export interface UserAgentRow extends UserAgentDraft {
   enabled: boolean
@@ -47,6 +49,8 @@ export function useUserAgents() {
       const row = {
         name, description: a.description.trim(), prompt: a.prompt.trim(), model: a.model, tools: a.tools,
         ...(a.forked_from ? { forked_from: a.forked_from } : {}),
+        // Omitted unless set or cleared, so a database without migration 016 still saves.
+        ...(a.role !== undefined ? { role: a.role || null } : {}),
       }
       return sb.from('user_agents')
         .upsert({ user_id: userId, ...row, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })

@@ -44,7 +44,7 @@ import { getToolRiskLevel, type PermissionRequest, type ApprovalMode } from './v
 import { classifyRisk } from '@/lib/riskTier'
 import { TextInput, type AttachedFile } from './voice/TextInput'
 import { AgentsPopover } from './voice/AgentsPopover'
-import type { NamedAgent, SkillInfo } from './AgentStore'
+import type { NamedAgent, SkillInfo, RolesData } from './AgentStore'
 import { useUserAgents } from '../lib/user-agents'
 import { SkillsPopover } from './voice/SkillsPanel'
 import { ControlMenu } from './voice/ControlMenu'
@@ -717,6 +717,7 @@ function VoiceRoomInner({
   // Skills state
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [namedAgents, setNamedAgents] = useState<NamedAgent[]>([])
+  const [agentRoles, setAgentRoles] = useState<RolesData | null>(null)
   const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
   // Esc closes the skill viewer (× and backdrop-click already close it).
   useEffect(() => {
@@ -2572,6 +2573,7 @@ function VoiceRoomInner({
         if (data.agents && Array.isArray(data.agents)) {
           setNamedAgents(data.agents)
         }
+        if (Array.isArray(data.roles)) setAgentRoles({ roles: data.roles, chains: data.chains || [] })
       } else if (data.type === 'skill_content') {
         if (data.content) setViewedSkill({ name: data.name, content: data.content })
       } else if (data.type === 'skill_remove_result' || data.type === 'skill_fork_result') {
@@ -3507,7 +3509,7 @@ function VoiceRoomInner({
   useEffect(() => {
     if (!agentConnected || userAgentRows === null) return
     const encoder = new TextEncoder()
-    const agents = userAgentRows.filter((r) => r.enabled).map(({ name, description, prompt, model, tools, forked_from }) => ({ name, description, prompt, model, tools, forked_from }))
+    const agents = userAgentRows.filter((r) => r.enabled).map(({ name, description, prompt, model, tools, forked_from, role }) => ({ name, description, prompt, model, tools, forked_from, role }))
     sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents, turbo: turboMode })), { reliable: true })
   }, [agentConnected, userAgentRows, turboMode, sendToAgent])
 
@@ -4223,7 +4225,7 @@ function VoiceRoomInner({
                 live in the composer control strip next to the input (Claude-
                 style), so the top bar carries only status/stats + hangup. */}
             <div className="hidden sm:flex items-center gap-1.5">
-              <AgentsPopover agents={namedAgents} activity={backgroundFlows} disabled={!agentConnected}
+              <AgentsPopover agents={namedAgents} roles={agentRoles} activity={backgroundFlows} disabled={!agentConnected}
                 yours={userAgentRows}
                 onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} onSetAgentEnabled={handleSetAgentEnabled} />
 
@@ -5024,7 +5026,7 @@ function VoiceRoomInner({
           Agents/Skills rows via requestOpen. Rendered at top level (not inside
           the sheet) so they survive the sheet closing; their panels are the
           standard viewport-anchored mobile popovers. */}
-      <AgentsPopover agents={namedAgents} activity={backgroundFlows} disabled={!agentConnected}
+      <AgentsPopover agents={namedAgents} roles={agentRoles} activity={backgroundFlows} disabled={!agentConnected}
         yours={userAgentRows}
         onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} onSetAgentEnabled={handleSetAgentEnabled}
         requestOpen={agentsOpenReq} hideTrigger />

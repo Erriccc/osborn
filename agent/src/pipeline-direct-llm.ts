@@ -276,7 +276,7 @@ export class PipelineDirectLLM extends llm.LLM {
   getPendingPermission() { return this.#claudeLLM.getPendingPermission() }
   getMcpServers() { return this.#claudeLLM.getMcpServers() }
   setMcpServers(s: any) { this.#claudeLLM.setMcpServers(s) }
-  setAgents(a: any) { this.#claudeLLM.setAgents(a) }
+  setAgents(a: any, roles?: any) { this.#claudeLLM.setAgents(a, roles) }
   setTurbo(on: boolean) { this.#claudeLLM.setTurbo(on) }
   // CLICK-TIME OVERLAP (0.9.258): start the resume replay early so it overlaps
   // the connect handshake. Proxied to the inner ClaudeLLM.

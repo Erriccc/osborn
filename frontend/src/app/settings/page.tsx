@@ -8,7 +8,8 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
-import { AgentStore, SkillStore, type NamedAgent, type SkillInfo } from '@/components/AgentStore'
+import { AgentStore, SkillStore, type NamedAgent, type SkillInfo, type RolesData } from '@/components/AgentStore'
+import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
@@ -61,6 +62,8 @@ export default function SettingsPage() {
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [dashSkills, setDashSkills] = useState<SkillInfo[]>([])
   const [dashAgents, setDashAgents] = useState<NamedAgent[]>([])
+  const [dashRoles, setDashRoles] = useState<RolesData | null>(null)
+  const [storeTab, setStoreTab] = useState<'installed' | 'browse'>('installed')
   const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
   const [skillError, setSkillError] = useState<string | null>(null)
   const userAgents = useUserAgents()
@@ -155,7 +158,10 @@ export default function SettingsPage() {
       .then((d) => { if (Array.isArray(d?.skills)) setDashSkills(d.skills) })
       .catch(() => {})
     fetch(`${base}/agents`).then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (Array.isArray(d?.agents)) setDashAgents(d.agents) })
+      .then((d) => {
+        if (Array.isArray(d?.agents)) setDashAgents(d.agents)
+        if (Array.isArray(d?.roles)) setDashRoles({ roles: d.roles, chains: d.chains || [] })
+      })
       .catch(() => {})
     if (syncToken) {
       fetch(`${base}/secrets`, { headers: { 'Authorization': `Bearer ${syncToken}` } })
@@ -689,6 +695,15 @@ export default function SettingsPage() {
     })
   }
 
+  // Deep link from the chat popovers: /settings?section=agents&browse=1
+  useEffect(() => {
+    if (loading) return
+    const sp = new URLSearchParams(window.location.search)
+    const sec = sp.get('section') as SectionId | null
+    if (sp.get('browse') === '1') setStoreTab('browse')
+    if (sec && NAV_GROUPS.some((g) => g.items.some((i) => i.id === sec))) setTimeout(() => goToSection(sec), 50)
+  }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Editable public handle (profiles.username) — drives /p/{handle}/{slug}
    *  URLs. Self-contained: loads on mount, PUTs /api/account/handle on save.
    *  Must stay ABOVE the `if (loading)` early return (Rules of Hooks). */
@@ -1190,11 +1205,34 @@ export default function SettingsPage() {
     }).catch(() => setSkillError('Could not reach your machine'))
   }
 
-  const AgentsSection = (
+  const storeRequest = useCallback((path: string, method: 'GET' | 'POST' = 'GET') => skillRequest(path, method), [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
+  const storeTabs = (
+    <div role="tablist" className="mb-3 flex gap-1.5">
+      {(['installed', 'browse'] as const).map((t) => (
+        <button key={t} role="tab" aria-selected={storeTab === t} onClick={() => setStoreTab(t)}
+          className={`rounded-full border px-3 py-1 text-[12px] ${storeTab === t ? 'border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]' : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>
+          {t === 'installed' ? 'Installed' : 'Browse'}
+        </button>
+      ))}
+    </div>
+  )
+
+  const AgentsSection = storeTab === 'browse' ? (
+    <SettingsSection title="Browse" description="Skills and named agents from trusted catalogs. Anthropic's are first-party; community catalogs are marked. Look at the prompt and files before installing.">
+      <div className="px-4 py-3.5">
+        {storeTabs}
+        <StoreBrowse request={storeRequest} yours={userAgents.rows}
+          onInstallAgent={userAgents.rows ? userAgents.save : undefined}
+          onSkillsChanged={setDashSkills}
+          takenAgentNames={new Set([...dashAgents.map((a) => a.name), ...(userAgents.rows || []).map((r) => r.name)])} />
+      </div>
+    </SettingsSection>
+  ) : (
     <>
       <SettingsSection title="Agents" description="The specialists your voice agent can dispatch to. Built-in agents are maintained by Voice Native; fork one to make it your own. Your agents run when you ask for them by name.">
         <div className="px-4 py-3.5">
-          <AgentStore agents={dashAgents} yours={userAgents.rows}
+          {storeTabs}
+          <AgentStore agents={dashAgents} yours={userAgents.rows} roles={dashRoles}
             onSave={userAgents.save} onDelete={userAgents.remove} onSetEnabled={userAgents.setEnabled} />
         </div>
       </SettingsSection>

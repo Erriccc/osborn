@@ -17,6 +17,8 @@ export interface NamedAgent {
   core: boolean
   prompt?: string
   forkedFrom?: string
+  role?: string
+  behaviours?: string[]
 }
 
 export interface SkillInfo {
@@ -25,6 +27,22 @@ export interface SkillInfo {
   folder?: string
   core?: boolean
   forkedFrom?: string
+  installedFrom?: { source: string; repo: string; sha: string }
+}
+
+/** Roles and chains as the machine reports them (agent-store.ts describeRoles). */
+export interface RoleInfo { role: string; summary: string; behaviours: string[] }
+export interface RolesData { roles: RoleInfo[]; chains: string[][] }
+
+const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']
+/** Display copy of agent-store.ts resolveRole: set role, else the parent's, else from tools. */
+export const effectiveRole = (r: { role?: string | null; forked_from?: string | null; tools?: string[] }, coreNames: Set<string>) =>
+  r.role || (r.forked_from && coreNames.has(r.forked_from) ? r.forked_from : (r.tools || []).some((t) => EDIT_TOOLS.includes(t)) ? 'writer' : 'reader')
+
+/** Where an installed catalog agent came from: 'source:owner/repo@sha/path' → 'owner/repo @sha7'. */
+export const originLabel = (from: string) => {
+  const m = /^[a-z0-9-]+:([^@]+)@([0-9a-f]{7})[0-9a-f]*\//.exec(from)
+  return m ? `${m[1]} @${m[2]}` : from
 }
 
 // Plain-language one-liners for the built-in agents; the raw description is
@@ -58,6 +76,35 @@ function LockBadge() {
   )
 }
 
+function RoleLine({ role, behaviours }: { role: string; behaviours?: string[] }) {
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-snug text-[var(--text-muted)]">
+      <span className="rounded border border-[var(--accent)]/40 px-1 py-px font-semibold uppercase tracking-wide text-[var(--accent)]">{role}</span>
+      {behaviours?.map((b, i) => <span key={i}>{i > 0 && '· '}{b}</span>)}
+    </div>
+  )
+}
+
+/** "Works together": the automatic chains, e.g. writer → tester → steward → reviewer. */
+export function ChainStrip({ chains }: { chains: string[][] }) {
+  if (!chains.length) return null
+  return (
+    <div className="space-y-1">
+      {chains.map((c) => (
+        <div key={c.join('>')} className="flex flex-wrap items-center gap-1 text-[11px] text-[var(--text-secondary)]">
+          {c.map((r, i) => (
+            <span key={r + i} className="flex items-center gap-1">
+              {i > 0 && <span className="text-[var(--text-muted)]">→</span>}
+              <span className="rounded bg-[var(--surface)] px-1.5 py-px capitalize">{r}</span>
+            </span>
+          ))}
+        </div>
+      ))}
+      <p className="text-[10px] text-[var(--text-muted)]">Chains follow roles: any agent with the writer role is tested, stewarded and reviewed the same way.</p>
+    </div>
+  )
+}
+
 function ArmedDelete({ onConfirm, label = 'Delete' }: { onConfirm: () => void; label?: string }) {
   const [armed, setArmed] = useState(false)
   return (
@@ -74,7 +121,7 @@ const uniqueName = (base: string, taken: Set<string>) => {
   return n
 }
 
-export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, status }: {
+export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, status, roles, browseHref }: {
   /** Agents reported by the machine; the core ones fill "Built in". */
   agents: NamedAgent[]
   /** The user's rows; null when signed out or not loaded. */
@@ -84,6 +131,10 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   onSetEnabled?: (name: string, enabled: boolean) => void
   /** Optional live status (e.g. "working") shown beside an agent's name. */
   status?: (name: string) => ReactNode
+  /** Role list + chains for the role picker and the chain strip. */
+  roles?: RolesData | null
+  /** Where "Browse catalogs" goes (omitted = no link). */
+  browseHref?: string
 }) {
   const core = agents.filter((a) => a.core)
   const coreNames = new Set(core.map((a) => a.name))
@@ -105,9 +156,20 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
     : editing!.isNew && taken.has(name) ? `${name} already exists` : ''
   const canSave = !!d && !nameError && !!d.description.trim() && d.description.length <= 500 && !!d.prompt.trim() && d.prompt.length <= MAX_PROMPT
   const set = (patch: Partial<UserAgentDraft>) => editing && setEditing({ ...editing, draft: { ...editing.draft, ...patch } })
+  const roleInfo = (role: string) => roles?.roles.find((r) => r.role === role)
+  const rowRole = (r: UserAgentDraft) => agents.find((a) => a.name === r.name && !a.core)?.role || effectiveRole(r, coreNames)
 
   return (
     <div className="space-y-4">
+      {(roles?.chains.length || browseHref) ? (
+        <div>
+          <div className="flex items-center justify-between">
+            <h5 className={heading}>Works together</h5>
+            {browseHref && <a className={link} href={browseHref} target="_blank" rel="noreferrer">Browse catalogs ↗</a>}
+          </div>
+          {roles?.chains && <ChainStrip chains={roles.chains} />}
+        </div>
+      ) : null}
       <div>
         <h5 className={heading}>Built in — maintained by Voice Native</h5>
         <div className="space-y-1.5">
@@ -127,6 +189,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
                 </span>
               </div>
               <p title={a.description} className="mt-0.5 text-[11px] leading-snug text-[var(--text-secondary)]">{AGENT_BLURBS[a.name] ?? a.description}</p>
+              {a.role && <RoleLine role={a.role} behaviours={a.behaviours ?? roleInfo(a.role)?.behaviours} />}
               {viewing === a.name && (
                 <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-[var(--surface)] p-2 font-mono text-[10px] leading-relaxed text-[var(--text-secondary)]">{a.prompt}</pre>
               )}
@@ -146,7 +209,9 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
         </div>
         {d && (
           <div className={`${card} mb-2 space-y-1.5`}>
-            {d.forked_from && <p className="text-[10px] text-[var(--text-secondary)]">Forking <b className="capitalize">{d.forked_from}</b>. The built-in keeps running in the automatic chain; your fork runs when you ask for it by name.</p>}
+            {d.forked_from && (coreNames.has(d.forked_from)
+              ? <p className="text-[10px] text-[var(--text-secondary)]">Forking <b className="capitalize">{d.forked_from}</b>. The built-in keeps running in the automatic chain; your fork runs when you ask for it by name, with the same role.</p>
+              : <p className="text-[10px] text-[var(--text-secondary)]">Installed from <b>{originLabel(d.forked_from)}</b>.</p>)}
             <input value={d.name} disabled={!editing!.isNew} onChange={(e) => set({ name: e.target.value })} placeholder="agent-name (kebab-case)" className={field} />
             {nameError && d.name && <p className="text-[10px] text-red-400">{nameError}</p>}
             <input value={d.description} onChange={(e) => set({ description: e.target.value })} maxLength={500} placeholder="When should the orchestrator use this agent?" className={field} />
@@ -156,6 +221,15 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
                 {(MODELS.includes(d.model) ? MODELS : [...MODELS, d.model]).map((m) => <option key={m} value={m}>{m}</option>)}
               </select>
               <input value={d.tools.join(', ')} onChange={(e) => set({ tools: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })} placeholder="Tools (comma-sep; empty = inherit all)" className={`${field} flex-1`} />
+            </div>
+            <div>
+              <select value={d.role || ''} onChange={(e) => set({ role: e.target.value || null })} className={field} aria-label="Role">
+                <option value="">Role: automatic ({effectiveRole({ ...d, role: null }, coreNames)})</option>
+                {(roles?.roles.map((r) => r.role) ?? []).map((r) => <option key={r} value={r}>Role: {r}</option>)}
+              </select>
+              <p className="mt-0.5 text-[10px] leading-snug text-[var(--text-muted)]">
+                {roleInfo(effectiveRole(d, coreNames))?.summary ?? 'The role decides what the agent may do: where it can write and which checks run after it.'}
+              </p>
             </div>
             <button
               disabled={!canSave}
@@ -178,15 +252,16 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
               <div className="flex items-start justify-between gap-2">
                 <span className="flex flex-wrap items-center gap-1.5 text-[13px] font-medium text-[var(--text-primary)]">
                   {r.name}{r.enabled && status?.(r.name)}
-                  {r.forked_from && <span className="text-[10px] font-normal text-[var(--text-secondary)]">forked from <span className="capitalize">{r.forked_from}</span></span>}
+                  {r.forked_from && <span className="text-[10px] font-normal text-[var(--text-secondary)]">{coreNames.has(r.forked_from) ? <>forked from <span className="capitalize">{r.forked_from}</span></> : <>from {originLabel(r.forked_from)}</>}</span>}
                 </span>
                 <span className="flex shrink-0 items-center gap-2">
                   {onSetEnabled && <button className={link} onClick={() => onSetEnabled(r.name, !r.enabled)}>{r.enabled ? 'Disable' : 'Enable'}</button>}
-                  {onSave && <button className={link} onClick={() => setEditing({ isNew: false, draft: { name: r.name, description: r.description, prompt: r.prompt, model: r.model, tools: r.tools || [], forked_from: r.forked_from } })}>Edit</button>}
+                  {onSave && <button className={link} onClick={() => setEditing({ isNew: false, draft: { name: r.name, description: r.description, prompt: r.prompt, model: r.model, tools: r.tools || [], forked_from: r.forked_from, role: r.role } })}>Edit</button>}
                   {onDelete && <ArmedDelete onConfirm={() => onDelete(r.name)} />}
                 </span>
               </div>
               <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-[var(--text-secondary)]">{r.description}</p>
+              <RoleLine role={rowRole(r)} behaviours={roleInfo(rowRole(r))?.behaviours} />
             </div>
           ))}
         </div>
@@ -215,6 +290,7 @@ export function SkillStore({ skills, onView, onFork, onRemove }: {
         <span className="flex flex-wrap items-center gap-1.5 text-[13px] font-medium leading-snug text-[var(--text-primary)]">
           {s.name}{s.core && <LockBadge />}
           {s.forkedFrom && <span className="text-[10px] font-normal text-[var(--text-secondary)]">forked from {s.forkedFrom}</span>}
+          {s.installedFrom && <span title={`${s.installedFrom.repo}@${s.installedFrom.sha}`} className="text-[10px] font-normal text-[var(--text-secondary)]">from {s.installedFrom.repo} @{s.installedFrom.sha.slice(0, 7)}</span>}
         </span>
         <span className="flex shrink-0 items-center gap-2">
           {onView && <button className={link} onClick={() => onView(folderOf(s))}>View</button>}

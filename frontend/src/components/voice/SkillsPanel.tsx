@@ -81,6 +81,7 @@ export function SkillsPanel({
       ) : (
         <p className="text-[11px] text-gray-500">No skills installed</p>
       )}
+      <a href="/settings?section=agents&browse=1" target="_blank" rel="noreferrer" className="block text-[11px] text-[var(--accent)] hover:opacity-80">Browse skill catalogs ↗</a>
       {/* Catalog: one-tap official skills */}
       {skills && !skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder || sk.name)) && (
         <button
