@@ -49,7 +49,7 @@ const run = async () => {
   assert.deepEqual(by['sql-reviewer'].tools, ['Read', 'Grep'])
   assert.equal(by['pg-migrations'].license, 'Apache-2.0', 'own license wins')
 
-  // Agent draft: role inferred from tools, pinned origin accepted by parseUserAgents.
+  // Agent draft: role inferred from tools; parseUserAgents keeps the saved role.
   const draft = agentDraft(fe, bodies[fe.id])
   assert.equal(draft.role, 'writer')
   assert.equal(draft.forked_from, `wshobson-agents:wshobson/agents@${fx.sha}/plugins/web/agents/frontend-dev.md`)
@@ -57,7 +57,6 @@ const run = async () => {
   assert.equal(rev.role, 'reader')
   assert.equal(rev.model, 'claude-opus-5-5')
   const parsed = parseUserAgents([{ ...draft, enabled: true }], {})
-  assert.equal(parsed.forkedFrom['frontend-dev'], draft.forked_from, 'catalog origin kept verbatim')
   assert.equal(parsed.roles['frontend-dev'], 'writer')
 
   // Install: copies files at the pinned sha, writes provenance, refuses collisions and traversal.

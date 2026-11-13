@@ -2912,7 +2912,6 @@ async function main() {
   // switch/resume) reuse them without waiting for a frontend resend. Added
   // beside the core NAMED_AGENTS, which they can never override or remove.
   let userNamedAgents: Record<string, AgentDef> | null = null
-  let userAgentForks: Record<string, string> = {}
   let userAgentRoles: Record<string, Role> = {}
   const loggedDroppedAgents = new Set<string>()
   // Turbo mode — read from set_agents handshake (data.turbo). When true every
@@ -5990,7 +5989,7 @@ async function main() {
           enabledMcpServers: enabledMcpNames,
           workingDirectory: workingDir,
           skills: loadSkillsList(homedir()),
-          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks, false, userAgentRoles),
+          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles),
           ...describeRoles(),
         })
       }
@@ -6792,7 +6791,6 @@ async function main() {
           console.warn(`🤖 set_agents: '${d.name}' dropped — ${d.reason}`)
         }
         userNamedAgents = Object.keys(parsed.agents).length ? parsed.agents : null
-        userAgentForks = parsed.forkedFrom
         userAgentRoles = parsed.roles
         // Turbo preference from the frontend (sourced from user_settings DB row).
         turboMode = !!data.turbo
@@ -6801,7 +6799,7 @@ async function main() {
         ;(currentLLM as any)?.setTurbo?.(turboMode)
         ;(currentLLM as any)?.setAgents?.(userNamedAgents || turboMode ? merged : undefined, userAgentRoles)
         console.log(`🤖 set_agents: ${Object.keys(parsed.agents).length} user agent(s) → effective [${Object.keys(merged).join(', ')}]`)
-        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks, false, userAgentRoles), ...describeRoles() })
+        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles), ...describeRoles() })
       }
       // Noise cancellation (noise gate) — UI toggle. Meeting chunks auto-engage
       // it pipeline-side; this is the explicit button next to mute.

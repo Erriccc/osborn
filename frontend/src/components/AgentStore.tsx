@@ -20,7 +20,6 @@ export interface NamedAgent {
   tools?: string[]
   core: boolean
   prompt?: string
-  forkedFrom?: string
   role: string
   summary: string
   icon: string
@@ -256,7 +255,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
         {d && limits && roles && (
           <div className={`${card} mb-2 space-y-1.5`}>
             {d.forked_from && (coreNames.has(d.forked_from)
-              ? <p className="text-[10px] text-[var(--text-secondary)]">Forking <b className="capitalize">{d.forked_from}</b>. Your fork runs when you ask for it by name; the built-in keeps running in the automatic chain.</p>
+              ? <p className="text-[10px] text-[var(--text-secondary)]">Forking <b className="capitalize">{d.forked_from}</b>. The built-in stays as it is; your fork is a separate agent that starts with its role.</p>
               : <p className="text-[10px] text-[var(--text-secondary)]">Installed from <b>{originLabel(d.forked_from)}</b>.</p>)}
             <input value={d.name} disabled={!editing!.isNew} onChange={(e) => set({ name: e.target.value })} placeholder="agent-name (kebab-case)" className={field} />
             {nameError && d.name && <p className="text-[10px] text-red-400">{nameError}</p>}
@@ -307,7 +306,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
                 {r.forked_from && (
                   <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
                     {fromCore
-                      ? <>Forked from <span className="capitalize">{r.forked_from}</span>. Runs when you ask for it by name; the built-in {r.forked_from} keeps running in the automatic chain.</>
+                      ? <>Forked from <span className="capitalize">{r.forked_from}</span>.</>
                       : <>From {originLabel(r.forked_from)}</>}
                   </p>
                 )}

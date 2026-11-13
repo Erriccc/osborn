@@ -17,7 +17,6 @@ export interface AgentListing {
   tools?: string[]
   core: boolean
   prompt?: string
-  forkedFrom?: string
   role: Role
   /** The role's one-liner (for a built-in agent, its card text) and icon key. */
   summary: string
@@ -129,9 +128,6 @@ export const AGENT_MODELS = ['inherit', 'sonnet', 'opus', 'haiku', 'fable'] as c
 export const isAgentModel = (m: unknown): m is string => typeof m === 'string' && ((AGENT_MODELS as readonly string[]).includes(m) || /^claude-/.test(m))
 export const AGENT_LIMITS = { name: 40, description: 500, prompt: 20000 } as const
 
-/** forked_from of an agent installed from a catalog: '<source>:<owner>/<repo>@<sha>/<path>'. */
-export const CATALOG_ORIGIN = /^[a-z0-9-]+:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[0-9a-f]{7,40}\/[A-Za-z0-9_./-]{1,200}$/
-
 /** Roles, chains and the editor's rules for the store (served by /agents and agents_status). */
 export const describeRoles = () => ({
   roles: ROLE_NAMES.map((role) => ({ role, summary: ROLES[role].summary, icon: ROLES[role].icon, behaviours: roleBehaviours(role, false) })),
@@ -147,10 +143,9 @@ export const storeName = (raw: unknown): string =>
 /** Validates user_agents rows. Disabled rows are skipped; every other dropped
  *  row is reported with its reason (a core name: core agents cannot be overridden). */
 export function parseUserAgents(rows: unknown, core: CoreAgents): {
-  agents: Record<string, AgentDef>; forkedFrom: Record<string, string>; roles: Record<string, Role>; dropped: { name: string; reason: string }[]
+  agents: Record<string, AgentDef>; roles: Record<string, Role>; dropped: { name: string; reason: string }[]
 } {
   const agents: Record<string, AgentDef> = {}
-  const forkedFrom: Record<string, string> = {}
   const roles: Record<string, Role> = {}
   const dropped: { name: string; reason: string }[] = []
   for (const r of Array.isArray(rows) ? rows : []) {
@@ -167,9 +162,8 @@ export function parseUserAgents(rows: unknown, core: CoreAgents): {
       : prompt.length > AGENT_LIMITS.prompt ? `prompt longer than ${AGENT_LIMITS.prompt}`
       : ''
     if (reason) { dropped.push({ name: name || '(unnamed)', reason }); continue }
-    const rawFrom = String(r.forkedFrom ?? r.forked_from ?? '').trim()
-    const from = CATALOG_ORIGIN.test(rawFrom) ? rawFrom : storeName(rawFrom)
-    if (from) forkedFrom[name] = from
+    // Only a built-in parent matters here (its role and grounding); a catalog origin names none.
+    const from = storeName(r.forkedFrom ?? r.forked_from)
     roles[name] = resolveRole({ role: r.role, forkedFrom: from }, core)
     const tools: string[] | undefined = Array.isArray(r.tools) && r.tools.length ? r.tools.map(String) : undefined
     agents[name] = {
@@ -181,7 +175,7 @@ export function parseUserAgents(rows: unknown, core: CoreAgents): {
       ...(coreRole(from, core) && core[from].grounded ? { grounded: true } : {}),
     }
   }
-  return { agents, forkedFrom, roles, dropped }
+  return { agents, roles, dropped }
 }
 
 /** Effective agent set: every core agent, plus user agents whose names are free. */
@@ -192,7 +186,7 @@ export function mergeAgents<T>(core: Record<string, T>, user: Record<string, T> 
 }
 
 /** UI listing; withPrompts adds the core prompts (GET /agents only, never the data channel). */
-export function describeAgents(core: CoreAgents, user: Record<string, AgentDef> | null | undefined, forkedFrom: Record<string, string> = {}, withPrompts = false, roles: Record<string, Role> = {}): AgentListing[] {
+export function describeAgents(core: CoreAgents, user: Record<string, AgentDef> | null | undefined, roles: Record<string, Role> = {}, withPrompts = false): AgentListing[] {
   return Object.entries(mergeAgents<any>(core, user)).map(([name, a]) => {
     const isCore = Object.hasOwn(core, name)
     const role = roleOf(name, roles, core) ?? 'reader'
@@ -200,7 +194,6 @@ export function describeAgents(core: CoreAgents, user: Record<string, AgentDef> 
       name, description: a.description, model: a.model, tools: a.tools ? [...a.tools] : undefined, core: isCore, role,
       summary: ROLES[role].summary, icon: ROLES[role].icon, behaviours: roleBehaviours(role, isCore),
       ...(isCore && withPrompts ? { prompt: a.prompt } : {}),
-      ...(!isCore && Object.hasOwn(forkedFrom, name) ? { forkedFrom: forkedFrom[name] } : {}),
     }
   })
 }

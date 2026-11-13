@@ -21,7 +21,7 @@ const rows = [
 const parsed = parseUserAgents(rows, core)
 assert.deepEqual(parsed.dropped, [{ name: 'writer', reason: 'is a core agent (fork it under a new name)' }])
 assert.deepEqual(Object.keys(parsed.agents).sort(), ['helper', 'my-writer'])
-assert.deepEqual(parsed.forkedFrom, { 'my-writer': 'writer' })
+assert.equal(parsed.roles['my-writer'], 'writer', 'a fork holds its parent\'s role')
 assert.equal((parsed.agents['my-writer'] as any).forkedFrom, undefined, 'fork origin stays out of the SDK definition')
 
 const merged = mergeAgents<any>(core, parsed.agents)
@@ -45,13 +45,13 @@ assert.deepEqual(bad.map((d) => d.reason), ['no name', 'name longer than 40', 'n
 // Even if a core name slips past parsing, the merge keeps the core definition.
 assert.equal(mergeAgents<any>(core, { writer: { description: 'x', prompt: 'y' } }).writer.prompt, 'WRITER PROMPT')
 
-assert.equal(describeAgents(core, parsed.agents, parsed.forkedFrom)[0].prompt, undefined, 'no prompts on the data channel')
-const listing = describeAgents(core, parsed.agents, parsed.forkedFrom, true)
+assert.equal(describeAgents(core, parsed.agents, parsed.roles)[0].prompt, undefined, 'no prompts on the data channel')
+const listing = describeAgents(core, parsed.agents, parsed.roles, true)
 const byName = Object.fromEntries(listing.map((a) => [a.name, a]))
 assert.equal(byName.writer.core, true)
 assert.equal(byName.writer.prompt, 'WRITER PROMPT')
 assert.equal(byName['my-writer'].core, false)
-assert.equal(byName['my-writer'].forkedFrom, 'writer')
+assert.equal(byName['my-writer'].role, 'writer')
 assert.equal(byName['my-writer'].prompt, undefined)
 assert.deepEqual(listing.slice(0, 2).map((a) => a.name), ['writer', 'steward'])
 

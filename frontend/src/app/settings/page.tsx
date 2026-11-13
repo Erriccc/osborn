@@ -1215,7 +1215,7 @@ export default function SettingsPage() {
     </SettingsSection>
   ) : (
     <>
-      <SettingsSection title="Agents" description="The specialists your voice agent can dispatch to. Built-in agents are maintained by Voice Native; fork one to make it your own. Your agents run when you ask for them by name.">
+      <SettingsSection title="Agents" description="The specialists your voice agent can dispatch to. Built-in agents are maintained by Voice Native; fork one to make it your own.">
         <div className="px-4 py-3.5">
           {storeTabs}
           <AgentStore agents={dashAgents} yours={userAgents.rows} roles={dashRoles}

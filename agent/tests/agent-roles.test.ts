@@ -87,7 +87,7 @@ assert.deepEqual(meta.chains, [['researcher', 'reasoner'], ['planner', 'steward'
 assert.ok(meta.roles.find((x) => x.role === 'writer')!.behaviours.every((b) => !/skills without asking/.test(b)), 'the role picker describes user agents')
 assert.ok(meta.models.includes('inherit') && meta.limits.prompt > 0 && meta.editTools.includes('Edit'))
 
-const listing = Object.fromEntries(describeAgents(NAMED_AGENTS, parsed.agents, parsed.forkedFrom, false, parsed.roles).map((a) => [a.name, a]))
+const listing = Object.fromEntries(describeAgents(NAMED_AGENTS, parsed.agents, parsed.roles).map((a) => [a.name, a]))
 assert.equal(listing.writer.role, 'writer')
 assert.ok(listing.writer.behaviours.some((b) => /skills without asking/.test(b)), 'built-in writer')
 assert.ok(!listing['my-writer'].behaviours.some((b) => /skills without asking/.test(b)), 'fork of the writer')

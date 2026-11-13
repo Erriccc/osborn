@@ -4,7 +4,8 @@ import assert from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ROLE_NAMES, CATALOG_ORIGIN, AGENT_LIMITS, AGENT_MODELS } from '../src/agent-store.js'
+import { ROLE_NAMES, AGENT_LIMITS, AGENT_MODELS } from '../src/agent-store.js'
+import { agentDraft, type CatalogEntry } from '../src/store-catalog.js'
 import { NAMED_AGENTS } from '../src/claude-llm.js'
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'supabase', 'migrations')
@@ -25,10 +26,12 @@ const nameLists = [...(m015 + m017).matchAll(/name in \(([^)]*)\)|forked_from in
 assert.equal(nameLists.length, 3)
 for (const l of nameLists) assert.deepEqual(l, core)
 
-// Roles and the catalog origin.
+// Roles, and the forked_from check accepts what a catalog install saves (store-catalog.ts agentDraft).
 assert.deepEqual(quoted(/role in \(([^)]*)\)/.exec(m016)![1]), [...ROLE_NAMES])
-const origin = quoted(m016).find((q) => q.includes('@'))
-assert.equal(origin, CATALOG_ORIGIN.source.replaceAll('\\/', '/'))
+const origin = new RegExp(quoted(m016).find((q) => q.includes('@'))!)
+const entry = { id: 'x', source: 'wshobson-agents', kind: 'agent', name: 'Frontend Dev', description: 'd', tools: [], files: ['frontend-dev.md'], repo: 'wshobson/agents', path: 'plugins/web/agents/frontend-dev.md', sha: 'a'.repeat(40), license: 'MIT', scripts: [], trust: 'community' } as CatalogEntry
+assert.match(agentDraft(entry, 'prompt').forked_from, origin)
+assert.doesNotMatch('wshobson-agents:wshobson/agents/plugins/web/agents/frontend-dev.md', origin, 'an unpinned origin is refused')
 assert.match(m017, /set default 'reader'/)
 
 console.log('user-agents-migrations: all assertions passed')

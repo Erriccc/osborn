@@ -293,7 +293,7 @@ export function skillProvenance(skillsDir: string, folder: string): { source: st
   } catch { return undefined }
 }
 
-/** forked_from of an agent installed from the catalog (agent-store.ts CATALOG_ORIGIN). */
+/** forked_from of an agent installed from the catalog (user_agents check, migration 016). */
 const catalogOrigin = (e: CatalogEntry) => `${e.source}:${e.repo}@${e.sha}/${e.path}`
 /** The same catalog file at any commit. */
 const unpinned = (origin: string) => origin.replace(/@[0-9a-f]{7,40}\//, '/')
