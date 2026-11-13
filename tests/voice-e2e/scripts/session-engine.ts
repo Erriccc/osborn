@@ -1290,7 +1290,7 @@ async function main() {
           }
           if (fallback && before) forgetCached(before.url, String(body.instruction))
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
-          const prevTask = tasks[tasks.length - 1]
+          const prevTask = [...tasks].reverse().find((t) => t.label !== 'shot')  // a /shot in between must not hide an unreviewed clip
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit()
           const n = ++reqN
