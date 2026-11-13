@@ -48,6 +48,7 @@ import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
+import { parseUserAgents, mergeAgents, describeAgents, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, storeName, type AgentDef } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
@@ -136,11 +137,16 @@ function buildToolLogEvent(
   return ev
 }
 
+// Skills shipped with the package (core: maintained by Voice Native).
+const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
+const homeSkillsDir = () => join(homedir(), '.claude', 'skills')
+
 // Load skills list with name + description for frontend display
-function loadSkillsList(agentDir: string): { name: string; description: string; folder: string }[] {
+function loadSkillsList(agentDir: string): { name: string; description: string; folder: string; core: boolean; forkedFrom?: string }[] {
   const skillsDir = join(agentDir, '.claude', 'skills')
   if (!existsSync(skillsDir)) return []
-  const skills: { name: string; description: string; folder: string }[] = []
+  const core = coreSkillNames(PKG_SKILLS_DIR)
+  const skills: { name: string; description: string; folder: string; core: boolean; forkedFrom?: string }[] = []
   try {
     for (const skillName of readdirSync(skillsDir)) {
       const skillFile = join(skillsDir, skillName, 'SKILL.md')
@@ -152,7 +158,8 @@ function loadSkillsList(agentDir: string): { name: string; description: string; 
         // Extract description from first paragraph after heading
         const descMatch = content.match(/^#[^\n]+\n+([^\n#]+)/m)
         const description = descMatch ? descMatch[1].trim() : ''
-        skills.push({ name, description, folder: skillName })
+        const forkedFrom = skillForkedFrom(skillsDir, skillName)
+        skills.push({ name, description, folder: skillName, core: core.has(skillName), ...(forkedFrom ? { forkedFrom } : {}) })
       }
     }
   } catch (err) {
@@ -747,17 +754,29 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    if (url.pathname === '/skills/content' || url.pathname === '/skills/fork' || url.pathname === '/skills/remove') {
+      // Store actions for the Settings page (no LiveKit connection); same rules
+      // as the skill_get / skill_fork / skill_remove data messages.
+      if (unauthorized()) return
+      const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+      const name = storeName(url.searchParams.get('name'))
+      if (req.method === 'GET' && url.pathname === '/skills/content') {
+        const p = join(homeSkillsDir(), name, 'SKILL.md')
+        return name && existsSync(p) ? reply(200, { name, content: readFileSync(p, 'utf-8') }) : reply(404, { error: 'skill not found' })
+      }
+      if (req.method === 'POST' && url.pathname !== '/skills/content') {
+        const out = url.pathname === '/skills/fork'
+          ? forkSkill(homeSkillsDir(), PKG_SKILLS_DIR, name, url.searchParams.get('to') || '')
+          : removeUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, name)
+        return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
+      }
+      return reply(405, { error: 'method not allowed' })
+    }
+
     if (req.method === 'GET' && url.pathname === '/agents') {
-      // Named sub-agents (researcher/reasoner/writer) — definitions come from
-      // claude-llm.ts NAMED_AGENTS (single source of truth, same object the SDK
-      // query uses). Prompts are omitted: the UI manager needs role/model/tools,
-      // not the full instruction text.
-      const agents = Object.entries(NAMED_AGENTS).map(([name, a]: [string, any]) => ({
-        name,
-        description: a.description,
-        model: a.model,
-        tools: a.tools,
-      }))
+      // Core sub-agents from claude-llm.ts NAMED_AGENTS (the same object the SDK
+      // query uses), with prompts so the store can show and fork them.
+      const agents = describeAgents(NAMED_AGENTS, null)
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
       res.end(JSON.stringify({ agents }))
       return
@@ -2831,17 +2850,14 @@ async function main() {
   let currentUserId: string = ''
   // Per-user named agents (DB-backed) — sent by the frontend via set_agents
   // after agent_ready. Kept here so agent-side LLM recreations (session
-  // switch/resume) reuse them without waiting for a frontend resend. Merged
-  // OVER the built-in NAMED_AGENTS (same-name user rows shadow built-ins).
-  let userNamedAgents: Record<string, { description: string; prompt: string; tools?: string[]; model?: string }> | null = null
+  // switch/resume) reuse them without waiting for a frontend resend. Added
+  // beside the core NAMED_AGENTS, which they can never override or remove.
+  let userNamedAgents: Record<string, AgentDef> | null = null
+  let userAgentForks: Record<string, string> = {}
+  const loggedIgnoredAgents = new Set<string>()
   // Turbo mode — read from set_agents handshake (data.turbo). When true every
   // agent (main + sub-agents) runs on FAST_MODEL. Default false = perfect no-op.
   let turboMode = false
-  // Built-ins the user has removed (tombstoned in user_agents with enabled=false).
-  // A removed built-in disappears from the effective set but stays re-addable
-  // from the frontend's "Available to add" list — default agents are never
-  // gone forever, matching the skill-catalog pattern.
-  let userRemovedAgents: string[] = []
 
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
   // While set (Date.now() < value), the agent's streaming tts_say output is
@@ -4260,11 +4276,7 @@ async function main() {
       // ClaudeLLM cold-start uses NAMED_AGENTS directly (the ?? NAMED_AGENTS path).
       // When turbo IS on with no custom agents, undefined would skip the override —
       // ClaudeLLM handles that internally via the turbo bypass in ClaudeLLMStream.
-      agents: (userNamedAgents || userRemovedAgents.length) ? (() => {
-        const base: Record<string, any> = { ...NAMED_AGENTS }
-        for (const r of userRemovedAgents) delete base[r]
-        return applyTurbo({ ...base, ...(userNamedAgents || {}) }, turboMode)
-      })() : undefined,
+      agents: userNamedAgents ? applyTurbo(mergeAgents<any>(NAMED_AGENTS, userNamedAgents), turboMode) : undefined,
     })
     // Apply turbo to the freshly created LLM so the main model also picks it up.
     // PipelineDirectLLM (llmOverride path) wraps its own ClaudeLLM and may not expose setTurbo.
@@ -5917,9 +5929,7 @@ async function main() {
           enabledMcpServers: enabledMcpNames,
           workingDirectory: workingDir,
           skills: loadSkillsList(homedir()),
-          namedAgents: Object.entries(NAMED_AGENTS).map(([name, a]: [string, any]) => ({
-            name, description: a.description, model: a.model, tools: a.tools,
-          })),
+          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks),
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -6707,67 +6717,38 @@ async function main() {
         })
       }
       else if (data.type === 'get_agents') {
-        // Named sub-agents for the chat agents manager — built-ins (minus any
-        // user-removed) merged with per-user DB-backed definitions.
-        const effectiveBase: Record<string, any> = { ...NAMED_AGENTS }
-        for (const r of userRemovedAgents) delete effectiveBase[r]
-        const effective = { ...effectiveBase, ...(userNamedAgents || {}) }
-        await sendToFrontend({
-          type: 'agents_status',
-          agents: Object.entries(effective).map(([name, a]: [string, any]) => ({
-            name, description: a.description, model: a.model, tools: a.tools,
-            custom: !!userNamedAgents && name in userNamedAgents,
-          })),
-        })
+        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks) })
       }
       else if (data.type === 'set_agents') {
         // Per-user named agents from the DB (frontend fetches its user_agents
         // rows and sends them here after agent_ready, and again after edits).
-        // Validated + merged over built-ins, applied via setAgents(). SDK
+        // Added beside the core agents, applied via setAgents(). SDK
         // constraint: takes effect at the next query cold start — a live
         // subprocess keeps the agents it started with.
-        const MODELS = new Set(['sonnet', 'opus', 'haiku', 'fable', 'inherit'])
-        const rows = Array.isArray(data.agents) ? data.agents : []
-        const validated: NonNullable<typeof userNamedAgents> = {}
-        for (const r of rows) {
-          const name = String(r?.name || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
-          const description = String(r?.description || '').trim()
-          const prompt = String(r?.prompt || '').trim()
-          if (!name || !description || !prompt) continue
-          if (prompt.length > 6000) { console.warn(`🤖 set_agents: '${name}' prompt >6KB — skipped`); continue }
-          validated[name] = {
-            description,
-            prompt,
-            ...(Array.isArray(r.tools) && r.tools.length ? { tools: r.tools.map(String) } : {}),
-            ...(r.model && (MODELS.has(r.model) || /^claude-/.test(r.model)) ? { model: String(r.model) } : {}),
-          }
+        const parsed = parseUserAgents(data.agents, NAMED_AGENTS)
+        for (const n of parsed.ignored) {
+          if (loggedIgnoredAgents.has(n)) continue
+          loggedIgnoredAgents.add(n)
+          console.warn(`🤖 set_agents: '${n}' is a core agent — user row ignored (fork it under a new name)`)
         }
-        userNamedAgents = Object.keys(validated).length ? validated : null
-        // Removed built-ins (tombstones) — excluded from the effective set.
-        userRemovedAgents = Array.isArray(data.removed) ? data.removed.map(String) : []
+        userNamedAgents = Object.keys(parsed.agents).length ? parsed.agents : null
+        userAgentForks = parsed.forkedFrom
         // Turbo preference from the frontend (sourced from user_settings DB row).
         turboMode = !!data.turbo
-        const base: Record<string, any> = { ...NAMED_AGENTS }
-        for (const r of userRemovedAgents) delete base[r]
-        // applyTurbo wraps AFTER the base+custom merge so custom models also get overridden.
-        const merged = applyTurbo({ ...base, ...(userNamedAgents || {}) }, turboMode)
-        const customized = !!userNamedAgents || userRemovedAgents.length > 0 || turboMode
+        // applyTurbo wraps AFTER the merge so custom models also get overridden.
+        const merged = applyTurbo(mergeAgents<any>(NAMED_AGENTS, userNamedAgents), turboMode)
         ;(currentLLM as any)?.setTurbo?.(turboMode)
-        ;(currentLLM as any)?.setAgents?.(customized ? merged : undefined)
-        console.log(`🤖 set_agents: ${Object.keys(validated).length} user agent(s), ${userRemovedAgents.length} removed → effective [${Object.keys(merged).join(', ')}]`)
-        await sendToFrontend({
-          type: 'agents_status',
-          agents: Object.entries(merged).map(([name, a]: [string, any]) => ({
-            name, description: a.description, model: a.model, tools: a.tools,
-            custom: !!userNamedAgents && name in userNamedAgents,
-          })),
-        })
+        ;(currentLLM as any)?.setAgents?.(userNamedAgents || turboMode ? merged : undefined)
+        console.log(`🤖 set_agents: ${Object.keys(parsed.agents).length} user agent(s) → effective [${Object.keys(merged).join(', ')}]`)
+        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks) })
       }
       else if (data.type === 'skill_add') {
         const skillName = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
         const skillContent = (data.content as string || '').trim()
         if (!skillName || !skillContent) {
           await sendToFrontend({ type: 'skill_add_result', success: false, error: 'Name and content are required' })
+        } else if (coreSkillNames(PKG_SKILLS_DIR).has(skillName)) {
+          await sendToFrontend({ type: 'skill_add_result', success: false, error: `${skillName} is a built-in skill — fork it under a new name` })
         } else {
           try {
             const skillDir = join(homedir(), '.claude', 'skills', skillName)
@@ -6792,18 +6773,21 @@ async function main() {
         }
       }
       else if (data.type === 'skill_remove') {
-        const folder = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
-        const dir = join(homedir(), '.claude', 'skills', folder)
-        if (!folder || !existsSync(dir)) {
-          await sendToFrontend({ type: 'skill_remove_result', success: false, error: 'skill not found' })
-        } else {
-          try {
-            rmSync(dir, { recursive: true, force: true })
-            console.log(`🗑️ Skill removed: ${folder}`)
-            await sendToFrontend({ type: 'skill_remove_result', success: true, skills: loadSkillsList(homedir()) })
-          } catch (err) {
-            await sendToFrontend({ type: 'skill_remove_result', success: false, error: String(err) })
-          }
+        try {
+          const out = removeUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, data.name)
+          if ('ok' in out) console.log(`🗑️ Skill removed: ${storeName(data.name)}`)
+          await sendToFrontend({ type: 'skill_remove_result', success: 'ok' in out, ...('error' in out ? { error: out.error } : {}), skills: loadSkillsList(homedir()) })
+        } catch (err) {
+          await sendToFrontend({ type: 'skill_remove_result', success: false, error: String(err) })
+        }
+      }
+      else if (data.type === 'skill_fork') {
+        try {
+          const out = forkSkill(homeSkillsDir(), PKG_SKILLS_DIR, data.name, data.to)
+          if ('ok' in out) console.log(`📚 Skill forked: ${storeName(data.name)} → ${storeName(data.to)}`)
+          await sendToFrontend({ type: 'skill_fork_result', success: 'ok' in out, ...('error' in out ? { error: out.error } : {}), skills: loadSkillsList(homedir()) })
+        } catch (err) {
+          await sendToFrontend({ type: 'skill_fork_result', success: false, error: String(err) })
         }
       }
       // Noise cancellation (noise gate) — UI toggle. Meeting chunks auto-engage
@@ -6891,14 +6875,12 @@ async function main() {
               await sendToFrontend({ type: 'meeting_joined', botId, message: 'Osborn has joined the meeting' })
 
               // Phase B — point the addressable roster at the REAL effective
-              // agent set (built-ins minus user-removed, plus per-user agents),
+              // agent set (core agents plus per-user agents),
               // same effective set get_agents/set_agents compute, with the
               // orchestrator ('osborn') first. Flag-gated: a no-op (no roster
               // change, no emit) when OSBORN_MEETING_ADDRESSING is unset.
               if (meetingAddressing.enabled) {
-                const base: Record<string, unknown> = { ...NAMED_AGENTS }
-                for (const r of userRemovedAgents) delete base[r]
-                const effective = { ...base, ...(userNamedAgents || {}) }
+                const effective = mergeAgents<unknown>(NAMED_AGENTS, userNamedAgents)
                 meetingAddressing.setRoster(['osborn', ...Object.keys(effective)])
                 console.log(`🎛️ [meeting-addr] roster → [${meetingAddressing.rosterIds.join(', ')}]`)
                 emitMeetingState()

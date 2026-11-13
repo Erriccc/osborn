@@ -23,9 +23,8 @@ export function ControlMenu({
   onAddSkill,
   onViewSkill,
   onRemoveSkill,
+  onForkSkill,
   onInstallFromCatalog,
-  skillRemoveArm,
-  setSkillRemoveArm,
   showAddSkill,
   setShowAddSkill,
   newSkillName,
@@ -47,9 +46,8 @@ export function ControlMenu({
   onAddSkill?: (name: string, content: string) => void
   onViewSkill?: (folder: string) => void
   onRemoveSkill?: (folder: string) => void
+  onForkSkill?: (folder: string, newName: string) => void
   onInstallFromCatalog?: (name: string, url: string) => void
-  skillRemoveArm?: string | null
-  setSkillRemoveArm?: (v: string | null) => void
   showAddSkill?: boolean
   setShowAddSkill?: (show: boolean) => void
   newSkillName?: string
@@ -214,9 +212,8 @@ export function ControlMenu({
                 onAddSkill={onAddSkill}
                 onViewSkill={onViewSkill}
                 onRemoveSkill={onRemoveSkill}
+                onForkSkill={onForkSkill}
                 onInstallFromCatalog={onInstallFromCatalog}
-                skillRemoveArm={skillRemoveArm}
-                setSkillRemoveArm={setSkillRemoveArm}
                 showAddSkill={showAddSkill}
                 setShowAddSkill={setShowAddSkill}
                 newSkillName={newSkillName}

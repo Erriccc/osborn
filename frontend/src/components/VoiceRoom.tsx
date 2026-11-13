@@ -43,7 +43,9 @@ import { RoomsSidebar, RoomsBar, type Room } from './voice/RoomsRail'
 import { getToolRiskLevel, type PermissionRequest, type ApprovalMode } from './voice/PermissionModal'
 import { classifyRisk } from '@/lib/riskTier'
 import { TextInput, type AttachedFile } from './voice/TextInput'
-import { AgentsPopover, type NamedAgent, type UserAgentDraft } from './voice/AgentsPopover'
+import { AgentsPopover } from './voice/AgentsPopover'
+import type { NamedAgent, SkillInfo } from './AgentStore'
+import { useUserAgents } from '../lib/user-agents'
 import { SkillsPopover } from './voice/SkillsPanel'
 import { ControlMenu } from './voice/ControlMenu'
 import { ChatPanel } from './voice/ChatPanel'
@@ -713,7 +715,7 @@ function VoiceRoomInner({
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
   // Skills state
-  const [skills, setSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
+  const [skills, setSkills] = useState<SkillInfo[]>([])
   const [namedAgents, setNamedAgents] = useState<NamedAgent[]>([])
   const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
   // Esc closes the skill viewer (× and backdrop-click already close it).
@@ -723,7 +725,6 @@ function VoiceRoomInner({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [viewedSkill])
-  const [skillRemoveArm, setSkillRemoveArm] = useState<string | null>(null)
   const [showAddSkill, setShowAddSkill] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
   // Burger-sheet → popover bridges: incrementing these force-opens the
@@ -2573,11 +2574,10 @@ function VoiceRoomInner({
         }
       } else if (data.type === 'skill_content') {
         if (data.content) setViewedSkill({ name: data.name, content: data.content })
-      } else if (data.type === 'skill_remove_result') {
+      } else if (data.type === 'skill_remove_result' || data.type === 'skill_fork_result') {
         if (data.skills && Array.isArray(data.skills)) {
           setSkills(data.skills)
         }
-        setSkillRemoveArm(null)
       } else if (data.type === 'skill_add_result') {
         if (data.success && data.skills) {
           setSkills(data.skills)
@@ -3482,15 +3482,11 @@ function VoiceRoomInner({
 
   // Add a new skill
   // ── Per-user named agents (DB-backed) ──
-  // Fetch the signed-in user's user_agents rows once; whenever they change (or
-  // the agent [re]connects), push them via set_agents. The agent merges over
-  // built-ins and replies agents_status (drives the popover). Guests / no
-  // rows → nothing sent, built-ins stand. SDK constraint: edits apply at the
-  // NEXT session cold start.
-  const [userAgentRows, setUserAgentRows] = useState<UserAgentDraft[] | null>(null)
-  // Tombstoned built-ins (user_agents rows with enabled=false): removed from
-  // the effective set but always re-addable — defaults are never gone forever.
-  const [removedAgentNames, setRemovedAgentNames] = useState<string[]>([])
+  // The user's own agents and forks live in Supabase user_agents; whenever they
+  // change (or the agent [re]connects), the enabled ones go out via set_agents.
+  // The agent adds them beside the locked core agents and replies
+  // agents_status. Guests → nothing sent. Edits apply at the NEXT session.
+  const { rows: userAgentRows, save: handleSaveAgent, remove: handleDeleteAgent, setEnabled: handleSetAgentEnabled } = useUserAgents()
   // Turbo mode: read from instances.turbo on mount; included in set_agents.
   // Guests / no row → false (agent defaults to real models).
   const [turboMode, setTurboMode] = useState(false)
@@ -3499,86 +3495,17 @@ function VoiceRoomInner({
     const sb = createSupabaseBrowser()
     sb.auth.getUser().then(({ data }) => {
       if (!data?.user) return
-      // Fetch user_agents and instances.turbo in parallel.
-      Promise.all([
-        sb.from('user_agents').select('name,description,prompt,model,tools,enabled'),
-        sb.from('instances').select('turbo').eq('user_id', data.user.id).single(),
-      ]).then(([agentsResult, instanceResult]) => {
-        const rows = agentsResult.data
-        if (Array.isArray(rows)) {
-          setUserAgentRows(rows.filter((r: any) => r.enabled) as UserAgentDraft[])
-          setRemovedAgentNames(rows.filter((r: any) => !r.enabled).map((r: any) => r.name))
-        }
-        if (typeof instanceResult.data?.turbo === 'boolean') {
-          setTurboMode(instanceResult.data.turbo)
-        }
+      sb.from('instances').select('turbo').eq('user_id', data.user.id).single().then(({ data: inst }) => {
+        if (typeof inst?.turbo === 'boolean') setTurboMode(inst.turbo)
       })
     }).catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   useEffect(() => {
     if (!agentConnected || userAgentRows === null) return
     const encoder = new TextEncoder()
-    sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents: userAgentRows, removed: removedAgentNames, turbo: turboMode })), { reliable: true })
-  }, [agentConnected, userAgentRows, removedAgentNames, turboMode, sendToAgent])
-
-  const handleSaveAgent = useCallback((a: UserAgentDraft) => {
-    if (!isSupabaseConfigured()) return
-    const sb = createSupabaseBrowser()
-    sb.auth.getUser().then(({ data }) => {
-      if (!data?.user) return
-      const name = a.name.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
-      sb.from('user_agents')
-        .upsert({ user_id: data.user.id, name, description: a.description.trim(), prompt: a.prompt.trim(), model: a.model, tools: a.tools, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })
-        .then(({ error }) => {
-          if (error) { console.error('user_agents upsert failed:', error.message); return }
-          setUserAgentRows((prev) => {
-            const rest = (prev || []).filter((r) => r.name !== name)
-            return [...rest, { ...a, name }]
-          })
-        })
-    })
-  }, [])
-
-  const handleDeleteAgent = useCallback((name: string, isCustom: boolean) => {
-    if (!isSupabaseConfigured()) return
-    const sb = createSupabaseBrowser()
-    sb.auth.getUser().then(({ data }) => {
-      if (!data?.user) return
-      if (isCustom) {
-        // Custom agent → delete the row outright.
-        sb.from('user_agents').delete().eq('user_id', data.user.id).eq('name', name)
-          .then(({ error }) => {
-            if (error) { console.error('user_agents delete failed:', error.message); return }
-            setUserAgentRows((prev) => (prev || []).filter((r) => r.name !== name))
-          })
-      } else {
-        // Built-in default → tombstone (enabled=false). It moves to the
-        // "Available to add" list instead of vanishing forever.
-        sb.from('user_agents')
-          .upsert({ user_id: data.user.id, name, description: '(removed built-in)', prompt: '-', model: 'inherit', tools: [], enabled: false, updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })
-          .then(({ error }) => {
-            if (error) { console.error('user_agents tombstone failed:', error.message); return }
-            setUserAgentRows((prev) => prev ?? [])
-            setRemovedAgentNames((prev) => prev.includes(name) ? prev : [...prev, name])
-          })
-      }
-    })
-  }, [])
-
-  const handleRestoreAgent = useCallback((name: string) => {
-    if (!isSupabaseConfigured()) return
-    const sb = createSupabaseBrowser()
-    sb.auth.getUser().then(({ data }) => {
-      if (!data?.user) return
-      sb.from('user_agents').delete().eq('user_id', data.user.id).eq('name', name)
-        .then(({ error }) => {
-          if (error) { console.error('user_agents restore failed:', error.message); return }
-          setRemovedAgentNames((prev) => prev.filter((n) => n !== name))
-          setUserAgentRows((prev) => prev ?? [])
-        })
-    })
-  }, [])
+    const agents = userAgentRows.filter((r) => r.enabled).map(({ name, description, prompt, model, tools, forked_from }) => ({ name, description, prompt, model, tools, forked_from }))
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents, turbo: turboMode })), { reliable: true })
+  }, [agentConnected, userAgentRows, turboMode, sendToAgent])
 
   const handleAddSkill = useCallback((name: string, content: string) => {
     const encoder = new TextEncoder()
@@ -3598,6 +3525,11 @@ function VoiceRoomInner({
   const handleRemoveSkill = useCallback((folder: string) => {
     const encoder = new TextEncoder()
     sendToAgent(encoder.encode(JSON.stringify({ type: 'skill_remove', name: folder })), { reliable: true })
+  }, [sendToAgent])
+
+  const handleForkSkill = useCallback((folder: string, to: string) => {
+    const encoder = new TextEncoder()
+    sendToAgent(encoder.encode(JSON.stringify({ type: 'skill_fork', name: folder, to })), { reliable: true })
   }, [sendToAgent])
 
   // One-tap catalog install: fetch a served skill (same-origin) and add it.
@@ -4244,8 +4176,7 @@ function VoiceRoomInner({
               onViewSkill={handleViewSkill}
               onRemoveSkill={handleRemoveSkill}
               onInstallFromCatalog={handleInstallFromCatalog}
-              skillRemoveArm={skillRemoveArm}
-              setSkillRemoveArm={setSkillRemoveArm}
+              onForkSkill={handleForkSkill}
               showAddSkill={showAddSkill}
               setShowAddSkill={setShowAddSkill}
               newSkillName={newSkillName}
@@ -4289,8 +4220,8 @@ function VoiceRoomInner({
                 style), so the top bar carries only status/stats + hangup. */}
             <div className="hidden sm:flex items-center gap-1.5">
               <AgentsPopover agents={namedAgents} activity={backgroundFlows} disabled={!agentConnected}
-                onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
-                removed={removedAgentNames} onRestoreAgent={handleRestoreAgent} />
+                yours={userAgentRows}
+                onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} onSetAgentEnabled={handleSetAgentEnabled} />
 
               <SkillsPopover
                 disabled={!agentConnected}
@@ -4299,8 +4230,7 @@ function VoiceRoomInner({
                 onViewSkill={handleViewSkill}
                 onRemoveSkill={handleRemoveSkill}
                 onInstallFromCatalog={handleInstallFromCatalog}
-                skillRemoveArm={skillRemoveArm}
-                setSkillRemoveArm={setSkillRemoveArm}
+                onForkSkill={handleForkSkill}
                 showAddSkill={showAddSkill}
                 setShowAddSkill={setShowAddSkill}
                 newSkillName={newSkillName}
@@ -5091,8 +5021,8 @@ function VoiceRoomInner({
           the sheet) so they survive the sheet closing; their panels are the
           standard viewport-anchored mobile popovers. */}
       <AgentsPopover agents={namedAgents} activity={backgroundFlows} disabled={!agentConnected}
-        onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
-        removed={removedAgentNames} onRestoreAgent={handleRestoreAgent}
+        yours={userAgentRows}
+        onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} onSetAgentEnabled={handleSetAgentEnabled}
         requestOpen={agentsOpenReq} hideTrigger />
       <SkillsPopover
         disabled={!agentConnected}
@@ -5101,8 +5031,7 @@ function VoiceRoomInner({
         onViewSkill={handleViewSkill}
         onRemoveSkill={handleRemoveSkill}
         onInstallFromCatalog={handleInstallFromCatalog}
-        skillRemoveArm={skillRemoveArm}
-        setSkillRemoveArm={setSkillRemoveArm}
+        onForkSkill={handleForkSkill}
         showAddSkill={showAddSkill}
         setShowAddSkill={setShowAddSkill}
         newSkillName={newSkillName}
