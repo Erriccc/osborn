@@ -34,7 +34,7 @@ export interface RolesData {
   limits: { name: number; description: number; prompt: number }
 }
 export const rolesData = (d: any): RolesData | null =>
-  Array.isArray(d?.roles) && d.limits ?{ roles: d.roles, chains: d.chains || [], models: d.models || [], limits: d.limits } : null
+  Array.isArray(d?.roles) && d.limits ? { roles: d.roles, chains: d.chains || [], models: d.models || [], limits: d.limits } : null
 
 /** Where an installed catalog agent came from: 'source:owner/repo@sha/path' → 'owner/repo @sha7'. */
 const originLabel = (from: string) => {

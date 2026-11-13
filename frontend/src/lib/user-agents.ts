@@ -14,7 +14,7 @@ export interface UserAgentDraft {
   model: string
   tools: string[]
   forked_from?: string | null
-  /** What the agent may do (agent-store.ts ROLES). Always saved: a new draft starts from its tools, a fork from its parent. */
+  /** What the agent may do (agent-store.ts ROLES). Always saved: a new agent starts as reader, a catalog draft from its tools, a fork from its parent. */
   role: string
 }
 export interface UserAgentRow extends UserAgentDraft {

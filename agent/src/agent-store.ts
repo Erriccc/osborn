@@ -28,7 +28,7 @@ export interface AgentListing {
 // What an agent may do is decided by its ROLE, never its name, so a fork or an
 // imported agent carries the behaviour of the role it holds. Core agents hold
 // the role of the same name; a fork inherits its parent's; any other agent's is
-// the one saved on it (drafts get one from their tools, see draftRole), else reader.
+// the one saved on it (a catalog draft gets one from its tools, see draftRole), else reader.
 
 /** 'workspace': session workspace only. 'anywhere': any path, through the
  *  permission dialog. Extension rule: only matching files (fail closed). */
@@ -82,10 +82,10 @@ export const ROLES: Record<Role, RoleSpec> = {
   reviewer: { summary: 'Reviews the final diff for problems before it ships. May write documentation files only.', icon: 'eye', write: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' } },
 }
 
-/** Tools that edit files: the write gate covers each of them, and a draft with one is a writer. */
+/** Tools that edit files: the write gate covers each of them, and a catalog draft with one is a writer. */
 export const EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
-/** The role a NEW agent starts with (editor draft, catalog install): a writer if it can edit, else a reader.
+/** The role a catalog agent's draft starts with: a writer if it can edit, else a reader.
  *  It is saved on the row, so the owner sees it and can change it. Never applied to saved rows. */
 export const draftRole = (tools?: string[] | null): Role =>
   (tools || []).some((t) => EDIT_TOOLS.has(String(t).trim())) ? 'writer' : 'reader'
