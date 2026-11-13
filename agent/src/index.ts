@@ -6743,17 +6743,19 @@ async function main() {
         await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks) })
       }
       else if (data.type === 'skill_add') {
-        const skillName = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+        const skillName = storeName(data.name)
         const skillContent = (data.content as string || '').trim()
+        const skillDir = join(homeSkillsDir(), skillName)
+        const isCore = coreSkillNames(PKG_SKILLS_DIR).has(skillName)
         if (!skillName || !skillContent) {
           await sendToFrontend({ type: 'skill_add_result', success: false, error: 'Name and content are required' })
-        } else if (coreSkillNames(PKG_SKILLS_DIR).has(skillName)) {
+        } else if (isCore && existsSync(join(skillDir, 'SKILL.md'))) {
           await sendToFrontend({ type: 'skill_add_result', success: false, error: `${skillName} is a built-in skill — fork it under a new name` })
         } else {
           try {
-            const skillDir = join(homedir(), '.claude', 'skills', skillName)
-            mkdirSync(skillDir, { recursive: true })
-            writeFileSync(join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
+            // A built-in name (the panel's official catalog install) gets the shipped copy, never the sent content.
+            if (isCore) cpSync(join(PKG_SKILLS_DIR, skillName), skillDir, { recursive: true })
+            else { mkdirSync(skillDir, { recursive: true }); writeFileSync(join(skillDir, 'SKILL.md'), skillContent, 'utf-8') }
             console.log(`📚 Skill added: ${skillName}`)
             const skills = loadSkillsList(homedir())
             await sendToFrontend({ type: 'skill_add_result', success: true, skills })
