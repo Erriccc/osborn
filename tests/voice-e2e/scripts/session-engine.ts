@@ -56,7 +56,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from '@playwri
 import { Stagehand } from '@browserbasehq/stagehand'
 import { createServer } from 'http'
 import { execFile } from 'child_process'
-import { createHmac, randomBytes } from 'crypto'
+import { createHash, createHmac, randomBytes } from 'crypto'
 import { promisify } from 'util'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync } from 'fs'
 import { join, dirname } from 'path'
@@ -210,9 +210,43 @@ async function main() {
   // evaluate context. CONTEXT-level so EVERY page gets it — page-level missed
   // tabs opened later (caught live by the devtools sense: "__name is not
   // defined" pageerror on tab 1's HUD evaluate).
-  await context.addInitScript(() => { (globalThis as any).__name = (globalThis as any).__name || ((f: any) => f) })
-  // Lets a page know it is inside the engine (the in-app Browser hides its own live view there).
-  await context.addInitScript(() => { (globalThis as any).__osbornEngine = true })
+  const prepareContext = async (c: BrowserContext) => {
+    await c.addInitScript(() => { (globalThis as any).__name = (globalThis as any).__name || ((f: any) => f) })
+    // Lets a page know it is inside the engine (the in-app Browser hides its own live view there).
+    await c.addInitScript(() => { (globalThis as any).__osbornEngine = true })
+  }
+  await prepareContext(context)
+  // PROFILES: each person (the /browser panel's signed-in user) or agent that names
+  // one (`x-profile`) gets its own Chrome profile — cookies and sign-ins isolated
+  // from everyone else's and saved to the volume, so they survive restarts. No
+  // profile = the shared one, as before. Tabs keep ONE index space across profiles,
+  // in the order they were opened, so existing callers' tab numbers still hold.
+  const PROFILES_DIR = join(OUT_DIR, 'profiles')
+  mkdirSync(PROFILES_DIR, { recursive: true })
+  const contexts = new Map<string, BrowserContext>([['', context]])
+  const tabOrder: Page[] = []
+  const pageProfile = new WeakMap<Page, string>()
+  const trackContext = (c: BrowserContext, key: string) => c.on('page', (p) => {
+    tabOrder.push(p); pageProfile.set(p, key)
+    p.once('close', () => { const i = tabOrder.indexOf(p); if (i >= 0) tabOrder.splice(i, 1) })
+  })
+  trackContext(context, '')
+  const allPages = () => tabOrder.filter((p) => !p.isClosed())
+  const tabs = { pages: allPages } as unknown as BrowserContext  // the tab helpers only read pages()
+  const profileFile = (key: string) => join(PROFILES_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 20)}.json`)
+  const contextFor = async (key: string): Promise<BrowserContext> => {
+    const have = contexts.get(key)
+    if (have) return have
+    const file = profileFile(key)
+    const c = await browser.newContext({ permissions: ['microphone'], ...(existsSync(file) ? { storageState: file } : {}) })
+    await prepareContext(c); trackContext(c, key); contexts.set(key, c)
+    mark(`profile opened${existsSync(file) ? ' (restored)' : ''}`)
+    return c
+  }
+  const saveProfiles = async () => {
+    for (const [key, c] of contexts) if (key) await c.storageState({ path: profileFile(key) }).catch(() => {})
+  }
+  setInterval(() => { void saveProfiles() }, 60000)
   let active: Page = await context.newPage()
   // DEVTOOLS SENSE per tab — console, page errors, failed network, websocket
   // lifecycle. Every task response carries the active tab's summary so the
@@ -230,20 +264,20 @@ async function main() {
     touchTab(p)
     // Browser events → webhooks: navigations ("the browser got forwarded")
     // and page errors, tagged with the tab they happened on.
-    p.on('framenavigated', (f) => { if (f === p.mainFrame()) notifyRef('navigation', { url: f.url(), tab: context.pages().indexOf(p) }) })
-    p.on('pageerror', (e) => notifyRef('page_error', { message: e.message.slice(0, 300), tab: context.pages().indexOf(p) }))
+    p.on('framenavigated', (f) => { if (f === p.mainFrame()) notifyRef('navigation', { url: f.url(), tab: allPages().indexOf(p) }) })
+    p.on('pageerror', (e) => notifyRef('page_error', { message: e.message.slice(0, 300), tab: allPages().indexOf(p) }))
     // Meeting/agent activity → first-class events: the frontend logs its data
     // messages to console; promote transcripts and agent output so directors
     // detect activity on ONE stream instead of tailing three log sources.
     p.on('console', (m) => {
       const t = m.text()
-      if (/Meeting transcript|user_transcript/i.test(t)) notifyRef('transcript', { text: t.slice(0, 250), tab: context.pages().indexOf(p) })
-      else if (t.includes('claude_output')) notifyRef('agent_output', { text: t.slice(0, 200), tab: context.pages().indexOf(p) })
+      if (/Meeting transcript|user_transcript/i.test(t)) notifyRef('transcript', { text: t.slice(0, 250), tab: allPages().indexOf(p) })
+      else if (t.includes('claude_output')) notifyRef('agent_output', { text: t.slice(0, 200), tab: allPages().indexOf(p) })
     })
   }
   const writeDevtoolsFile = () => {
     try {
-      const dump = context.pages().map((p, i) => {
+      const dump = allPages().map((p, i) => {
         const b = devtoolsBufs.get(p)
         return b ? `===== TAB ${i} — ${p.url()}\n--- console\n${b.console.join('\n')}\n--- network\n${b.network.join('\n')}` : ''
       }).filter(Boolean).join('\n\n')
@@ -567,10 +601,10 @@ async function main() {
   // page — removed per user (2026-07-31).
   const updateTabHud = async () => {
     if (FULL_WINDOW) {
-      await Promise.all(context.pages().map((p) => p.evaluate(() => document.getElementById('__osb_tabhud')?.remove()).catch(() => {})))
+      await Promise.all(allPages().map((p) => p.evaluate(() => document.getElementById('__osb_tabhud')?.remove()).catch(() => {})))
       return
     }
-    const pages = context.pages()
+    const pages = allPages()
     const activeI = pages.indexOf(active)
     await Promise.all(pages.map((p, i) => p.evaluate((info: { i: number; n: number; isActive: boolean }) => {
       let el = document.getElementById('__osb_tabhud')
@@ -599,6 +633,15 @@ async function main() {
   // driver acts on ITS OWN tab, never a shared global one — so a foreign
   // /dashboard tab can never bleed into your run again.
   const driverId = (req: import('http').IncomingMessage): string => String(req.headers['x-driver-id'] || 'default')
+  // Which profile a request's new tabs open in: an explicit x-profile, else the panel's
+  // signed-in person (driver id person:<email>), else the shared profile.
+  const profileOf = (req: import('http').IncomingMessage): string => {
+    // Named profiles live in their own namespace: a header can never open a person's profile.
+    const named = String(req.headers['x-profile'] || '').trim().toLowerCase().slice(0, 120)
+    if (named) return `agent:${named}`
+    const d = driverId(req)
+    return d.startsWith('person:') ? d : ''
+  }
   const driverActive = new Map<string, Page>()  // driver → its current tab
   let actionChain: Promise<unknown> = Promise.resolve()
   let inflight = 0  // commands running or queued; capture never pauses under one
@@ -613,7 +656,7 @@ async function main() {
   const focusDriverTab = async (driver: string): Promise<void> => {
     let tab = driverActive.get(driver)
     if (!tab || tab.isClosed()) {
-      tab = [...context.pages()].reverse().find((p) => tabOwners.get(p)?.owner === driver) || context.pages()[0]
+      tab = [...allPages()].reverse().find((p) => tabOwners.get(p)?.owner === driver) || allPages()[0]
       driverActive.set(driver, tab)
     }
     active = tab
@@ -634,8 +677,8 @@ async function main() {
       if (Date.now() - (tk.seen ?? tk.since) < TAKEOVER_IDLE_MS) continue
       takeovers.delete(p)
       if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
-      mark(`tab HANDBACK (idle takeover by ${tk.by}): ${context.pages().indexOf(p)}`); saveTabState()
-      notify('handback', { i: context.pages().indexOf(p), by: tk.by, owner: tk.prevOwner, url: p.url(), reason: 'idle' })
+      mark(`tab HANDBACK (idle takeover by ${tk.by}): ${allPages().indexOf(p)}`); saveTabState()
+      notify('handback', { i: allPages().indexOf(p), by: tk.by, owner: tk.prevOwner, url: p.url(), reason: 'idle' })
     }
   }, 60000).unref()
   const guardOwnership = (driver: string): Record<string, unknown> | null => {
@@ -655,10 +698,10 @@ async function main() {
   const TAB_STATE = join(OUT_DIR, 'last-tabs.json')
   const saveTabState = () => {
     try {
-      const pages = context.pages()
+      const pages = allPages()
       writeFileSync(TAB_STATE, JSON.stringify({
         savedAt: Date.now(), activeIndex: pages.indexOf(active),
-        tabs: pages.map((p) => ({ url: p.url(), owner: ownerOf(p) })),
+        tabs: pages.map((p) => ({ url: p.url(), owner: ownerOf(p), profile: pageProfile.get(p) || undefined })),
       }, null, 2))
     } catch { /* ignore */ }
   }
@@ -667,7 +710,7 @@ async function main() {
   // (the audio timeline), so transcript windows line up with task windows.
   // Every task records WHICH TAB it ran on ({i, url} at execution time) — the
   // per-tab memory that lets a director reconstruct what happened where.
-  const activeTab = (p: Page = active) => ({ i: context.pages().indexOf(p), url: p.url(), owner: ownerOf(p) })
+  const activeTab = (p: Page = active) => ({ i: allPages().indexOf(p), url: p.url(), owner: ownerOf(p) })
   // Clips still encoding after their reply; GET /clip and /media wait on them.
   const pendingClips = new Map<number, Promise<unknown>>()
   const awaitClip = async (n: number) => { const p = pendingClips.get(n); if (p) await Promise.race([p, new Promise((r) => setTimeout(r, 90000))]) }
@@ -863,7 +906,7 @@ async function main() {
       // This used to run on every shutdown against whatever tab was active, so
       // an idle-stop on a third-party site told the brain to click that site's
       // "Leave"/"Disconnect"-looking button.
-      const roomTab = context.pages()[0]
+      const roomTab = allPages()[0]
       if (roomTab && !roomTab.isClosed()) active = roomTab
       await bounded(brain('Click the Disconnect or Leave button to end the voice session').catch(() => null), 12000)
       await active.waitForTimeout(2000).catch(() => {})
@@ -874,7 +917,8 @@ async function main() {
     manifest.audioCapture = savedAudio ? 'audio-capture.webm' : null
     await bounded(stagehand?.close(), 8000)
     await bounded(live?.stop(), 5000)
-    await bounded(context.close(), 8000)
+    await bounded(saveProfiles(), 8000)
+    for (const c of contexts.values()) await bounded(c.close(), 8000)
     await bounded(browser.close(), 8000)
     manifest.endedAt = Date.now()
     writeManifest()
@@ -947,11 +991,11 @@ async function main() {
           // and reach the pre-restart media via /clip?run=<previousRun>.
           previousRun: restoredFromRun, restartRecovered: restoredFromRun != null,
           depth: depthNow(),
-          takeovers: [...takeovers.entries()].map(([p, t]) => ({ i: context.pages().indexOf(p), by: t.by, prevOwner: t.prevOwner, since: t.since })),
-          drivers: [...driverActive.keys()], tabsByOwner: context.pages().map((p,i)=>({i, owner: ownerOf(p)})),
+          takeovers: [...takeovers.entries()].map(([p, t]) => ({ i: allPages().indexOf(p), by: t.by, prevOwner: t.prevOwner, since: t.since })),
+          drivers: [...driverActive.keys()], tabsByOwner: allPages().map((p,i)=>({i, owner: ownerOf(p)})),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
-          activeTab: { i: context.pages().indexOf(active), url: active.url() },
-          tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
+          activeTab: { i: allPages().indexOf(active), url: active.url() },
+          tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
         })
       }
       if (req.method === 'GET' && path === '/runs') {
@@ -997,7 +1041,7 @@ async function main() {
           const alreadyAudible = t3?.clipAudio && (t3.clipAudio.said || t3.clipAudio.heard)
           // Otherwise mux from the tab the task ran on, not whichever tab
           // another driver has fronted since.
-          const taskPage = context.pages().find((p) => p.url() === t3?.tab?.url && ownerOf(p) === (t3?.tab?.owner ?? null))
+          const taskPage = allPages().find((p) => p.url() === t3?.tab?.url && ownerOf(p) === (t3?.tab?.owner ?? null))
           if (t3?.endMs && !alreadyAudible) { const m = await muxClipAudio(file, t3.endMs, n, taskPage ?? active); if (m) file = m }
         }
         if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs` }, 404)
@@ -1008,7 +1052,7 @@ async function main() {
       if (req.method === 'GET' && path === '/logs') {
         // Full devtools state, all tabs — console, network, websockets.
         return json(res, {
-          pages: context.pages().map((p, i) => {
+          pages: allPages().map((p, i) => {
             const b = devtoolsBufs.get(p)
             return { i, url: p.url(), console: b?.console.slice(-80) ?? [], network: b?.network.slice(-80) ?? [] }
           }),
@@ -1439,10 +1483,10 @@ async function main() {
         body.owner = driver
         const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'list']
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
-        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !context.pages()[body.i])
-          return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${context.pages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
+        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !allPages()[body.i])
+          return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
-        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(driverActive.get(driver) ?? active), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
+        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(driverActive.get(driver) ?? active), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]) })) })
         // Serialized with /act and /say so a tab change never lands mid-action.
         return await withLock(async () => {
         // After ANY change of active tab the screencast is retargeted so the
@@ -1455,12 +1499,12 @@ async function main() {
           if (body.reuse !== false && body.url) {
             try {
               const host = new URL(body.url).hostname
-              const pages = context.pages()
-              const cand = pages.find((p, idx) => { try { return idx > 0 && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
+              const pages = allPages()
+              const cand = pages.find((p, idx) => { try { return idx > 0 && pageProfile.get(p) === profileOf(req) && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
               if (cand) { await cand.goto(String(body.url), { timeout: 45000 }); active = cand; reused = true }
             } catch { /* fall through to a fresh tab */ }
           }
-          if (!reused) { active = await openTab(context, body.url); watchPage(active) }
+          if (!reused) { active = await openTab(await contextFor(profileOf(req)), body.url); watchPage(active) }
           if (body.viewport === 'mobile') await active.setViewportSize({ width: 390, height: 844 })
           else if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
           if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
@@ -1470,7 +1514,7 @@ async function main() {
         }
         else if (body.op === 'navigate') {
           // Point an EXISTING tab at a new URL (the reuse primitive).
-          const target = body.i != null ? context.pages()[body.i] : active
+          const target = body.i != null ? allPages()[body.i] : active
           if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
           const o = ownerOf(target)
           if (o && body.owner !== o) return json(res, { error: `tab is claimed by "${o}"` }, 409)
@@ -1479,19 +1523,19 @@ async function main() {
           await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
         }
         else if (body.op === 'switch') {
-          const so = ownerOf(context.pages()[body.i])
+          const so = ownerOf(allPages()[body.i])
           if (so && so !== body.owner) return json(res, { error: `tab ${body.i} is owned by "${so}" — you are "${body.owner}"` }, 409)
-          active = await switchTab(context, body.i); driverActive.set(driver, active); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`)
+          active = await switchTab(tabs, body.i); driverActive.set(driver, active); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`)
         }
         else if (body.op === 'close') {
-          const target = context.pages()[body.i]
+          const target = allPages()[body.i]
           const o = target ? ownerOf(target) : null
           if (o && body.owner !== o) return json(res, { error: `tab ${body.i} is claimed by "${o}" — pass matching owner to close` }, 409)
           if (target) { tabOwners.delete(target); takeovers.delete(target) }
-          active = await closeTab(context, body.i); await live?.retarget(active).catch(() => {}); mark(`tab close: ${body.i}`)
+          active = await closeTab(tabs, body.i); await live?.retarget(active).catch(() => {}); mark(`tab close: ${body.i}`)
         }
         else if (body.op === 'claim') {
-          const target = context.pages()[body.i]
+          const target = allPages()[body.i]
           if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
           const o = ownerOf(target)
           if (o && o !== body.owner) return json(res, { error: `tab ${body.i} already claimed by "${o}"` }, 409)
@@ -1501,13 +1545,13 @@ async function main() {
           // Only the owner may release. (It used to be open to anyone, which
           // made "release then claim" a silent way to steal a tab — use
           // takeover/handback for that, which the owner is told about.)
-          const target = context.pages()[body.i]
+          const target = allPages()[body.i]
           const o = ownerOf(target)
           if (o && o !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: o, error: `tab ${body.i} is owned by "${o}" — only its owner can release it; use {"op":"takeover"} to borrow it` }, 409)
           tabOwners.delete(target); takeovers.delete(target); mark(`tab release: ${body.i}`)
         }
         else if (body.op === 'takeover') {
-          const target = context.pages()[body.i]
+          const target = allPages()[body.i]
           const prev = ownerOf(target)
           if (takeovers.has(target)) return json(res, { ok: false, code: 'already_taken_over', by: takeovers.get(target)!.by, error: `tab ${body.i} is already taken over by "${takeovers.get(target)!.by}"` }, 409)
           if (prev === body.owner) return json(res, { ok: false, code: 'bad_request', error: `tab ${body.i} is already yours` }, 400)
@@ -1519,7 +1563,7 @@ async function main() {
           notify('takeover', { i: body.i, by: body.owner, prevOwner: prev })
         }
         else if (body.op === 'handback') {
-          const target = context.pages()[body.i]
+          const target = allPages()[body.i]
           const tk = takeovers.get(target)
           if (!tk) return json(res, { ok: false, code: 'not_taken_over', error: `tab ${body.i} is not under a takeover` }, 400)
           if (tk.by !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: tk.by, error: `tab ${body.i} was taken over by "${tk.by}" — only they can hand it back` }, 409)
@@ -1536,8 +1580,8 @@ async function main() {
           writeScenario()
         }
         await updateTabHud(); saveTabState()
-        notify('tab', { op: body.op, activeTab: activeTab(), tabCount: context.pages().length })
-        return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(context).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(context.pages()[t.index]) })) })
+        notify('tab', { op: body.op, activeTab: activeTab(), tabCount: allPages().length })
+        return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]) })) })
         })
       }
       if (path === '/journey') {
@@ -1558,7 +1602,7 @@ async function main() {
             try { saved = saveJourney(host, journey.name, { goal: journey.goal ?? null, startUrl: journey.startUrl, auth: useAuth ? String(manifest.profile) : 'guest', savedAt: new Date().toISOString(), steps }) } catch { /* volume issue */ }
           }
           if (body.cleanup !== false) {
-            while (context.pages().length > 1) { try { active = await closeTab(context, context.pages().length - 1) } catch { break } }
+            while (allPages().length > 1) { try { active = await closeTab(tabs, allPages().length - 1) } catch { break } }
             await live?.retarget(active).catch(() => {})
             try { await active.setViewportSize({ width: 1280, height: 720 }) } catch { /* ignore */ }
             saveTabState()
@@ -1636,6 +1680,32 @@ async function main() {
         })
       }
       if (path === '/end') {
+        // The engine is shared: /end closes the caller's tabs, and shuts the engine down
+        // only when no other driver still has a tab open (or with {"shutdown": true}).
+        const driver = driverId(req)
+        const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
+        const others = [...new Set(allPages().flatMap(holders).filter((o) => o !== driver))]
+        if (others.length && body.shutdown !== true) {
+          const done = await withLock(async () => {
+            let closed = 0, handedBack = 0
+            for (const [i, p] of allPages().entries()) {
+              if (ownerOf(p) !== driver) continue
+              const tk = takeovers.get(p)
+              if (tk) {  // a tab taken over from someone goes back to them, not into the bin
+                takeovers.delete(p)
+                if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+                handedBack++
+              } else if (i === 0) tabOwners.delete(p)  // tab 0 holds the voice room: release, never close
+              else { await p.close().catch(() => {}); closed++ }
+            }
+            driverActive.delete(driver)
+            if (active.isClosed()) active = allPages()[0]
+            await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState()
+            return { closed, handedBack }
+          })
+          mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
+          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running for ${others.join(', ')} — pass {"shutdown": true} to stop it anyway`, ...done, others })
+        }
         json(res, { ok: true, msg: 'shutting down' })
         void gracefulEnd('end requested')
         return
@@ -1723,12 +1793,12 @@ async function main() {
           try { return new URL(t.url).pathname !== '/chat' } catch { return true }
         })
         for (const t of extra) {
-          active = await openTab(context, t.url); watchPage(active)
+          active = await openTab(await contextFor(t.profile || ''), t.url); watchPage(active)
           if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
         }
         if (extra.length) {
-          const pages = context.pages()
-          active = await switchTab(context, Math.min(st.activeIndex ?? 0, pages.length - 1))
+          const pages = allPages()
+          active = await switchTab(tabs, Math.min(st.activeIndex ?? 0, pages.length - 1))
           await live?.retarget(active).catch(() => {})
           mark(`restored ${extra.length} tab(s) from pre-sleep state`)
         }
@@ -1771,7 +1841,7 @@ async function main() {
   const TAB_STALE_MS = Number(process.env.OSBORN_TAB_STALE_MS ?? 1800000)
   setInterval(async () => {
     if (ending || !TAB_STALE_MS) return
-    const pages = context.pages()
+    const pages = allPages()
     for (let i = pages.length - 1; i >= 1; i--) {
       const p = pages[i]
       if (p === active) continue
