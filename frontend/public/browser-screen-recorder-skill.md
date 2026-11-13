@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 39
+Version: 40
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,10 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v40
+- Send `x-profile: <name>` to get your own browser profile: your sign-ins stay yours, other drivers can't see them, and they survive engine restarts, so you sign in once. The /browser panel gives each signed-in person their own profile.
+- `POST /end` closes only your tabs while another driver is still working; the engine shuts down when you are the last one, or with `{"shutdown": true}`.
 
 ## What's new in v39
 - The engine records the page itself (Chrome's own screenshots) instead of the whole screen. That cuts most of its idle CPU use. Clips no longer show Chrome's tab strip and address bar; a label at the top of the page names the tab and URL. Set `OSBORN_CAPTURE=display` to record the whole window again.
