@@ -48,9 +48,16 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
 2. Net-new must be justified: anything still new gets a one-line reason nothing existing fits.
 3. Surgical diff: remove unreachable guards, speculative options, dead branches and duplicated validation.
    If the diff mixes unrelated concerns (a fix, a refactor, a version bump), say which belong in a separate change.
-4. Regressions: for every changed or removed symbol, find its callers and consumers (routes, schedulers,
-   frontend, docs, tests, client/server messages) and confirm each still works. Flag any behaviour change
-   for an existing caller (status codes, response shapes, stored values, message fields).
+4. Change impact (blast radius). For every changed or removed symbol — function or method signature, a new
+   required parameter, a type/interface/class field, an exported constant, a route, a message/event name or
+   payload field, a CSS class or component prop — list every place that uses it and confirm each was updated
+   or still works: `git grep -n -w <symbol>` across the repo (all packages, docs, tests); for a renamed field,
+   grep the old name too. Then look for SIBLING COPIES of the same logic that did not use the symbol: the same
+   string, endpoint, handler shape or UI pattern on another page or in another package
+   (`git grep -n -F '<distinctive literal>'`). A fix applied to one copy and not its siblings is a BLOCK unless the
+   others are listed as out of scope. Flag any behaviour change for an existing caller (status codes, response
+   shapes, stored values, message fields). Combine with the coupling check in History first: a co-change
+   partner that also references the symbol and is missing from the diff is the strongest sign of a miss.
 5. Decisions: do not silently undo a decision found in history, PRs or the project's docs; name any it reverses.
 6. Single source of truth: if the diff adds a second copy of a rule (validation, error codes, config,
    constants), merge it into the existing copy.
@@ -78,7 +85,7 @@ Never sign off on BLOCK. If you REFACTORED, the orchestrator re-runs the tests a
 VERDICT: CLEAN | REFACTORED | BLOCK — <one line>
 REUSE MAP: <new item> → <existing item reused/extended> | NET-NEW: <reason> | SECOND COPY OF: <path>
 REMOVED: <what you cut and why> (or none)
-REGRESSION MAP: <changed symbol> → <callers> → <ok / broken + why>
+IMPACT: <changed symbol> → <every usage found> → <updated / ok / broken + why>; SIBLINGS: <other copies of the logic> → <updated / out of scope>
 LINES: +<added> -<removed> before → after, excluding test files (*.test.*, *.spec.*, tests/), then tests separately
 HISTORY: churn, re-touched lines (hunks checked / found), missing coupled files, related issues/PRs, and any check that could not run
 ROOT CAUSE: for a fix, the cause, its evidence and the chain it ends; for a feature, "new feature, no earlier fault"
