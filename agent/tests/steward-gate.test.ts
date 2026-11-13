@@ -4,7 +4,7 @@ import { execFileSync, execSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { stewardGate, gitAction, stewardMode, SIGNOFF_COMMAND } from '../src/steward-gate.js'
+import { stewardGate, gitAction, gitActions, stewardMode, SIGNOFF_COMMAND } from '../src/steward-gate.js'
 
 async function main() {
 const repo = mkdtempSync(join(tmpdir(), 'steward-'))
@@ -68,6 +68,17 @@ try {
   execFileSync('sh', ['-c', SIGNOFF_COMMAND], { cwd: fresh })
   assert.equal((await stewardGate('git add -A && git commit -m x', fresh, 'block')).decision, 'allow')
   rmSync(fresh, { recursive: true, force: true })
+
+  // #220: every git action in a command is checked, wherever it sits
+  assert.deepEqual(gitActions('git commit -am x && git push origin main', repo).map((h) => h.action), ['commit', 'push'])
+  for (const c of [' git push', 'FOO=1 git push', 'sudo -E git push', 'command git push', 'git --no-pager -c a=b push', 'git -C . push'])
+    assert.equal(gitAction(c, repo)?.action, 'push', c)
+  assert.equal(gitAction('cd sub; git push', repo)?.dir, join(repo, 'sub'))
+  assert.equal(gitAction('(cd sub && git push)', repo)?.dir, join(repo, 'sub'))
+  assert.equal(gitActions('(cd sub && true); git push', repo)[0]?.dir, repo, 'a subshell cd does not leak')
+  assert.equal(gitAction("echo 'git push; git commit'", repo), null)
+  writeFileSync(join(repo, 'd.ts'), 'export const d = 7\n')
+  assert.equal((await stewardGate('git commit -am x && git push origin HEAD', repo, 'block')).decision, 'deny', 'combined commit+push checks the commit')
 
   // Not a repo: never blocks
   assert.equal((await stewardGate('git push', tmpdir(), 'block')).decision, 'allow')
