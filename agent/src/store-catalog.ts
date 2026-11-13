@@ -200,7 +200,8 @@ export async function snapshot(repo: string): Promise<Snapshot> {
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 async function rawBytes(repo: string, sha: string, path: string): Promise<Buffer | null> {
   const r = await fetch(`${GH_RAW}/${repo}/${sha}/${path.split('/').map(encodeURIComponent).join('/')}`, { signal: AbortSignal.timeout(20000) })
-  if (!r.ok) return null
+  if (r.status === 404) return null
+  if (!r.ok) throw new Error(`raw ${r.status}`)  // rate limit / outage: a failure, not a missing file
   const buf = Buffer.from(await r.arrayBuffer())
   return buf.length > MAX_FILE_BYTES ? null : buf
 }

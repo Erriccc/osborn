@@ -44,7 +44,6 @@ export interface RoleSpec {
   historyFirst?: boolean
   /** Its final message is parsed into a steward verdict card. */
   verdict?: boolean
-  /** Its prompt records the sign-off the commit/push/PR gate checks (steward-gate.ts). */
   /** Verifier chain: dispatched beside it (parallelAtStart) and pushed to the orchestrator when it finishes (afterReminder). */
   chain?: { next: Role[]; parallelAtStart?: Role[]; afterReminder: string }
 }
