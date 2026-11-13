@@ -1326,6 +1326,7 @@ async function main() {
           const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, Date.now(), page).catch(() => null) : null
           lap('clip')
           const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
+          const clipWhy = range ? null : live?.clipFailure?.()  // read now: another request's clip overwrites it
           let hearError: string | null = null
           // Skip decoding and hearing when the ears clearly heard nothing this
           // turn: no page audio ever tapped, or no sound since speaking (#201).
@@ -1345,7 +1346,7 @@ async function main() {
             budget, `hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           lap('hear')
-          if (!range) clipError = live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session'
+          if (!range) clipError = live ? (clipWhy ?? 'clip failed') : 'live stream unavailable — no clips this session'
           else {
             clip = range.path
             const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, left(3000)).catch(() => null)

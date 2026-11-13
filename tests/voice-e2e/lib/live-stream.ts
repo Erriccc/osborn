@@ -323,10 +323,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       // frame (100ms at 10fps) to the previous kept frame are dropped. A
       // minimum-duration floor here stretched a burst of 2400 frames 5ms apart
       // (12s of wall clock) into a 48s clip.
-      // Display capture runs at CAPTURE_FPS, so encode at that rate: on a
-      // throttled CPU, encoding 10fps from 5fps frames doubled the work (#215).
-      const OUT_FPS = DISPLAY ? CAPTURE_FPS : 10
-      const MIN_GAP_MS = 1000 / OUT_FPS
+      const OUT_FPS = DISPLAY ? CAPTURE_FPS : 10  // display frames arrive at CAPTURE_FPS
+      const MIN_GAP_MS = 100
       const kept: typeof frames = []
       for (const f of frames) if (!kept.length || f.t - kept[kept.length - 1].t >= MIN_GAP_MS) kept.push(f)
       const lines: string[] = ['ffconcat version 1.0']

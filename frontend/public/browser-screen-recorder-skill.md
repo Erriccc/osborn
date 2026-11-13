@@ -187,7 +187,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 
 ## What's new in v38
 - A failed clip now says why (too few frames, ffmpeg error, or the encode ran past 20s), and `/say` `timings` include `encode`, the part of `clip` spent encoding.
-- Clips encode at the capture rate (5fps in full-window mode) instead of 10fps, which halves the encode work.
+- Clips encode at the capture rate (5fps in full-window mode) instead of 10fps, so the encoder has half as many frames to write.
 
 ## What's new in v37
 - When nobody is watching and no command has arrived for 2 minutes, the engine stops recording the screen and restarts it on the next command. On Fly's shared CPUs a machine that never idles gets throttled, which slowed speech playback and clip encoding. Set `OSBORN_CAPTURE_IDLE_MS` to change the wait (0 turns it off).
