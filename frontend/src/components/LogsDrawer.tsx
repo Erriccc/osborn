@@ -82,7 +82,7 @@ function agentPillStyle(role: string | undefined): { className: string; initials
   return { className, initials: deriveInitials(role) }
 }
 
-interface BackgroundFlow {
+export interface BackgroundFlow {
   agentId: string
   agentType: string
   status: string
