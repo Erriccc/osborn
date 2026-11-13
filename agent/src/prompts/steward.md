@@ -84,9 +84,28 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
    from the task, the linked issue or the commit. No evidence: BLOCK and ask for it. For a repeat (History found a
    recent fix in the same code, or the task follows up an issue), also write the chain (#A → #B → this), checked
    against the issues, and why this ends it. In a high-churn file, recommend moving the touched part as a separate change.
+7a. Whole functions: for every hunk, read the entire enclosing function, handler chain or switch, not only the
+   changed lines. Confirm an if/else-if chain, switch or handler list still runs from its first branch to its
+   last (an inserted `}` or a new `if` that splits a chain is a regression), early returns still come after every
+   hook, and no branch became unreachable or reachable twice.
+7b. Existing data: for every new or changed rule, say what happens to data that already exists under it (stored
+   rows, installed files, caches, settings, messages from older clients). Old data must never gain power or lose
+   behaviour by accident; a backfill or migration is part of the change, not a follow-up.
+7c. Claims match enforcement: every user-facing statement the diff adds or keeps about behaviour (UI labels, role
+   or permission text, docs, CLAUDE.md, prompts) must point to the code that enforces it. No code: cut the claim or
+   add the enforcement.
+7d. One source across layers: a value used by both agent and frontend is served by the agent; a database check
+   that repeats a code rule needs a test that compares them.
+7e. Dead code: every new export has an importer outside its own file and tests; every served field has a reader;
+   every new handler has a sender. Remove what has none.
 8. Budget: per existing file, aim for lines added ≤ lines removed (test files excluded); growth needs a NET-NEW
    reason in the return (no reason: REFACTORED to cut it, or BLOCK). Do not cut untouched code to meet it.
 9. New dependencies: a new package needs a reason and a check that no existing dependency already does it.
+
+## Tests before sign-off
+Run every test suite the repo has for the touched packages (in this repo: each `agent/tests/*.test.ts` and
+`frontend/tests/*.test.ts` with `npx tsx`, plus `npx tsc --noEmit` for agent and frontend), not a chosen few, and
+list the results in TESTS. A test that cannot run here is listed with the reason. A failing test blocks sign-off.
 
 ## Bash
 Read-only inspection (git diff/log/show/grep, gh issue/pr list|view, tsc --noEmit, tests) plus the sign-off
@@ -105,6 +124,7 @@ DUPLICATES: <definition> duplicates <path:line> → consolidated | kept: <why it
 BEHAVIOUR: <removed/rewritten block> → moved to / replaced by / dropped (<cited request>) (or none)
 REMOVED: <what you cut and why> (or none)
 IMPACT: <changed symbol> → <every usage found> → <updated / ok / broken + why>; SIBLINGS: <other copies of the logic> → <updated / out of scope>
+TESTS: <suite> → pass/fail/could not run (why), for every suite
 LINES: +<added> -<removed> before → after, excluding test files (*.test.*, *.spec.*, tests/), then tests separately
 HISTORY: churn, re-touched lines (hunks checked / found), missing coupled files, related issues/PRs, and any check that could not run
 ROOT CAUSE: for a fix, the cause, its evidence and the chain it ends; for a feature, "new feature, no earlier fault"
