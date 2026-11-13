@@ -255,7 +255,7 @@ async function main() {
   manifest.live = live?.url ?? null
   manifest.captureMode = DISPLAY_MODE ? 'display (full browser window)' : 'page (CDP)'
   mark(`browser up (${useAuth ? 'auth' : 'guest'}${IN_CONTAINER ? ', container' : ''}, capture: ${DISPLAY_MODE ? 'full-window' : 'page'}) — live: ${live?.url ?? 'n/a'}`)
-  // Warm the speech connection now, so the first /say doesn't pay for it (#206).
+  // Load speech code and look up its provider now; the logged time shows a cold synthesis (#206).
   void warmUpSpeech().then((w) => mark(`speech warm-up: ${w.provider} in ${w.ms}ms`)).catch((e) => mark(`speech warm-up failed: ${String(e).slice(0, 80)}`))
 
   // BRAIN — re-initializable in place. A double page reload detaches Stagehand

@@ -183,17 +183,21 @@ async function synthesize(text: string, base: string): Promise<string> {
   }
   const openai = optionalEnvKey('OPENAI_API_KEY')
   if (openai) {
-    const res = await fetch('https://api.openai.com/v1/audio/speech', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${openai}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'tts-1', voice: 'onyx', input: text, response_format: 'wav' }),
-      signal: AbortSignal.timeout(8000),
-    }).catch(() => null)
-    if (res?.ok) {
-      writeFileSync(`${base}.wav`, Buffer.from(await res.arrayBuffer()))
-      return 'openai'
+    try {
+      const res = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${openai}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'tts-1', voice: 'onyx', input: text, response_format: 'wav' }),
+        signal: AbortSignal.timeout(8000),
+      })
+      if (res.ok) {
+        writeFileSync(`${base}.wav`, Buffer.from(await res.arrayBuffer()))
+        return 'openai'
+      }
+      console.warn(`[reactive-mic] OpenAI TTS ${res.status} — falling back to local synth`)
+    } catch (e) {
+      console.warn('[reactive-mic] OpenAI TTS error — falling back to local synth:', e)
     }
-    console.warn(`[reactive-mic] OpenAI TTS ${res?.status ?? 'error'} — falling back to local synth`)
   }
   try {
     execSync(
@@ -222,7 +226,9 @@ async function sonioxTTS(text: string, apiKey: string): Promise<Buffer> {
       if (err) reject(err)
       else resolve(pcmToWav(Buffer.concat(chunks), 24000))
     }
-    const timer = setTimeout(() => finish(new Error('Soniox TTS timeout')), 10000)  // then fall back
+    // 10s of silence (not 10s in total) means Soniox is stuck: fall back.
+    let timer = setTimeout(() => finish(new Error('Soniox TTS timeout')), 10000)
+    const stillAlive = () => { clearTimeout(timer); timer = setTimeout(() => finish(new Error('Soniox TTS timeout')), 10000) }
     ws.on('open', () => {
       ws.send(JSON.stringify({
         api_key: apiKey, model: 'tts-rt-v1-preview', language: 'en', voice: 'Maya',
@@ -232,6 +238,7 @@ async function sonioxTTS(text: string, apiKey: string): Promise<Buffer> {
       ws.send(JSON.stringify({ stream_id: streamId, text_end: true }))
     })
     ws.on('message', (raw: Buffer) => {
+      stillAlive()
       let m: any
       try { m = JSON.parse(raw.toString()) } catch { return }
       if (m.error_code !== undefined) return finish(new Error(`Soniox TTS ${m.error_code}: ${m.error_message}`))
@@ -265,8 +272,9 @@ function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
   return Buffer.concat([header, pcm])
 }
 
-/** Synthesizes one short phrase and throws it away, so the first real turn
- *  doesn't pay for a cold speech connection. Returns the provider and time. */
+/** Synthesizes one short phrase and throws it away: loads the speech code and
+ *  resolves the provider's address before the first turn, and its time shows
+ *  how slow a cold synthesis is. (It does not keep a connection open.) */
 export async function warmUpSpeech(): Promise<{ provider: string; ms: number }> {
   const base = join(tmpdir(), `osborn-warm-${Date.now()}`)
   const t = Date.now()
