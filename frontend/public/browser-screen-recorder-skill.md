@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 42
+Version: 43
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,11 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v43
+- **Who you are on the engine:** every request carries `x-driver-id` (your tabs and ownership) and, optionally, `x-profile` (your saved sign-ins). With `drive.sh` set `BSR_DRIVER=<id>` and `BSR_PROFILE=<name>`; with your own HTTP client send the two headers. Two drivers = two different `x-driver-id` values, so multi-driver behaviour (takeover, scoped `/end`, profile isolation) is testable from one machine.
+- **Sign in once:** open your app's login in a tab with your `x-profile`, sign in (a person may need to hand you a one-time code), and that profile stays signed in across engine restarts. Then voice behaviour (`/say`, ears, clips) can be recorded in a real signed-in session.
+- **Every issue gets evidence:** paste the `evidence.markdown` from the response; even a desk proposal can attach a `/shot` of the current screen.
 
 ## What's new in v42
 - `POST /end {"keep": true}` closes your tabs and never stops the engine, even when you are the last driver (the /browser panel's "Close my tabs").

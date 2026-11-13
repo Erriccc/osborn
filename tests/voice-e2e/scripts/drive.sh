@@ -34,7 +34,8 @@ RESOLVE=(--resolve "$HOST:$PORT:$IP")
 [[ "$HOST" == "127.0.0.1" || "$HOST" == "localhost" ]] && RESOLVE=()
 DRIVER="${BSR_DRIVER:-$(whoami 2>/dev/null || echo default)}"
 # nounset-safe empty-array expansion (bash 3.2 on macOS errors on "${RESOLVE[@]}" when empty)
-cc() { curl -s ${RESOLVE[@]+"${RESOLVE[@]}"} -H "x-engine-token: $TOKEN" -H "x-driver-id: $DRIVER" "$@"; }
+PROFILE="${BSR_PROFILE:-}"  # your own browser profile: sign in once, kept across restarts
+cc() { curl -s ${RESOLVE[@]+"${RESOLVE[@]}"} -H "x-engine-token: $TOKEN" -H "x-driver-id: $DRIVER" ${PROFILE:+-H "x-profile: $PROFILE"} "$@"; }
 
 case "$CMD" in
   act|say)
