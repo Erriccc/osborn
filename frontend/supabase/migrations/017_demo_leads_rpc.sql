@@ -1,4 +1,4 @@
--- 015: record demo_leads' schema + a public, locked-down record function.
+-- 017: record demo_leads' schema + a public, locked-down record function.
 --
 -- POST /api/demo-access ("Connect without account") wrote through
 -- SUPABASE_SERVICE_ROLE_KEY, which is not set on Railway — the same constraint

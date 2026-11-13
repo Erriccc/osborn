@@ -1,25 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
 import { createSupabaseAnon } from '@/lib/supabase-anon'
+import { serviceClient } from '@/lib/sandbox-claims'
 
 /**
  * POST /api/demo-access — email gate for free/demo ("Connect without account")
  * usage. The login page collects the visitor's email before starting a guest
  * session; this route validates + upserts it into public.demo_leads.
  *
- * Guests have NO Supabase session, so the write cannot go through a caller's
- * own client. It prefers public.record_demo_lead() — a SECURITY DEFINER upsert
- * granted to anon (migration 015) — because SUPABASE_SERVICE_ROLE_KEY is not set
- * on Railway; the service-role client is the fallback. RLS is enabled on
- * demo_leads with NO policies, so these two are the only write paths. Never
- * expose SUPABASE_SERVICE_ROLE_KEY to the client.
+ * A guest has no Supabase session, so this prefers record_demo_lead() — a
+ * SECURITY DEFINER upsert granted to anon (migration 017) — because
+ * SUPABASE_SERVICE_ROLE_KEY is not set on Railway; service-role is the fallback.
  *
- * Recording the lead must never cost the visitor the session: the login page
+ * Recording a lead must never cost the visitor the session: the login page
  * already proceeds when this route is unreachable, so a missing or failing store
- * logs and answers ok rather than turning a visitor away. Only a bad email (400)
- * or the rate limit (429) refuses. The anon RPC is also callable directly with
- * the public anon key, so the per-IP limit below shapes traffic, it does not
- * protect the table.
+ * logs and answers ok. Only a bad email (400) or the rate limit (429) refuses.
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
@@ -51,7 +45,7 @@ async function recordLead(email: string): Promise<void> {
     try {
       const { error } = await anon.rpc('record_demo_lead', { p_email: email })
       if (!error) return
-      // Includes PGRST202/42883 — migration 015 not applied, every lead dropped.
+      // Includes PGRST202/42883 — migration 017 not applied, every lead dropped.
       console.error('[demo-access] record_demo_lead failed:', error.message)
     } catch (err) {
       console.error('[demo-access] record_demo_lead threw:', err)
@@ -60,14 +54,12 @@ async function recordLead(email: string): Promise<void> {
 
   // 2) Service-role upsert, keeping the earliest created_at. Unset on Railway,
   //    so this is the path for local and self-hosted deployments.
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!url || !service) {
+  const sb = serviceClient()
+  if (!sb) {
     console.error('[demo-access] lead not stored: no RPC and no service-role key')
     return
   }
   try {
-    const sb = createClient(url, service, { auth: { persistSession: false } })
     const { data: existing } = await sb
       .from('demo_leads')
       .select('email')

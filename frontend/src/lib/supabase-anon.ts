@@ -8,11 +8,9 @@ import { createClient } from '@supabase/supabase-js'
  * context at all — just the public URL + anon key. That keeps the public
  * library surface (/p/..., sitemap.ts) statically cacheable / ISR-friendly.
  *
- * SECURITY: reads through this client are limited to the `public_content` VIEW,
- * which exposes a safe, published-only column list (migration 007) — never read
- * `content_items` through it. Writes are limited to SECURITY DEFINER functions
- * explicitly granted to `anon` (migration 015's `record_demo_lead`), which
- * validate their own input; RLS otherwise refuses this client every table.
+ * SECURITY: only ever READ the `public_content` VIEW through this, which
+ * exposes a safe, published-only column list (migration 007). Never read
+ * `content_items` through this client.
  */
 export function createSupabaseAnon() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
