@@ -814,7 +814,7 @@ export const NAMED_AGENTS = {
   },
   steward: {
     description: [
-      'Codebase-steward agent (Sonnet). Owns duplication and regressions, not features. Use (1) on a PLAN before',
+      'Codebase-steward agent (Sonnet). NOT GROUNDED: reads the repo and its git history directly. Owns duplication and regressions, not features. Use (1) on a PLAN before',
       'any code is written, to answer "does this already exist?" for every new function, route, module, table or',
       'feature; (2) on the DIFF after the writer and tester, to refactor it to reuse existing code, cut what is not',
       'needed, and map every changed symbol to its callers. Returns CLEAN, REFACTORED or BLOCK. Never reviews its own refactor.',
@@ -2820,14 +2820,14 @@ class ClaudeLLMStream extends llm.LLMStream {
 
               // Steward sign-off gate (#218): a commit, push or PR whose content the steward has
               // not signed off is reported (advise, default) or refused (OSBORN_STEWARD_MODE=block).
+              let stewardNote: string | null = null  // advise mode: rides the allow tail below
               if (toolName === 'Bash') {
-                const gate = stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
+                const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
                 if (gate.decision === 'deny') {
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: gate.message })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
-                if (gate.decision === 'advise') {
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: gate.message } }
-                }
+                if (gate.decision === 'advise') stewardNote = gate.message ?? null
               }
 
               // Write/Edit/MultiEdit access control — plain WRITE_RULES lookup
@@ -2891,10 +2891,10 @@ class ClaudeLLMStream extends llm.LLMStream {
               // Consume an armed spoken-progress nudge on this allowed main-agent tool call:
               // inject it as NON-BLOCKING additionalContext (the model reads it; the tool still
               // runs). Riding the allow tail guarantees one clean, non-deny injection site.
-              if (pendingSpeakNudge && !agentType) {
-                pendingSpeakNudge = false
-                return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: speakProgressNudge(turnToolCallCount) } }
-              }
+              const nudge = pendingSpeakNudge && !agentType ? speakProgressNudge(turnToolCallCount) : null
+              if (nudge) pendingSpeakNudge = false
+              const context = [stewardNote, nudge].filter(Boolean).join('\n\n')
+              if (context) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }
               return {}
             }]
           }],

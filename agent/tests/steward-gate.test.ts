@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { stewardGate, gitAction, stewardMode, SIGNOFF_COMMAND } from '../src/steward-gate.js'
 
+async function main() {
 const repo = mkdtempSync(join(tmpdir(), 'steward-'))
 const sh = (cmd: string) => execSync(cmd, { cwd: repo, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' })
 const signOff = () => execFileSync('sh', ['-c', SIGNOFF_COMMAND], { cwd: repo })
@@ -24,30 +25,53 @@ try {
   assert.equal(gitAction('gh pr create --fill', repo)?.action, 'pr')
   assert.equal(gitAction('cd /tmp/x && git push', repo)?.dir, '/tmp/x')
   assert.equal(gitAction('git -C sub commit -m x', repo)?.dir, join(repo, 'sub'))
+  assert.equal(gitAction('git -c core.x=y commit -m x', repo)?.action, 'commit')
+  // Text that merely mentions a command is not the command
+  assert.equal(gitAction('grep -rn "git push" .', repo), null)
+  assert.equal(gitAction('echo "remember to git commit"', repo), null)
+  assert.equal(gitAction('git log | grep "gh pr create"', repo), null)
 
   // Unsigned change: advise warns, block refuses, off allows, other commands untouched
   writeFileSync(join(repo, 'b.ts'), 'export const b = 2\n')
-  assert.equal(stewardGate('git add -A && git commit -m b', repo, 'advise').decision, 'advise')
-  assert.equal(stewardGate('git add -A && git commit -m b', repo, 'block').decision, 'deny')
-  assert.equal(stewardGate('git add -A && git commit -m b', repo, 'off').decision, 'allow')
-  assert.equal(stewardGate('npm test', repo, 'block').decision, 'allow')
+  assert.equal((await stewardGate('git add -A && git commit -m b', repo, 'advise')).decision, 'advise')
+  assert.equal((await stewardGate('git add -A && git commit -m b', repo, 'block')).decision, 'deny')
+  assert.equal((await stewardGate('git add -A && git commit -m b', repo, 'off')).decision, 'allow')
+  assert.equal((await stewardGate('npm test', repo, 'block')).decision, 'allow')
 
   // Sign-off covers exactly this content, untracked files included, and leaves the index alone
   signOff()
   assert.equal(sh('git status --porcelain').trim(), '?? b.ts', 'sign-off must not stage anything')
-  assert.equal(stewardGate('git add -A && git commit -m b', repo, 'block').decision, 'allow')
+  assert.equal((await stewardGate('git add -A && git commit -m b', repo, 'block')).decision, 'allow')
   writeFileSync(join(repo, 'b.ts'), 'export const b = 3\n')
-  assert.equal(stewardGate('git add -A && git commit -m b', repo, 'block').decision, 'deny', 'an edit after sign-off needs a new one')
+  assert.equal((await stewardGate('git add -A && git commit -m b', repo, 'block')).decision, 'deny', 'an edit after sign-off needs a new one')
   signOff()
   sh('git add -A && git commit -qm b')
 
   // Push / PR check the committed tree
-  assert.equal(stewardGate('git push origin HEAD', repo, 'block').decision, 'allow')
-  assert.equal(stewardGate('gh pr create --fill', repo, 'block').decision, 'allow')
+  assert.equal((await stewardGate('git push origin HEAD', repo, 'block')).decision, 'allow')
+  assert.equal((await stewardGate('gh pr create --fill', repo, 'block')).decision, 'allow')
   writeFileSync(join(repo, 'c.ts'), 'export const c = 4\n'); sh('git add -A && git commit -qm c')
-  assert.equal(stewardGate('git push origin HEAD', repo, 'block').decision, 'deny', 'a commit the steward never saw')
+  assert.equal((await stewardGate('git push origin HEAD', repo, 'block')).decision, 'deny', 'a commit the steward never saw')
+
+  // Signed with an untracked leftover, committed only part: push still counts as signed
+  writeFileSync(join(repo, 'd.ts'), 'export const d = 5\n'); writeFileSync(join(repo, 'notes.txt'), 'scratch\n')
+  signOff()
+  sh('git add d.ts && git commit -qm d')
+  assert.equal((await stewardGate('git push origin HEAD', repo, 'block')).decision, 'allow', 'untracked leftovers do not void the sign-off')
+  writeFileSync(join(repo, 'd.ts'), 'export const d = 6\n')
+  assert.equal((await stewardGate('git push origin HEAD', repo, 'block')).decision, 'deny', 'uncommitted tracked edits do')
+
+  // A repo with no commits can be signed off
+  const fresh = mkdtempSync(join(tmpdir(), 'steward-empty-'))
+  execSync('git init -q', { cwd: fresh }); writeFileSync(join(fresh, 'x.ts'), 'x\n')
+  assert.equal((await stewardGate('git add -A && git commit -m x', fresh, 'block')).decision, 'deny')
+  execFileSync('sh', ['-c', SIGNOFF_COMMAND], { cwd: fresh })
+  assert.equal((await stewardGate('git add -A && git commit -m x', fresh, 'block')).decision, 'allow')
+  rmSync(fresh, { recursive: true, force: true })
 
   // Not a repo: never blocks
-  assert.equal(stewardGate('git push', tmpdir(), 'block').decision, 'allow')
+  assert.equal((await stewardGate('git push', tmpdir(), 'block')).decision, 'allow')
   console.log('steward-gate: all assertions passed')
 } finally { rmSync(repo, { recursive: true, force: true }) }
+}
+main().catch((e) => { console.error(e); process.exit(1) })
