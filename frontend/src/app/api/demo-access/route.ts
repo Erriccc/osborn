@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { createSupabaseAnon } from '@/lib/supabase-anon'
 
 /**
  * POST /api/demo-access — email gate for free/demo ("Connect without account")
@@ -8,15 +9,17 @@ import { createClient } from '@supabase/supabase-js'
  *
  * Guests have NO Supabase session, so the write cannot go through a caller's
  * own client. It prefers public.record_demo_lead() — a SECURITY DEFINER upsert
- * granted to anon (migration 014) — because SUPABASE_SERVICE_ROLE_KEY is not set
+ * granted to anon (migration 015) — because SUPABASE_SERVICE_ROLE_KEY is not set
  * on Railway; the service-role client is the fallback. RLS is enabled on
  * demo_leads with NO policies, so these two are the only write paths. Never
  * expose SUPABASE_SERVICE_ROLE_KEY to the client.
  *
  * Recording the lead must never cost the visitor the session: the login page
- * already proceeds when this route is unreachable, so a store that is missing or
- * failing answers ok with stored:false (and logs) rather than turning a visitor
- * away. Only a bad email (400) or the rate limit (429) refuses.
+ * already proceeds when this route is unreachable, so a missing or failing store
+ * logs and answers ok rather than turning a visitor away. Only a bad email (400)
+ * or the rate limit (429) refuses. The anon RPC is also callable directly with
+ * the public anon key, so the per-IP limit below shapes traffic, it does not
+ * protect the table.
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
@@ -38,37 +41,31 @@ function rateLimited(ip: string): boolean {
   return false
 }
 
-/**
- * Record the lead. Returns false when it could not be stored — never throws, so
- * a store outage cannot reach the visitor.
- */
-async function recordLead(email: string): Promise<boolean> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!url || (!anon && !service)) {
-    console.error('[demo-access] no Supabase url/key configured; lead not stored')
-    return false
-  }
-
+/** Record the lead. Never throws, so a store outage cannot reach the visitor;
+ *  every failure is logged, because a dropped lead is invisible otherwise. */
+async function recordLead(email: string): Promise<void> {
   // 1) SECURITY DEFINER RPC as anon (works without the service-role key).
+  //    createSupabaseAnon pins db.schema = public, which an RPC needs here.
+  const anon = createSupabaseAnon()
   if (anon) {
     try {
-      const { error } = await createClient(url, anon, { auth: { persistSession: false } })
-        .rpc('record_demo_lead', { p_email: email })
-      if (!error) return true
-      // Migration 014 not applied yet -> fall through to the service client.
-      if (error.code !== 'PGRST202' && error.code !== '42883') {
-        console.error('[demo-access] record_demo_lead failed:', error.message)
-      }
+      const { error } = await anon.rpc('record_demo_lead', { p_email: email })
+      if (!error) return
+      // Includes PGRST202/42883 — migration 015 not applied, every lead dropped.
+      console.error('[demo-access] record_demo_lead failed:', error.message)
     } catch (err) {
       console.error('[demo-access] record_demo_lead threw:', err)
     }
   }
 
-  if (!service) return false
-
-  // 2) Service-role upsert, keeping the earliest created_at.
+  // 2) Service-role upsert, keeping the earliest created_at. Unset on Railway,
+  //    so this is the path for local and self-hosted deployments.
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !service) {
+    console.error('[demo-access] lead not stored: no RPC and no service-role key')
+    return
+  }
   try {
     const sb = createClient(url, service, { auth: { persistSession: false } })
     const { data: existing } = await sb
@@ -81,14 +78,9 @@ async function recordLead(email: string): Promise<boolean> {
       ? await sb.from('demo_leads').update({ last_seen_at: new Date().toISOString() }).eq('email', email)
       : await sb.from('demo_leads').insert({ email, source: 'login' })
 
-    if (error) {
-      console.error('[demo-access] write failed:', error.message)
-      return false
-    }
-    return true
+    if (error) console.error('[demo-access] write failed:', error.message)
   } catch (err) {
     console.error('[demo-access] write threw:', err)
-    return false
   }
 }
 
@@ -113,5 +105,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Enter a valid email address.' }, { status: 400 })
   }
 
-  return NextResponse.json({ ok: true, stored: await recordLead(email) })
+  await recordLead(email)
+  return NextResponse.json({ ok: true })
 }
