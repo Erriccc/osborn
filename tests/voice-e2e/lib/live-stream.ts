@@ -197,7 +197,10 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     // engine); refused outright when no engine token is configured so an open
     // control API is never published on the public stream port. Responses are
     // piped, so SSE (/control/events) and media (/control/clip) work as-is.
-    if (pathName === '/control' || pathName.startsWith('/control/')) {
+    // Signed evidence links also work without the /control prefix: a /media/… path pasted
+    // onto the public host used to get the viewer page instead of the image.
+    const isMedia = pathName.startsWith('/media/')
+    if (pathName === '/control' || pathName.startsWith('/control/') || isMedia) {
       const sendJson = (code: number, body: Record<string, unknown>) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
       if (!process.env.OSBORN_ENGINE_TOKEN) return sendJson(403, { error: 'control API over the stream port is disabled — set OSBORN_ENGINE_TOKEN on the engine to enable it' })
       const fwdHeaders: Record<string, string> = {}
@@ -208,7 +211,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       if (pubHost) fwdHeaders['x-control-base'] = `${String(req.headers['x-forwarded-proto'] || 'http').split(',')[0]}://${pubHost}/control`
       const upstream = httpRequest({
         host: '127.0.0.1', port: Number(process.env.SESSION_ENGINE_PORT ?? 8781),
-        method: req.method, path: (pathName.slice('/control'.length) || '/') + reqUrl.search, headers: fwdHeaders,
+        method: req.method, path: (isMedia ? pathName : pathName.slice('/control'.length) || '/') + reqUrl.search, headers: fwdHeaders,
       }, (up) => {
         // Hop-by-hop headers describe the upstream connection, not this one.
         const h = { ...up.headers }; for (const k of ['connection', 'keep-alive', 'transfer-encoding']) delete h[k]
