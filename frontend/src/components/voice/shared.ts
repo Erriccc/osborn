@@ -69,13 +69,13 @@ export function useViewportClamp<T extends HTMLElement = HTMLDivElement>(open: b
 // box in the middle of the tree (useViewportClamp only clamps horizontally, so
 // it cannot pull it back). The sheet is reachable only under sm, but it survives
 // a resize past that breakpoint while open.
-export const PANEL_SHEET =
+export const PANEL_BOTTOM_SHEET =
   'fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto z-50 bg-gray-900 ' +
   'border border-gray-700/60 rounded-t-2xl shadow-2xl pb-[env(safe-area-inset-bottom)]'
 
 /** The sheet, plus the sm+ drop-down under the panel's own trigger button. */
 export const PANEL_ANCHORED =
-  `${PANEL_SHEET} sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto ` +
+  `${PANEL_BOTTOM_SHEET} sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto ` +
   'sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(26rem,calc(100vw-1.5rem))] sm:rounded-xl sm:pb-0'
 
 // ── Header-panel mutual exclusion ────────────────────────────────────────

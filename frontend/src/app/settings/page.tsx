@@ -4,6 +4,13 @@ import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { MagnifyingGlass, Brain, PenNib, Robot, TestTube, ListChecks, ShieldCheck, Eye } from '@phosphor-icons/react'
 import { AGENT_BLURBS } from '@/components/voice/AgentsPopover'
+
+// Role glyphs for the Agents list, keyed lower-case like AGENT_BLURBS beside it.
+// Module scope: one table, not a fresh object per row per render.
+const AGENT_GLYPHS: Record<string, typeof Robot> = {
+  researcher: MagnifyingGlass, reasoner: Brain, writer: PenNib,
+  tester: TestTube, planner: ListChecks, steward: ShieldCheck, reviewer: Eye,
+}
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
@@ -1179,10 +1186,10 @@ export default function SettingsPage() {
       <SettingsSection title={`Agents${dashAgents.length ? ` (${dashAgents.length})` : ''}`} description="The specialists your voice agent can dispatch to.">
         {dashAgents.length > 0 ? (
           dashAgents.map((a) => {
-            // One key for both lookups: the icon map used to read the raw name
-            // while the blurb lower-cased it, so "Steward" lost its icon.
-            const key = a.name?.toLowerCase()
-            const Glyph = ({ researcher: MagnifyingGlass, reasoner: Brain, writer: PenNib, tester: TestTube, planner: ListChecks, steward: ShieldCheck, reviewer: Eye } as Record<string, typeof Robot>)[key] ?? Robot
+            // Keyed like AGENT_BLURBS below it, which lower-cases: reading the
+            // raw name here cost "Steward" its icon while it kept its blurb.
+            const key = a.name.toLowerCase()
+            const Glyph = AGENT_GLYPHS[key] ?? Robot
             return (
               <div key={a.name} className="flex gap-3 px-4 py-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border-subtle)] bg-gradient-to-b from-[var(--surface-2)] to-[var(--surface)]">

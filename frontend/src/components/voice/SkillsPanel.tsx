@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { PANEL_ANCHORED, PANEL_SHEET, usePanelExclusive, useViewportClamp } from './shared'
+import { PANEL_ANCHORED, PANEL_BOTTOM_SHEET, usePanelExclusive, useViewportClamp } from './shared'
 
 // Shared skills panel — the single source of truth for the skills UI. Mounted
 // in TWO places: the first-class header SkillsPopover (primary, high-visibility)
@@ -175,10 +175,7 @@ export function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean; re
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          {/* Mobile: viewport-anchored (button-anchored panels jut off-screen
-              when the trigger sits mid-header — user screenshot 2026-08-01);
-              sm+: anchored under the button as before. */}
-          <div ref={popRef} className={props.hideTrigger ? PANEL_SHEET : PANEL_ANCHORED}>
+          <div ref={popRef} className={props.hideTrigger ? PANEL_BOTTOM_SHEET : PANEL_ANCHORED}>
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">✨ Skills</span>
               <span className="text-[10px] text-gray-500">{count} installed</span>
