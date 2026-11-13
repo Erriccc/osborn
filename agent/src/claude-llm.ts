@@ -2770,7 +2770,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               }
 
               // Steward sign-off gate (#218): a commit, push or PR whose content the steward has
-              // not signed off is reported (advise, default) or refused (OSBORN_STEWARD_MODE=block).
+              // not signed off is refused (block, default) or only reported (OSBORN_STEWARD_MODE=advise).
               let stewardNote: string | null = null  // advise mode: rides the allow tail below
               if (toolName === 'Bash') {
                 const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())

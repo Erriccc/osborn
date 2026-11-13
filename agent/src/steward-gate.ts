@@ -27,8 +27,8 @@ export const TREE_COMMAND =
 export const SIGNOFF_COMMAND = `T=$(sh -c '${TREE_COMMAND}') && echo "$T" > "$(git rev-parse --git-dir)/${MARKER_FILE}"`
 
 export function stewardMode(env: Record<string, string | undefined> = process.env): StewardMode {
-  const m = (env.OSBORN_STEWARD_MODE || 'advise').toLowerCase()
-  return m === 'block' || m === 'off' ? m : 'advise'
+  const m = (env.OSBORN_STEWARD_MODE || 'block').toLowerCase()
+  return m === 'advise' || m === 'off' ? m : 'block'
 }
 
 // Split a shell command into simple commands (outside quotes) and read each one's
