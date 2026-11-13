@@ -158,6 +158,7 @@ export async function makeFixture(name: string): Promise<Fixture> {
     process.env.OSBORN_HOME = join(tmp, 'osborn-home')
     for (const k of ENV_KEYS) delete process.env[k]
     delete process.env.OSBORN_SYNC_TOKEN
+    process.env.OSBORN_LIBRARY_MIN_PERIOD_H = '4' // the fixture is laid out in 4h periods
     for (const [k, v] of Object.entries(extra)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   }
   const fx: Fixture = {
@@ -175,7 +176,7 @@ export async function makeFixture(name: string): Promise<Fixture> {
   const ctl = installFetch(scenario)
   ctl.toLibrary()
   const { runLibraryStep } = await import('../src/content/lens-library.js')
-  const r = await runLibraryStep({ sessionId, projectDir, minSpanMs: 4 * 3_600_000 })  // the fixture is laid out in 4h periods
+  const r = await runLibraryStep({ sessionId, projectDir })
   if (r.status !== 'written') throw new Error(`fixture: library step status=${r.status} ${r.errors.join('; ')}`)
   fx.libraryDir = r.libraryDir!
   ctl.toRun()

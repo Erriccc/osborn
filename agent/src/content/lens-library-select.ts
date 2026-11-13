@@ -17,7 +17,7 @@
  * seam-closed group is the one that just ended.
  */
 
-export const DEFAULT_MIN_SPAN_MS = 4 * 3_600_000
+export const DEFAULT_MIN_SPAN_MS = 3_600_000
 
 export interface RowStamp {
   id: number

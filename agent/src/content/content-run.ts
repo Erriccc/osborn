@@ -19,9 +19,8 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
 import { loadConversationRows, recordView, resolveSessionDb, type DbRecord } from './lens-db.js'
-import { readCompactionBoundaries } from './lens-period-boundaries.js'
-import { pageFileName, segmentPeriods, type LibraryPeriod } from './lens-library-select.js'
-import { libraryDirFor, readManifest } from './lens-library.js'
+import { pageFileName, type LibraryPeriod } from './lens-library-select.js'
+import { libraryDirFor, librarySegments, readManifest } from './lens-library.js'
 import { CapError, contentCaps, daySpent, genModel, isContentPipelineEnabled, isContentStrict, SpendGuard, type CapKind, type ContentLlmOptions } from './content-llm.js'
 import { makeScrubber, type ContentScrubber } from './content-redact.js'
 import {
@@ -101,9 +100,8 @@ export function pickContentPeriod(db: string, sessionId: string, dir: string, m:
     if (!hasPage(handoff)) return { period: null, reason: 'no-page' }
     return isDone(handoff.startRowId) ? { period: null, reason: 'already-done' } : { period: handoff, page: pageFileName(handoff) }
   }
-  const rows = loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
-  const seg = segmentPeriods(rows, readCompactionBoundaries(db))
   const lib = readManifest(dir, sessionId)
+  const seg = librarySegments(db, lib)
   const recent = [...(seg.tail ? [seg.tail] : []), ...[...seg.closed].reverse()].slice(0, 3)
   let done = false
   for (const p of recent) {

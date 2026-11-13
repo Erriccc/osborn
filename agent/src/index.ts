@@ -2459,6 +2459,7 @@ async function main() {
     if (warmLLM) {
       try {
         const llm = warmLLM as any
+        launchLibraryOnSessionEnd(warmSessionId, llm.workingDirectory || workingDir, `warm_${reason}`)
         if (typeof llm.abortQuery === 'function') llm.abortQuery()
         else if (typeof llm.abortAgent === 'function') llm.abortAgent()
       } catch (err) {
@@ -3954,7 +3955,7 @@ async function main() {
       }
 
       // 4. Close the old query (idle, or forced) and clear its resume state.
-      launchLibraryOnSessionEnd((currentLLM as any).sessionId, workingDir, 'session_switch')
+      launchLibraryOnSessionEnd(llmAny.sessionId, llmAny.workingDirectory || workingDir, 'session_switch')
       currentLLM.resetForSessionSwitch()
 
       // 5. Cross-project: the SDK cwd, fast brain and session tail move together.
