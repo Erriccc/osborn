@@ -57,6 +57,7 @@ import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
+import { readStewardVerdicts } from './steward-verdict.js'
 import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, ClientNoteQueue, parseFavoriteChanged, parseLegacyFavoriteNotice } from './transcript-wiring.js'
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
@@ -700,10 +701,11 @@ function startApiServer(workingDir: string, port: number): void {
         // pass their own cwd; honoured only if the session really lives there.
         const readDir = sessionMessagesDir(sessionId, url.searchParams.get('workingDirectory'), workingDir, sessionExists)
         const compactions = readCompactionMarkers(sessionId, readDir)
+        const steward = readStewardVerdicts(sessionId, readDir)
         const dbPath = storeExists(sessionId, readDir)
         if (!dbPath) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ sessionId, messages: [], compactions }))
+          res.end(JSON.stringify({ sessionId, messages: [], compactions, steward }))
           return
         }
         const db = openStore(dbPath, { readonly: true })
@@ -712,7 +714,7 @@ function startApiServer(workingDir: string, port: number): void {
           // (notices, injected blocks) don't shrink the page (L2b).
           const messages = cleanHistoryRows(n => recentRows(db, n, ['user', 'assistant']), limit, 1200)
           res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ sessionId, messages, compactions }))
+          res.end(JSON.stringify({ sessionId, messages, compactions, steward }))
         } finally { try { db.close() } catch {} }
       } catch (err) {
         console.error('API /session-messages error:', err)
@@ -2444,7 +2446,7 @@ async function main() {
     'session_id', 'mcp_servers_changed', 'tool_use', 'tool_result',
     'assistant_text', 'assistant_result', 'tts_chunks', 'permission_request',
     'tts_say', 'session_resume_failed', 'checkpoint_captured',
-    'dispatch_rejected', 'task_completed', 'agent_started',
+    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate',
   ] as const
 
   // Abort + clear the parked brain. Clears BOTH timers so grace/watchdog can't
@@ -4712,6 +4714,10 @@ async function main() {
       last_assistant_message: d.last_assistant_message,
     }))
 
+    // Steward verdict card + sign-off gate note (#221) → chat
+    directLLM.events.on('steward_verdict', (v: any) => sendToFrontend({ type: 'steward_verdict', ...v }))
+    directLLM.events.on('steward_gate', (d: any) => sendToFrontend({ type: 'steward_gate', decision: d.decision, message: d.message }))
+
     // Dispatcher v1 — sub-agent started → frontend stop-key signal (Feature A2)
     directLLM.events.on('agent_started', (d: any) => sendToFrontend({
       type: 'agent_started',
@@ -5979,8 +5985,10 @@ async function main() {
                     // Durable compaction markers ride the same push so the resumed
                     // transcript rebuilds its "Conversation compacted" rows too.
                     const compactions = readCompactionMarkers(preSelectedSessionId!, workingDir)
+                    // Last few cards, without the full return text, so the push stays under the packet limit.
+                    const steward = readStewardVerdicts(preSelectedSessionId!, workingDir).slice(-10).map(({ raw, ...v }) => v)
                     if (priorMessages.length > 0) {
-                      await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages, compactions })
+                      await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages, compactions, steward })
                       console.log(`💬 Sent ${priorMessages.length} prior messages (+${compactions.length} compaction markers) from DB for optimistic UI`)
                     }
                   } finally { try { db.close() } catch {} }

@@ -32,6 +32,7 @@ type EngineState = {
   driver?: string
 }
 type Status = {
+  build?: { skillVersion?: string }
   roomReady?: boolean
   pageUrl?: string
   pageState?: string
@@ -312,6 +313,12 @@ export function BrowserPanel() {
     if (!confirm(`Shut down the browser engine? It ends every run on it, for everyone${drivers.length ? ` (now driving: ${drivers.map(label).join(', ')})` : ''}, and the machine sleeps.`)) return
     if (await post('end', { shutdown: true }, 'shut down')) setWatching(false)  // confirmed: stop it for everyone
   }
+  // Scoped end with keep: closes my tabs and hands back takeovers; never stops the engine.
+  const closeMyTabs = async () => {
+    const r = await post('end', { keep: true }, 'close my tabs')
+    if (!r) return
+    setNote(r.msg ?? 'Closed your tabs')
+  }
 
   const taskN = (t: Task, i: number) => (typeof t.n === 'number' ? t.n : typeof t.index === 'number' ? t.index : i)
   const asleep = engine?.state && engine.state !== 'started'
@@ -332,6 +339,8 @@ export function BrowserPanel() {
   // In control: you took the tab over, or it is simply yours (you opened it).
   const inControl = !!me && (shownTakeover ? shownTakeover.by === me : shownOwner === me)
   const label = (d: string | null | undefined) => (d && d === me ? 'you' : d?.replace(/^person:/, '') ?? '')
+  // The engine keeps a browser profile per signed-in person (lowercased driver id), else the shared one.
+  const profile = me?.startsWith('person:') ? me.slice(7).toLowerCase() : 'shared'
   const blank = watching && !!status && blankPage(status.pageUrl)
 
   // Closing the page while in control hands the tab back instead of leaving the
@@ -370,6 +379,11 @@ export function BrowserPanel() {
           <span className="text-lg">🎥</span>
           <h2 className="text-base font-semibold text-neutral-100">Browser</h2>
           <StateBadge engine={engine} watching={watching} status={status} tokenMisconfigured={tokenMisconfigured} agentUnreachable={agentUnreachable} />
+          {watching && (
+            <span title="Your tabs and sign-ins live in this browser profile, kept across restarts" className="max-w-[16rem] truncate rounded-full border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300">
+              Profile: {profile}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {watching && (
@@ -383,6 +397,12 @@ export function BrowserPanel() {
           <button onClick={copyShare} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800">
             Copy viewer link
           </button>
+          {/* Needs an engine that understands /end {keep} (skill v42+); older ones would shut down. */}
+          {watching && Number(status?.build?.skillVersion) >= 42 && (
+            <button onClick={closeMyTabs} disabled={!!busy} title="Closes your tabs and hands back any you took over; the engine keeps running for anyone else using it" className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">
+              Close my tabs
+            </button>
+          )}
           {watching && (
             <button onClick={stopEngine} disabled={!!busy} title="Ends every run on the engine, for everyone, and puts it to sleep" className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">
               Shut down engine

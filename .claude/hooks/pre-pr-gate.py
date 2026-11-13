@@ -31,6 +31,20 @@ if not sha:
     sys.exit(0)
 marker = os.path.join(git("rev-parse", "--absolute-git-dir"), "pre-pr-reviewed")
 reviewed = open(marker).read().strip() if os.path.exists(marker) else ""
+# The PR body is the decision record: every template section filled, the steward's verdict included.
+body = str(inp.get("body") or "")
+if tool == "mcp__github__create_pull_request":
+    sections = dict(re.findall(r"^## (.+?)\s*$\n(.*?)(?=^## |\Z)", body, re.M | re.S))
+    def empty(name):  # "## Tested (manual)" or "## net-new" still count as the section
+        texts = [v for k, v in sections.items() if k.strip().lower().startswith(name.lower())]
+        return not any(re.sub(r"<!--.*?-->", "", t, flags=re.S).strip() for t in texts)
+    tpl = os.path.join(git("rev-parse", "--show-toplevel"), ".github", "pull_request_template.md")
+    headings = re.findall(r"^## (.+?)\s*$", open(tpl).read(), re.M) if os.path.exists(tpl) else []
+    missing = [h for h in headings if empty(h)]
+    if missing:
+        deny("Fill every PR template section (.github/pull_request_template.md) — empty or missing: " + ", ".join(missing) +
+             ". Net-new and Removed come from the steward's lists; Steward is its verdict line. "
+             "(Checked for PRs opened with the GitHub tool; `gh pr create` bodies are not inspected.)")
 steward = os.path.join(git("rev-parse", "--absolute-git-dir"), "steward-reviewed")
 if (open(steward).read().strip() if os.path.exists(steward) else "") != sha:
     deny(f"Steward sign-off required (CLAUDE.md). Run the steward agent (.claude/agents/steward.md) on "

@@ -23,6 +23,7 @@ import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
+import { parseStewardVerdict, appendStewardVerdict } from './steward-verdict.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -2773,6 +2774,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               let stewardNote: string | null = null  // advise mode: rides the allow tail below
               if (toolName === 'Bash') {
                 const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
+                if (gate.decision !== 'allow') this.#eventEmitter.emit('steward_gate', { decision: gate.decision, message: gate.message })
                 if (gate.decision === 'deny') {
                   this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: gate.message })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
@@ -3294,6 +3296,14 @@ class ClaudeLLMStream extends llm.LLMStream {
               const aid = input?.agent_id ?? ('sa-' + Date.now())
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
+              // Steward verdict card (#221): parsed, kept in the session's sidecar, sent to the chat.
+              const verdict = at === 'steward' ? parseStewardVerdict(msg) : null
+              if (verdict) {
+                try {
+                  if (this.#sessionId && this.#opts.workingDirectory) appendStewardVerdict(this.#sessionId, this.#opts.workingDirectory, verdict)
+                } catch (e) { console.warn('steward verdict persist failed:', e instanceof Error ? e.message : e) }
+                this.#eventEmitter.emit('steward_verdict', verdict)
+              }
               // Pattern #1 verifier chaining — CORRECT timing (moved here from PostToolUse).
               // SubagentStop fires at REAL completion. When a chained producer (writer/researcher)
               // finishes, push its afterReminder into the MAIN agent's streaming input so the main

@@ -10,7 +10,7 @@ import { resolveOrbState } from '@/lib/orb-state'
 // violet shimmer · speaking = sage rhythmic ripple. Label is quiet serif —
 // the orb does the talking. Same props/name as the old pill (call sites
 // untouched).
-export function StatusIndicator({ state, isMuted, micBlocked, blocked, reconnecting, error }: {
+export function StatusIndicator({ state, isMuted, micBlocked, blocked, reconnecting, error, bargeIn }: {
   state: string
   isMuted: boolean
   /** Mic confirmed off (not merely muted) while the agent is listening. */
@@ -21,6 +21,8 @@ export function StatusIndicator({ state, isMuted, micBlocked, blocked, reconnect
   reconnecting?: boolean
   /** Error known outside agent_state. Not passed by VoiceRoom yet (L6b). */
   error?: boolean
+  /** Browser barge-in duck engaged on the user's voice. */
+  bargeIn?: boolean
 }) {
   // Truthfulness lives in resolveOrbState: never "Listening" when the mic is
   // off/muted/blocked, and agent_state 'error' shows "Error", not "Ready".
@@ -31,6 +33,7 @@ export function StatusIndicator({ state, isMuted, micBlocked, blocked, reconnect
     blocked,
     reconnecting,
     error,
+    bargeIn,
   })
   const { colorVar: color, anim, label } = view
 

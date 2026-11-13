@@ -17,7 +17,7 @@ const AGENT_STATES: (string | null | undefined)[] = [
   'connecting', 'initializing', 'pre-connect-buffering', 'disconnected',
   'bogus', '', null, undefined,
 ]
-const FLAGS = ['micOff', 'muted', 'reconnecting', 'blocked', 'error'] as const
+const FLAGS = ['micOff', 'muted', 'reconnecting', 'blocked', 'error', 'bargeIn'] as const
 
 function allInputs(): OrbInput[] {
   const out: OrbInput[] = []
@@ -37,6 +37,7 @@ function expectedKey(i: OrbInput): string {
   if (i.error || s === 'error') return 'error'
   if (i.reconnecting) return 'reconnecting'
   if (i.blocked && s !== 'speaking' && s !== 'thinking') return 'blocked'
+  if (i.bargeIn && s === 'speaking' && !i.blocked && !i.muted && !i.micOff) return 'heardYou'
   if ((s === 'listening' || s === 'idle') && i.micOff) return 'micOff'
   if ((s === 'listening' || s === 'idle') && i.muted) return 'muted'
   if (s === 'idle') return 'idle'
@@ -71,6 +72,16 @@ t('precedence: error > reconnecting > blocked > micOff > agentState', () => {
   eq(resolveOrbState({ agentState: 'listening', reconnecting: true, blocked: true, micOff: true }).key, 'reconnecting', 'reconnecting 2nd')
   eq(resolveOrbState({ agentState: 'listening', blocked: true, micOff: true, muted: true }).key, 'blocked', 'blocked 3rd')
   eq(resolveOrbState({ agentState: 'listening', micOff: true, muted: true }).key, 'micOff', 'micOff 4th')
+})
+t('bargeIn while speaking -> "Heard you" in the listening colour/anim', () => {
+  const v = resolveOrbState({ agentState: 'speaking', bargeIn: true })
+  eq(v.label, 'Heard you', 'label'); eq(v.colorVar, ORB_VIEWS.listening.colorVar, 'colour'); eq(v.anim, ORB_VIEWS.listening.anim, 'anim')
+})
+t('bargeIn never shows "Heard you" when muted, mic off or blocked', () => {
+  for (const extra of [{ muted: true }, { micOff: true }, { blocked: true }]) ok(resolveOrbState({ agentState: 'speaking', bargeIn: true, ...extra }).key !== 'heardYou', JSON.stringify(extra))
+})
+t('bargeIn only applies while speaking', () => {
+  for (const s of ['listening', 'thinking', 'idle']) eq(resolveOrbState({ agentState: s, bargeIn: true }).key, s, s)
 })
 t('micOff does not override speaking/thinking', () => {
   for (const s of ['thinking', 'speaking']) eq(resolveOrbState({ agentState: s, micOff: true }).key, s, s)
@@ -113,7 +124,7 @@ t('baseOrbKey: only "idle" maps to idle', () => {
   for (const s of AGENT_STATES) if (s !== 'idle') ok(baseOrbKey(s) !== 'idle', `${String(s)} -> idle`)
 })
 
-// ── Exhaustive: every agentState x 2^5 flag combinations ──
+// ── Exhaustive: every agentState x 2^6 flag combinations ──
 let combos = 0
 t('exhaustive combinations match spec oracle + invariants', () => {
   for (const i of allInputs()) {
@@ -129,6 +140,7 @@ t('exhaustive combinations match spec oracle + invariants', () => {
     if (v.label === 'Ready') ok(i.agentState === 'idle' && !i.error && !i.reconnecting && !i.blocked && !i.micOff && !i.muted, `Ready leaked for ${tag}`)
     if (v.label === 'Listening') ok(!i.muted && !i.micOff && !i.blocked && !i.reconnecting && !i.error, `Listening while not hearing for ${tag}`)
     if (i.error || i.agentState === 'error') eq(v.label, 'Error', `error for ${tag}`)
+    if (v.key === 'heardYou') ok(i.bargeIn && !i.muted && !i.micOff && !i.blocked, `Heard you while not hearing for ${tag}`)
   }
 })
 

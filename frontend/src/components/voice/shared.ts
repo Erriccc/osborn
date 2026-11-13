@@ -158,6 +158,21 @@ export interface CompactionMarker {
   integrityWarning?: string
 }
 
+// The steward agent's verdict as a chat card (#221, #224). Same shape the agent
+// parses and stores in its steward.jsonl sidecar (agent/src/steward-verdict.ts).
+export interface StewardVerdict {
+  verdict: 'CLEAN' | 'REFACTORED' | 'BLOCK'
+  summary: string
+  decision?: string
+  rootCause?: string
+  netNew?: string[]
+  removed?: string[]
+  lines?: string
+  history?: string[]
+  raw?: string
+  at: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -171,6 +186,8 @@ export interface ChatMessage {
   // Present only on a compaction-marker row; renders CompactionMarkerCard in
   // place of a normal bubble (see MessageBubble).
   compaction?: CompactionMarker
+  // Present only on a steward verdict row; renders StewardVerdictCard.
+  steward?: StewardVerdict
   messageId?: string
   chunkIndex?: number
   liked?: boolean

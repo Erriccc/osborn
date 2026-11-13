@@ -23,7 +23,7 @@
 | `POST /journey {op: start\|end\|list, name?, goal?, save?, cleanup?}` | journey framing — see below |
 | `POST /brain` | re-init a detached Stagehand in place |
 | `POST /recover` | reload the active tab |
-| `POST /end {shutdown?}` | closes YOUR tabs; shuts the engine down (bounded, manifest safe) only when no other driver has a tab open, or with `{"shutdown": true}` |
+| `POST /end {shutdown?, keep?}` | closes YOUR tabs; shuts the engine down (bounded, manifest safe) only when no other driver has a tab open, or with `{"shutdown": true}`; `{"keep": true}` never stops it |
 | `x-profile: <name>` header | opens your new tabs in your own Chrome profile: cookies and sign-ins isolated from other drivers and saved across restarts (sign in once). Without it, tabs use the shared profile. The /browser panel uses the signed-in person's profile automatically. |
 
 ## Journeys — how a deployment learns a site

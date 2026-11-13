@@ -13,3 +13,5 @@
 
 ## Tested
 
+## Steward
+<!-- The steward's verdict for the head commit: CLEAN | REFACTORED | BLOCK-resolved — one line (root cause or reuse note). -->

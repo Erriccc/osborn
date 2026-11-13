@@ -36,7 +36,7 @@ export function stewardMode(env: Record<string, string | undefined> = process.en
 // counts: not `grep "git push"` or `echo "... git commit"`.
 type Hit = { action: GitAction; dir: string }
 // Words that can precede a command: keywords, wrappers, and wrappers' options.
-const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout',
+const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout', 'setsid', 'stdbuf', 'doas', 'ionice',
   'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}'])
 // Options that take a value, per wrapper.
 const TAKES_ARG: Record<string, Set<string>> = {
@@ -47,6 +47,9 @@ const TAKES_ARG: Record<string, Set<string>> = {
   time: new Set(['-f', '-o', '--format', '--output']),
   env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
   exec: new Set(['-a']),
+  stdbuf: new Set(['-i', '-o', '-e']),
+  doas: new Set(['-u', '-C']),
+  ionice: new Set(['-c', '-n', '-p', '-P', '-u', '--class', '--classdata']),
 }
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash'])
 

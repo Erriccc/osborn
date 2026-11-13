@@ -27,7 +27,7 @@ import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
@@ -147,6 +147,7 @@ function buildPriorItems(
   sessionId: string,
   msgs: Array<{ role: string; content: string; ts?: string | number | null }>,
   compactions?: PriorCompaction[],
+  steward?: StewardVerdict[],
 ): ChatMessage[] {
   // Unified timeline: messages (kind 0) and compaction markers (kind 1), merged by
   // timestamp. A tie puts the marker AFTER the messages at that instant — a
@@ -154,6 +155,7 @@ function buildPriorItems(
   type Row =
     | { kind: 0; t: number; idx: number; role: string; content: string }
     | { kind: 1; t: number; idx: number; comp: CompactionMarker }
+    | { kind: 2; t: number; idx: number; verdict: StewardVerdict }
 
   const rows: Row[] = []
   // Bug 14bedf48: control notices in the stored history are not You bubbles.
@@ -181,6 +183,12 @@ function buildPriorItems(
     })
   })
 
+  ;(Array.isArray(steward) ? steward : []).forEach((v, i) => {
+    const t = new Date(v?.at).getTime()
+    if (!v?.verdict || Number.isNaN(t)) return
+    rows.push({ kind: 2, t, idx: i, verdict: v })
+  })
+
   rows.sort((a, b) => (a.t !== b.t ? a.t - b.t : a.kind !== b.kind ? a.kind - b.kind : a.idx - b.idx))
 
   const items: ChatMessage[] = []
@@ -192,7 +200,15 @@ function buildPriorItems(
       lastDay = day
       items.push({ id: `prior-day-${day}-${sessionId}`, role: 'system', content: `── ${day} ──`, timestamp: t })
     }
-    if (r.kind === 1) {
+    if (r.kind === 2) {
+      items.push({
+        id: `prior-steward-${r.idx}-${sessionId}`,
+        role: 'system',
+        content: `Steward: ${r.verdict.verdict}`,
+        timestamp: t,
+        steward: r.verdict,
+      })
+    } else if (r.kind === 1) {
       items.push({
         id: `prior-compaction-${r.idx}-${sessionId}`,
         role: 'system',
@@ -816,8 +832,9 @@ function VoiceRoomInner({
     // compaction placement), so the cached paint is identical to what replaces it.
     const items: ChatMessage[] = buildPriorItems(
       preSelectedSessionId,
-      cached.filter(c => !c.compaction).map(c => ({ role: c.role, content: c.content, ts: c.ts })),
+      cached.filter(c => !c.compaction && !c.steward).map(c => ({ role: c.role, content: c.content, ts: c.ts })),
       cached.flatMap(c => (c.compaction ? [c.compaction] : [])),
+      cached.flatMap(c => (c.steward ? [c.steward] : [])),
     ).map(m => ({ ...m, fromCache: true }))
     setMessages(prev => {
       // Never overwrite anything real that already arrived (fast reconnect).
@@ -860,7 +877,7 @@ function VoiceRoomInner({
           if (cancelled) return
           if (!Array.isArray(d?.messages) || d.messages.length === 0) continue
           console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length} (+${Array.isArray(d.compactions) ? d.compactions.length : 0} compaction markers)`)
-          const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined)
+          const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined, d.steward)
           // Reconcile: if an authoritative replay already painted, leave it;
           // otherwise drop the optimistic cache rows and show the live history.
           setMessages(prev => (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)
@@ -888,9 +905,9 @@ function VoiceRoomInner({
   const hydrateSwitchedRef = useRef<(sessionId: string, query: string, fallback: Array<{ role: string; content: string }>) => void>(() => {})
   hydrateSwitchedRef.current = (sessionId, query, fallback) => {
     const base = agentUrl ? agentUrl.replace(/\/$/, '') : ''
-    const paint = (msgs: Array<{ role: string; content: string; ts?: string | number | null }>, compactions?: PriorCompaction[]) => {
+    const paint = (msgs: Array<{ role: string; content: string; ts?: string | number | null }>, compactions?: PriorCompaction[], steward?: StewardVerdict[]) => {
       if (currentSessionIdRef.current && currentSessionIdRef.current !== sessionId) return
-      const items = buildPriorItems(sessionId, msgs, compactions)
+      const items = buildPriorItems(sessionId, msgs, compactions, steward)
       setMessages(prev => [...items, ...prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache)])
     }
     ;(async () => {
@@ -900,7 +917,7 @@ function VoiceRoomInner({
           if (r.ok) {
             const d = await r.json()
             if (Array.isArray(d?.messages) && d.messages.length > 0) {
-              paint(d.messages, Array.isArray(d.compactions) ? d.compactions : undefined)
+              paint(d.messages, Array.isArray(d.compactions) ? d.compactions : undefined, d.steward)
               return
             }
           }
@@ -1131,6 +1148,7 @@ function VoiceRoomInner({
   // Leftover echo of the agent's voice in your mic. Kept across mic toggles; seeded at the old
   // fixed onset (0.04 / 3) so the duck only gets more sensitive as real echo is measured.
   const echoFloorRef = useRef(0.04 / 3)
+  const [bargeIn, setBargeIn] = useState(false)
   agentAudioTrackRef.current = (audioTrack?.publication?.track as unknown) || null
 
   useEffect(() => {
@@ -1223,9 +1241,12 @@ function VoiceRoomInner({
           // its last audible frame, if that came after the duck; otherwise we only know the edge.
           if (duckedAt) {
             const stop = agentHeardAt >= duckOnsetAt ? `agent stopped ${Math.round(agentHeardAt - duckOnsetAt)}ms after your voice` : 'agent was already quiet'
-            console.log(`🦆 [duck] barge-in timing: duck ${Math.round(duckedAt - duckOnsetAt)}ms, ${stop}`)
+            const timing = `barge-in timing: duck ${Math.round(duckedAt - duckOnsetAt)}ms, ${stop}`
+            console.log(`🦆 [duck] ${timing}`)
+            addMessageRef.current?.('system', `Voice ${timing}`, undefined, 'log')
           }
         }
+        if (duckedAt) setBargeIn(false)
         peak = 0; duckOnsetAt = 0; duckedAt = 0
         lastSpeaking = speaking
       }
@@ -1245,6 +1266,7 @@ function VoiceRoomInner({
           if (targetVol === 1 && now - aboveSince >= ONSET_HOLD_MS) {
             targetVol = DUCK_LEVEL
             duckOnsetAt = aboveSince; duckedAt = now; duckVol = vol
+            setBargeIn(true)
             console.log(`🦆 [duck] engaged: mic=${vol.toFixed(3)} onset=${onset.toFixed(3)} msSinceOnset=${Math.round(now - aboveSince)} → ${DUCK_LEVEL}`)
           }
         } else {
@@ -1261,6 +1283,7 @@ function VoiceRoomInner({
             // onset to just above what tripped it, so the same echo cannot flicker the duck.
             echoFloorRef.current = Math.min(ONSET_MAX / 3, Math.max(echoFloorRef.current, (duckVol * 1.2) / 3))
             duckOnsetAt = 0; duckedAt = 0
+            setBargeIn(false)
             console.log(`🦆 [duck] restore: false trigger (mic=${vol.toFixed(3)} quiet ${Math.round(now - belowSince)}ms)`)
           }
         }
@@ -1281,6 +1304,7 @@ function VoiceRoomInner({
       try { void analyser?.cleanup() } catch { /* already closed */ }
       try { void agentAnalyser?.cleanup() } catch { /* already closed */ }
       applyVolume(1, true) // never leave a track ducked on teardown (quiet: no bail log)
+      setBargeIn(false)
     }
   }, [localParticipant, micEnabled])
 
@@ -2836,6 +2860,20 @@ function VoiceRoomInner({
             return next
           })
         }
+      } else if (data.type === 'steward_verdict' && data.verdict) {
+        // Steward verdict card (#221): persisted by the agent, rebuilt on reload by buildPriorItems.
+        const { type: _type, ...verdict } = data
+        setMessages(prev => [...prev, {
+          id: `steward-${Date.now()}-${Math.random()}`,
+          role: 'system' as const,
+          content: `Steward: ${verdict.verdict}`,
+          timestamp: new Date(verdict.at || Date.now()),
+          category: 'chat' as const,
+          steward: verdict as StewardVerdict,
+        }])
+      } else if (data.type === 'steward_gate') {
+        // The steward sign-off gate advised on or refused a commit / push / PR.
+        addMessageRef.current?.('system', `Steward gate ${data.decision === 'deny' ? 'refused' : 'warned'}: ${data.message ?? ''}`, undefined, 'chat')
       } else if (data.type === 'prior_messages') {
         // Fallback path: prior session messages pushed by the agent over the data
         // channel after connect. The PRIMARY path is the mount-time HTTP fetch of
@@ -2843,7 +2881,7 @@ function VoiceRoomInner({
         // guard dedupes whichever arrives second.
         if (Array.isArray(data.messages) && data.messages.length > 0) {
           console.log(`💬 prior_messages received: ${data.messages.length} messages (+${Array.isArray(data.compactions) ? data.compactions.length : 0} compaction markers)`)
-          const priorItems = buildPriorItems(data.sessionId ?? 'x', data.messages, Array.isArray(data.compactions) ? data.compactions : undefined)
+          const priorItems = buildPriorItems(data.sessionId ?? 'x', data.messages, Array.isArray(data.compactions) ? data.compactions : undefined, data.steward)
           setMessages(prev => {
             // Don't double-inject: skip if an authoritative replay already painted.
             if (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)) return prev
@@ -4134,7 +4172,7 @@ function VoiceRoomInner({
             {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
 
             {/* Status */}
-            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} />
+            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} bargeIn={bargeIn} />
 
             {/* Project/workspace chip — which repo this session is attached to. */}
             {projectName && (

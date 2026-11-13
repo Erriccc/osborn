@@ -950,6 +950,8 @@ async function main() {
       // relative "/clip?n=1" is relative to. Direct :8781 callers get the
       // same relative paths as before.
       const mediaBase = String(req.headers['x-control-base'] || '')
+      // Public evidence links are absolute even for direct :8781 callers, so they render when pasted into an issue.
+      const evidenceBase = (mediaBase || process.env.OSBORN_ENGINE_PUBLIC_URL || (process.env.FLY_APP_NAME ? `https://${process.env.FLY_APP_NAME}.fly.dev/control` : '')).replace(/\/+$/, '')
       if (req.method === 'GET' && path.startsWith('/media/')) {
         // Signed public evidence — checked BEFORE the token gate on purpose.
         const m = path.match(/^\/media\/([A-Za-z0-9T:-]+)\/(\d+)\.(jpg|mp4|txt)$/)
@@ -1096,7 +1098,7 @@ async function main() {
         if (!list) return json(res, { ok: false, code: 'no_run', error: `run ${run} is not stored — GET /runs lists runs` }, 404)
         const wanted = q.get('n') ? list.filter((t: any) => t.n === Number(q.get('n'))) : list
         if (!wanted.length) return json(res, { ok: false, code: 'no_task', error: `no task ${q.get('n')} in run ${run}` }, 404)
-        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(mediaBase, run, t.n, { clip: !!(t.clip || t.clipPending), shot: !!t.artifact }) })) })
+        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(evidenceBase, run, t.n, { clip: !!(t.clip || t.clipPending), shot: !!t.artifact }) })) })
       }
       if (req.method === 'GET' && path === '/tasks') {
         // This run's task index — same data as manifest.json on disk.
@@ -1303,7 +1305,7 @@ async function main() {
         const shot = await reqShot(n, 'act', page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
         addStep('act', String(body.instruction))
-        return json(res, { ok: true, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: true, result: r, effect, warning, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)
@@ -1452,7 +1454,7 @@ async function main() {
           writeManifest()
           addStep('say', String(body.text))
           const clipPending = !body.waitClip
-          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {
@@ -1704,7 +1706,7 @@ async function main() {
         const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
         const working = [...driverActive.keys()].filter((d) => d !== driver && isWorking(d))
         const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
-        if (others.length && body.shutdown !== true) {
+        if ((others.length || body.keep === true) && body.shutdown !== true) {  // keep: close my tabs, never stop the engine
           const done = await withLock(async () => {
             let closed = 0, handedBack = 0
             for (const [i, p] of allPages().entries()) {
@@ -1724,7 +1726,7 @@ async function main() {
           })
           void saveProfiles()
           mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
-          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running for ${others.join(', ')} — pass {"shutdown": true} to stop it anyway`, ...done, others })
+          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running${others.length ? ` for ${others.join(', ')}` : ''} — pass {"shutdown": true} to stop it`, ...done, others })
         }
         json(res, { ok: true, msg: 'shutting down' })
         void gracefulEnd('end requested')

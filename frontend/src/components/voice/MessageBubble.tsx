@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { MarkdownMessage } from '../MarkdownMessage'
 import { FileCard } from '../chat/FileCard'
 import { userBubbleText } from '@/lib/chat-echo'
-import { stripProvenance, type ChatMessage, type CompactionMarker, type MessagePart, type SpeakingChunk } from './shared'
+import { stripProvenance, type ChatMessage, type CompactionMarker, type MessagePart, type SpeakingChunk, type StewardVerdict } from './shared'
 
 // Phase 1 of "compaction integrity / visible memory": a persistent, expandable
 // marker that makes an otherwise-invisible context compaction VISIBLE in the
@@ -76,6 +76,53 @@ function CompactionMarkerCard({ data }: { data: CompactionMarker }) {
             </p>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+// The steward's verdict (#221, #224): pill + one-line summary, then compact rows.
+// History and the full return stay collapsed; BLOCK is red and shows the decision.
+const VERDICT_STYLE: Record<StewardVerdict['verdict'], string> = {
+  CLEAN: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+  REFACTORED: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+  BLOCK: 'bg-rose-500/20 text-rose-200 border-rose-500/50',
+}
+function StewardRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-2">
+      <span className="w-20 shrink-0 text-gray-500">{label}</span>
+      <div className="min-w-0 flex-1 text-gray-300 break-words">{children}</div>
+    </div>
+  )
+}
+const listOrNone = (items?: string[]) =>
+  items && items.length > 0 ? <ul className="space-y-0.5">{items.map((x, i) => <li key={i}>{x}</li>)}</ul> : <span className="text-gray-500">none</span>
+function StewardVerdictCard({ data }: { data: StewardVerdict }) {
+  const block = data.verdict === 'BLOCK'
+  return (
+    <div className={`w-full max-w-xl rounded-lg border px-3.5 py-2.5 text-xs leading-relaxed space-y-1.5 ${block ? 'border-rose-500/40 bg-rose-500/[0.06]' : 'border-gray-700/60 bg-gray-800/40'}`}>
+      <div className="flex items-start gap-2">
+        <span className="text-[11px] font-semibold text-gray-400 mt-0.5">Steward</span>
+        <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold tracking-wide ${VERDICT_STYLE[data.verdict] ?? VERDICT_STYLE.CLEAN}`}>{data.verdict}</span>
+        <span className="min-w-0 flex-1 text-gray-200">{data.summary}</span>
+      </div>
+      {block && data.decision && <StewardRow label="Your call"><span className="text-rose-200">{data.decision}</span></StewardRow>}
+      <StewardRow label="Root cause">{data.rootCause || <span className="text-gray-500">not given</span>}</StewardRow>
+      <StewardRow label="Net-new">{listOrNone(data.netNew)}</StewardRow>
+      <StewardRow label="Removed">{listOrNone(data.removed)}</StewardRow>
+      {data.lines && <StewardRow label="Lines">{data.lines}</StewardRow>}
+      {data.history && data.history.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-gray-500 hover:text-gray-300">History ({data.history.length})</summary>
+          <div className="mt-1 pl-[5.5rem]">{listOrNone(data.history)}</div>
+        </details>
+      )}
+      {data.raw && (
+        <details>
+          <summary className="cursor-pointer text-gray-500 hover:text-gray-300">Full return</summary>
+          <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-gray-400">{data.raw}</pre>
+        </details>
       )}
     </div>
   )
@@ -341,6 +388,10 @@ export const MessageBubble = React.memo(function MessageBubble({
   // working memory and WHAT durable memories it kept. Surface-only.
   if (message.compaction) {
     return <CompactionMarkerCard data={message.compaction} />
+  }
+
+  if (message.steward) {
+    return <StewardVerdictCard data={message.steward} />
   }
 
   // Date / prior-conversation dividers — centered hairline label (Slack-style),
