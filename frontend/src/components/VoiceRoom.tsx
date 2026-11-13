@@ -27,7 +27,7 @@ import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
@@ -147,6 +147,7 @@ function buildPriorItems(
   sessionId: string,
   msgs: Array<{ role: string; content: string; ts?: string | number | null }>,
   compactions?: PriorCompaction[],
+  steward?: StewardVerdict[],
 ): ChatMessage[] {
   // Unified timeline: messages (kind 0) and compaction markers (kind 1), merged by
   // timestamp. A tie puts the marker AFTER the messages at that instant — a
@@ -154,6 +155,7 @@ function buildPriorItems(
   type Row =
     | { kind: 0; t: number; idx: number; role: string; content: string }
     | { kind: 1; t: number; idx: number; comp: CompactionMarker }
+    | { kind: 2; t: number; idx: number; verdict: StewardVerdict }
 
   const rows: Row[] = []
   // Bug 14bedf48: control notices in the stored history are not You bubbles.
@@ -181,6 +183,12 @@ function buildPriorItems(
     })
   })
 
+  ;(Array.isArray(steward) ? steward : []).forEach((v, i) => {
+    const t = new Date(v?.at).getTime()
+    if (!v?.verdict || Number.isNaN(t)) return
+    rows.push({ kind: 2, t, idx: i, verdict: v })
+  })
+
   rows.sort((a, b) => (a.t !== b.t ? a.t - b.t : a.kind !== b.kind ? a.kind - b.kind : a.idx - b.idx))
 
   const items: ChatMessage[] = []
@@ -192,7 +200,15 @@ function buildPriorItems(
       lastDay = day
       items.push({ id: `prior-day-${day}-${sessionId}`, role: 'system', content: `── ${day} ──`, timestamp: t })
     }
-    if (r.kind === 1) {
+    if (r.kind === 2) {
+      items.push({
+        id: `prior-steward-${r.idx}-${sessionId}`,
+        role: 'system',
+        content: `Steward: ${r.verdict.verdict}`,
+        timestamp: t,
+        steward: r.verdict,
+      })
+    } else if (r.kind === 1) {
       items.push({
         id: `prior-compaction-${r.idx}-${sessionId}`,
         role: 'system',
@@ -816,8 +832,9 @@ function VoiceRoomInner({
     // compaction placement), so the cached paint is identical to what replaces it.
     const items: ChatMessage[] = buildPriorItems(
       preSelectedSessionId,
-      cached.filter(c => !c.compaction).map(c => ({ role: c.role, content: c.content, ts: c.ts })),
+      cached.filter(c => !c.compaction && !c.steward).map(c => ({ role: c.role, content: c.content, ts: c.ts })),
       cached.flatMap(c => (c.compaction ? [c.compaction] : [])),
+      cached.flatMap(c => (c.steward ? [c.steward] : [])),
     ).map(m => ({ ...m, fromCache: true }))
     setMessages(prev => {
       // Never overwrite anything real that already arrived (fast reconnect).
@@ -860,7 +877,7 @@ function VoiceRoomInner({
           if (cancelled) return
           if (!Array.isArray(d?.messages) || d.messages.length === 0) continue
           console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length} (+${Array.isArray(d.compactions) ? d.compactions.length : 0} compaction markers)`)
-          const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined)
+          const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined, d.steward)
           // Reconcile: if an authoritative replay already painted, leave it;
           // otherwise drop the optimistic cache rows and show the live history.
           setMessages(prev => (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)
@@ -888,9 +905,9 @@ function VoiceRoomInner({
   const hydrateSwitchedRef = useRef<(sessionId: string, query: string, fallback: Array<{ role: string; content: string }>) => void>(() => {})
   hydrateSwitchedRef.current = (sessionId, query, fallback) => {
     const base = agentUrl ? agentUrl.replace(/\/$/, '') : ''
-    const paint = (msgs: Array<{ role: string; content: string; ts?: string | number | null }>, compactions?: PriorCompaction[]) => {
+    const paint = (msgs: Array<{ role: string; content: string; ts?: string | number | null }>, compactions?: PriorCompaction[], steward?: StewardVerdict[]) => {
       if (currentSessionIdRef.current && currentSessionIdRef.current !== sessionId) return
-      const items = buildPriorItems(sessionId, msgs, compactions)
+      const items = buildPriorItems(sessionId, msgs, compactions, steward)
       setMessages(prev => [...items, ...prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache)])
     }
     ;(async () => {
@@ -900,7 +917,7 @@ function VoiceRoomInner({
           if (r.ok) {
             const d = await r.json()
             if (Array.isArray(d?.messages) && d.messages.length > 0) {
-              paint(d.messages, Array.isArray(d.compactions) ? d.compactions : undefined)
+              paint(d.messages, Array.isArray(d.compactions) ? d.compactions : undefined, d.steward)
               return
             }
           }
@@ -2843,6 +2860,20 @@ function VoiceRoomInner({
             return next
           })
         }
+      } else if (data.type === 'steward_verdict' && data.verdict) {
+        // Steward verdict card (#221): persisted by the agent, rebuilt on reload by buildPriorItems.
+        const { type: _type, ...verdict } = data
+        setMessages(prev => [...prev, {
+          id: `steward-${Date.now()}-${Math.random()}`,
+          role: 'system' as const,
+          content: `Steward: ${verdict.verdict}`,
+          timestamp: new Date(verdict.at || Date.now()),
+          category: 'chat' as const,
+          steward: verdict as StewardVerdict,
+        }])
+      } else if (data.type === 'steward_gate') {
+        // The steward sign-off gate advised on or refused a commit / push / PR.
+        addMessageRef.current?.('system', `Steward gate ${data.decision === 'deny' ? 'refused' : 'warned'}: ${data.message ?? ''}`, undefined, 'chat')
       } else if (data.type === 'prior_messages') {
         // Fallback path: prior session messages pushed by the agent over the data
         // channel after connect. The PRIMARY path is the mount-time HTTP fetch of
@@ -2850,7 +2881,7 @@ function VoiceRoomInner({
         // guard dedupes whichever arrives second.
         if (Array.isArray(data.messages) && data.messages.length > 0) {
           console.log(`💬 prior_messages received: ${data.messages.length} messages (+${Array.isArray(data.compactions) ? data.compactions.length : 0} compaction markers)`)
-          const priorItems = buildPriorItems(data.sessionId ?? 'x', data.messages, Array.isArray(data.compactions) ? data.compactions : undefined)
+          const priorItems = buildPriorItems(data.sessionId ?? 'x', data.messages, Array.isArray(data.compactions) ? data.compactions : undefined, data.steward)
           setMessages(prev => {
             // Don't double-inject: skip if an authoritative replay already painted.
             if (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)) return prev
