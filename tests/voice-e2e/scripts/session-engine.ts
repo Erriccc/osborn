@@ -400,7 +400,7 @@ async function main() {
       const p = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-${label}.mp4`)
       const out = await live.clip(p, seconds)
       if (out) { mark(`clip: ${out}`); return { clip: out, clipError: null } }
-      return { clip: null, clipError: 'clip failed — ffmpeg unavailable or too few frames' }
+      return { clip: null, clipError: live.clipFailure() ?? 'clip failed' }
     } catch (e) { return { clip: null, clipError: (e as Error).message } }
   }
   // Settles with `p`, or rejects with `msg` after `ms` (the timer is always cleared).
@@ -1229,7 +1229,7 @@ async function main() {
         const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000)
         const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page).catch(() => null) : null
         const clip = actRange?.path ?? null
-        const clipError = clip ? null : (live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session')
+        const clipError = clip ? null : (live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session')
         if (clip) mark(`clip: ${clip}`)
         const shot = await reqShot(n, 'act', page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
@@ -1325,6 +1325,7 @@ async function main() {
           let audio: { said: boolean; heard: boolean } = { said: false, heard: false }
           const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, Date.now(), page).catch(() => null) : null
           lap('clip')
+          const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
           let hearError: string | null = null
           // Skip decoding and hearing when the ears clearly heard nothing this
           // turn: no page audio ever tapped, or no sound since speaking (#201).
@@ -1344,7 +1345,7 @@ async function main() {
             budget, `hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           lap('hear')
-          if (!range) clipError = live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session'
+          if (!range) clipError = live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session'
           else {
             clip = range.path
             const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, left(3000)).catch(() => null)

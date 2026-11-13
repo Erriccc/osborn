@@ -42,6 +42,9 @@ export type LiveStream = {
   clipRange: (outPath: string, fromMs: number, toMs?: number, page?: Page) => Promise<{ path: string; startMs: number; endMs: number } | null>
   // Record a tab on its own; clipRange(..., page) cuts from that recording.
   trackPage: (page: Page) => void
+  // Why the last clipRange returned null, and how long its encode took.
+  clipFailure: () => string | null
+  lastEncodeMs: () => number | null
   // Epoch ms of the most recent screencast frame (null before the first one).
   // A growing age means the page has stopped painting — ground truth for /status.
   lastFrameAt: () => number | null
@@ -306,19 +309,24 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     }).catch((e) => { tabRecs.delete(p); console.log(`[live-stream] tab recorder failed: ${(e as Error).message.slice(0, 80)}`) })
   }
 
+  let clipFail: string | null = null, encodeMs: number | null = null
   const clipRange = async (outPath: string, fromMs: number, toMs = Date.now(), page?: Page): Promise<{ path: string; startMs: number; endMs: number } | null> => {
     const inRange = (r: Array<{ t: number; buf: Buffer }>) => r.filter((f) => f.t >= fromMs && f.t <= toMs)
     const own = page ? inRange(tabRecs.get(page)?.ring ?? []) : []
     // A recorder that only just started has too few frames: use the main ring.
     const frames = own.length >= 2 ? own : inRange(ring)
-    if (frames.length < 2) { console.log(`[live-stream] clip skipped — ${frames.length} frame(s)`); return null }
+    clipFail = null; encodeMs = null
+    if (frames.length < 2) { clipFail = `clip failed — only ${frames.length} frame(s) recorded`; console.log(`[live-stream] clip skipped — ${frames.length} frame(s)`); return null }
     const dir = mkdtempSync(join(tmpdir(), 'osbclip-'))
     try {
       // Thin bursts instead of padding them: frames closer than one output
       // frame (100ms at 10fps) to the previous kept frame are dropped. A
       // minimum-duration floor here stretched a burst of 2400 frames 5ms apart
       // (12s of wall clock) into a 48s clip.
-      const MIN_GAP_MS = 100
+      // Display capture runs at CAPTURE_FPS, so encode at that rate: on a
+      // throttled CPU, encoding 10fps from 5fps frames doubled the work (#215).
+      const OUT_FPS = DISPLAY ? CAPTURE_FPS : 10
+      const MIN_GAP_MS = 1000 / OUT_FPS
       const kept: typeof frames = []
       for (const f of frames) if (!kept.length || f.t - kept[kept.length - 1].t >= MIN_GAP_MS) kept.push(f)
       const lines: string[] = ['ffconcat version 1.0']
@@ -332,13 +340,18 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       lines.push(`file 'f${String(kept.length - 1).padStart(5, '0')}.jpg'`)
       writeFileSync(join(dir, 'list.txt'), lines.join('\n') + '\n')
       let timedOut = false
+      const tEnc = Date.now()
       const ok = await new Promise<boolean>((resolve) => {
         const ff = spawn('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', join(dir, 'list.txt'),
-          '-vf', 'fps=10,pad=ceil(iw/2)*2:ceil(ih/2)*2', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { stdio: 'ignore' })
+          '-vf', `fps=${OUT_FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2`, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { stdio: 'ignore' })
         const kill = setTimeout(() => { timedOut = true; ff.kill('SIGKILL') }, 20000)  // a clip never holds a turn past 20s
         ff.on('error', () => { clearTimeout(kill); resolve(false) }); ff.on('close', (c) => { clearTimeout(kill); resolve(c === 0) })
       })
-      if (!ok) { console.log(`[live-stream] clip failed — ${timedOut ? 'encoding took over 20s' : 'ffmpeg unavailable'}`); return null }
+      encodeMs = Date.now() - tEnc
+      if (!ok) {
+        clipFail = timedOut ? `clip failed — encoding ${kept.length} frames took over 20s (machine short of CPU)` : 'clip failed — ffmpeg error'
+        console.log(`[live-stream] ${clipFail}`); return null
+      }
       console.log(`[live-stream] clip saved: ${outPath} (${frames.length} frames, ${((toMs - frames[0].t) / 1000).toFixed(1)}s)`)
       return { path: outPath, startMs: frames[0].t, endMs: toMs }
     } finally { try { rmSync(dir, { recursive: true, force: true }) } catch {} }
@@ -351,6 +364,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     clip,
     clipRange,
     trackPage,
+    clipFailure: () => clipFail,
+    lastEncodeMs: () => encodeMs,
     pause,
     resume,
     lastFrameAt: () => lastFrameTime,
