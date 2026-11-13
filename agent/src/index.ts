@@ -774,10 +774,10 @@ function startApiServer(workingDir: string, port: number): void {
     // Agent & skill store routes: the chat and Settings both use them (through the
     // authenticated /api/agent proxy in the cloud). JSON in and out.
     const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
-    // Store writes change the machine. Past the token gate: with no sync token only this
-    // machine may make them, and only as JSON, so no other site's form or text/plain POST can.
+    // Store writes change the machine. Called past the token gate (unauthorized()): with no
+    // sync token only this machine may make them, and only as JSON, so no other site's form
+    // or text/plain POST can.
     const storeWriteRefused = (): boolean => {
-      if (unauthorized()) return true
       if (!syncToken && !/^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '')) { reply(403, { error: 'store changes need the sync token or a request from this machine' }); return true }
       if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) { reply(415, { error: 'send JSON (Content-Type: application/json)' }); return true }
       return false
@@ -2936,8 +2936,8 @@ async function main() {
   // Turbo mode — read from set_agents handshake (data.turbo). When true every
   // agent (main + sub-agents) runs on FAST_MODEL. Default false = perfect no-op.
   let turboMode = false
-  // The per-user agents for every LLM this process creates (direct, pipeline and
-  // recovery), so a session switch or rebuild keeps them. applyTurbo runs after the
+  // The per-user agents for the voice session's LLMs (direct, pipeline and recovery),
+  // so a session switch or rebuild keeps them (headless background slots run the built-ins). applyTurbo runs after the
   // merge so custom models are overridden too. With no custom agents, undefined lets
   // ClaudeLLM use NAMED_AGENTS directly (turbo then applies inside ClaudeLLMStream).
   const userAgentOptions = () => ({

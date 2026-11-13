@@ -2593,7 +2593,9 @@ function VoiceRoomInner({
         const roles = rolesData(data)
         if (roles) setAgentRoles(roles)
       } else if (data.type === 'skill_content' || data.type === 'skill_add_result' || data.type === 'skill_fork_result' || data.type === 'skill_remove_result' || data.type === 'agent_prompt') {
-        // Replies to askAgent (skill store, agent prompts).
+        // Replies to askAgent (skill store, agent prompts). A skill list is applied even with
+        // no waiter (a late reply, or a change made from another device in the room).
+        if (Array.isArray(data.skills)) setSkills(data.skills)
         replyWaiters.current.get(data.type)?.[0]?.(data)
       } else if (data.type === 'claude_auth_required') {
         console.log('🔑 Claude auth required')
