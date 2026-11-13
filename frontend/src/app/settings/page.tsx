@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
@@ -8,9 +8,11 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
-import { AgentStore, SkillStore, type NamedAgent, type SkillInfo, type RolesData } from '@/components/AgentStore'
+import { AgentStore, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, type RolesData } from '@/components/AgentStore'
 import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
+import { useSkillStore } from '@/lib/skill-store'
+import { agentRequest } from '@/lib/agent-read'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 
@@ -60,13 +62,14 @@ export default function SettingsPage() {
   // ── Agent connection + machine state (identical model to the dashboard) ──
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
-  const [dashSkills, setDashSkills] = useState<SkillInfo[]>([])
   const [dashAgents, setDashAgents] = useState<NamedAgent[]>([])
   const [dashRoles, setDashRoles] = useState<RolesData | null>(null)
   const [storeTab, setStoreTab] = useState<'installed' | 'browse'>('installed')
-  const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
-  const [skillError, setSkillError] = useState<string | null>(null)
   const userAgents = useUserAgents()
+  // Skills, agent prompts and the catalog: the agent's store routes, through the
+  // authenticated /api/agent proxy (the same client the chat uses).
+  const skillStore = useSkillStore(agentUrl)
+  const storeRequest = useMemo(() => agentRequest(agentUrl), [agentUrl])
   const [syncToken, setSyncToken] = useState<string | null>(null)
   const [dashSecrets, setDashSecrets] = useState<{ key: string; set: boolean; secret: boolean; masked: string; source: 'store' | 'env' | 'none' }[]>([])
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({})
@@ -154,22 +157,18 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!agentUrl) return
     const base = agentUrl.replace(/\/$/, '')
-    fetch(`${base}/skills`).then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (Array.isArray(d?.skills)) setDashSkills(d.skills) })
-      .catch(() => {})
-    fetch(`${base}/agents`).then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (Array.isArray(d?.agents)) setDashAgents(d.agents)
-        if (Array.isArray(d?.roles)) setDashRoles({ roles: d.roles, chains: d.chains || [] })
-      })
-      .catch(() => {})
+    skillStore.load()
+    storeRequest('agents').then(({ ok, d }) => {
+      if (ok && Array.isArray(d?.agents)) setDashAgents(d.agents)
+      setDashRoles(rolesData(d))
+    }).catch(() => {})
     if (syncToken) {
       fetch(`${base}/secrets`, { headers: { 'Authorization': `Bearer ${syncToken}` } })
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (Array.isArray(d?.secrets)) setDashSecrets(d.secrets) })
         .catch(() => {})
     }
-  }, [agentUrl, syncToken])
+  }, [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Machine location (agent /health region).
   useEffect(() => {
@@ -737,10 +736,6 @@ export default function SettingsPage() {
   /** Admin board discoverability: show the row only when the SERVER confirms
    *  this email is in ADMIN_EMAILS. Shares the dashboard menu's probe. */
   const isAdminUser = useIsAdmin(user)
-  const skillRequest = (path: string, method: 'GET' | 'POST' = 'GET') =>
-    fetch(`${agentUrl.replace(/\/$/, '')}${path}`, { method, headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {} })
-      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
-  const storeRequest = useCallback((path: string, method: 'GET' | 'POST' = 'GET') => skillRequest(path, method), [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (
@@ -1196,21 +1191,11 @@ export default function SettingsPage() {
     </SettingsSection>
   )
 
-  // Skill store actions go to the agent's HTTP API (same rules as the chat's
-  // skill_* data messages).
-  const skillAction = (path: string) => {
-    setSkillError(null)
-    skillRequest(path, 'POST').then(({ ok, d }) => {
-      if (Array.isArray(d?.skills)) setDashSkills(d.skills)
-      if (!ok) setSkillError(d?.error || 'Request failed')
-    }).catch(() => setSkillError('Could not reach your machine'))
-  }
-
   const storeTabs = (
     <div role="tablist" className="mb-3 flex gap-1.5">
       {(['installed', 'browse'] as const).map((t) => (
         <button key={t} role="tab" aria-selected={storeTab === t} onClick={() => setStoreTab(t)}
-          className={`rounded-full border px-3 py-1 text-[12px] ${storeTab === t ? 'border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]' : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>
+          className={pill(storeTab === t)}>
           {t === 'installed' ? 'Installed' : 'Browse'}
         </button>
       ))}
@@ -1223,8 +1208,9 @@ export default function SettingsPage() {
         {storeTabs}
         <StoreBrowse request={storeRequest} yours={userAgents.rows}
           onInstallAgent={userAgents.rows ? userAgents.save : undefined}
-          onSkillsChanged={setDashSkills}
-          takenAgentNames={new Set([...dashAgents.map((a) => a.name), ...(userAgents.rows || []).map((r) => r.name)])} />
+          onSkillsChanged={skillStore.setSkills}
+          takenAgentNames={new Set([...dashAgents.map((a) => a.name), ...(userAgents.rows || []).map((r) => r.name)])}
+          maxAgentName={dashRoles?.limits.name} />
       </div>
     </SettingsSection>
   ) : (
@@ -1237,28 +1223,10 @@ export default function SettingsPage() {
         </div>
       </SettingsSection>
 
-      <SettingsSection title={`Skills${dashSkills.length ? ` (${dashSkills.length})` : ''}`} description="Capabilities available to the agent on your machine.">
+      <SettingsSection title={`Skills${skillStore.skills.length ? ` (${skillStore.skills.length})` : ''}`} description="Capabilities available to the agent on your machine.">
         <div className="px-4 py-3.5">
-          {dashSkills.length > 0 ? (
-            <SkillStore skills={dashSkills}
-              onView={(folder) => skillRequest(`/skills/content?name=${encodeURIComponent(folder)}`)
-                .then(({ ok, d }) => (ok ? setViewedSkill({ name: d.name, content: d.content }) : setSkillError(d?.error || 'Skill not found')))
-                .catch(() => setSkillError('Could not reach your machine'))}
-              onFork={(folder, to) => skillAction(`/skills/fork?name=${encodeURIComponent(folder)}&to=${encodeURIComponent(to)}`)}
-              onRemove={(folder) => skillAction(`/skills/remove?name=${encodeURIComponent(folder)}`)} />
-          ) : (
-            <p className="text-[12px] text-[var(--text-muted)]">Connect your machine to see its skills.</p>
-          )}
-          {skillError && <p className="mt-2 text-[11px] text-red-400">{skillError}</p>}
-          {viewedSkill && (
-            <div className="mt-3">
-              <div className="mb-1 flex items-center justify-between text-[11px] text-[var(--text-secondary)]">
-                <span>{viewedSkill.name}/SKILL.md</span>
-                <button onClick={() => setViewedSkill(null)} className="text-[var(--accent)]">Close</button>
-              </div>
-              <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-[var(--surface-2)] p-2 font-mono text-[10px] leading-relaxed text-[var(--text-secondary)]">{viewedSkill.content}</pre>
-            </div>
-          )}
+          {skillStore.skills.length > 0 ? <SkillStore store={skillStore} /> : <p className="text-[12px] text-[var(--text-muted)]">Connect your machine to see its skills.</p>}
+          <SkillViewer skill={skillStore.viewed} onClose={skillStore.closeView} />
         </div>
       </SettingsSection>
     </>

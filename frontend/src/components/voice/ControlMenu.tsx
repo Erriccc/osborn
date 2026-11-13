@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react'
 import { formatTime, deriveSessionTitle } from '@/lib/sessions'
 import { usePanelExclusive, useViewportClamp, type SessionInfo, type McpServerStatus } from './shared'
 import { SkillsPanel } from './SkillsPanel'
+import type { SkillStoreApi } from '@/lib/skill-store'
 import { useMenuDismiss } from '@/lib/use-menu-dismiss'
 import type { DismissReason } from '@/lib/menu-dismiss'
 
@@ -19,12 +20,7 @@ export function ControlMenu({
   mcpServers,
   onMcpToggle,
   onLoadMcpStatus,
-  skills,
-  onAddSkill,
-  onViewSkill,
-  onRemoveSkill,
-  onForkSkill,
-  onInstallFromCatalog,
+  skillStore,
   showAddSkill,
   setShowAddSkill,
   newSkillName,
@@ -42,12 +38,7 @@ export function ControlMenu({
   mcpServers?: McpServerStatus[]
   onMcpToggle?: (serverKey: string, enabled: boolean) => void
   onLoadMcpStatus?: () => void
-  skills?: { name: string; description: string; folder?: string }[]
-  onAddSkill?: (name: string, content: string) => void
-  onViewSkill?: (folder: string) => void
-  onRemoveSkill?: (folder: string) => void
-  onForkSkill?: (folder: string, newName: string) => void
-  onInstallFromCatalog?: (name: string, url: string) => void
+  skillStore?: SkillStoreApi
   showAddSkill?: boolean
   setShowAddSkill?: (show: boolean) => void
   newSkillName?: string
@@ -76,7 +67,7 @@ export function ControlMenu({
   useMenuDismiss(isOpen, onDismiss, [wrapRef], toggleRef)
 
   const enabledMcpCount = (mcpServers || []).filter(s => s.enabled).length
-  const skillCount = (skills || []).length
+  const skillCount = skillStore?.skills.length ?? 0
   const toolsBadgeCount = enabledMcpCount + skillCount
 
   // Load data when tabs are opened
@@ -207,20 +198,15 @@ export function ControlMenu({
           {activeTab === 'tools' && (
             <div className="max-h-96 overflow-y-auto p-3 space-y-3">
               {/* Skills Section — shared SkillsPanel (also mounted in the header SkillsPopover) */}
-              <SkillsPanel
-                skills={skills}
-                onAddSkill={onAddSkill}
-                onViewSkill={onViewSkill}
-                onRemoveSkill={onRemoveSkill}
-                onForkSkill={onForkSkill}
-                onInstallFromCatalog={onInstallFromCatalog}
+              {skillStore && <SkillsPanel
+                store={skillStore}
                 showAddSkill={showAddSkill}
                 setShowAddSkill={setShowAddSkill}
                 newSkillName={newSkillName}
                 setNewSkillName={setNewSkillName}
                 newSkillContent={newSkillContent}
                 setNewSkillContent={setNewSkillContent}
-              />
+              />}
 
               {/* MCP Servers Section */}
               {(!mcpServers || mcpServers.length === 0) ? (
