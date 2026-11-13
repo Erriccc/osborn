@@ -4,7 +4,7 @@ import { execFileSync, execSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { stewardGate, gitAction, gitActions, stewardMode, SIGNOFF_COMMAND } from '../src/steward-gate.js'
+import { stewardGate, gitActions, stewardMode, SIGNOFF_COMMAND } from '../src/steward-gate.js'
 
 async function main() {
 const repo = mkdtempSync(join(tmpdir(), 'steward-'))
@@ -18,18 +18,18 @@ try {
   assert.equal(stewardMode({}), 'advise')
   assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'BLOCK' }), 'block')
   assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'nonsense' }), 'advise')
-  assert.equal(gitAction('ls -la', repo), null)
-  assert.equal(gitAction('git commit -m x', repo)?.action, 'commit')
-  assert.equal(gitAction('git add -A && git commit -m x', repo)?.action, 'commit')
-  assert.equal(gitAction('git push -u origin b', repo)?.action, 'push')
-  assert.equal(gitAction('gh pr create --fill', repo)?.action, 'pr')
-  assert.equal(gitAction('cd /tmp/x && git push', repo)?.dir, '/tmp/x')
-  assert.equal(gitAction('git -C sub commit -m x', repo)?.dir, join(repo, 'sub'))
-  assert.equal(gitAction('git -c core.x=y commit -m x', repo)?.action, 'commit')
+  assert.equal(gitActions('ls -la', repo)[0], null)
+  assert.equal(gitActions('git commit -m x', repo)[0]?.action, 'commit')
+  assert.equal(gitActions('git add -A && git commit -m x', repo)[0]?.action, 'commit')
+  assert.equal(gitActions('git push -u origin b', repo)[0]?.action, 'push')
+  assert.equal(gitActions('gh pr create --fill', repo)[0]?.action, 'pr')
+  assert.equal(gitActions('cd /tmp/x && git push', repo)[0]?.dir, '/tmp/x')
+  assert.equal(gitActions('git -C sub commit -m x', repo)[0]?.dir, join(repo, 'sub'))
+  assert.equal(gitActions('git -c core.x=y commit -m x', repo)[0]?.action, 'commit')
   // Text that merely mentions a command is not the command
-  assert.equal(gitAction('grep -rn "git push" .', repo), null)
-  assert.equal(gitAction('echo "remember to git commit"', repo), null)
-  assert.equal(gitAction('git log | grep "gh pr create"', repo), null)
+  assert.equal(gitActions('grep -rn "git push" .', repo)[0], null)
+  assert.equal(gitActions('echo "remember to git commit"', repo)[0], null)
+  assert.equal(gitActions('git log | grep "gh pr create"', repo)[0], null)
 
   // Unsigned change: advise warns, block refuses, off allows, other commands untouched
   writeFileSync(join(repo, 'b.ts'), 'export const b = 2\n')
@@ -72,11 +72,18 @@ try {
   // #220: every git action in a command is checked, wherever it sits
   assert.deepEqual(gitActions('git commit -am x && git push origin main', repo).map((h) => h.action), ['commit', 'push'])
   for (const c of [' git push', 'FOO=1 git push', 'sudo -E git push', 'command git push', 'git --no-pager -c a=b push', 'git -C . push'])
-    assert.equal(gitAction(c, repo)?.action, 'push', c)
-  assert.equal(gitAction('cd sub; git push', repo)?.dir, join(repo, 'sub'))
-  assert.equal(gitAction('(cd sub && git push)', repo)?.dir, join(repo, 'sub'))
+    assert.equal(gitActions(c, repo)[0]?.action, 'push', c)
+  assert.equal(gitActions('cd sub; git push', repo)[0]?.dir, join(repo, 'sub'))
+  assert.equal(gitActions('(cd sub && git push)', repo)[0]?.dir, join(repo, 'sub'))
   assert.equal(gitActions('(cd sub && true); git push', repo)[0]?.dir, repo, 'a subshell cd does not leak')
-  assert.equal(gitAction("echo 'git push; git commit'", repo), null)
+  assert.equal(gitActions("echo 'git push; git commit'", repo)[0], null)
+  for (const c of ['sudo -u bob git push', 'timeout 30 git push', 'nice git push', 'xargs git push', '/usr/bin/git push',
+    'if true; then git push; fi', '{ git push; }', '! git push', 'echo `git push`', "bash -c 'git push'", 'echo $(git push)'])
+    assert.equal(gitActions(c, repo)[0]?.action, 'push', c)
+  assert.equal(gitActions('gh --repo o/r pr create --fill', repo)[0]?.action, 'pr')
+  // Heredoc bodies are data: a quote inside one cannot hide what follows, and a script being written is not run
+  assert.deepEqual(gitActions("cat > n.md <<'EOF'\nDon't forget\nEOF\ngit commit -am x && git push", repo).map((h) => h.action), ['commit', 'push'])
+  assert.deepEqual(gitActions("cat > deploy.sh <<'EOF'\ncd app && git push origin main\nEOF", repo), [])
   writeFileSync(join(repo, 'd.ts'), 'export const d = 7\n')
   assert.equal((await stewardGate('git commit -am x && git push origin HEAD', repo, 'block')).decision, 'deny', 'combined commit+push checks the commit')
 

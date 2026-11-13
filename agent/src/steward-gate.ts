@@ -35,7 +35,11 @@ export function stewardMode(env: Record<string, string | undefined> = process.en
 // words, tracking `cd` (subshells restore it). Only a word in command position
 // counts: not `grep "git push"` or `echo "... git commit"`.
 type Hit = { action: GitAction; dir: string }
-const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin'])
+// Words that can precede a command: keywords, wrappers, and wrappers' options.
+const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout',
+  'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}'])
+const TAKES_ARG = new Set(['-u', '-g', '-h', '-p', '-U', '-C', '-D', '-r', '-t', '-n', '-s', '-k', '--signal'])  // sudo/nice/timeout/xargs
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash'])
 
 export function gitActions(cmd: string, cwd: string): Hit[] {
   const hits: Hit[] = []
@@ -47,16 +51,28 @@ export function gitActions(cmd: string, cwd: string): Hit[] {
   }
   let dir = cwd
   const stack: string[] = []
-  let words: string[] = [], word = '', inWord = false, quote: string | null = null
+  let words: string[] = [], word = '', inWord = false, quote: string | null = null, inBacktick = false
   const endWord = () => { if (inWord) words.push(word); word = ''; inWord = false }
   const endCommand = () => {
     endWord()
     let w = words; words = []
-    while (w.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0]) || PREFIX.has(w[0]) || (w[0].startsWith('-') && w.length > 1))) w = w.slice(1)
+    let wrapped = false
+    while (w.length) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0]) || PREFIX.has(w[0])) { wrapped = wrapped || PREFIX.has(w[0]); w = w.slice(1) }
+      else if (wrapped && w[0].startsWith('-')) w = w.slice(TAKES_ARG.has(w[0]) ? 2 : 1)
+      else if (wrapped && /^\d+[smhd]?$/.test(w[0])) w = w.slice(1)  // timeout's duration
+      else break
+    }
     if (!w.length) return
-    if (w[0] === 'cd') { dir = resolveDir(dir, w[1]); return }
-    if (w[0] === 'gh' && w[1] === 'pr' && w[2] === 'create') { hits.push({ action: 'pr', dir }); return }
-    if (w[0] !== 'git') return
+    const name = w[0].split('/').pop()
+    if (name === 'cd') { dir = resolveDir(dir, w[1]); return }
+    if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { for (const h of gitActions(w[2], dir)) hits.push(h); return }
+    if (name === 'gh') {
+      const rest = w.slice(1).filter((x, j, a) => !x.startsWith('-') && !['--repo', '-R', '--hostname'].includes(a[j - 1]))
+      if (rest[0] === 'pr' && rest[1] === 'create') hits.push({ action: 'pr', dir })
+      return
+    }
+    if (name !== 'git') return
     let gdir = dir, i = 1
     while (i < w.length && w[i].startsWith('-')) {
       if (w[i] === '-C') { gdir = resolveDir(gdir, w[i + 1]); i += 2 }
@@ -67,22 +83,28 @@ export function gitActions(cmd: string, cwd: string): Hit[] {
   }
   for (let k = 0; k < cmd.length; k++) {
     const c = cmd[k]
+    // Heredoc: its body is data, not commands. Skip to the line holding only the delimiter.
+    if (!quote && c === '<' && cmd[k + 1] === '<' && cmd[k + 2] !== '<') {
+      const m = cmd.slice(k).match(/^<<-?\s*(['"]?)([A-Za-z0-9_]+)\1/)
+      if (m) {
+        const nl = cmd.indexOf('\n', k)
+        const head = nl < 0 ? cmd.slice(k + m[0].length) : cmd.slice(k + m[0].length, nl)
+        const close = nl < 0 ? -1 : cmd.slice(nl + 1).search(new RegExp(`^\\s*${m[2]}\\s*$`, 'm'))
+        cmd = cmd.slice(0, k) + head + '\n' + (close < 0 ? '' : cmd.slice(nl + 1 + close).replace(/^[^\n]*\n?/, ''))
+        k -= 1; continue
+      }
+    }
     if (quote) { if (c === quote) quote = null; else if (c === '\\' && quote === '"') word += cmd[++k] ?? ''; else word += c; continue }
     if (c === '"' || c === "'") { quote = c; inWord = true; continue }
     if (c === '\\') { word += cmd[++k] ?? ''; inWord = true; continue }
     if (c === ';' || c === '&' || c === '|' || c === '\n') { endCommand(); continue }
-    if (c === '(') { endCommand(); stack.push(dir); continue }
-    if (c === ')') { endCommand(); dir = stack.pop() ?? dir; continue }
+    if (c === '(' || (c === '`' && !inBacktick)) { endCommand(); stack.push(dir); if (c === '`') inBacktick = true; continue }
+    if (c === ')' || c === '`') { endCommand(); dir = stack.pop() ?? dir; if (c === '`') inBacktick = false; continue }
     if (c === ' ' || c === '\t') { endWord(); continue }
     word += c; inWord = true
   }
   endCommand()
   return hits
-}
-
-/** First git action in a command (kept for callers that need one). */
-export function gitAction(cmd: string, cwd: string): Hit | null {
-  return gitActions(cmd, cwd)[0] ?? null
 }
 
 const git = async (dir: string, args: string[]) => (await run('git', args, { cwd: dir })).stdout.trim()

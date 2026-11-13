@@ -903,7 +903,7 @@ export const NAMED_AGENTS = {
       'REUSE MAP: <new item> → <existing item reused/extended> | NET-NEW: <reason> | SECOND COPY OF: <path>',
       'REMOVED: <what you cut and why> (or none)',
       'REGRESSION MAP: <changed symbol> → <callers> → <ok / broken + why>',
-      'LINES: +<added> -<removed> before → +<added> -<removed> after',
+      'LINES: +<added> -<removed> before → after, excluding test files (*.test.*, *.spec.*, tests/), then tests separately',
       'HISTORY: churn, re-touched lines (hunks checked / found), missing coupled files, related issues/PRs, and any check that could not run',
       'ROOT CAUSE: for a fix, the cause, its evidence and the chain it ends; for a feature, "new feature, no earlier fault"',
       'For BLOCK, name the decision a human has to make.',
