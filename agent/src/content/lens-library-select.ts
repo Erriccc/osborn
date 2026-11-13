@@ -53,7 +53,7 @@ function span(recs: RowStamp[]): number {
   return Number.isFinite(a) && Number.isFinite(b) ? Math.max(0, b - a) : 0
 }
 
-function period(index: number, start: number, end: number, closedBy: number | null, recs: RowStamp[]): LibraryPeriod {
+export function period(index: number, start: number, end: number, closedBy: number | null, recs: RowStamp[]): LibraryPeriod {
   return {
     index, startRowId: start, endRowId: end, closedBy, rows: recs.length,
     fromTs: recs[0]?.timestamp ?? '', toTs: recs[recs.length - 1]?.timestamp ?? '', spanMs: span(recs),

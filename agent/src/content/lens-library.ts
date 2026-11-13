@@ -23,7 +23,7 @@ import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { runPeriodMap } from './period-run.js'
-import { DEFAULT_MIN_SPAN_MS, pageFileName, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type Segmentation } from './lens-library-select.js'
+import { DEFAULT_MIN_SPAN_MS, pageFileName, period, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type Segmentation } from './lens-library-select.js'
 import { rebuildIndex } from './lens-library-index.js'
 import { contentHashFor, ingestPage, needsIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 
@@ -168,12 +168,8 @@ export function librarySegments(db: string, manifest: Manifest, minSpanMs = libr
   const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
   const lastEnd = written.length ? Math.max(...written.map(e => e.endRowId)) : 0
   const lastIndex = written.length ? Math.max(...written.map(e => e.index)) : 0
-  const frozen: LibraryPeriod[] = written.map(e => {
-    const recs = rows.filter(r => r.id >= e.startRowId && r.id <= e.endRowId)
-    const fromTs = recs[0]?.timestamp ?? '', toTs = recs[recs.length - 1]?.timestamp ?? ''
-    return { index: e.index, startRowId: e.startRowId, endRowId: e.endRowId, closedBy: typeof e.closedBy === 'number' ? e.closedBy : null,
-      rows: recs.length, fromTs, toTs, spanMs: recs.length ? Date.parse(toTs) - Date.parse(fromTs) : 0 }
-  })
+  const frozen = written.map(e => period(e.index, e.startRowId, e.endRowId, typeof e.closedBy === 'number' ? e.closedBy : null,
+    rows.filter(r => r.id >= e.startRowId && r.id <= e.endRowId)))
   const rest = segmentPeriods(rows.filter(r => r.id > lastEnd), readCompactionBoundaries(db), minSpanMs)
   const renumber = (p: LibraryPeriod): LibraryPeriod => ({ ...p, index: p.index + lastIndex })
   return { closed: [...frozen, ...rest.closed.map(renumber)], tail: rest.tail ? renumber(rest.tail) : null }
