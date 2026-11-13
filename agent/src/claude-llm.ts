@@ -22,6 +22,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSy
 import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
+import { stewardGate, SIGNOFF_COMMAND } from './steward-gate.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -811,6 +812,67 @@ export const NAMED_AGENTS = {
       'Return a self-contained brief; the orchestrator passes it directly to the writer.',
     ].join('\n'),
   },
+  steward: {
+    description: [
+      'Codebase-steward agent (Sonnet). Owns duplication and regressions, not features. Use (1) on a PLAN before',
+      'any code is written, to answer "does this already exist?" for every new function, route, module, table or',
+      'feature; (2) on the DIFF after the writer and tester, to refactor it to reuse existing code, cut what is not',
+      'needed, and map every changed symbol to its callers. Returns CLEAN, REFACTORED or BLOCK. Never reviews its own refactor.',
+    ].join(' '),
+    tools: ['Read', 'Glob', 'Grep', 'Bash', 'Edit', 'Write', 'MultiEdit'],
+    model: 'sonnet',
+    prompt: [
+      'You are Osborn\'s steward agent. You own the codebase: you are responsible for duplication and regressions,',
+      'not for features. Bloat compounds: every duplicate widens the code that agents and people must read, which',
+      'causes more misses and more duplicates. You debloat new code and protect existing code.',
+      '',
+      '## Principles',
+      '- Proven code wins. Code that already works is trusted over anything new. If a change avoids, replaces or',
+      '  changes the behaviour of existing working code, state why; with no strong reason, keep and reuse it.',
+      '- Extend before you create. Prefer a parameter, option or small branch on an existing function over a new',
+      '  module, route, table or helper. A brand-new module is the last resort and needs a written reason.',
+      '- Protect what exists. Do not bloat, fork or quietly rewrite working code.',
+      '- Scope: act only on the diff (or plan) and on the code it duplicates. Never rewrite untouched code.',
+      '',
+      '## Plan mode (the task gives you a plan, no diff yet)',
+      'For every new function, route, module, table, config or feature in the plan, search the repo (Grep/Glob,',
+      'git log -S) for something that already does it. Return a reuse map: each item → existing thing to reuse or',
+      'extend, or a one-line net-new reason. Do not edit files in plan mode.',
+      '',
+      '## Diff mode (after the writer)',
+      '0. `git status`, `git diff HEAD --stat`, `git diff HEAD` (include untracked files). Count lines added/removed.',
+      '1. Reuse first: for every added function, class, route, module, table or config, search for existing logic',
+      '   that does the same or nearly the same. If found, EDIT the diff to reuse or extend it instead.',
+      '2. Net-new must be justified: anything still new gets a one-line reason nothing existing fits.',
+      '3. Surgical diff: remove unreachable guards, speculative options, dead branches and duplicated validation.',
+      '   If the diff mixes unrelated concerns, say which parts belong in a separate PR.',
+      '4. Regressions: for every changed or removed symbol, find its callers and consumers (routes, schedulers,',
+      '   frontend, docs, tests, data-channel messages) and confirm each still works. Flag any behaviour change',
+      '   for an existing caller (status codes, response shapes, stored values, message fields).',
+      '5. History: read `git log` / `git log -L` for the touched code and any decision notes (CLAUDE.md, docs/,',
+      '   critical-patterns). Do not silently undo or contradict a recorded decision.',
+      '6. Single source of truth: if the diff adds a second copy of a rule (validation, error codes, config,',
+      '   constants), merge it into the existing copy.',
+      '',
+      '## Bash',
+      'Read-only inspection (git diff/log/show/grep, tsc --noEmit, tests) plus the sign-off command below.',
+      'Never commit, push, reset, checkout, stash or delete. Your edits are file edits only.',
+      '',
+      '## Sign-off',
+      'After a CLEAN or REFACTORED verdict in diff mode, run this from the repository root to record your sign-off',
+      'for this exact content (any later edit invalidates it; the commit/push/PR gate checks it):',
+      '  ' + SIGNOFF_COMMAND,
+      'Never sign off on BLOCK. If you REFACTORED, the orchestrator re-runs the tests and the reviewer, not you.',
+      '',
+      '## What to return',
+      'VERDICT: CLEAN | REFACTORED | BLOCK — <one line>',
+      'REUSE MAP: <new item> → <existing item reused/extended> | NET-NEW: <reason>',
+      'REMOVED: <what you cut and why> (or none)',
+      'REGRESSION MAP: <changed symbol> → <callers> → <ok / broken + why>',
+      'LINES: +<added> -<removed> before → +<added> -<removed> after',
+      'For BLOCK, name the decision a human has to make.',
+    ].join('\n'),
+  },
   reviewer: {
     description: [
       'Code-review agent (Sonnet). Use for: the VERIFY step in a generator-verifier loop — after the',
@@ -1045,6 +1107,7 @@ const WRITE_RULES: Record<string, WriteRule> = {
   writer: 'anywhere',
   tester: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true },
   reviewer: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' },
+  steward: 'anywhere',  // refactors the writer's diff in place
 }
 
 /**
@@ -1111,9 +1174,18 @@ export const VERIFIER_CHAIN: Record<string, { parallelAtStart?: string[]; afterR
     afterReminder:
       'The writer sub-agent just finished. Before you finalize, you MUST now use the Task tool to: ' +
       "(1) RUN the tester's tests against the new implementation and report PASS/FAIL; " +
-      '(2) dispatch the `reviewer` on the diff for a VERDICT. ' +
-      'If tests FAIL or the reviewer REJECTs, dispatch the `writer` to fix and then re-verify — ' +
-      'at most 2 fix rounds, after which surface the outcome to the user rather than looping.',
+      '(2) dispatch the `steward` on the diff (diff mode) — it refactors toward reuse and returns CLEAN, REFACTORED or BLOCK; ' +
+      "(3) if it REFACTORED, RUN the tests again; (4) dispatch the `reviewer` on the final diff for a VERDICT. " +
+      'If the steward returns BLOCK, stop and ask the user the decision it names. ' +
+      'If tests FAIL or the reviewer REJECTs, dispatch the `writer` to fix and then re-verify (steward included) — ' +
+      'at most 2 fix rounds, after which surface the outcome to the user rather than looping. ' +
+      "Put the steward's NET-NEW and REMOVED lists in any PR description.",
+  },
+  planner: {
+    afterReminder:
+      'The planner sub-agent just finished. Before the writer starts, use the Task tool to dispatch the `steward` ' +
+      'in PLAN MODE on that plan: for every new function, route, module, table or feature it answers "does this already exist?". ' +
+      'Give the writer the plan WITH the steward\'s reuse map.',
   },
   researcher: {
     afterReminder:
@@ -2744,6 +2816,18 @@ class ClaudeLLMStream extends llm.LLMStream {
                   pendingSpeakNudge = true
                 }
                 console.log(`🔧 Tool call ${turnToolCallCount} (speak-cadence ${SPEAK_CADENCE_N}, ceiling ${TOOL_HARD_CEILING || 'off'}): ${toolName}`)
+              }
+
+              // Steward sign-off gate (#218): a commit, push or PR whose content the steward has
+              // not signed off is reported (advise, default) or refused (OSBORN_STEWARD_MODE=block).
+              if (toolName === 'Bash') {
+                const gate = stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
+                if (gate.decision === 'deny') {
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
+                }
+                if (gate.decision === 'advise') {
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: gate.message } }
+                }
               }
 
               // Write/Edit/MultiEdit access control — plain WRITE_RULES lookup

@@ -58,6 +58,7 @@ export const DEFAULT_AGENT_NAMES = [
   'planner',
   'reviewer',
   'tester',
+  'steward',
 ] as const
 
 /** The orchestrator's canonical id — the main agent / "the bot" itself. An
