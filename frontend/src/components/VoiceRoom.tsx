@@ -1131,6 +1131,7 @@ function VoiceRoomInner({
   // Leftover echo of the agent's voice in your mic. Kept across mic toggles; seeded at the old
   // fixed onset (0.04 / 3) so the duck only gets more sensitive as real echo is measured.
   const echoFloorRef = useRef(0.04 / 3)
+  const [bargeIn, setBargeIn] = useState(false)
   agentAudioTrackRef.current = (audioTrack?.publication?.track as unknown) || null
 
   useEffect(() => {
@@ -1223,9 +1224,12 @@ function VoiceRoomInner({
           // its last audible frame, if that came after the duck; otherwise we only know the edge.
           if (duckedAt) {
             const stop = agentHeardAt >= duckOnsetAt ? `agent stopped ${Math.round(agentHeardAt - duckOnsetAt)}ms after your voice` : 'agent was already quiet'
-            console.log(`🦆 [duck] barge-in timing: duck ${Math.round(duckedAt - duckOnsetAt)}ms, ${stop}`)
+            const timing = `barge-in timing: duck ${Math.round(duckedAt - duckOnsetAt)}ms, ${stop}`
+            console.log(`🦆 [duck] ${timing}`)
+            addMessageRef.current?.('system', `Voice ${timing}`, undefined, 'log')
           }
         }
+        if (duckedAt) setBargeIn(false)
         peak = 0; duckOnsetAt = 0; duckedAt = 0
         lastSpeaking = speaking
       }
@@ -1245,6 +1249,7 @@ function VoiceRoomInner({
           if (targetVol === 1 && now - aboveSince >= ONSET_HOLD_MS) {
             targetVol = DUCK_LEVEL
             duckOnsetAt = aboveSince; duckedAt = now; duckVol = vol
+            setBargeIn(true)
             console.log(`🦆 [duck] engaged: mic=${vol.toFixed(3)} onset=${onset.toFixed(3)} msSinceOnset=${Math.round(now - aboveSince)} → ${DUCK_LEVEL}`)
           }
         } else {
@@ -1261,6 +1266,7 @@ function VoiceRoomInner({
             // onset to just above what tripped it, so the same echo cannot flicker the duck.
             echoFloorRef.current = Math.min(ONSET_MAX / 3, Math.max(echoFloorRef.current, (duckVol * 1.2) / 3))
             duckOnsetAt = 0; duckedAt = 0
+            setBargeIn(false)
             console.log(`🦆 [duck] restore: false trigger (mic=${vol.toFixed(3)} quiet ${Math.round(now - belowSince)}ms)`)
           }
         }
@@ -1281,6 +1287,7 @@ function VoiceRoomInner({
       try { void analyser?.cleanup() } catch { /* already closed */ }
       try { void agentAnalyser?.cleanup() } catch { /* already closed */ }
       applyVolume(1, true) // never leave a track ducked on teardown (quiet: no bail log)
+      setBargeIn(false)
     }
   }, [localParticipant, micEnabled])
 
@@ -4134,7 +4141,7 @@ function VoiceRoomInner({
             {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
 
             {/* Status */}
-            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} />
+            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} bargeIn={bargeIn} />
 
             {/* Project/workspace chip — which repo this session is attached to. */}
             {projectName && (

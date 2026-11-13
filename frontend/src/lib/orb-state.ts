@@ -6,9 +6,11 @@
 // `agent_state:'error'` fell back to "Ready").
 //
 // Precedence (highest first):
-//   error > reconnecting > blocked* > micOff(listening|idle) > muted(listening|idle) > agentState
+//   error > reconnecting > blocked* > heardYou(speaking) > micOff(listening|idle) > muted(listening|idle) > agentState
 // * While the agent is speaking or thinking, `blocked` does not replace the
 //   main state; it shows as a "mic blocked" badge instead (blockedBadge).
+// heardYou: the agent is speaking and the browser barge-in duck has engaged on
+// your voice. Never shown while the mic is muted, off or blocked.
 // The muted badge is independent of the resolved state.
 
 export type OrbKey =
@@ -19,6 +21,7 @@ export type OrbKey =
   | 'muted'
   | 'connecting'
   | 'listening'
+  | 'heardYou'
   | 'thinking'
   | 'speaking'
   | 'idle'
@@ -39,6 +42,8 @@ export interface OrbInput {
   blocked?: boolean
   /** An error is known outside of agentState (e.g. a connection error). */
   error?: boolean
+  /** The browser barge-in duck is engaged on the user's voice. */
+  bargeIn?: boolean
 }
 
 export interface OrbView {
@@ -69,6 +74,7 @@ export const ORB_VIEWS: Record<OrbKey, Omit<OrbView, 'mutedBadge' | 'blockedBadg
   muted:        { key: 'muted',        label: 'Muted',        colorVar: 'var(--voice-idle)',                        anim: BREATHE },
   connecting:   { key: 'connecting',   label: 'Connecting',   colorVar: 'var(--voice-connecting, #7d7768)',         anim: SLOW_BREATHE },
   listening:    { key: 'listening',    label: 'Listening',    colorVar: 'var(--voice-listening)',                   anim: PULSE },
+  heardYou:     { key: 'heardYou',     label: 'Heard you',    colorVar: 'var(--voice-listening)',                   anim: PULSE },
   thinking:     { key: 'thinking',     label: 'Thinking',     colorVar: 'var(--voice-thinking)',                    anim: SHIMMER },
   speaking:     { key: 'speaking',     label: 'Speaking',     colorVar: 'var(--voice-speaking)',                    anim: RIPPLE },
   idle:         { key: 'idle',         label: 'Ready',        colorVar: 'var(--voice-idle)',                        anim: BREATHE },
@@ -104,6 +110,7 @@ export function resolveOrbState(input: OrbInput): OrbView {
   if (input.error || base === 'error') key = 'error'
   else if (input.reconnecting) key = 'reconnecting'
   else if (blocked && !agentBusy) key = 'blocked'
+  else if (input.bargeIn && base === 'speaking' && !blocked && !muted && !input.micOff) key = 'heardYou'
   else if (micGated && input.micOff) key = 'micOff'
   else if (micGated && muted) key = 'muted'
   else key = base
