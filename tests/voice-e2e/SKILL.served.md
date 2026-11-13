@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 42
+Version: 44
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,18 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v44
+- `drive.sh` works against the deployed engine with no setup beyond the token: its default is the public control URL (`https://osborn-voice-e2e-n.fly.dev/control`), and any `BSR_ENGINE` URL with a path or port is parsed correctly. It no longer pins a fixed IP (set `BSR_IP` only if DNS fails).
+- `/shot` returns `task` and public `evidence` links, so a desk review can attach a screenshot without a fake `/act`. `/act` returns `task` at the top level.
+- Opening a clip through its public evidence link counts as reviewing it (the "clip was never fetched" nag clears).
+- The tab label in screenshots is small and sits bottom-left, so it no longer covers page headers.
+- Ending a journey already closes your tabs; a following `/end` reports 0 closed.
+
+## What's new in v43
+- `drive.sh` sends `x-profile` from `BSR_PROFILE=<name>` (as it sends `x-driver-id` from `BSR_DRIVER`). Two different driver ids from one machine make multi-driver behaviour (takeover, scoped `/end`, profile isolation) testable.
+- To record voice (`/say`, ears, clips) in a real signed-in session, sign in once under your profile (see v40); a person may need to hand you a one-time code.
+- **Every issue gets evidence:** paste the `evidence.markdown` from the response; even a desk proposal can attach a `/shot` of the current screen.
 
 ## What's new in v42
 - `POST /end {"keep": true}` closes your tabs and never stops the engine, even when you are the last driver (the /browser panel's "Close my tabs").

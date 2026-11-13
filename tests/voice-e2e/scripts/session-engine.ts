@@ -619,7 +619,7 @@ async function main() {
       let el = document.getElementById('__osb_tabhud')
       if (!el) {
         el = document.createElement('div'); el.id = '__osb_tabhud'
-        Object.assign(el.style, { position: 'fixed', top: '8px', left: '50%', transform: 'translateX(-50%)', zIndex: '2147483647', background: 'rgba(15,15,20,0.88)', color: '#ffd479', font: '600 13px monospace', padding: '5px 14px', borderRadius: '8px', pointerEvents: 'none', border: '1px solid rgba(255,212,121,0.4)' })
+        Object.assign(el.style, { position: 'fixed', bottom: '6px', left: '6px', zIndex: '2147483647', background: 'rgba(15,15,20,0.72)', color: '#ffd479', font: '600 10px monospace', padding: '3px 8px', borderRadius: '6px', pointerEvents: 'none', border: '1px solid rgba(255,212,121,0.4)' })
         document.documentElement.appendChild(el)
       }
       el.textContent = `TAB ${info.i + 1}/${info.n}${info.isActive ? ' • ACTIVE' : ''} — ${location.host}${location.pathname}`
@@ -966,6 +966,7 @@ async function main() {
         }
         const file = m[3] === 'mp4' ? t.clip : t.artifact
         if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}` }, 404)
+        if (m[3] === 'mp4' && m[1] === RUN_STAMP) fetchedClips.add(t.n)  // reviewing via the public link counts
         res.writeHead(200, { 'Content-Type': m[3] === 'mp4' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size, 'Cache-Control': 'public, max-age=86400' })
         createReadStream(file).on('error', () => res.destroy()).pipe(res)
         return
@@ -1289,7 +1290,7 @@ async function main() {
           }
           if (fallback && before) forgetCached(before.url, String(body.instruction))
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
-          const prevTask = tasks[tasks.length - 1]
+          const prevTask = [...tasks].reverse().find((t) => t.label !== 'shot')  // a /shot in between must not hide an unreviewed clip
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit()
           const n = ++reqN
@@ -1305,7 +1306,7 @@ async function main() {
         const shot = await reqShot(n, 'act', page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
         addStep('act', String(body.instruction))
-        return json(res, { ok: true, result: r, effect, warning, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: true, task: n, result: r, effect, warning, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)
@@ -1467,7 +1468,18 @@ async function main() {
         try { const heard = await hearSince(hearPage, Math.max(0, since)); return json(res, { heard, ears: hearEars, warning: heard ? null : (hearEars.playing === 0 ? 'nothing heard: no audio element on the page is playing' : null) }) }
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
-      if (path === '/shot') { const driver = driverId(req); return await withLock(async () => { await focusDriverTab(driver); const b = await active.screenshot({ type: 'jpeg', quality: 60 }); return json(res, { jpegB64: b.toString('base64'), driver }) }) }
+      if (path === '/shot') {
+        // A screenshot is a task too, so it carries public evidence links for an issue.
+        const driver = driverId(req)
+        return await withLock(async () => {
+          await focusDriverTab(driver)
+          const n = ++reqN, t0 = Date.now()
+          const shot = await reqShot(n, 'shot', active)
+          if (!shot) return json(res, { ok: false, code: 'no_screenshot', error: 'the page could not be captured', driver }, 500)
+          stampTask(n, 'shot', t0, null, shot, undefined, undefined, active)
+          return json(res, { jpegB64: readFileSync(shot).toString('base64'), task: n, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { shot: true }), driver })
+        })
+      }
       if (path === '/eval') {
         const driver = driverId(req)
         return await withLock(async () => {

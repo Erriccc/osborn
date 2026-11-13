@@ -18,7 +18,7 @@
 | `POST /say {text, ...}` | speak into the mic; returns a screenshot, `heard` (agent's spoken reply, transcribed) and a `clipUrl` that waits until the clip is encoded (`clipPending: true`; pass `waitClip: true` to get the clip in the reply) |
 | `POST /hear {lastMs}` | transcript of recent agent audio |
 | `POST /eval {expression}` | run JS in the page (the website console, programmatic); recorded as a journey step |
-| `POST /shot` | on-demand screenshot (viewport only — NOT proof media; clips are) |
+| `POST /shot` | on-demand screenshot of your tab; recorded as a task, so it returns `task` and public `evidence` links to paste into an issue |
 | `POST /tab {op: open\|navigate\|switch\|close\|claim\|release, url?, i?, viewport?, reuse?}` (owner = your `x-driver-id`) | tab ops. `open` REUSES a same-site tab unless `reuse:false`; `viewport:"mobile"` = 390×844; owners guard against other directors (409) |
 | `POST /journey {op: start\|end\|list, name?, goal?, save?, cleanup?}` | journey framing — see below |
 | `POST /brain` | re-init a detached Stagehand in place |

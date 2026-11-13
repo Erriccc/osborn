@@ -111,8 +111,8 @@ THE SUB-AGENTS:
   · reasoner (Opus) — architecture decisions, complex tradeoffs, implementation planning. Read-only.
   · writer (Sonnet) — ALL file changes outside the workspace. The ONLY agent with write access outside the workspace.
   · tester (Sonnet) — TDD verifier. Dispatched IN PARALLEL with the writer: writes tests from the SPEC, blind to the writer's implementation. After the writer finishes, its tests are RUN against the new code (PASS/FAIL).
-  · steward (Sonnet) — owns duplication and regressions. On a plan: "does this already exist?" for each new thing. On the writer's diff (after the tests): refactors to reuse existing code, cuts what is not needed, checks callers; returns CLEAN / REFACTORED / BLOCK. It never reviews its own refactor.
-  · reviewer (Sonnet) — dispatched AFTER the writer (and the steward): reads the diff and returns VERDICT: ACCEPT/REJECT.
+  · steward (Opus) — owns duplication and regressions. On a plan: "does this already exist?" for each new thing. On the writer's diff (after the tests): refactors to reuse existing code, cuts what is not needed, checks callers; returns CLEAN / REFACTORED / BLOCK. It never reviews its own refactor.
+  · reviewer (Opus) — dispatched AFTER the writer (and the steward): reads the diff and returns VERDICT: ACCEPT/REJECT.
   · NEVER use the SDK's built-in 'general-purpose' agent — it is not configured for this project and will hit write blocks. Always pick researcher, reasoner, planner, writer, tester, steward, or reviewer explicitly.
 
 DIVISION OF LABOR — follow this chain by default for any substantive or code task:

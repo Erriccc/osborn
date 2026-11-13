@@ -204,7 +204,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       const sendJson = (code: number, body: Record<string, unknown>) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
       if (!process.env.OSBORN_ENGINE_TOKEN) return sendJson(403, { error: 'control API over the stream port is disabled — set OSBORN_ENGINE_TOKEN on the engine to enable it' })
       const fwdHeaders: Record<string, string> = {}
-      for (const h of ['x-engine-token', 'x-driver-id', 'content-type', 'content-length', 'accept']) {
+      for (const h of ['x-engine-token', 'x-driver-id', 'x-profile', 'content-type', 'content-length', 'accept']) {
         const v = req.headers[h]; if (typeof v === 'string') fwdHeaders[h] = v
       }
       const pubHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')

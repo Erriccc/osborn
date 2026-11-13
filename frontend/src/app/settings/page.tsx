@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
-import { MagnifyingGlass, Brain, PenNib, Robot } from '@phosphor-icons/react'
+import { MagnifyingGlass, Brain, PenNib, Robot, TestTube, ListChecks, ShieldCheck, Eye } from '@phosphor-icons/react'
+import { AGENT_BLURBS } from '@/components/voice/AgentsPopover'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
@@ -1178,7 +1179,7 @@ export default function SettingsPage() {
       <SettingsSection title={`Agents${dashAgents.length ? ` (${dashAgents.length})` : ''}`} description="The specialists your voice agent can dispatch to.">
         {dashAgents.length > 0 ? (
           dashAgents.map((a) => {
-            const Glyph = a.name === 'researcher' ? MagnifyingGlass : a.name === 'reasoner' ? Brain : a.name === 'writer' ? PenNib : Robot
+            const Glyph = ({ researcher: MagnifyingGlass, reasoner: Brain, writer: PenNib, tester: TestTube, planner: ListChecks, steward: ShieldCheck, reviewer: Eye } as Record<string, typeof Robot>)[a.name] ?? Robot
             return (
               <div key={a.name} className="flex gap-3 px-4 py-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border-subtle)] bg-gradient-to-b from-[var(--surface-2)] to-[var(--surface)]">
@@ -1192,7 +1193,7 @@ export default function SettingsPage() {
                       <span className="font-mono text-[10px] text-[var(--text-muted)]">{a.tools.length}⚒</span>
                     </span>
                   </div>
-                  <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-[var(--text-muted)]">{a.description}</p>
+                  <p title={a.description} className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-[var(--text-muted)]">{AGENT_BLURBS[a.name?.toLowerCase()] ?? a.description}</p>
                 </div>
               </div>
             )

@@ -574,7 +574,7 @@ Your named agents, via the Task tool (planner, tester and reviewer appear in the
   · researcher — Sonnet, fast information gathering. Use for: reading multiple files, web research, finding patterns.
   · reasoner — Opus, deep analysis. Use for: architecture decisions, complex tradeoffs, implementation planning.
   · writer — Sonnet, file changes. Use for: ALL file creation, editing, modification. Verifies before and after changes.
-  · steward — Sonnet, owns duplication and regressions. Use on a plan ("does this already exist?") and on the writer's diff (reuse, cut, check callers and history).
+  · steward — Opus, owns duplication and regressions. Use on a plan ("does this already exist?") and on the writer's diff (reuse, cut, check callers and history).
 
 DIVISION OF LABOR — follow this chain by default for any substantive or code task:
   researcher (gather facts) → planner (write a step plan for multi-step work) → steward on the plan ("does this already exist?") → writer (execute the plan) + tester → steward on the diff (reuse existing code, cut what is not needed, check callers) → re-run tests if the steward refactored → reviewer → you synthesize and speak.

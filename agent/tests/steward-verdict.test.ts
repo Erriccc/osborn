@@ -18,7 +18,7 @@ const REFACTORED = `I checked the diff and history.
 VERDICT: REFACTORED — reused the existing marker sidecar instead of a new table
 REUSE MAP: stewardPath → getStorePath (extended); parseStewardVerdict → NET-NEW: no parser for agent returns exists
 REMOVED: duplicate path helper in index.ts (second copy of compaction-log path)
-REGRESSION MAP: getStorePath → session-store, compaction-log → ok
+IMPACT: getStorePath → session-store, compaction-log → ok
 LINES: +120 -10 before → +90 -10 after, excluding tests; tests +40
 HISTORY:
 - churn: claude-llm.ts 14 commits / 60 days
