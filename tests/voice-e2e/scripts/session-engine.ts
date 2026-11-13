@@ -200,9 +200,11 @@ async function main() {
       : IN_CONTAINER ? { headless: !DISPLAY_MODE } : { channel: 'chrome', headless: false }),
     args: launchArgs,
   })
+  // The shared profile's own saved sign-ins (see PROFILES below) win over the boot profile.
+  const SHARED_PROFILE = join(OUT_DIR, 'profiles', 'shared.json')
   const context: BrowserContext = await browser.newContext({
     permissions: ['microphone'],
-    ...(useAuth ? { storageState: profile } : {}),
+    ...(existsSync(SHARED_PROFILE) ? { storageState: SHARED_PROFILE } : useAuth ? { storageState: profile } : {}),
     // NO recordVideo — per-task clips from the live-stream ring buffer are
     // the video record (the continuous recording grew unbounded).
   })
@@ -233,7 +235,7 @@ async function main() {
   trackContext(context, '')
   const allPages = () => tabOrder.filter((p) => !p.isClosed())
   const tabs = { pages: allPages } as unknown as BrowserContext  // the tab helpers only read pages()
-  const profileFile = (key: string) => join(PROFILES_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 20)}.json`)
+  const profileFile = (key: string) => key ? join(PROFILES_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 20)}.json`) : SHARED_PROFILE
   const contextFor = async (key: string): Promise<BrowserContext> => {
     const have = contexts.get(key)
     if (have) return have
@@ -244,7 +246,8 @@ async function main() {
     return c
   }
   const saveProfiles = async () => {
-    for (const [key, c] of contexts) if (key) await c.storageState({ path: profileFile(key) }).catch(() => {})
+    // Cookies and localStorage (where most sites, Supabase included, keep a sign-in); IndexedDB is not kept.
+    for (const [key, c] of contexts) await c.storageState({ path: profileFile(key) }).catch(() => {})
   }
   setInterval(() => { void saveProfiles() }, 60000)
   let active: Page = await context.newPage()
@@ -636,11 +639,12 @@ async function main() {
   // Which profile a request's new tabs open in: an explicit x-profile, else the panel's
   // signed-in person (driver id person:<email>), else the shared profile.
   const profileOf = (req: import('http').IncomingMessage): string => {
-    // Named profiles live in their own namespace: a header can never open a person's profile.
-    const named = String(req.headers['x-profile'] || '').trim().toLowerCase().slice(0, 120)
+    // Named profiles live in their own namespace: an x-profile can never open a person's profile.
+    // The engine token is the trust boundary: whoever holds it can drive any tab anyway.
+    const named = String(req.headers['x-profile'] || '').trim().toLowerCase().replace(/\s+/g, ' ')
     if (named) return `agent:${named}`
-    const d = driverId(req)
-    return d.startsWith('person:') ? d : ''
+    const d = driverId(req).trim().toLowerCase()
+    return d.startsWith('person:') && d.length > 7 ? d : ''
   }
   const driverActive = new Map<string, Page>()  // driver → its current tab
   let actionChain: Promise<unknown> = Promise.resolve()
@@ -1602,7 +1606,10 @@ async function main() {
             try { saved = saveJourney(host, journey.name, { goal: journey.goal ?? null, startUrl: journey.startUrl, auth: useAuth ? String(manifest.profile) : 'guest', savedAt: new Date().toISOString(), steps }) } catch { /* volume issue */ }
           }
           if (body.cleanup !== false) {
-            while (allPages().length > 1) { try { active = await closeTab(tabs, allPages().length - 1) } catch { break } }
+            // Only this driver's tabs: a journey ending must not close other drivers' work.
+            const me = driverId(req)
+            for (const p of allPages().slice(1)) if (ownerOf(p) === me) await p.close().catch(() => {})
+            if (active.isClosed()) active = allPages()[0]
             await live?.retarget(active).catch(() => {})
             try { await active.setViewportSize({ width: 1280, height: 720 }) } catch { /* ignore */ }
             saveTabState()
@@ -1684,7 +1691,8 @@ async function main() {
         // only when no other driver still has a tab open (or with {"shutdown": true}).
         const driver = driverId(req)
         const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
-        const others = [...new Set(allPages().flatMap(holders).filter((o) => o !== driver))]
+        const working = [...driverActive.entries()].filter(([d, p]) => d !== driver && !p.isClosed()).map(([d]) => d)
+        const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
         if (others.length && body.shutdown !== true) {
           const done = await withLock(async () => {
             let closed = 0, handedBack = 0
@@ -1700,7 +1708,7 @@ async function main() {
             }
             driverActive.delete(driver)
             if (active.isClosed()) active = allPages()[0]
-            await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState()
+            await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState(); await saveProfiles()
             return { closed, handedBack }
           })
           mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
@@ -1844,7 +1852,7 @@ async function main() {
     const pages = allPages()
     for (let i = pages.length - 1; i >= 1; i--) {
       const p = pages[i]
-      if (p === active) continue
+      if (p === active || [...driverActive.values()].includes(p)) continue  // someone is working in it
       if (!tabLastUsed.has(p)) { touchTab(p); continue }
       if (Date.now() - (tabLastUsed.get(p) ?? 0) <= TAB_STALE_MS) continue
       const url = p.url(); const owner = ownerOf(p)
