@@ -186,7 +186,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v40
-- Send `x-profile: <name>` to get your own browser profile: your sign-ins stay yours, other drivers can't see them, and they survive engine restarts, so you sign in once. The /browser panel gives each signed-in person their own profile.
+- Send `x-profile: <name>` to get your own browser profile: its sign-ins are isolated from the shared profile and from the /browser panel's people (anyone sending the same name shares it), and they survive engine restarts, so you sign in once. The /browser panel gives each signed-in person their own profile.
 - `POST /end` closes only your tabs while another driver is still working; the engine shuts down when you are the last one, or with `{"shutdown": true}`.
 
 ## What's new in v39

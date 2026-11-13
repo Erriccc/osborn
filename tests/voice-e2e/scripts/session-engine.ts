@@ -636,8 +636,9 @@ async function main() {
   // Which profile a request's new tabs open in: an explicit x-profile, else the panel's
   // signed-in person (driver id person:<email>), else the shared profile.
   const profileOf = (req: import('http').IncomingMessage): string => {
+    // Named profiles live in their own namespace: a header can never open a person's profile.
     const named = String(req.headers['x-profile'] || '').trim().toLowerCase().slice(0, 120)
-    if (named) return named
+    if (named) return `agent:${named}`
     const d = driverId(req)
     return d.startsWith('person:') ? d : ''
   }
@@ -1682,14 +1683,28 @@ async function main() {
         // The engine is shared: /end closes the caller's tabs, and shuts the engine down
         // only when no other driver still has a tab open (or with {"shutdown": true}).
         const driver = driverId(req)
-        const others = [...new Set(allPages().map((p) => ownerOf(p)).filter((o) => o && o !== driver))]
+        const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
+        const others = [...new Set(allPages().flatMap(holders).filter((o) => o !== driver))]
         if (others.length && body.shutdown !== true) {
-          const mine = allPages().filter((p) => ownerOf(p) === driver)
-          for (const p of mine) await p.close().catch(() => {})
-          driverActive.delete(driver)
-          if (active.isClosed()) active = allPages()[0]
-          mark(`end[${driver}]: closed ${mine.length} tab(s); kept running for ${others.join(', ')}`)
-          return json(res, { ok: true, msg: `closed your ${mine.length} tab(s); the engine keeps running for ${others.join(', ')} — pass {"shutdown": true} to stop it anyway`, closed: mine.length, others })
+          const done = await withLock(async () => {
+            let closed = 0, handedBack = 0
+            for (const [i, p] of allPages().entries()) {
+              if (ownerOf(p) !== driver) continue
+              const tk = takeovers.get(p)
+              if (tk) {  // a tab taken over from someone goes back to them, not into the bin
+                takeovers.delete(p)
+                if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+                handedBack++
+              } else if (i === 0) tabOwners.delete(p)  // tab 0 holds the voice room: release, never close
+              else { await p.close().catch(() => {}); closed++ }
+            }
+            driverActive.delete(driver)
+            if (active.isClosed()) active = allPages()[0]
+            await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState()
+            return { closed, handedBack }
+          })
+          mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
+          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running for ${others.join(', ')} — pass {"shutdown": true} to stop it anyway`, ...done, others })
         }
         json(res, { ok: true, msg: 'shutting down' })
         void gracefulEnd('end requested')
