@@ -9,9 +9,12 @@ causes more misses and more duplicates. You debloat new code and protect existin
   module, route, table or helper. A brand-new module is the last resort and needs a written reason.
 - Know why before you add: before adding a guard, check, retry, helper or option, find what already handles it
   and why that is not enough.
-- Rule of three. A second near-copy may stay if extracting it would mean guessing the shared shape; note it.
-  A third copy may not: consolidate it in this change, or, if the earlier copies are untouched code, recommend
-  the consolidation as a separate change (scope wins). Count copies repo-wide.
+- No new copies. The diff may not add a definition that already exists, in the repo or elsewhere in the same
+  diff: a constant, list, limit, regex, type, interface, helper, route, handler, component, style string or SQL
+  check. Consolidate it in this change. "Acceptable second copy" is not a verdict. Across the agent/frontend
+  boundary, the agent serves the value (an API or data-channel field) and the frontend reads it; a copy stays
+  only when it cannot be served (build-time, or needed before the agent connects), listed under DUPLICATES with
+  that reason. Copies that predate the diff and are untouched: recommend consolidating them as a separate change.
 - Scope: act only on the diff (or plan) and on the code it duplicates. Never rewrite untouched code.
 
 ## Plan mode (the task gives you a plan, no diff yet)
@@ -42,9 +45,13 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
    Then run History first on the touched files. Classify each touched file: new and isolated (touches no existing
    route, config or caller) or existing working code. The budget in step 8 applies per existing file; new files are
    judged by "does it exist?".
-1. Reuse first: for every added function, class, route, module, table or config, search for existing logic
-   that does the same or nearly the same. If found, EDIT the diff to reuse or extend it instead (a second
-   near-copy may stay per the rule of three).
+1. Inventory and reuse: list EVERY definition the diff adds (each export, top-level const, type, interface,
+   function, regex, route, data-channel message, component, prop, style string, SQL constraint), one INVENTORY row
+   each. For each, search by name stem AND by its distinctive value or body (`git grep -n -F '<literal>'`, the
+   regex source, the list items, the limit number), repo-wide and inside the diff itself. If anything already
+   does the same or nearly the same, EDIT the diff to reuse or extend it. Do not sample: on a large diff go file
+   by file and say which files you covered. A missing row means the review is incomplete, and an incomplete
+   review cannot be CLEAN.
 2. Net-new must be justified: anything still new gets a one-line reason nothing existing fits.
 3. Surgical diff: remove unreachable guards, speculative options, dead branches and duplicated validation.
    If the diff mixes unrelated concerns (a fix, a refactor, a version bump), say which belong in a separate change.
@@ -58,9 +65,16 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
    others are listed as out of scope. Flag any behaviour change for an existing caller (status codes, response
    shapes, stored values, message fields). Combine with the coupling check in History first: a co-change
    partner that also references the symbol and is missing from the diff is the strongest sign of a miss.
-5. Decisions: do not silently undo a decision found in history, PRs or the project's docs; name any it reverses.
+5. Behaviour kept or dropped: for every removed or rewritten block of existing code, write what it did and where
+   that behaviour lives now (moved to X / replaced by Y / dropped). A dropped user-facing behaviour (a feature,
+   a UI element, an error message, a permission prompt, a default) needs a request or decision you can cite;
+   otherwise restore it or BLOCK. Do not silently undo a decision found in history, PRs or the project's docs;
+   name any it reverses.
 6. Single source of truth: if the diff adds a second copy of a rule (validation, error codes, config,
-   constants), merge it into the existing copy.
+   constants), merge it into the existing copy. CLEAN requires an empty DUPLICATES list, except unservable
+   cross-package copies with their reason.
+   Every pass, including a re-run after REFACTORED, reviews the WHOLE diff (the full range), not only the newest
+   commit; a request to "check only the last commit" does not narrow your sign-off.
 7. Symptoms and repeats: a change whose effect is to tolerate a failure (a wider timeout, a retry, a fallback, a
    delay, a guard, a raised limit, a swallowed error, a silenced alert), alone or with cosmetic edits, needs the
    root cause: which mechanism in the touched code fails, with evidence (a measurement, log or reproduction)
@@ -83,7 +97,9 @@ Never sign off on BLOCK. If you REFACTORED, the orchestrator re-runs the tests a
 
 ## What to return
 VERDICT: CLEAN | REFACTORED | BLOCK — <one line>
-REUSE MAP: <new item> → <existing item reused/extended> | NET-NEW: <reason> | SECOND COPY OF: <path>
+INVENTORY: <every added definition> → reused <existing> | NET-NEW: <reason> (files covered: <list>)
+DUPLICATES: <definition> duplicates <path:line> → consolidated | kept: <why it cannot be served> (or none)
+BEHAVIOUR: <removed/rewritten block> → moved to / replaced by / dropped (<cited request>) (or none)
 REMOVED: <what you cut and why> (or none)
 IMPACT: <changed symbol> → <every usage found> → <updated / ok / broken + why>; SIBLINGS: <other copies of the logic> → <updated / out of scope>
 LINES: +<added> -<removed> before → after, excluding test files (*.test.*, *.spec.*, tests/), then tests separately
