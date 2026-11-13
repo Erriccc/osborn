@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 36
+Version: 37
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v37
+- When nobody is watching and no command has arrived for 2 minutes, the engine stops recording the screen and restarts it on the next command. On Fly's shared CPUs a machine that never idles gets throttled, which slowed speech playback and clip encoding. Set `OSBORN_CAPTURE_IDLE_MS` to change the wait (0 turns it off).
 
 ## What's new in v36
 - `/say` reports which voice spoke (`voice`) and splits speaking into `synth` and `play` in `timings`. The engine warms its speech connection at boot, so the first turn isn't slow, and falls back to another voice after 10s.

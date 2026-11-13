@@ -902,6 +902,8 @@ async function main() {
       // Any authenticated director command counts as activity for idle-stop.
       // /status is excluded (pollers/health checks must not keep it awake).
       if (path !== '/status') lastActivity = Date.now()
+      // Driving commands (not polls or reads) resume a paused capture.
+      if (req.method === 'POST') live?.touch?.()
       if (req.method === 'GET' && path === '/status') {
         // GROUND TRUTH, not cached flags — the old `inRoom: true` reported a
         // healthy room while the page sat on the "Session paused" idle screen.
