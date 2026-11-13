@@ -261,10 +261,6 @@ export default function Dashboard() {
       setImportMsg(`Added "${share.session_title.slice(0, 40)}" — it's now in your sessions below.`)
     } else setImportMsg(res.error)
   }
-  // Skills + named agents from the agent's HTTP API (GET /skills, GET /agents)
-  // — the dashboard has no LiveKit data channel, so these come over HTTP.
-  const [dashSkills, setDashSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
-  const [dashAgents, setDashAgents] = useState<{ name: string; description: string; model: string; tools: string[] }[]>([])
   // Per-user sync token — authorises calls to the agent's authed endpoints
   // (session import/export + /secrets). Declared here (before the settings
   // effect that depends on it) to avoid a TDZ reference.
@@ -409,17 +405,11 @@ export default function Dashboard() {
     if (m) setConnectionMode(m)
   }, [])
 
-  // Fetch skills + named agents from the agent's HTTP API when settings open.
-  // Older agents (<0.9.96) 404 these — sections just stay empty/hidden.
+  // Connected API keys from the agent's HTTP API when settings open (skills and
+  // agents live in Settings → Agents & Skills).
   useEffect(() => {
     if (!showSettings || !agentUrl) return
     const base = agentUrl.replace(/\/$/, '')
-    fetch(`${base}/skills`).then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (Array.isArray(d?.skills)) setDashSkills(d.skills) })
-      .catch(() => {})
-    fetch(`${base}/agents`).then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (Array.isArray(d?.agents)) setDashAgents(d.agents) })
-      .catch(() => {})
     // Connected API keys — status only (agent never returns raw values).
     // Requires the per-user sync token; older agents (<0.9.224) 404 and the
     // section just stays hidden.

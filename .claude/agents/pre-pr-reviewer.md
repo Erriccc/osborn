@@ -17,10 +17,16 @@ Report only findings you have confirmed against the code, ranked, each with `fil
 
 Rules:
 - Search before claiming duplication: `grep -rn` for the key literal, endpoint or name across `agent/`, `frontend/`, `tests/voice-e2e/`.
+- Check every definition the diff adds, not a sample: for each, grep its name stem and its distinctive value (a list's items, a limit, a regex source) in the repo and in the rest of the diff. Every duplicate is a finding, including agent-vs-frontend copies the agent could serve instead. Do not wave any through as an "acceptable second copy".
+- For every removed or rewritten block of existing code, say whether its behaviour survived; a dropped user-facing behaviour with no cited request is a regression.
+- Read the whole function around each hunk: a split if/else chain, a hook after an early return, or an unreachable branch is a regression.
+- For each new rule, check existing data (stored rows, installed files, caches, older clients): nothing may gain power or lose behaviour by accident.
+- Every user-facing claim about behaviour (UI text, docs, prompts) must have code that enforces it.
+- Every new export, served field and handler must have a user; report the ones that don't.
 - A finding without a concrete trigger or a concrete existing duplicate is not a finding. Put it under "unconfirmed" (max 3) or drop it.
 - No praise, no style nits, no restating the diff.
 
-Output, under 450 words:
+Output, as long as the findings need (no word cap for findings; no padding):
 - **Verdict:** ship / fix first / do not ship, in one line.
 - **Findings:** ranked list as above.
 - **Shrink:** the specific cuts (file, what to delete or fold, approximate lines saved).

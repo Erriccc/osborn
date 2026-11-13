@@ -11,14 +11,19 @@
  * Deliberately TIGHT — only the exact paths in the allowlists are forwarded;
  * everything else 404s here. Dangerous/stateful routes (restart, editor, canvas)
  * keep their own gates and are never proxied.
- *   GET:  sessions, session-messages, sessions/export-one (binary tar.gz)
- *   POST: sessions/import  (session-sharing import leg; binary body)
+ *   GET:  sessions, session-messages, sessions/export-one (binary tar.gz), the store reads
+ *   POST: sessions/import  (session-sharing import leg; binary body), the store changes
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
 
-const PROXYABLE_GET = new Set(['sessions', 'session-messages', 'sessions/export-one'])
-const PROXYABLE_POST = new Set(['sessions/import'])
+// Agent & skill store (agent/src/index.ts): listing, prompts, skill changes and the catalog.
+const STORE_GET = ['agents', 'skills', 'skills/content', 'store/catalog', 'store/entry']
+const STORE_POST = ['skills/fork', 'skills/remove', 'store/install']
+const PROXYABLE_GET = new Set(['sessions', 'session-messages', 'sessions/export-one', ...STORE_GET])
+const PROXYABLE_POST = new Set(['sessions/import', ...STORE_POST])
+// The first catalog read lists three GitHub repos; give it longer than a session read.
+const timeoutFor = (path: string, ms: number) => (path.startsWith('store/') ? 90000 : ms)
 
 // Resolve the signed-in user's own machine base URL + sync token. Returns an
 // error NextResponse when unavailable, else { base, token }.
@@ -50,7 +55,7 @@ export async function GET(
   try {
     const upstream = await fetch(`${m.base}/${joined}${req.nextUrl.search}`, {
       headers: m.token ? { Authorization: `Bearer ${m.token}` } : {},
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(timeoutFor(joined, 20000)),
       cache: 'no-store',
     })
     // Forward the raw body (JSON, or the binary tar.gz from export-one) as-is.
@@ -80,7 +85,7 @@ export async function POST(
         'Content-Type': req.headers.get('content-type') ?? 'application/octet-stream',
       },
       body,
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(timeoutFor(joined, 30000)),
       cache: 'no-store',
     })
     return new NextResponse(await upstream.arrayBuffer(), {

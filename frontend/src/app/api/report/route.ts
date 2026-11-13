@@ -9,6 +9,9 @@ import { NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
 import { buildBugReportRow, type BugReportInput } from '@/lib/bug-report'
 import { mirrorReportToGitHub } from '@/lib/github-issue-mirror'
+import { knownSandboxClaim } from '@/lib/sandbox-claims'
+import { execInSprite } from '@/lib/machines'
+import { randomUUID } from 'node:crypto'
 
 export const runtime = 'nodejs'
 
@@ -48,9 +51,32 @@ export async function POST(request: Request) {
     )
     if (!built.ok) return NextResponse.json({ ok: false, error: built.error }, { status: 400 })
 
+    // A report filed by a cloud agent (its context carries a machine id) gets the log
+    // tail of the reporter's own machine (best-effort; the report files without it).
+    // The exec target is always the caller's recorded, undisputed sandbox, never an
+    // id from the body, which would let a caller exec into any machine.
+    const id = randomUUID()
+    let logUrl: string | null = null
+    try {
+      const known = body.sandbox_id ? await knownSandboxClaim(supabase, user.id) : null
+      if (known?.id && known.claim === 'mine') {
+        const logResult = await execInSprite(known.id, 'sh', ['-c', 'tail -500 /workspace/osborn.log 2>/dev/null || echo "log unavailable"'], 15)
+        if (logResult.output) {
+          const storagePath = `bug-logs/${id}.log`
+          const { error: upErr } = await supabase.storage
+            .from('osborn-storage')
+            .upload(storagePath, logResult.output, { contentType: 'text/plain', upsert: false })
+          if (!upErr) logUrl = storagePath
+          else console.error('[report] log upload failed', upErr)
+        }
+      }
+    } catch (e) {
+      console.error('[report] log tail failed:', e)
+    }
+
     const { data: inserted, error } = await supabase
       .from('bug_reports')
-      .insert(built.row)
+      .insert({ id, ...built.row, log_url: logUrl })
       .select('id')
       .single()
     if (error) {

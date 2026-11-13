@@ -50,6 +50,18 @@ function serviceClient() {
 }
 
 /**
+ * The caller's recorded sandbox (their instances row) and its claim. The row
+ * counts only when no OTHER user's row claims the same id (fail closed): before
+ * migration 012 the column was client-writable, so a row alone proves nothing.
+ */
+export async function knownSandboxClaim(userClient: any, userId: string): Promise<{ id?: string; claim: SandboxClaim | 'none' }> {
+  const { data } = await userClient.from('instances').select('sandbox_id').eq('user_id', userId).single()
+  const id = (data?.sandbox_id as string | null | undefined) ?? undefined
+  if (!id) return { claim: 'none' }
+  return { id, claim: await checkSandboxClaim(userClient, id, userId) }
+}
+
+/**
  * Is `sandboxId` claimed only by `userId`? 'disputed' = another user's row
  * also claims it (or it is another user's legacy app name, RPC path only).
  * 'unknown' = the check could not run; callers must treat it as not owned.

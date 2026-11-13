@@ -73,12 +73,15 @@ export function setWatchResultHandler(fn: (allow: boolean, toolName: string) => 
   resultHandler = fn
 }
 
+/** The frontend this agent links to and accepts store writes from (OSBORN_FRONTEND_URL, default the live site). */
+export const osbornFrontendUrl = (): string => (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/+$/, '')
+
 export function pushoverConfig(): PushoverConfig | null {
   const token = process.env.PUSHOVER_TOKEN
   const userKey = process.env.PUSHOVER_USER_KEY
   const secret = process.env.WATCH_ACK_SECRET
   const publicUrl = (process.env.OSBORN_PUBLIC_URL || '').replace(/\/+$/, '')
-  const frontendUrl = (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/+$/, '')
+  const frontendUrl = osbornFrontendUrl()
   if (!token || !userKey || !secret || !publicUrl) return null
   return { token, userKey, secret, publicUrl, frontendUrl }
 }
@@ -170,7 +173,7 @@ export async function armPermissionPush(opts: { toolName: string; description: s
 
   const secret = process.env.WATCH_ACK_SECRET || ''
   const publicUrl = (process.env.OSBORN_PUBLIC_URL || '').replace(/\/+$/, '')
-  const frontendUrl = (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/+$/, '')
+  const frontendUrl = osbornFrontendUrl()
   if (!secret || !publicUrl) return
 
   const now = Date.now()

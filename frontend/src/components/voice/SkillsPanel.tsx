@@ -2,18 +2,15 @@
 
 import { useState, useEffect } from 'react'
 import { usePanelExclusive, useViewportClamp } from './shared'
-import { SkillStore, type SkillInfo } from '../AgentStore'
+import { SkillStore } from '../AgentStore'
+import type { SkillStoreApi } from '@/lib/skill-store'
 
 // Shared skills panel — the single source of truth for the skills UI. Mounted
 // in TWO places: the first-class header SkillsPopover (primary, high-visibility)
 // and the ControlMenu Tools tab (kept for muscle memory).
 interface SkillsPanelProps {
-  skills?: SkillInfo[]
-  onAddSkill?: (name: string, content: string) => void
-  onViewSkill?: (folder: string) => void
-  onRemoveSkill?: (folder: string) => void
-  onForkSkill?: (folder: string, newName: string) => void
-  onInstallFromCatalog?: (name: string, url: string) => void
+  /** The machine's skills and actions (lib/skill-store.ts), shared with Settings. */
+  store: SkillStoreApi
   showAddSkill?: boolean
   setShowAddSkill?: (v: boolean) => void
   newSkillName?: string
@@ -23,12 +20,7 @@ interface SkillsPanelProps {
 }
 
 export function SkillsPanel({
-  skills,
-  onAddSkill,
-  onViewSkill,
-  onRemoveSkill,
-  onForkSkill,
-  onInstallFromCatalog,
+  store,
   showAddSkill,
   setShowAddSkill,
   newSkillName,
@@ -36,6 +28,12 @@ export function SkillsPanel({
   newSkillContent,
   setNewSkillContent,
 }: SkillsPanelProps) {
+  const { skills } = store
+  const add = (name: string, content: string) => store.add(name, content).then((ok) => {
+    if (ok) { setShowAddSkill?.(false); setNewSkillName?.(''); setNewSkillContent?.('') }
+  })
+  // One-tap official skill: the served copy (same origin) is the source of truth.
+  const installOfficial = (name: string, url: string) => fetch(url).then((r) => r.text()).then((content) => add(name, content)).catch(() => {})
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -66,7 +64,7 @@ export function SkillsPanel({
           <button
             onClick={() => {
               if (newSkillName?.trim() && newSkillContent?.trim()) {
-                onAddSkill?.(newSkillName.trim(), newSkillContent.trim())
+                add(newSkillName.trim(), newSkillContent.trim())
               }
             }}
             disabled={!newSkillName?.trim() || !newSkillContent?.trim()}
@@ -76,16 +74,16 @@ export function SkillsPanel({
           </button>
         </div>
       )}
-      {skills && skills.length > 0 ? (
-        <SkillStore skills={skills} onView={onViewSkill} onFork={onForkSkill} onRemove={onRemoveSkill} />
+      {skills.length > 0 ? (
+        <SkillStore store={store} />
       ) : (
         <p className="text-[11px] text-gray-500">No skills installed</p>
       )}
       <a href="/settings?section=agents&browse=1" target="_blank" rel="noreferrer" className="block text-[11px] text-[var(--accent)] hover:opacity-80">Browse skill catalogs ↗</a>
       {/* Catalog: one-tap official skills */}
-      {skills && !skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder || sk.name)) && (
+      {!skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder)) && (
         <button
-          onClick={() => onInstallFromCatalog?.('browser-screen-recorder', '/api/browser-screen-recorder')}
+          onClick={() => installOfficial('browser-screen-recorder', '/api/browser-screen-recorder')}
           className="mt-2 w-full py-1.5 text-[11px] rounded-lg bg-gray-800/70 border border-amber-500/20 text-amber-400 hover:bg-gray-800 transition-colors"
         >
           ⤓ Install Browser Screen Recorder skill (official)
@@ -99,7 +97,7 @@ export function SkillsPanel({
 // header: sparkle icon + live count badge, opens a dedicated popover.
 export function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean; requestOpen?: number; hideTrigger?: boolean }) {
   const [open, setOpen] = useState(false)
-  const count = props.skills?.length ?? 0
+  const count = props.store.skills.length
   // Esc closes the popover (outside-click already closes via the backdrop).
   useEffect(() => {
     if (!open) return

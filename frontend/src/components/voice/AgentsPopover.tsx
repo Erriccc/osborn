@@ -8,16 +8,18 @@ import { usePanelExclusive, useViewportClamp } from './shared'
 
 // Agents button + popover. The panel body is the shared AgentStore (same
 // surface as Settings → Agents & Skills) with live run status per agent.
-export function AgentsPopover({ agents, roles, yours, activity, disabled, onSaveAgent, onDeleteAgent, onSetAgentEnabled, requestOpen, hideTrigger }: {
+export function AgentsPopover({ agents, roles, yours, activity, disabled, onSaveAgent, onDeleteAgent, onSetAgentEnabled, getPrompt, requestOpen, hideTrigger }: {
   agents?: NamedAgent[]
   roles?: RolesData | null
   yours?: UserAgentRow[] | null
   /** Live sub-agent runs — the same flows the Activity drawer's Running tab shows. */
   activity?: BackgroundFlow[]
   disabled?: boolean
-  onSaveAgent?: (a: UserAgentDraft) => void
+  onSaveAgent?: (a: UserAgentDraft) => Promise<string | null>
   onDeleteAgent?: (name: string) => void
   onSetAgentEnabled?: (name: string, enabled: boolean) => void
+  /** Built-in prompts are fetched on demand (View / Fork); the data channel never carries them. */
+  getPrompt?: (name: string) => Promise<string | null>
   /** Increment to force the panel open (mobile burger sheet rows use this —
       they can't reach internal state). Ignored while disabled. */
   requestOpen?: number
@@ -92,11 +94,14 @@ export function AgentsPopover({ agents, roles, yours, activity, disabled, onSave
             </div>
             <div className="max-h-[28rem] overflow-y-auto p-3">
               <AgentStore agents={agents ?? []} yours={yours ?? null} roles={roles} browseHref="/settings?section=agents&browse=1"
-                onSave={onSaveAgent} onDelete={onDeleteAgent} onSetEnabled={onSetAgentEnabled}
+                onSave={onSaveAgent} onDelete={onDeleteAgent} onSetEnabled={onSetAgentEnabled} getPrompt={getPrompt}
                 status={(name) => {
-                  const live = runsOf(name).find((f) => f.status === 'running')
-                  if (live) return <span title={live.lastMessage || live.task} className="text-[10px] font-semibold normal-case text-amber-300 animate-pulse">● working</span>
+                  if (isWorking(name)) return <span className="text-[10px] font-semibold normal-case text-amber-300 animate-pulse">● working</span>
                   return recentlyFinished(name) ? <span className="text-[10px] normal-case text-emerald-400">✓ finished</span> : null
+                }}
+                progress={(name) => {
+                  const live = runsOf(name).find((f) => f.status === 'running')
+                  return live ? live.lastMessage || live.task || null : null
                 }} />
             </div>
           </div>

@@ -44,7 +44,8 @@ import { getToolRiskLevel, type PermissionRequest, type ApprovalMode } from './v
 import { classifyRisk } from '@/lib/riskTier'
 import { TextInput, type AttachedFile } from './voice/TextInput'
 import { AgentsPopover } from './voice/AgentsPopover'
-import type { NamedAgent, SkillInfo, RolesData } from './AgentStore'
+import { SkillViewer, rolesData, type NamedAgent, type RolesData } from './AgentStore'
+import { useSkillStore, type SkillTransport } from '../lib/skill-store'
 import { useUserAgents } from '../lib/user-agents'
 import { SkillsPopover } from './voice/SkillsPanel'
 import { ControlMenu } from './voice/ControlMenu'
@@ -714,18 +715,9 @@ function VoiceRoomInner({
   const [outputsPreviewPath, setOutputsPreviewPath] = useState<string | null>(null)
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
-  // Skills state
-  const [skills, setSkills] = useState<SkillInfo[]>([])
+  // Named agents (skills: skillStore, below sendJson)
   const [namedAgents, setNamedAgents] = useState<NamedAgent[]>([])
   const [agentRoles, setAgentRoles] = useState<RolesData | null>(null)
-  const [viewedSkill, setViewedSkill] = useState<{ name: string; content: string } | null>(null)
-  // Esc closes the skill viewer (× and backdrop-click already close it).
-  useEffect(() => {
-    if (!viewedSkill) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setViewedSkill(null) }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [viewedSkill])
   const [showAddSkill, setShowAddSkill] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
   // Burger-sheet → popover bridges: incrementing these force-opens the
@@ -1628,6 +1620,29 @@ function VoiceRoomInner({
   const sendJson = useCallback((m: Record<string, unknown>) => {
     sendToAgent(new TextEncoder().encode(JSON.stringify(m)), { reliable: true })
   }, [sendToAgent])
+  // Request/reply over the data channel: resolves with the next message of replyType
+  // (handleDataMessage hands it over), or an error after 15s (e.g. an older machine).
+  const replyWaiters = useRef(new Map<string, ((d: any) => void)[]>())
+  const askAgent = useCallback((m: Record<string, unknown>, replyType: string) => new Promise<any>((resolve) => {
+    const waiting = replyWaiters.current.get(replyType) ?? []
+    replyWaiters.current.set(replyType, waiting)
+    const done = (d: any) => { clearTimeout(timer); const i = waiting.indexOf(done); if (i >= 0) waiting.splice(i, 1); resolve(d) }
+    const timer = setTimeout(() => done({ error: 'No answer from your machine' }), 15000)
+    waiting.push(done)
+    sendJson(m)
+  }), [sendJson])
+  // Skills: the chat acts on the agent it is connected to (LAN, tunnel or cloud), over the
+  // owner-gated data channel; Settings, with no room, uses the same rules over HTTP.
+  const chatSkills = useMemo<SkillTransport>(() => ({
+    view: (name) => askAgent({ type: 'skill_get', name }, 'skill_content'),
+    change: (op, name, arg) => askAgent({ type: `skill_${op}`, name, ...(op === 'add' ? { content: arg } : op === 'fork' ? { to: arg } : {}) }, `skill_${op}_result`),
+  }), [askAgent])
+  const skillStore = useSkillStore(chatSkills)
+  const { skills, setSkills } = skillStore
+  // A built-in agent's prompt for View / Fork (the listings never carry prompts).
+  const getAgentPrompt = useCallback((name: string) =>
+    askAgent({ type: 'get_agent_prompt', name }, 'agent_prompt').then((d) => (typeof d?.prompt === 'string' ? d.prompt : null)),
+  [askAgent])
   const currentSessionIdRef = useRef(currentSessionId)
   useEffect(() => { currentSessionIdRef.current = currentSessionId }, [currentSessionId])
   const generatedFilesRef = useRef(generatedFiles)
@@ -1917,6 +1932,8 @@ function VoiceRoomInner({
         if (data.namedAgents && Array.isArray(data.namedAgents)) {
           setNamedAgents(data.namedAgents)
         }
+        const roles = rolesData(data)
+        if (roles) setAgentRoles(roles)
         // Pre-selected session: complete gate immediately (don't need to wait for session list)
         if (!sessionGateCompletedRef.current && !showResumePromptRef.current &&
             (preSelectedSessionId || data.preSelectedSessionId)) {
@@ -2573,24 +2590,13 @@ function VoiceRoomInner({
         if (data.agents && Array.isArray(data.agents)) {
           setNamedAgents(data.agents)
         }
-        if (Array.isArray(data.roles)) setAgentRoles({ roles: data.roles, chains: data.chains || [] })
-      } else if (data.type === 'skill_content') {
-        if (data.content) setViewedSkill({ name: data.name, content: data.content })
-      } else if (data.type === 'skill_remove_result' || data.type === 'skill_fork_result') {
-        if (data.skills && Array.isArray(data.skills)) {
-          setSkills(data.skills)
-        }
-      }
-      if (/^skill_(add|fork|remove)_result$/.test(data.type) && data.error) {
-        setMessages((prev) => [...prev, { id: `skill-err-${Date.now()}`, role: 'system', content: `Skill not changed: ${data.error}`, timestamp: new Date(), category: 'chat' }])
-      }
-      if (data.type === 'skill_add_result') {
-        if (data.success && data.skills) {
-          setSkills(data.skills)
-          setShowAddSkill(false)
-          setNewSkillName('')
-          setNewSkillContent('')
-        }
+        const roles = rolesData(data)
+        if (roles) setAgentRoles(roles)
+      } else if (replyWaiters.current.has(data.type) || Array.isArray(data.skills)) {
+        // Replies to askAgent (skill store, agent prompts). A skill result's list is applied even
+        // with no waiter (a late reply, or a change made from another device in the room).
+        if (Array.isArray(data.skills)) setSkills(data.skills)
+        replyWaiters.current.get(data.type)?.[0]?.(data)
       } else if (data.type === 'claude_auth_required') {
         console.log('🔑 Claude auth required')
         // Prompt discipline (#87 §6): only auto-open the modal if the user hasn't
@@ -2721,24 +2727,6 @@ function VoiceRoomInner({
       } else if (data.type === 'compaction_progress') {
         console.log('[COMPACT-FRONTEND-RX] compaction_progress stage=', data.stage, 'detail=', data.detail ?? '')
         setCompactionStages(prev => [...prev, { stage: data.stage, detail: data.detail, ts: Date.now() }])
-      } else if (data.type === 'bug_report') {
-        // bug-reporter skill (agent-side) emitted a bug report. Forward to the
-        // backend API which has the Supabase keys and will INSERT the row +
-        // upload the log tail. Fire-and-forget — we don't block the voice UI on
-        // Supabase round-trips. Errors are logged but not surfaced to the user;
-        // the agent already told them "Filed."
-        console.log('🪲 Bug report received from agent:', data.reportId, data.payload?.title)
-        fetch('/api/sandbox', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'submit-bug-report',
-            reportId: data.reportId,
-            payload: data.payload,
-            context: data.context || {},
-            sessionId: preSelectedSessionId ?? null,
-          }),
-        }).catch((err) => console.error('[bug-report] submit-bug-report failed:', err))
       } else if (data.type === 'compaction_complete') {
         console.log('[COMPACT-FRONTEND-RX] compaction_complete skillsWritten=', data.skillsWritten, 'skills=', data.skillNames, 'full=', JSON.stringify(data).substring(0, 200))
         setCompactionStatus('complete')
@@ -3513,39 +3501,6 @@ function VoiceRoomInner({
     sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents, turbo: turboMode })), { reliable: true })
   }, [agentConnected, userAgentRows, turboMode, sendToAgent])
 
-  const handleAddSkill = useCallback((name: string, content: string) => {
-    const encoder = new TextEncoder()
-    const payload = encoder.encode(JSON.stringify({
-      type: 'skill_add',
-      name,
-      content,
-    }))
-    sendToAgent(payload, { reliable: true })
-  }, [sendToAgent])
-
-  const handleViewSkill = useCallback((folder: string) => {
-    const encoder = new TextEncoder()
-    sendToAgent(encoder.encode(JSON.stringify({ type: 'skill_get', name: folder })), { reliable: true })
-  }, [sendToAgent])
-
-  const handleRemoveSkill = useCallback((folder: string) => {
-    const encoder = new TextEncoder()
-    sendToAgent(encoder.encode(JSON.stringify({ type: 'skill_remove', name: folder })), { reliable: true })
-  }, [sendToAgent])
-
-  const handleForkSkill = useCallback((folder: string, to: string) => {
-    const encoder = new TextEncoder()
-    sendToAgent(encoder.encode(JSON.stringify({ type: 'skill_fork', name: folder, to })), { reliable: true })
-  }, [sendToAgent])
-
-  // One-tap catalog install: fetch a served skill (same-origin) and add it.
-  const handleInstallFromCatalog = useCallback(async (name: string, url: string) => {
-    try {
-      const content = await fetch(url).then((r) => r.text())
-      handleAddSkill(name, content)
-    } catch { /* surfaced via missing skill_add_result */ }
-  }, [handleAddSkill])
-
   // Helper: complete the session gate (unmute mic, send session_selected to backend)
   const completeSessionGate = useCallback((sessionId: string | null) => {
     setShowResumePrompt(false)
@@ -4177,12 +4132,7 @@ function VoiceRoomInner({
               mcpServers={mcpServers}
               onMcpToggle={handleMcpToggle}
               onLoadMcpStatus={handleLoadMcpStatus}
-              skills={skills}
-              onAddSkill={handleAddSkill}
-              onViewSkill={handleViewSkill}
-              onRemoveSkill={handleRemoveSkill}
-              onInstallFromCatalog={handleInstallFromCatalog}
-              onForkSkill={handleForkSkill}
+              skillStore={skillStore}
               showAddSkill={showAddSkill}
               setShowAddSkill={setShowAddSkill}
               newSkillName={newSkillName}
@@ -4194,25 +4144,7 @@ function VoiceRoomInner({
             {/* Skill viewer — mobile bottom-sheet / desktop centered dialog.
                 Close is a real 44px icon button (the old bare "×" was a tiny,
                 easy-to-miss tap target); Esc + backdrop still close too. */}
-            {viewedSkill && (
-              <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4" onClick={() => setViewedSkill(null)} role="dialog" aria-modal="true" aria-label={`Skill: ${viewedSkill.name}`}>
-                <div className="bg-gray-900 border border-gray-700 rounded-t-2xl sm:rounded-xl w-full max-w-2xl max-h-[85vh] sm:max-h-[80vh] flex flex-col shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0" onClick={(e) => e.stopPropagation()}>
-                  <div className="sm:hidden w-10 h-1 rounded-full bg-gray-700 mx-auto mt-2 mb-0.5" aria-hidden="true" />
-                  <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-800">
-                    <h3 className="text-sm font-semibold text-white truncate">📚 {viewedSkill.name}</h3>
-                    <button
-                      onClick={() => setViewedSkill(null)}
-                      aria-label="Close skill viewer"
-                      title="Close"
-                      className="shrink-0 -mr-1.5 flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
-                    >
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                    </button>
-                  </div>
-                  <pre className="flex-1 overflow-auto p-4 text-[11px] leading-relaxed text-gray-300 whitespace-pre-wrap font-mono" data-selectable>{viewedSkill.content}</pre>
-                </div>
-              </div>
-            )}
+            <SkillViewer skill={skillStore.viewed} onClose={skillStore.closeView} />
 
             </div>{/* /left info group */}
 
@@ -4227,16 +4159,11 @@ function VoiceRoomInner({
             <div className="hidden sm:flex items-center gap-1.5">
               <AgentsPopover agents={namedAgents} roles={agentRoles} activity={backgroundFlows} disabled={!agentConnected}
                 yours={userAgentRows}
-                onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} onSetAgentEnabled={handleSetAgentEnabled} />
+                onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} onSetAgentEnabled={handleSetAgentEnabled} getPrompt={getAgentPrompt} />
 
               <SkillsPopover
                 disabled={!agentConnected}
-                skills={skills}
-                onAddSkill={handleAddSkill}
-                onViewSkill={handleViewSkill}
-                onRemoveSkill={handleRemoveSkill}
-                onInstallFromCatalog={handleInstallFromCatalog}
-                onForkSkill={handleForkSkill}
+                store={skillStore}
                 showAddSkill={showAddSkill}
                 setShowAddSkill={setShowAddSkill}
                 newSkillName={newSkillName}
@@ -5028,16 +4955,11 @@ function VoiceRoomInner({
           standard viewport-anchored mobile popovers. */}
       <AgentsPopover agents={namedAgents} roles={agentRoles} activity={backgroundFlows} disabled={!agentConnected}
         yours={userAgentRows}
-        onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} onSetAgentEnabled={handleSetAgentEnabled}
+        onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent} onSetAgentEnabled={handleSetAgentEnabled} getPrompt={getAgentPrompt}
         requestOpen={agentsOpenReq} hideTrigger />
       <SkillsPopover
         disabled={!agentConnected}
-        skills={skills}
-        onAddSkill={handleAddSkill}
-        onViewSkill={handleViewSkill}
-        onRemoveSkill={handleRemoveSkill}
-        onInstallFromCatalog={handleInstallFromCatalog}
-        onForkSkill={handleForkSkill}
+        store={skillStore}
         showAddSkill={showAddSkill}
         setShowAddSkill={setShowAddSkill}
         newSkillName={newSkillName}

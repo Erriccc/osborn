@@ -48,8 +48,8 @@ import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
-import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance } from './store-catalog.js'
-import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, storeName, type AgentDef, type Role } from './agent-store.js'
+import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds } from './store-catalog.js'
+import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
@@ -67,7 +67,7 @@ import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
-import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './pushover.js'
+import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
@@ -138,6 +138,14 @@ function buildToolLogEvent(
   return ev
 }
 
+// The reply each chat store request waits for (VoiceRoom askAgent).
+const STORE_REPLY_TYPES: Record<string, string> = {
+  skill_get: 'skill_content', skill_add: 'skill_add_result', skill_fork: 'skill_fork_result',
+  skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
+}
+// Routes that change the machine's skills (guarded by storeWriteRefused).
+const STORE_WRITE_PATHS = new Set(['/skills/fork', '/skills/remove', '/store/install'])
+
 // Skills shipped with the package (core: maintained by Voice Native).
 const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
 const homeSkillsDir = () => join(homedir(), '.claude', 'skills')
@@ -153,13 +161,12 @@ function loadSkillsList(agentDir: string): SkillListing[] {
     for (const skillName of readdirSync(skillsDir)) {
       const skillFile = join(skillsDir, skillName, 'SKILL.md')
       if (existsSync(skillFile)) {
-        const content = readFileSync(skillFile, 'utf-8')
-        // Extract title from first # heading, or use folder name
-        const titleMatch = content.match(/^#\s+(?:Skill:\s*)?(.+)/m)
+        const { meta, body } = parseFrontMatter(readFileSync(skillFile, 'utf-8'))
+        // Display name: the first # heading (else the folder); description: front matter, else the paragraph after the heading
+        const titleMatch = body.match(/^#\s+(?:Skill:\s*)?(.+)/m)
         const name = titleMatch ? titleMatch[1].trim() : skillName
-        // Extract description from first paragraph after heading
-        const descMatch = content.match(/^#[^\n]+\n+([^\n#]+)/m)
-        const description = descMatch ? descMatch[1].trim() : ''
+        const descMatch = body.match(/^#[^\n]+\n+([^\n#]+)/m)
+        const description = typeof meta.description === 'string' && meta.description ? meta.description : descMatch ? descMatch[1].trim() : ''
         const forkedFrom = skillForkedFrom(skillsDir, skillName)
         const installedFrom = skillProvenance(skillsDir, skillName)
         skills.push({ name, description, folder: skillName, core: core.has(skillName), ...(forkedFrom ? { forkedFrom } : {}), ...(installedFrom ? { installedFrom } : {}) })
@@ -169,6 +176,21 @@ function loadSkillsList(agentDir: string): SkillListing[] {
     console.warn('⚠️ Failed to load skills list:', err)
   }
   return skills
+}
+
+/** Adds, forks or removes a user skill (agent-store.ts rules). The one entry point for the
+ *  chat's skill_* data messages (the connected agent) and Settings' /skills/* routes (no room). */
+function changeSkill(op: 'add' | 'fork' | 'remove', name: unknown, arg?: unknown): { ok: true } | { error: string } {
+  let out: { ok: true } | { error: string }
+  try {
+    out = op === 'add' ? addUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, name, arg)
+      : op === 'fork' ? forkSkill(homeSkillsDir(), PKG_SKILLS_DIR, name, arg)
+      : removeUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, name)
+  } catch (err) {
+    out = { error: err instanceof Error ? err.message : String(err) }
+  }
+  console.log(`📚 skill ${op} ${storeName(name)}: ${'ok' in out ? 'ok' : out.error}`)
+  return out
 }
 
 // Generate a short, user-friendly room code
@@ -399,7 +421,7 @@ function parseDevSubdomainPort(req: { headers: { host?: string; 'fly-replay-src'
 // Route prefixes that belong to the agent itself. The proxy fall-through checks
 // this list FIRST so it never intercepts an agent API path.
 const AGENT_ROUTE_PREFIXES = [
-  '/health', '/sessions', '/skills', '/agents', '/canvas', '/canvas-token',
+  '/health', '/sessions', '/skills', '/agents', '/store', '/canvas', '/canvas-token',
   '/canvas-stream', '/events', '/room-code', '/connect-room', '/leave-room',
   '/report-bug', '/restart', '/tts', '/noise-cancel', '/webhook', '/sessions/export',
   '/sessions/import', '/sessions/manifest',
@@ -624,6 +646,13 @@ function startApiServer(workingDir: string, port: number): void {
     // Authorization is required for /secrets (Bearer OSBORN_SYNC_TOKEN); without it in the
     // allow-list the browser preflight fails and the dashboard can't read/manage keys.
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    // Store writes never answer every site: only an allowed origin (agent-store.ts) is echoed,
+    // so another site's page can neither pass the preflight nor read the reply.
+    if (STORE_WRITE_PATHS.has((req.url || '/').split('?')[0])) {
+      const origin = req.headers.origin
+      if (origin && storeWriteOriginAllowed(origin, osbornFrontendUrl())) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin') }
+      else res.removeHeader('Access-Control-Allow-Origin')
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
@@ -757,23 +786,34 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
-    if (url.pathname === '/skills/content' || url.pathname === '/skills/fork' || url.pathname === '/skills/remove') {
-      // Store actions for the Settings page (no LiveKit connection); same rules
-      // as the skill_get / skill_fork / skill_remove data messages.
+    // Agent & skill store routes: the chat and Settings both use them (through the
+    // authenticated /api/agent proxy in the cloud). JSON in and out.
+    const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+    // Store writes change the machine. Called past the token gate (unauthorized()); the
+    // rules for a machine with no sync token are agent-store.ts storeWriteRefusal.
+    const storeWriteRefused = (): boolean => {
+      const refusal = storeWriteRefusal({
+        hasToken: !!syncToken,
+        publicDeploy: !!process.env.FLY_APP_NAME || !!process.env.OSBORN_PUBLIC_HOST,
+        forwarded: !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host']),
+        host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin,
+        contentType: String(req.headers['content-type'] || ''), frontendUrl: osbornFrontendUrl(),
+      })
+      if (refusal) reply(refusal.status, { error: refusal.error })
+      return !!refusal
+    }
+
+    if (url.pathname === '/skills/content' || (url.pathname.startsWith('/skills/') && STORE_WRITE_PATHS.has(url.pathname))) {
       if (unauthorized()) return
-      const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
-      const name = storeName(url.searchParams.get('name'))
+      const name = url.searchParams.get('name')
       if (req.method === 'GET' && url.pathname === '/skills/content') {
-        const p = join(homeSkillsDir(), name, 'SKILL.md')
-        return name && existsSync(p) ? reply(200, { name, content: readFileSync(p, 'utf-8') }) : reply(404, { error: 'skill not found' })
+        const out = readUserSkill(homeSkillsDir(), name)
+        return reply('error' in out ? 404 : 200, out)
       }
-      if (req.method === 'POST' && url.pathname !== '/skills/content') {
-        const out = url.pathname === '/skills/fork'
-          ? forkSkill(homeSkillsDir(), PKG_SKILLS_DIR, name, url.searchParams.get('to') || '')
-          : removeUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, name)
-        return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
-      }
-      return reply(405, { error: 'method not allowed' })
+      if (req.method !== 'POST' || url.pathname === '/skills/content') return reply(405, { error: 'method not allowed' })
+      if (storeWriteRefused()) return
+      const out = changeSkill(url.pathname === '/skills/fork' ? 'fork' : 'remove', name, url.searchParams.get('to'))
+      return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
     }
 
     if (url.pathname.startsWith('/store/')) {
@@ -781,7 +821,6 @@ function startApiServer(workingDir: string, port: number): void {
       // read here, never by the browser; installs only take entries from the
       // agent's own cached catalog, by id.
       if (unauthorized()) return
-      const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
       try {
         if (req.method === 'GET' && url.pathname === '/store/catalog') {
           const src = url.searchParams.get('source')
@@ -789,7 +828,7 @@ function startApiServer(workingDir: string, port: number): void {
           const entries = caches.flatMap((c) => c.entries)
           const skills = loadSkillsList(homedir())
           const myAgents = (url.searchParams.get('agents') || '').split(',').map(storeName).filter(Boolean).slice(0, 50)
-          const installed = new Set([...skills.map((s) => s.folder), ...myAgents])
+          const installed = installedIds(entries, new Set(skills.map((s) => s.folder)), url.searchParams.getAll('origin').slice(0, 50))
           const signals = [
             ...skills.map((s) => ({ text: `${s.folder} ${s.name} ${s.description}`, reason: `because you use the ${s.folder} skill` })),
             ...myAgents.map((n) => ({ text: n, reason: `because you have the ${n} agent` })),
@@ -807,9 +846,12 @@ function startApiServer(workingDir: string, port: number): void {
         }
         if (req.method === 'GET' && url.pathname === '/store/entry') {
           const found = await findEntry(url.searchParams.get('id') || '')
-          return found ? reply(200, { entry: found.entry, content: found.body }) : reply(404, { error: 'not in the catalog' })
+          if (!found) return reply(404, { error: 'not in the catalog' })
+          // An agent's detail carries the draft it would install as (its starting role included).
+          return reply(200, { entry: found.entry, content: found.body, ...(found.entry.kind === 'agent' ? { draft: agentDraft(found.entry, found.body) } : {}) })
         }
         if (req.method === 'POST' && url.pathname === '/store/install') {
+          if (storeWriteRefused()) return
           const found = await findEntry(url.searchParams.get('id') || '')
           if (!found) return reply(404, { error: 'not in the catalog' })
           if (found.entry.kind === 'agent') return reply(200, { draft: agentDraft(found.entry, found.body) })
@@ -824,11 +866,10 @@ function startApiServer(workingDir: string, port: number): void {
 
     if (req.method === 'GET' && url.pathname === '/agents') {
       // Core sub-agents from claude-llm.ts NAMED_AGENTS (the same object the SDK
-      // query uses), with prompts so the store can show and fork them.
-      const agents = describeAgents(NAMED_AGENTS, null, {}, true)
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
-      res.end(JSON.stringify({ agents, ...describeRoles() }))
-      return
+      // query uses), with prompts so the store can show and fork them — so gated
+      // like the other store routes (the chat and Settings go through /api/agent).
+      if (unauthorized()) return
+      return reply(200, { agents: describeAgents(NAMED_AGENTS, null, {}, true), ...describeRoles() })
     }
 
     if (req.method === 'GET' && url.pathname === '/health') {
@@ -2902,12 +2943,20 @@ async function main() {
   // switch/resume) reuse them without waiting for a frontend resend. Added
   // beside the core NAMED_AGENTS, which they can never override or remove.
   let userNamedAgents: Record<string, AgentDef> | null = null
-  let userAgentForks: Record<string, string> = {}
   let userAgentRoles: Record<string, Role> = {}
-  const loggedIgnoredAgents = new Set<string>()
+  let userAgentOrigins: Record<string, string> = {}
+  const loggedDroppedAgents = new Set<string>()
   // Turbo mode — read from set_agents handshake (data.turbo). When true every
   // agent (main + sub-agents) runs on FAST_MODEL. Default false = perfect no-op.
   let turboMode = false
+  // The per-user agents for the voice session's LLMs (direct, pipeline and recovery),
+  // so a session switch or rebuild keeps them (headless background slots run the built-ins). applyTurbo runs after the
+  // merge so custom models are overridden too. With no custom agents, undefined lets
+  // ClaudeLLM use NAMED_AGENTS directly (turbo then applies inside ClaudeLLMStream).
+  const userAgentOptions = () => ({
+    agents: userNamedAgents ? applyTurbo(mergeAgents<any>(NAMED_AGENTS, userNamedAgents), turboMode) : undefined,
+    agentRoles: userAgentRoles,
+  })
 
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
   // While set (Date.now() < value), the agent's streaming tts_say output is
@@ -4164,10 +4213,12 @@ async function main() {
     } catch {}
   })
 
-  async function sendToFrontend(data: object) {
+  /** Publishes to the frontend (to one participant when `to` is given). Resolves false
+   *  when nothing was sent (no room, over the hard size cap, or a publish error). */
+  async function sendToFrontend(data: object, to?: string): Promise<boolean> {
     if (!localParticipant) {
       console.log('⚠️ sendToFrontend: no localParticipant!')
-      return
+      return false
     }
     try {
       const encoder = new TextEncoder()
@@ -4202,16 +4253,19 @@ async function main() {
       const payload = encoder.encode(jsonData)
       if (payload.length > HARD_MAX_MESSAGE_SIZE) {
         console.error(`❌ sendToFrontend: dropping message (${(payload.length / 1024).toFixed(0)}KB > ${(HARD_MAX_MESSAGE_SIZE / 1024).toFixed(0)}KB hard limit) — type: ${(data as any).type}`)
-        return
+        return false
       }
 
       await localParticipant.publishData(payload, {
         reliable: true,
         topic: 'osborn-updates',
+        ...(to ? { destinationIdentities: [to] } : {}),
       })
       console.log(`📤 Sent to frontend: ${(data as any).type} (${payload.length} bytes)`)
+      return true
     } catch (err) {
       console.error('❌ sendToFrontend error:', err)
+      return false
     }
   }
 
@@ -4320,14 +4374,7 @@ async function main() {
       voiceMode: 'direct',
       skipTTSQueue: true,
       onCompactionEvent: buildOnCompactionEvent(),
-      // Per-user named agents survive LLM recreations (session switch/resume).
-      // applyTurbo runs post-merge so custom models are also overridden when turbo is on.
-      // When neither custom agents nor turbo are active, pass undefined so the
-      // ClaudeLLM cold-start uses NAMED_AGENTS directly (the ?? NAMED_AGENTS path).
-      // When turbo IS on with no custom agents, undefined would skip the override —
-      // ClaudeLLM handles that internally via the turbo bypass in ClaudeLLMStream.
-      agents: userNamedAgents ? applyTurbo(mergeAgents<any>(NAMED_AGENTS, userNamedAgents), turboMode) : undefined,
-      agentRoles: userAgentRoles,
+      ...userAgentOptions(),
     })
     // Apply turbo to the freshly created LLM so the main model also picks it up.
     // PipelineDirectLLM (llmOverride path) wraps its own ClaudeLLM and may not expose setTurbo.
@@ -5344,6 +5391,7 @@ async function main() {
         resumeSessionId,
         voiceMode: 'direct',
         skipTTSQueue: true,
+        ...userAgentOptions(),
         // PipelineDirectOptions extends ClaudeLLMOptions; passing this through
         // forwards it into the inner `new ClaudeLLM(opts)`. Without this,
         // pipeline mode silently drops every PreCompact/PostCompact event
@@ -5846,6 +5894,7 @@ async function main() {
                 resumeSessionId: recoverySessionId,
                 voiceMode: 'direct',
                 skipTTSQueue: true,
+                ...userAgentOptions(),
                 getChatHistory: () => getChatHistory(20).map(t => ({ role: t.role, content: t.text })),
                 getResearchContext: () => {
                   if (activeResearch?.researchLog.length) {
@@ -5980,7 +6029,8 @@ async function main() {
           enabledMcpServers: enabledMcpNames,
           workingDirectory: workingDir,
           skills: loadSkillsList(homedir()),
-          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks, false, userAgentRoles),
+          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles, false, userAgentOrigins),
+          ...describeRoles(),
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -6236,6 +6286,10 @@ async function main() {
       const senderCheck = checkControlSender(String(data.type), participant?.identity, controllingUserIdentity)
       if (!senderCheck.ok) {
         console.warn(`🚫 Dropped ${data.type}: ${senderCheck.reason}`)
+        // A store request waits for its reply (the chat's askAgent): answer the sender now.
+        if (Object.hasOwn(STORE_REPLY_TYPES, data.type) && participant?.identity) {
+          await sendToFrontend({ type: STORE_REPLY_TYPES[data.type], success: false, error: 'Another device controls this session' }, participant.identity)
+        }
         return
       }
 
@@ -6767,9 +6821,6 @@ async function main() {
           skills: loadSkillsList(homedir()),
         })
       }
-      else if (data.type === 'get_agents') {
-        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks, false, userAgentRoles), ...describeRoles() })
-      }
       else if (data.type === 'set_agents') {
         // Per-user named agents from the DB (frontend fetches its user_agents
         // rows and sends them here after agent_ready, and again after edits).
@@ -6777,14 +6828,15 @@ async function main() {
         // constraint: takes effect at the next query cold start — a live
         // subprocess keeps the agents it started with.
         const parsed = parseUserAgents(data.agents, NAMED_AGENTS)
-        for (const n of parsed.ignored) {
-          if (loggedIgnoredAgents.has(n)) continue
-          loggedIgnoredAgents.add(n)
-          console.warn(`🤖 set_agents: '${n}' is a core agent — user row ignored (fork it under a new name)`)
+        for (const d of parsed.dropped) {
+          const key = `${d.name}: ${d.reason}`
+          if (loggedDroppedAgents.has(key)) continue
+          loggedDroppedAgents.add(key)
+          console.warn(`🤖 set_agents: '${d.name}' dropped — ${d.reason}`)
         }
         userNamedAgents = Object.keys(parsed.agents).length ? parsed.agents : null
-        userAgentForks = parsed.forkedFrom
         userAgentRoles = parsed.roles
+        userAgentOrigins = parsed.origins
         // Turbo preference from the frontend (sourced from user_settings DB row).
         turboMode = !!data.turbo
         // applyTurbo wraps AFTER the merge so custom models also get overridden.
@@ -6792,57 +6844,25 @@ async function main() {
         ;(currentLLM as any)?.setTurbo?.(turboMode)
         ;(currentLLM as any)?.setAgents?.(userNamedAgents || turboMode ? merged : undefined, userAgentRoles)
         console.log(`🤖 set_agents: ${Object.keys(parsed.agents).length} user agent(s) → effective [${Object.keys(merged).join(', ')}]`)
-        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentForks, false, userAgentRoles), ...describeRoles() })
+        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles, false, userAgentOrigins), ...describeRoles() })
       }
-      else if (data.type === 'skill_add') {
-        const skillName = storeName(data.name)
-        const skillContent = (data.content as string || '').trim()
-        const skillDir = join(homeSkillsDir(), skillName)
-        const isCore = coreSkillNames(PKG_SKILLS_DIR).has(skillName)
-        if (!skillName || !skillContent) {
-          await sendToFrontend({ type: 'skill_add_result', success: false, error: 'Name and content are required' })
-        } else if (isCore && existsSync(join(skillDir, 'SKILL.md'))) {
-          await sendToFrontend({ type: 'skill_add_result', success: false, error: `${skillName} is a built-in skill — fork it under a new name` })
-        } else {
-          try {
-            // A built-in name (the panel's official catalog install) gets the shipped copy, never the sent content.
-            if (isCore) cpSync(join(PKG_SKILLS_DIR, skillName), skillDir, { recursive: true })
-            else { mkdirSync(skillDir, { recursive: true }); writeFileSync(join(skillDir, 'SKILL.md'), skillContent, 'utf-8') }
-            console.log(`📚 Skill added: ${skillName}`)
-            const skills = loadSkillsList(homedir())
-            await sendToFrontend({ type: 'skill_add_result', success: true, skills })
-          } catch (err) {
-            console.error('❌ Failed to add skill:', err)
-            await sendToFrontend({ type: 'skill_add_result', success: false, error: String(err) })
-          }
-        }
-      }
+      // The chat's skill actions go to the agent it is connected to (LAN, tunnel or cloud);
+      // Settings, which has no room, uses the /skills/* routes. Both call changeSkill.
       else if (data.type === 'skill_get') {
-        const folder = (data.name as string || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
-        const p = join(homedir(), '.claude', 'skills', folder, 'SKILL.md')
-        if (folder && existsSync(p)) {
-          await sendToFrontend({ type: 'skill_content', name: folder, content: readFileSync(p, 'utf-8') })
-        } else {
-          await sendToFrontend({ type: 'skill_content', name: folder, error: 'skill not found' })
-        }
+        const out = readUserSkill(homeSkillsDir(), data.name)
+        await sendToFrontend({ type: STORE_REPLY_TYPES.skill_get, ...('error' in out ? { name: storeName(data.name), error: out.error } : out) })
       }
-      else if (data.type === 'skill_remove') {
-        try {
-          const out = removeUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, data.name)
-          if ('ok' in out) console.log(`🗑️ Skill removed: ${storeName(data.name)}`)
-          await sendToFrontend({ type: 'skill_remove_result', success: 'ok' in out, ...('error' in out ? { error: out.error } : {}), skills: loadSkillsList(homedir()) })
-        } catch (err) {
-          await sendToFrontend({ type: 'skill_remove_result', success: false, error: String(err) })
-        }
+      else if (data.type === 'skill_add' || data.type === 'skill_fork' || data.type === 'skill_remove') {
+        const op = data.type === 'skill_add' ? 'add' : data.type === 'skill_fork' ? 'fork' : 'remove'
+        const out = changeSkill(op, data.name, op === 'add' ? data.content : data.to)
+        const result = { type: STORE_REPLY_TYPES[data.type], success: 'ok' in out, ...('error' in out ? { error: out.error } : {}) }
+        // A skill list over the data-channel cap is dropped: the result still goes out without it.
+        if (!await sendToFrontend({ ...result, skills: loadSkillsList(homedir()) })) await sendToFrontend(result)
       }
-      else if (data.type === 'skill_fork') {
-        try {
-          const out = forkSkill(homeSkillsDir(), PKG_SKILLS_DIR, data.name, data.to)
-          if ('ok' in out) console.log(`📚 Skill forked: ${storeName(data.name)} → ${storeName(data.to)}`)
-          await sendToFrontend({ type: 'skill_fork_result', success: 'ok' in out, ...('error' in out ? { error: out.error } : {}), skills: loadSkillsList(homedir()) })
-        } catch (err) {
-          await sendToFrontend({ type: 'skill_fork_result', success: false, error: String(err) })
-        }
+      else if (data.type === 'get_agent_prompt') {
+        // A built-in agent's prompt for View / Fork in the chat (the listing never carries prompts).
+        const name = String(data.name || '')
+        await sendToFrontend({ type: STORE_REPLY_TYPES.get_agent_prompt, name, prompt: coreRole(name, NAMED_AGENTS) ? (NAMED_AGENTS as Record<string, { prompt: string }>)[name].prompt : null })
       }
       // Noise cancellation (noise gate) — UI toggle. Meeting chunks auto-engage
       // it pipeline-side; this is the explicit button next to mute.
@@ -6917,9 +6937,8 @@ async function main() {
               // was showing). speakIntoMeeting routes voice→output_audio +
               // caption→canvas (no audio), so no double-audio. The canvas page's
               // OWN Web Audio is NOT used for voice (it's suspended headless).
-              const frontendUrl = (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/$/, '')
               const canvasUrl = /^https:\/\//.test(webhookBase)
-                ? `${frontendUrl}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
+                ? `${osbornFrontendUrl()}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
                 : undefined
               const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || canvasUrl
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { castUrl })
@@ -6930,7 +6949,7 @@ async function main() {
 
               // Phase B — point the addressable roster at the REAL effective
               // agent set (core agents plus per-user agents),
-              // same effective set get_agents/set_agents compute, with the
+              // same effective set set_agents computes, with the
               // orchestrator ('osborn') first. Flag-gated: a no-op (no roster
               // change, no emit) when OSBORN_MEETING_ADDRESSING is unset.
               if (meetingAddressing.enabled) {

@@ -12,6 +12,7 @@
  */
 
 import { recordView, estimateTokens, type DbRecord } from './lens-db.js'
+import { STOPWORDS } from '../stopwords.js'
 
 export type StopReason = 'topic-shift' | 'soft-limit:compaction' | 'soft-limit:time-gap' | 'cap' | 'session-edge'
 
@@ -46,14 +47,12 @@ export interface ClipWindow {
   blocks: { side: 'before' | 'after'; firstRowId: number; lastRowId: number; score: number; kept: boolean }[]
 }
 
-const STOP = new Set(
-  ('the and for that this with you your are was were have has had not but just like what when then them they there ' +
-    'their about from into would could should will can its it\'s i\'m don\'t that\'s okay yeah yes so um uh know ' +
-    'mean really actually basically right going gonna wanna want need let\'s lets thing things also well even still ' +
-    'here more some only very much make made does did doing done been being which where while because since each ' +
-    'other than over our out all any one two who how why way get got see say said sure think now back time ' +
-    'kind sort something maybe stuff look looks good same work working').split(/\s+/),
-)
+// Shared English stopwords plus what speech transcripts are full of (fillers, contractions, vague nouns).
+const STOP = new Set([
+  ...STOPWORDS,
+  ...("it's i'm don't that's okay yeah yes um uh know mean really actually basically right going gonna wanna let's lets " +
+    'thing things sure think time kind sort something maybe stuff look looks good same work working').split(/\s+/),
+])
 
 /** Lower-cased content terms (3+ chars, no stopwords). Keeps tokens like x-forwarded-host, 1006, 0.9.153. */
 export function terms(text: string): Set<string> {

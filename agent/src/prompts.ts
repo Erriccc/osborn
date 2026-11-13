@@ -487,6 +487,12 @@ export function getStewardPrompt(): string {
   return readFileSync(join(PROMPTS_FILE_DIR, 'steward.md'), 'utf-8').replaceAll('${SIGNOFF_COMMAND}', SIGNOFF_COMMAND)
 }
 
+/** Pushed to the orchestrator when an agent with a verifier chain finishes
+ *  (prompts/chain-after-<role>.md; {{agent}} = the agent that finished, a fork included). */
+export function getChainReminder(role: string, agent: string = role): string | null {
+  try { return readFileSync(join(PROMPTS_FILE_DIR, `chain-after-${role}.md`), 'utf-8').trim().replaceAll('{{agent}}', agent) || null } catch { return null }
+}
+
 export function getDirectModeResearchPrompt(workspacePath: string | null): string {
   // Read the prompt body from a co-located markdown file at every call.
   // This makes hot-reloading the prompt as simple as: edit the .md file, reconnect the

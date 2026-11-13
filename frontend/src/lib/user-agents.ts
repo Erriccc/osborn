@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { isSupabaseConfigured } from './supabase'
 import { createSupabaseBrowser } from './supabase-browser'
+import { agentName } from './agent-name'
 
 // The signed-in user's own agents (Supabase user_agents). Built-in agents are
 // never stored here: they are core and locked, and a fork is a new row whose
@@ -14,14 +15,14 @@ export interface UserAgentDraft {
   model: string
   tools: string[]
   forked_from?: string | null
-  /** Null = inherit the parent's role or infer it from the tools (agent-store.ts). */
-  role?: string | null
+  /** What the agent may do (agent-store.ts ROLES). Always saved: a new agent starts as reader, a catalog draft from its tools, a fork from its parent. */
+  role: string
 }
 export interface UserAgentRow extends UserAgentDraft {
   enabled: boolean
 }
 
-export const agentName = (raw: string) => raw.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+export { agentName }
 
 /** rows is null until loaded, and stays null for guests (no store). */
 export function useUserAgents() {
@@ -49,8 +50,7 @@ export function useUserAgents() {
       const row = {
         name, description: a.description.trim(), prompt: a.prompt.trim(), model: a.model, tools: a.tools.map((t) => t.trim()).filter(Boolean),
         ...(a.forked_from ? { forked_from: a.forked_from } : {}),
-        // Omitted unless set or cleared, so a database without migration 016 still saves.
-        ...(a.role !== undefined ? { role: a.role || null } : {}),
+        role: a.role,
       }
       return sb.from('user_agents')
         .upsert({ user_id: userId, ...row, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })
