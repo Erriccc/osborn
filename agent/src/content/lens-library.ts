@@ -208,6 +208,11 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
     const p = (res.period = pick.period)
     const key = String(p.startRowId)
     const file = pageFileName(p)
+    // Never overwrite a page this manifest did not write (e.g. a manual backfill page).
+    if (!o.outDir && existsSync(join(dir, file)) && !Object.values(manifest.periods).some(e => e.file === file)) {
+      log(`library: ${file} exists and is not ours — not overwritten`)
+      return { ...res, status: 'already-written' }
+    }
 
     // Period map on exactly this row range, staged first; published only when a map came back.
     mkdirSync(join(dir, STAGING_DIR), { recursive: true })

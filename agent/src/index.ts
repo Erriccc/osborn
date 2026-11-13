@@ -803,7 +803,7 @@ function startApiServer(workingDir: string, port: number): void {
         library: {
           enabled: isContentLensEnabled(),
           modelKey: !!(process.env.OPENROUTER_API_KEY || '').trim(),
-          ingest: (() => { const c = resolveIngestConfig(); return 'reason' in c ? c.reason : 'on' })(),
+          ingest: (() => { const c = resolveIngestConfig(); return 'reason' in c ? (c.reason === 'no-key' ? 'no-anon-key' : c.reason) : 'on' })(),
           lastRun: lastLibraryRun(),
         },
         // WHERE this machine physically runs — Fly sets FLY_REGION (e.g. 'ord').
@@ -2474,9 +2474,10 @@ async function main() {
         const llm = warmLLM as any
         if (typeof llm.abortQuery === 'function') llm.abortQuery()
         else if (typeof llm.abortAgent === 'function') llm.abortAgent()
-        launchLibraryOnSessionEnd(warmSessionId, llm.workingDirectory || workingDir, `warm_${reason}`)
       } catch (err) {
         console.error(`❌ killWarm(${reason}) abort failed:`, err instanceof Error ? err.message : err)
+      } finally {
+        launchLibraryOnSessionEnd(warmSessionId, (warmLLM as any)?.workingDirectory || workingDir, `warm_${reason}`)
       }
     }
     if (warmLLM) console.log(`🧊 [KEEP-WARM] freed warm slot (${reason})`)
@@ -2657,7 +2658,6 @@ async function main() {
     if (!currentLLM) return
     try {
       const llm = currentLLM as any
-      launchLibraryOnSessionEnd(llm.sessionId, llm.workingDirectory || workingDir, reason)
       // NOTE (fast-brain migration): the old summary-index 10s setInterval watcher
       // was retired — fast-brain now reads the recall store (session.db) directly,
       // so there is no per-LLM timer holding the PipelineDirectLLM → ClaudeLLM graph
@@ -2671,6 +2671,8 @@ async function main() {
       }
     } catch (err) {
       console.error(`❌ killCurrentLLM(${reason}) failed:`, err instanceof Error ? err.message : err)
+    } finally {
+      launchLibraryOnSessionEnd((currentLLM as any)?.sessionId, (currentLLM as any)?.workingDirectory || workingDir, reason)
     }
   }
 
