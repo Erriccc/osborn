@@ -186,8 +186,8 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v43
-- **Who you are on the engine:** every request carries `x-driver-id` (your tabs and ownership) and, optionally, `x-profile` (your saved sign-ins). With `drive.sh` set `BSR_DRIVER=<id>` and `BSR_PROFILE=<name>`; with your own HTTP client send the two headers. Two drivers = two different `x-driver-id` values, so multi-driver behaviour (takeover, scoped `/end`, profile isolation) is testable from one machine.
-- **Sign in once:** open your app's login in a tab with your `x-profile`, sign in (a person may need to hand you a one-time code), and that profile stays signed in across engine restarts. Then voice behaviour (`/say`, ears, clips) can be recorded in a real signed-in session.
+- `drive.sh` sends `x-profile` from `BSR_PROFILE=<name>` (as it sends `x-driver-id` from `BSR_DRIVER`). Two different driver ids from one machine make multi-driver behaviour (takeover, scoped `/end`, profile isolation) testable.
+- To record voice (`/say`, ears, clips) in a real signed-in session, sign in once under your profile (see v40); a person may need to hand you a one-time code.
 - **Every issue gets evidence:** paste the `evidence.markdown` from the response; even a desk proposal can attach a `/shot` of the current screen.
 
 ## What's new in v42
