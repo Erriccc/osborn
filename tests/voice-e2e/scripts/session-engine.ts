@@ -401,9 +401,14 @@ async function main() {
       return { clip: null, clipError: 'clip failed — ffmpeg unavailable or too few frames' }
     } catch (e) { return { clip: null, clipError: (e as Error).message } }
   }
+  // Settles with `p`, or rejects with `msg` after `ms` (the timer is always cleared).
+  const withTimeout = <T,>(p: Promise<T>, ms: number, msg: string): Promise<T> => {
+    let t: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error(msg)), ms) })]).finally(() => clearTimeout(t))
+  }
   const reqShot = async (n: number, label: string, page: Page = active): Promise<string | null> => {
     const p = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-${label}.jpg`)
-    try { await page.screenshot({ path: p, type: 'jpeg', quality: 60 }); return p } catch { /* fall back */ }
+    try { await page.screenshot({ path: p, type: 'jpeg', quality: 60, timeout: 5000 }); return p } catch { /* fall back */ }
     // FALLBACK (diag 2026-08-05: page.screenshot fails in headful display mode
     // → artifact:null → /artifact 404s). Use the live x11grab frame so the
     // screenshot field is NEVER null when a stream exists.
@@ -1257,11 +1262,18 @@ async function main() {
           const MAX_SAY_ATTEMPTS = Math.max(1, Number(process.env.OSBORN_SAY_RETRIES ?? 2))
           let sayErr: Error | null = null
           for (let attempt = 1; attempt <= MAX_SAY_ATTEMPTS; attempt++) {
-            try { await speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { playStartMs = Date.now() } }); sayErr = null; break }
+            // Speaking must finish within 35s of the request; a timed-out attempt is
+            // cancelled so it can't play later, and is not retried.
+            let cancelled = false
+            try {
+              await withTimeout(speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { if (cancelled) throw new Error('cancelled'); playStartMs = Date.now() } }),
+                Math.max(1000, tReq + 35000 - Date.now()), 'speaking ran out of time').catch((e) => { cancelled = true; throw e })
+              sayErr = null; break
+            }
             catch (e) {
               sayErr = e as Error
               const m = sayErr.message || ''
-              if (/mic/i.test(m)) break
+              if (/mic|ran out of time/i.test(m)) break
               if (attempt < MAX_SAY_ATTEMPTS) {
                 mark(`say[${driver}] transient fail (attempt ${attempt}/${MAX_SAY_ATTEMPTS}): ${m.slice(0, 60)} — retrying`)
                 await active.waitForTimeout(retryDelayMs(attempt)).catch(() => {})
@@ -1275,9 +1287,11 @@ async function main() {
             try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
             const fn = ++reqN
             const fshot = await reqShot(fn, 'say')
-            stampTask(fn, 'say', t0, null, fshot, body.text)
+            const fw = stampTask(fn, 'say', t0, null, fshot, body.text)
+            timings.speak = Date.now() - tReq; timings.total = timings.speak; (fw as any).timings = timings; writeManifest()
             return json(res, {
               ok: false,
+              timings,
               code: noMic ? 'no_mic' : 'speak_failed',
               error: noMic
                 ? `this page has no open microphone — Say needs a Voice Native /chat tab (open one first). (${msg})`
@@ -1292,9 +1306,9 @@ async function main() {
         const { page, t0, ears, saidWav, playStartMs, n } = spoken
         lap('speak')
         // One deadline for the whole request, under the panel's 90s cut-off (#201).
-        const turnDeadline = tReq + 80000
+        const turnDeadline = tReq + 75000
         {
-          await page.waitForTimeout(body.listenMs ?? 6000).catch(() => {})
+          await page.waitForTimeout(Math.min(Number(body.listenMs) || 6000, 15000)).catch(() => {})
           lap('listen')
           // Cut the clip NOW — speak start to end of the listen window — before
           // the (slow) transcription, so the spoken moment is always in it. It
@@ -1318,14 +1332,14 @@ async function main() {
           lap('decode')
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
           const budget = left(5000)
-          const heard = nothingToHear ? '' : await Promise.race([decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw(),
-            new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)), budget))])
+          const heard = nothingToHear ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw(),
+            budget, `hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           lap('hear')
           if (!range) clipError = live ? 'clip failed — too few frames or ffmpeg unavailable' : 'live stream unavailable — no clips this session'
           else {
             clip = range.path
-            const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, left(10000)).catch(() => null)
+            const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, left(3000)).catch(() => null)
             if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
             mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
           }
@@ -1341,9 +1355,9 @@ async function main() {
             : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say', page)
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard, page)
-          ;(window as any).clipAudio = audio; writeManifest()
-          addStep('say', String(body.text))
           timings.total = Date.now() - tReq
+          ;(window as any).clipAudio = audio; (window as any).timings = timings; writeManifest()
+          addStep('say', String(body.text))
           return json(res, { ok: true, timings, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
