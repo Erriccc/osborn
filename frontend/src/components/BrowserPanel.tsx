@@ -314,7 +314,7 @@ export function BrowserPanel() {
   }
   // Scoped end: closes my tabs and hands back takeovers; the engine stops only when nobody else is working.
   const closeMyTabs = async () => {
-    const r = await post('end', {}, 'close my tabs')
+    const r = await post('end', { keep: true }, 'close my tabs')
     if (!r) return
     setNote(r.msg ?? 'Closed your tabs')
     if (!r.others) setWatching(false)

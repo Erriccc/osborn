@@ -186,6 +186,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v42
+- `POST /end {"keep": true}` closes your tabs and never stops the engine, even when you are the last driver (the /browser panel's "Close my tabs").
 - Evidence links (`evidence.screenshot`, `.clip`, `.log`, `.markdown`) are always absolute public URLs on the deployed engine, whichever port you called, so they render when pasted into an issue. `https://<engine>/media/…` also works without the `/control` prefix.
 
 ## What's new in v41

@@ -1706,7 +1706,7 @@ async function main() {
         const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
         const working = [...driverActive.keys()].filter((d) => d !== driver && isWorking(d))
         const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
-        if (others.length && body.shutdown !== true) {
+        if ((others.length || body.keep === true) && body.shutdown !== true) {  // keep: close my tabs, never stop the engine
           const done = await withLock(async () => {
             let closed = 0, handedBack = 0
             for (const [i, p] of allPages().entries()) {
@@ -1726,7 +1726,7 @@ async function main() {
           })
           void saveProfiles()
           mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
-          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running for ${others.join(', ')} — pass {"shutdown": true} to stop it anyway`, ...done, others })
+          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running${others.length ? ` for ${others.join(', ')}` : ''} — pass {"shutdown": true} to stop it`, ...done, others })
         }
         json(res, { ok: true, msg: 'shutting down' })
         void gracefulEnd('end requested')
