@@ -2397,6 +2397,7 @@ function VoiceRoomInner({
             sessionMessagesQuery(data.sessionId, data.workingDirectory, 50),
             Array.isArray(data.conversationHistory) ? data.conversationHistory : [],
           )
+          if (data.forced) addMessageRef.current?.('system', 'The previous session was stopped mid-step to switch.')
         } else {
           addMessageRef.current?.('system', `❌ ${switchFailureText(data)}`)
         }
