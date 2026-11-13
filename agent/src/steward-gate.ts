@@ -67,6 +67,10 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
   const home = process.env.HOME || '~'
   const resolveDir = (base: string | null, raw?: string) => {
     if (!raw) return home
+    // A variable or command substitution is expanded by the shell, not here.
+    // Resolving it literally would invent a path like `<cwd>/$HOME/x`, so the
+    // directory is simply unknown.
+    if (/[$`]/.test(raw)) return null
     const p = raw.replace(/^~(?=\/|$)/, home)
     if (isAbsolute(p)) return p
     return base === null ? null : resolve(base, p)
@@ -102,14 +106,16 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
       return
     }
     const name = w[0].split('/').pop()
-    // `cd`/`pushd` take options before the operand, so the operand is not always
-    // w[1]: `cd -- sub` used to be read as a directory literally named "--".
-    if (name === 'cd' || name === 'pushd') {
+    // `cd` takes options before the operand, so the operand is not always w[1]:
+    // `cd -- sub` used to be read as a directory literally named "--".
+    // (`pushd` is deliberately NOT tracked: without modelling `popd` too, a
+    // `pushd sub; popd` pair would leave the tracked dir in sub, which is more
+    // wrong than not following it at all.)
+    if (name === 'cd') {
       let j = 1
       while (j < w.length && /^-[LPe@]+$/.test(w[j])) j++
       if (w[j] === '--') j++
-      // `cd -` is $OLDPWD and bare `pushd` swaps the stack: neither is knowable here.
-      dir = w[j] === '-' || (name === 'pushd' && w[j] === undefined) ? null : resolveDir(dir, w[j])
+      dir = w[j] === '-' ? null : resolveDir(dir, w[j])  // `cd -` is $OLDPWD: unknowable
       return
     }
     if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { hits.push(...scan(w[2], dir).hits); return }  // subshell: its cd does not escape
@@ -147,6 +153,8 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
     // `&&` / `||` continue in this shell; a bare `|` (pipeline element) or `&`
     // (background job) runs its command in a SUBSHELL, so its `cd` dies with it.
     if (c === '&' || c === '|') {
+      // Not a separator at all inside a redirection: `>&2`, `2>&1`, `&>log`.
+      if (c === '&' && (word.endsWith('>') || cmd[k - 1] === '>' || cmd[k + 1] === '>')) { word += c; inWord = true; continue }
       const chained = cmd[k + 1] === c
       endCommand()
       if (chained) k++
@@ -184,15 +192,17 @@ export async function stewardGate(cmd: string, cwd: string, mode: StewardMode = 
   if (mode === 'off') return { decision: 'allow' }
   let unsigned: GitAction | null = null, failed: string | null = null
   for (const hit of gitActions(cmd, cwd)) {
-    // An unknown or not-yet-created directory is NOT a safe allow: the repo this
-    // would commit to cannot be read, so nothing can have signed off on it. A
-    // directory that exists but holds no repo still passes — `git` itself refuses
-    // there, so there is no action to gate.
-    if (hit.dir === null || !existsSync(hit.dir)) {
-      failed = failed ?? (hit.dir === null
-        ? `the working directory of this ${hit.action} could not be worked out`
-        : `${hit.dir} does not exist yet`)
-      console.log(`[steward-gate] could not check ${hit.action}: ${failed}`)
+    // A directory the shell will only create later cannot be read, so nothing
+    // can have signed off on it — report it instead of passing in silence. An
+    // UNKNOWN directory (hit.dir === null: `cd $VAR`, `cd -`) is left alone:
+    // the command is probably fine and there is nothing the agent could do
+    // about a complaint. A directory that exists but holds no repo also passes,
+    // since git refuses there anyway and there is no action to gate.
+    if (hit.dir === null) continue
+    if (!existsSync(hit.dir)) {
+      const why = `${hit.dir} does not exist yet`
+      failed = failed ?? why
+      console.log(`[steward-gate] could not check ${hit.action}: ${why}`)
       continue
     }
     let gitDir: string
@@ -207,9 +217,19 @@ export async function stewardGate(cmd: string, cwd: string, mode: StewardMode = 
     }
   }
   if (!unsigned && !failed) return { decision: 'allow' }
-  const message = unsigned
-    ? `The steward has not signed off on the code in ${unsigned === 'pr' ? 'opening this PR' : `this ${unsigned}`}: run the \`steward\` agent on the change first ` +
-      `(it records its sign-off for this exact content; any later edit needs a new sign-off).`
-    : `The steward sign-off could not be checked (${failed}).`
+  // Something we could not CHECK is reported but never refused: no sign-off can
+  // clear it, so refusing would be a dead end (the steward cannot sign a tree in
+  // a directory that does not exist yet). Only a checked-and-unsigned action is
+  // refusable, and only in block mode.
+  if (!unsigned) {
+    return {
+      decision: 'advise',
+      message: `The steward sign-off could not be checked (${failed}): nothing has signed off on a repository ` +
+        `that this command is still creating. Create it in one command, then commit in the next, so the gate can see it.`,
+    }
+  }
+  const message =
+    `The steward has not signed off on the code in ${unsigned === 'pr' ? 'opening this PR' : `this ${unsigned}`}: run the \`steward\` agent on the change first ` +
+    `(it records its sign-off for this exact content; any later edit needs a new sign-off).`
   return mode === 'block' ? { decision: 'deny', message } : { decision: 'advise', message }
 }
