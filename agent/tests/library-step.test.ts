@@ -17,7 +17,7 @@ process.env.OSBORN_LENS_DENYLIST = deny
 process.env.OPENROUTER_API_KEY = 'dummy-not-a-key'
 delete process.env.OSBORN_CONTENT_LENS
 delete process.env.OSBORN_CONTENT_LENS_MODEL
-delete process.env.OSBORN_LIBRARY_MIN_PERIOD_H
+process.env.OSBORN_LIBRARY_MIN_PERIOD_H = '4' // fixtures are built on 4h periods; the default is now 1h
 delete process.env.OSBORN_SYNC_TOKEN // cloud ingest is covered by library-ingest.test.ts; keep this file offline
 
 const { segmentPeriods, pickLibraryPeriod, pageFileName } = await import('../src/content/lens-library-select.js')
@@ -86,7 +86,7 @@ const pages = () => (existsSync(libDir) ? readdirSync(libDir).filter(f => /-peri
 
 // ── boundary selection (pure) ──
 await t('segment: closes at a seam only once the group spans >= 4h; seam clusters merge forward', () => {
-  const s = segmentPeriods(stamps(), [5, 7, 11])
+  const s = segmentPeriods(stamps(), [5, 7, 11], 4 * H)
   assert.deepEqual(s.closed.map(p => [p.index, p.startRowId, p.endRowId, p.closedBy]), [[1, 1, 4, 5], [2, 5, 10, 11]])
   assert.deepEqual([s.tail?.index, s.tail?.startRowId, s.tail?.endRowId, s.tail?.closedBy], [3, 11, 12, null])
 })
@@ -102,14 +102,21 @@ await t('segment: no seams → whole session is the tail (first compaction); emp
   assert.deepEqual(segmentPeriods([], [3]), { closed: [], tail: null })
 })
 await t('pick: short tail → last seam-closed period; long tail → tail; done → deferred / already-written', () => {
-  const s = segmentPeriods(stamps(), [5, 7, 11])
-  const a = pickLibraryPeriod(s, () => false)
+  const s = segmentPeriods(stamps(), [5, 7, 11], 4 * H)
+  const a = pickLibraryPeriod(s, () => false, 4 * H)
   assert.equal(a.reason, 'last-closed'); assert.equal(a.period?.startRowId, 5)
-  assert.equal(pickLibraryPeriod(s, k => k === 5).reason, 'deferred')
-  const long = segmentPeriods([...stamps(), { id: 13, timestamp: iso(17) }], [5, 7, 11])
-  const b = pickLibraryPeriod(long, () => false)
+  assert.equal(pickLibraryPeriod(s, k => k === 5, 4 * H).reason, 'deferred')
+  const long = segmentPeriods([...stamps(), { id: 13, timestamp: iso(17) }], [5, 7, 11], 4 * H)
+  const b = pickLibraryPeriod(long, () => false, 4 * H)
   assert.equal(b.reason, 'tail'); assert.equal(b.period?.startRowId, 11)
-  assert.equal(pickLibraryPeriod(long, () => true).reason, 'already-written')
+  assert.equal(pickLibraryPeriod(long, () => true, 4 * H).reason, 'already-written')
+})
+await t('daily run: a written tail closes its period, so the next run picks up after it (no compaction)', () => {
+  const rows = [{ id: 1, timestamp: iso(0) }, { id: 2, timestamp: iso(1.5) }, { id: 3, timestamp: iso(2) }, { id: 4, timestamp: iso(3.5) }]
+  const first = pickLibraryPeriod(segmentPeriods(rows.slice(0, 2), [], H), () => false, H)
+  assert.equal(first.reason, 'tail'); assert.equal(first.period?.endRowId, 2)
+  const next = pickLibraryPeriod(segmentPeriods(rows, [first.period!.endRowId + 1], H), (k) => k === 1, H)
+  assert.equal(next.reason, 'tail'); assert.equal(next.period?.startRowId, 3)
 })
 await t('pageFileName: <start date>-period-<NN>.md (backfill scheme)', () => {
   assert.equal(pageFileName({ index: 2, fromTs: '2026-08-23T03:09:52.058Z' }), '2026-08-23-period-02.md')

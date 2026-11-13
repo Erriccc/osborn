@@ -23,7 +23,7 @@ import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { runPeriodMap } from './period-run.js'
-import { DEFAULT_MIN_SPAN_MS, pageFileName, pickLibraryPeriod, segmentPeriods, type LibraryPeriod } from './lens-library-select.js'
+import { pageFileName, pickLibraryPeriod, segmentPeriods, type LibraryPeriod } from './lens-library-select.js'
 import { rebuildIndex } from './lens-library-index.js'
 import { contentHashFor, ingestPage, needsIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 
@@ -157,6 +157,9 @@ const envNum = (k: string): number | undefined => {
 }
 
 /** Run the library step once. Never throws. */
+// Library pages need a period of at least an hour (the content step keeps DEFAULT_MIN_SPAN_MS, 4h).
+export const LIBRARY_MIN_SPAN_MS = 3_600_000
+
 export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStepResult> {
   const log = o.log ?? (() => {})
   const res: LibraryStepResult = { status: 'failed', libraryDir: null, period: null, page: null, index: null, costUsd: 0, errors: [] }
@@ -169,13 +172,16 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
     if (!db) return { ...res, status: 'no-db' }
     const projectDir = dirname(dirname(dirname(db)))
     const envH = envNum('OSBORN_LIBRARY_MIN_PERIOD_H')
-    const minSpan = o.minSpanMs ?? (envH ? envH * 3_600_000 : DEFAULT_MIN_SPAN_MS)
+    const minSpan = o.minSpanMs ?? (envH ? envH * 3_600_000 : LIBRARY_MIN_SPAN_MS)
     const dir = (res.libraryDir = o.outDir ?? libraryDirFor(db, o.sessionId))
 
     // Segment the whole session at its compaction seams (ids + timestamps only).
     const rows = loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
-    const seg = segmentPeriods(rows, readCompactionBoundaries(db), minSpan)
     const manifest = readManifest(dir, o.sessionId)
+    // A written page also closes its period: without a compaction the tail would keep its
+    // start row and never be written again.
+    const written = Object.values(manifest.periods).filter(e => e.status === 'ok').map(e => e.endRowId + 1)
+    const seg = segmentPeriods(rows, [...readCompactionBoundaries(db), ...written], minSpan)
     const pick = pickLibraryPeriod(seg, start => manifest.periods[String(start)]?.status === 'ok', minSpan)
     log(`library: ${seg.closed.length} closed period(s), tail ${seg.tail ? `#${seg.tail.startRowId}–#${seg.tail.endRowId} (${(seg.tail.spanMs / 3_600_000).toFixed(1)}h)` : 'none'} → ${pick.reason}`)
     const red = loadClientRedactor(projectDir)

@@ -55,6 +55,7 @@ import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationIt
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
+import { launchLibraryOnSessionEnd, libraryStatus } from './content/lens-launch.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
 import { readStewardVerdicts } from './steward-verdict.js'
@@ -797,6 +798,7 @@ function startApiServer(workingDir: string, port: number): void {
         status: 'ok',
         workingDir,
         version,
+        library: libraryStatus(),
         // WHERE this machine physically runs — Fly sets FLY_REGION (e.g. 'ord').
         // The dashboard maps it to a city ("Chicago") so the user always knows
         // the machine's location, not just their own clock. Null in local dev.
@@ -2641,6 +2643,7 @@ async function main() {
     if (!currentLLM) return
     try {
       const llm = currentLLM as any
+      launchLibraryOnSessionEnd(llm.sessionId, llm.workingDirectory || workingDir, reason)
       // NOTE (fast-brain migration): the old summary-index 10s setInterval watcher
       // was retired — fast-brain now reads the recall store (session.db) directly,
       // so there is no per-LLM timer holding the PipelineDirectLLM → ClaudeLLM graph
@@ -3951,6 +3954,7 @@ async function main() {
       }
 
       // 4. Close the old query (idle, or forced) and clear its resume state.
+      launchLibraryOnSessionEnd((currentLLM as any).sessionId, workingDir, 'session_switch')
       currentLLM.resetForSessionSwitch()
 
       // 5. Cross-project: the SDK cwd, fast brain and session tail move together.
