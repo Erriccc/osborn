@@ -38,7 +38,16 @@ type Hit = { action: GitAction; dir: string }
 // Words that can precede a command: keywords, wrappers, and wrappers' options.
 const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout',
   'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}'])
-const TAKES_ARG = new Set(['-u', '-g', '-h', '-p', '-U', '-C', '-D', '-r', '-t', '-n', '-s', '-k', '--signal'])  // sudo/nice/timeout/xargs
+// Options that take a value, per wrapper: a shared list let `time -p` swallow the command word.
+const TAKES_ARG: Record<string, Set<string>> = {
+  sudo: new Set(['-u', '-g', '-h', '-p', '-U', '-C', '-D', '-r', '-t', '-T']),
+  timeout: new Set(['-s', '-k', '--signal', '--kill-after']),
+  nice: new Set(['-n', '--adjustment']),
+  xargs: new Set(['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s', '--arg-file', '--delimiter', '--eof', '--max-lines', '--max-procs', '--max-args', '--max-chars']),
+  time: new Set(['-f', '-o', '--format', '--output']),
+  env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
+  exec: new Set(['-a']),
+}
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash'])
 
 export function gitActions(cmd: string, cwd: string): Hit[] {
@@ -56,14 +65,17 @@ export function gitActions(cmd: string, cwd: string): Hit[] {
   const endCommand = () => {
     endWord()
     let w = words; words = []
-    let wrapped = false
+    let wrapper = ''
     while (w.length) {
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0]) || PREFIX.has(w[0])) { wrapped = wrapped || PREFIX.has(w[0]); w = w.slice(1) }
-      else if (wrapped && w[0].startsWith('-')) w = w.slice(TAKES_ARG.has(w[0]) ? 2 : 1)
-      else if (wrapped && /^\d+[smhd]?$/.test(w[0])) w = w.slice(1)  // timeout's duration
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0])) w = w.slice(1)
+      else if (PREFIX.has(w[0])) { wrapper = w[0]; w = w.slice(1) }
+      else if (wrapper && w[0].startsWith('-')) w = w.slice(!w[0].includes('=') && TAKES_ARG[wrapper]?.has(w[0]) ? 2 : 1)
+      else if (wrapper === 'timeout' && /^\d+(\.\d+)?[smhd]?$/.test(w[0])) w = w.slice(1)  // timeout's duration
       else break
     }
     if (!w.length) return
+    // eval runs its arguments as a command in this shell: check them as one.
+    if (w[0] === 'eval') { for (const h of gitActions(w.slice(1).join(' '), dir)) hits.push(h); return }
     const name = w[0].split('/').pop()
     if (name === 'cd') { dir = resolveDir(dir, w[1]); return }
     if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { for (const h of gitActions(w[2], dir)) hits.push(h); return }
