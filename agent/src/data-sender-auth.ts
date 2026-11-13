@@ -15,14 +15,14 @@
  *     user_text, claude_auth_code, permission_response, list_sessions,
  *     resume_session, continue_session, switch_session, session_selected,
  *     cancel_session_switch,
- *     mcp_toggle, set_agents, skill_add, skill_remove, skill_fork, noise_cancel,
+ *     mcp_toggle, set_agents, noise_cancel,
  *     gate_send_anyway, stop_dispatch, join_meeting, leave_meeting,
  *     mute_participant, start_ide, stop_ide, spawn_background_session,
  *     dispatch_background, stop_background_session, list_slots, list_processes,
  *     favorite_changed
  *   Open (read-only, listed in READ_ONLY_MESSAGE_TYPES):
  *     get_current_session, get_session_artifacts, get_plan_file,
- *     get_research_artifact, get_mcp_status, get_skills, get_agents, skill_get
+ *     get_research_artifact, get_mcp_status, get_skills
  * list_sessions / list_slots / list_processes are read-only but return session
  * and process ids that the gated commands (dispatch_background etc.) take as
  * targets, so they are gated too.
@@ -52,9 +52,6 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'session_selected',
   'mcp_toggle',
   'set_agents',
-  'skill_add',
-  'skill_remove',
-  'skill_fork',
   'noise_cancel',
   'gate_send_anyway',
   'stop_dispatch',
@@ -80,8 +77,6 @@ export const READ_ONLY_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'get_research_artifact',
   'get_mcp_status',
   'get_skills',
-  'get_agents',
-  'skill_get',
 ])
 
 /** Identity prefix /api/token gives every user participant. */

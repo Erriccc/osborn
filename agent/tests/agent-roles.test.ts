@@ -85,7 +85,7 @@ assert.ok(!ROLES.reviewer.chain && !ROLES.tester.chain && !ROLES.steward.chain, 
 const meta = describeRoles()
 assert.deepEqual(meta.chains, [['researcher', 'reasoner'], ['planner', 'steward', 'writer'], ['writer', 'tester', 'steward', 'reviewer']])
 assert.ok(meta.roles.find((x) => x.role === 'writer')!.behaviours.every((b) => !/skills without asking/.test(b)), 'the role picker describes user agents')
-assert.ok(meta.models.includes('inherit') && meta.limits.prompt > 0 && meta.editTools.includes('Edit'))
+assert.ok(meta.models.includes('inherit') && meta.limits.prompt > 0)
 
 const listing = Object.fromEntries(describeAgents(NAMED_AGENTS, parsed.agents, parsed.roles).map((a) => [a.name, a]))
 assert.equal(listing.writer.role, 'writer')

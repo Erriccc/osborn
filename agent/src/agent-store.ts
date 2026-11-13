@@ -134,7 +134,6 @@ export const describeRoles = () => ({
   chains: ROLE_NAMES.filter((r) => ROLES[r].chain).map((r) => [r, ...ROLES[r].chain!]),
   models: AGENT_MODELS,
   limits: AGENT_LIMITS,
-  editTools: [...EDIT_TOOLS],
 })
 
 export const storeName = (raw: unknown): string =>

@@ -32,10 +32,9 @@ export interface RolesData {
   chains: string[][]
   models: string[]
   limits: { name: number; description: number; prompt: number }
-  editTools: string[]
 }
 export const rolesData = (d: any): RolesData | null =>
-  Array.isArray(d?.roles) && d.limits ?{ roles: d.roles, chains: d.chains || [], models: d.models || [], limits: d.limits, editTools: d.editTools || [] } : null
+  Array.isArray(d?.roles) && d.limits ?{ roles: d.roles, chains: d.chains || [], models: d.models || [], limits: d.limits } : null
 
 /** Where an installed catalog agent came from: 'source:owner/repo@sha/path' → 'owner/repo @sha7'. */
 const originLabel = (from: string) => {
@@ -141,7 +140,7 @@ function AgentCard({ icon, title, badges, actions, model, tools, text, textTitle
   )
 }
 
-type Editing = { draft: UserAgentDraft; isNew: boolean; autoRole: boolean }
+type Editing = { draft: UserAgentDraft; isNew: boolean }
 
 export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, status, progress, getPrompt, roles, browseHref }: {
   /** Agents reported by the machine; the core ones fill "Built in". */
@@ -181,7 +180,6 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   }
 
   const limits = roles?.limits
-  const draftRole = (tools: string[]) => (tools.some((t) => roles?.editTools.includes(t.trim())) ? 'writer' : 'reader')
   const roleInfo = (role: string) => roles?.roles.find((r) => r.role === role)
   const canEdit = !!(onSave && yours && roles)
 
@@ -190,7 +188,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
     if (prompt == null) { setSaveError(`Could not load the ${a.name} prompt from your machine.`); return }
     setSaveError(null)
     setEditing({
-      isNew: true, autoRole: false,
+      isNew: true,
       draft: { name: uniqueName(`my-${a.name}`, taken, limits?.name), description: a.description.slice(0, limits?.description), prompt, model: a.model || 'inherit', tools: a.tools || [], forked_from: a.name, role: a.role },
     })
   }
@@ -204,8 +202,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   const canSave = !!d && !!limits && !nameError && !!d.description.trim() && d.description.length <= limits.description && !!d.prompt.trim() && d.prompt.length <= limits.prompt
   const set = (patch: Partial<UserAgentDraft>) => editing && setEditing({
     ...editing,
-    autoRole: editing.autoRole && !('role' in patch),
-    draft: { ...editing.draft, ...patch, ...(editing.autoRole && patch.tools && !('role' in patch) ? { role: draftRole(patch.tools) } : {}) },
+    draft: { ...editing.draft, ...patch },
   })
 
   return (
@@ -246,7 +243,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
         <div className="flex items-center justify-between">
           <h5 className={heading}>Yours</h5>
           {canEdit && (
-            <button className={link} onClick={() => setEditing(editing ? null : { isNew: true, autoRole: true, draft: { name: '', description: '', prompt: '', model: 'inherit', tools: [], role: 'reader' } })}>
+            <button className={link} onClick={() => setEditing(editing ? null : { isNew: true, draft: { name: '', description: '', prompt: '', model: 'inherit', tools: [], role: 'reader' } })}>
               {editing ? 'Cancel' : '+ New agent'}
             </button>
           )}
@@ -300,7 +297,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
                 model={r.model} tools={r.tools} text={r.description} role={r.role} behaviours={role?.behaviours} progress={r.enabled ? progress?.(r.name) : null}
                 actions={<>
                   {onSetEnabled && <button className={link} onClick={() => onSetEnabled(r.name, !r.enabled)}>{r.enabled ? 'Disable' : 'Enable'}</button>}
-                  {canEdit && <button className={link} onClick={() => { setSaveError(null); setEditing({ isNew: false, autoRole: false, draft: { name: r.name, description: r.description, prompt: r.prompt, model: r.model, tools: r.tools || [], forked_from: r.forked_from, role: r.role } }) }}>Edit</button>}
+                  {canEdit && <button className={link} onClick={() => { setSaveError(null); setEditing({ isNew: false, draft: { name: r.name, description: r.description, prompt: r.prompt, model: r.model, tools: r.tools || [], forked_from: r.forked_from, role: r.role } }) }}>Edit</button>}
                   {onDelete && <ArmedDelete onConfirm={() => onDelete(r.name)} />}
                 </>}>
                 {r.forked_from && (
