@@ -671,17 +671,17 @@ async function main() {
   // Clips still encoding after their reply; GET /clip and /media wait on them.
   const pendingClips = new Map<number, Promise<unknown>>()
   const awaitClip = async (n: number) => { const p = pendingClips.get(n); if (p) await Promise.race([p, new Promise((r) => setTimeout(r, 90000))]) }
-  const stampTask = (n: number, label: string, startMs: number, clip: string | null, artifact: string | null, text?: string, heard?: string, page: Page = active) => {
+  const stampTask = (n: number, label: string, startMs: number, clip: string | null, artifact: string | null, text?: string, heard?: string, page: Page = active, clipPending = false) => {
     const endMs = Date.now()
     touchTab(page)
     const devtools = devtoolsBufs.get(page)?.summary() ?? null
-    const rec = { n, label, text, heard, tab: activeTab(page), startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), clip, artifact, devtools }
+    const rec = { n, label, text, heard, tab: activeTab(page), startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), clip, clipPending, artifact, devtools }
     tasks.push(rec); writeManifest(); writeDevtoolsFile(); saveTabState()
     // #120: snapshot journey progress on every task so a restart recovers a
     // journey that points at the work already done (saveJourneyState no-ops
     // when no journey is open).
     saveJourneyState('active')
-    notifyRef('task', { task: { n, label, text, heard, tab: rec.tab }, clipUrl: clip ? `/clip?n=${n}` : null, artifactUrl: artifact ? `/artifact?n=${n}` : null })
+    notifyRef('task', { task: { n, label, text, heard, tab: rec.tab }, clipUrl: clip || clipPending ? `/clip?n=${n}` : null, artifactUrl: artifact ? `/artifact?n=${n}` : null })
     return rec
   }
 
@@ -850,6 +850,7 @@ async function main() {
     const watchdog = setTimeout(() => { console.log('[engine] teardown watchdog — force exit'); manifest.endedAt = Date.now(); writeManifest(); process.exit(0) }, 45000)
     const bounded = (p: Promise<unknown> | undefined | null, ms: number) =>
       p ? Promise.race([p.catch(() => null), new Promise((r) => setTimeout(() => r(null), ms))]) : Promise.resolve(null)
+    if (pendingClips.size) await bounded(Promise.all(pendingClips.values()), 30000)  // /say clips still encoding
     // MEETING-AWARE SHUTDOWN (v14): while a meeting is active, do NOT click
     // Disconnect or POST /leave-room — an explicit leave kills the copilot
     // instantly, while a silent participant drop is absorbed by the agent's
@@ -1037,7 +1038,7 @@ async function main() {
         if (!list) return json(res, { ok: false, code: 'no_run', error: `run ${run} is not stored — GET /runs lists runs` }, 404)
         const wanted = q.get('n') ? list.filter((t: any) => t.n === Number(q.get('n'))) : list
         if (!wanted.length) return json(res, { ok: false, code: 'no_task', error: `no task ${q.get('n')} in run ${run}` }, 404)
-        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(mediaBase, run, t.n, { clip: !!t.clip, shot: !!t.artifact }) })) })
+        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(mediaBase, run, t.n, { clip: !!(t.clip || t.clipPending), shot: !!t.artifact }) })) })
       }
       if (req.method === 'GET' && path === '/tasks') {
         // This run's task index — same data as manifest.json on disk.
@@ -1229,7 +1230,7 @@ async function main() {
           if (fallback && before) forgetCached(before.url, String(body.instruction))
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
           const prevTask = tasks[tasks.length - 1]
-          const nag = prevTask?.clip && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
+          const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit()
           const n = ++reqN
           return { page, n, t0, r, effect, warning, nag, endMs: Date.now() }
@@ -1382,10 +1383,10 @@ async function main() {
             : ears.armedNow ? 'nothing was heard; the ears were armed on this tab just before speaking, so audio that started earlier was not captured'
             : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say', page)
-          const window = stampTask(n, 'say', t0, null, shot, body.text, heard, page)
+          const window = stampTask(n, 'say', t0, null, shot, body.text, heard, page, true)
           ;(window as any).timings = timings; (window as any).voice = voice
           const clipDone = finishClip().catch((e) => { clipError = `clip failed — ${(e as Error).message.slice(0, 120)}` }).then(() => {
-            ;(window as any).clip = clip; (window as any).clipError = clipError; (window as any).clipAudio = audio; writeManifest()
+            ;(window as any).clip = clip; (window as any).clipPending = false; (window as any).clipError = clipError; (window as any).clipAudio = audio; writeManifest()
           }).finally(() => pendingClips.delete(n))
           pendingClips.set(n, clipDone)
           if (body.waitClip) await clipDone
@@ -1602,9 +1603,9 @@ async function main() {
             // page starts after the window border and the browser's top bar.
             const parsed = (process.env.OSBORN_DISPLAY_SIZE || '').split('x').map(Number)
             const [dw, dh] = parsed.length === 2 && parsed.every((n) => n > 0) ? parsed : [1280, 800]
-            const border = DISPLAY_MODE ? (win.ow - win.iw) / 2 : 0
-            const x = fx * (DISPLAY_MODE ? dw : win.iw) - border
-            const y = fy * (DISPLAY_MODE ? dh : win.ih) - (DISPLAY_MODE ? win.oh - win.ih - border : 0)
+            const border = FULL_WINDOW ? (win.ow - win.iw) / 2 : 0
+            const x = fx * (FULL_WINDOW ? dw : win.iw) - border
+            const y = fy * (FULL_WINDOW ? dh : win.ih) - (FULL_WINDOW ? win.oh - win.ih - border : 0)
             if (y < 0) return json(res, { ok: false, code: 'browser_bar', error: 'that is the browser bar; use the address box or the tab bar instead' }, 400)
             if (!(x >= 0 && x < win.iw && y < win.ih)) return json(res, { ok: false, code: 'outside_page', error: 'that point is outside the page' }, 400)
             await page.mouse.click(x, y)

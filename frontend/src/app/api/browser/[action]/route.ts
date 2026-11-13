@@ -184,7 +184,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
     const upstream = await fetch(target, {
       headers: engineHeaders(),
       cache: 'no-store',
-      signal: AbortSignal.timeout(30000),
+      // /clip waits for a /say clip that is still encoding (up to 90s on the engine).
+      signal: AbortSignal.timeout(action === 'clip' ? 95000 : 30000),
     })
     const headers: Record<string, string> = {
       'Content-Type': upstream.headers.get('content-type') ?? 'application/json',

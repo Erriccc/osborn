@@ -15,7 +15,7 @@
 | `GET /logs` | full console+network+websocket buffers, all tabs |
 | `GET /events` | SSE: live navigation/task/tab/journey/transcript/agent_output/lifecycle events (25-event replay on connect; `engine_stopping` announces sleep) |
 | `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab |
-| `POST /say {text, ...}` | speak into the mic; returns media + `heard` (agent's spoken reply, transcribed) |
+| `POST /say {text, ...}` | speak into the mic; returns a screenshot, `heard` (agent's spoken reply, transcribed) and a `clipUrl` that waits until the clip is encoded (`clipPending: true`; pass `waitClip: true` to get the clip in the reply) |
 | `POST /hear {lastMs}` | transcript of recent agent audio |
 | `POST /eval {expression}` | run JS in the page (the website console, programmatic); recorded as a journey step |
 | `POST /shot` | on-demand screenshot (viewport only — NOT proof media; clips are) |
@@ -40,7 +40,7 @@
 - `OSBORN_DEVTOOLS=1` — DevTools panel on camera. `OSBORN_DISPLAY_SIZE` — virtual display size.
 
 ## Self-hosting the cloud engine (Fly)
-From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 --shared` + `fly ips allocate-v6` (Machines-API-created apps get NO public IPs), set secrets (GOOGLE_API_KEY, OSBORN_ENGINE_TOKEN required; stream token strongly advised — see streaming.md). You get wake-on-visit (~40s to pixels), idle self-stop, full-window capture (Xvfb+openbox+x11grab: real tab strip at real-time speed), tab-state restore across sleep. Updating = `fly deploy` from a fresh bundle; the version probe says when you're stale.
+From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 --shared` + `fly ips allocate-v6` (Machines-API-created apps get NO public IPs), set secrets (GOOGLE_API_KEY, OSBORN_ENGINE_TOKEN required; stream token strongly advised — see streaming.md). You get wake-on-visit (~40s to pixels), idle self-stop, page capture via CDP (set `OSBORN_CAPTURE=display` for full-window x11grab capture with the real tab strip; it costs most of a shared CPU), tab-state restore across sleep. Updating = `fly deploy` from a fresh bundle; the version probe says when you're stale.
 
 ## v24 additions
 
