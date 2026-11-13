@@ -38,15 +38,27 @@ function hasRpc(client: unknown): client is Required<MaybeRpcClient> {
 }
 
 /** Postgres/PostgREST "function does not exist" (migration 012 not applied). */
-function isMissingFunction(err: { code?: string } | null | undefined): boolean {
+export function isMissingFunction(err: { code?: string } | null | undefined): boolean {
   return !!err && (err.code === 'PGRST202' || err.code === '42883')
 }
 
-function serviceClient() {
+export function serviceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) return null
   return createClient(url, key, { auth: { persistSession: false } })
+}
+
+/**
+ * The caller's recorded sandbox (their instances row) and its claim. The row
+ * counts only when no OTHER user's row claims the same id (fail closed): before
+ * migration 012 the column was client-writable, so a row alone proves nothing.
+ */
+export async function knownSandboxClaim(userClient: any, userId: string): Promise<{ id?: string; claim: SandboxClaim | 'none' }> {
+  const { data } = await userClient.from('instances').select('sandbox_id').eq('user_id', userId).single()
+  const id = (data?.sandbox_id as string | null | undefined) ?? undefined
+  if (!id) return { claim: 'none' }
+  return { id, claim: await checkSandboxClaim(userClient, id, userId) }
 }
 
 /**

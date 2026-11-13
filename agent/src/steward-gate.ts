@@ -27,14 +27,16 @@ export const TREE_COMMAND =
 export const SIGNOFF_COMMAND = `T=$(sh -c '${TREE_COMMAND}') && echo "$T" > "$(git rev-parse --git-dir)/${MARKER_FILE}"`
 
 export function stewardMode(env: Record<string, string | undefined> = process.env): StewardMode {
-  const m = (env.OSBORN_STEWARD_MODE || 'advise').toLowerCase()
-  return m === 'block' || m === 'off' ? m : 'advise'
+  const m = (env.OSBORN_STEWARD_MODE || 'block').toLowerCase()
+  return m === 'advise' || m === 'off' ? m : 'block'
 }
 
 // Split a shell command into simple commands (outside quotes) and read each one's
 // words, tracking `cd` (subshells restore it). Only a word in command position
 // counts: not `grep "git push"` or `echo "... git commit"`.
-type Hit = { action: GitAction; dir: string }
+// `dir: null` = the shell's directory there could not be worked out, so the
+// action is skipped rather than checked against a guess.
+type Hit = { action: GitAction; dir: string | null }
 // Words that can precede a command: keywords, wrappers, and wrappers' options.
 const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout', 'setsid', 'stdbuf', 'doas', 'ionice',
   'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}'])
@@ -54,15 +56,27 @@ const TAKES_ARG: Record<string, Set<string>> = {
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash'])
 
 export function gitActions(cmd: string, cwd: string): Hit[] {
+  return scan(cmd, cwd).hits
+}
+
+/** gitActions' worker: also returns the directory the shell is left in, so a
+ *  `cd` inside `eval`'s argument carries over to the commands after it. */
+function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | null } {
   const hits: Hit[] = []
   const home = process.env.HOME || '~'
-  const resolveDir = (base: string, raw?: string) => {
-    if (!raw) return home
+  const resolveDir = (base: string | null, raw?: string) => {
+    if (raw === undefined) return home  // bare `cd`
+    if (raw === '') return base          // `cd ""` leaves the shell where it is
+    // `-` is $OLDPWD, and a variable or command substitution is expanded by the
+    // shell, not here — resolving one literally would invent `<cwd>/$HOME/x`.
+    if (raw === '-' || /[$`]/.test(raw)) return null
     const p = raw.replace(/^~(?=\/|$)/, home)
-    return isAbsolute(p) ? p : resolve(base, p)
+    if (isAbsolute(p)) return p
+    return base === null ? null : resolve(base, p)
   }
   let dir = cwd
-  const stack: string[] = []
+  let segDir = cwd  // dir at the start of the current simple command, for subshell revert
+  const stack: (string | null)[] = []
   let words: string[] = [], word = '', inWord = false, quote: string | null = null, inBacktick = false
   const endWord = () => { if (inWord) words.push(word); word = ''; inWord = false }
   const endCommand = () => {
@@ -74,7 +88,7 @@ export function gitActions(cmd: string, cwd: string): Hit[] {
       else if (PREFIX.has(w[0])) { wrapper = w[0]; w = w.slice(1) }
       else if (wrapper === 'env' && /^(-S|--split-string)/.test(w[0])) {  // env -S runs its string as a command
         const rest = w[0].includes('=') ? [w[0].split('=').slice(1).join('='), ...w.slice(1)] : w[0].length > 2 && w[0].startsWith('-S') ? [w[0].slice(2), ...w.slice(1)] : w.slice(1)
-        for (const h of gitActions(rest.join(' '), dir)) hits.push(h)
+        hits.push(...scan(rest.join(' '), dir).hits)  // env execs: a cd inside cannot outlive it
         return
       }
       else if (wrapper && w[0].startsWith('-')) w = w.slice(!w[0].includes('=') && TAKES_ARG[wrapper]?.has(w[0]) ? 2 : 1)
@@ -82,15 +96,42 @@ export function gitActions(cmd: string, cwd: string): Hit[] {
       else break
     }
     if (!w.length) return
-    // eval runs its arguments as a command in this shell: check them as one.
+    // eval runs its arguments as a command in THIS shell, so a `cd` among them
+    // persists — whether it arrived bare (`eval cd sub`) or quoted (`eval 'cd sub'`).
     if (w[0] === 'eval') {
-      if (w[1] === 'cd') { dir = resolveDir(dir, w[2]); return }
-      for (const h of gitActions(w.slice(1).join(' '), dir)) hits.push(h)
+      const sub = scan(w.slice(1).join(' '), dir)
+      hits.push(...sub.hits)
+      dir = sub.dir ?? dir  // an unknowable cd inside eval must not blank what follows
       return
     }
     const name = w[0].split('/').pop()
-    if (name === 'cd') { dir = resolveDir(dir, w[1]); return }
-    if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { for (const h of gitActions(w[2], dir)) hits.push(h); return }
+    // `cd` takes options before the operand, so the operand is not always w[1]:
+    // `cd -- sub` used to be read as a directory literally named "--".
+    // (`pushd` is deliberately NOT tracked: without modelling `popd` too, a
+    // `pushd sub; popd` pair would leave the tracked dir in sub, which is more
+    // wrong than not following it at all.)
+    if (name === 'cd') {
+      // Skip options (-L -P -e -@, zsh's -q -s, ...) to reach the operand; `--`
+      // ends them. `-` alone is not an option, it is $OLDPWD.
+      let j = 1
+      while (j < w.length && w[j].startsWith('-') && w[j] !== '-') if (w[j++] === '--') break
+      dir = resolveDir(dir, w[j])
+      return
+    }
+    // A shell's -c can carry other flags with it (`sh -ec`, `bash -lc`,
+    // `bash -o pipefail -c`); its command runs in a subshell, so no cd escapes.
+    if (SHELLS.has(name!)) {
+      for (let i = 1; i < w.length; i++) {
+        if (w[i] === '-o' || w[i] === '+o') { i++; continue }
+        if (/^-[a-zA-Z]*c$/.test(w[i])) {
+          const arg = w[i + 1] === '--' ? w[i + 2] : w[i + 1]
+          if (arg) hits.push(...scan(arg, dir).hits)
+          return
+        }
+        if (!w[i].startsWith('-')) return
+      }
+      return
+    }
     if (name === 'gh') {
       const rest = w.slice(1).filter((x, j, a) => !x.startsWith('-') && !['--repo', '-R', '--hostname'].includes(a[j - 1]))
       if (rest[0] === 'pr' && rest[1] === 'create') hits.push({ action: 'pr', dir })
@@ -121,14 +162,33 @@ export function gitActions(cmd: string, cwd: string): Hit[] {
     if (quote) { if (c === quote) quote = null; else if (c === '\\' && quote === '"') word += cmd[++k] ?? ''; else word += c; continue }
     if (c === '"' || c === "'") { quote = c; inWord = true; continue }
     if (c === '\\') { word += cmd[++k] ?? ''; inWord = true; continue }
-    if (c === ';' || c === '&' || c === '|' || c === '\n') { endCommand(); continue }
-    if (c === '(' || (c === '`' && !inBacktick)) { endCommand(); stack.push(dir); if (c === '`') inBacktick = true; continue }
-    if (c === ')' || c === '`') { endCommand(); dir = stack.pop() ?? dir; if (c === '`') inBacktick = false; continue }
+    if (c === ';' || c === '\n') { endCommand(); segDir = dir; continue }
+    // `&&` / `||` continue in this shell; a bare `|` (pipeline element) or `&`
+    // (background job) runs its command in a SUBSHELL, so its `cd` dies with it.
+    if (c === '&' || c === '|') {
+      // Not a separator at all inside a redirection: `>&2`, `2>&1`, `&>log`.
+      if (c === '&' && (word.endsWith('>') || cmd[k + 1] === '>')) { word += c; inWord = true; continue }
+      const chained = cmd[k + 1] === c
+      endCommand()
+      if (chained) k++
+      else dir = segDir
+      segDir = dir
+      continue
+    }
+    // A substitution splits the token stream here, so the word it belongs to is
+    // only half-read. Feed it a `$` so resolveDir reads it as unresolvable —
+    // otherwise `cd `pwd`` ends a BARE `cd` and resolves it to $HOME, and
+    // `cd `echo child`` would check the parent repo's marker for a child commit.
+    if (c === '(' || (c === '`' && !inBacktick)) {
+      word += '$'; inWord = true
+      endCommand(); stack.push(dir); if (c === '`') inBacktick = true; continue
+    }
+    if (c === ')' || c === '`') { endCommand(); dir = stack.pop() ?? dir; segDir = dir; if (c === '`') inBacktick = false; continue }
     if (c === ' ' || c === '\t') { endWord(); continue }
     word += c; inWord = true
   }
   endCommand()
-  return hits
+  return { hits, dir }
 }
 
 const git = async (dir: string, args: string[]) => (await run('git', args, { cwd: dir })).stdout.trim()
@@ -152,7 +212,11 @@ export async function stewardGate(cmd: string, cwd: string, mode: StewardMode = 
   if (mode === 'off') return { decision: 'allow' }
   let unsigned: GitAction | null = null, failed: string | null = null
   for (const hit of gitActions(cmd, cwd)) {
-    if (!existsSync(hit.dir)) continue
+    // An unknown directory (`cd $VAR`, `cd -`) or one the command has not created
+    // yet is skipped, as before: there is no repo to read, and nothing the agent
+    // could do about a complaint. `git worktree add w && cd w && git commit` is
+    // the ordinary case, not an evasion.
+    if (hit.dir === null || !existsSync(hit.dir)) continue
     let gitDir: string
     try { gitDir = await git(hit.dir, ['rev-parse', '--absolute-git-dir']) } catch { continue }  // not a repo
     try {

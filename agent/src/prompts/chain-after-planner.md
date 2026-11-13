@@ -1,0 +1,1 @@
+The `{{agent}}` sub-agent (planner role) just finished. Before the writer starts, use the Task tool to dispatch the `steward` in PLAN MODE on that plan: for every new function, route, module, table or feature it answers "does this already exist?". Give the writer the plan WITH the steward's reuse map.

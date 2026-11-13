@@ -22,8 +22,7 @@ import {
   checkSessionLayerConsistency,
   getLastUpdateResult,
 } from '@/lib/cloud'
-import { checkSandboxClaim, claimSandboxForUser, type SandboxClaim } from '@/lib/sandbox-claims'
-import { mirrorReportToGitHub } from '@/lib/github-issue-mirror'
+import { checkSandboxClaim, claimSandboxForUser, knownSandboxClaim } from '@/lib/sandbox-claims'
 
 /**
  * GET /api/sandbox — get current user's sandbox status
@@ -173,16 +172,7 @@ export async function POST(request: Request) {
   // The row's sandbox_id only counts when no OTHER user's row claims the same
   // id (checkSandboxClaim, fail closed): before migration 012 the column was
   // client-writable, so a row alone does not prove ownership.
-  const getKnownSandboxClaim = async (): Promise<{ id?: string; claim: SandboxClaim | 'none' }> => {
-    const { data } = await supabase
-      .from('instances')
-      .select('sandbox_id')
-      .eq('user_id', user.id)
-      .single()
-    const id = (data?.sandbox_id as string | null | undefined) ?? undefined
-    if (!id) return { claim: 'none' }
-    return { id, claim: await checkSandboxClaim(supabase, id, user.id) }
-  }
+  const getKnownSandboxClaim = () => knownSandboxClaim(supabase, user.id)
   // True when the caller's instances row already holds `id`. The pool-claim
   // path records sandbox_id itself (service role) before create returns, so
   // a failed claim RPC does not always mean the machine is unrecorded. On a
@@ -744,120 +734,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Failed to upload log' }, { status: 500 })
       }
       return NextResponse.json({ path: storagePath })
-    }
-
-    case 'submit-bug-report': {
-      // Receives a bug report or feature request originally filed by the
-      // bug-reporter skill on the workspace agent and forwarded here through
-      // the LiveKit data channel. We do the actual Supabase work (the agent
-      // never holds Supabase credentials): upload a log tail to Storage and
-      // INSERT a row into bug_reports.
-      const { reportId, payload, context, sessionId: bugSessionId } = body as {
-        reportId?: string
-        payload?: {
-          type: 'bug' | 'feature'
-          severity: 'low' | 'medium' | 'high' | 'critical'
-          title: string
-          description: string
-          reproduction_notes?: string
-          tags?: string[]
-        }
-        context?: {
-          voice_mode?: string
-          sandbox_id?: string
-          osborn_version?: string
-        }
-        sessionId?: string | null
-      }
-      if (!reportId || !payload?.type || !payload?.title || !payload?.description) {
-        return NextResponse.json(
-          { error: 'reportId, payload.type, payload.title, payload.description required' },
-          { status: 400 },
-        )
-      }
-
-      // Find the user's sandbox so we can pull the log tail from the right machine.
-      // Only the caller's own, undisputed id: never context.sandbox_id from the
-      // request body, which would let a caller exec into any machine.
-      const targetSandboxId = (await getKnownSandboxId()) ?? null
-
-      // Pull log tail (best-effort — bug report still files if exec fails)
-      let logUrl: string | null = null
-      if (targetSandboxId) {
-        try {
-          const logResult = await execInSprite(
-            targetSandboxId,
-            'sh',
-            ['-c', 'tail -500 /workspace/osborn.log 2>/dev/null || echo "log unavailable"'],
-            15,
-          )
-          if (logResult.output && logResult.output.length > 0) {
-            const storagePath = `bug-logs/${reportId}.log`
-            const { error: upErr } = await supabase.storage
-              .from('osborn-storage')
-              .upload(storagePath, logResult.output, {
-                contentType: 'text/plain',
-                upsert: false,
-              })
-            if (!upErr) {
-              logUrl = storagePath
-            } else {
-              console.error('[bug-report] log upload failed', upErr)
-            }
-          }
-        } catch (e) {
-          console.error('[bug-report] exec to fetch log failed:', e)
-        }
-      }
-
-      // Insert the row
-      const { data: inserted, error: insertErr } = await supabase
-        .from('bug_reports')
-        .insert({
-          id: reportId,
-          type: payload.type,
-          severity: payload.severity || 'medium',
-          status: 'open',
-          reporter_user_id: user.id,
-          reporter_email: user.email ?? null,
-          title: payload.title,
-          description: payload.description,
-          reproduction_notes: payload.reproduction_notes ?? null,
-          osborn_version: context?.osborn_version ?? 'unknown',
-          voice_mode: context?.voice_mode ?? null,
-          session_id: bugSessionId ?? null,
-          sandbox_id: targetSandboxId,
-          log_url: logUrl,
-          tags: Array.isArray(payload.tags) ? payload.tags : [],
-          metadata: {},
-        })
-        .select('id, type, severity, title, created_at')
-        .single()
-
-      if (insertErr) {
-        console.error('[bug-report] insert failed', insertErr)
-        return NextResponse.json(
-          { error: 'Failed to write report', details: insertErr.message },
-          { status: 500 },
-        )
-      }
-      console.log(`[bug-report] filed ${inserted?.id.slice(0, 8)} (${inserted?.type}/${inserted?.severity}): ${inserted?.title}`)
-
-      // Mirror to GitHub Issues (issue #44) — best-effort, privacy-safe (only the
-      // report text + product context travel, never reporter/session/machine ids).
-      const mirror = await mirrorReportToGitHub({
-        type: payload.type,
-        severity: payload.severity || 'medium',
-        title: payload.title,
-        description: payload.description,
-        reproduction_notes: payload.reproduction_notes ?? null,
-        tags: Array.isArray(payload.tags) ? payload.tags : [],
-        osborn_version: context?.osborn_version ?? null,
-        voice_mode: context?.voice_mode ?? null,
-      })
-      if (!mirror.ok) console.error('[bug-report] github mirror failed:', mirror.error)
-
-      return NextResponse.json({ success: true, report: inserted, logUrl })
     }
 
     case 'check-version': {

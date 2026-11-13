@@ -15,9 +15,10 @@ try {
   writeFileSync(join(repo, 'a.ts'), 'export const a = 1\n'); sh('git add -A && git commit -qm init')
 
   // Mode and command parsing
-  assert.equal(stewardMode({}), 'advise')
+  assert.equal(stewardMode({}), 'block')
   assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'BLOCK' }), 'block')
-  assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'nonsense' }), 'advise')
+  assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'nonsense' }), 'block')
+  assert.equal(stewardMode({ OSBORN_STEWARD_MODE: 'Advise' }), 'advise')
   assert.equal(gitActions('ls -la', repo)[0], null)
   assert.equal(gitActions('git commit -m x', repo)[0]?.action, 'commit')
   assert.equal(gitActions('git add -A && git commit -m x', repo)[0]?.action, 'commit')
@@ -94,6 +95,44 @@ try {
   assert.deepEqual(gitActions("cat > deploy.sh <<'EOF'\ncd app && git push origin main\nEOF", repo), [])
   writeFileSync(join(repo, 'd.ts'), 'export const d = 7\n')
   assert.equal((await stewardGate('git commit -am x && git push origin HEAD', repo, 'block')).decision, 'deny', 'combined commit+push checks the commit')
+
+  // #245.1: cd's options are not the directory operand
+  for (const c of ['cd -L sub; git push', 'cd -P sub; git push', 'cd -- sub; git push', 'cd -LP -- sub; git push', 'cd -q sub; git push', 'eval cd -L sub; git push'])
+    assert.equal(gitActions(c, repo)[0]?.dir, join(repo, 'sub'), c)
+  // Unknowable directories are recorded as unknown, never guessed at: `cd -` is
+  // $OLDPWD, and a variable or command substitution is expanded by the shell.
+  for (const c of ['cd -; git push', 'cd $REPO; git push', 'cd "$HOME/x"; git push', 'cd "$(git rev-parse --show-toplevel)"; git push'])
+    assert.equal(gitActions(c, repo)[0]?.dir, null, c)
+
+  // #245.2: a cd inside eval's argument persists, however it is quoted
+  for (const c of ["eval 'cd sub'; git push", "eval 'cd sub; git push'"])
+    assert.equal(gitActions(c, repo)[0]?.dir, join(repo, 'sub'), c)
+  // ...but a subshell's cd still does not escape it
+  assert.equal(gitActions("sh -c 'cd sub'; git push", repo)[0]?.dir, repo)
+
+  // #245.3: a cd in a pipeline element or background job runs in a subshell
+  for (const c of ['cd sub | cat; git push', 'cd sub & git push'])
+    assert.equal(gitActions(c, repo)[0]?.dir, repo, c)
+  // ...while &&, || and a redirection's & stay in this shell
+  for (const c of ['cd sub && git push', 'cd sub || git push', 'cd sub >&2; git push', 'cd sub 2>&1; git push', 'cd sub &>/dev/null; git push'])
+    assert.equal(gitActions(c, repo)[0]?.dir, join(repo, 'sub'), c)
+
+  // A directory that is unknown, or that the command has not created yet, is
+  // skipped rather than refused: there is no repo to read and no sign-off could
+  // ever clear it. `git worktree add w && cd w && git commit` is the ordinary
+  // case this protects, not an evasion.
+  for (const c of ['cd /tmp/definitely-not-here && git push', 'mkdir fresh && cd fresh && git init && git commit -m x'])
+    assert.equal((await stewardGate(c, repo, 'block')).decision, 'allow', c)
+  // A substitution in the operand is unresolvable whichever way it is spelled,
+  // so the action is skipped rather than checked against a guessed directory —
+  // guessing read the PARENT repo's marker for a commit in a child.
+  for (const c of ['cd `pwd` && git push', 'cd "$PWD" && git push', 'cd `echo sub` && git commit -am x'])
+    assert.equal(gitActions(c, repo)[0]?.dir, null, c)
+  // An unknowable cd inside eval must not blank the actions after it.
+  assert.equal(gitActions("eval 'cd $NOPE'; git push", repo)[0]?.dir, repo)
+  // A shell's -c carries its command however the flags are spelled.
+  for (const c of ["sh -ec 'git push'", "bash -lc 'git push'", "bash -o pipefail -c 'git push'", "zsh -fc 'git push'", "sh -c -- 'git push'"])
+    assert.equal(gitActions(c, repo)[0]?.action, 'push', c)
 
   // Not a repo: never blocks
   assert.equal((await stewardGate('git push', tmpdir(), 'block')).decision, 'allow')

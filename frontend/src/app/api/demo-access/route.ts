@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { createSupabaseAnon } from '@/lib/supabase-anon'
+import { isMissingFunction, serviceClient } from '@/lib/sandbox-claims'
 
 /**
  * POST /api/demo-access — email gate for free/demo ("Connect without account")
  * usage. The login page collects the visitor's email before starting a guest
  * session; this route validates + upserts it into public.demo_leads.
  *
- * Guests have NO Supabase session, so the write must use the SERVICE ROLE key.
- * RLS is enabled on demo_leads with NO policies — this route is the only write
- * path. Never expose SUPABASE_SERVICE_ROLE_KEY to the client.
+ * A guest has no Supabase session, so this prefers record_demo_lead() — a
+ * SECURITY DEFINER upsert granted to anon (migration 017) — because
+ * SUPABASE_SERVICE_ROLE_KEY is not set on Railway; service-role is the fallback.
+ *
+ * Recording a lead must never cost the visitor the session, so a missing or
+ * failing store logs and answers ok. Only a bad email (400) or the rate limit
+ * (429) refuses — the login page still blocks the visitor on those.
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
@@ -30,12 +35,35 @@ function rateLimited(ip: string): boolean {
   return false
 }
 
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } },
-  )
+/** Record the lead. Never throws, so a store outage cannot reach the visitor. */
+async function recordLead(email: string): Promise<void> {
+  try {
+    // 1) SECURITY DEFINER RPC as anon: the only write path a guest's role has.
+    //    createSupabaseAnon pins db.schema = public, which the RPC needs.
+    const anon = createSupabaseAnon()
+    if (anon) {
+      const { error } = await anon.rpc('record_demo_lead', { p_email: email })
+      if (!error) return
+      console.error(isMissingFunction(error)
+        ? '[demo-access] migration 017 is not applied; every lead is being dropped'
+        : `[demo-access] record_demo_lead failed: ${error.message}`)
+    }
+
+    // 2) Service-role upsert, keeping the earliest created_at. The key is unset
+    //    on Railway, so this is the local / self-hosted path.
+    const sb = serviceClient()
+    if (!sb) {
+      console.error('[demo-access] lead not stored: no RPC and no service-role key')
+      return
+    }
+    const { data: existing } = await sb.from('demo_leads').select('email').eq('email', email).maybeSingle()
+    const { error } = existing
+      ? await sb.from('demo_leads').update({ last_seen_at: new Date().toISOString() }).eq('email', email)
+      : await sb.from('demo_leads').insert({ email, source: 'login' })
+    if (error) console.error('[demo-access] write failed:', error.message)
+  } catch (err) {
+    console.error('[demo-access] lead not stored:', err)
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -55,31 +83,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Invalid request.' }, { status: 400 })
   }
 
-  if (!EMAIL_RE.test(email)) {
+  if (email.length > 320 || !EMAIL_RE.test(email)) {
     return NextResponse.json({ ok: false, error: 'Enter a valid email address.' }, { status: 400 })
   }
 
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    console.error('[demo-access] SUPABASE_SERVICE_ROLE_KEY / NEXT_PUBLIC_SUPABASE_URL not configured')
-    return NextResponse.json({ ok: false, error: 'Server not configured.' }, { status: 500 })
-  }
-
-  // Upsert keeping earliest created_at: on conflict, only bump last_seen_at.
-  const sb = serviceClient()
-  const { data: existing } = await sb
-    .from('demo_leads')
-    .select('email')
-    .eq('email', email)
-    .maybeSingle()
-
-  const { error } = existing
-    ? await sb.from('demo_leads').update({ last_seen_at: new Date().toISOString() }).eq('email', email)
-    : await sb.from('demo_leads').insert({ email, source: 'login' })
-
-  if (error) {
-    console.error('[demo-access] write failed:', error.message)
-    return NextResponse.json({ ok: false, error: 'Could not save email.' }, { status: 500 })
-  }
-
+  await recordLead(email)
   return NextResponse.json({ ok: true })
 }

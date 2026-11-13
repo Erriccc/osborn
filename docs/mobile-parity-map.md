@@ -234,8 +234,8 @@ APNs (Phase 2).
 get_research_artifact, list_processes, list_sessions, resume_session,
 continue_session, user_text, replay_message, mcp_toggle, get_mcp_status,
 spawn_background_session, dispatch_background, stop_background_session, join_meeting,
-leave_meeting, start_ide, stop_ide, session_selected, skill_get, skill_remove,
-skill_add.
+leave_meeting, start_ide, stop_ide, session_selected, skill_get, skill_add, skill_fork,
+skill_remove, get_agent_prompt.
 **Recv (~25):** agent_ready, agent_state, user_transcript, tts_chunk_playing,
 assistant_response, system, research_task_started/complete, agent_started,
 noise_cancel_state, gate_dropped, agent_stopped, task_completed, tool_use,
@@ -243,7 +243,7 @@ task_review, claude_output, permission_request, permission_response, status_upda
 progress_update, sessions_list, current_session, session_resume_set/failed,
 session_switched, plan_file_updated/content, research_artifact_updated/content,
 session_artifacts, fast_brain_response, mcp_status/servers_changed/toggle_result,
-skills_status, agents_status, skill_content/remove_result/add_result,
+skills_status, agents_status, skill_content/add_result/fork_result/remove_result, agent_prompt,
 claude_auth_required/url/waiting_code/submitting/complete/error,
 meeting_joining/joined/left/error, ide_status, background_update, slots_list,
 process_list.

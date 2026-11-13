@@ -24,7 +24,7 @@ export interface StewardVerdict {
 }
 
 const LABELS: Record<string, string> = {
-  'VERDICT': 'verdict', 'REUSE MAP': 'reuse', 'NET-NEW': 'netNew', 'REMOVED': 'removed',
+  'VERDICT': 'verdict', 'REUSE MAP': 'reuse', 'INVENTORY': 'reuse', 'DUPLICATES': 'reuse', 'BEHAVIOUR': 'regressions', 'NET-NEW': 'netNew', 'REMOVED': 'removed',
   'REGRESSION MAP': 'regressions', 'IMPACT': 'regressions', 'LINES': 'lines', 'HISTORY': 'history', 'ROOT CAUSE': 'rootCause',
   'DECISION': 'decision', 'HUMAN DECISION': 'decision', 'DECISION NEEDED': 'decision',
 }

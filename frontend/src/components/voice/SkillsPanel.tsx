@@ -2,18 +2,15 @@
 
 import { useState, useEffect } from 'react'
 import { PANEL_ANCHORED, PANEL_BOTTOM_SHEET, usePanelExclusive, useViewportClamp } from './shared'
+import { SkillStore } from '../AgentStore'
+import type { SkillStoreApi } from '@/lib/skill-store'
 
 // Shared skills panel — the single source of truth for the skills UI. Mounted
 // in TWO places: the first-class header SkillsPopover (primary, high-visibility)
 // and the ControlMenu Tools tab (kept for muscle memory).
 interface SkillsPanelProps {
-  skills?: { name: string; description: string; folder?: string }[]
-  onAddSkill?: (name: string, content: string) => void
-  onViewSkill?: (folder: string) => void
-  onRemoveSkill?: (folder: string) => void
-  onInstallFromCatalog?: (name: string, url: string) => void
-  skillRemoveArm?: string | null
-  setSkillRemoveArm?: (v: string | null) => void
+  /** The machine's skills and actions (lib/skill-store.ts), shared with Settings. */
+  store: SkillStoreApi
   showAddSkill?: boolean
   setShowAddSkill?: (v: boolean) => void
   newSkillName?: string
@@ -23,13 +20,7 @@ interface SkillsPanelProps {
 }
 
 export function SkillsPanel({
-  skills,
-  onAddSkill,
-  onViewSkill,
-  onRemoveSkill,
-  onInstallFromCatalog,
-  skillRemoveArm,
-  setSkillRemoveArm,
+  store,
   showAddSkill,
   setShowAddSkill,
   newSkillName,
@@ -37,6 +28,12 @@ export function SkillsPanel({
   newSkillContent,
   setNewSkillContent,
 }: SkillsPanelProps) {
+  const { skills } = store
+  const add = (name: string, content: string) => store.add(name, content).then((ok) => {
+    if (ok) { setShowAddSkill?.(false); setNewSkillName?.(''); setNewSkillContent?.('') }
+  })
+  // One-tap official skill: the served copy (same origin) is the source of truth.
+  const installOfficial = (name: string, url: string) => fetch(url).then((r) => r.text()).then((content) => add(name, content)).catch(() => {})
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -67,7 +64,7 @@ export function SkillsPanel({
           <button
             onClick={() => {
               if (newSkillName?.trim() && newSkillContent?.trim()) {
-                onAddSkill?.(newSkillName.trim(), newSkillContent.trim())
+                add(newSkillName.trim(), newSkillContent.trim())
               }
             }}
             disabled={!newSkillName?.trim() || !newSkillContent?.trim()}
@@ -77,46 +74,16 @@ export function SkillsPanel({
           </button>
         </div>
       )}
-      {skills && skills.length > 0 ? (
-        <div className="space-y-1">
-          {skills.map((skill) => {
-            const folder = skill.folder || skill.name.toLowerCase().replace(/[^a-z0-9-]/g, '-')
-            const armed = skillRemoveArm === folder
-            return (
-            <div
-              key={folder}
-              className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-sm font-medium text-gray-200 break-words leading-snug">{skill.name}</span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => onViewSkill?.(folder)}
-                    className="text-[10px] text-amber-400 hover:text-amber-300"
-                  >View</button>
-                  <button
-                    onClick={() => {
-                      if (armed) { onRemoveSkill?.(folder) }
-                      else { setSkillRemoveArm?.(folder); setTimeout(() => setSkillRemoveArm?.(null), 4000) }
-                    }}
-                    className={`text-[10px] ${armed ? 'text-red-400 font-semibold' : 'text-gray-500 hover:text-red-400'}`}
-                  >{armed ? 'Confirm?' : 'Remove'}</button>
-                </div>
-              </div>
-              {skill.description && (
-                <p className="text-[11px] text-gray-500 truncate">{skill.description}</p>
-              )}
-            </div>
-            )
-          })}
-        </div>
+      {skills.length > 0 ? (
+        <SkillStore store={store} />
       ) : (
         <p className="text-[11px] text-gray-500">No skills installed</p>
       )}
+      <a href="/settings?section=agents&browse=1" target="_blank" rel="noreferrer" className="block text-[11px] text-[var(--accent)] hover:opacity-80">Browse skill catalogs ↗</a>
       {/* Catalog: one-tap official skills */}
-      {skills && !skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder || sk.name)) && (
+      {!skills.some((sk) => /voice-e2e|browser-screen-recorder/i.test(sk.folder)) && (
         <button
-          onClick={() => onInstallFromCatalog?.('browser-screen-recorder', '/api/browser-screen-recorder')}
+          onClick={() => installOfficial('browser-screen-recorder', '/api/browser-screen-recorder')}
           className="mt-2 w-full py-1.5 text-[11px] rounded-lg bg-gray-800/70 border border-amber-500/20 text-amber-400 hover:bg-gray-800 transition-colors"
         >
           ⤓ Install Browser Screen Recorder skill (official)
@@ -130,7 +97,7 @@ export function SkillsPanel({
 // header: sparkle icon + live count badge, opens a dedicated popover.
 export function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean; requestOpen?: number; hideTrigger?: boolean }) {
   const [open, setOpen] = useState(false)
-  const count = props.skills?.length ?? 0
+  const count = props.store.skills.length
   // Esc closes the popover (outside-click already closes via the backdrop).
   useEffect(() => {
     if (!open) return

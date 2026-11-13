@@ -1,24 +1,20 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
-import { MagnifyingGlass, Brain, PenNib, Robot, TestTube, ListChecks, ShieldCheck, Eye } from '@phosphor-icons/react'
-import { AGENT_BLURBS } from '@/components/voice/AgentsPopover'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
+import { AgentStore, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, type RolesData } from '@/components/AgentStore'
+import { StoreBrowse } from '@/components/StoreBrowse'
+import { useUserAgents } from '@/lib/user-agents'
+import { useSkillStore, httpSkills } from '@/lib/skill-store'
+import { agentRequest } from '@/lib/agent-read'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
-
-// Role glyphs for the Agents list, keyed lower-case like AGENT_BLURBS beside it.
-// Module scope: one table, not a fresh object per row per render.
-const AGENT_GLYPHS: Record<string, typeof Robot> = {
-  researcher: MagnifyingGlass, reasoner: Brain, writer: PenNib,
-  tester: TestTube, planner: ListChecks, steward: ShieldCheck, reviewer: Eye,
-}
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
 // fall back to the uppercased code (still tells you WHERE-ish).
@@ -66,8 +62,15 @@ export default function SettingsPage() {
   // ── Agent connection + machine state (identical model to the dashboard) ──
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
-  const [dashSkills, setDashSkills] = useState<{ name: string; description: string; folder?: string }[]>([])
-  const [dashAgents, setDashAgents] = useState<{ name: string; description: string; model: string; tools: string[] }[]>([])
+  const [dashAgents, setDashAgents] = useState<NamedAgent[]>([])
+  const [dashRoles, setDashRoles] = useState<RolesData | null>(null)
+  const [storeTab, setStoreTab] = useState<'installed' | 'browse'>('installed')
+  const userAgents = useUserAgents()
+  // Skills, agent prompts and the catalog: the agent's store routes, through the
+  // authenticated /api/agent proxy (the same client the chat uses).
+  const skillHttp = useMemo(() => httpSkills(agentUrl), [agentUrl])
+  const skillStore = useSkillStore(skillHttp)
+  const storeRequest = useMemo(() => agentRequest(agentUrl), [agentUrl])
   const [syncToken, setSyncToken] = useState<string | null>(null)
   const [dashSecrets, setDashSecrets] = useState<{ key: string; set: boolean; secret: boolean; masked: string; source: 'store' | 'env' | 'none' }[]>([])
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({})
@@ -155,19 +158,18 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!agentUrl) return
     const base = agentUrl.replace(/\/$/, '')
-    fetch(`${base}/skills`).then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (Array.isArray(d?.skills)) setDashSkills(d.skills) })
-      .catch(() => {})
-    fetch(`${base}/agents`).then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (Array.isArray(d?.agents)) setDashAgents(d.agents) })
-      .catch(() => {})
+    skillHttp.list().then((list) => { if (list) skillStore.setSkills(list) })
+    storeRequest('agents').then(({ ok, d }) => {
+      if (ok && Array.isArray(d?.agents)) setDashAgents(d.agents)
+      setDashRoles(rolesData(d))
+    }).catch(() => {})
     if (syncToken) {
       fetch(`${base}/secrets`, { headers: { 'Authorization': `Bearer ${syncToken}` } })
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (Array.isArray(d?.secrets)) setDashSecrets(d.secrets) })
         .catch(() => {})
     }
-  }, [agentUrl, syncToken])
+  }, [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Machine location (agent /health region).
   useEffect(() => {
@@ -693,6 +695,15 @@ export default function SettingsPage() {
     })
   }
 
+  // Deep link from the chat popovers: /settings?section=agents&browse=1
+  useEffect(() => {
+    if (loading) return
+    const sp = new URLSearchParams(window.location.search)
+    const sec = sp.get('section') as SectionId | null
+    if (sp.get('browse') === '1') setStoreTab('browse')
+    if (sec && NAV_GROUPS.some((g) => g.items.some((i) => i.id === sec))) setTimeout(() => goToSection(sec), 50)
+  }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Editable public handle (profiles.username) — drives /p/{handle}/{slug}
    *  URLs. Self-contained: loads on mount, PUTs /api/account/handle on save.
    *  Must stay ABOVE the `if (loading)` early return (Rules of Hooks). */
@@ -1181,54 +1192,42 @@ export default function SettingsPage() {
     </SettingsSection>
   )
 
-  const AgentsSection = (
+  const storeTabs = (
+    <div role="tablist" className="mb-3 flex gap-1.5">
+      {(['installed', 'browse'] as const).map((t) => (
+        <button key={t} role="tab" aria-selected={storeTab === t} onClick={() => setStoreTab(t)}
+          className={pill(storeTab === t)}>
+          {t === 'installed' ? 'Installed' : 'Browse'}
+        </button>
+      ))}
+    </div>
+  )
+
+  const AgentsSection = storeTab === 'browse' ? (
+    <SettingsSection title="Browse" description="Skills and named agents from trusted catalogs. Anthropic's are first-party; community catalogs are marked. Look at the prompt and files before installing.">
+      <div className="px-4 py-3.5">
+        {storeTabs}
+        <StoreBrowse request={storeRequest} yours={userAgents.rows}
+          onInstallAgent={userAgents.rows ? userAgents.save : undefined}
+          onSkillsChanged={skillStore.setSkills}
+          takenAgentNames={new Set([...dashAgents.map((a) => a.name), ...(userAgents.rows || []).map((r) => r.name)])}
+          maxAgentName={dashRoles?.limits.name} />
+      </div>
+    </SettingsSection>
+  ) : (
     <>
-      <SettingsSection title={`Agents${dashAgents.length ? ` (${dashAgents.length})` : ''}`} description="The specialists your voice agent can dispatch to.">
-        {dashAgents.length > 0 ? (
-          dashAgents.map((a) => {
-            // Keyed like AGENT_BLURBS below it, which lower-cases: reading the
-            // raw name here cost "Steward" its icon while it kept its blurb.
-            // `?.` is load-bearing despite the type — /agents rows are taken on
-            // trust (Array.isArray only), so a nameless row must not throw.
-            const key = a.name?.toLowerCase() ?? ''
-            const Glyph = AGENT_GLYPHS[key] ?? Robot
-            return (
-              <div key={a.name} className="flex gap-3 px-4 py-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border-subtle)] bg-gradient-to-b from-[var(--surface-2)] to-[var(--surface)]">
-                  <Glyph size={19} weight="duotone" color="var(--accent)" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[13px] font-semibold capitalize tracking-tight text-[var(--text-primary)]">{a.name}</span>
-                    <span className="flex shrink-0 items-center gap-1.5">
-                      <span className="rounded-full border border-[var(--accent-dim)]/25 bg-[var(--accent-dim)]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[var(--accent)]">{a.model}</span>
-                      <span className="font-mono text-[10px] text-[var(--text-muted)]">{a.tools.length}⚒</span>
-                    </span>
-                  </div>
-                  <p title={a.description} className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-[var(--text-muted)]">{AGENT_BLURBS[key] ?? a.description}</p>
-                </div>
-              </div>
-            )
-          })
-        ) : (
-          <SettingsRow label="No agents loaded" sublabel="Connect your machine to see its named agents." />
-        )}
+      <SettingsSection title="Agents" description="The specialists your voice agent can dispatch to. Built-in agents are maintained by Voice Native; fork one to make it your own.">
+        <div className="px-4 py-3.5">
+          {storeTabs}
+          <AgentStore agents={dashAgents} yours={userAgents.rows} roles={dashRoles}
+            onSave={userAgents.save} onDelete={userAgents.remove} onSetEnabled={userAgents.setEnabled} />
+        </div>
       </SettingsSection>
 
-      <SettingsSection title={`Skills${dashSkills.length ? ` (${dashSkills.length})` : ''}`} description="Capabilities available to the agent on your machine.">
+      <SettingsSection title={`Skills${skillStore.skills.length ? ` (${skillStore.skills.length})` : ''}`} description="Capabilities available to the agent on your machine.">
         <div className="px-4 py-3.5">
-          {dashSkills.length > 0 ? (
-            <div className="flex flex-wrap gap-1">
-              {dashSkills.map((s) => (
-                <span key={s.folder || s.name} title={s.description}
-                  className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
-                  {s.name.length > 34 ? s.name.slice(0, 32) + '…' : s.name}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <p className="text-[12px] text-[var(--text-muted)]">Connect your machine to see its skills.</p>
-          )}
+          {skillStore.skills.length > 0 ? <SkillStore store={skillStore} /> : <p className="text-[12px] text-[var(--text-muted)]">Connect your machine to see its skills.</p>}
+          <SkillViewer skill={skillStore.viewed} onClose={skillStore.closeView} />
         </div>
       </SettingsSection>
     </>

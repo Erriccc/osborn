@@ -12,4 +12,5 @@ Differences in this repo (Claude Code dev environment):
 - Sign-off: ignore `${SIGNOFF_COMMAND}`. After a CLEAN verdict, record it for the exact commit:
   `git rev-parse HEAD > "$(git rev-parse --git-dir)/steward-reviewed"`.
   After REFACTORED, do not sign off: the orchestrator commits your edits and runs you again.
+- Every run is a fresh review of the whole range. If the orchestrator resumes you or asks you to "check only" a commit, still review `origin/main...HEAD` in full before signing off.
 - Your NET-NEW and REMOVED lists go into the PR description verbatim. "None" only when it is true: new state, functions, options, files and helpers all count.
