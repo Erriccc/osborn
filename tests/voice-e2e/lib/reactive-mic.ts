@@ -122,23 +122,28 @@ export async function speakWav(page: Page, wavPath: string) {
  *  2. macOS `say`
  *  3. espeak-ng (Linux)
  */
-export async function speakText(page: Page, text: string, opts?: { keepWav?: string; onPlayStart?: () => void }) {
+export async function speakText(page: Page, text: string, opts?: { keepWav?: string; onPlayStart?: () => void }): Promise<{ provider: string; synthMs: number; playMs: number }> {
   const base = join(tmpdir(), `osborn-utt-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
   const wav = `${base}.wav`
   try {
-    await synthesize(text, base)
+    const t = Date.now()
+    const provider = await synthesize(text, base)
+    const synthMs = Date.now() - t
     // keepWav: a copy of exactly what was spoken, so proof clips can carry the
     // tester's side of the conversation (the mic feed never reaches speakers).
     if (opts?.keepWav) { try { copyFileSync(wav, opts.keepWav) } catch { /* proof is best-effort */ } }
     opts?.onPlayStart?.()
+    const p = Date.now()
     await speakWav(page, wav)
+    return { provider, synthMs, playMs: Date.now() - p }
   } finally {
     rmSync(`${base}.aiff`, { force: true })
     rmSync(wav, { force: true })
   }
 }
 
-async function synthesize(text: string, base: string): Promise<void> {
+/** Synthesizes `text` to `${base}.wav`; returns which provider spoke. */
+async function synthesize(text: string, base: string): Promise<string> {
   const { optionalEnvKey } = await import('./env')
   const { writeFileSync } = await import('fs')
   // Soniox TTS (tts-rt-v1) — preferred mouth: real-time WebSocket that streams
@@ -148,7 +153,7 @@ async function synthesize(text: string, base: string): Promise<void> {
   if (soniox) {
     try {
       writeFileSync(`${base}.wav`, await sonioxTTS(text, soniox))
-      return
+      return 'soniox'
     } catch (e) {
       console.warn('[reactive-mic] Soniox TTS error — falling back:', e)
     }
@@ -165,10 +170,11 @@ async function synthesize(text: string, base: string): Promise<void> {
         method: 'POST',
         headers: { Authorization: `Token ${deepgram}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
+        signal: AbortSignal.timeout(8000),
       })
       if (res.ok) {
         writeFileSync(`${base}.wav`, Buffer.from(await res.arrayBuffer()))
-        return
+        return 'deepgram'
       }
       console.warn(`[reactive-mic] Deepgram Aura TTS ${res.status} — falling back`)
     } catch (e) {
@@ -181,21 +187,23 @@ async function synthesize(text: string, base: string): Promise<void> {
       method: 'POST',
       headers: { Authorization: `Bearer ${openai}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'tts-1', voice: 'onyx', input: text, response_format: 'wav' }),
-    })
-    if (res.ok) {
+      signal: AbortSignal.timeout(8000),
+    }).catch(() => null)
+    if (res?.ok) {
       writeFileSync(`${base}.wav`, Buffer.from(await res.arrayBuffer()))
-      return
+      return 'openai'
     }
-    console.warn(`[reactive-mic] OpenAI TTS ${res.status} — falling back to local synth`)
+    console.warn(`[reactive-mic] OpenAI TTS ${res?.status ?? 'error'} — falling back to local synth`)
   }
   try {
     execSync(
       `say -o "${base}.aiff" ${JSON.stringify(text)} && afconvert -f WAVE -d LEI16@44100 -c 1 "${base}.aiff" "${base}.wav"`,
       { stdio: 'pipe' },
     )
-    return
+    return 'say'
   } catch { /* not macOS */ }
   execSync(`espeak-ng -w "${base}.wav" ${JSON.stringify(text)}`, { stdio: 'pipe' })
+  return 'espeak'
 }
 
 /** Synthesize `text` via Soniox real-time TTS → a complete WAV Buffer (24kHz mono PCM16). */
@@ -214,7 +222,7 @@ async function sonioxTTS(text: string, apiKey: string): Promise<Buffer> {
       if (err) reject(err)
       else resolve(pcmToWav(Buffer.concat(chunks), 24000))
     }
-    const timer = setTimeout(() => finish(new Error('Soniox TTS timeout')), 25000)
+    const timer = setTimeout(() => finish(new Error('Soniox TTS timeout')), 10000)  // then fall back
     ws.on('open', () => {
       ws.send(JSON.stringify({
         api_key: apiKey, model: 'tts-rt-v1-preview', language: 'en', voice: 'Maya',
@@ -255,4 +263,13 @@ function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
   header.write('data', 36)
   header.writeUInt32LE(pcm.length, 40)
   return Buffer.concat([header, pcm])
+}
+
+/** Synthesizes one short phrase and throws it away, so the first real turn
+ *  doesn't pay for a cold speech connection. Returns the provider and time. */
+export async function warmUpSpeech(): Promise<{ provider: string; ms: number }> {
+  const base = join(tmpdir(), `osborn-warm-${Date.now()}`)
+  const t = Date.now()
+  try { return { provider: await synthesize('Ready.', base), ms: Date.now() - t } }
+  finally { rmSync(`${base}.aiff`, { force: true }); rmSync(`${base}.wav`, { force: true }) }
 }

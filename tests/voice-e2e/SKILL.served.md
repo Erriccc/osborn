@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 35
+Version: 36
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,10 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v36
+- `/say` reports which voice spoke (`voice`) and splits speaking into `synth` and `play` in `timings`. The engine warms its speech connection at boot, so the first turn isn't slow, and falls back to another voice after 10s.
+- Clips are encoded with the fastest preset, so a turn's clip is back in seconds.
 
 ## What's new in v35
 - Speaking in `/say` is capped at 30s per attempt, and it retries only when the turn has time left. Each turn's `timings` are also saved on its task (`/tasks`), so a turn whose response you gave up on can still be diagnosed.

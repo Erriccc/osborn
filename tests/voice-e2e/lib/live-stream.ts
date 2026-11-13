@@ -315,8 +315,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       writeFileSync(join(dir, 'list.txt'), lines.join('\n') + '\n')
       const ok = await new Promise<boolean>((resolve) => {
         const ff = spawn('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', join(dir, 'list.txt'),
-          '-vf', 'fps=10,pad=ceil(iw/2)*2:ceil(ih/2)*2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { stdio: 'ignore' })
-        const kill = setTimeout(() => ff.kill('SIGKILL'), 10000)  // a clip never holds a turn past 10s
+          '-vf', 'fps=10,pad=ceil(iw/2)*2:ceil(ih/2)*2', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { stdio: 'ignore' })
+        const kill = setTimeout(() => ff.kill('SIGKILL'), 20000)  // a clip never holds a turn past 20s
         ff.on('error', () => { clearTimeout(kill); resolve(false) }); ff.on('close', (c) => { clearTimeout(kill); resolve(c === 0) })
       })
       if (!ok) { console.log('[live-stream] clip failed — ffmpeg unavailable'); return null }
