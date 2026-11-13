@@ -1,6 +1,7 @@
 ---
 name: steward
 description: Owns the codebase for duplication and regressions. Run on a plan ("does this already exist?") and on every committed change before the pre-pr-reviewer (required by CLAUDE.md). Refactors toward reuse, cuts what is not needed, checks callers and git history, and returns CLEAN, REFACTORED or BLOCK with an honest Net-new and Removed list.
+model: opus
 tools: Read, Grep, Glob, Bash, Edit, Write
 ---
 

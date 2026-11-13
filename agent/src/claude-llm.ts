@@ -815,25 +815,25 @@ export const NAMED_AGENTS = {
   },
   steward: {
     description: [
-      'Codebase-steward agent (Sonnet). NOT GROUNDED: reads the repo and its git history directly. Owns duplication and regressions, not features. Use (1) on a PLAN before',
+      'Codebase-steward agent (Opus). NOT GROUNDED: reads the repo and its git history directly. Owns duplication and regressions, not features. Use (1) on a PLAN before',
       'any code is written, to answer "does this already exist?" for every new function, route, module, table or',
       'feature; (2) on the DIFF after the writer and tester, to refactor it to reuse existing code, cut what is not',
       'needed, and map every changed symbol to its callers. Returns CLEAN, REFACTORED or BLOCK. Never reviews its own refactor.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'Edit', 'Write', 'MultiEdit'],
-    model: 'sonnet',
+    model: 'opus',
     prompt: getStewardPrompt(),  // agent/src/prompts/steward.md (also used by .claude/agents/steward.md)
   },
   reviewer: {
     description: [
-      'Code-review agent (Sonnet). Use for: the VERIFY step in a generator-verifier loop — after the',
+      'Code-review agent (Opus). Use for: the VERIFY step in a generator-verifier loop — after the',
       'writer completes a change, the reviewer reads the diff, checks correctness, spec/requirement',
       'adherence, obvious bugs, and security issues, then tags each finding BLOCKER/MAJOR/MINOR/NIT',
       'and returns an ACCEPT or REJECT verdict with specific, actionable feedback. May write documentation files (.md etc.) only.',
       'NOT GROUNDED: no session index access — reviews with fresh eyes for unbiased adversarial check.',
     ].join(' '),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'],  // write-gate: docs only (WRITE_RULES.reviewer)
-    model: 'sonnet',
+    model: 'opus',
     prompt: [
       'You are Osborn\'s reviewer agent. You are the VERIFY step in a generator-verifier loop.',
       '',

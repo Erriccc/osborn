@@ -7,7 +7,7 @@ import { usePanelExclusive, useViewportClamp } from './shared'
 // Plain-language, user-facing one-liners for the built-in sub-agents. The raw
 // `description` is a system-prompt instruction full of jargon ("GROUNDED",
 // recall store, "tool calls") — a stranger needs the job, not the config.
-const AGENT_BLURBS: Record<string, string> = {
+export const AGENT_BLURBS: Record<string, string> = {
   researcher: 'Digs through your code and the web to gather facts and examples.',
   reasoner: 'Thinks through hard problems and writes a plan — it doesn’t edit files.',
   writer: 'Makes the actual code changes — edits files and runs commands.',

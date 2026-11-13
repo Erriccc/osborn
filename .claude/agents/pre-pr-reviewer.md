@@ -1,6 +1,7 @@
 ---
 name: pre-pr-reviewer
 description: Adversarial pre-PR review. Run on a branch before opening or updating a pull request (required by CLAUDE.md). Hunts regressions and ownership problems, and duplicated or reinvented logic, so the codebase stops growing with code that already exists. Read-only.
+model: opus
 tools: Read, Grep, Glob, Bash
 ---
 
