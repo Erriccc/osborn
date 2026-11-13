@@ -35,44 +35,33 @@ function rateLimited(ip: string): boolean {
   return false
 }
 
-/** Record the lead. Never throws, so a store outage cannot reach the visitor;
- *  every failure is logged, because a dropped lead is invisible otherwise. */
+/** Record the lead. Never throws, so a store outage cannot reach the visitor. */
 async function recordLead(email: string): Promise<void> {
-  // 1) SECURITY DEFINER RPC as anon (works without the service-role key).
-  //    createSupabaseAnon pins db.schema = public, which an RPC needs here.
-  const anon = createSupabaseAnon()
-  if (anon) {
-    try {
+  try {
+    // 1) SECURITY DEFINER RPC as anon: the only write path a guest's role has.
+    //    createSupabaseAnon pins db.schema = public, which the RPC needs.
+    const anon = createSupabaseAnon()
+    if (anon) {
       const { error } = await anon.rpc('record_demo_lead', { p_email: email })
       if (!error) return
-      // Includes PGRST202/42883 — migration 017 not applied, every lead dropped.
+      // Includes PGRST202/42883 — migration 017 unapplied, every lead dropped.
       console.error('[demo-access] record_demo_lead failed:', error.message)
-    } catch (err) {
-      console.error('[demo-access] record_demo_lead threw:', err)
     }
-  }
 
-  // 2) Service-role upsert, keeping the earliest created_at. Unset on Railway,
-  //    so this is the path for local and self-hosted deployments.
-  const sb = serviceClient()
-  if (!sb) {
-    console.error('[demo-access] lead not stored: no RPC and no service-role key')
-    return
-  }
-  try {
-    const { data: existing } = await sb
-      .from('demo_leads')
-      .select('email')
-      .eq('email', email)
-      .maybeSingle()
-
+    // 2) Service-role upsert, keeping the earliest created_at. The key is unset
+    //    on Railway, so this is the local / self-hosted path.
+    const sb = serviceClient()
+    if (!sb) {
+      console.error('[demo-access] lead not stored: no RPC and no service-role key')
+      return
+    }
+    const { data: existing } = await sb.from('demo_leads').select('email').eq('email', email).maybeSingle()
     const { error } = existing
       ? await sb.from('demo_leads').update({ last_seen_at: new Date().toISOString() }).eq('email', email)
       : await sb.from('demo_leads').insert({ email, source: 'login' })
-
     if (error) console.error('[demo-access] write failed:', error.message)
   } catch (err) {
-    console.error('[demo-access] write threw:', err)
+    console.error('[demo-access] lead not stored:', err)
   }
 }
 
@@ -93,7 +82,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Invalid request.' }, { status: 400 })
   }
 
-  if (!EMAIL_RE.test(email)) {
+  if (email.length > 320 || !EMAIL_RE.test(email)) {
     return NextResponse.json({ ok: false, error: 'Enter a valid email address.' }, { status: 400 })
   }
 

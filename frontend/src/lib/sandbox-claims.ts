@@ -42,8 +42,6 @@ function isMissingFunction(err: { code?: string } | null | undefined): boolean {
   return !!err && (err.code === 'PGRST202' || err.code === '42883')
 }
 
-/** Service-role client, or null when SUPABASE_SERVICE_ROLE_KEY is absent
- *  (it is not set on Railway — every caller must handle null). */
 export function serviceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY

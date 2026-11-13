@@ -8,7 +8,7 @@ import { createClient } from '@supabase/supabase-js'
  * context at all — just the public URL + anon key. That keeps the public
  * library surface (/p/..., sitemap.ts) statically cacheable / ISR-friendly.
  *
- * SECURITY: only ever READ the `public_content` VIEW through this, which
+ * SECURITY: only ever use this to read the `public_content` VIEW, which
  * exposes a safe, published-only column list (migration 007). Never read
  * `content_items` through this client.
  */
