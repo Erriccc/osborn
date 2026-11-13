@@ -44,8 +44,9 @@ export interface RoleSpec {
   historyFirst?: boolean
   /** Its final message is parsed into a steward verdict card. */
   verdict?: boolean
-  /** Verifier chain: dispatched beside it (parallelAtStart) and pushed to the orchestrator when it finishes (afterReminder). */
-  chain?: { next: Role[]; parallelAtStart?: Role[]; afterReminder: string }
+  /** Verifier chain: dispatched beside it (parallelAtStart) and run after it (next). The text pushed to the
+   *  orchestrator when it finishes is a prompt: prompts/chain-after-<role>.md (getChainReminder). */
+  chain?: { next: Role[]; parallelAtStart?: Role[] }
 }
 
 export const ROLES: Record<Role, RoleSpec> = {
@@ -55,13 +56,6 @@ export const ROLES: Record<Role, RoleSpec> = {
     write: 'workspace',
     chain: {
       next: ['reasoner'],
-      afterReminder:
-        'The researcher sub-agent just finished. Before you finalize, you MUST now use the Task tool to ' +
-        'dispatch the `reasoner` GATE to judge whether the research is complete and well-sourced for the ' +
-        'original question — it returns GATE: PASS or GATE: NEEDS-MORE. ' +
-        'If it returns NEEDS-MORE, dispatch the `researcher` again with the gaps it named and then re-gate — ' +
-        'at most 2 rounds, after which surface the outcome to the user rather than looping. ' +
-        "This is the research analogue of writer→reviewer: don't rely on the findings until an independent agent has vetted them.",
     },
   },
   reasoner: { summary: 'Thinks through hard problems and gates research. Does not edit files.', write: 'workspace' },
@@ -70,10 +64,6 @@ export const ROLES: Record<Role, RoleSpec> = {
     write: 'workspace',
     chain: {
       next: ['steward', 'writer'],
-      afterReminder:
-        'The planner sub-agent just finished. Before the writer starts, use the Task tool to dispatch the `steward` ' +
-        'in PLAN MODE on that plan: for every new function, route, module, table or feature it answers "does this already exist?". ' +
-        'Give the writer the plan WITH the steward\'s reuse map.',
     },
   },
   writer: {
@@ -84,20 +74,11 @@ export const ROLES: Record<Role, RoleSpec> = {
     chain: {
       next: ['tester', 'steward', 'reviewer'],
       parallelAtStart: ['tester'],
-      afterReminder:
-        'The writer sub-agent just finished. Before you finalize, you MUST now use the Task tool to: ' +
-        "(1) RUN the tester's tests against the new implementation and report PASS/FAIL; " +
-        '(2) dispatch the `steward` on the diff (diff mode), passing the task and, for a fix, its root cause and evidence — it refactors toward reuse and returns CLEAN, REFACTORED or BLOCK; ' +
-        "(3) if it REFACTORED, RUN the tests again; (4) dispatch the `reviewer` on the final diff for a VERDICT. " +
-        'If the steward returns BLOCK, stop and ask the user the decision it names. ' +
-        'If tests FAIL or the reviewer REJECTs, dispatch the `writer` to fix and then re-verify (steward included) — ' +
-        'at most 2 fix rounds, after which surface the outcome to the user rather than looping. ' +
-        "In any PR description, put the steward's ROOT CAUSE under Why, and its NET-NEW and REMOVED lists under those headings.",
     },
   },
   tester: { summary: 'Writes and runs tests. May write test files only.', write: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true } },
   steward: {
-    summary: 'Guards against duplication and regressions; its verdict and sign-off unlock commits and PRs.',
+    summary: 'Guards against duplication and regressions; its verdict shows as a card in chat.',
     write: 'anywhere',  // refactors the writer's diff in place
     verdict: true,
   },

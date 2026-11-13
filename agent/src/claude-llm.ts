@@ -12,7 +12,7 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
-import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getGroundingBlock, getRecalledContextBlock } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock } from './prompts.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
 import { appendCompactionRecord, countTranscriptRows } from './compaction-log.js'
 import { getEmbedder } from './embedder.js'
@@ -1090,7 +1090,7 @@ export function decideWrite(
 // ── Verifier chaining (Pattern #1) ──────────────────────────────────────────
 // Verifiers are real named Task sub-agents. The chain is a role property
 // (agent-store.ts ROLES[role].chain): parallelAtStart is enforced by the
-// orchestrator prompt; afterReminder is pushed into the MAIN agent at
+// orchestrator prompt; its prompts/chain-after-<role>.md reminder is pushed into the MAIN agent at
 // SubagentStop so it dispatches the next verifier(s) as real Tasks.
 // Prepended to a verifier-chain reminder pushed into the MAIN agent at SubagentStop. Keeps the
 // dispatch SILENT — the model should emit ONLY the Task tool call(s), no spoken/streamed text —
@@ -3262,21 +3262,21 @@ class ClaudeLLMStream extends llm.LLMStream {
               }
               // Pattern #1 verifier chaining — CORRECT timing (moved here from PostToolUse).
               // SubagentStop fires at REAL completion. When a chained producer (writer/researcher)
-              // finishes, push its afterReminder into the MAIN agent's streaming input so the main
+              // finishes, push its chain reminder (prompts/chain-after-<role>.md) into the MAIN agent's streaming input so the main
               // agent dispatches the next verifier(s) as real Task sub-agents (verdicts return
               // inline). Only roles with a chain (writer/planner/researcher) push a reminder, so
               // verifiers (reviewer/tester/reasoner/steward) never re-chain. Dedup on agent_id guards a
               // double-fired SubagentStop; a fresh fix-round writer has a NEW id → re-chains (the
               // intended bounded loop). Guarded on a live session so we never cold-start a query
               // just to deliver a reminder. Silent-dispatch prefix keeps it off the voice.
-              const chainLink = atRole ? ROLES[atRole].chain : undefined
+              const chainReminder = atRole && ROLES[atRole].chain ? getChainReminder(atRole) : null
               // Dedup MUST key on the REAL agent_id, never the fabricated 'sa-<ts>' fallback used
               // above for status/emit — a synthetic id is unique every call and would defeat the
               // double-fire guard. If the SDK omits agent_id we can't dedup safely, so skip chaining.
-              if (chainLink?.afterReminder && input?.agent_id && this.#llmRef.hasSession() && this.#llmRef.markChainDispatched(input.agent_id)) {
+              if (chainReminder && input?.agent_id && this.#llmRef.hasSession() && this.#llmRef.markChainDispatched(input.agent_id)) {
                 console.log(`[DISPATCH] Pattern#1 chain (SubagentStop): ${at} done → pushing verify reminder to main agent`)
                 try {
-                  this.#llmRef.pushMessage(SILENT_VERIFY_PREFIX + chainLink.afterReminder, sdkOptions, {
+                  this.#llmRef.pushMessage(SILENT_VERIFY_PREFIX + chainReminder, sdkOptions, {
                     onSessionId: this.#onSessionId,
                     onCheckpoint: this.#onCheckpoint,
                     eventEmitter: this.#eventEmitter,

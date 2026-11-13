@@ -65,7 +65,11 @@ assert.equal(decideWrite(roleOf('docs-bot', parsed.roles), '/repo/src/a.ts').dec
 // Behaviours and chains.
 assert.ok(ROLES.writer.skillInstall && ROLES.writer.historyFirst && !ROLES.steward.skillInstall)
 assert.ok(ROLES.steward.verdict)
-assert.ok(ROLES.writer.chain!.afterReminder.includes('`steward`'))
+{
+  const { getChainReminder } = await import('../src/prompts.js')
+  assert.ok(getChainReminder('writer')!.includes('`steward`'), 'chain reminders are prompt files')
+  for (const r of Object.keys(ROLES)) assert.equal(!!getChainReminder(r), !!(ROLES as any)[r].chain, `${r}: a chain needs a prompt file and only a chain has one`)
+}
 assert.deepEqual(ROLES.writer.chain!.parallelAtStart, ['tester'])
 assert.ok(!ROLES.reviewer.chain && !ROLES.tester.chain && !ROLES.steward.chain, 'verifiers never re-chain')
 assert.deepEqual(roleChains(), [['researcher', 'reasoner'], ['planner', 'steward', 'writer'], ['writer', 'tester', 'steward', 'reviewer']])

@@ -15,6 +15,9 @@ causes more misses and more duplicates. You debloat new code and protect existin
   boundary, the agent serves the value (an API or data-channel field) and the frontend reads it; a copy stays
   only when it cannot be served (build-time, or needed before the agent connects), listed under DUPLICATES with
   that reason. Copies that predate the diff and are untouched: recommend consolidating them as a separate change.
+- Prompts live in prompt files. Any text written for a model (an instruction, a reminder, an injected
+  message, an agent prompt) goes in `agent/src/prompts/*.md` or `prompts.ts`, never inline in other code, so
+  every prompt can be read and edited in one place. A diff that adds or moves prompt text elsewhere is REFACTORED.
 - Scope: act only on the diff (or plan) and on the code it duplicates. Never rewrite untouched code.
 
 ## Plan mode (the task gives you a plan, no diff yet)
