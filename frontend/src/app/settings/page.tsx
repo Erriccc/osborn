@@ -737,6 +737,10 @@ export default function SettingsPage() {
   /** Admin board discoverability: show the row only when the SERVER confirms
    *  this email is in ADMIN_EMAILS. Shares the dashboard menu's probe. */
   const isAdminUser = useIsAdmin(user)
+  const skillRequest = (path: string, method: 'GET' | 'POST' = 'GET') =>
+    fetch(`${agentUrl.replace(/\/$/, '')}${path}`, { method, headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {} })
+      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+  const storeRequest = useCallback((path: string, method: 'GET' | 'POST' = 'GET') => skillRequest(path, method), [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (
@@ -1194,9 +1198,6 @@ export default function SettingsPage() {
 
   // Skill store actions go to the agent's HTTP API (same rules as the chat's
   // skill_* data messages).
-  const skillRequest = (path: string, method: 'GET' | 'POST' = 'GET') =>
-    fetch(`${agentUrl.replace(/\/$/, '')}${path}`, { method, headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {} })
-      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
   const skillAction = (path: string) => {
     setSkillError(null)
     skillRequest(path, 'POST').then(({ ok, d }) => {
@@ -1205,7 +1206,6 @@ export default function SettingsPage() {
     }).catch(() => setSkillError('Could not reach your machine'))
   }
 
-  const storeRequest = useCallback((path: string, method: 'GET' | 'POST' = 'GET') => skillRequest(path, method), [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
   const storeTabs = (
     <div role="tablist" className="mb-3 flex gap-1.5">
       {(['installed', 'browse'] as const).map((t) => (
