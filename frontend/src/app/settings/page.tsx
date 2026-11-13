@@ -4,13 +4,6 @@ import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { MagnifyingGlass, Brain, PenNib, Robot, TestTube, ListChecks, ShieldCheck, Eye } from '@phosphor-icons/react'
 import { AGENT_BLURBS } from '@/components/voice/AgentsPopover'
-
-// Role glyphs for the Agents list, keyed lower-case like AGENT_BLURBS beside it.
-// Module scope: one table, not a fresh object per row per render.
-const AGENT_GLYPHS: Record<string, typeof Robot> = {
-  researcher: MagnifyingGlass, reasoner: Brain, writer: PenNib,
-  tester: TestTube, planner: ListChecks, steward: ShieldCheck, reviewer: Eye,
-}
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
@@ -19,6 +12,13 @@ import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
+
+// Role glyphs for the Agents list, keyed lower-case like AGENT_BLURBS beside it.
+// Module scope: one table, not a fresh object per row per render.
+const AGENT_GLYPHS: Record<string, typeof Robot> = {
+  researcher: MagnifyingGlass, reasoner: Brain, writer: PenNib,
+  tester: TestTube, planner: ListChecks, steward: ShieldCheck, reviewer: Eye,
+}
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
 // fall back to the uppercased code (still tells you WHERE-ish).
@@ -1188,7 +1188,9 @@ export default function SettingsPage() {
           dashAgents.map((a) => {
             // Keyed like AGENT_BLURBS below it, which lower-cases: reading the
             // raw name here cost "Steward" its icon while it kept its blurb.
-            const key = a.name.toLowerCase()
+            // `?.` is load-bearing despite the type — /agents rows are taken on
+            // trust (Array.isArray only), so a nameless row must not throw.
+            const key = a.name?.toLowerCase() ?? ''
             const Glyph = AGENT_GLYPHS[key] ?? Robot
             return (
               <div key={a.name} className="flex gap-3 px-4 py-3">

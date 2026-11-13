@@ -63,12 +63,10 @@ export function useViewportClamp<T extends HTMLElement = HTMLDivElement>(open: b
 }
 
 // ── Header-panel geometry ────────────────────────────────────────────────
-// A viewport-anchored bottom sheet. A panel opened from the burger sheet keeps
-// this at every width: its hideTrigger wrapper renders EMPTY, so there is no
-// button to hang under, and the sm+ rules below would anchor it to a zero-height
-// box in the middle of the tree (useViewportClamp only clamps horizontally, so
-// it cannot pull it back). The sheet is reachable only under sm, but it survives
-// a resize past that breakpoint while open.
+// Viewport-anchored bottom sheet: button-anchored panels jut off-screen when
+// the trigger sits mid-header (user screenshot 2026-08-01). A hideTrigger panel
+// keeps it at every width — there is no trigger to anchor to, and
+// useViewportClamp only clamps horizontally, so it could not pull one back.
 export const PANEL_BOTTOM_SHEET =
   'fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto z-50 bg-gray-900 ' +
   'border border-gray-700/60 rounded-t-2xl shadow-2xl pb-[env(safe-area-inset-bottom)]'
