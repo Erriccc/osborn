@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import type { BackgroundFlow } from '../LogsDrawer'
 import { usePanelExclusive, useViewportClamp } from './shared'
 
 // Plain-language, user-facing one-liners for the built-in sub-agents. The raw
@@ -34,12 +35,10 @@ export interface UserAgentDraft {
   tools: string[]
 }
 
-// Live sub-agent runs (the same flows the Activity drawer's Running tab shows).
-export interface AgentActivity { agentType: string; status: string; task?: string; lastMessage?: string }
-
 export function AgentsPopover({ agents, activity, disabled, onSaveAgent, onDeleteAgent, removed, onRestoreAgent, requestOpen, hideTrigger }: {
   agents?: NamedAgent[]
-  activity?: AgentActivity[]
+  /** Live sub-agent runs — the same flows the Activity drawer's Running tab shows. */
+  activity?: BackgroundFlow[]
   disabled?: boolean
   onSaveAgent?: (a: UserAgentDraft) => void
   onDeleteAgent?: (name: string, isCustom: boolean) => void
@@ -56,7 +55,16 @@ export function AgentsPopover({ agents, activity, disabled, onSaveAgent, onDelet
   const [deleteArm, setDeleteArm] = useState<string | null>(null)
   const count = agents?.length ?? 0
   const runsOf = (name: string) => (activity ?? []).filter((f) => f.agentType?.toLowerCase() === name.toLowerCase())
-  const working = (activity ?? []).filter((f) => f.status === 'running').length
+  const isWorking = (name: string) => runsOf(name).some((f) => f.status === 'running')
+  const working = (agents ?? []).filter((a) => isWorking(a.name)).length
+  // "finished" only for a run that ended in the last 10 minutes (flows stay listed all session).
+  const finishedAt = useRef(new Map<string, number>())
+  const wasWorking = useRef(new Set<string>())
+  for (const a of agents ?? []) {
+    if (isWorking(a.name)) wasWorking.current.add(a.name)
+    else if (wasWorking.current.delete(a.name)) finishedAt.current.set(a.name, Date.now())
+  }
+  const recentlyFinished = (name: string) => Date.now() - (finishedAt.current.get(name) ?? 0) < 600000
   // Esc closes the popover (outside-click already closes via the backdrop).
   useEffect(() => {
     if (!open) return
@@ -160,7 +168,7 @@ export function AgentsPopover({ agents, activity, disabled, onSaveAgent, onDelet
                     </span>
                     <div className="flex items-center gap-2 shrink-0">
                       {live ? <span className="text-[10px] font-semibold text-amber-300 animate-pulse">● working</span>
-                        : runs.length > 0 && <span className="text-[10px] text-emerald-400">✓ finished</span>}
+                        : recentlyFinished(a.name) && <span className="text-[10px] text-emerald-400">✓ finished</span>}
                       <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20 uppercase tracking-wide">{a.model}</span>
                       {onDeleteAgent && (
                         <button
