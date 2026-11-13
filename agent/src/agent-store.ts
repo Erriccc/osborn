@@ -128,7 +128,7 @@ export function resolveRole(a: { role?: unknown; forkedFrom?: string; tools?: st
 /** The acting agent's role (null = the main orchestrator, or an agent we do not know). */
 export function roleOf(agentType: string | null | undefined, roles: Record<string, Role> = CORE_AGENT_ROLES): Role | null {
   if (!agentType) return null
-  return roles[agentType] ?? CORE_AGENT_ROLES[agentType] ?? null
+  return (Object.hasOwn(roles, agentType) ? roles[agentType] : undefined) ?? (Object.hasOwn(CORE_AGENT_ROLES, agentType) ? CORE_AGENT_ROLES[agentType] : null)
 }
 
 /** What a role unlocks, in plain words for the store. */

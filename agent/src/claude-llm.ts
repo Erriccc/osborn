@@ -2650,7 +2650,7 @@ class ClaudeLLMStream extends llm.LLMStream {
             // before they ever reach canUseTool, so this check is the only path that lets a
             // skill install through silently.
             const writeRole = roleOf(agentType as string | null, this.#opts.agentRoles)
-            if (writeRole && ROLES[writeRole].skillInstall && typeof agentType === 'string' && agentType in CORE_AGENT_ROLES && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
+            if (writeRole && ROLES[writeRole].skillInstall && typeof agentType === 'string' && Object.hasOwn(CORE_AGENT_ROLES, agentType) && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
               console.log(`✅ Auto-approved writer ${toolName} to skill dir: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }

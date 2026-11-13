@@ -39,6 +39,8 @@ assert.deepEqual(parsed.roles, { 'my-steward': 'steward', 'my-writer': 'writer',
 assert.equal(roleOf('writer'), 'writer')
 assert.equal(roleOf('writer', { writer: 'reader' } as any), 'reader', 'map wins (never populated for core names: parseUserAgents ignores them)')
 assert.equal(roleOf('my-steward', parsed.roles), 'steward')
+assert.equal(roleOf('constructor'), null, 'prototype keys are not agents')
+assert.equal(roleOf('constructor', { constructor: 'writer' } as any), 'writer', 'an own user role still resolves')
 assert.equal(roleOf('stranger', parsed.roles), null)
 assert.equal(roleOf(null, parsed.roles), null)
 
