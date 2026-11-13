@@ -45,7 +45,6 @@ export interface RoleSpec {
   /** Its final message is parsed into a steward verdict card. */
   verdict?: boolean
   /** Its prompt records the sign-off the commit/push/PR gate checks (steward-gate.ts). */
-  signsOff?: boolean
   /** Verifier chain: dispatched beside it (parallelAtStart) and pushed to the orchestrator when it finishes (afterReminder). */
   chain?: { next: Role[]; parallelAtStart?: Role[]; afterReminder: string }
 }
@@ -102,7 +101,6 @@ export const ROLES: Record<Role, RoleSpec> = {
     summary: 'Guards against duplication and regressions; its verdict and sign-off unlock commits and PRs.',
     write: 'anywhere',  // refactors the writer's diff in place
     verdict: true,
-    signsOff: true,
   },
   reviewer: { summary: 'Reviews the final diff for a verdict. May write documentation files only.', write: { extensions: /\.(md|markdown|mdx|txt|rst|adoc)$/i, label: 'documentation' } },
 }
@@ -121,7 +119,7 @@ export const inferRole = (tools?: string[] | null): Role =>
 /** Role of a non-core agent: the one set on it, else its parent's, else inferred from its tools. */
 export function resolveRole(a: { role?: unknown; forkedFrom?: string; tools?: string[] }): Role {
   if (isRole(a.role)) return a.role
-  if (a.forkedFrom && CORE_AGENT_ROLES[a.forkedFrom]) return CORE_AGENT_ROLES[a.forkedFrom]
+  if (a.forkedFrom && Object.hasOwn(CORE_AGENT_ROLES, a.forkedFrom)) return CORE_AGENT_ROLES[a.forkedFrom]
   return inferRole(a.tools)
 }
 
@@ -141,7 +139,6 @@ export function roleBehaviours(role: Role, core = true): string[] {
   if (r.skillInstall && core) out.push('Installs skills without asking for each file')  // built-in agents only
   if (r.historyFirst) out.push("Checks a file's history before its first edit")
   if (r.verdict) out.push('Its verdict shows as a card in chat')
-  if (r.signsOff) out.push('Its sign-off unlocks commits, pushes and PRs')
   if (r.chain?.parallelAtStart?.length) out.push(`Runs alongside the ${r.chain.parallelAtStart.join(', ')}`)
   if (r.chain) out.push(`When it finishes: ${r.chain.next.join(' → ')}`)
   return out

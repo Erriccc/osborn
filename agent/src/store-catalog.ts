@@ -112,7 +112,8 @@ async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): 
 }
 
 /** Turns a repo snapshot into catalog entries (pure apart from `read`). Returns the bodies too. */
-export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string> }> {
+export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string>; failed: number }> {
+  let failed = 0
   const paths = snap.paths
   const repoLicense = detectLicense(await read(paths.find((p) => /^LICEN[CS]E(\.md|\.txt)?$/i.test(p)) || 'LICENSE').catch(() => null))
   const market: Record<string, { category?: string }> = {}
@@ -129,7 +130,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
   })
   const bodies: Record<string, string> = {}
   const entries = (await mapLimit(hits, 8, async (h): Promise<CatalogEntry | null> => {
-    const md = await read(h.file).catch(() => null)
+    const md = await read(h.file).catch(() => { failed++; return null })
     if (!md) return null
     const { meta, body } = parseFrontMatter(md)
     const dir = h.kind === 'skill' ? posix.dirname(h.file) : h.file
@@ -155,7 +156,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
       ...(h.plugin ? { plugin: h.plugin, ...(market[h.plugin]?.category ? { category: market[h.plugin].category } : {}) } : {}),
     }
   })).filter((e): e is CatalogEntry => !!e)
-  return { entries, bodies }
+  return { entries, bodies, failed }
 }
 
 // ── Fetching ─────────────────────────────────────────────────────────────────
@@ -223,8 +224,14 @@ export async function loadSource(src: CatalogSource, opts: { refresh?: boolean; 
   const p = (async () => {
     try {
       const snap = await snapshot(src.repo)
-      const { entries, bodies } = await normaliseSource(src, snap, rawReader(src.repo, snap.sha))
+      const { entries, bodies, failed } = await normaliseSource(src, snap, rawReader(src.repo, snap.sha))
       const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies }
+      // Some files could not be read: never cache a partial catalog over a good one.
+      if (failed) {
+        const error = `${failed} file(s) could not be read from GitHub`
+        console.warn(`[store] ${src.id}: ${error}`)
+        return { ...(cached ?? fresh), error }
+      }
       mkdirSync(dirname(file), { recursive: true })
       writeFileSync(file + '.tmp', JSON.stringify(fresh))
       renameSync(file + '.tmp', file)

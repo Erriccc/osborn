@@ -107,7 +107,7 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
         setNote({ id: e.id, ok: true, text: `Installed as ${d.name} — available from the next session.` })
       } else {
         let name = d.draft.name, i = 2
-        while (takenAgentNames.has(name)) name = `${d.draft.name}-${i++}`
+        while (takenAgentNames.has(name)) { const suffix = `-${i++}`; name = `${d.draft.name.slice(0, 40 - suffix.length)}${suffix}` }
         const err = await onInstallAgent?.({ ...d.draft, name })
         if (err) { setNote({ id: e.id, ok: false, text: err }); return }
         setNote({ id: e.id, ok: true, text: `Added as ${name} (${d.draft.role}) — applies next session.` })

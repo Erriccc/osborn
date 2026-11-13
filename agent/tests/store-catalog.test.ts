@@ -20,7 +20,10 @@ assert.equal(parseFrontMatter('---\ndescription: >\n  one\n  two\n---\n').meta.d
 assert.equal(parseFrontMatter('no front matter').body, 'no front matter')
 
 const run = async () => {
-  const { entries, bodies } = await normaliseSource(src, { sha: fx.sha, paths: fx.paths }, read)
+  const { entries, bodies, failed } = await normaliseSource(src, { sha: fx.sha, paths: fx.paths }, read)
+  assert.equal(failed, 0)
+  const flaky = await normaliseSource(src, { sha: fx.sha, paths: fx.paths }, (p: string) => (/frontend-dev/.test(p) ? Promise.reject(new Error('429')) : read(p)))
+  assert.ok(flaky.failed > 0 && !flaky.entries.some((e) => e.name === 'frontend-dev'), 'a failed read is counted, so a partial catalog is not cached as good')
   const by = Object.fromEntries(entries.map((e) => [e.name, e]))
   assert.deepEqual(Object.keys(by).sort(), ['frontend-dev', 'pg-migrations', 'react-testing', 'sql-reviewer'], 'MCP entries and external_plugins are skipped')
 

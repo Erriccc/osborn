@@ -64,7 +64,7 @@ assert.equal(decideWrite(roleOf('docs-bot', parsed.roles), '/repo/src/a.ts').dec
 
 // Behaviours and chains.
 assert.ok(ROLES.writer.skillInstall && ROLES.writer.historyFirst && !ROLES.steward.skillInstall)
-assert.ok(ROLES.steward.verdict && ROLES.steward.signsOff)
+assert.ok(ROLES.steward.verdict)
 assert.ok(ROLES.writer.chain!.afterReminder.includes('`steward`'))
 assert.deepEqual(ROLES.writer.chain!.parallelAtStart, ['tester'])
 assert.ok(!ROLES.reviewer.chain && !ROLES.tester.chain && !ROLES.steward.chain, 'verifiers never re-chain')
@@ -85,4 +85,10 @@ console.log('agent-roles: all assertions passed')
   if (!roleBehaviours('writer', true).some((b) => /skills without asking/.test(b))) throw new Error('core writer lost skill install')
   if (roleBehaviours('writer', false).some((b) => /skills without asking/.test(b))) throw new Error('non-core writer must not auto-install skills')
   console.log('agent-roles: skill install is built-in only')
+}
+{
+  const { resolveRole } = await import('../src/agent-store.js')
+  if (typeof resolveRole({ forkedFrom: 'constructor', tools: ['Read'] }) !== 'string' || resolveRole({ forkedFrom: 'constructor', tools: ['Read'] }) !== 'reader')
+    throw new Error('forked_from=constructor must not inherit a prototype property')
+  console.log('agent-roles: forked_from uses own keys only')
 }
