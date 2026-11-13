@@ -95,19 +95,21 @@ const PAGE_RANGE_RE = /Rows in block: #(\d+)[–-]#(\d+)/
  */
 export function pickContentPeriod(db: string, sessionId: string, dir: string, m: ContentManifest, handoff?: LibraryPeriod | null): { period: LibraryPeriod; page: string } | { period: null; reason: 'no-page' | 'already-done' } {
   const isDone = (start: number) => ['done', 'no-pieces'].includes(m.periods[String(start)]?.status ?? '')
-  const hasPage = (p: LibraryPeriod) => existsSync(join(dir, pageFileName(p)))
+  const lib = readManifest(dir, sessionId)
+  // A written page's file comes from its manifest entry (written pages are frozen), else the scheme.
+  const fileOf = (p: LibraryPeriod) => lib.periods[String(p.startRowId)]?.file ?? pageFileName(p)
+  const hasPage = (p: LibraryPeriod) => existsSync(join(dir, fileOf(p)))
   if (handoff) {
     if (!hasPage(handoff)) return { period: null, reason: 'no-page' }
-    return isDone(handoff.startRowId) ? { period: null, reason: 'already-done' } : { period: handoff, page: pageFileName(handoff) }
+    return isDone(handoff.startRowId) ? { period: null, reason: 'already-done' } : { period: handoff, page: fileOf(handoff) }
   }
-  const lib = readManifest(dir, sessionId)
   const seg = librarySegments(db, lib)
   const recent = [...(seg.tail ? [seg.tail] : []), ...[...seg.closed].reverse()].slice(0, 3)
   let done = false
   for (const p of recent) {
     const le = lib.periods[String(p.startRowId)]
     if ((le && le.status !== 'ok') || !hasPage(p)) continue
-    if (!isDone(p.startRowId)) return { period: p, page: pageFileName(p) }
+    if (!isDone(p.startRowId)) return { period: p, page: fileOf(p) }
     done = true
   }
   return { period: null, reason: done ? 'already-done' : 'no-page' }

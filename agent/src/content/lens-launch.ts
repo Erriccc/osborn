@@ -20,6 +20,8 @@ export interface LensLaunchPayload {
   sessionId: string
   transcriptPath?: string
   cwd?: string
+  /** Session-end runs: Library + content steps only, not the profile lens (step 1). */
+  skipLens?: boolean
 }
 
 export type LensLaunchResult =
@@ -95,6 +97,7 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
         sessionId: payload.sessionId,
         transcriptPath: payload.transcriptPath,
         cwd: payload.cwd,
+        skipLens: !!payload.skipLens,
         lockDir: lockHeld ? projectDir : null,
       }),
       { mode: 0o600, flag: 'wx' },
@@ -128,28 +131,16 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
 }
 
 // Session-end Library run. Compaction (the hook trigger) needs ~750k tokens on a
-// 1M window, so it almost never fires; the agent also launches the lens when a
+// 1M window, so it almost never fires; the agent also launches the Library when a
 // session ends (disconnect, switch, cleanup). The worker is idempotent per period.
-type LastRun = { at: string; sessionId: string; reason: string; status: LensLaunchResult['status'] }
+type LastRun = { at: string; session: string; reason: string; status: LensLaunchResult['status'] }
 let lastRun: LastRun | null = null
-
-/** For /health: whether the keys are present (never their values) and the last session-end launch. */
-export function libraryStatus() {
-  return {
-    enabled: isContentLensEnabled(),
-    openrouterKey: !!(process.env.OPENROUTER_API_KEY || '').trim(),
-    syncToken: !!(process.env.OSBORN_SYNC_TOKEN || '').trim(),
-    lastRun,
-  }
-}
+export const lastLibraryRun = () => lastRun
 
 export function launchLibraryOnSessionEnd(sessionId: string | null | undefined, cwd: string | undefined, reason: string): LastRun | null {
   if (!sessionId) return null
-  const r = launchCompactionLens({ sessionId, cwd })
-  lastRun = { at: new Date().toISOString(), sessionId, reason, status: r.status }
-  const st = libraryStatus()
-  if (!st.openrouterKey) console.warn('⚠️ library: OPENROUTER_API_KEY is not set: no Library pages will be written')
-  else if (!st.syncToken) console.warn('⚠️ library: OSBORN_SYNC_TOKEN is not set: pages stay on this machine, nothing reaches /library')
-  console.log(`📚 library on session end (${reason}): ${sessionId.slice(0, 8)} → ${r.status}`)
+  const r = launchCompactionLens({ sessionId, cwd, skipLens: true })
+  lastRun = { at: new Date().toISOString(), session: sessionId.slice(0, 8), reason, status: r.status }
+  console.log(`📚 library on session end (${reason}): ${lastRun.session} → ${r.status}`)
   return lastRun
 }

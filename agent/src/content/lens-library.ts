@@ -163,8 +163,20 @@ const envNum = (k: string): number | undefined => {
  */
 export function librarySegments(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs()): Segmentation {
   const rows = loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
-  const written = Object.values(manifest.periods).filter(e => e.status === 'ok').map(e => e.endRowId + 1)
-  return segmentPeriods(rows, [...readCompactionBoundaries(db), ...written], minSpanMs)
+  // Written pages are frozen: they keep their rows, index and file whatever the period
+  // length is now. Only rows after the last written page are segmented, numbered on.
+  const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
+  const lastEnd = written.length ? Math.max(...written.map(e => e.endRowId)) : 0
+  const lastIndex = written.length ? Math.max(...written.map(e => e.index)) : 0
+  const frozen: LibraryPeriod[] = written.map(e => {
+    const recs = rows.filter(r => r.id >= e.startRowId && r.id <= e.endRowId)
+    const fromTs = recs[0]?.timestamp ?? '', toTs = recs[recs.length - 1]?.timestamp ?? ''
+    return { index: e.index, startRowId: e.startRowId, endRowId: e.endRowId, closedBy: typeof e.closedBy === 'number' ? e.closedBy : null,
+      rows: recs.length, fromTs, toTs, spanMs: recs.length ? Date.parse(toTs) - Date.parse(fromTs) : 0 }
+  })
+  const rest = segmentPeriods(rows.filter(r => r.id > lastEnd), readCompactionBoundaries(db), minSpanMs)
+  const renumber = (p: LibraryPeriod): LibraryPeriod => ({ ...p, index: p.index + lastIndex })
+  return { closed: [...frozen, ...rest.closed.map(renumber)], tail: rest.tail ? renumber(rest.tail) : null }
 }
 
 function libraryMinSpanMs(): number {

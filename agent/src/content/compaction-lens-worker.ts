@@ -46,6 +46,8 @@ interface Job {
   opts: LensRunOptions
   /** 'library' = the --library CLI entry: library step only. 'content' = the --content entry: content step only. */
   kind?: 'lens' | 'library' | 'content'
+  /** Session-end launch: skip step 1 (the profile lens). */
+  skipLens?: boolean
   library?: Pick<LibraryStepOptions, 'dry' | 'outDir'>
   content?: { dry: boolean; researchRefresh: boolean }
   lockDir: string | null
@@ -119,7 +121,7 @@ function parseJob(argv: string[]): Job {
     }
   }
   const argFile = argv[0]
-  let payload: { sessionId?: string; transcriptPath?: string; cwd?: string; lockDir?: string | null } = {}
+  let payload: { sessionId?: string; transcriptPath?: string; cwd?: string; lockDir?: string | null; skipLens?: boolean } = {}
   try {
     payload = JSON.parse(readFileSync(argFile, 'utf-8'))
   } finally {
@@ -134,6 +136,7 @@ function parseJob(argv: string[]): Job {
   if (!payload.sessionId) throw Object.assign(new Error('payload missing sessionId'), { lockDir, logDir })
   return {
     opts: { sessionId: payload.sessionId, transcriptPath: payload.transcriptPath, cwd: payload.cwd, mode: 'incremental' },
+    skipLens: payload.skipLens === true,
     lockDir,
     logDir,
     timeoutMs: INCREMENTAL_TIMEOUT_MS,
@@ -166,7 +169,7 @@ async function main(): Promise<number> {
     const t0 = Date.now()
     let lensErr: unknown = null
     // Step 1 — content lens (skipped by the --library entry).
-    if (job.kind !== 'library' && job.kind !== 'content') {
+    if (job.kind !== 'library' && job.kind !== 'content' && !job.skipLens) {
       try {
         const r = await runCompactionLens({
           ...job.opts,
