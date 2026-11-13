@@ -16,7 +16,8 @@ The runtime is further along than "nothing":
   tool, and `ClaudeLLM` already tracks dispatches end-to-end: `noteTaskDispatch`
   → `claimTaskDispatch` (SubagentStart) → a background-task registry with
   per-flow stop (`stopAgent` / `stopTask`). Per-user named agents arrive from
-  the frontend via `set_agents` and shadow the built-ins.
+  the frontend via `set_agents` and run beside the built-ins, which they can
+  never override (a fork is a new name; `agent/src/agent-store.ts`).
 - **A Tier-1-style triage already exists** for the single-speaker case:
   `agent/src/noise-gate.ts` classifies each utterance `directed | side_talk |
   ambiguous` (fail-open) before it reaches the agent. This is the nearest thing
