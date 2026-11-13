@@ -25,5 +25,6 @@ export type AgentRequest = (path: string, init?: { method?: 'GET' | 'POST'; body
 export const agentRequest = (agentUrl: string | null | undefined): AgentRequest => (path, init = {}) =>
   fetch(agentReadUrl(agentUrl, path), {
     method: init.method || 'GET',
-    ...(init.body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(init.body) } : {}),
+    // Every POST is JSON: the agent refuses store writes that are not (no cross-site form or text/plain POST).
+    ...(init.method === 'POST' || init.body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(init.body ?? {}) } : {}),
   }).then((r) => r.json().catch(() => ({})).then((d) => ({ ok: r.ok, d })))

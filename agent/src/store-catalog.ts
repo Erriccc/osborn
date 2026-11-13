@@ -8,7 +8,8 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, sep, posix } from 'node:path'
 import { promisify } from 'node:util'
 import MiniSearch from 'minisearch'
-import { storeName, draftRole, isAgentModel, parseFrontMatter, AGENT_LIMITS, type Role } from './agent-store.js'
+import { STOP as STOP_WORDS } from './content/lens-clip-window.js'
+import { storeName, draftRole, isAgentModel, parseFrontMatter, catalogOrigin, unpinnedOrigin, AGENT_LIMITS, type Role } from './agent-store.js'
 
 const run = promisify(execFile)
 
@@ -293,11 +294,6 @@ export function skillProvenance(skillsDir: string, folder: string): { source: st
   } catch { return undefined }
 }
 
-/** forked_from of an agent installed from the catalog (user_agents check, migration 016). */
-const catalogOrigin = (e: CatalogEntry) => `${e.source}:${e.repo}@${e.sha}/${e.path}`
-/** The same catalog file at any commit. */
-const unpinned = (origin: string) => origin.replace(/@[0-9a-f]{7,40}\//, '/')
-
 /** A user_agents draft for a catalog agent; the frontend saves it. Its role starts from its tools (draftRole). */
 export function agentDraft(entry: CatalogEntry, body: string): { name: string; description: string; prompt: string; model: string; tools: string[]; role: Role; forked_from: string } {
   const tools = entry.tools.filter((t) => !/^mcp__/.test(t))
@@ -313,8 +309,8 @@ export function agentDraft(entry: CatalogEntry, body: string): { name: string; d
 
 /** Ids of the entries already installed: a skill by its folder, an agent by a row installed from the same file. */
 export function installedIds(entries: CatalogEntry[], skillFolders: Set<string>, agentOrigins: string[]): Set<string> {
-  const origins = new Set(agentOrigins.map(unpinned))
-  return new Set(entries.filter((e) => (e.kind === 'skill' ? skillFolders.has(e.name) : origins.has(unpinned(catalogOrigin(e))))).map((e) => e.id))
+  const origins = new Set(agentOrigins.map(unpinnedOrigin))
+  return new Set(entries.filter((e) => (e.kind === 'skill' ? skillFolders.has(e.name) : origins.has(unpinnedOrigin(catalogOrigin(e))))).map((e) => e.id))
 }
 
 // ── Recommendations ──────────────────────────────────────────────────────────
@@ -322,7 +318,8 @@ export function installedIds(entries: CatalogEntry[], skillFolders: Set<string>,
 interface Signal { text: string; reason: string }
 interface Recommendation { id: string; score: number; reason: string }
 
-const STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'use', 'when', 'from', 'into', 'your', 'you', 'are', 'how', 'what', 'can', 'not', 'any', 'all', 'about', 'have', 'will', 'should', 'agent', 'skill', 'skills', 'agents', 'using', 'used', 'user', 'users', 'make', 'help', 'need', 'want', 'let', 'please', 'also', 'just', 'like', 'get', 'new', 'one', 'out', 'more', 'some', 'its', 'our', 'was', 'were', 'has', 'had', 'did', 'does', 'then', 'than', 'them', 'they', 'there', 'here', 'which', 'who', 'why'])
+// Stopwords: the shared English list plus words every catalog entry shares.
+const STOP = new Set([...STOP_WORDS, 'use', 'agent', 'skill', 'skills', 'agents', 'using', 'used', 'user', 'users', 'help', 'let', 'please', 'new'])
 const processTerm = (t: string) => { const w = t.toLowerCase(); return w.length < 3 || STOP.has(w) || /^\d+$/.test(w) ? null : w }
 
 /** Ranks entries against what the user does (installed skills, agents, recent session titles); installed ids are left out. */

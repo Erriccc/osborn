@@ -46,7 +46,8 @@ export interface ClipWindow {
   blocks: { side: 'before' | 'after'; firstRowId: number; lastRowId: number; score: number; kept: boolean }[]
 }
 
-const STOP = new Set(
+/** English stopwords for term matching (also used by the store catalog's recommendations). */
+export const STOP = new Set(
   ('the and for that this with you your are was were have has had not but just like what when then them they there ' +
     'their about from into would could should will can its it\'s i\'m don\'t that\'s okay yeah yes so um uh know ' +
     'mean really actually basically right going gonna wanna want need let\'s lets thing things also well even still ' +

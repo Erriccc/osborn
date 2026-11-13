@@ -17,6 +17,8 @@ export interface AgentListing {
   tools?: string[]
   core: boolean
   prompt?: string
+  /** A user agent's origin, for people: the built-in it was forked from, or 'owner/repo @sha7' for a catalog install. */
+  origin?: string
   role: Role
   /** The role's one-liner (for a built-in agent, its card text) and icon key. */
   summary: string
@@ -64,7 +66,7 @@ export const ROLES: Record<Role, RoleSpec> = {
     summary: 'Digs through your code and the web to gather facts; a reasoner checks them before they are used.',
     icon: 'search', write: 'workspace', chain: ['reasoner'],
   },
-  reasoner: { summary: 'Thinks through hard problems, writes plans and gates research. Does not edit files.', icon: 'brain', write: 'workspace' },
+  reasoner: { summary: 'Thinks through hard problems, writes plans and gates research. Writes notes in the session workspace only.', icon: 'brain', write: 'workspace' },
   planner: {
     summary: 'Breaks a task into ordered steps; the steward checks the plan for things that already exist.',
     icon: 'list', write: 'workspace', chain: ['steward', 'writer'],
@@ -139,13 +141,27 @@ export const describeRoles = () => ({
 export const storeName = (raw: unknown): string =>
   String(raw ?? '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
 
+// ── Catalog origins: forked_from of an agent installed from a store catalog ────
+// '<source>:<owner>/<repo>@<sha>/<path>' (user_agents check, migration 016).
+
+export const catalogOrigin = (e: { source: string; repo: string; sha: string; path: string }) => `${e.source}:${e.repo}@${e.sha}/${e.path}`
+/** The same catalog file at any commit. */
+export const unpinnedOrigin = (origin: string) => origin.replace(/@[0-9a-f]{7,40}\//, '/')
+/** Where a user agent came from, for people: its built-in parent's name, or 'owner/repo @sha7'. */
+const originLabel = (forkedFrom: string, core: CoreAgents): string | undefined => {
+  if (coreRole(forkedFrom, core)) return forkedFrom
+  const m = /^[^:]+:([^@]+)@([0-9a-f]{7})[0-9a-f]*\//.exec(forkedFrom)
+  return m ? `${m[1]} @${m[2]}` : undefined
+}
+
 /** Validates user_agents rows. Disabled rows are skipped; every other dropped
  *  row is reported with its reason (a core name: core agents cannot be overridden). */
 export function parseUserAgents(rows: unknown, core: CoreAgents): {
-  agents: Record<string, AgentDef>; roles: Record<string, Role>; dropped: { name: string; reason: string }[]
+  agents: Record<string, AgentDef>; roles: Record<string, Role>; origins: Record<string, string>; dropped: { name: string; reason: string }[]
 } {
   const agents: Record<string, AgentDef> = {}
   const roles: Record<string, Role> = {}
+  const origins: Record<string, string> = {}
   const dropped: { name: string; reason: string }[] = []
   for (const r of Array.isArray(rows) ? rows : []) {
     const name = storeName(r?.name)
@@ -161,8 +177,11 @@ export function parseUserAgents(rows: unknown, core: CoreAgents): {
       : prompt.length > AGENT_LIMITS.prompt ? `prompt longer than ${AGENT_LIMITS.prompt}`
       : ''
     if (reason) { dropped.push({ name: name || '(unnamed)', reason }); continue }
-    // Only a built-in parent matters here (its role and grounding); a catalog origin names none.
-    const from = storeName(r.forkedFrom ?? r.forked_from)
+    const rawFrom = String(r.forkedFrom ?? r.forked_from ?? '').trim()
+    const origin = originLabel(rawFrom, core)
+    if (origin) origins[name] = origin
+    // Only a built-in parent matters to the role and grounding; a catalog origin names none.
+    const from = storeName(rawFrom)
     roles[name] = resolveRole({ role: r.role, forkedFrom: from }, core)
     const tools: string[] | undefined = Array.isArray(r.tools) && r.tools.length ? r.tools.map(String) : undefined
     agents[name] = {
@@ -174,7 +193,7 @@ export function parseUserAgents(rows: unknown, core: CoreAgents): {
       ...(coreRole(from, core) && core[from].grounded ? { grounded: true } : {}),
     }
   }
-  return { agents, roles, dropped }
+  return { agents, roles, origins, dropped }
 }
 
 /** Effective agent set: every core agent, plus user agents whose names are free. */
@@ -185,7 +204,7 @@ export function mergeAgents<T>(core: Record<string, T>, user: Record<string, T> 
 }
 
 /** UI listing; withPrompts adds the core prompts (GET /agents only, never the data channel). */
-export function describeAgents(core: CoreAgents, user: Record<string, AgentDef> | null | undefined, roles: Record<string, Role> = {}, withPrompts = false): AgentListing[] {
+export function describeAgents(core: CoreAgents, user: Record<string, AgentDef> | null | undefined, roles: Record<string, Role> = {}, withPrompts = false, origins: Record<string, string> = {}): AgentListing[] {
   return Object.entries(mergeAgents<any>(core, user)).map(([name, a]) => {
     const isCore = Object.hasOwn(core, name)
     const role = roleOf(name, roles, core) ?? 'reader'
@@ -193,6 +212,7 @@ export function describeAgents(core: CoreAgents, user: Record<string, AgentDef> 
       name, description: a.description, model: a.model, tools: a.tools ? [...a.tools] : undefined, core: isCore, role,
       summary: ROLES[role].summary, icon: ROLES[role].icon, behaviours: roleBehaviours(role, isCore),
       ...(isCore && withPrompts ? { prompt: a.prompt } : {}),
+      ...(!isCore && Object.hasOwn(origins, name) ? { origin: origins[name] } : {}),
     }
   })
 }
@@ -211,7 +231,10 @@ export function parseFrontMatter(md: string): { meta: Record<string, unknown>; b
     const y = parseYaml(m[1])
     if (y && typeof y === 'object' && !Array.isArray(y)) meta = y as Record<string, unknown>
   } catch {
-    for (const kv of m[1].matchAll(/^([A-Za-z0-9_-]+):[ \t]*(.+)$/gm)) meta[kv[1]] = kv[2].trim().replace(/^(['"])(.*)\1$/, '$2')
+    for (const line of m[1].split(/\r?\n/)) {
+      const kv = /^([A-Za-z0-9_-]+):[ \t]*(.+)$/.exec(line)
+      if (kv) meta[kv[1]] = kv[2].trim().replace(/^(['"])(.*)\1$/, '$2')
+    }
   }
   for (const [k, v] of Object.entries(meta)) if (typeof v === 'string') meta[k] = v.trim()
   return { meta, body: md.slice(m[0].length) }
@@ -240,14 +263,19 @@ export function readUserSkill(skillsDir: string, name: unknown): { name: string;
   return folder && existsSync(p) ? { name: folder, content: readFileSync(p, 'utf-8') } : { error: 'skill not found' }
 }
 
-/** Writes a skill the user sent. A built-in name is accepted only while it is not
- *  installed (the served copy of a shipped skill); an installed built-in is never overwritten. */
+/** Writes a skill the user sent. A built-in name installs the packaged copy instead of the
+ *  sent body (it lists as built in, so it must be the shipped one; the Browser Screen Recorder
+ *  seed updates itself from the served copy); an installed built-in is never overwritten. */
 export function addUserSkill(skillsDir: string, pkgSkillsDir: string, name: unknown, content: unknown): SkillResult {
   const folder = storeName(name)
   const md = String(content ?? '').trim()
   if (!folder || !md) return { error: 'Name and content are required' }
   const dir = join(skillsDir, folder)
-  if (coreSkillNames(pkgSkillsDir).has(folder) && existsSync(join(dir, 'SKILL.md'))) return { error: `${folder} is a built-in skill — fork it under a new name` }
+  if (coreSkillNames(pkgSkillsDir).has(folder)) {
+    if (existsSync(join(dir, 'SKILL.md'))) return { error: `${folder} is a built-in skill — fork it under a new name` }
+    cpSync(join(pkgSkillsDir, folder), dir, { recursive: true })
+    return { ok: true }
+  }
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'SKILL.md'), md, 'utf-8')
   return { ok: true }

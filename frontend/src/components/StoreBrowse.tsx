@@ -74,10 +74,10 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   const [note, setNote] = useState<{ id: string; text: string; ok: boolean } | null>(null)
   const [justInstalled, setJustInstalled] = useState<Set<string>>(new Set())
 
-  // Names feed recommendations; catalog origins mark installed agents.
+  // Names feed recommendations; each row's forked_from lets the machine mark installed agents.
   const mine = useMemo(() => {
     const q = new URLSearchParams({ agents: (yours || []).map((r) => r.name).join(',') })
-    for (const r of yours || []) if (r.forked_from?.includes('@')) q.append('origin', r.forked_from)
+    for (const r of yours || []) if (r.forked_from) q.append('origin', r.forked_from)
     return q.toString()
   }, [yours])
   const load = useCallback((refresh = false) => {

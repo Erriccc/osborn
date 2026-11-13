@@ -20,6 +20,8 @@ export interface NamedAgent {
   tools?: string[]
   core: boolean
   prompt?: string
+  /** A user agent's origin as the machine words it: the built-in it forked, or 'owner/repo @sha7'. */
+  origin?: string
   role: string
   summary: string
   icon: string
@@ -35,12 +37,6 @@ export interface RolesData {
 }
 export const rolesData = (d: any): RolesData | null =>
   Array.isArray(d?.roles) && d.limits ? { roles: d.roles, chains: d.chains || [], models: d.models || [], limits: d.limits } : null
-
-/** Where an installed catalog agent came from: 'source:owner/repo@sha/path' → 'owner/repo @sha7'. */
-const originLabel = (from: string) => {
-  const m = /^[a-z0-9-]+:([^@]+)@([0-9a-f]{7})[0-9a-f]*\//.exec(from)
-  return m ? `${m[1]} @${m[2]}` : from
-}
 
 const ICONS: Record<string, typeof Robot> = { search: MagnifyingGlass, brain: Brain, pen: PenNib, test: TestTube, list: ListChecks, shield: ShieldCheck, eye: Eye, robot: Robot }
 
@@ -161,7 +157,8 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   /** Where "Browse catalogs" goes (omitted = no link). */
   browseHref?: string
 }) {
-  const core = agents.filter((a) => a.core)
+  // An older machine sends no roles and no core flags: list its agents read-only.
+  const core = roles ? agents.filter((a) => a.core) : agents
   const coreNames = new Set(core.map((a) => a.name))
   const mine = (yours || []).filter((r) => !coreNames.has(r.name))
   const taken = new Set([...core.map((a) => a.name), ...mine.map((r) => r.name)])
@@ -182,6 +179,8 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   const limits = roles?.limits
   const roleInfo = (role: string) => roles?.roles.find((r) => r.role === role)
   const canEdit = !!(onSave && yours && roles)
+  /** Where a user agent came from, as the machine labels it (enabled agents only). */
+  const originOf = (name: string) => agents.find((a) => a.name === name && !a.core)?.origin ?? 'a store catalog'
 
   const fork = async (a: NamedAgent) => {
     const prompt = await withPrompt(a)
@@ -217,14 +216,14 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
         </div>
       ) : null}
       <div>
-        <h5 className={heading}>Built in — maintained by Voice Native</h5>
+        <h5 className={heading}>{roles ? 'Built in — maintained by Voice Native' : 'Agents on your machine'}</h5>
         <div className="space-y-1.5">
           {core.length === 0 && <p className="text-[11px] text-[var(--text-muted)]">Connect your machine to see the built-in agents.</p>}
           {core.map((a) => (
-            <AgentCard key={a.name} icon={a.icon} title={<span className="capitalize">{a.name}</span>} badges={<><LockBadge />{status?.(a.name)}</>}
+            <AgentCard key={a.name} icon={a.icon} title={<span className="capitalize">{a.name}</span>} badges={<>{roles && <LockBadge />}{status?.(a.name)}</>}
               model={a.model} tools={a.tools} text={a.summary || a.description} textTitle={a.description} role={a.role} behaviours={a.behaviours} progress={progress?.(a.name)}
               actions={<>
-                {(a.prompt != null || getPrompt) && (
+                {(a.prompt != null || (getPrompt && roles)) && (
                   <button className={link} onClick={async () => { if (viewing === a.name) setViewing(null); else if (await withPrompt(a) != null) setViewing(a.name) }}>
                     {viewing === a.name ? 'Hide prompt' : 'View prompt'}
                   </button>
@@ -253,7 +252,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
           <div className={`${card} mb-2 space-y-1.5`}>
             {d.forked_from && (coreNames.has(d.forked_from)
               ? <p className="text-[10px] text-[var(--text-secondary)]">Forking <b className="capitalize">{d.forked_from}</b>. The built-in stays as it is; your fork is a separate agent that starts with its role.</p>
-              : <p className="text-[10px] text-[var(--text-secondary)]">Installed from <b>{originLabel(d.forked_from)}</b>.</p>)}
+              : <p className="text-[10px] text-[var(--text-secondary)]">Installed from <b>{originOf(d.name)}</b>.</p>)}
             <input value={d.name} disabled={!editing!.isNew} onChange={(e) => set({ name: e.target.value })} placeholder="agent-name (kebab-case)" className={field} />
             {nameError && d.name && <p className="text-[10px] text-red-400">{nameError}</p>}
             <input value={d.description} onChange={(e) => set({ description: e.target.value })} maxLength={limits.description} placeholder="When should the orchestrator use this agent?" className={field} />
@@ -287,7 +286,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
         )}
         <div className="space-y-1.5">
           {yours === null && <p className="text-[11px] text-[var(--text-muted)]">Sign in to create and fork agents.</p>}
-          {yours && !roles && <p className="text-[11px] text-[var(--text-muted)]">Connect your machine to create or edit agents.</p>}
+          {yours && !roles && <p className="text-[11px] text-[var(--text-muted)]">{agents.length ? 'Update osborn on your machine to create or edit agents.' : 'Connect your machine to create or edit agents.'}</p>}
           {yours && mine.length === 0 && !d && <p className="text-[11px] text-[var(--text-muted)]">No agents of your own yet. Fork a built-in or create one.</p>}
           {mine.map((r) => {
             const role = roleInfo(r.role)
@@ -304,7 +303,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
                   <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
                     {fromCore
                       ? <>Forked from <span className="capitalize">{r.forked_from}</span>.</>
-                      : <>From {originLabel(r.forked_from)}</>}
+                      : <>From {originOf(r.name)}</>}
                   </p>
                 )}
               </AgentCard>

@@ -384,7 +384,7 @@ function enumerateSkillsForCompaction(): string {
           blocks.push(`${header}${raw}`)
         } else {
           // Over budget → headings-only fallback (still enough to dedup + target a section).
-          const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '')
+          const { body } = parseFrontMatter(raw)
           const headings = (body.match(/^#{2,6}\s+.+$/gm) || [])
             .map(h => h.replace(/^#+\s+/, '').trim())
           blocks.push(`${header}(full body omitted — over injection budget)\nsections: ${headings.join(' | ') || '(none)'}`)

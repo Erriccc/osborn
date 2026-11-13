@@ -11,7 +11,7 @@ import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
 import { AgentStore, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, type RolesData } from '@/components/AgentStore'
 import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
-import { useSkillStore } from '@/lib/skill-store'
+import { useSkillStore, httpSkills } from '@/lib/skill-store'
 import { agentRequest } from '@/lib/agent-read'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
@@ -68,7 +68,8 @@ export default function SettingsPage() {
   const userAgents = useUserAgents()
   // Skills, agent prompts and the catalog: the agent's store routes, through the
   // authenticated /api/agent proxy (the same client the chat uses).
-  const skillStore = useSkillStore(agentUrl)
+  const skillHttp = useMemo(() => httpSkills(agentUrl), [agentUrl])
+  const skillStore = useSkillStore(skillHttp)
   const storeRequest = useMemo(() => agentRequest(agentUrl), [agentUrl])
   const [syncToken, setSyncToken] = useState<string | null>(null)
   const [dashSecrets, setDashSecrets] = useState<{ key: string; set: boolean; secret: boolean; masked: string; source: 'store' | 'env' | 'none' }[]>([])
@@ -157,7 +158,7 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!agentUrl) return
     const base = agentUrl.replace(/\/$/, '')
-    skillStore.load()
+    skillHttp.list().then((list) => { if (list) skillStore.setSkills(list) })
     storeRequest('agents').then(({ ok, d }) => {
       if (ok && Array.isArray(d?.agents)) setDashAgents(d.agents)
       setDashRoles(rolesData(d))

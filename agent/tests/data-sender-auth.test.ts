@@ -56,11 +56,13 @@ t('permission_response from osborn-agent (watch gateway) is accepted', () => {
 t('read-only queries are not gated', () => {
   assert.equal(checkControlSender('get_current_session', undefined, null).ok, true)
   assert.equal(checkControlSender('get_skills', 'user-other', CTRL).ok, true)
+  assert.equal(checkControlSender('skill_get', 'user-other', CTRL).ok, true)
 })
-t('user_text / list_sessions / set_agents from a non-controller are dropped', () => {
+t('user_text / list_sessions / set_agents / skill changes / agent prompts from a non-controller are dropped', () => {
   assert.equal(checkControlSender('user_text', 'user-other', CTRL).ok, false)
   assert.equal(checkControlSender('list_sessions', 'user-other', CTRL).ok, false)
   assert.equal(checkControlSender('set_agents', 'user-other', CTRL).ok, false)
+  for (const ty of ['skill_add', 'skill_fork', 'skill_remove', 'get_agent_prompt']) assert.equal(checkControlSender(ty, 'user-other', CTRL).ok, false, ty)
 })
 t('every type handleDataReceived handles is either gated or explicitly read-only', () => {
   const s = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'index.ts'), 'utf8')

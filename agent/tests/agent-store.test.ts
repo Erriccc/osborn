@@ -23,6 +23,12 @@ assert.deepEqual(parsed.dropped, [{ name: 'writer', reason: 'is a core agent (fo
 assert.deepEqual(Object.keys(parsed.agents).sort(), ['helper', 'my-writer'])
 assert.equal(parsed.roles['my-writer'], 'writer', 'a fork holds its parent\'s role')
 assert.equal((parsed.agents['my-writer'] as any).forkedFrom, undefined, 'fork origin stays out of the SDK definition')
+assert.deepEqual(parsed.origins, { 'my-writer': 'writer' })
+{
+  const cat = parseUserAgents([{ name: 'fe', description: 'd', prompt: 'p', forked_from: `wshobson-agents:wshobson/agents@${'a'.repeat(40)}/plugins/web/agents/fe.md` }], core)
+  assert.equal(describeAgents(core, cat.agents, cat.roles, false, cat.origins).find((a) => a.name === 'fe')!.origin, 'wshobson/agents @aaaaaaa', 'catalog origin label')
+  assert.equal(describeAgents(core, cat.agents, cat.roles, false, cat.origins).find((a) => a.name === 'writer')!.origin, undefined)
+}
 
 const merged = mergeAgents<any>(core, parsed.agents)
 assert.equal(merged.writer.prompt, 'WRITER PROMPT')
@@ -79,11 +85,11 @@ try {
   assert.ok('ok' in removeUserSkill(home, pkg, 'my-meetings'))
   assert.ok(!existsSync(join(home, 'my-meetings')))
 
-  // Adding: an installed built-in is never overwritten; a missing one takes the content sent (the served copy).
+  // Adding: an installed built-in is never overwritten; a missing one gets the packaged copy, not the body sent.
   assert.ok('error' in addUserSkill(home, pkg, 'meetings', 'new'))
   rmSync(join(home, 'meetings'), { recursive: true })
   assert.ok('ok' in addUserSkill(home, pkg, 'meetings', '# Served copy v9'))
-  assert.equal(readFileSync(join(home, 'meetings', 'SKILL.md'), 'utf-8'), '# Served copy v9')
+  assert.equal(readFileSync(join(home, 'meetings', 'SKILL.md'), 'utf-8'), readFileSync(join(pkg, 'meetings', 'SKILL.md'), 'utf-8'))
   assert.ok('error' in addUserSkill(home, pkg, 'x', '  '))
   assert.ok('ok' in addUserSkill(home, pkg, 'Mine', '# Mine v2'), 'a user skill can be replaced')
   assert.deepEqual(readUserSkill(home, 'mine'), { name: 'mine', content: '# Mine v2' })

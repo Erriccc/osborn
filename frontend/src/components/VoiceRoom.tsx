@@ -23,7 +23,7 @@ import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
 import { cacheTranscript, readCachedTranscript } from '@/lib/transcript-cache'
-import { agentReadUrl, agentRequest } from '@/lib/agent-read'
+import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
@@ -45,7 +45,7 @@ import { classifyRisk } from '@/lib/riskTier'
 import { TextInput, type AttachedFile } from './voice/TextInput'
 import { AgentsPopover } from './voice/AgentsPopover'
 import { SkillViewer, rolesData, type NamedAgent, type RolesData } from './AgentStore'
-import { useSkillStore } from '../lib/skill-store'
+import { useSkillStore, type SkillTransport } from '../lib/skill-store'
 import { useUserAgents } from '../lib/user-agents'
 import { SkillsPopover } from './voice/SkillsPanel'
 import { ControlMenu } from './voice/ControlMenu'
@@ -715,9 +715,7 @@ function VoiceRoomInner({
   const [outputsPreviewPath, setOutputsPreviewPath] = useState<string | null>(null)
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
-  // Skills (the machine's /skills routes, shared with Settings) and agents
-  const skillStore = useSkillStore(agentUrl)
-  const { skills, setSkills } = skillStore
+  // Named agents (skills: skillStore, below sendJson)
   const [namedAgents, setNamedAgents] = useState<NamedAgent[]>([])
   const [agentRoles, setAgentRoles] = useState<RolesData | null>(null)
   const [showAddSkill, setShowAddSkill] = useState(false)
@@ -1622,6 +1620,29 @@ function VoiceRoomInner({
   const sendJson = useCallback((m: Record<string, unknown>) => {
     sendToAgent(new TextEncoder().encode(JSON.stringify(m)), { reliable: true })
   }, [sendToAgent])
+  // Request/reply over the data channel: resolves with the next message of replyType
+  // (handleDataMessage hands it over), or an error after 15s (e.g. an older machine).
+  const replyWaiters = useRef(new Map<string, ((d: any) => void)[]>())
+  const askAgent = useCallback((m: Record<string, unknown>, replyType: string) => new Promise<any>((resolve) => {
+    const waiting = replyWaiters.current.get(replyType) ?? []
+    replyWaiters.current.set(replyType, waiting)
+    const done = (d: any) => { clearTimeout(timer); const i = waiting.indexOf(done); if (i >= 0) waiting.splice(i, 1); resolve(d) }
+    const timer = setTimeout(() => done({ error: 'No answer from your machine' }), 15000)
+    waiting.push(done)
+    sendJson(m)
+  }), [sendJson])
+  // Skills: the chat acts on the agent it is connected to (LAN, tunnel or cloud), over the
+  // owner-gated data channel; Settings, with no room, uses the same rules over HTTP.
+  const chatSkills = useMemo<SkillTransport>(() => ({
+    view: (name) => askAgent({ type: 'skill_get', name }, 'skill_content'),
+    change: (op, name, arg) => askAgent({ type: `skill_${op}`, name, ...(op === 'add' ? { content: arg } : op === 'fork' ? { to: arg } : {}) }, `skill_${op}_result`),
+  }), [askAgent])
+  const skillStore = useSkillStore(chatSkills)
+  const { skills, setSkills } = skillStore
+  // A built-in agent's prompt for View / Fork (the listings never carry prompts).
+  const getAgentPrompt = useCallback((name: string) =>
+    askAgent({ type: 'get_agent_prompt', name }, 'agent_prompt').then((d) => (typeof d?.prompt === 'string' ? d.prompt : null)),
+  [askAgent])
   const currentSessionIdRef = useRef(currentSessionId)
   useEffect(() => { currentSessionIdRef.current = currentSessionId }, [currentSessionId])
   const generatedFilesRef = useRef(generatedFiles)
@@ -2571,6 +2592,9 @@ function VoiceRoomInner({
         }
         const roles = rolesData(data)
         if (roles) setAgentRoles(roles)
+      } else if (data.type === 'skill_content' || data.type === 'skill_add_result' || data.type === 'skill_fork_result' || data.type === 'skill_remove_result' || data.type === 'agent_prompt') {
+        // Replies to askAgent (skill store, agent prompts).
+        replyWaiters.current.get(data.type)?.[0]?.(data)
       } else if (data.type === 'claude_auth_required') {
         console.log('🔑 Claude auth required')
         // Prompt discipline (#87 §6): only auto-open the modal if the user hasn't
@@ -3474,11 +3498,6 @@ function VoiceRoomInner({
     const agents = userAgentRows.filter((r) => r.enabled).map(({ name, description, prompt, model, tools, forked_from, role }) => ({ name, description, prompt, model, tools, forked_from, role }))
     sendToAgent(encoder.encode(JSON.stringify({ type: 'set_agents', agents, turbo: turboMode })), { reliable: true })
   }, [agentConnected, userAgentRows, turboMode, sendToAgent])
-
-  // A built-in agent's prompt for View / Fork, fetched on demand (never on the data channel).
-  const getAgentPrompt = useCallback((name: string) =>
-    agentRequest(agentUrl)('agents').then(({ ok, d }) => (ok ? (d?.agents as NamedAgent[] | undefined)?.find((a) => a.name === name)?.prompt ?? null : null)),
-  [agentUrl])
 
   // Helper: complete the session gate (unmute mic, send session_selected to backend)
   const completeSessionGate = useCallback((sessionId: string | null) => {

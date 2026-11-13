@@ -49,7 +49,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds } from './store-catalog.js'
-import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
+import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
@@ -154,9 +154,9 @@ function loadSkillsList(agentDir: string): SkillListing[] {
       const skillFile = join(skillsDir, skillName, 'SKILL.md')
       if (existsSync(skillFile)) {
         const { meta, body } = parseFrontMatter(readFileSync(skillFile, 'utf-8'))
-        // Front matter name/description (the skill's own), else the first # heading and the paragraph after it
+        // Display name: the first # heading (else the folder); description: front matter, else the paragraph after the heading
         const titleMatch = body.match(/^#\s+(?:Skill:\s*)?(.+)/m)
-        const name = typeof meta.name === 'string' && meta.name ? meta.name : titleMatch ? titleMatch[1].trim() : skillName
+        const name = titleMatch ? titleMatch[1].trim() : skillName
         const descMatch = body.match(/^#[^\n]+\n+([^\n#]+)/m)
         const description = typeof meta.description === 'string' && meta.description ? meta.description : descMatch ? descMatch[1].trim() : ''
         const forkedFrom = skillForkedFrom(skillsDir, skillName)
@@ -168,6 +168,21 @@ function loadSkillsList(agentDir: string): SkillListing[] {
     console.warn('⚠️ Failed to load skills list:', err)
   }
   return skills
+}
+
+/** Adds, forks or removes a user skill (agent-store.ts rules). The one entry point for the
+ *  chat's skill_* data messages (the connected agent) and Settings' /skills/* routes (no room). */
+function changeSkill(op: 'add' | 'fork' | 'remove', name: unknown, arg?: unknown): { ok: true } | { error: string } {
+  let out: { ok: true } | { error: string }
+  try {
+    out = op === 'add' ? addUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, name, arg)
+      : op === 'fork' ? forkSkill(homeSkillsDir(), PKG_SKILLS_DIR, name, arg)
+      : removeUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, name)
+  } catch (err) {
+    out = { error: err instanceof Error ? err.message : String(err) }
+  }
+  console.log(`📚 skill ${op} ${storeName(name)}: ${'ok' in out ? 'ok' : out.error}`)
+  return out
 }
 
 // Generate a short, user-friendly room code
@@ -759,6 +774,14 @@ function startApiServer(workingDir: string, port: number): void {
     // Agent & skill store routes: the chat and Settings both use them (through the
     // authenticated /api/agent proxy in the cloud). JSON in and out.
     const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+    // Store writes change the machine. Past the token gate: with no sync token only this
+    // machine may make them, and only as JSON, so no other site's form or text/plain POST can.
+    const storeWriteRefused = (): boolean => {
+      if (unauthorized()) return true
+      if (!syncToken && !/^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '')) { reply(403, { error: 'store changes need the sync token or a request from this machine' }); return true }
+      if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) { reply(415, { error: 'send JSON (Content-Type: application/json)' }); return true }
+      return false
+    }
 
     if (url.pathname === '/skills/content' || url.pathname === '/skills/add' || url.pathname === '/skills/fork' || url.pathname === '/skills/remove') {
       if (unauthorized()) return
@@ -768,21 +791,15 @@ function startApiServer(workingDir: string, port: number): void {
         return reply('error' in out ? 404 : 200, out)
       }
       if (req.method !== 'POST' || url.pathname === '/skills/content') return reply(405, { error: 'method not allowed' })
-      let out: { ok: true } | { error: string }
-      try {
-        if (url.pathname === '/skills/add') {
-          let body = ''
-          for await (const chunk of req) body += chunk
-          out = addUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, name, JSON.parse(body || '{}').content)
-        } else {
-          out = url.pathname === '/skills/fork'
-            ? forkSkill(homeSkillsDir(), PKG_SKILLS_DIR, name, url.searchParams.get('to'))
-            : removeUserSkill(homeSkillsDir(), PKG_SKILLS_DIR, name)
-        }
-      } catch (err) {
-        out = { error: err instanceof Error ? err.message : String(err) }
+      if (storeWriteRefused()) return
+      let content: unknown
+      if (url.pathname === '/skills/add') {
+        let body = ''
+        for await (const chunk of req) body += chunk
+        try { content = JSON.parse(body || '{}').content } catch { return reply(400, { error: 'invalid JSON body' }) }
       }
-      console.log(`📚 ${url.pathname} ${storeName(name)}: ${'ok' in out ? 'ok' : out.error}`)
+      const op = url.pathname === '/skills/add' ? 'add' : url.pathname === '/skills/fork' ? 'fork' : 'remove'
+      const out = changeSkill(op, name, op === 'add' ? content : url.searchParams.get('to'))
       return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
     }
 
@@ -821,6 +838,7 @@ function startApiServer(workingDir: string, port: number): void {
           return reply(200, { entry: found.entry, content: found.body, ...(found.entry.kind === 'agent' ? { draft: agentDraft(found.entry, found.body) } : {}) })
         }
         if (req.method === 'POST' && url.pathname === '/store/install') {
+          if (storeWriteRefused()) return
           const found = await findEntry(url.searchParams.get('id') || '')
           if (!found) return reply(404, { error: 'not in the catalog' })
           if (found.entry.kind === 'agent') return reply(200, { draft: agentDraft(found.entry, found.body) })
@@ -2913,10 +2931,19 @@ async function main() {
   // beside the core NAMED_AGENTS, which they can never override or remove.
   let userNamedAgents: Record<string, AgentDef> | null = null
   let userAgentRoles: Record<string, Role> = {}
+  let userAgentOrigins: Record<string, string> = {}
   const loggedDroppedAgents = new Set<string>()
   // Turbo mode — read from set_agents handshake (data.turbo). When true every
   // agent (main + sub-agents) runs on FAST_MODEL. Default false = perfect no-op.
   let turboMode = false
+  // The per-user agents for every LLM this process creates (direct, pipeline and
+  // recovery), so a session switch or rebuild keeps them. applyTurbo runs after the
+  // merge so custom models are overridden too. With no custom agents, undefined lets
+  // ClaudeLLM use NAMED_AGENTS directly (turbo then applies inside ClaudeLLMStream).
+  const userAgentOptions = () => ({
+    agents: userNamedAgents ? applyTurbo(mergeAgents<any>(NAMED_AGENTS, userNamedAgents), turboMode) : undefined,
+    agentRoles: userAgentRoles,
+  })
 
   let activeMeetingBotId: string | null = null  // Recall.ai bot ID if in a meeting
   // While set (Date.now() < value), the agent's streaming tts_say output is
@@ -4329,14 +4356,7 @@ async function main() {
       voiceMode: 'direct',
       skipTTSQueue: true,
       onCompactionEvent: buildOnCompactionEvent(),
-      // Per-user named agents survive LLM recreations (session switch/resume).
-      // applyTurbo runs post-merge so custom models are also overridden when turbo is on.
-      // When neither custom agents nor turbo are active, pass undefined so the
-      // ClaudeLLM cold-start uses NAMED_AGENTS directly (the ?? NAMED_AGENTS path).
-      // When turbo IS on with no custom agents, undefined would skip the override —
-      // ClaudeLLM handles that internally via the turbo bypass in ClaudeLLMStream.
-      agents: userNamedAgents ? applyTurbo(mergeAgents<any>(NAMED_AGENTS, userNamedAgents), turboMode) : undefined,
-      agentRoles: userAgentRoles,
+      ...userAgentOptions(),
     })
     // Apply turbo to the freshly created LLM so the main model also picks it up.
     // PipelineDirectLLM (llmOverride path) wraps its own ClaudeLLM and may not expose setTurbo.
@@ -5353,6 +5373,7 @@ async function main() {
         resumeSessionId,
         voiceMode: 'direct',
         skipTTSQueue: true,
+        ...userAgentOptions(),
         // PipelineDirectOptions extends ClaudeLLMOptions; passing this through
         // forwards it into the inner `new ClaudeLLM(opts)`. Without this,
         // pipeline mode silently drops every PreCompact/PostCompact event
@@ -5855,6 +5876,7 @@ async function main() {
                 resumeSessionId: recoverySessionId,
                 voiceMode: 'direct',
                 skipTTSQueue: true,
+                ...userAgentOptions(),
                 getChatHistory: () => getChatHistory(20).map(t => ({ role: t.role, content: t.text })),
                 getResearchContext: () => {
                   if (activeResearch?.researchLog.length) {
@@ -5989,7 +6011,7 @@ async function main() {
           enabledMcpServers: enabledMcpNames,
           workingDirectory: workingDir,
           skills: loadSkillsList(homedir()),
-          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles),
+          namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles, false, userAgentOrigins),
           ...describeRoles(),
         })
       }
@@ -6792,6 +6814,7 @@ async function main() {
         }
         userNamedAgents = Object.keys(parsed.agents).length ? parsed.agents : null
         userAgentRoles = parsed.roles
+        userAgentOrigins = parsed.origins
         // Turbo preference from the frontend (sourced from user_settings DB row).
         turboMode = !!data.turbo
         // applyTurbo wraps AFTER the merge so custom models also get overridden.
@@ -6799,7 +6822,23 @@ async function main() {
         ;(currentLLM as any)?.setTurbo?.(turboMode)
         ;(currentLLM as any)?.setAgents?.(userNamedAgents || turboMode ? merged : undefined, userAgentRoles)
         console.log(`🤖 set_agents: ${Object.keys(parsed.agents).length} user agent(s) → effective [${Object.keys(merged).join(', ')}]`)
-        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles), ...describeRoles() })
+        await sendToFrontend({ type: 'agents_status', agents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles, false, userAgentOrigins), ...describeRoles() })
+      }
+      // The chat's skill actions go to the agent it is connected to (LAN, tunnel or cloud);
+      // Settings, which has no room, uses the /skills/* routes. Both call changeSkill.
+      else if (data.type === 'skill_get') {
+        const out = readUserSkill(homeSkillsDir(), data.name)
+        await sendToFrontend({ type: 'skill_content', ...('error' in out ? { name: storeName(data.name), error: out.error } : out) })
+      }
+      else if (data.type === 'skill_add' || data.type === 'skill_fork' || data.type === 'skill_remove') {
+        const op = data.type === 'skill_add' ? 'add' : data.type === 'skill_fork' ? 'fork' : 'remove'
+        const out = changeSkill(op, data.name, op === 'add' ? data.content : data.to)
+        await sendToFrontend({ type: `${data.type}_result`, success: 'ok' in out, ...('error' in out ? { error: out.error } : {}), skills: loadSkillsList(homedir()) })
+      }
+      else if (data.type === 'get_agent_prompt') {
+        // A built-in agent's prompt for View / Fork in the chat (the listing never carries prompts).
+        const name = String(data.name || '')
+        await sendToFrontend({ type: 'agent_prompt', name, prompt: coreRole(name, NAMED_AGENTS) ? (NAMED_AGENTS as Record<string, { prompt: string }>)[name].prompt : null })
       }
       // Noise cancellation (noise gate) — UI toggle. Meeting chunks auto-engage
       // it pipeline-side; this is the explicit button next to mute.
