@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { isSupabaseConfigured } from './supabase'
 import { createSupabaseBrowser } from './supabase-browser'
+import { agentName } from './agent-name'
 
 // The signed-in user's own agents (Supabase user_agents). Built-in agents are
 // never stored here: they are core and locked, and a fork is a new row whose
@@ -21,9 +22,7 @@ export interface UserAgentRow extends UserAgentDraft {
   enabled: boolean
 }
 
-/** Live preview of the name the machine stores (agent-store.ts storeName), so the
- *  editor can flag a taken or built-in name while the user types. */
-export const agentName = (raw: string) => raw.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
+export { agentName }
 
 /** rows is null until loaded, and stays null for guests (no store). */
 export function useUserAgents() {
