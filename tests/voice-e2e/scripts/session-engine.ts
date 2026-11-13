@@ -596,9 +596,11 @@ async function main() {
   const driverId = (req: import('http').IncomingMessage): string => String(req.headers['x-driver-id'] || 'default')
   const driverActive = new Map<string, Page>()  // driver → its current tab
   let actionChain: Promise<unknown> = Promise.resolve()
+  let inflight = 0  // commands running or queued; capture never pauses under one
   const withLock = <T>(fn: () => Promise<T>): Promise<T> => {
     const run = actionChain.then(fn, fn)
-    actionChain = run.then(() => {}, () => {})
+    inflight++
+    actionChain = run.then(() => { inflight-- }, () => { inflight-- })
     return run as Promise<T>
   }
   // Point the module-level `active` at the driver's tab + bring it to front.
@@ -902,6 +904,8 @@ async function main() {
       // Any authenticated director command counts as activity for idle-stop.
       // /status is excluded (pollers/health checks must not keep it awake).
       if (path !== '/status') lastActivity = Date.now()
+      // A command resumes paused capture and holds it until its response is done.
+      if (req.method === 'POST') { live?.resume(); inflight++; res.once('close', () => { inflight-- }) }
       if (req.method === 'GET' && path === '/status') {
         // GROUND TRUTH, not cached flags — the old `inRoom: true` reported a
         // healthy room while the page sat on the "Session paused" idle screen.
@@ -1712,6 +1716,12 @@ async function main() {
   // 15min default (user request 2026-08-02 — was 10min; meetings/gates need breathing room)
   const IDLE_STOP_MS = Number(process.env.OSBORN_IDLE_STOP_MS ?? (IN_CONTAINER ? 900000 : 0))
   const MISSION_MAX_MS = 2 * 60 * 60 * 1000
+  // CAPTURE IDLE PAUSE (#209/#210): nothing running, no viewer, no command for
+  // OSBORN_CAPTURE_IDLE_MS (default 2min; 0 = never) → stop screen capture.
+  const CAPTURE_IDLE_MS = Number(process.env.OSBORN_CAPTURE_IDLE_MS ?? 120000)
+  setInterval(() => {
+    if (!ending && CAPTURE_IDLE_MS && !inflight && !journey && Date.now() - lastActivity > CAPTURE_IDLE_MS) live?.pause()
+  }, 10000)
   setInterval(async () => {
     if (ending || !IDLE_STOP_MS) return
     if ((live?.viewerCount() ?? 0) > 0) { lastActivity = Date.now(); return }

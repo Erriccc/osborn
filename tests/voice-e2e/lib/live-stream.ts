@@ -48,6 +48,9 @@ export type LiveStream = {
   // How many clients are watching /stream right now (idle-stop holds off
   // while someone is watching).
   viewerCount: () => number
+  // Stop/restart screen capture while the engine is idle (a viewer holds it on).
+  pause: () => void
+  resume: () => void
   // Latest frame as base64 jpeg — inline keyframes in act/say responses so
   // the director can review-and-relay without downloading the clip first.
   latestFrame: (page?: Page) => string | null
@@ -115,6 +118,20 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   // x11grab source: constant-rate MJPEG of the whole display from ffmpeg's
   // stdout, split on JPEG SOI/EOI markers and pushed into the same ring.
   let grabber: import('child_process').ChildProcess | null = null
+  // Fly's shared CPUs throttle a machine that never idles, so the engine pauses capture when idle.
+  let paused = false, stopped = false
+  const pause = () => {
+    if (paused || stopped || clients.size > 0) return
+    paused = true
+    try { grabber?.kill('SIGKILL') } catch { /* already gone */ }
+    console.log('[live-stream] capture paused (engine idle)')
+  }
+  const resume = () => {
+    if (!paused || stopped) return
+    paused = false
+    if (DISPLAY) startDisplayGrab()
+    console.log('[live-stream] capture resumed')
+  }
   const startDisplayGrab = () => {
     grabber = spawn('ffmpeg', ['-loglevel', 'error', '-f', 'x11grab', '-framerate', String(CAPTURE_FPS),
       '-video_size', process.env.OSBORN_DISPLAY_SIZE || '1280x800', '-i', DISPLAY!,
@@ -131,7 +148,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
         acc = acc.subarray(eoi + 2)
       }
     })
-    grabber.on('exit', (c) => console.log(`[live-stream] x11grab exited (${c})`))
+    const me = grabber
+    me.on('exit', (c) => { if (!paused || me !== grabber) console.log(`[live-stream] x11grab exited (${c})`) })
     console.log(`[live-stream] display capture: x11grab ${DISPLAY} @ ${CAPTURE_FPS}fps (full browser window)`)
   }
 
@@ -148,7 +166,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     const HEARTBEAT_MS = 500
     let beating = false
     heartbeat = setInterval(async () => {
-      if (!cdp || beating) return
+      if (!cdp || beating || paused) return
       if (lastFrameTime && Date.now() - lastFrameTime < HEARTBEAT_MS) return
       beating = true
       try {
@@ -212,7 +230,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
         'Content-Type': 'multipart/x-mixed-replace; boundary=osbframe',
         'Cache-Control': 'no-store', Connection: 'close',
       })
-      clients.add(res)
+      clients.add(res); resume()
       if (latest) { res.write(`--osbframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${latest.length}\r\n\r\n`); res.write(latest); res.write('\r\n') }
       req.on('close', () => clients.delete(res))
       return
@@ -279,7 +297,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     attach(p, push).then((s) => {
       let beating = false
       const hb = setInterval(async () => {
-        if (beating || Date.now() - rec.last < 500) return
+        if (beating || paused || Date.now() - rec.last < 500) return
         beating = true
         try { push(Buffer.from((await s.send('Page.captureScreenshot', { format: 'jpeg', quality: 50 }) as any).data, 'base64')) } catch { /* navigating */ }
         beating = false
@@ -333,6 +351,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     clip,
     clipRange,
     trackPage,
+    pause,
+    resume,
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
     latestFrame: (p?: Page) => { const r = p ? tabRecs.get(p)?.ring : undefined; const b = r?.length ? r[r.length - 1].buf : latest; return b ? b.toString('base64') : null },
@@ -347,6 +367,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     },
     stop: async () => {
       if (heartbeat) clearInterval(heartbeat)
+      stopped = paused = true
       try { grabber?.kill('SIGKILL') } catch { /* ignore */ }
       try { await cdp?.send('Page.stopScreencast') } catch { /* ignore */ }
       for (const res of clients) { try { res.end() } catch { /* ignore */ } }
