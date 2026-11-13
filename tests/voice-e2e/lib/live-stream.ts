@@ -48,8 +48,9 @@ export type LiveStream = {
   // How many clients are watching /stream right now (idle-stop holds off
   // while someone is watching).
   viewerCount: () => number
-  // A driving command arrived: resume capture if it was paused for idleness.
-  touch: () => void
+  // Stop/restart screen capture while the engine is idle (a viewer holds it on).
+  pause: () => void
+  resume: () => void
   // Latest frame as base64 jpeg — inline keyframes in act/say responses so
   // the director can review-and-relay without downloading the clip first.
   latestFrame: (page?: Page) => string | null
@@ -117,18 +118,16 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   // x11grab source: constant-rate MJPEG of the whole display from ffmpeg's
   // stdout, split on JPEG SOI/EOI markers and pushed into the same ring.
   let grabber: import('child_process').ChildProcess | null = null
-  // IDLE CAPTURE PAUSE. Capture is the engine's main CPU cost, and Fly's
-  // shared CPUs throttle a machine that never idles (measured: 88-93% steal
-  // time with one idle tab), which stretched speech playback ~6x and made clip
-  // encodes time out (#209/#210). With no viewer and no driving command for
-  // CAPTURE_IDLE_MS, x11grab and per-tab heartbeats stop; the next command or
-  // viewer restarts them before anything is recorded.
-  const CAPTURE_IDLE_MS = Number(process.env.OSBORN_CAPTURE_IDLE_MS ?? 120000)
-  let lastDemand = Date.now()
-  let paused = false
-  const touch = () => {
-    lastDemand = Date.now()
-    if (!paused) return
+  // Fly's shared CPUs throttle a machine that never idles, so the engine pauses capture when idle.
+  let paused = false, stopped = false
+  const pause = () => {
+    if (paused || stopped || clients.size > 0) return
+    paused = true
+    try { grabber?.kill('SIGKILL') } catch { /* already gone */ }
+    console.log('[live-stream] capture paused (engine idle)')
+  }
+  const resume = () => {
+    if (!paused || stopped) return
     paused = false
     if (DISPLAY) startDisplayGrab()
     console.log('[live-stream] capture resumed')
@@ -153,13 +152,6 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     me.on('exit', (c) => { if (!paused || me !== grabber) console.log(`[live-stream] x11grab exited (${c})`) })
     console.log(`[live-stream] display capture: x11grab ${DISPLAY} @ ${CAPTURE_FPS}fps (full browser window)`)
   }
-
-  const idleTimer = CAPTURE_IDLE_MS > 0 ? setInterval(() => {
-    if (paused || clients.size > 0 || Date.now() - lastDemand < CAPTURE_IDLE_MS) return
-    paused = true
-    try { grabber?.kill('SIGKILL') } catch { /* already gone */ }
-    console.log(`[live-stream] capture paused — no viewer or command for ${Math.round(CAPTURE_IDLE_MS / 1000)}s`)
-  }, 10000) : null
 
   let heartbeat: ReturnType<typeof setInterval> | null = null
   if (DISPLAY) {
@@ -238,7 +230,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
         'Content-Type': 'multipart/x-mixed-replace; boundary=osbframe',
         'Cache-Control': 'no-store', Connection: 'close',
       })
-      clients.add(res); touch()
+      clients.add(res); resume()
       if (latest) { res.write(`--osbframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${latest.length}\r\n\r\n`); res.write(latest); res.write('\r\n') }
       req.on('close', () => clients.delete(res))
       return
@@ -359,7 +351,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     clip,
     clipRange,
     trackPage,
-    touch,
+    pause,
+    resume,
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
     latestFrame: (p?: Page) => { const r = p ? tabRecs.get(p)?.ring : undefined; const b = r?.length ? r[r.length - 1].buf : latest; return b ? b.toString('base64') : null },
@@ -374,8 +367,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     },
     stop: async () => {
       if (heartbeat) clearInterval(heartbeat)
-      if (idleTimer) clearInterval(idleTimer)
-      paused = true
+      stopped = paused = true
       try { grabber?.kill('SIGKILL') } catch { /* ignore */ }
       try { await cdp?.send('Page.stopScreencast') } catch { /* ignore */ }
       for (const res of clients) { try { res.end() } catch { /* ignore */ } }
