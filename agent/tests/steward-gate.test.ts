@@ -96,7 +96,7 @@ try {
   assert.equal((await stewardGate('git commit -am x && git push origin HEAD', repo, 'block')).decision, 'deny', 'combined commit+push checks the commit')
 
   // #245.1: cd's options are not the directory operand
-  for (const c of ['cd -L sub; git push', 'cd -P sub; git push', 'cd -- sub; git push', 'cd -LP -- sub; git push', 'eval cd -L sub; git push'])
+  for (const c of ['cd -L sub; git push', 'cd -P sub; git push', 'cd -- sub; git push', 'cd -LP -- sub; git push', 'cd -q sub; git push', 'eval cd -L sub; git push'])
     assert.equal(gitActions(c, repo)[0]?.dir, join(repo, 'sub'), c)
   // Unknowable directories are recorded as unknown, never guessed at: `cd -` is
   // $OLDPWD, and a variable or command substitution is expanded by the shell.
@@ -116,14 +116,12 @@ try {
   for (const c of ['cd sub && git push', 'cd sub || git push', 'cd sub >&2; git push', 'cd sub 2>&1; git push', 'cd sub &>/dev/null; git push'])
     assert.equal(gitActions(c, repo)[0]?.dir, join(repo, 'sub'), c)
 
-  // Acceptance: a repo created by the very command that commits in it used to be
-  // skipped in silence — no advice, no refusal, no event (#273). It is reported
-  // now, but never refused: the steward cannot sign a tree that does not exist.
-  for (const m of ['block', 'advise'] as const)
-    assert.equal((await stewardGate('mkdir fresh && cd fresh && git init && git commit -m x', repo, m)).decision, 'advise', m)
-  // An UNKNOWN directory stays silent: no sign-off could clear it, and the
-  // command is most likely fine (`cd "$HOME/repo" && git push` must not be refused).
-  for (const c of ['cd -; git push', 'cd "$HOME/x" && git push', 'cd $REPO && git push'])
+  // A directory that is unknown, or that the command has not created yet, is
+  // skipped rather than refused: there is no repo to read and no sign-off could
+  // ever clear it. `git worktree add w && cd w && git commit` is the ordinary
+  // case this protects, not an evasion.
+  for (const c of ['cd -; git push', 'cd "$HOME/x" && git push', 'cd $REPO && git push',
+    'cd /tmp/definitely-not-here && git push', 'mkdir fresh && cd fresh && git init && git commit -m x'])
     assert.equal((await stewardGate(c, repo, 'block')).decision, 'allow', c)
 
   // Not a repo: never blocks

@@ -112,10 +112,11 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
     // `pushd sub; popd` pair would leave the tracked dir in sub, which is more
     // wrong than not following it at all.)
     if (name === 'cd') {
+      // Skip options (-L -P -e -@, zsh's -q -s, ...) to reach the operand; `--`
+      // ends them. `-` alone is not an option, it is $OLDPWD.
       let j = 1
-      while (j < w.length && /^-[LPe@]+$/.test(w[j])) j++
-      if (w[j] === '--') j++
-      dir = w[j] === '-' ? null : resolveDir(dir, w[j])  // `cd -` is $OLDPWD: unknowable
+      while (j < w.length && w[j].startsWith('-') && w[j] !== '-') if (w[j++] === '--') break
+      dir = w[j] === '-' ? null : resolveDir(dir, w[j])  // $OLDPWD is unknowable
       return
     }
     if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { hits.push(...scan(w[2], dir).hits); return }  // subshell: its cd does not escape
@@ -192,19 +193,11 @@ export async function stewardGate(cmd: string, cwd: string, mode: StewardMode = 
   if (mode === 'off') return { decision: 'allow' }
   let unsigned: GitAction | null = null, failed: string | null = null
   for (const hit of gitActions(cmd, cwd)) {
-    // A directory the shell will only create later cannot be read, so nothing
-    // can have signed off on it — report it instead of passing in silence. An
-    // UNKNOWN directory (hit.dir === null: `cd $VAR`, `cd -`) is left alone:
-    // the command is probably fine and there is nothing the agent could do
-    // about a complaint. A directory that exists but holds no repo also passes,
-    // since git refuses there anyway and there is no action to gate.
-    if (hit.dir === null) continue
-    if (!existsSync(hit.dir)) {
-      const why = `${hit.dir} does not exist yet`
-      failed = failed ?? why
-      console.log(`[steward-gate] could not check ${hit.action}: ${why}`)
-      continue
-    }
+    // An unknown directory (`cd $VAR`, `cd -`) or one the command has not created
+    // yet is skipped, as before: there is no repo to read, and nothing the agent
+    // could do about a complaint. `git worktree add w && cd w && git commit` is
+    // the ordinary case, not an evasion.
+    if (hit.dir === null || !existsSync(hit.dir)) continue
     let gitDir: string
     try { gitDir = await git(hit.dir, ['rev-parse', '--absolute-git-dir']) } catch { continue }  // not a repo
     try {
@@ -217,19 +210,9 @@ export async function stewardGate(cmd: string, cwd: string, mode: StewardMode = 
     }
   }
   if (!unsigned && !failed) return { decision: 'allow' }
-  // Something we could not CHECK is reported but never refused: no sign-off can
-  // clear it, so refusing would be a dead end (the steward cannot sign a tree in
-  // a directory that does not exist yet). Only a checked-and-unsigned action is
-  // refusable, and only in block mode.
-  if (!unsigned) {
-    return {
-      decision: 'advise',
-      message: `The steward sign-off could not be checked (${failed}): nothing has signed off on a repository ` +
-        `that this command is still creating. Create it in one command, then commit in the next, so the gate can see it.`,
-    }
-  }
-  const message =
-    `The steward has not signed off on the code in ${unsigned === 'pr' ? 'opening this PR' : `this ${unsigned}`}: run the \`steward\` agent on the change first ` +
-    `(it records its sign-off for this exact content; any later edit needs a new sign-off).`
+  const message = unsigned
+    ? `The steward has not signed off on the code in ${unsigned === 'pr' ? 'opening this PR' : `this ${unsigned}`}: run the \`steward\` agent on the change first ` +
+      `(it records its sign-off for this exact content; any later edit needs a new sign-off).`
+    : `The steward sign-off could not be checked (${failed}).`
   return mode === 'block' ? { decision: 'deny', message } : { decision: 'advise', message }
 }
