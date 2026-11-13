@@ -34,8 +34,12 @@ export interface UserAgentDraft {
   tools: string[]
 }
 
-export function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, removed, onRestoreAgent, requestOpen, hideTrigger }: {
+// Live sub-agent runs (the same flows the Activity drawer's Running tab shows).
+export interface AgentActivity { agentType: string; status: string; task?: string; lastMessage?: string }
+
+export function AgentsPopover({ agents, activity, disabled, onSaveAgent, onDeleteAgent, removed, onRestoreAgent, requestOpen, hideTrigger }: {
   agents?: NamedAgent[]
+  activity?: AgentActivity[]
   disabled?: boolean
   onSaveAgent?: (a: UserAgentDraft) => void
   onDeleteAgent?: (name: string, isCustom: boolean) => void
@@ -51,6 +55,8 @@ export function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, re
   const [editing, setEditing] = useState<UserAgentDraft | null>(null)
   const [deleteArm, setDeleteArm] = useState<string | null>(null)
   const count = agents?.length ?? 0
+  const runsOf = (name: string) => (activity ?? []).filter((f) => f.agentType?.toLowerCase() === name.toLowerCase())
+  const working = (activity ?? []).filter((f) => f.status === 'running').length
   // Esc closes the popover (outside-click already closes via the backdrop).
   useEffect(() => {
     if (!open) return
@@ -85,6 +91,7 @@ export function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, re
           <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
         </svg>
         <span className="hidden md:inline text-xs font-medium">Agents</span>
+        {working > 0 && <span aria-label={`${working} working`} className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-400 animate-pulse" />}
         {count > 0 && (
           <span className="min-w-[16px] h-4 px-1 flex items-center justify-center text-[9px] font-bold rounded-full bg-amber-500/25 text-amber-300 border border-amber-500/30">
             {count}
@@ -102,7 +109,7 @@ export function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, re
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">🤖 Named Agents</span>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] text-gray-500">{count} configured</span>
+                <span className="text-[10px] text-gray-500">{working > 0 ? `${working} working · ` : ''}{count} configured</span>
                 {onSaveAgent && (
                   <button
                     onClick={() => setEditing(editing ? null : { name: '', description: '', prompt: '', model: 'inherit', tools: [] })}
@@ -144,7 +151,7 @@ export function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, re
                   >Save agent (applies next session)</button>
                 </div>
               )}
-              {agents && agents.length > 0 ? agents.map((a) => (
+              {agents && agents.length > 0 ? agents.map((a) => { const runs = runsOf(a.name); const live = runs.find((f) => f.status === 'running'); return (
                 <div key={a.name} className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/30">
                   <div className="flex items-start justify-between gap-2">
                     <span className="text-sm font-medium text-gray-200 capitalize flex items-center gap-1.5">
@@ -152,6 +159,8 @@ export function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, re
                       {a.custom && <span className="px-1 py-px text-[8px] rounded bg-sky-500/15 text-sky-300 border border-sky-500/20 uppercase">custom</span>}
                     </span>
                     <div className="flex items-center gap-2 shrink-0">
+                      {live ? <span className="text-[10px] font-semibold text-amber-300 animate-pulse">● working</span>
+                        : runs.length > 0 && <span className="text-[10px] text-emerald-400">✓ finished</span>}
                       <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20 uppercase tracking-wide">{a.model}</span>
                       {onDeleteAgent && (
                         <button
@@ -165,13 +174,14 @@ export function AgentsPopover({ agents, disabled, onSaveAgent, onDeleteAgent, re
                     </div>
                   </div>
                   <p title={a.description} className="text-[11px] text-gray-500 mt-0.5 leading-snug">{AGENT_BLURBS[a.name?.toLowerCase()] ?? a.description}</p>
+                  {live && (live.lastMessage || live.task) && <p className="text-[11px] text-amber-200/80 mt-1 leading-snug line-clamp-2">{live.lastMessage || live.task}</p>}
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     {a.tools?.map((t) => (
                       <span key={t} className="px-1.5 py-0.5 text-[9px] rounded bg-gray-900/80 text-gray-400 border border-gray-700/40">{t}</span>
                     ))}
                   </div>
                 </div>
-              )) : (
+              ) }) : (
                 <p className="text-[11px] text-gray-500">No named agents reported</p>
               )}
               {/* Removed defaults — never gone forever, one tap to add back */}

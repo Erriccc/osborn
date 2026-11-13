@@ -4190,7 +4190,7 @@ function VoiceRoomInner({
                 live in the composer control strip next to the input (Claude-
                 style), so the top bar carries only status/stats + hangup. */}
             <div className="hidden sm:flex items-center gap-1.5">
-              <AgentsPopover agents={namedAgents} disabled={!agentConnected}
+              <AgentsPopover agents={namedAgents} activity={backgroundFlows} disabled={!agentConnected}
                 onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
                 removed={removedAgentNames} onRestoreAgent={handleRestoreAgent} />
 
@@ -4989,7 +4989,7 @@ function VoiceRoomInner({
           Agents/Skills rows via requestOpen. Rendered at top level (not inside
           the sheet) so they survive the sheet closing; their panels are the
           standard viewport-anchored mobile popovers. */}
-      <AgentsPopover agents={namedAgents} disabled={!agentConnected}
+      <AgentsPopover agents={namedAgents} activity={backgroundFlows} disabled={!agentConnected}
         onSaveAgent={handleSaveAgent} onDeleteAgent={handleDeleteAgent}
         removed={removedAgentNames} onRestoreAgent={handleRestoreAgent}
         requestOpen={agentsOpenReq} hideTrigger />
