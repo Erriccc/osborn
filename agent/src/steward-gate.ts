@@ -38,7 +38,7 @@ type Hit = { action: GitAction; dir: string }
 // Words that can precede a command: keywords, wrappers, and wrappers' options.
 const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout',
   'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}'])
-// Options that take a value, per wrapper: a shared list let `time -p` swallow the command word.
+// Options that take a value, per wrapper.
 const TAKES_ARG: Record<string, Set<string>> = {
   sudo: new Set(['-u', '-g', '-h', '-p', '-U', '-C', '-D', '-r', '-t', '-T']),
   timeout: new Set(['-s', '-k', '--signal', '--kill-after']),
@@ -69,13 +69,22 @@ export function gitActions(cmd: string, cwd: string): Hit[] {
     while (w.length) {
       if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0])) w = w.slice(1)
       else if (PREFIX.has(w[0])) { wrapper = w[0]; w = w.slice(1) }
+      else if (wrapper === 'env' && /^(-S|--split-string)/.test(w[0])) {  // env -S runs its string as a command
+        const rest = w[0].includes('=') ? [w[0].split('=').slice(1).join('='), ...w.slice(1)] : w[0].length > 2 && w[0].startsWith('-S') ? [w[0].slice(2), ...w.slice(1)] : w.slice(1)
+        for (const h of gitActions(rest.join(' '), dir)) hits.push(h)
+        return
+      }
       else if (wrapper && w[0].startsWith('-')) w = w.slice(!w[0].includes('=') && TAKES_ARG[wrapper]?.has(w[0]) ? 2 : 1)
       else if (wrapper === 'timeout' && /^\d+(\.\d+)?[smhd]?$/.test(w[0])) w = w.slice(1)  // timeout's duration
       else break
     }
     if (!w.length) return
     // eval runs its arguments as a command in this shell: check them as one.
-    if (w[0] === 'eval') { for (const h of gitActions(w.slice(1).join(' '), dir)) hits.push(h); return }
+    if (w[0] === 'eval') {
+      if (w[1] === 'cd') { dir = resolveDir(dir, w[2]); return }
+      for (const h of gitActions(w.slice(1).join(' '), dir)) hits.push(h)
+      return
+    }
     const name = w[0].split('/').pop()
     if (name === 'cd') { dir = resolveDir(dir, w[1]); return }
     if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { for (const h of gitActions(w[2], dir)) hits.push(h); return }
