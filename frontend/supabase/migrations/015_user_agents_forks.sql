@@ -17,10 +17,10 @@ delete from public.user_agents
   where name in ('researcher','reasoner','planner','writer','tester','steward','reviewer')
     and enabled = false and description = '(removed built-in)';
 
+-- If <name>-custom is taken, add a short id suffix so no row keeps a core name.
 update public.user_agents u
-  set name = u.name || '-custom', forked_from = u.name, updated_at = now()
-  where u.name in ('researcher','reasoner','planner','writer','tester','steward','reviewer')
-    and not exists (
-      select 1 from public.user_agents o
-      where o.user_id = u.user_id and o.name = u.name || '-custom'
-    );
+  set name = u.name || '-custom' || case when exists (
+        select 1 from public.user_agents o where o.user_id = u.user_id and o.name = u.name || '-custom'
+      ) then '-' || left(u.id::text, 6) else '' end,
+      forked_from = u.name, updated_at = now()
+  where u.name in ('researcher','reasoner','planner','writer','tester','steward','reviewer');

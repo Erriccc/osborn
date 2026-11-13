@@ -25,10 +25,10 @@ export const agentName = (raw: string) => raw.trim().toLowerCase().replace(/[^a-
 export function useUserAgents() {
   const [rows, setRows] = useState<UserAgentRow[] | null>(null)
 
-  const withUser = useCallback((fn: (sb: ReturnType<typeof createSupabaseBrowser>, userId: string) => void) => {
-    if (!isSupabaseConfigured()) return
+  const withUser = useCallback(<T,>(fn: (sb: ReturnType<typeof createSupabaseBrowser>, userId: string) => T | PromiseLike<T>): Promise<T | undefined> => {
+    if (!isSupabaseConfigured()) return Promise.resolve(undefined)
     const sb = createSupabaseBrowser()
-    sb.auth.getUser().then(({ data }) => { if (data?.user) fn(sb, data.user.id) }).catch(() => {})
+    return sb.auth.getUser().then(({ data }) => (data?.user ? fn(sb, data.user.id) : undefined)).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -40,23 +40,26 @@ export function useUserAgents() {
     })
   }, [withUser])
 
-  const save = useCallback((a: UserAgentDraft) => {
+  /** Resolves to an error message, or null once saved. */
+  const save = useCallback(async (a: UserAgentDraft): Promise<string | null> => {
     const name = agentName(a.name)
-    withUser((sb, userId) => {
+    const err = await withUser((sb, userId) => {
       const row = {
         name, description: a.description.trim(), prompt: a.prompt.trim(), model: a.model, tools: a.tools,
         ...(a.forked_from ? { forked_from: a.forked_from } : {}),
       }
-      sb.from('user_agents')
+      return sb.from('user_agents')
         .upsert({ user_id: userId, ...row, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })
         .then(({ error }) => {
-          if (error) { console.error('user_agents upsert failed:', error.message); return }
+          if (error) { console.error('user_agents upsert failed:', error.message); return error.message }
           setRows((prev) => {
             const old = (prev || []).find((r) => r.name === name)
             return [...(prev || []).filter((r) => r.name !== name), { ...old, ...row, enabled: true }]
           })
+          return null
         })
     })
+    return err === undefined ? 'Sign in to save agents.' : err
   }, [withUser])
 
   const remove = useCallback((name: string) => {

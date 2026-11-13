@@ -2578,7 +2578,11 @@ function VoiceRoomInner({
         if (data.skills && Array.isArray(data.skills)) {
           setSkills(data.skills)
         }
-      } else if (data.type === 'skill_add_result') {
+      }
+      if (/^skill_(add|fork|remove)_result$/.test(data.type) && data.error) {
+        setMessages((prev) => [...prev, { id: `skill-err-${Date.now()}`, role: 'system', content: `Skill not changed: ${data.error}`, timestamp: new Date(), category: 'chat' }])
+      }
+      if (data.type === 'skill_add_result') {
         if (data.success && data.skills) {
           setSkills(data.skills)
           setShowAddSkill(false)

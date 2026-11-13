@@ -23,7 +23,8 @@ if tool == "mcp__github__create_pull_request":
 elif tool == "Bash" and re.search(r"(^|[;&|(]\s*|\n\s*)gh\s+pr\s+create\b", str(inp.get("command", ""))):
     ref = "HEAD"  # only when the command RUNS it, not when the text appears in it
 elif tool == "Bash" and re.search(r"(^|[;&|(]\s*|\n\s*)git\s+(-\S+\s+)*push\b", str(inp.get("command", ""))) \
-        and not re.search(r"\s(--delete|-d)\b|\s:\S", str(inp.get("command", ""))):
+        and not re.search(r"\s(--delete|-d)\b|\s:\S|(^|[;&|(]\s*)cd\s|\bgit\s+-C\s", str(inp.get("command", ""))):
+    # deletes and pushes from another directory are not this repo's HEAD: not gated
     tool, ref = "push", "HEAD"  # a push updates the branch (and any open PR on it): steward sign-off only
 else:
     sys.exit(0)
@@ -52,6 +53,9 @@ if tool == "mcp__github__create_pull_request":
              "(Checked for PRs opened with the GitHub tool; `gh pr create` bodies are not inspected.)")
 steward = os.path.join(git("rev-parse", "--absolute-git-dir"), "steward-reviewed")
 if (open(steward).read().strip() if os.path.exists(steward) else "") != sha:
+    if tool == "push":
+        deny(f"Steward sign-off required before pushing {sha[:8]} (CLAUDE.md). Run the steward agent on origin/main...{sha[:8]}; "
+             f"it records \"$(git rev-parse --git-dir)/steward-reviewed\". Commit first, then push in a separate command.")
     deny(f"Steward sign-off required (CLAUDE.md). Run the steward agent (.claude/agents/steward.md) on "
          f"origin/main...{sha[:8]} first; it records its CLEAN verdict in \"$(git rev-parse --git-dir)/steward-reviewed\". "
          f"Put its NET-NEW and REMOVED lists in the PR description.")

@@ -776,7 +776,7 @@ function startApiServer(workingDir: string, port: number): void {
     if (req.method === 'GET' && url.pathname === '/agents') {
       // Core sub-agents from claude-llm.ts NAMED_AGENTS (the same object the SDK
       // query uses), with prompts so the store can show and fork them.
-      const agents = describeAgents(NAMED_AGENTS, null)
+      const agents = describeAgents(NAMED_AGENTS, null, {}, true)
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
       res.end(JSON.stringify({ agents }))
       return

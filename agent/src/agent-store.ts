@@ -54,12 +54,12 @@ export function mergeAgents<T>(core: Record<string, T>, user: Record<string, T> 
 }
 
 /** UI listing: core agents carry their prompt (for View and Fork). */
-export function describeAgents(core: Record<string, any>, user: Record<string, AgentDef> | null | undefined, forkedFrom: Record<string, string> = {}): AgentListing[] {
+export function describeAgents(core: Record<string, any>, user: Record<string, AgentDef> | null | undefined, forkedFrom: Record<string, string> = {}, withPrompts = false): AgentListing[] {
   return Object.entries(mergeAgents<any>(core, user)).map(([name, a]) => {
     const isCore = name in core
     return {
       name, description: a.description, model: a.model, tools: a.tools, core: isCore,
-      ...(isCore ? { prompt: a.prompt } : {}),
+      ...(isCore && withPrompts ? { prompt: a.prompt } : {}),  // prompts are large: GET /agents only, never the data channel
       ...(!isCore && forkedFrom[name] ? { forkedFrom: forkedFrom[name] } : {}),
     }
   })

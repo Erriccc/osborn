@@ -79,7 +79,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   agents: NamedAgent[]
   /** The user's rows; null when signed out or not loaded. */
   yours: UserAgentRow[] | null
-  onSave?: (a: UserAgentDraft) => void
+  onSave?: (a: UserAgentDraft) => Promise<string | null> | void
   onDelete?: (name: string) => void
   onSetEnabled?: (name: string, enabled: boolean) => void
   /** Optional live status (e.g. "working") shown beside an agent's name. */
@@ -90,6 +90,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   const mine = (yours || []).filter((r) => !coreNames.has(r.name))
   const taken = new Set([...core.map((a) => a.name), ...mine.map((r) => r.name)])
   const [editing, setEditing] = useState<{ draft: UserAgentDraft; isNew: boolean } | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [viewing, setViewing] = useState<string | null>(null)
 
   const fork = (a: NamedAgent) => setEditing({
@@ -122,6 +123,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
                   {a.model && <span className="rounded-full bg-[var(--accent-dim)]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase text-[var(--accent)]">{a.model}</span>}
                   {a.prompt && <button className={link} onClick={() => setViewing(viewing === a.name ? null : a.name)}>{viewing === a.name ? 'Hide prompt' : 'View prompt'}</button>}
                   {onSave && yours && a.prompt && <button className={link} onClick={() => fork(a)}>Fork</button>}
+                  {!a.prompt && <a className={link} href="/settings">View or fork in Settings</a>}
                 </span>
               </div>
               <p title={a.description} className="mt-0.5 text-[11px] leading-snug text-[var(--text-secondary)]">{AGENT_BLURBS[a.name] ?? a.description}</p>
@@ -157,9 +159,15 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
             </div>
             <button
               disabled={!canSave}
-              onClick={() => { if (canSave) { onSave?.({ ...d, name }); setEditing(null) } }}
+              onClick={async () => {
+                if (!canSave) return
+                const err = await onSave?.({ ...d, name })
+                setSaveError(err || null)
+                if (!err) setEditing(null)
+              }}
               className="w-full rounded bg-[var(--accent)]/20 py-1.5 text-xs text-[var(--accent)] hover:bg-[var(--accent)]/30 disabled:cursor-not-allowed disabled:opacity-50"
             >Save agent (applies next session)</button>
+            {saveError && <p className="text-[11px] text-red-400">Not saved: {saveError}</p>}
           </div>
         )}
         <div className="space-y-1.5">

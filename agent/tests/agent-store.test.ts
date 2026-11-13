@@ -34,7 +34,8 @@ assert.ok(!('off' in merged))
 // Even if a core name slips past parsing, the merge keeps the core definition.
 assert.equal(mergeAgents<any>(core, { writer: { description: 'x', prompt: 'y' } }).writer.prompt, 'WRITER PROMPT')
 
-const listing = describeAgents(core, parsed.agents, parsed.forkedFrom)
+assert.equal(describeAgents(core, parsed.agents, parsed.forkedFrom)[0].prompt, undefined, 'no prompts on the data channel')
+const listing = describeAgents(core, parsed.agents, parsed.forkedFrom, true)
 const byName = Object.fromEntries(listing.map((a) => [a.name, a]))
 assert.equal(byName.writer.core, true)
 assert.equal(byName.writer.prompt, 'WRITER PROMPT')
