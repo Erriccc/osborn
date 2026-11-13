@@ -49,7 +49,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds } from './store-catalog.js'
-import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
+import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
@@ -137,6 +137,16 @@ function buildToolLogEvent(
 
   return ev
 }
+
+// The web frontend (meeting canvas links, and the origin store writes accept).
+const frontendUrl = () => (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/$/, '')
+// The reply each chat store request waits for (VoiceRoom askAgent).
+const STORE_REPLY_TYPES: Record<string, string> = {
+  skill_get: 'skill_content', skill_add: 'skill_add_result', skill_fork: 'skill_fork_result',
+  skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
+}
+// Routes that change the machine's skills (guarded by storeWriteRefused).
+const STORE_WRITE_PATHS = new Set(['/skills/add', '/skills/fork', '/skills/remove', '/store/install'])
 
 // Skills shipped with the package (core: maintained by Voice Native).
 const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
@@ -638,6 +648,13 @@ function startApiServer(workingDir: string, port: number): void {
     // Authorization is required for /secrets (Bearer OSBORN_SYNC_TOKEN); without it in the
     // allow-list the browser preflight fails and the dashboard can't read/manage keys.
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    // Store writes never answer every site: only an allowed origin (agent-store.ts) is echoed,
+    // so another site's page can neither pass the preflight nor read the reply.
+    if (STORE_WRITE_PATHS.has((req.url || '/').split('?')[0])) {
+      const origin = req.headers.origin
+      if (origin && storeWriteOriginAllowed(origin, frontendUrl())) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin') }
+      else res.removeHeader('Access-Control-Allow-Origin')
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
@@ -774,13 +791,18 @@ function startApiServer(workingDir: string, port: number): void {
     // Agent & skill store routes: the chat and Settings both use them (through the
     // authenticated /api/agent proxy in the cloud). JSON in and out.
     const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
-    // Store writes change the machine. Called past the token gate (unauthorized()): with no
-    // sync token only this machine may make them, and only as JSON, so no other site's form
-    // or text/plain POST can.
+    // Store writes change the machine. Called past the token gate (unauthorized()); the
+    // rules for a machine with no sync token are agent-store.ts storeWriteRefusal.
     const storeWriteRefused = (): boolean => {
-      if (!syncToken && !/^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '')) { reply(403, { error: 'store changes need the sync token or a request from this machine' }); return true }
-      if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) { reply(415, { error: 'send JSON (Content-Type: application/json)' }); return true }
-      return false
+      const refusal = storeWriteRefusal({
+        hasToken: !!syncToken,
+        publicDeploy: !!process.env.FLY_APP_NAME || !!process.env.OSBORN_PUBLIC_HOST,
+        forwarded: !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host']),
+        host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin,
+        contentType: String(req.headers['content-type'] || ''), frontendUrl: frontendUrl(),
+      })
+      if (refusal) reply(refusal.status, { error: refusal.error })
+      return !!refusal
     }
 
     if (url.pathname === '/skills/content' || url.pathname === '/skills/add' || url.pathname === '/skills/fork' || url.pathname === '/skills/remove') {
@@ -4200,10 +4222,12 @@ async function main() {
     } catch {}
   })
 
-  async function sendToFrontend(data: object) {
+  /** Publishes to the frontend (to one participant when `to` is given). Resolves false
+   *  when nothing was sent (no room, over the hard size cap, or a publish error). */
+  async function sendToFrontend(data: object, to?: string): Promise<boolean> {
     if (!localParticipant) {
       console.log('⚠️ sendToFrontend: no localParticipant!')
-      return
+      return false
     }
     try {
       const encoder = new TextEncoder()
@@ -4238,16 +4262,19 @@ async function main() {
       const payload = encoder.encode(jsonData)
       if (payload.length > HARD_MAX_MESSAGE_SIZE) {
         console.error(`❌ sendToFrontend: dropping message (${(payload.length / 1024).toFixed(0)}KB > ${(HARD_MAX_MESSAGE_SIZE / 1024).toFixed(0)}KB hard limit) — type: ${(data as any).type}`)
-        return
+        return false
       }
 
       await localParticipant.publishData(payload, {
         reliable: true,
         topic: 'osborn-updates',
+        ...(to ? { destinationIdentities: [to] } : {}),
       })
       console.log(`📤 Sent to frontend: ${(data as any).type} (${payload.length} bytes)`)
+      return true
     } catch (err) {
       console.error('❌ sendToFrontend error:', err)
+      return false
     }
   }
 
@@ -6268,6 +6295,10 @@ async function main() {
       const senderCheck = checkControlSender(String(data.type), participant?.identity, controllingUserIdentity)
       if (!senderCheck.ok) {
         console.warn(`🚫 Dropped ${data.type}: ${senderCheck.reason}`)
+        // A store request waits for its reply (the chat's askAgent): answer the sender now.
+        if (Object.hasOwn(STORE_REPLY_TYPES, data.type) && participant?.identity) {
+          await sendToFrontend({ type: STORE_REPLY_TYPES[data.type], success: false, error: 'Another device controls this session' }, participant.identity)
+        }
         return
       }
 
@@ -6828,17 +6859,19 @@ async function main() {
       // Settings, which has no room, uses the /skills/* routes. Both call changeSkill.
       else if (data.type === 'skill_get') {
         const out = readUserSkill(homeSkillsDir(), data.name)
-        await sendToFrontend({ type: 'skill_content', ...('error' in out ? { name: storeName(data.name), error: out.error } : out) })
+        await sendToFrontend({ type: STORE_REPLY_TYPES.skill_get, ...('error' in out ? { name: storeName(data.name), error: out.error } : out) })
       }
       else if (data.type === 'skill_add' || data.type === 'skill_fork' || data.type === 'skill_remove') {
         const op = data.type === 'skill_add' ? 'add' : data.type === 'skill_fork' ? 'fork' : 'remove'
         const out = changeSkill(op, data.name, op === 'add' ? data.content : data.to)
-        await sendToFrontend({ type: `${data.type}_result`, success: 'ok' in out, ...('error' in out ? { error: out.error } : {}), skills: loadSkillsList(homedir()) })
+        const result = { type: STORE_REPLY_TYPES[data.type], success: 'ok' in out, ...('error' in out ? { error: out.error } : {}) }
+        // A skill list over the data-channel cap is dropped: the result still goes out without it.
+        if (!await sendToFrontend({ ...result, skills: loadSkillsList(homedir()) })) await sendToFrontend(result)
       }
       else if (data.type === 'get_agent_prompt') {
         // A built-in agent's prompt for View / Fork in the chat (the listing never carries prompts).
         const name = String(data.name || '')
-        await sendToFrontend({ type: 'agent_prompt', name, prompt: coreRole(name, NAMED_AGENTS) ? (NAMED_AGENTS as Record<string, { prompt: string }>)[name].prompt : null })
+        await sendToFrontend({ type: STORE_REPLY_TYPES.get_agent_prompt, name, prompt: coreRole(name, NAMED_AGENTS) ? (NAMED_AGENTS as Record<string, { prompt: string }>)[name].prompt : null })
       }
       // Noise cancellation (noise gate) — UI toggle. Meeting chunks auto-engage
       // it pipeline-side; this is the explicit button next to mute.
@@ -6913,9 +6946,8 @@ async function main() {
               // was showing). speakIntoMeeting routes voice→output_audio +
               // caption→canvas (no audio), so no double-audio. The canvas page's
               // OWN Web Audio is NOT used for voice (it's suspended headless).
-              const frontendUrl = (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/$/, '')
               const canvasUrl = /^https:\/\//.test(webhookBase)
-                ? `${frontendUrl}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
+                ? `${frontendUrl()}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
                 : undefined
               const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || canvasUrl
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { castUrl })

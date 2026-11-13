@@ -22,6 +22,8 @@ export interface NamedAgent {
   prompt?: string
   /** A user agent's origin as the machine words it: the built-in it forked, or 'owner/repo @sha7'. */
   origin?: string
+  /** Older machines mark the user's own agents this way instead of sending core. */
+  custom?: boolean
   role: string
   summary: string
   icon: string
@@ -157,8 +159,9 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   /** Where "Browse catalogs" goes (omitted = no link). */
   browseHref?: string
 }) {
-  // An older machine sends no roles and no core flags: list its agents read-only.
-  const core = roles ? agents.filter((a) => a.core) : agents
+  // The built-ins. An older machine sends no core flag (it marks the user's own agents
+  // custom instead), so anything not marked as the user's is listed here, read-only.
+  const core = agents.filter((a) => a.core !== false && !a.custom)
   const coreNames = new Set(core.map((a) => a.name))
   const mine = (yours || []).filter((r) => !coreNames.has(r.name))
   const taken = new Set([...core.map((a) => a.name), ...mine.map((r) => r.name)])
@@ -180,7 +183,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   const roleInfo = (role: string) => roles?.roles.find((r) => r.role === role)
   const canEdit = !!(onSave && yours && roles)
   /** Where a user agent came from, as the machine labels it (enabled agents only). */
-  const originOf = (name: string) => agents.find((a) => a.name === name && !a.core)?.origin ?? 'a store catalog'
+  const originOf = (r: { name: string; forked_from?: string | null }) => agents.find((a) => a.name === r.name && !a.core)?.origin ?? r.forked_from
 
   const fork = async (a: NamedAgent) => {
     const prompt = await withPrompt(a)
@@ -216,11 +219,11 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
         </div>
       ) : null}
       <div>
-        <h5 className={heading}>{roles ? 'Built in — maintained by Voice Native' : 'Agents on your machine'}</h5>
+        <h5 className={heading}>Built in — maintained by Voice Native</h5>
         <div className="space-y-1.5">
           {core.length === 0 && <p className="text-[11px] text-[var(--text-muted)]">Connect your machine to see the built-in agents.</p>}
           {core.map((a) => (
-            <AgentCard key={a.name} icon={a.icon} title={<span className="capitalize">{a.name}</span>} badges={<>{roles && <LockBadge />}{status?.(a.name)}</>}
+            <AgentCard key={a.name} icon={a.icon} title={<span className="capitalize">{a.name}</span>} badges={<><LockBadge />{status?.(a.name)}</>}
               model={a.model} tools={a.tools} text={a.summary || a.description} textTitle={a.description} role={a.role} behaviours={a.behaviours} progress={progress?.(a.name)}
               actions={<>
                 {(a.prompt != null || (getPrompt && roles)) && (
@@ -252,7 +255,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
           <div className={`${card} mb-2 space-y-1.5`}>
             {d.forked_from && (coreNames.has(d.forked_from)
               ? <p className="text-[10px] text-[var(--text-secondary)]">Forking <b className="capitalize">{d.forked_from}</b>. The built-in stays as it is; your fork is a separate agent that starts with its role.</p>
-              : <p className="text-[10px] text-[var(--text-secondary)]">Installed from <b>{originOf(d.name)}</b>.</p>)}
+              : <p className="text-[10px] text-[var(--text-secondary)]">Installed from <b>{originOf(d)}</b>.</p>)}
             <input value={d.name} disabled={!editing!.isNew} onChange={(e) => set({ name: e.target.value })} placeholder="agent-name (kebab-case)" className={field} />
             {nameError && d.name && <p className="text-[10px] text-red-400">{nameError}</p>}
             <input value={d.description} onChange={(e) => set({ description: e.target.value })} maxLength={limits.description} placeholder="When should the orchestrator use this agent?" className={field} />
@@ -303,7 +306,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
                   <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
                     {fromCore
                       ? <>Forked from <span className="capitalize">{r.forked_from}</span>.</>
-                      : <>From {originOf(r.name)}</>}
+                      : <>From {originOf(r)}</>}
                   </p>
                 )}
               </AgentCard>

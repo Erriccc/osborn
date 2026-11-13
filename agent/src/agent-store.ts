@@ -217,6 +217,39 @@ export function describeAgents(core: CoreAgents, user: Record<string, AgentDef> 
   })
 }
 
+// ── Who may change the machine's skills (skills add/fork/remove, catalog install) ──
+
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/
+const LOOPBACK_ADDR = /^(127\.|::1$|::ffff:127\.)/
+
+/** Browser origins allowed to make store writes on a machine with no sync token: a local
+ *  page, voice-native.com, or the frontend the agent is configured with. No Origin = not a
+ *  browser cross-site request. Also decides which origin the write routes' CORS echoes. */
+export function storeWriteOriginAllowed(origin: string | undefined, frontendUrl: string): boolean {
+  if (!origin) return true
+  let u: URL
+  try { u = new URL(origin) } catch { return false }
+  let configured = ''
+  try { configured = new URL(frontendUrl).origin } catch { /* none configured */ }
+  return LOOPBACK_HOST.test(u.host) || u.origin === 'https://voice-native.com' || u.origin === configured
+}
+
+/** Refusal for a store write, or null. With a token, unauthorized() has already checked it;
+ *  without one, only this machine's own pages may write, never a public or tunnelled
+ *  address, and every write must be JSON (no other site's form or text/plain POST). */
+export function storeWriteRefusal(r: {
+  hasToken: boolean; publicDeploy: boolean; forwarded: boolean; host?: string; remote?: string
+  origin?: string; contentType?: string; frontendUrl: string
+}): { status: number; error: string } | null {
+  if (!r.hasToken) {
+    if (r.publicDeploy || r.forwarded || !LOOPBACK_HOST.test(r.host || '')) return { status: 403, error: 'this machine is reachable from outside: set OSBORN_SYNC_TOKEN to change skills' }
+    if (!LOOPBACK_ADDR.test(r.remote || '')) return { status: 403, error: 'store changes need the sync token or a request from this machine' }
+    if (!storeWriteOriginAllowed(r.origin, r.frontendUrl)) return { status: 403, error: 'store changes are refused from this site' }
+  }
+  if (!/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }
+  return null
+}
+
 // ── SKILL.md and agent .md front matter ───────────────────────────────────────
 
 const FRONT_MATTER = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/

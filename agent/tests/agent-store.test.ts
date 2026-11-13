@@ -3,7 +3,7 @@ import assert from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseUserAgents, mergeAgents, describeAgents, forkSkill, removeUserSkill, addUserSkill, readUserSkill, skillForkedFrom, coreSkillNames, parseFrontMatter } from '../src/agent-store.js'
+import { storeWriteRefusal, storeWriteOriginAllowed, parseUserAgents, mergeAgents, describeAgents, forkSkill, removeUserSkill, addUserSkill, readUserSkill, skillForkedFrom, coreSkillNames, parseFrontMatter } from '../src/agent-store.js'
 
 const core = {
   writer: { description: 'core writer', prompt: 'WRITER PROMPT', model: 'opus', tools: ['Edit'] },
@@ -102,5 +102,23 @@ try {
 assert.deepEqual(parseFrontMatter('---\ntools: ["Read", Grep]\n---\n').meta.tools, ['Read', 'Grep'])
 assert.equal(parseFrontMatter('---\ndescription: Use it: when asked\nname: x\n---\nbody').meta.description, 'Use it: when asked')
 assert.equal(parseFrontMatter('no front matter').body, 'no front matter')
+
+// Store writes: who may change skills.
+{
+  const fe = 'https://app.example.com'
+  assert.ok(storeWriteOriginAllowed(undefined, fe), 'no Origin: not a cross-site browser request')
+  for (const o of ['http://localhost:3000', 'http://127.0.0.1:5173', 'https://voice-native.com', 'https://app.example.com']) assert.ok(storeWriteOriginAllowed(o, fe), o)
+  for (const o of ['https://evil.example', 'null', 'http://localhost.evil.com', 'https://voice-native.com.evil.io', 'https://www.voice-native.com']) assert.ok(!storeWriteOriginAllowed(o, fe), o)
+  const local = { hasToken: false, publicDeploy: false, forwarded: false, host: 'localhost:8741', remote: '127.0.0.1', origin: 'http://localhost:3000', contentType: 'application/json', frontendUrl: fe }
+  assert.equal(storeWriteRefusal(local), null)
+  assert.equal(storeWriteRefusal({ ...local, origin: 'https://evil.example' })?.status, 403, 'any website on a local agent with no token')
+  assert.equal(storeWriteRefusal({ ...local, contentType: 'text/plain' })?.status, 415)
+  assert.equal(storeWriteRefusal({ ...local, remote: '192.168.1.9' })?.status, 403, 'another machine on the LAN')
+  assert.equal(storeWriteRefusal({ ...local, forwarded: true })?.status, 403, 'through a tunnel or proxy')
+  assert.equal(storeWriteRefusal({ ...local, host: 'my-tunnel.example.com' })?.status, 403, 'reached by a public name')
+  assert.equal(storeWriteRefusal({ ...local, publicDeploy: true })?.status, 403, 'a cloud machine needs the token')
+  assert.equal(storeWriteRefusal({ ...local, hasToken: true, publicDeploy: true, forwarded: true, host: 'x.fly.dev', remote: '10.0.0.1', origin: 'https://evil.example' }), null, 'with a token, unauthorized() is the gate')
+  assert.equal(storeWriteRefusal({ ...local, hasToken: true, contentType: '' })?.status, 415)
+}
 
 console.log('agent-store: all assertions passed')

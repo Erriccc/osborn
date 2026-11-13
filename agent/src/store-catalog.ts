@@ -8,7 +8,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, sep, posix } from 'node:path'
 import { promisify } from 'node:util'
 import MiniSearch from 'minisearch'
-import { STOP as STOP_WORDS } from './content/lens-clip-window.js'
+import { STOPWORDS } from './stopwords.js'
 import { storeName, draftRole, isAgentModel, parseFrontMatter, catalogOrigin, unpinnedOrigin, AGENT_LIMITS, type Role } from './agent-store.js'
 
 const run = promisify(execFile)
@@ -318,8 +318,10 @@ export function installedIds(entries: CatalogEntry[], skillFolders: Set<string>,
 interface Signal { text: string; reason: string }
 interface Recommendation { id: string; score: number; reason: string }
 
-// Stopwords: the shared English list plus words every catalog entry shares.
-const STOP = new Set([...STOP_WORDS, 'use', 'agent', 'skill', 'skills', 'agents', 'using', 'used', 'user', 'users', 'help', 'let', 'please', 'new'])
+// Stopwords: the shared English list plus words every catalog entry shares. The transcript
+// fillers the content lens adds (work, time, look, good, thing…) stay searchable here: in a
+// skill or agent description they name what it does ("time tracking", "look up").
+const STOP = new Set([...STOPWORDS, 'use', 'agent', 'skill', 'skills', 'agents', 'using', 'used', 'user', 'users', 'help', 'let', 'please', 'new'])
 const processTerm = (t: string) => { const w = t.toLowerCase(); return w.length < 3 || STOP.has(w) || /^\d+$/.test(w) ? null : w }
 
 /** Ranks entries against what the user does (installed skills, agents, recent session titles); installed ids are left out. */
