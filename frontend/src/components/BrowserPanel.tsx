@@ -32,6 +32,7 @@ type EngineState = {
   driver?: string
 }
 type Status = {
+  build?: { skillVersion?: string }
   roomReady?: boolean
   pageUrl?: string
   pageState?: string
@@ -312,12 +313,11 @@ export function BrowserPanel() {
     if (!confirm(`Shut down the browser engine? It ends every run on it, for everyone${drivers.length ? ` (now driving: ${drivers.map(label).join(', ')})` : ''}, and the machine sleeps.`)) return
     if (await post('end', { shutdown: true }, 'shut down')) setWatching(false)  // confirmed: stop it for everyone
   }
-  // Scoped end: closes my tabs and hands back takeovers; the engine stops only when nobody else is working.
+  // Scoped end with keep: closes my tabs and hands back takeovers; never stops the engine.
   const closeMyTabs = async () => {
     const r = await post('end', { keep: true }, 'close my tabs')
     if (!r) return
     setNote(r.msg ?? 'Closed your tabs')
-    if (!r.others) setWatching(false)
   }
 
   const taskN = (t: Task, i: number) => (typeof t.n === 'number' ? t.n : typeof t.index === 'number' ? t.index : i)
@@ -397,7 +397,8 @@ export function BrowserPanel() {
           <button onClick={copyShare} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800">
             Copy viewer link
           </button>
-          {watching && (
+          {/* Needs an engine that understands /end {keep} (skill v42+); older ones would shut down. */}
+          {watching && Number(status?.build?.skillVersion) >= 42 && (
             <button onClick={closeMyTabs} disabled={!!busy} title="Closes your tabs and hands back any you took over; the engine keeps running for anyone else using it" className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">
               Close my tabs
             </button>

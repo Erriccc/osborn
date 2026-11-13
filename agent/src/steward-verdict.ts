@@ -61,7 +61,8 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
   const entries = (k: string) => {
     const ls = sections[k] ?? []
     const out = (ls.length === 1 ? ls[0].split(/;\s+/) : ls).map(strip).filter(Boolean)
-    return out.length === 1 && isNone(out[0]) ? [] : out
+    // Bounded, so a long return cannot overflow the data-channel packet on reload.
+    return out.length === 1 && isNone(out[0]) ? [] : out.slice(0, 20).map((e) => e.slice(0, 300))
   }
   // REUSE MAP and REGRESSION MAP stay in `raw` only; a NET-NEW entry inside the reuse map is lifted out.
   const netNew = entries('netNew')

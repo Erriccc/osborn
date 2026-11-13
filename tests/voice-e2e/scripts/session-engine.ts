@@ -951,7 +951,7 @@ async function main() {
       // same relative paths as before.
       const mediaBase = String(req.headers['x-control-base'] || '')
       // Public evidence links are absolute even for direct :8781 callers, so they render when pasted into an issue.
-      const evidenceBase = mediaBase || process.env.OSBORN_PUBLIC_URL || (process.env.FLY_APP_NAME ? `https://${process.env.FLY_APP_NAME}.fly.dev/control` : '')
+      const evidenceBase = (mediaBase || process.env.OSBORN_ENGINE_PUBLIC_URL || (process.env.FLY_APP_NAME ? `https://${process.env.FLY_APP_NAME}.fly.dev/control` : '')).replace(/\/+$/, '')
       if (req.method === 'GET' && path.startsWith('/media/')) {
         // Signed public evidence — checked BEFORE the token gate on purpose.
         const m = path.match(/^\/media\/([A-Za-z0-9T:-]+)\/(\d+)\.(jpg|mp4|txt)$/)
