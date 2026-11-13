@@ -15,23 +15,24 @@
 #   drive.sh tab  '{"op":"open","url":"https://x.com","viewport":"mobile"}'
 #   drive.sh status | drive.sh eval "document.title" | drive.sh journey '{"op":"start","name":"x"}'
 #
-# Config (env): BSR_ENGINE (default https://osborn-voice-e2e.fly.dev:8781),
-#   BSR_TOKEN (or ~/osborn-backups/voice-e2e-engine-token.txt), BSR_IP
-#   (Fly shared v4, default 66.241.124.164 — Machines-API apps need --resolve),
-#   BSR_OUT (default /tmp/bsr).
+# Config (env): BSR_ENGINE (default https://osborn-voice-e2e-n.fly.dev/control — the
+#   control API on the public port; https://<engine>:8781 works too), BSR_TOKEN (or
+#   ~/osborn-backups/voice-e2e-engine-token.txt), BSR_DRIVER, BSR_PROFILE, BSR_IP (pin
+#   the engine's IP with --resolve, only when DNS is unreliable), BSR_OUT (default /tmp/bsr).
 set -euo pipefail
 
-ENGINE="${BSR_ENGINE:-https://osborn-voice-e2e.fly.dev:8781}"
+ENGINE="${BSR_ENGINE:-https://osborn-voice-e2e-n.fly.dev/control}"; ENGINE="${ENGINE%/}"
 TOKEN="${BSR_TOKEN:-$(cat ~/osborn-backups/voice-e2e-engine-token.txt 2>/dev/null || true)}"
-HOSTPORT="${ENGINE#https://}"; HOSTPORT="${HOSTPORT#http://}"
-HOST="${HOSTPORT%%:*}"; PORT="${HOSTPORT##*:}"; [ "$PORT" = "$HOST" ] && PORT=8781
-IP="${BSR_IP:-66.241.124.164}"
+HOSTPORT="${ENGINE#*://}"; HOSTPORT="${HOSTPORT%%/*}"
+HOST="${HOSTPORT%%:*}"; PORT="${HOSTPORT##*:}"
+if [ "$PORT" = "$HOST" ]; then case "$ENGINE" in http://*) PORT=80 ;; *) PORT=443 ;; esac; fi
+IP="${BSR_IP:-}"
 OUT="${BSR_OUT:-/tmp/bsr}"; mkdir -p "$OUT"
 CMD="${1:-}"; ARG="${2:-}"
 
-# Force the Fly IP so DNS/edge quirks can't break it; drop --resolve for localhost.
-RESOLVE=(--resolve "$HOST:$PORT:$IP")
-[[ "$HOST" == "127.0.0.1" || "$HOST" == "localhost" ]] && RESOLVE=()
+# Pin the engine IP only when asked (BSR_IP); otherwise use normal DNS.
+RESOLVE=()
+[[ -n "$IP" && "$HOST" != "127.0.0.1" && "$HOST" != "localhost" ]] && RESOLVE=(--resolve "$HOST:$PORT:$IP")
 DRIVER="${BSR_DRIVER:-$(whoami 2>/dev/null || echo default)}"
 # nounset-safe empty-array expansion (bash 3.2 on macOS errors on "${RESOLVE[@]}" when empty)
 PROFILE="${BSR_PROFILE:-}"  # your own browser profile: sign in once, kept across restarts
