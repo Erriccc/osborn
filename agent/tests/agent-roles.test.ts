@@ -77,3 +77,10 @@ assert.ok(listing['my-steward'].behaviours.includes('Its verdict shows as a card
 assert.equal(listing.helper.role, 'reader')
 
 console.log('agent-roles: all assertions passed')
+// A user or catalog writer never gets silent skill installs (built-in agents only).
+{
+  const { roleBehaviours } = await import('../src/agent-store.js')
+  if (!roleBehaviours('writer', true).some((b) => /skills without asking/.test(b))) throw new Error('core writer lost skill install')
+  if (roleBehaviours('writer', false).some((b) => /skills without asking/.test(b))) throw new Error('non-core writer must not auto-install skills')
+  console.log('agent-roles: skill install is built-in only')
+}

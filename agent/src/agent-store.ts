@@ -132,13 +132,13 @@ export function roleOf(agentType: string | null | undefined, roles: Record<strin
 }
 
 /** What a role unlocks, in plain words for the store. */
-export function roleBehaviours(role: Role): string[] {
+export function roleBehaviours(role: Role, core = true): string[] {
   const r = ROLES[role]
   const out: string[] = []
   if (r.write === 'workspace') out.push('Writes only in the session workspace')
   else if (r.write === 'anywhere') out.push('Can edit files anywhere — you approve each write')
   else out.push(`Can write ${r.write.label} files only`)
-  if (r.skillInstall) out.push('Installs skills without asking for each file')
+  if (r.skillInstall && core) out.push('Installs skills without asking for each file')  // built-in agents only
   if (r.historyFirst) out.push("Checks a file's history before its first edit")
   if (r.verdict) out.push('Its verdict shows as a card in chat')
   if (r.signsOff) out.push('Its sign-off unlocks commits, pushes and PRs')
@@ -209,7 +209,7 @@ export function describeAgents(core: Record<string, any>, user: Record<string, A
     const isCore = name in core
     const role = roleOf(name, roles) ?? resolveRole({ forkedFrom: forkedFrom[name], tools: a.tools })
     return {
-      name, description: a.description, model: a.model, tools: a.tools, core: isCore, role, behaviours: roleBehaviours(role),
+      name, description: a.description, model: a.model, tools: a.tools, core: isCore, role, behaviours: roleBehaviours(role, isCore),
       ...(isCore && withPrompts ? { prompt: a.prompt } : {}),  // prompts are large: GET /agents only, never the data channel
       ...(!isCore && forkedFrom[name] ? { forkedFrom: forkedFrom[name] } : {}),
     }

@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
 import { parseStewardVerdict, appendStewardVerdict } from './steward-verdict.js'
-import { ROLES, roleOf, type Role, type WriteRule } from './agent-store.js'
+import { ROLES, CORE_AGENT_ROLES, roleOf, type Role, type WriteRule } from './agent-store.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -2644,11 +2644,13 @@ class ClaudeLLMStream extends llm.LLMStream {
             // Pattern matches `.claude/skills/<skillname>/<file>` in any osborn install location
             // (npm global, dev tree, cloud sandbox), so installing a multi-file skill via the
             // writer agent doesn't blow up into a per-file permission cascade.
-            // Requires a role with skillInstall (writer) — workspace-only roles are blocked by PreToolUse
+            // Requires a role with skillInstall (writer) on a BUILT-IN agent: a user or catalog agent with
+            // the writer role still writes, but each skill file goes through the approval dialog.
+            // Workspace-only roles are blocked by PreToolUse
             // before they ever reach canUseTool, so this check is the only path that lets a
             // skill install through silently.
             const writeRole = roleOf(agentType as string | null, this.#opts.agentRoles)
-            if (writeRole && ROLES[writeRole].skillInstall && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
+            if (writeRole && ROLES[writeRole].skillInstall && typeof agentType === 'string' && agentType in CORE_AGENT_ROLES && /\/\.claude\/skills\/[^/]+\//.test(filePath)) {
               console.log(`✅ Auto-approved writer ${toolName} to skill dir: ${filePath}`)
               return { behavior: 'allow', updatedInput: input }
             }
