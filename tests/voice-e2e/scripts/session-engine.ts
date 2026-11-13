@@ -61,7 +61,7 @@ import { promisify } from 'util'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { installReactiveMic, speakText } from '../lib/reactive-mic'
+import { installReactiveMic, speakText, warmUpSpeech } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture } from '../lib/audio-capture'
@@ -255,6 +255,8 @@ async function main() {
   manifest.live = live?.url ?? null
   manifest.captureMode = DISPLAY_MODE ? 'display (full browser window)' : 'page (CDP)'
   mark(`browser up (${useAuth ? 'auth' : 'guest'}${IN_CONTAINER ? ', container' : ''}, capture: ${DISPLAY_MODE ? 'full-window' : 'page'}) — live: ${live?.url ?? 'n/a'}`)
+  // Load speech code and look up its provider now; the logged time shows a cold synthesis (#206).
+  void warmUpSpeech().then((w) => mark(`speech warm-up: ${w.provider} in ${w.ms}ms`)).catch((e) => mark(`speech warm-up failed: ${String(e).slice(0, 80)}`))
 
   // BRAIN — re-initializable in place. A double page reload detaches Stagehand
   // ("uninitialized Stagehand object") and previously killed /act for the rest
@@ -1233,7 +1235,7 @@ async function main() {
       if (path === '/say') {
         const driver = driverId(req)
         // Where the turn's time went, returned to the caller (#201).
-        const tReq = Date.now(); const timings: Record<string, number> = {}
+        const tReq = Date.now(); const timings: Record<string, number> = {}; let voice = ''
         let tStep = tReq; const lap = (name: string) => { const now = Date.now(); timings[name] = now - tStep; tStep = now }
         // The lock covers speaking only; listening, clip and transcript run after it.
         const spoken = await withLock(async () => {
@@ -1266,8 +1268,9 @@ async function main() {
             // cancelled so it can't play later, and is not retried.
             let cancelled = false
             try {
-              await withTimeout(speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { if (cancelled) throw new Error('cancelled'); playStartMs = Date.now() } }),
+              const st = await withTimeout(speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { if (cancelled) throw new Error('cancelled'); playStartMs = Date.now() } }),
                 Math.max(1000, tReq + 35000 - Date.now()), 'speaking ran out of time').catch((e) => { cancelled = true; throw e })
+              timings.synth = st.synthMs; timings.play = st.playMs; voice = st.provider
               sayErr = null; break
             }
             catch (e) {
@@ -1285,10 +1288,11 @@ async function main() {
             const noMic = /mic/i.test(msg)
             mark(`say[${driver}] FAILED after ${MAX_SAY_ATTEMPTS} attempt(s): ${msg.slice(0, 80)}`)
             try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
+            timings.speak = Date.now() - tReq  // before the screenshot, so it isn't counted as speaking
             const fn = ++reqN
             const fshot = await reqShot(fn, 'say')
             const fw = stampTask(fn, 'say', t0, null, fshot, body.text)
-            timings.speak = Date.now() - tReq; timings.total = timings.speak; (fw as any).timings = timings; writeManifest()
+            timings.total = Date.now() - tReq; (fw as any).timings = timings; writeManifest()
             return json(res, {
               ok: false,
               timings,
@@ -1356,9 +1360,9 @@ async function main() {
           const shot = await reqShot(n, 'say', page)
           const window = stampTask(n, 'say', t0, clip, shot, body.text, heard, page)
           timings.total = Date.now() - tReq
-          ;(window as any).clipAudio = audio; (window as any).timings = timings; writeManifest()
+          ;(window as any).clipAudio = audio; (window as any).timings = timings; (window as any).voice = voice; writeManifest()
           addStep('say', String(body.text))
-          return json(res, { ok: true, timings, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {
