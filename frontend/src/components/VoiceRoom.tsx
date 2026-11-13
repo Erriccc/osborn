@@ -1113,7 +1113,8 @@ function VoiceRoomInner({
   }, [state, agentConnected, onAgentReady])
 
   // ── Early TTS volume-duck on user speech (website path only) ───────────────
-  // The MOMENT your own mic shows voice while the agent is speaking, drop the
+  // The MOMENT your own mic shows voice while the agent is audible (its state is
+  // 'speaking' or its audio track has sound), drop the
   // agent's TTS volume to DUCK_LEVEL — WITHOUT waiting for the server-side STT
   // interrupt to confirm. That confirmed barge-in still fully STOPS the TTS
   // exactly as before (agent index.ts: Deepgram STT endpointing →
@@ -1146,10 +1147,13 @@ function VoiceRoomInner({
       console.log('🦆 [duck] armed')
     } catch (e) { console.log('🦆 [duck] bail: createAudioAnalyser threw', e); return }
 
-    const ONSET = 0.04        // above the residual-echo floor (AEC is on); ducking is cheap, err low
+    // Onset adapts to the leftover echo of the agent's voice in YOUR mic: a fixed
+    // 0.04 made people raise their voice before the duck engaged.
+    const ONSET_MIN = 0.012, ONSET_MAX = 0.04
     const ONSET_HOLD_MS = 50  // sustained over onset before ducking (ignore single clicks/pops)
     const QUIET_HOLD_MS = 250 // quiet this long while ducked ⇒ false trigger ⇒ restore
     const RAMP = 0.18         // per-frame lerp toward target → click-free ramp (~tens of ms)
+    const AUDIBLE = 0.01, AUDIBLE_HOLD_MS = 300 // agent audio counts as playing for 300ms after it was heard
 
     let curVol = 1
     let targetVol = 1
@@ -1158,6 +1162,12 @@ function VoiceRoomInner({
     let raf = 0
     let lastSpeaking: boolean | null = null
     let peak = 0 // peak mic level since the last speaking edge
+    // Slow average of the mic while the agent plays and you are quiet. Seeded so the onset
+    // starts at the old fixed ONSET_MAX and only comes down as real echo is measured:
+    // an echo between the bounds can then never hold the duck on by itself.
+    let echoFloor = ONSET_MAX / 3
+    let agentHeardAt = 0
+    let onsetAt = 0, duckedAt = 0 // for the barge-in timing log
 
     // Log a missing agent track / setVolume once per state change, not per frame.
     let lastMissing: string | null = null
@@ -1171,15 +1181,36 @@ function VoiceRoomInner({
       try { t?.setVolume?.(v) } catch { /* track detached */ }
     }
 
+    let agentAnalyser: { calculateVolume: () => number; analyser: AnalyserNode; cleanup: () => Promise<void> } | null = null
+    let agentAnalysed: unknown = null
+    const agentLevel = () => {
+      const t = agentAudioTrackRef.current
+      if (t !== agentAnalysed) {
+        try { void agentAnalyser?.cleanup() } catch { /* closed */ }
+        agentAnalyser = null; agentAnalysed = t
+        try {
+          if (t) {
+            agentAnalyser = createAudioAnalyser(t as never, { smoothingTimeConstant: 0.2, fftSize: 512 })
+            void (agentAnalyser.analyser.context as AudioContext).resume().catch(() => {})
+          }
+        } catch { /* state only */ }
+      }
+      try { return agentAnalyser?.calculateVolume() ?? 0 } catch { return 0 }
+    }
+
     const loop = () => {
       raf = requestAnimationFrame(loop)
-      const speaking = agentStateRef.current === 'speaking'
+      const now = performance.now()
+      if (agentLevel() > AUDIBLE) agentHeardAt = now
+      const speaking = agentStateRef.current === 'speaking' || now - agentHeardAt < AUDIBLE_HOLD_MS
       if (speaking !== lastSpeaking) {
-        console.log(`🦆 [duck] agent state → speaking=${speaking} (state=${agentStateRef.current})`)
+        console.log(`🦆 [duck] agent audible → ${speaking} (state=${agentStateRef.current})`)
         if (lastSpeaking === true && !speaking) {
-          console.log(`🦆 [duck] peak mic while agent spoke=${peak.toFixed(3)} (onset ${ONSET})`)
+          console.log(`🦆 [duck] peak mic while agent spoke=${peak.toFixed(3)} echoFloor=${echoFloor.toFixed(3)}`)
+          // The agent stopped while you were talking over it: how long the barge-in took end to end.
+          if (onsetAt) console.log(`🦆 [duck] barge-in timing: duck ${duckedAt ? Math.round(duckedAt - onsetAt) : '-'}ms, agent stopped ${Math.round(Math.max(0, agentHeardAt - onsetAt))}ms after your voice`)
         }
-        peak = 0
+        peak = 0; onsetAt = 0; duckedAt = 0
         lastSpeaking = speaking
       }
       if (!speaking) {
@@ -1189,19 +1220,23 @@ function VoiceRoomInner({
       } else {
         const vol = analyser!.calculateVolume() // instant 0..1 RMS of YOUR mic
         if (vol > peak) peak = vol
-        const now = performance.now()
-        if (vol > ONSET) {
+        const onset = Math.min(ONSET_MAX, Math.max(ONSET_MIN, echoFloor * 3))
+        if (vol > onset) {
           belowSince = 0
           if (!aboveSince) aboveSince = now
+          if (!onsetAt) onsetAt = aboveSince
           if (targetVol === 1 && now - aboveSince >= ONSET_HOLD_MS) {
             targetVol = DUCK_LEVEL
-            console.log(`🦆 [duck] engaged: mic=${vol.toFixed(3)} msSinceOnset=${Math.round(now - aboveSince)} → ${DUCK_LEVEL}`)
+            duckedAt = now
+            console.log(`🦆 [duck] engaged: mic=${vol.toFixed(3)} onset=${onset.toFixed(3)} msSinceOnset=${Math.round(now - aboveSince)} → ${DUCK_LEVEL}`)
           }
         } else {
+          if (targetVol === 1) echoFloor += (vol - echoFloor) * 0.02 // learn the echo only while not ducked
           aboveSince = 0
           if (!belowSince) belowSince = now
           if (targetVol !== 1 && now - belowSince >= QUIET_HOLD_MS) {
             targetVol = 1
+            onsetAt = 0; duckedAt = 0
             console.log(`🦆 [duck] restore: false trigger (mic=${vol.toFixed(3)} quiet ${Math.round(now - belowSince)}ms)`)
           }
         }
@@ -1220,6 +1255,7 @@ function VoiceRoomInner({
     return () => {
       cancelAnimationFrame(raf)
       try { void analyser?.cleanup() } catch { /* already closed */ }
+      try { void agentAnalyser?.cleanup() } catch { /* already closed */ }
       applyVolume(1, true) // never leave a track ducked on teardown (quiet: no bail log)
     }
   }, [localParticipant, micEnabled])
