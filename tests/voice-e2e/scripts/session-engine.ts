@@ -538,22 +538,25 @@ async function main() {
     const clipDur = Math.max(1, (clip.endMs - clip.startMs) / 1000)
     // Players autoplay muted, so the clip SHOWS its sound: waveform + captions.
     filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest,apad=whole_dur=${clipDur.toFixed(3)},atrim=0:${clipDur.toFixed(3)},loudnorm=I=-18:TP=-2,aformat=channel_layouts=stereo,asplit=2[a][aw]`)
-    filters.push(`[aw]showwaves=s=1280x90:mode=cline:colors=0x46d38a,format=rgba,colorchannelmixer=aa=0.85[wav]`)
-    let vchain = `[0:v]scale=1280:-2,pad=1280:ih+90:0:0:black[base];[base][wav]overlay=0:H-90:shortest=1`
+    // Same width as the clip (OSBORN_CLIP_WIDTH): this re-encode is the costliest step of a turn.
+    const W = Number(process.env.OSBORN_CLIP_WIDTH ?? 640), k = W / 1280, px = (v: number) => Math.round(v * k)
+    const WAVE_H = px(90) & ~1
+    filters.push(`[aw]showwaves=s=${W}x${WAVE_H}:mode=cline:colors=0x46d38a,format=rgba,colorchannelmixer=aa=0.85[wav]`)
+    let vchain = `[0:v]scale=${W}:-2,pad=${W}:ih+${WAVE_H}:0:0:black[base];[base][wav]overlay=0:H-${WAVE_H}:shortest=1`
     const capFiles: string[] = []
     if (captions) {
       const saidAt = said ? Math.max(0, (playStartMs - clip.startMs) / 1000) : 0
       const saidFor = said ? Math.max(1.5, (await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', saidWav!]).then((r) => Number(String(r.stdout).trim()) || 3).catch(() => 3))) : 0
-      const box = 'box=1:boxcolor=black@0.65:boxborderw=10:fontcolor=white:fontsize=24:x=24'
+      const box = `box=1:boxcolor=black@0.65:boxborderw=${px(10)}:fontcolor=white:fontsize=${Math.max(12, px(24))}:x=${px(24)}`
       const wrap = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 220).replace(/(.{1,80})(\s|$)/g, '$1\n').trim()
       const cap = (name: string, text: string) => { const f = join(RUN_DIR, `_cap-${n}-${name}.txt`); writeFileSync(f, text); capFiles.push(f); return f.replace(/\\/g, '/').replace(/:/g, '\\:') }
-      if (said) vchain += `,drawtext=textfile='${cap('said', `TESTER SAID: ${wrap(captions.said)}`)}':${box}:y=24:enable='between(t\\,${saidAt.toFixed(2)}\\,${(saidAt + saidFor).toFixed(2)})'`
+      if (said) vchain += `,drawtext=textfile='${cap('said', `TESTER SAID: ${wrap(captions.said)}`)}':${box}:y=${px(24)}:enable='between(t\\,${saidAt.toFixed(2)}\\,${(saidAt + saidFor).toFixed(2)})'`
       const replyFrom = said ? saidAt + saidFor : 0
-      vchain += `,drawtext=textfile='${cap('heard', captions.heard ? `HEARD BACK (transcript): ${wrap(captions.heard)}` : 'NO SPEECH TRANSCRIBED in reply (any sound is still in the audio and waveform)')}':${box}:y=h-90-24-th:enable='gte(t\\,${replyFrom.toFixed(2)})'`
+      vchain += `,drawtext=textfile='${cap('heard', captions.heard ? `HEARD BACK (transcript): ${wrap(captions.heard)}` : 'NO SPEECH TRANSCRIBED in reply (any sound is still in the audio and waveform)')}':${box}:y=h-${WAVE_H}-${px(24)}-th:enable='gte(t\\,${replyFrom.toFixed(2)})'`
     }
     filters.push(`${vchain}[v]`)
     try {
-      await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-movflags', '+faststart', '-shortest', out], { timeout: timeoutMs })
+      await execFileP('ffmpeg', [...args, '-filter_complex', filters.join(';'), '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-movflags', '+faststart', '-shortest', out], { timeout: timeoutMs })
       return existsSync(out) ? { path: out, said, heard } : null
     } catch (e) { mark(`audio mux failed: ${(e as Error).message.slice(0, 100)}`); return null }
     finally { for (const f of capFiles) { try { rmSync(f, { force: true }) } catch { /* ignore */ } } }
@@ -665,6 +668,9 @@ async function main() {
   // Every task records WHICH TAB it ran on ({i, url} at execution time) — the
   // per-tab memory that lets a director reconstruct what happened where.
   const activeTab = (p: Page = active) => ({ i: context.pages().indexOf(p), url: p.url(), owner: ownerOf(p) })
+  // Clips still encoding after their reply; GET /clip and /media wait on them.
+  const pendingClips = new Map<number, Promise<unknown>>()
+  const awaitClip = async (n: number) => { const p = pendingClips.get(n); if (p) await Promise.race([p, new Promise((r) => setTimeout(r, 90000))]) }
   const stampTask = (n: number, label: string, startMs: number, clip: string | null, artifact: string | null, text?: string, heard?: string, page: Page = active) => {
     const endMs = Date.now()
     touchTab(page)
@@ -890,6 +896,7 @@ async function main() {
         const m = path.match(/^\/media\/([A-Za-z0-9T:-]+)\/(\d+)\.(jpg|mp4|txt)$/)
         const sig = new URL(req.url || '', 'http://x').searchParams.get('s') || ''
         if (!m || sig !== shareSig(m[1], `${m[2]}.${m[3]}`)) return json(res, { error: 'bad or missing evidence signature' }, 403)
+        if (m[1] === RUN_STAMP && m[3] === 'mp4') await awaitClip(Number(m[2]))
         const t = (loadRunTasks(m[1]) ?? []).find((t: any) => t.n === Number(m[2]))
         if (!t) return json(res, { error: `run ${m[1]} task ${m[2]} is no longer stored (runs are pruned to the newest ${KEEP_RUNS})` }, 404)
         if (m[3] === 'txt') {
@@ -973,6 +980,7 @@ async function main() {
             file = path === '/clip' ? t?.clip : t?.artifact
           } catch { /* fall through to 404 */ }
         } else {
+          if (path === '/clip') await awaitClip(n)
           const t = tasks.find((t) => t.n === n) as any
           file = path === '/clip' ? t?.clip : t?.artifact
           if (path === '/clip' && file) fetchedClips.add(n)
@@ -1325,10 +1333,11 @@ async function main() {
           // used to be "the last 30s", which for a long turn showed only the tail.
           let clip: string | null = null; let clipError: string | null = null
           let audio: { said: boolean; heard: boolean } = { said: false, heard: false }
-          const range = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, Date.now(), page).catch(() => null) : null
-          lap('clip')
-          const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
-          const clipWhy = range ? null : live?.clipFailure?.()  // read now: another request's clip overwrites it
+          // The clip's frames are taken now; the encode and audio mix finish after
+          // the reply (#215), and GET /clip?n waits for them. waitClip:true restores
+          // the old in-reply clip.
+          const tClip = Date.now()
+          const rangeJob = live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, tClip, page).catch(() => null) : Promise.resolve(null)
           let hearError: string | null = null
           // Skip decoding and hearing when the ears clearly heard nothing this
           // turn: no page audio ever tapped, or no sound since speaking (#201).
@@ -1348,15 +1357,22 @@ async function main() {
             budget, `hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           lap('hear')
-          if (!range) clipError = live ? (clipWhy ?? 'clip failed') : 'live stream unavailable — no clips this session'
-          else {
-            clip = range.path
-            const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, left(3000)).catch(() => null)
-            if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
-            mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
+          const finishClip = async () => {
+            const range = await rangeJob
+            const clipWhy = range ? null : live?.clipFailure?.()  // read now: another request's clip overwrites it
+            timings.clip = Date.now() - tClip
+            const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
+            if (!range) clipError = live ? (clipWhy ?? 'clip failed') : 'live stream unavailable — no clips this session'
+            else {
+              clip = range.path
+              const tMix = Date.now()
+              const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, 45000).catch(() => null)
+              if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
+              timings.mix = Date.now() - tMix
+              mark(`clip: ${clip}${av ? ' (with audio)' : ' (silent — no audio available)'}`)
+            }
+            for (const f of [saidWav, decoded?.wav]) if (f) try { rmSync(f, { force: true }) } catch { /* ignore */ }
           }
-          lap('mix')
-          for (const f of [saidWav, decoded?.wav]) if (f) try { rmSync(f, { force: true }) } catch { /* ignore */ }
           const earsAfter = await earsState(page)
           const sayWarning = heard ? null
             : hearError ? `nothing transcribed: ${hearError}`
@@ -1366,11 +1382,18 @@ async function main() {
             : ears.armedNow ? 'nothing was heard; the ears were armed on this tab just before speaking, so audio that started earlier was not captured'
             : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say', page)
-          const window = stampTask(n, 'say', t0, clip, shot, body.text, heard, page)
+          const window = stampTask(n, 'say', t0, null, shot, body.text, heard, page)
+          ;(window as any).timings = timings; (window as any).voice = voice
+          const clipDone = finishClip().catch((e) => { clipError = `clip failed — ${(e as Error).message.slice(0, 120)}` }).then(() => {
+            ;(window as any).clip = clip; (window as any).clipError = clipError; (window as any).clipAudio = audio; writeManifest()
+          }).finally(() => pendingClips.delete(n))
+          pendingClips.set(n, clipDone)
+          if (body.waitClip) await clipDone
           timings.total = Date.now() - tReq
-          ;(window as any).clipAudio = audio; (window as any).timings = timings; (window as any).voice = voice; writeManifest()
+          writeManifest()
           addStep('say', String(body.text))
-          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: audio, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          const clipPending = !body.waitClip
+          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {
@@ -1717,8 +1740,10 @@ async function main() {
   // gracefully — on Fly the machine stops (restart policy 'never') and
   // auto_start_machines boots it again on the next request. Default 10 min in
   // containers, disabled locally (set OSBORN_IDLE_STOP_MS to override; 0 = off).
-  // 15min default (user request 2026-08-02 — was 10min; meetings/gates need breathing room)
-  const IDLE_STOP_MS = Number(process.env.OSBORN_IDLE_STOP_MS ?? (IN_CONTAINER ? 900000 : 0))
+  // 3h default: Fly shared CPUs bank burst credit only while running below their
+  // allowance, and a fresh start has ~5s of it, so stopping after 15min meant every
+  // session began throttled (#215). Idle capture is paused, so staying up is cheap.
+  const IDLE_STOP_MS = Number(process.env.OSBORN_IDLE_STOP_MS ?? (IN_CONTAINER ? 3 * 3600000 : 0))
   const MISSION_MAX_MS = 2 * 60 * 60 * 1000
   // CAPTURE IDLE PAUSE (#209/#210): nothing running, no viewer, no command for
   // OSBORN_CAPTURE_IDLE_MS (default 2min; 0 = never) → stop screen capture.

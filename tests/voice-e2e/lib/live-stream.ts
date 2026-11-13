@@ -327,6 +327,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       // (12s of wall clock) into a 48s clip.
       const OUT_FPS = DISPLAY ? CAPTURE_FPS : 10  // display frames arrive at CAPTURE_FPS
       const MIN_GAP_MS = 100
+      // Small clips: a quarter of the pixels to encode on a throttled CPU, still readable.
+      const CLIP_W = Number(process.env.OSBORN_CLIP_WIDTH ?? 640), CLIP_H = Math.round(CLIP_W * 0.625 / 2) * 2
       const kept: typeof frames = []
       for (const f of frames) if (!kept.length || f.t - kept[kept.length - 1].t >= MIN_GAP_MS) kept.push(f)
       const lines: string[] = ['ffconcat version 1.0']
@@ -343,7 +345,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       const tEnc = Date.now()
       const ok = await new Promise<boolean>((resolve) => {
         const ff = spawn('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', join(dir, 'list.txt'),
-          '-vf', `fps=${OUT_FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2`, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { stdio: 'ignore' })
+          '-vf', `fps=${OUT_FPS},scale=${CLIP_W}:${CLIP_H}:force_original_aspect_ratio=decrease,pad=${CLIP_W}:${CLIP_H}:-1:-1`, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outPath], { stdio: 'ignore' })
         const kill = setTimeout(() => { timedOut = true; ff.kill('SIGKILL') }, 20000)  // a clip never holds a turn past 20s
         ff.on('error', () => { clearTimeout(kill); resolve(false) }); ff.on('close', (c) => { clearTimeout(kill); resolve(c === 0) })
       })

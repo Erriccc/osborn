@@ -28,7 +28,7 @@ primary_region = "ord"
   policy = "never"
 
 [[vm]]
-  size = "shared-cpu-2x"
+  size = "shared-cpu-4x"  # 2x was throttled under active testing (#215)
   memory = "2048mb"
 
 # Live browser stream (screencast/x11grab → MJPEG) served during a run.
