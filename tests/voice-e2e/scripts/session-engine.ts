@@ -965,8 +965,8 @@ async function main() {
           return res.end(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`)
         }
         const file = m[3] === 'mp4' ? t.clip : t.artifact
-        if (m[3] === 'mp4' && m[1] === RUN_STAMP) fetchedClips.add(t.n)  // reviewing via the public link counts
         if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}` }, 404)
+        if (m[3] === 'mp4' && m[1] === RUN_STAMP) fetchedClips.add(t.n)  // reviewing via the public link counts
         res.writeHead(200, { 'Content-Type': m[3] === 'mp4' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size, 'Cache-Control': 'public, max-age=86400' })
         createReadStream(file).on('error', () => res.destroy()).pipe(res)
         return
