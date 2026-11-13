@@ -122,9 +122,16 @@ try {
   // case this protects, not an evasion.
   for (const c of ['cd /tmp/definitely-not-here && git push', 'mkdir fresh && cd fresh && git init && git commit -m x'])
     assert.equal((await stewardGate(c, repo, 'block')).decision, 'allow', c)
-  // A substitution at the START of the operand must not fall back to $HOME and
-  // escape the repo: the action stays attributed to the real cwd.
-  assert.equal((await stewardGate('cd `pwd` && git push', repo, 'block')).decision, 'deny')
+  // A substitution in the operand is unresolvable whichever way it is spelled,
+  // so the action is skipped rather than checked against a guessed directory —
+  // guessing read the PARENT repo's marker for a commit in a child.
+  for (const c of ['cd `pwd` && git push', 'cd "$PWD" && git push', 'cd `echo sub` && git commit -am x'])
+    assert.equal(gitActions(c, repo)[0]?.dir, null, c)
+  // An unknowable cd inside eval must not blank the actions after it.
+  assert.equal(gitActions("eval 'cd $NOPE'; git push", repo)[0]?.dir, repo)
+  // A shell's -c carries its command however the flags are spelled.
+  for (const c of ["sh -ec 'git push'", "bash -lc 'git push'", "bash -o pipefail -c 'git push'", "zsh -fc 'git push'", "sh -c -- 'git push'"])
+    assert.equal(gitActions(c, repo)[0]?.action, 'push', c)
 
   // Not a repo: never blocks
   assert.equal((await stewardGate('git push', tmpdir(), 'block')).decision, 'allow')

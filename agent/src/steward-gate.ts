@@ -65,7 +65,8 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
   const hits: Hit[] = []
   const home = process.env.HOME || '~'
   const resolveDir = (base: string | null, raw?: string) => {
-    if (!raw) return home
+    if (raw === undefined) return home  // bare `cd`
+    if (raw === '') return base          // `cd ""` leaves the shell where it is
     // `-` is $OLDPWD, and a variable or command substitution is expanded by the
     // shell, not here — resolving one literally would invent `<cwd>/$HOME/x`.
     if (raw === '-' || /[$`]/.test(raw)) return null
@@ -100,7 +101,7 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
     if (w[0] === 'eval') {
       const sub = scan(w.slice(1).join(' '), dir)
       hits.push(...sub.hits)
-      dir = sub.dir
+      dir = sub.dir ?? dir  // an unknowable cd inside eval must not blank what follows
       return
     }
     const name = w[0].split('/').pop()
@@ -117,7 +118,20 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
       dir = resolveDir(dir, w[j])
       return
     }
-    if (SHELLS.has(name!) && w[1] === '-c' && w[2]) { hits.push(...scan(w[2], dir).hits); return }  // subshell: its cd does not escape
+    // A shell's -c can carry other flags with it (`sh -ec`, `bash -lc`,
+    // `bash -o pipefail -c`); its command runs in a subshell, so no cd escapes.
+    if (SHELLS.has(name!)) {
+      for (let i = 1; i < w.length; i++) {
+        if (w[i] === '-o' || w[i] === '+o') { i++; continue }
+        if (/^-[a-zA-Z]*c$/.test(w[i])) {
+          const arg = w[i + 1] === '--' ? w[i + 2] : w[i + 1]
+          if (arg) hits.push(...scan(arg, dir).hits)
+          return
+        }
+        if (!w[i].startsWith('-')) return
+      }
+      return
+    }
     if (name === 'gh') {
       const rest = w.slice(1).filter((x, j, a) => !x.startsWith('-') && !['--repo', '-R', '--hostname'].includes(a[j - 1]))
       if (rest[0] === 'pr' && rest[1] === 'create') hits.push({ action: 'pr', dir })
@@ -161,9 +175,14 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
       segDir = dir
       continue
     }
-    // Save dir BEFORE ending the command: `cd `pwd`` splits here with a bare `cd`
-    // left in hand, and resolving that to $HOME would escape the repo entirely.
-    if (c === '(' || (c === '`' && !inBacktick)) { stack.push(dir); endCommand(); if (c === '`') inBacktick = true; continue }
+    // A substitution splits the token stream here, so the word it belongs to is
+    // only half-read. Feed it a `$` so resolveDir reads it as unresolvable —
+    // otherwise `cd `pwd`` ends a BARE `cd` and resolves it to $HOME, and
+    // `cd `echo child`` would check the parent repo's marker for a child commit.
+    if (c === '(' || (c === '`' && !inBacktick)) {
+      word += '$'; inWord = true
+      endCommand(); stack.push(dir); if (c === '`') inBacktick = true; continue
+    }
     if (c === ')' || c === '`') { endCommand(); dir = stack.pop() ?? dir; segDir = dir; if (c === '`') inBacktick = false; continue }
     if (c === ' ' || c === '\t') { endWord(); continue }
     word += c; inWord = true
