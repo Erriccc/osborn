@@ -6,6 +6,8 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
+import { storeName } from './store-name.js'
+export { storeName }
 
 export interface AgentDef { description: string; prompt: string; tools?: string[]; model?: string; grounded?: boolean }
 /** The built-in agents (claude-llm.ts NAMED_AGENTS): each holds the role of its own name. */
@@ -138,8 +140,6 @@ export const describeRoles = () => ({
   limits: AGENT_LIMITS,
 })
 
-export const storeName = (raw: unknown): string =>
-  String(raw ?? '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-')
 
 // ── Catalog origins: forked_from of an agent installed from a store catalog ────
 // '<source>:<owner>/<repo>@<sha>/<path>' (user_agents check, migration 016).
