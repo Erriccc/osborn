@@ -107,8 +107,8 @@ assert.equal(parseFrontMatter('no front matter').body, 'no front matter')
 {
   const fe = 'https://app.example.com'
   assert.ok(storeWriteOriginAllowed(undefined, fe), 'no Origin: not a cross-site browser request')
-  for (const o of ['http://localhost:3000', 'http://127.0.0.1:5173', 'https://voice-native.com', 'https://app.example.com']) assert.ok(storeWriteOriginAllowed(o, fe), o)
-  for (const o of ['https://evil.example', 'null', 'http://localhost.evil.com', 'https://voice-native.com.evil.io', 'https://www.voice-native.com']) assert.ok(!storeWriteOriginAllowed(o, fe), o)
+  for (const o of ['http://localhost:3000', 'http://127.0.0.1:5173', 'https://voice-native.com', 'https://www.voice-native.com', 'https://app.example.com']) assert.ok(storeWriteOriginAllowed(o, fe), o)
+  for (const o of ['https://evil.example', 'null', 'http://localhost.evil.com', 'https://voice-native.com.evil.io', 'https://evil.www.voice-native.com']) assert.ok(!storeWriteOriginAllowed(o, fe), o)
   const local = { hasToken: false, publicDeploy: false, forwarded: false, host: 'localhost:8741', remote: '127.0.0.1', origin: 'http://localhost:3000', contentType: 'application/json', frontendUrl: fe }
   assert.equal(storeWriteRefusal(local), null)
   assert.equal(storeWriteRefusal({ ...local, origin: 'https://evil.example' })?.status, 403, 'any website on a local agent with no token')

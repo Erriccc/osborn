@@ -67,7 +67,7 @@ import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
-import { armPermissionPush, handleWatchAck, setWatchResultHandler } from './pushover.js'
+import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
@@ -138,8 +138,6 @@ function buildToolLogEvent(
   return ev
 }
 
-// The web frontend (meeting canvas links, and the origin store writes accept).
-const frontendUrl = () => (process.env.OSBORN_FRONTEND_URL || 'https://www.voice-native.com').replace(/\/$/, '')
 // The reply each chat store request waits for (VoiceRoom askAgent).
 const STORE_REPLY_TYPES: Record<string, string> = {
   skill_get: 'skill_content', skill_add: 'skill_add_result', skill_fork: 'skill_fork_result',
@@ -652,7 +650,7 @@ function startApiServer(workingDir: string, port: number): void {
     // so another site's page can neither pass the preflight nor read the reply.
     if (STORE_WRITE_PATHS.has((req.url || '/').split('?')[0])) {
       const origin = req.headers.origin
-      if (origin && storeWriteOriginAllowed(origin, frontendUrl())) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin') }
+      if (origin && storeWriteOriginAllowed(origin, osbornFrontendUrl())) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin') }
       else res.removeHeader('Access-Control-Allow-Origin')
     }
 
@@ -799,13 +797,13 @@ function startApiServer(workingDir: string, port: number): void {
         publicDeploy: !!process.env.FLY_APP_NAME || !!process.env.OSBORN_PUBLIC_HOST,
         forwarded: !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host']),
         host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin,
-        contentType: String(req.headers['content-type'] || ''), frontendUrl: frontendUrl(),
+        contentType: String(req.headers['content-type'] || ''), frontendUrl: osbornFrontendUrl(),
       })
       if (refusal) reply(refusal.status, { error: refusal.error })
       return !!refusal
     }
 
-    if (url.pathname === '/skills/content' || url.pathname === '/skills/fork' || url.pathname === '/skills/remove') {
+    if (url.pathname === '/skills/content' || (url.pathname.startsWith('/skills/') && STORE_WRITE_PATHS.has(url.pathname))) {
       if (unauthorized()) return
       const name = url.searchParams.get('name')
       if (req.method === 'GET' && url.pathname === '/skills/content') {
@@ -6940,7 +6938,7 @@ async function main() {
               // caption→canvas (no audio), so no double-audio. The canvas page's
               // OWN Web Audio is NOT used for voice (it's suspended headless).
               const canvasUrl = /^https:\/\//.test(webhookBase)
-                ? `${frontendUrl()}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
+                ? `${osbornFrontendUrl()}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
                 : undefined
               const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || canvasUrl
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { castUrl })

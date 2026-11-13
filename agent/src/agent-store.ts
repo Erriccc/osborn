@@ -231,7 +231,7 @@ export function storeWriteOriginAllowed(origin: string | undefined, frontendUrl:
   try { u = new URL(origin) } catch { return false }
   let configured = ''
   try { configured = new URL(frontendUrl).origin } catch { /* none configured */ }
-  return LOOPBACK_HOST.test(u.host) || u.origin === 'https://voice-native.com' || u.origin === configured
+  return LOOPBACK_HOST.test(u.host) || /^https:\/\/(www\.)?voice-native\.com$/.test(u.origin) || u.origin === configured
 }
 
 /** Refusal for a store write, or null. With a token, unauthorized() has already checked it;
