@@ -95,6 +95,33 @@ try {
   writeFileSync(join(repo, 'd.ts'), 'export const d = 7\n')
   assert.equal((await stewardGate('git commit -am x && git push origin HEAD', repo, 'block')).decision, 'deny', 'combined commit+push checks the commit')
 
+  // #245.1: cd's options are not the directory operand
+  for (const c of ['cd -L sub; git push', 'cd -P sub; git push', 'cd -- sub; git push', 'cd -LP -- sub; git push', 'eval cd -L sub; git push'])
+    assert.equal(gitActions(c, repo)[0]?.dir, join(repo, 'sub'), c)
+  // `cd -` is $OLDPWD and a bare `pushd` swaps the stack: unknowable, so not guessed
+  for (const c of ['cd -; git push', 'pushd; git push'])
+    assert.equal(gitActions(c, repo)[0]?.dir, null, c)
+
+  // #245.2: a cd inside eval's argument persists, and pushd is tracked like cd
+  for (const c of ["eval 'cd sub'; git push", 'pushd sub; git push', 'eval pushd sub; git push', "eval 'cd sub; git push'"])
+    assert.equal(gitActions(c, repo)[0]?.dir, join(repo, 'sub'), c)
+  // ...but a subshell's cd still does not escape it
+  assert.equal(gitActions("sh -c 'cd sub'; git push", repo)[0]?.dir, repo)
+
+  // #245.3: a cd in a pipeline element or background job runs in a subshell
+  for (const c of ['cd sub | cat; git push', 'cd sub & git push'])
+    assert.equal(gitActions(c, repo)[0]?.dir, repo, c)
+  // ...while && and || stay in this shell
+  for (const c of ['cd sub && git push', 'cd sub || git push'])
+    assert.equal(gitActions(c, repo)[0]?.dir, join(repo, 'sub'), c)
+
+  // Acceptance: a hit whose directory is unresolvable or absent fails closed.
+  // Covers a repo created by the very command that commits in it, which used to
+  // be skipped in silence — no advice, no refusal, no event (#273).
+  assert.equal((await stewardGate('cd -; git push', repo, 'block')).decision, 'deny')
+  assert.equal((await stewardGate('mkdir fresh && cd fresh && git init && git commit -m x', repo, 'block')).decision, 'deny')
+  assert.equal((await stewardGate('mkdir fresh && cd fresh && git init && git commit -m x', repo, 'advise')).decision, 'advise')
+
   // Not a repo: never blocks
   assert.equal((await stewardGate('git push', tmpdir(), 'block')).decision, 'allow')
   console.log('steward-gate: all assertions passed')
