@@ -15,7 +15,7 @@
 | `GET /logs` | full console+network+websocket buffers, all tabs |
 | `GET /events` | SSE: live navigation/task/tab/journey/transcript/agent_output/lifecycle events (25-event replay on connect; `engine_stopping` announces sleep) |
 | `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab |
-| `POST /say {text, ...}` | speak into the mic; returns media + `heard` (agent's spoken reply, transcribed) |
+| `POST /say {text, ...}` | speak into the mic; returns a screenshot, `heard` (agent's spoken reply, transcribed) and a `clipUrl` that waits until the clip is encoded (`clipPending: true`; pass `waitClip: true` to get the clip in the reply) |
 | `POST /hear {lastMs}` | transcript of recent agent audio |
 | `POST /eval {expression}` | run JS in the page (the website console, programmatic); recorded as a journey step |
 | `POST /shot` | on-demand screenshot (viewport only — NOT proof media; clips are) |
@@ -33,14 +33,14 @@
 - `OSBORN_APP_URL` — the target site. `OSBORN_ENTRY=none` — just load the page, skip the voice-native room flow (ANY website).
 - `OSBORN_AGENT_URL` — the Voice Native agent machine the auto-joined chat talks to. **No default (#49)**: unset (or unreachable at boot) → the engine skips the room join, opens `OSBORN_APP_URL` for plain browsing, and marks `agentUnreachable` on `/status` + the live view instead of spinning on "Connecting…".
 - `OSBORN_ENGINE_TOKEN` — control-API auth (REQUIRED on public deployments).
-- `OSBORN_IDLE_STOP_MS` (default 15min container) — self-sleep. `OSBORN_TAB_STALE_MS` (default 30min) — stale-tab sweep.
+- `OSBORN_IDLE_STOP_MS` (default 3h container) — self-sleep. `OSBORN_TAB_STALE_MS` (default 30min) — stale-tab sweep.
 - `OSBORN_RECOVER_JOURNEY` (default on; `=0` disables) — persist the active journey to `journey-state.json` in the results dir and ADOPT it on the next boot, so a mid-journey process restart (#120) keeps the journey instead of nulling it. `OSBORN_SAY_RETRIES` (default 2) — bounded in-process retries of a TRANSIENT (non-mic) speak failure at the Say step. (Caller-side: `drive.sh say` re-attaches once on an empty/gateway 502 — the restart signature — after polling `/status` for the engine to wake; `BSR_SAY_REATTACH=0` disables.)
 - `OSBORN_WEBHOOK_URL`/`OSBORN_WEBHOOK_TOKEN` — push events to any receiver.
 - `OSBORN_TEST_EMAIL/PASSWORD` + `OSBORN_SUPABASE_URL/ANON` — mint an auth profile at boot from secrets (cloud auth without baking cookies into images).
 - `OSBORN_DEVTOOLS=1` — DevTools panel on camera. `OSBORN_DISPLAY_SIZE` — virtual display size.
 
 ## Self-hosting the cloud engine (Fly)
-From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 --shared` + `fly ips allocate-v6` (Machines-API-created apps get NO public IPs), set secrets (GOOGLE_API_KEY, OSBORN_ENGINE_TOKEN required; stream token strongly advised — see streaming.md). You get wake-on-visit (~40s to pixels), idle self-stop, full-window capture (Xvfb+openbox+x11grab: real tab strip at real-time speed), tab-state restore across sleep. Updating = `fly deploy` from a fresh bundle; the version probe says when you're stale.
+From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 --shared` + `fly ips allocate-v6` (Machines-API-created apps get NO public IPs), set secrets (GOOGLE_API_KEY, OSBORN_ENGINE_TOKEN required; stream token strongly advised — see streaming.md). You get wake-on-visit (~40s to pixels), idle self-stop, page capture via CDP (set `OSBORN_CAPTURE=display` for full-window x11grab capture with the real tab strip; it costs most of a shared CPU), tab-state restore across sleep. Updating = `fly deploy` from a fresh bundle; the version probe says when you're stale.
 
 ## v24 additions
 

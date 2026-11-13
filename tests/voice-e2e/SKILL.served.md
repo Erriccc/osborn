@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 38
+Version: 39
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,11 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v39
+- The engine records the page itself (Chrome's own screenshots) instead of the whole screen. That cuts most of its idle CPU use. Clips no longer show Chrome's tab strip and address bar; a label at the top of the page names the tab and URL. Set `OSBORN_CAPTURE=display` to record the whole window again.
+- `/say` replies without waiting for its clip: the reply has `clipPending: true`, and `clipUrl` (and the evidence link) wait until the clip is ready. Pass `waitClip: true` to get the clip in the reply as before. Clips are 640px wide.
+- The engine stops itself after 3 idle hours instead of 15 minutes. A freshly started machine gets throttled almost at once, and staying up lets it build up CPU credit.
 
 ## What's new in v38
 - A failed clip now says why (too few frames, ffmpeg error, or the encode ran past 20s), and `/say` `timings` include `encode`, the part of `clip` spent encoding.
