@@ -158,6 +158,7 @@ export async function makeFixture(name: string): Promise<Fixture> {
     process.env.OSBORN_HOME = join(tmp, 'osborn-home')
     for (const k of ENV_KEYS) delete process.env[k]
     delete process.env.OSBORN_SYNC_TOKEN
+    process.env.OSBORN_LIBRARY_MIN_PERIOD_H = '4' // the fixture is laid out in 4h periods
     for (const [k, v] of Object.entries(extra)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   }
   const fx: Fixture = {

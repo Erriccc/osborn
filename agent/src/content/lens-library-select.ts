@@ -1,15 +1,16 @@
 /**
- * lens-library-select.ts — which PERIOD a compaction just ended. Pure + deterministic.
+ * lens-library-select.ts — which PERIOD just ended. Pure + deterministic.
  *
- * A period runs from one compaction seam (lens-period-boundaries) to the row
- * before the next seam. Seams come in clusters (several re-compactions within
+ * A period runs from one seam to the row before the next. Seams are compactions
+ * (lens-period-boundaries) and the end of each page already written
+ * (librarySegments), so a session that never compacts still gets new periods. Seams come in clusters (several re-compactions within
  * minutes), so short periods are merged FORWARD: walking the seams in order, a
  * group only closes at a seam once it spans >= minSpanMs of conversation. The
  * walk depends only on earlier rows, so a later seam never re-numbers an earlier
  * group. That makes the group's OPENING boundary row (startRowId) a stable key:
  * the same period always gets the same key, index and file name.
  *
- * Timing: the worker runs at PostCompact, usually BEFORE the recall store has
+ * Timing: the worker runs at PostCompact (and when a session ends); at PostCompact it is usually BEFORE the recall store has
  * ingested the seam this compaction will produce. So the db's TAIL (last seam →
  * last row) is the period that just ended; it is treated as closed by "this
  * compaction" when it spans >= minSpanMs, else it is deferred (merged into the
@@ -17,7 +18,7 @@
  * seam-closed group is the one that just ended.
  */
 
-export const DEFAULT_MIN_SPAN_MS = 4 * 3_600_000
+export const DEFAULT_MIN_SPAN_MS = 3_600_000
 
 export interface RowStamp {
   id: number
@@ -52,7 +53,7 @@ function span(recs: RowStamp[]): number {
   return Number.isFinite(a) && Number.isFinite(b) ? Math.max(0, b - a) : 0
 }
 
-function period(index: number, start: number, end: number, closedBy: number | null, recs: RowStamp[]): LibraryPeriod {
+export function period(index: number, start: number, end: number, closedBy: number | null, recs: RowStamp[]): LibraryPeriod {
   return {
     index, startRowId: start, endRowId: end, closedBy, rows: recs.length,
     fromTs: recs[0]?.timestamp ?? '', toTs: recs[recs.length - 1]?.timestamp ?? '', spanMs: span(recs),

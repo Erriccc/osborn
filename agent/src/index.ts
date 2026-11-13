@@ -55,6 +55,8 @@ import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationIt
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
+import { launchLibraryOnSessionEnd, lastLibraryRun, isContentLensEnabled } from './content/lens-launch.js'
+import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
 import { readStewardVerdicts } from './steward-verdict.js'
@@ -797,6 +799,13 @@ function startApiServer(workingDir: string, port: number): void {
         status: 'ok',
         workingDir,
         version,
+        // Library: is it on, can it call the model, does it reach /library (no values, 8-char session id).
+        library: {
+          enabled: isContentLensEnabled(),
+          modelKey: !!(process.env.OPENROUTER_API_KEY || '').trim(),
+          ingest: (() => { const c = resolveIngestConfig(); return 'reason' in c ? (c.reason === 'no-key' ? 'no-anon-key' : c.reason) : 'on' })(),
+          lastRun: lastLibraryRun(),
+        },
         // WHERE this machine physically runs — Fly sets FLY_REGION (e.g. 'ord').
         // The dashboard maps it to a city ("Chicago") so the user always knows
         // the machine's location, not just their own clock. Null in local dev.
@@ -1910,6 +1919,12 @@ function startApiServer(workingDir: string, port: number): void {
 
   const host = process.env.HOST || '0.0.0.0'
   server.requestTimeout = 0  // no timeout — large uploads can take minutes
+  {
+    const c = resolveIngestConfig()
+    const why = 'reason' in c ? c.reason : null
+    if (!(process.env.OPENROUTER_API_KEY || '').trim()) console.warn('⚠️ library: OPENROUTER_API_KEY is not set: no Library pages will be written')
+    else if (why && why !== 'disabled') console.warn(`⚠️ library: pages stay on this machine, nothing reaches /library (${why})`)
+  }
   server.listen(port, host, () => {
     console.log(`🌐 API server listening on http://${host}:${port}`)
     console.log(`   Sessions: http://${host}:${port}/sessions`)
@@ -2461,6 +2476,8 @@ async function main() {
         else if (typeof llm.abortAgent === 'function') llm.abortAgent()
       } catch (err) {
         console.error(`❌ killWarm(${reason}) abort failed:`, err instanceof Error ? err.message : err)
+      } finally {
+        launchLibraryOnSessionEnd(warmSessionId, (warmLLM as any)?.workingDirectory || workingDir, `warm_${reason}`)
       }
     }
     if (warmLLM) console.log(`🧊 [KEEP-WARM] freed warm slot (${reason})`)
@@ -2654,6 +2671,8 @@ async function main() {
       }
     } catch (err) {
       console.error(`❌ killCurrentLLM(${reason}) failed:`, err instanceof Error ? err.message : err)
+    } finally {
+      launchLibraryOnSessionEnd((currentLLM as any)?.sessionId, (currentLLM as any)?.workingDirectory || workingDir, reason)
     }
   }
 
@@ -3951,6 +3970,7 @@ async function main() {
       }
 
       // 4. Close the old query (idle, or forced) and clear its resume state.
+      launchLibraryOnSessionEnd(llmAny.sessionId, llmAny.workingDirectory || workingDir, 'session_switch')
       currentLLM.resetForSessionSwitch()
 
       // 5. Cross-project: the SDK cwd, fast brain and session tail move together.

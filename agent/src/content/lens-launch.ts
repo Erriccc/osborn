@@ -20,6 +20,8 @@ export interface LensLaunchPayload {
   sessionId: string
   transcriptPath?: string
   cwd?: string
+  /** Session-end runs: Library + content steps only, not the profile lens (step 1). */
+  skipLens?: boolean
 }
 
 export type LensLaunchResult =
@@ -95,6 +97,7 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
         sessionId: payload.sessionId,
         transcriptPath: payload.transcriptPath,
         cwd: payload.cwd,
+        skipLens: !!payload.skipLens,
         lockDir: lockHeld ? projectDir : null,
       }),
       { mode: 0o600, flag: 'wx' },
@@ -125,4 +128,19 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
     }
     return { status: 'error', error: msg }
   }
+}
+
+// Session-end Library run. Compaction (the hook trigger) needs ~750k tokens on a
+// 1M window, so it almost never fires; the agent also launches the Library when a
+// session ends (disconnect, switch, cleanup). The worker is idempotent per period.
+type LastRun = { at: string; session: string; reason: string; status: LensLaunchResult['status'] }
+let lastRun: LastRun | null = null
+export const lastLibraryRun = () => lastRun
+
+export function launchLibraryOnSessionEnd(sessionId: string | null | undefined, cwd: string | undefined, reason: string): LastRun | null {
+  if (!sessionId) return null
+  const r = launchCompactionLens({ sessionId, cwd, skipLens: true })
+  lastRun = { at: new Date().toISOString(), session: sessionId.slice(0, 8), reason, status: r.status }
+  console.log(`📚 library on session end (${reason}): ${lastRun.session} → ${r.status}`)
+  return lastRun
 }

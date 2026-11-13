@@ -23,7 +23,7 @@ import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { runPeriodMap } from './period-run.js'
-import { DEFAULT_MIN_SPAN_MS, pageFileName, pickLibraryPeriod, segmentPeriods, type LibraryPeriod } from './lens-library-select.js'
+import { DEFAULT_MIN_SPAN_MS, pageFileName, period, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type Segmentation } from './lens-library-select.js'
 import { rebuildIndex } from './lens-library-index.js'
 import { contentHashFor, ingestPage, needsIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 
@@ -156,6 +156,30 @@ const envNum = (k: string): number | undefined => {
   return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
+/**
+ * The session's periods as the library writes them (shared with the content step): compaction
+ * seams plus the end of every written page, so without a compaction the tail moves on past a
+ * written page instead of keeping its start row forever.
+ */
+export function librarySegments(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs()): Segmentation {
+  const rows = loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
+  // Written pages are frozen: they keep their rows, index and file whatever the period
+  // length is now. Only rows after the last written page are segmented, numbered on.
+  const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
+  const lastEnd = written.length ? Math.max(...written.map(e => e.endRowId)) : 0
+  const lastIndex = written.length ? Math.max(...written.map(e => e.index)) : 0
+  const frozen = written.map(e => period(e.index, e.startRowId, e.endRowId, typeof e.closedBy === 'number' ? e.closedBy : null,
+    rows.filter(r => r.id >= e.startRowId && r.id <= e.endRowId)))
+  const rest = segmentPeriods(rows.filter(r => r.id > lastEnd), readCompactionBoundaries(db), minSpanMs)
+  const renumber = (p: LibraryPeriod): LibraryPeriod => ({ ...p, index: p.index + lastIndex })
+  return { closed: [...frozen, ...rest.closed.map(renumber)], tail: rest.tail ? renumber(rest.tail) : null }
+}
+
+function libraryMinSpanMs(): number {
+  const envH = envNum('OSBORN_LIBRARY_MIN_PERIOD_H')
+  return envH ? envH * 3_600_000 : DEFAULT_MIN_SPAN_MS
+}
+
 /** Run the library step once. Never throws. */
 export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStepResult> {
   const log = o.log ?? (() => {})
@@ -168,14 +192,10 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
     const db = resolveSessionDb(o.sessionId, o.projectDir, o.cwd)
     if (!db) return { ...res, status: 'no-db' }
     const projectDir = dirname(dirname(dirname(db)))
-    const envH = envNum('OSBORN_LIBRARY_MIN_PERIOD_H')
-    const minSpan = o.minSpanMs ?? (envH ? envH * 3_600_000 : DEFAULT_MIN_SPAN_MS)
     const dir = (res.libraryDir = o.outDir ?? libraryDirFor(db, o.sessionId))
-
-    // Segment the whole session at its compaction seams (ids + timestamps only).
-    const rows = loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
-    const seg = segmentPeriods(rows, readCompactionBoundaries(db), minSpan)
     const manifest = readManifest(dir, o.sessionId)
+    const minSpan = o.minSpanMs ?? libraryMinSpanMs()
+    const seg = librarySegments(db, manifest, minSpan)
     const pick = pickLibraryPeriod(seg, start => manifest.periods[String(start)]?.status === 'ok', minSpan)
     log(`library: ${seg.closed.length} closed period(s), tail ${seg.tail ? `#${seg.tail.startRowId}–#${seg.tail.endRowId} (${(seg.tail.spanMs / 3_600_000).toFixed(1)}h)` : 'none'} → ${pick.reason}`)
     const red = loadClientRedactor(projectDir)
@@ -188,6 +208,11 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
     const p = (res.period = pick.period)
     const key = String(p.startRowId)
     const file = pageFileName(p)
+    // Never overwrite a page this manifest did not write (e.g. a manual backfill page).
+    if (!o.outDir && existsSync(join(dir, file)) && !Object.values(manifest.periods).some(e => e.file === file)) {
+      log(`library: ${file} exists and is not ours — not overwritten`)
+      return { ...res, status: 'already-written' }
+    }
 
     // Period map on exactly this row range, staged first; published only when a map came back.
     mkdirSync(join(dir, STAGING_DIR), { recursive: true })
