@@ -2725,7 +2725,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
                 if (gate.decision !== 'allow') this.#eventEmitter.emit('steward_gate', { decision: gate.decision, message: gate.message })
                 if (gate.decision === 'deny') {
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: gate.message })
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: gate.message, kind: 'steward' })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
@@ -2754,7 +2754,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                     `Then re-attempt this edit. (One-time reminder this turn; new files are exempt.)`,
                   ].join('\n')
                   console.log(`🏛️  Writer provenance reminder: nudging before ${base} (first edit of an existing file this turn)`)
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Review ${base}'s git history first (one-time provenance reminder).` })
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Review ${base}'s git history first (one-time provenance reminder).`, kind: 'reminder' })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gateReason }
                 }
 
@@ -2762,7 +2762,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log(`🔎 Write gate: agent=${agentType ?? 'main'} role=${role ?? '-'} path="${filePath || '(none)'}" → ${decision}`)
 
                 if (decision === 'deny') {
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason })
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason, agent: agentType ?? 'main', role, path: filePath })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason }
                 }
                 if (decision === 'defer') {

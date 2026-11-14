@@ -2576,7 +2576,7 @@ async function main() {
     'session_id', 'mcp_servers_changed', 'tool_use', 'tool_result',
     'assistant_text', 'assistant_result', 'tts_chunks', 'permission_request',
     'tts_say', 'session_resume_failed', 'checkpoint_captured',
-    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate',
+    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate', 'tool_blocked',
   ] as const
 
   // Abort + clear the parked brain. Clears BOTH timers so grace/watchdog can't
@@ -2845,8 +2845,8 @@ async function main() {
     bgEmitter.on('tool_result', ({ name, response, agentRole }: any) => {
       sendToFrontend({ type: 'tool_result', slotId, name, response, agentRole }).catch(() => {})
     })
-    bgEmitter.on('tool_blocked', ({ name, reason }: any) => {
-      sendToFrontend({ type: 'tool_blocked', slotId, name, reason }).catch(() => {})
+    bgEmitter.on('tool_blocked', (d: any) => {
+      sendToFrontend({ type: 'tool_blocked', slotId, ...d }).catch(() => {})
     })
     bgEmitter.on('session_id', ({ sessionId: sid }: { sessionId: string }) => {
       sendToFrontend({ type: 'background_session_ready', slotId, sessionId: sid }).catch(() => {})
@@ -4850,6 +4850,7 @@ async function main() {
     // Steward verdict card + sign-off gate note (#221) → chat
     directLLM.events.on('steward_verdict', (v: any) => sendToFrontend({ type: 'steward_verdict', ...v }))
     directLLM.events.on('steward_gate', (d: any) => sendToFrontend({ type: 'steward_gate', decision: d.decision, message: d.message }))
+    directLLM.events.on('tool_blocked', (d: any) => sendToFrontend({ type: 'tool_blocked', ...d }))
 
     // Dispatcher v1 — sub-agent started → frontend stop-key signal (Feature A2)
     directLLM.events.on('agent_started', (d: any) => sendToFrontend({
