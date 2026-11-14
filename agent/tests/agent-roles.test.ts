@@ -103,4 +103,9 @@ assert.equal(listing.writer.icon, 'pen')
   const p = parseUserAgents([{ name: 'spacey', description: 'd', prompt: 'p', tools: [' Edit ', '', 'Read'], role: 'reader' }], {} as any)
   assert.deepEqual(p.agents.spacey.tools, ['Edit', 'Read'], 'tool names are trimmed, blanks dropped')
 }
+{
+  const { parseUserAgents } = await import('../src/agent-store.js')
+  const p = parseUserAgents([{ name: '!!!', description: 'd', prompt: 'p', role: 'reader' }], {} as any)
+  assert.deepEqual(Object.keys(p.agents), [], "a name with no letters or digits ('---') is dropped")
+}
 console.log('agent-roles: all assertions passed')

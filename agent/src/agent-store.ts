@@ -168,7 +168,7 @@ export function parseUserAgents(rows: unknown, core: CoreAgents): {
     const description = String(r?.description || '').trim()
     const prompt = String(r?.prompt || '').trim()
     if (r?.enabled === false) continue
-    const reason = !name ? 'no name'
+    const reason = !/[a-z0-9]/.test(name) ? 'no name'
       : Object.hasOwn(core, name) ? 'is a core agent (fork it under a new name)'
       : name.length > AGENT_LIMITS.name ? `name longer than ${AGENT_LIMITS.name}`
       : !description ? 'no description'
