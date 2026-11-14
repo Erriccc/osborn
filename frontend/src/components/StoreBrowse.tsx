@@ -24,13 +24,14 @@ interface CatalogEntry {
   repo: string
   path: string
   sha: string
+  rev: string
   license: string
   scripts: string[]
   trust: 'anthropic' | 'community'
   plugin?: string
   category?: string
 }
-interface SourceInfo { id: string; label: string; repo: string; trust: string; sha: string; fetchedAt: number; count: number; error?: string }
+interface SourceInfo { id: string; label: string; repo: string; trust: string; sha: string; fetchedAt: number; count: number; error?: string; note?: string }
 /** installed: ids of the entries already on the machine or in the user's agents. */
 interface Catalog { sources: SourceInfo[]; entries: CatalogEntry[]; installed: string[]; recommended: { id: string; score: number; reason: string }[] }
 
@@ -104,7 +105,7 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   const install = async (e: CatalogEntry) => {
     setBusy(e.id); setNote(null)
     try {
-      const { ok, d } = await request(`store/install?id=${encodeURIComponent(e.id)}&sha=${encodeURIComponent(e.sha)}`, { method: 'POST' })
+      const { ok, d } = await request(`store/install?id=${encodeURIComponent(e.id)}&rev=${encodeURIComponent(e.rev)}`, { method: 'POST' })
       if (!ok) { setNote({ id: e.id, ok: false, text: d?.error || 'Install failed' }); return }
       if (e.kind === 'skill') {
         if (Array.isArray(d?.skills)) onSkillsChanged?.(d.skills)
@@ -199,7 +200,7 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
       <div className="flex flex-wrap items-center gap-1.5">
         <button className={pill(source === 'all')} onClick={() => { setSource('all'); setShown(PAGE) }}>All sources</button>
         {(data?.sources || []).map((s) => (
-          <button key={s.id} className={pill(source === s.id)} onClick={() => { setSource(s.id); setShown(PAGE) }} title={s.error ? `Last refresh failed: ${s.error}` : `${s.repo} @${s.sha.slice(0, 7)}`}>
+          <button key={s.id} className={pill(source === s.id)} onClick={() => { setSource(s.id); setShown(PAGE) }} title={s.error ? `Last refresh failed: ${s.error}` : `${s.repo} @${s.sha.slice(0, 7)}${s.note ? ` · ${s.note}` : ''}`}>
             {s.trust === 'anthropic' ? '✓ ' : ''}{s.label} <span className="text-[var(--text-muted)]">{s.count}</span>{s.error ? ' ⚠' : ''}
           </button>
         ))}

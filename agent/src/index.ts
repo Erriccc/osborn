@@ -841,7 +841,7 @@ function startApiServer(workingDir: string, port: number): void {
           return reply(200, {
             sources: caches.map((c) => {
               const s = SOURCES.find((x) => x.id === c.source)!
-              return { id: c.source, label: s.label, repo: c.repo, trust: s.trust, sha: c.sha, fetchedAt: c.fetchedAt, count: c.entries.length, ...(c.error ? { error: c.error } : {}) }
+              return { id: c.source, label: s.label, repo: c.repo, trust: s.trust, sha: c.sha, fetchedAt: c.fetchedAt, count: c.entries.length, ...(c.error ? { error: c.error } : {}), ...(c.note ? { note: c.note } : {}) }
             }),
             entries,
             installed: [...installed],
@@ -858,9 +858,9 @@ function startApiServer(workingDir: string, port: number): void {
           if (storeRefused()) return
           const found = await findEntry(url.searchParams.get('id') || '')
           if (!found) return reply(404, { error: 'not in the catalog' })
-          // Install exactly what was reviewed: the card carries the sha it showed.
-          const reviewed = url.searchParams.get('sha')
-          if (reviewed && reviewed !== found.entry.sha) return reply(409, { error: 'This changed upstream since you viewed it. Refresh and review it again.' })
+          // Install what was reviewed: the card carries the entry's rev (its text and file list).
+          const reviewed = url.searchParams.get('rev')
+          if (reviewed && reviewed !== found.entry.rev) return reply(409, { error: 'This entry changed upstream since you viewed it. Refresh and review it again.' })
           // An agent whose prompt is over the limit is refused, never cut: what was reviewed is what installs.
           if (found.entry.kind === 'agent' && found.body.length > AGENT_LIMITS.prompt) return reply(400, { error: `this agent's prompt is ${found.body.length} characters; the limit is ${AGENT_LIMITS.prompt}` })
           if (found.entry.kind === 'agent') return reply(200, { draft: agentDraft(found.entry, found.body) })

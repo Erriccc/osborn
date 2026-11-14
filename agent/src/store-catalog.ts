@@ -3,6 +3,7 @@
 // hour, pinned at the commit they were read at. MCP servers, hooks, bin and
 // monitors are out of scope: entries that need MCP are skipped.
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, mkdtempSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, sep, posix } from 'node:path'
@@ -50,6 +51,7 @@ export interface CatalogEntry {
   repo: string
   path: string            // skill folder or agent file
   sha: string
+  rev: string               // hash of the reviewed text + file list; install refuses when it moved
   license: string
   /** Files that can run (scripts/ or a script extension), shown before install. */
   scripts: string[]
@@ -126,6 +128,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
       description: str(meta.description).slice(0, 600),
       tools, ...(str(meta.model) ? { model: str(meta.model) } : {}),
       files, repo: src.repo, path: dir, sha: snap.sha,
+      rev: createHash('sha256').update(md).update('\0' + files.join('\n')).digest('hex').slice(0, 16),
       license: ownLicense ? (/LICENSE/i.test(ownLicense) ? 'See LICENSE.txt' : ownLicense.slice(0, 40)) : (files.some((f) => /^LICEN[CS]E/i.test(f)) ? 'See LICENSE.txt' : repoLicense || 'Unknown'),
       scripts: files.filter((f) => f.startsWith('scripts/') || SCRIPT_EXT.test(f)),
       trust: src.trust,
@@ -191,12 +194,12 @@ const rawReader = (repo: string, sha: string): Reader => async (p) => (await raw
 const TTL_MS = 60 * 60 * 1000
 const cacheDir = () => join(homedir(), '.osborn', 'store-cache')
 
-interface SourceCache { source: string; repo: string; sha: string; fetchedAt: number; entries: CatalogEntry[]; bodies: Record<string, string>; error?: string }
+interface SourceCache { source: string; repo: string; sha: string; fetchedAt: number; entries: CatalogEntry[]; bodies: Record<string, string>; error?: string; note?: string }
 
 const inflight = new Map<string, Promise<SourceCache>>()
 
 async function loadSource(src: CatalogSource, opts: { refresh?: boolean; dir?: string } = {}): Promise<SourceCache> {
-  const file = join(opts.dir || cacheDir(), `${src.id}.v2.json`)  // v2: entries carry scripts[]
+  const file = join(opts.dir || cacheDir(), `${src.id}.v3.json`)  // v3: entries carry rev
   let cached: SourceCache | null = null
   try { cached = JSON.parse(readFileSync(file, 'utf-8')) } catch { /* none yet */ }
   if (cached && !opts.refresh && Date.now() - cached.fetchedAt < TTL_MS) return cached
@@ -206,7 +209,7 @@ async function loadSource(src: CatalogSource, opts: { refresh?: boolean; dir?: s
       const snap = await snapshot(src.repo)
       const { entries, bodies, failed, tooLarge } = await normaliseSource(src, snap, rawReader(src.repo, snap.sha))
       // Oversize entries are left out on purpose; the source says so rather than looking complete.
-      const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies, ...(tooLarge ? { error: `${tooLarge} entr${tooLarge === 1 ? 'y is' : 'ies are'} over ${MAX_FILE_BYTES >> 20} MB and not listed` } : {}) }
+      const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies, ...(tooLarge ? { note: `${tooLarge} entr${tooLarge === 1 ? 'y is' : 'ies are'} over ${MAX_FILE_BYTES >> 20} MB and not listed` } : {}) }
       // Some files could not be read: never cache a partial catalog over a good one.
       if (failed) {
         const error = `${failed} file(s) could not be read from GitHub`
@@ -274,7 +277,8 @@ export async function installSkill(
   try {
     let total = 0
     for (const f of entry.files) {
-      const buf = await fetchFile(`${entry.path}/${f}`)
+      let buf: Buffer | null
+      try { buf = await fetchFile(`${entry.path}/${f}`) } catch (e) { if (e instanceof TooLarge) return { error: e.message }; throw e }
       if (!buf) return { error: `could not fetch ${f}` }
       total += buf.length
       if (total > MAX_SKILL_BYTES) return { error: 'skill is larger than 10 MB' }

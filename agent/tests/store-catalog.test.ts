@@ -34,6 +34,10 @@ const run = async () => {
   assert.deepEqual(fe.tools, ['Read', 'Edit', 'Write', 'Bash'])
   assert.equal(fe.model, 'sonnet')
   assert.equal(fe.sha, fx.sha)
+  const moved = await normaliseSource(src, { sha: 'f'.repeat(40), paths: fx.paths }, (p: string) => (/frontend-dev/.test(p) ? read(p).then((t) => t + '\nchanged') : read(p)))
+  const movedBy = Object.fromEntries(moved.entries.map((e) => [e.name, e]))
+  assert.equal(movedBy['react-testing'].rev, by['react-testing'].rev, 'a commit elsewhere in the repo leaves an entry\'s rev alone')
+  assert.notEqual(movedBy['frontend-dev'].rev, fe.rev, 'a changed entry gets a new rev')
   assert.equal(fe.repo, 'wshobson/agents')
   assert.equal(fe.license, 'MIT', 'repo license detected')
   assert.equal(fe.plugin, 'web')
@@ -87,6 +91,7 @@ const run = async () => {
     assert.ok(!existsSync(join(root, 'missing')), 'a failed fetch leaves nothing behind')
     assert.ok('error' in await installSkill({ ...rt, name: 'big', files: ['SKILL.md'] }, root, new Set(), async () => Buffer.alloc(11 * 1024 * 1024)))
     assert.ok('error' in await installSkill(fe, root, new Set(), fetchFile), 'agents are not installed as skills')
+    assert.match((await installSkill({ ...rt, name: 'huge' }, root, new Set(), async () => { throw new TooLarge('SKILL.md is larger than 2 MB') }) as any).error, /larger than 2 MB/, 'an oversize file is a refusal, not a crash')
   } finally { rmSync(root, { recursive: true, force: true }) }
 
   // Installed: a skill by its folder, an agent by a row installed from the same file (any commit).
