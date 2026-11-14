@@ -775,7 +775,6 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
-
     // Agent & skill store routes: the chat and Settings both use them (through the
     // authenticated /api/agent proxy in the cloud). JSON in and out.
     const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
@@ -2849,8 +2848,8 @@ async function main() {
     bgEmitter.on('tool_result', ({ name, response, agentRole }: any) => {
       sendToFrontend({ type: 'tool_result', slotId, name, response, agentRole }).catch(() => {})
     })
-    bgEmitter.on('tool_blocked', (d: any) => {
-      sendToFrontend({ type: 'tool_blocked', slotId, ...d }).catch(() => {})
+    bgEmitter.on('tool_blocked', ({ name, reason }: any) => {
+      sendToFrontend({ type: 'tool_blocked', slotId, name, reason }).catch(() => {})
     })
     bgEmitter.on('session_id', ({ sessionId: sid }: { sessionId: string }) => {
       sendToFrontend({ type: 'background_session_ready', slotId, sessionId: sid }).catch(() => {})
