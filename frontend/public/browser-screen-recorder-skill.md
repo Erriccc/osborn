@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 44
+Version: 45
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -184,6 +184,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v45
+- A `/say` clip that fails after the reply now says why: `/clip?n=N` and its public evidence link return 404 with `clipError` (the encoder's message) instead of a bare "not found". Retry the say, or use `/audio` for the voice.
 
 ## What's new in v44
 - `drive.sh` works against the deployed engine with no setup beyond the token: its default is the public control URL (`https://osborn-voice-e2e-n.fly.dev/control`), and any `BSR_ENGINE` URL with a path or port is parsed correctly. It no longer pins a fixed IP (set `BSR_IP` only if DNS fails).
