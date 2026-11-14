@@ -1066,7 +1066,8 @@ export function decideWrite(
   const rule: WriteRule = role ? ROLES[role].write : 'workspace'
   if (rule === 'anywhere') return { decision: 'defer' }
   if (rule === 'workspace') {
-    if (filePath && !isWorkspacePath(filePath)) {
+    // Fail closed like the extension rule below: an edit with no path is not a workspace write.
+    if (!filePath || !isWorkspacePath(filePath)) {
       return { decision: 'deny', reason: 'Research mode: writes restricted to session workspace.' }
     }
     return { decision: 'allow' }

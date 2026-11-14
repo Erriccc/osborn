@@ -126,7 +126,7 @@ function roleBehaviours(role: Role, isCore: boolean): string[] {
 }
 
 // ── Definitions shared with the frontend and the user_agents SQL checks ───────
-// (migrations 004/015/016/017; agent/tests/user-agents-migrations.test.ts keeps them equal)
+// (migrations 004/015/016/018; agent/tests/user-agents-migrations.test.ts keeps them equal)
 
 export const AGENT_MODELS = ['inherit', 'sonnet', 'opus', 'haiku', 'fable'] as const
 export const isAgentModel = (m: unknown): m is string => typeof m === 'string' && ((AGENT_MODELS as readonly string[]).includes(m) || /^claude-/.test(m))
