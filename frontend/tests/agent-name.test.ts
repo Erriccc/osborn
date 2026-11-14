@@ -5,6 +5,7 @@ import assert from 'node:assert'
 import { agentName } from '../src/lib/agent-name'
 import { storeName } from '../../agent/src/store-name'
 
-const inputs = ['writer', 'My Writer', '  padded  ', 'UPPER_case', 'dots.and/slashes', 'ünïcödé', 'a--b', '', 'x'.repeat(50), 'emoji 🤖 bot', 'tab\tname']
+const inputs = ['writer', 'My Writer', '  padded  ', 'UPPER_case', 'dots.and/slashes', 'ünïcödé', 'a--b', '', 'x'.repeat(50), 'emoji 🤖 bot', 'tab\tname', '---', '!!!']
 for (const raw of inputs) assert.equal(agentName(raw), storeName(raw), JSON.stringify(raw))
+assert.equal(agentName('---'), '', "a name with no letter or digit is no name")
 console.log(`agent-name: ${inputs.length} inputs match storeName`)

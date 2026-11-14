@@ -1,5 +1,5 @@
 -- Agent roles: what an agent may do follows its role (agent/src/agent-store.ts
--- ROLES), not its name. Rows without one get it in 017 (the built-in parent's,
+-- ROLES), not its name. Rows without one get it in 018 (the built-in parent's,
 -- else reader). forked_from also takes a catalog origin for agents
 -- installed from the store: '<source>:<owner>/<repo>@<sha>/<path>'.
 

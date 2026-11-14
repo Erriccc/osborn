@@ -49,7 +49,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds } from './store-catalog.js'
-import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
+import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
@@ -143,8 +143,10 @@ const STORE_REPLY_TYPES: Record<string, string> = {
   skill_get: 'skill_content', skill_add: 'skill_add_result', skill_fork: 'skill_fork_result',
   skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
 }
-// Routes that change the machine's skills (guarded by storeWriteRefused).
+// Store routes, guarded by storeRefused: writes change the machine's skills; reads carry the
+// core prompts, the user's skills and the catalog. Neither answers every site's CORS.
 const STORE_WRITE_PATHS = new Set(['/skills/fork', '/skills/remove', '/store/install'])
+const STORE_PATHS = new Set([...STORE_WRITE_PATHS, '/skills', '/skills/content', '/store/catalog', '/store/entry', '/agents'])
 
 // Skills shipped with the package (core: maintained by Voice Native).
 const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
@@ -646,9 +648,8 @@ function startApiServer(workingDir: string, port: number): void {
     // Authorization is required for /secrets (Bearer OSBORN_SYNC_TOKEN); without it in the
     // allow-list the browser preflight fails and the dashboard can't read/manage keys.
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-    // Store writes never answer every site: only an allowed origin (agent-store.ts) is echoed,
-    // so another site's page can neither pass the preflight nor read the reply.
-    if (STORE_WRITE_PATHS.has((req.url || '/').split('?')[0])) {
+    // Store routes (STORE_PATHS) echo only an allowed origin, never '*'.
+    if (STORE_PATHS.has((req.url || '/').split('?')[0])) {
       const origin = req.headers.origin
       if (origin && storeWriteOriginAllowed(origin, osbornFrontendUrl())) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin') }
       else res.removeHeader('Access-Control-Allow-Origin')
@@ -774,7 +775,25 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
+    // Agent & skill store routes: the chat and Settings both use them (through the
+    // authenticated /api/agent proxy in the cloud). JSON in and out.
+    const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+    // Called past the token gate (unauthorized()); the rules for a machine with no sync token
+    // are agent-store.ts storeWriteRefusal (reads skip only the JSON check).
+    const storeRefused = (read = false): boolean => {
+      const refusal = storeWriteRefusal({ read,
+        hasToken: !!syncToken,
+        publicDeploy: !!process.env.FLY_APP_NAME || !!process.env.OSBORN_PUBLIC_HOST,
+        forwarded: !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host']),
+        host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin,
+        contentType: String(req.headers['content-type'] || ''), frontendUrl: osbornFrontendUrl(),
+      })
+      if (refusal) reply(refusal.status, { error: refusal.error })
+      return !!refusal
+    }
+
     if (req.method === 'GET' && url.pathname === '/skills') {
+      if (unauthorized() || storeRefused(true)) return
       // Installed skills — same list the chat's get_skills data-channel message
       // returns, exposed over HTTP so the DASHBOARD (no LiveKit connection) can
       // render the skills manager too. Reads ~/.claude/skills (homedir) — the SINGLE
@@ -786,32 +805,16 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
-    // Agent & skill store routes: the chat and Settings both use them (through the
-    // authenticated /api/agent proxy in the cloud). JSON in and out.
-    const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
-    // Store writes change the machine. Called past the token gate (unauthorized()); the
-    // rules for a machine with no sync token are agent-store.ts storeWriteRefusal.
-    const storeWriteRefused = (): boolean => {
-      const refusal = storeWriteRefusal({
-        hasToken: !!syncToken,
-        publicDeploy: !!process.env.FLY_APP_NAME || !!process.env.OSBORN_PUBLIC_HOST,
-        forwarded: !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host']),
-        host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin,
-        contentType: String(req.headers['content-type'] || ''), frontendUrl: osbornFrontendUrl(),
-      })
-      if (refusal) reply(refusal.status, { error: refusal.error })
-      return !!refusal
-    }
-
     if (url.pathname === '/skills/content' || (url.pathname.startsWith('/skills/') && STORE_WRITE_PATHS.has(url.pathname))) {
       if (unauthorized()) return
       const name = url.searchParams.get('name')
       if (req.method === 'GET' && url.pathname === '/skills/content') {
+        if (storeRefused(true)) return
         const out = readUserSkill(homeSkillsDir(), name)
         return reply('error' in out ? 404 : 200, out)
       }
       if (req.method !== 'POST' || url.pathname === '/skills/content') return reply(405, { error: 'method not allowed' })
-      if (storeWriteRefused()) return
+      if (storeRefused()) return
       const out = changeSkill(url.pathname === '/skills/fork' ? 'fork' : 'remove', name, url.searchParams.get('to'))
       return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
     }
@@ -822,6 +825,7 @@ function startApiServer(workingDir: string, port: number): void {
       // agent's own cached catalog, by id.
       if (unauthorized()) return
       try {
+        if (req.method === 'GET' && storeRefused(true)) return
         if (req.method === 'GET' && url.pathname === '/store/catalog') {
           const src = url.searchParams.get('source')
           const caches = await loadCatalog(src && src !== 'all' ? src.split(',') : null, { refresh: url.searchParams.get('refresh') === '1' })
@@ -837,7 +841,7 @@ function startApiServer(workingDir: string, port: number): void {
           return reply(200, {
             sources: caches.map((c) => {
               const s = SOURCES.find((x) => x.id === c.source)!
-              return { id: c.source, label: s.label, repo: c.repo, trust: s.trust, sha: c.sha, fetchedAt: c.fetchedAt, count: c.entries.length, ...(c.error ? { error: c.error } : {}) }
+              return { id: c.source, label: s.label, repo: c.repo, trust: s.trust, sha: c.sha, fetchedAt: c.fetchedAt, count: c.entries.length, ...(c.error ? { error: c.error } : {}), ...(c.note ? { note: c.note } : {}) }
             }),
             entries,
             installed: [...installed],
@@ -851,9 +855,14 @@ function startApiServer(workingDir: string, port: number): void {
           return reply(200, { entry: found.entry, content: found.body, ...(found.entry.kind === 'agent' ? { draft: agentDraft(found.entry, found.body) } : {}) })
         }
         if (req.method === 'POST' && url.pathname === '/store/install') {
-          if (storeWriteRefused()) return
+          if (storeRefused()) return
           const found = await findEntry(url.searchParams.get('id') || '')
           if (!found) return reply(404, { error: 'not in the catalog' })
+          // Install what was reviewed: the card carries the entry's rev (its text and file list).
+          const reviewed = url.searchParams.get('rev')
+          if (reviewed && reviewed !== found.entry.rev) return reply(409, { error: 'This entry changed upstream since you viewed it. Refresh and review it again.' })
+          // An agent whose prompt is over the limit is refused, never cut: what was reviewed is what installs.
+          if (found.entry.kind === 'agent' && found.body.length > AGENT_LIMITS.prompt) return reply(400, { error: `this agent's prompt is ${found.body.length} characters; the limit is ${AGENT_LIMITS.prompt}` })
           if (found.entry.kind === 'agent') return reply(200, { draft: agentDraft(found.entry, found.body) })
           const out = await installSkill(found.entry, homeSkillsDir(), coreSkillNames(PKG_SKILLS_DIR))
           return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
@@ -868,7 +877,7 @@ function startApiServer(workingDir: string, port: number): void {
       // Core sub-agents from claude-llm.ts NAMED_AGENTS (the same object the SDK
       // query uses), with prompts so the store can show and fork them — so gated
       // like the other store routes (the chat and Settings go through /api/agent).
-      if (unauthorized()) return
+      if (unauthorized() || storeRefused(true)) return
       return reply(200, { agents: describeAgents(NAMED_AGENTS, null, {}, true), ...describeRoles() })
     }
 
@@ -2570,7 +2579,7 @@ async function main() {
     'session_id', 'mcp_servers_changed', 'tool_use', 'tool_result',
     'assistant_text', 'assistant_result', 'tts_chunks', 'permission_request',
     'tts_say', 'session_resume_failed', 'checkpoint_captured',
-    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate',
+    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate', 'tool_blocked',
   ] as const
 
   // Abort + clear the parked brain. Clears BOTH timers so grace/watchdog can't
@@ -4844,6 +4853,7 @@ async function main() {
     // Steward verdict card + sign-off gate note (#221) → chat
     directLLM.events.on('steward_verdict', (v: any) => sendToFrontend({ type: 'steward_verdict', ...v }))
     directLLM.events.on('steward_gate', (d: any) => sendToFrontend({ type: 'steward_gate', decision: d.decision, message: d.message }))
+    directLLM.events.on('tool_blocked', (d: any) => sendToFrontend({ type: 'tool_blocked', ...d }))
 
     // Dispatcher v1 — sub-agent started → frontend stop-key signal (Feature A2)
     directLLM.events.on('agent_started', (d: any) => sendToFrontend({

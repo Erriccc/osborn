@@ -126,7 +126,7 @@ function roleBehaviours(role: Role, isCore: boolean): string[] {
 }
 
 // ── Definitions shared with the frontend and the user_agents SQL checks ───────
-// (migrations 004/015/016/017; agent/tests/user-agents-migrations.test.ts keeps them equal)
+// (migrations 004/015/016/018; agent/tests/user-agents-migrations.test.ts keeps them equal)
 
 export const AGENT_MODELS = ['inherit', 'sonnet', 'opus', 'haiku', 'fable'] as const
 export const isAgentModel = (m: unknown): m is string => typeof m === 'string' && ((AGENT_MODELS as readonly string[]).includes(m) || /^claude-/.test(m))
@@ -183,7 +183,8 @@ export function parseUserAgents(rows: unknown, core: CoreAgents): {
     // Only a built-in parent matters to the role and grounding; a catalog origin names none.
     const from = storeName(rawFrom)
     roles[name] = resolveRole({ role: r.role, forkedFrom: from }, core)
-    const tools: string[] | undefined = Array.isArray(r.tools) && r.tools.length ? r.tools.map(String) : undefined
+    const listed = Array.isArray(r.tools) ? r.tools.map((t) => String(t).trim()).filter(Boolean) : []  // ' Edit ' is Edit
+    const tools: string[] | undefined = listed.length ? listed : undefined
     agents[name] = {
       description,
       prompt,
@@ -234,19 +235,20 @@ export function storeWriteOriginAllowed(origin: string | undefined, frontendUrl:
   return LOOPBACK_HOST.test(u.host) || /^https:\/\/(www\.)?voice-native\.com$/.test(u.origin) || u.origin === configured
 }
 
-/** Refusal for a store write, or null. With a token, unauthorized() has already checked it;
- *  without one, only this machine's own pages may write, never a public or tunnelled
- *  address, and every write must be JSON (no other site's form or text/plain POST). */
+/** Refusal for a store request, or null. With a token, unauthorized() has already checked it;
+ *  without one, only this machine's own pages may use the store (reads carry the core prompts
+ *  and the user's skills), never a public or tunnelled address, and every write must be JSON
+ *  (no other site's form or text/plain POST). */
 export function storeWriteRefusal(r: {
   hasToken: boolean; publicDeploy: boolean; forwarded: boolean; host?: string; remote?: string
-  origin?: string; contentType?: string; frontendUrl: string
+  origin?: string; contentType?: string; frontendUrl: string; read?: boolean
 }): { status: number; error: string } | null {
   if (!r.hasToken) {
-    if (r.publicDeploy || r.forwarded || !LOOPBACK_HOST.test(r.host || '')) return { status: 403, error: 'this machine is reachable from outside: set OSBORN_SYNC_TOKEN to change skills' }
-    if (!LOOPBACK_ADDR.test(r.remote || '')) return { status: 403, error: 'store changes need the sync token or a request from this machine' }
-    if (!storeWriteOriginAllowed(r.origin, r.frontendUrl)) return { status: 403, error: 'store changes are refused from this site' }
+    if (r.publicDeploy || r.forwarded || !LOOPBACK_HOST.test(r.host || '')) return { status: 403, error: 'this machine is reachable from outside: set OSBORN_SYNC_TOKEN to use the store' }
+    if (!LOOPBACK_ADDR.test(r.remote || '')) return { status: 403, error: 'the store needs the sync token or a request from this machine' }
+    if (!storeWriteOriginAllowed(r.origin, r.frontendUrl)) return { status: 403, error: 'the store is refused from this site' }
   }
-  if (!/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }
+  if (!r.read && !/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }
   return null
 }
 

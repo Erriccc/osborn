@@ -60,6 +60,7 @@ assert.equal(decideWrite(r('researcher'), outside).decision, 'deny')
 assert.equal(decideWrite(r('planner'), outside).decision, 'deny')
 assert.equal(decideWrite(null, outside).decision, 'deny', 'main orchestrator: workspace only')
 assert.equal(decideWrite(null, ws).decision, 'allow')
+assert.equal(decideWrite(r('researcher'), '').decision, 'deny', 'an edit with no path is not a workspace write')
 assert.equal(decideWrite(r('tester'), '/repo/src/a.test.ts').decision, 'defer')
 assert.equal(decideWrite(r('tester'), '/repo/src/a.ts').decision, 'deny')
 assert.equal(decideWrite(r('reviewer'), '/repo/README.md').decision, 'defer')
@@ -97,4 +98,14 @@ assert.equal(listing.helper.role, 'reader')
 assert.equal(listing.writer.summary, ROLES.writer.summary)
 assert.equal(listing.writer.icon, 'pen')
 
+{
+  const { parseUserAgents } = await import('../src/agent-store.js')
+  const p = parseUserAgents([{ name: 'spacey', description: 'd', prompt: 'p', tools: [' Edit ', '', 'Read'], role: 'reader' }], {} as any)
+  assert.deepEqual(p.agents.spacey.tools, ['Edit', 'Read'], 'tool names are trimmed, blanks dropped')
+}
+{
+  const { parseUserAgents } = await import('../src/agent-store.js')
+  const p = parseUserAgents([{ name: '!!!', description: 'd', prompt: 'p', role: 'reader' }], {} as any)
+  assert.deepEqual(Object.keys(p.agents), [], "a name with no letters or digits ('---') is dropped")
+}
 console.log('agent-roles: all assertions passed')

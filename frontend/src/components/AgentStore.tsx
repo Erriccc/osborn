@@ -197,7 +197,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
 
   const d = editing?.draft
   const name = d ? agentName(d.name) : ''
-  const nameError = !d || !limits ? '' : !name ? 'Name required'
+  const nameError = !d || !limits ? '' : !name ? (d.name.trim() ? 'Use letters or numbers' : 'Name required')
     : name.length > limits.name ? `At most ${limits.name} characters`
     : coreNames.has(name) ? `${name} is built in — pick a new name`
     : editing!.isNew && taken.has(name) ? `${name} already exists` : ''
@@ -258,6 +258,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
               : <p className="text-[10px] text-[var(--text-secondary)]">Installed from <b>{originOf(d)}</b>.</p>)}
             <input value={d.name} disabled={!editing!.isNew} onChange={(e) => set({ name: e.target.value })} placeholder="agent-name (kebab-case)" className={field} />
             {nameError && d.name && <p className="text-[10px] text-red-400">{nameError}</p>}
+            {!nameError && name && name !== d.name && <p className="text-[10px] text-[var(--text-muted)]">Saved as {name}</p>}
             <input value={d.description} onChange={(e) => set({ description: e.target.value })} maxLength={limits.description} placeholder="When should the orchestrator use this agent?" className={field} />
             <textarea value={d.prompt} onChange={(e) => set({ prompt: e.target.value })} rows={6} maxLength={limits.prompt} placeholder="System prompt — the agent's role, workflow, and rules" className={`${field} resize-y font-mono`} />
             <div className="flex flex-wrap gap-1.5">
