@@ -965,7 +965,8 @@ async function main() {
           return res.end(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`)
         }
         const file = m[3] === 'mp4' ? t.clip : t.artifact
-        if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}` }, 404)
+        // A clip that failed after the reply carries its reason (#299): say it, not just "missing".
+        if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}`, ...(m[3] === 'mp4' && t.clipError ? { clipError: t.clipError } : {}) }, 404)
         if (m[3] === 'mp4' && m[1] === RUN_STAMP) fetchedClips.add(t.n)  // reviewing via the public link counts
         res.writeHead(200, { 'Content-Type': m[3] === 'mp4' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size, 'Cache-Control': 'public, max-age=86400' })
         createReadStream(file).on('error', () => res.destroy()).pipe(res)
@@ -1061,7 +1062,10 @@ async function main() {
           const taskPage = allPages().find((p) => p.url() === t3?.tab?.url && ownerOf(p) === (t3?.tab?.owner ?? null))
           if (t3?.endMs && !alreadyAudible) { const m = await muxClipAudio(file, t3.endMs, n, taskPage ?? active); if (m) file = m }
         }
-        if (!file || !existsSync(file)) return json(res, { error: `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs` }, 404)
+        if (!file || !existsSync(file)) {
+          const failed = path === '/clip' ? (runParam ? null : (tasks.find((t) => t.n === n) as any)?.clipError) : null
+          return json(res, { error: failed ? `task ${n}'s clip failed: ${failed}` : `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs`, ...(failed ? { clipError: failed } : {}) }, 404)
+        }
         res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })
         createReadStream(file).on('error', () => res.destroy()).pipe(res)
         return
