@@ -183,7 +183,8 @@ export function parseUserAgents(rows: unknown, core: CoreAgents): {
     // Only a built-in parent matters to the role and grounding; a catalog origin names none.
     const from = storeName(rawFrom)
     roles[name] = resolveRole({ role: r.role, forkedFrom: from }, core)
-    const tools: string[] | undefined = Array.isArray(r.tools) && r.tools.length ? r.tools.map(String) : undefined
+    const listed = Array.isArray(r.tools) ? r.tools.map((t) => String(t).trim()).filter(Boolean) : []  // ' Edit ' is Edit
+    const tools: string[] | undefined = listed.length ? listed : undefined
     agents[name] = {
       description,
       prompt,

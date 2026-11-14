@@ -98,4 +98,9 @@ assert.equal(listing.helper.role, 'reader')
 assert.equal(listing.writer.summary, ROLES.writer.summary)
 assert.equal(listing.writer.icon, 'pen')
 
+{
+  const { parseUserAgents } = await import('../src/agent-store.js')
+  const p = parseUserAgents([{ name: 'spacey', description: 'd', prompt: 'p', tools: [' Edit ', '', 'Read'], role: 'reader' }], {} as any)
+  assert.deepEqual(p.agents.spacey.tools, ['Edit', 'Read'], 'tool names are trimmed, blanks dropped')
+}
 console.log('agent-roles: all assertions passed')
