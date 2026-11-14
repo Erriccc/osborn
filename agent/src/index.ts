@@ -146,7 +146,7 @@ const STORE_REPLY_TYPES: Record<string, string> = {
 // Store routes, guarded by storeRefused: writes change the machine's skills; reads carry the
 // core prompts, the user's skills and the catalog. Neither answers every site's CORS.
 const STORE_WRITE_PATHS = new Set(['/skills/fork', '/skills/remove', '/store/install'])
-const STORE_PATHS = new Set([...STORE_WRITE_PATHS, '/skills/content', '/store/catalog', '/store/entry', '/agents'])
+const STORE_PATHS = new Set([...STORE_WRITE_PATHS, '/skills', '/skills/content', '/store/catalog', '/store/entry', '/agents'])
 
 // Skills shipped with the package (core: maintained by Voice Native).
 const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
@@ -648,8 +648,7 @@ function startApiServer(workingDir: string, port: number): void {
     // Authorization is required for /secrets (Bearer OSBORN_SYNC_TOKEN); without it in the
     // allow-list the browser preflight fails and the dashboard can't read/manage keys.
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-    // Store writes never answer every site: only an allowed origin (agent-store.ts) is echoed,
-    // so another site's page can neither pass the preflight nor read the reply.
+    // Store routes (STORE_PATHS) echo only an allowed origin, never '*'.
     if (STORE_PATHS.has((req.url || '/').split('?')[0])) {
       const origin = req.headers.origin
       if (origin && storeWriteOriginAllowed(origin, osbornFrontendUrl())) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin') }
@@ -776,17 +775,6 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
-    if (req.method === 'GET' && url.pathname === '/skills') {
-      // Installed skills — same list the chat's get_skills data-channel message
-      // returns, exposed over HTTP so the DASHBOARD (no LiveKit connection) can
-      // render the skills manager too. Reads ~/.claude/skills (homedir) — the SINGLE
-      // location the agent ingests from (loadAllSkills) and PostCompact writes to.
-      // Previously used process.cwd()/.claude/skills, which the agent never read —
-      // so UI-created skills were invisible to the agent (the "divergence").
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ skills: loadSkillsList(homedir()) }))
-      return
-    }
 
     // Agent & skill store routes: the chat and Settings both use them (through the
     // authenticated /api/agent proxy in the cloud). JSON in and out.
@@ -803,6 +791,19 @@ function startApiServer(workingDir: string, port: number): void {
       })
       if (refusal) reply(refusal.status, { error: refusal.error })
       return !!refusal
+    }
+
+    if (req.method === 'GET' && url.pathname === '/skills') {
+      if (unauthorized() || storeRefused(true)) return
+      // Installed skills — same list the chat's get_skills data-channel message
+      // returns, exposed over HTTP so the DASHBOARD (no LiveKit connection) can
+      // render the skills manager too. Reads ~/.claude/skills (homedir) — the SINGLE
+      // location the agent ingests from (loadAllSkills) and PostCompact writes to.
+      // Previously used process.cwd()/.claude/skills, which the agent never read —
+      // so UI-created skills were invisible to the agent (the "divergence").
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ skills: loadSkillsList(homedir()) }))
+      return
     }
 
     if (url.pathname === '/skills/content' || (url.pathname.startsWith('/skills/') && STORE_WRITE_PATHS.has(url.pathname))) {

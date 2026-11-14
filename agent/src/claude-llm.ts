@@ -2725,7 +2725,6 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
                 if (gate.decision !== 'allow') this.#eventEmitter.emit('steward_gate', { decision: gate.decision, message: gate.message })
                 if (gate.decision === 'deny') {
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: gate.message, kind: 'steward' })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
