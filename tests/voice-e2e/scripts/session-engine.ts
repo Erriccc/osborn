@@ -1035,35 +1035,27 @@ async function main() {
         const q = new URL(req.url || '', 'http://x').searchParams
         const n = Number(q.get('n'))
         const runParam = q.get('run')
-        let file: string | undefined
-        if (runParam && runParam !== RUN_STAMP) {
-          try {
-            const m = JSON.parse(readFileSync(join(RUNS_ROOT, runParam.replace(/[^A-Za-z0-9T:-]/g, ''), 'manifest.json'), 'utf8'))
-            const t = (m.tasks ?? []).find((t: { n: number }) => t.n === n)
-            file = path === '/clip' ? t?.clip : t?.artifact
-          } catch { /* fall through to 404 */ }
-        } else {
-          if (path === '/clip') await awaitClip(n)
-          const t = tasks.find((t) => t.n === n) as any
-          file = path === '/clip' ? t?.clip : t?.artifact
-          if (path === '/clip' && file) fetchedClips.add(n)
-        }
+        const pastRun = !!runParam && runParam !== RUN_STAMP
+        if (!pastRun && path === '/clip') await awaitClip(n)
+        const t = (loadRunTasks(pastRun ? runParam : RUN_STAMP) ?? []).find((t: any) => t.n === n)
+        let file: string | undefined = path === '/clip' ? t?.clip : t?.artifact
+        if (!pastRun && path === '/clip' && file) fetchedClips.add(n)
         // audio=1: mux the task's ALIGNED audio slice into the (silent) video
         // clip so a remote/cloud director can HEAR the agent, not just see it.
         // Current run only (past runs' recording is gone).
         if (path === '/clip' && q.get('audio') === '1' && !runParam && file) {
-          const t3 = tasks.find((t) => t.n === n) as any
           // A spoken-turn clip already carries both sides of the audio, aligned
           // when it was cut — re-muxing it here dropped the tester's track and
           // shifted the page audio by the transcription time. Serve it as is.
-          const alreadyAudible = t3?.clipAudio && (t3.clipAudio.said || t3.clipAudio.heard)
+          const alreadyAudible = t?.clipAudio && (t.clipAudio.said || t.clipAudio.heard)
           // Otherwise mux from the tab the task ran on, not whichever tab
           // another driver has fronted since.
-          const taskPage = allPages().find((p) => p.url() === t3?.tab?.url && ownerOf(p) === (t3?.tab?.owner ?? null))
-          if (t3?.endMs && !alreadyAudible) { const m = await muxClipAudio(file, t3.endMs, n, taskPage ?? active); if (m) file = m }
+          const taskPage = allPages().find((p) => p.url() === t?.tab?.url && ownerOf(p) === (t?.tab?.owner ?? null))
+          if (t?.endMs && !alreadyAudible) { const m = await muxClipAudio(file, t.endMs, n, taskPage ?? active); if (m) file = m }
         }
         if (!file || !existsSync(file)) {
-          const failed = path === '/clip' ? (runParam ? null : (tasks.find((t) => t.n === n) as any)?.clipError) : null
+          // A clip that failed after the reply carries its reason (#299).
+          const failed = path === '/clip' ? t?.clipError : null
           return json(res, { error: failed ? `task ${n}'s clip failed: ${failed}` : `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs`, ...(failed ? { clipError: failed } : {}) }, 404)
         }
         res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })
