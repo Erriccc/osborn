@@ -4128,15 +4128,12 @@ async function main() {
       // 11. Tell the UI; it replaces the transcript with the target's history.
       const summary = await getSessionSummary(target, cwd)
       const conversationHistory = await getConversationHistory(target, cwd, 30)
-      await sendToFrontend({
-        type: 'session_switched',
-        sessionId: target,
-        workingDirectory: cwd,
-        success: true,
-        forced: plan.reason === 'forced',
-        summary,
-        conversationHistory,
-      })
+      const switched = { type: 'session_switched', sessionId: target, workingDirectory: cwd, success: true, forced: plan.reason === 'forced' }
+      // The history is only the UI's fallback (it reads /session-messages first); when it pushes the
+      // message past the size cap, send the switch without it so the rail and URL still move.
+      const told = await sendToFrontend({ ...switched, summary, conversationHistory })
+        || await sendToFrontend(switched)
+      if (!told) console.warn(`⚠️ Switch to ${target.slice(0, 8)}: the UI was not told (no room or publish failed)`)
       const switchArtifacts = listWorkspaceArtifacts(cwd, target)
       if (switchArtifacts.length > 0) {
         await sendToFrontend({

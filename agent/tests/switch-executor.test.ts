@@ -261,5 +261,10 @@ await t('4.14 housekeeping protects the switched-to session (sessionId ?? curren
   assert.ok(/currentResumeSessionId = target/.test(body('async function performSessionSwitch(')))
 })
 
+await t('4.15 an oversized session_switched is resent without its history (50KB cap), so the rail still moves', () => {
+  const b = body('async function performSessionSwitch(')
+  assert.ok(/await sendToFrontend\(\{ \.\.\.switched, summary, conversationHistory \}\)\s*\|\|\s*await sendToFrontend\(switched\)/.test(b))
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

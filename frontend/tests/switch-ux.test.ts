@@ -223,5 +223,9 @@ t('S13 wiring: keyed reads/writes; every sign-out clears the records', () => {
   }
 })
 
+t('S12 a forced switch says the previous session was stopped mid-step', () => {
+  assert.ok(/if \(data\.forced\) addMessageRef\.current\?\.\('system', 'The previous session was stopped mid-step to switch\.'\)/.test(vr))
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
