@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { BackgroundFlow } from '../LogsDrawer'
 import { AgentStore, type NamedAgent, type RolesData } from '../AgentStore'
 import type { UserAgentDraft, UserAgentRow } from '@/lib/user-agents'
-import { usePanelExclusive, useViewportClamp } from './shared'
+import { PANEL_ANCHORED, PANEL_BOTTOM_SHEET, usePanelExclusive, useViewportClamp } from './shared'
 
 // Agents button + popover. The panel body is the shared AgentStore (same
 // surface as Settings → Agents & Skills) with live run status per agent.
@@ -84,10 +84,7 @@ export function AgentsPopover({ agents, roles, yours, activity, disabled, onSave
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          {/* Mobile: viewport-anchored (button-anchored panels jut off-screen
-              when the trigger sits mid-header — user screenshot 2026-08-01);
-              sm+: anchored under the button as before. */}
-          <div ref={popRef} className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(26rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
+          <div ref={popRef} className={hideTrigger ? PANEL_BOTTOM_SHEET : PANEL_ANCHORED}>
             <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-200">🤖 Agents</span>
               <span className="text-[10px] text-gray-500">{working > 0 ? `${working} working · ` : ''}{count} active</span>

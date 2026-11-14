@@ -3,9 +3,10 @@
 /**
  * Library — the user's content library (Supabase `content_items`).
  *
- * The content-lens worker publishes one page per compaction period into
- * `content_items` (migration 007). This page is the dashboard-reachable view of
- * that library: it reads the signed-in owner's rows directly (RLS policy
+ * The content-lens worker publishes one page per period into `content_items`
+ * (migration 007; see lens-launch.ts for when a period closes). This page is
+ * the dashboard-reachable view of that library: it reads the signed-in owner's
+ * rows directly (RLS policy
  * `content_items_owner_select` = `auth.uid() = owner_user_id`, so the anon
  * browser client only ever sees the caller's own items), newest first, with a
  * status filter + search, a responsive card grid, and a reading modal.
@@ -530,7 +531,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
             </div>
             <p className="text-[var(--text-secondary)] text-sm max-w-xs">
               {items.length === 0
-                ? 'No library pages yet. They’re written automatically as your sessions compact.'
+                ? 'No library pages yet. They’re written automatically when a session ends.'
                 : 'Nothing matches that filter.'}
             </p>
           </div>
