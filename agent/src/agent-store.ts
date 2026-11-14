@@ -234,19 +234,20 @@ export function storeWriteOriginAllowed(origin: string | undefined, frontendUrl:
   return LOOPBACK_HOST.test(u.host) || /^https:\/\/(www\.)?voice-native\.com$/.test(u.origin) || u.origin === configured
 }
 
-/** Refusal for a store write, or null. With a token, unauthorized() has already checked it;
- *  without one, only this machine's own pages may write, never a public or tunnelled
- *  address, and every write must be JSON (no other site's form or text/plain POST). */
+/** Refusal for a store request, or null. With a token, unauthorized() has already checked it;
+ *  without one, only this machine's own pages may use the store (reads carry the core prompts
+ *  and the user's skills), never a public or tunnelled address, and every write must be JSON
+ *  (no other site's form or text/plain POST). */
 export function storeWriteRefusal(r: {
   hasToken: boolean; publicDeploy: boolean; forwarded: boolean; host?: string; remote?: string
-  origin?: string; contentType?: string; frontendUrl: string
+  origin?: string; contentType?: string; frontendUrl: string; read?: boolean
 }): { status: number; error: string } | null {
   if (!r.hasToken) {
-    if (r.publicDeploy || r.forwarded || !LOOPBACK_HOST.test(r.host || '')) return { status: 403, error: 'this machine is reachable from outside: set OSBORN_SYNC_TOKEN to change skills' }
-    if (!LOOPBACK_ADDR.test(r.remote || '')) return { status: 403, error: 'store changes need the sync token or a request from this machine' }
-    if (!storeWriteOriginAllowed(r.origin, r.frontendUrl)) return { status: 403, error: 'store changes are refused from this site' }
+    if (r.publicDeploy || r.forwarded || !LOOPBACK_HOST.test(r.host || '')) return { status: 403, error: 'this machine is reachable from outside: set OSBORN_SYNC_TOKEN to use the store' }
+    if (!LOOPBACK_ADDR.test(r.remote || '')) return { status: 403, error: 'the store needs the sync token or a request from this machine' }
+    if (!storeWriteOriginAllowed(r.origin, r.frontendUrl)) return { status: 403, error: 'the store is refused from this site' }
   }
-  if (!/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }
+  if (!r.read && !/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }
   return null
 }
 

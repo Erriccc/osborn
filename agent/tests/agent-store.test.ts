@@ -119,6 +119,10 @@ assert.equal(parseFrontMatter('no front matter').body, 'no front matter')
   assert.equal(storeWriteRefusal({ ...local, publicDeploy: true })?.status, 403, 'a cloud machine needs the token')
   assert.equal(storeWriteRefusal({ ...local, hasToken: true, publicDeploy: true, forwarded: true, host: 'x.fly.dev', remote: '10.0.0.1', origin: 'https://evil.example' }), null, 'with a token, unauthorized() is the gate')
   assert.equal(storeWriteRefusal({ ...local, hasToken: true, contentType: '' })?.status, 415)
+  // Reads (core prompts, skills, catalog) get the same who-may-ask rules, minus the JSON check.
+  assert.equal(storeWriteRefusal({ ...local, read: true, contentType: '' }), null)
+  assert.equal(storeWriteRefusal({ ...local, read: true, remote: '192.168.1.9' })?.status, 403, 'a LAN device cannot read prompts or skills')
+  assert.equal(storeWriteRefusal({ ...local, read: true, origin: 'https://evil.example' })?.status, 403, 'another site cannot read them')
 }
 
 console.log('agent-store: all assertions passed')

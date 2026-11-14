@@ -143,8 +143,10 @@ const STORE_REPLY_TYPES: Record<string, string> = {
   skill_get: 'skill_content', skill_add: 'skill_add_result', skill_fork: 'skill_fork_result',
   skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
 }
-// Routes that change the machine's skills (guarded by storeWriteRefused).
+// Store routes, guarded by storeRefused: writes change the machine's skills; reads carry the
+// core prompts, the user's skills and the catalog. Neither answers every site's CORS.
 const STORE_WRITE_PATHS = new Set(['/skills/fork', '/skills/remove', '/store/install'])
+const STORE_PATHS = new Set([...STORE_WRITE_PATHS, '/skills/content', '/store/catalog', '/store/entry', '/agents'])
 
 // Skills shipped with the package (core: maintained by Voice Native).
 const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
@@ -648,7 +650,7 @@ function startApiServer(workingDir: string, port: number): void {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
     // Store writes never answer every site: only an allowed origin (agent-store.ts) is echoed,
     // so another site's page can neither pass the preflight nor read the reply.
-    if (STORE_WRITE_PATHS.has((req.url || '/').split('?')[0])) {
+    if (STORE_PATHS.has((req.url || '/').split('?')[0])) {
       const origin = req.headers.origin
       if (origin && storeWriteOriginAllowed(origin, osbornFrontendUrl())) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin') }
       else res.removeHeader('Access-Control-Allow-Origin')
@@ -789,10 +791,10 @@ function startApiServer(workingDir: string, port: number): void {
     // Agent & skill store routes: the chat and Settings both use them (through the
     // authenticated /api/agent proxy in the cloud). JSON in and out.
     const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
-    // Store writes change the machine. Called past the token gate (unauthorized()); the
-    // rules for a machine with no sync token are agent-store.ts storeWriteRefusal.
-    const storeWriteRefused = (): boolean => {
-      const refusal = storeWriteRefusal({
+    // Called past the token gate (unauthorized()); the rules for a machine with no sync token
+    // are agent-store.ts storeWriteRefusal (reads skip only the JSON check).
+    const storeRefused = (read = false): boolean => {
+      const refusal = storeWriteRefusal({ read,
         hasToken: !!syncToken,
         publicDeploy: !!process.env.FLY_APP_NAME || !!process.env.OSBORN_PUBLIC_HOST,
         forwarded: !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host']),
@@ -807,11 +809,12 @@ function startApiServer(workingDir: string, port: number): void {
       if (unauthorized()) return
       const name = url.searchParams.get('name')
       if (req.method === 'GET' && url.pathname === '/skills/content') {
+        if (storeRefused(true)) return
         const out = readUserSkill(homeSkillsDir(), name)
         return reply('error' in out ? 404 : 200, out)
       }
       if (req.method !== 'POST' || url.pathname === '/skills/content') return reply(405, { error: 'method not allowed' })
-      if (storeWriteRefused()) return
+      if (storeRefused()) return
       const out = changeSkill(url.pathname === '/skills/fork' ? 'fork' : 'remove', name, url.searchParams.get('to'))
       return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
     }
@@ -822,6 +825,7 @@ function startApiServer(workingDir: string, port: number): void {
       // agent's own cached catalog, by id.
       if (unauthorized()) return
       try {
+        if (req.method === 'GET' && storeRefused(true)) return
         if (req.method === 'GET' && url.pathname === '/store/catalog') {
           const src = url.searchParams.get('source')
           const caches = await loadCatalog(src && src !== 'all' ? src.split(',') : null, { refresh: url.searchParams.get('refresh') === '1' })
@@ -851,7 +855,7 @@ function startApiServer(workingDir: string, port: number): void {
           return reply(200, { entry: found.entry, content: found.body, ...(found.entry.kind === 'agent' ? { draft: agentDraft(found.entry, found.body) } : {}) })
         }
         if (req.method === 'POST' && url.pathname === '/store/install') {
-          if (storeWriteRefused()) return
+          if (storeRefused()) return
           const found = await findEntry(url.searchParams.get('id') || '')
           if (!found) return reply(404, { error: 'not in the catalog' })
           if (found.entry.kind === 'agent') return reply(200, { draft: agentDraft(found.entry, found.body) })
@@ -868,7 +872,7 @@ function startApiServer(workingDir: string, port: number): void {
       // Core sub-agents from claude-llm.ts NAMED_AGENTS (the same object the SDK
       // query uses), with prompts so the store can show and fork them — so gated
       // like the other store routes (the chat and Settings go through /api/agent).
-      if (unauthorized()) return
+      if (unauthorized() || storeRefused(true)) return
       return reply(200, { agents: describeAgents(NAMED_AGENTS, null, {}, true), ...describeRoles() })
     }
 
