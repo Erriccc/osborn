@@ -197,8 +197,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
 
   const d = editing?.draft
   const name = d ? agentName(d.name) : ''
-  const nameError = !d || !limits ? '' : !name ? 'Name required'
-    : !/[a-z0-9]/.test(name) ? 'Use letters or numbers'
+  const nameError = !d || !limits ? '' : !name ? (d.name.trim() ? 'Use letters or numbers' : 'Name required')
     : name.length > limits.name ? `At most ${limits.name} characters`
     : coreNames.has(name) ? `${name} is built in — pick a new name`
     : editing!.isNew && taken.has(name) ? `${name} already exists` : ''

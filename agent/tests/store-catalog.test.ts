@@ -56,6 +56,7 @@ const run = async () => {
   assert.equal(draft.role, 'writer')
   assert.equal(draft.forked_from, `wshobson-agents:wshobson/agents@${fx.sha}/plugins/web/agents/frontend-dev.md`)
   const rev = agentDraft(by['sql-reviewer'], bodies[by['sql-reviewer'].id])
+  assert.equal(agentDraft(fe, 'x'.repeat(25000)).prompt.length, 25000, 'a long prompt is never cut (install refuses it instead)')
   assert.equal(rev.role, 'reader')
   assert.equal(rev.model, 'claude-opus-5-5')
   const parsed = parseUserAgents([{ ...draft, enabled: true }], {})

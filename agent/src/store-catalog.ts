@@ -181,7 +181,7 @@ async function rawBytes(repo: string, sha: string, path: string): Promise<Buffer
   if (r.status === 404) return null
   if (!r.ok) throw new Error(`raw ${r.status}`)  // rate limit / outage: a failure, not a missing file
   const buf = Buffer.from(await r.arrayBuffer())
-  if (buf.length > MAX_FILE_BYTES) throw new TooLarge(`${path} is larger than 2 MB`)  // never read as a missing file
+  if (buf.length > MAX_FILE_BYTES) throw new TooLarge(`${path} is larger than ${MAX_FILE_BYTES >> 20} MB`)  // never read as a missing file
   return buf
 }
 const rawReader = (repo: string, sha: string): Reader => async (p) => (await rawBytes(repo, sha, p))?.toString('utf-8') ?? null
@@ -206,7 +206,7 @@ async function loadSource(src: CatalogSource, opts: { refresh?: boolean; dir?: s
       const snap = await snapshot(src.repo)
       const { entries, bodies, failed, tooLarge } = await normaliseSource(src, snap, rawReader(src.repo, snap.sha))
       // Oversize entries are left out on purpose; the source says so rather than looking complete.
-      const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies, ...(tooLarge ? { error: `${tooLarge} entr${tooLarge === 1 ? 'y is' : 'ies are'} over 2 MB and not listed` } : {}) }
+      const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies, ...(tooLarge ? { error: `${tooLarge} entr${tooLarge === 1 ? 'y is' : 'ies are'} over ${MAX_FILE_BYTES >> 20} MB and not listed` } : {}) }
       // Some files could not be read: never cache a partial catalog over a good one.
       if (failed) {
         const error = `${failed} file(s) could not be read from GitHub`
@@ -305,7 +305,7 @@ export function agentDraft(entry: CatalogEntry, body: string): { name: string; d
   return {
     name: storeName(entry.name).slice(0, AGENT_LIMITS.name),
     description: (entry.description || entry.name).slice(0, AGENT_LIMITS.description),
-    prompt: body.slice(0, AGENT_LIMITS.prompt),
+    prompt: body,  // never cut: /store/install refuses one over AGENT_LIMITS.prompt
     model, tools, role: draftRole(tools),
     forked_from: catalogOrigin(entry),
   }
