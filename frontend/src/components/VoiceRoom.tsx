@@ -2869,6 +2869,13 @@ function VoiceRoomInner({
       } else if (data.type === 'steward_gate') {
         // The steward sign-off gate advised on or refused a commit / push / PR.
         addMessageRef.current?.('system', `Steward gate ${data.decision === 'deny' ? 'refused' : 'warned'}: ${data.message ?? ''}`, undefined, 'chat')
+      } else if (data.type === 'tool_blocked') {
+        // A refused tool call in this session (a background slot's carry slotId). The
+        // one-time history reminder is a nudge, not a refusal, so it gets no line.
+        if (!data.slotId && data.kind !== 'reminder') {
+          const who = data.agent && data.agent !== 'main' ? `${data.agent}${data.role ? ` (${data.role})` : ''}` : 'Osborn'
+          addMessageRef.current?.('system', `${who} was not allowed to use ${data.name ?? 'a tool'}${data.path ? ` on ${data.path}` : ''}: ${data.reason ?? ''}`, undefined, 'chat')
+        }
       } else if (data.type === 'prior_messages') {
         // Fallback path: prior session messages pushed by the agent over the data
         // channel after connect. The PRIMARY path is the mount-time HTTP fetch of

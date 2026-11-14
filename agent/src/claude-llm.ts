@@ -1065,19 +1065,18 @@ export function decideWrite(
 ): { decision: 'allow' | 'defer' | 'deny'; reason?: string } {
   const rule: WriteRule = role ? ROLES[role].write : 'workspace'
   if (rule === 'anywhere') return { decision: 'defer' }
+  // Fail closed for every limited role: an edit with no path is denied.
+  if (!filePath) return { decision: 'deny', reason: 'Write denied: could not determine target file path. Failing closed.' }
   if (rule === 'workspace') {
-    if (filePath && !isWorkspacePath(filePath)) {
+    if (!isWorkspacePath(filePath)) {
       return { decision: 'deny', reason: 'Research mode: writes restricted to session workspace.' }
     }
     return { decision: 'allow' }
   }
-  // Extension whitelist — fail closed (empty/unknown path denied).
-  const target = rule.matchBasename ? (filePath ? basename(resolve(filePath)) : '') : filePath
-  if (!filePath || !rule.extensions.test(target)) {
-    const reason = filePath
-      ? `Write denied: ${filePath} is not a ${rule.label} file. This agent may only write ${rule.label} files.`
-      : 'Write denied: could not determine target file path. Failing closed.'
-    return { decision: 'deny', reason }
+  // Extension whitelist.
+  const target = rule.matchBasename ? basename(resolve(filePath)) : filePath
+  if (!rule.extensions.test(target)) {
+    return { decision: 'deny', reason: `Write denied: ${filePath} is not a ${rule.label} file. This agent may only write ${rule.label} files.` }
   }
   return { decision: 'defer' }
 }
@@ -2724,7 +2723,6 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
                 if (gate.decision !== 'allow') this.#eventEmitter.emit('steward_gate', { decision: gate.decision, message: gate.message })
                 if (gate.decision === 'deny') {
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: gate.message })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
@@ -2753,7 +2751,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                     `Then re-attempt this edit. (One-time reminder this turn; new files are exempt.)`,
                   ].join('\n')
                   console.log(`🏛️  Writer provenance reminder: nudging before ${base} (first edit of an existing file this turn)`)
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Review ${base}'s git history first (one-time provenance reminder).` })
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Review ${base}'s git history first (one-time provenance reminder).`, kind: 'reminder' })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gateReason }
                 }
 
@@ -2761,7 +2759,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log(`🔎 Write gate: agent=${agentType ?? 'main'} role=${role ?? '-'} path="${filePath || '(none)'}" → ${decision}`)
 
                 if (decision === 'deny') {
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason })
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason, agent: agentType ?? 'main', role, path: filePath })
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason }
                 }
                 if (decision === 'defer') {

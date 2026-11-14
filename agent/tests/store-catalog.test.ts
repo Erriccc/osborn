@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync }
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SOURCES, normaliseSource, installSkill, agentDraft, recommend, installedIds, safeRelPath, skillProvenance, PROVENANCE_FILE, type CatalogEntry } from '../src/store-catalog.js'
+import { SOURCES, normaliseSource, installSkill, agentDraft, recommend, installedIds, safeRelPath, skillProvenance, PROVENANCE_FILE, TooLarge, type CatalogEntry } from '../src/store-catalog.js'
 import { parseUserAgents, parseFrontMatter } from '../src/agent-store.js'
 
 const fx = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'store-catalog.json'), 'utf-8'))
@@ -24,6 +24,8 @@ const run = async () => {
   assert.equal(failed, 0)
   const flaky = await normaliseSource(src, { sha: fx.sha, paths: fx.paths }, (p: string) => (/frontend-dev/.test(p) ? Promise.reject(new Error('429')) : read(p)))
   assert.ok(flaky.failed > 0 && !flaky.entries.some((e) => e.name === 'frontend-dev'), 'a failed read is counted, so a partial catalog is not cached as good')
+  const big = await normaliseSource(src, { sha: fx.sha, paths: fx.paths }, (p: string) => (/frontend-dev/.test(p) ? Promise.reject(new TooLarge('big')) : read(p)))
+  assert.ok(big.tooLarge === 1 && big.failed === 0 && !big.entries.some((e) => e.name === 'frontend-dev'), 'an oversize file is counted apart from a missing one')
   const by = Object.fromEntries(entries.map((e) => [e.name, e]))
   assert.deepEqual(Object.keys(by).sort(), ['frontend-dev', 'pg-migrations', 'react-testing', 'sql-reviewer'], 'MCP entries and external_plugins are skipped')
 
@@ -32,6 +34,10 @@ const run = async () => {
   assert.deepEqual(fe.tools, ['Read', 'Edit', 'Write', 'Bash'])
   assert.equal(fe.model, 'sonnet')
   assert.equal(fe.sha, fx.sha)
+  const moved = await normaliseSource(src, { sha: 'f'.repeat(40), paths: fx.paths }, (p: string) => (/frontend-dev/.test(p) ? read(p).then((t) => t + '\nchanged') : read(p)))
+  const movedBy = Object.fromEntries(moved.entries.map((e) => [e.name, e]))
+  assert.equal(movedBy['react-testing'].rev, by['react-testing'].rev, 'a commit elsewhere in the repo leaves an entry\'s rev alone')
+  assert.notEqual(movedBy['frontend-dev'].rev, fe.rev, 'a changed entry gets a new rev')
   assert.equal(fe.repo, 'wshobson/agents')
   assert.equal(fe.license, 'MIT', 'repo license detected')
   assert.equal(fe.plugin, 'web')
@@ -54,6 +60,7 @@ const run = async () => {
   assert.equal(draft.role, 'writer')
   assert.equal(draft.forked_from, `wshobson-agents:wshobson/agents@${fx.sha}/plugins/web/agents/frontend-dev.md`)
   const rev = agentDraft(by['sql-reviewer'], bodies[by['sql-reviewer'].id])
+  assert.equal(agentDraft(fe, 'x'.repeat(25000)).prompt.length, 25000, 'a long prompt is never cut (install refuses it instead)')
   assert.equal(rev.role, 'reader')
   assert.equal(rev.model, 'claude-opus-5-5')
   const parsed = parseUserAgents([{ ...draft, enabled: true }], {})
@@ -84,6 +91,7 @@ const run = async () => {
     assert.ok(!existsSync(join(root, 'missing')), 'a failed fetch leaves nothing behind')
     assert.ok('error' in await installSkill({ ...rt, name: 'big', files: ['SKILL.md'] }, root, new Set(), async () => Buffer.alloc(11 * 1024 * 1024)))
     assert.ok('error' in await installSkill(fe, root, new Set(), fetchFile), 'agents are not installed as skills')
+    assert.match((await installSkill({ ...rt, name: 'huge' }, root, new Set(), async () => { throw new TooLarge('SKILL.md is larger than 2 MB') }) as any).error, /larger than 2 MB/, 'an oversize file is a refusal, not a crash')
   } finally { rmSync(root, { recursive: true, force: true }) }
 
   // Installed: a skill by its folder, an agent by a row installed from the same file (any commit).

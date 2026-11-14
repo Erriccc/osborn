@@ -3,6 +3,7 @@
 // hour, pinned at the commit they were read at. MCP servers, hooks, bin and
 // monitors are out of scope: entries that need MCP are skipped.
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, mkdtempSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, sep, posix } from 'node:path'
@@ -50,6 +51,7 @@ export interface CatalogEntry {
   repo: string
   path: string            // skill folder or agent file
   sha: string
+  rev: string               // hash of the reviewed text + file list; install refuses when it moved
   license: string
   /** Files that can run (scripts/ or a script extension), shown before install. */
   scripts: string[]
@@ -88,8 +90,8 @@ async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): 
 }
 
 /** Turns a repo snapshot into catalog entries (pure apart from `read`). Returns the bodies too. */
-export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string>; failed: number }> {
-  let failed = 0
+export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string>; failed: number; tooLarge: number }> {
+  let failed = 0, tooLarge = 0
   const paths = snap.paths
   const repoLicense = detectLicense(await read(paths.find((p) => /^LICEN[CS]E(\.md|\.txt)?$/i.test(p)) || 'LICENSE').catch(() => null))
   const market: Record<string, { category?: string }> = {}
@@ -106,7 +108,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
   })
   const bodies: Record<string, string> = {}
   const entries = (await mapLimit(hits, 8, async (h): Promise<CatalogEntry | null> => {
-    const md = await read(h.file).catch(() => { failed++; return null })
+    const md = await read(h.file).catch((e) => { if (e instanceof TooLarge) tooLarge++; else failed++; return null })
     if (!md) return null
     const { meta, body } = parseFrontMatter(md)
     const dir = h.kind === 'skill' ? posix.dirname(h.file) : h.file
@@ -126,13 +128,14 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
       description: str(meta.description).slice(0, 600),
       tools, ...(str(meta.model) ? { model: str(meta.model) } : {}),
       files, repo: src.repo, path: dir, sha: snap.sha,
+      rev: createHash('sha256').update(md).update('\0' + files.join('\n')).digest('hex').slice(0, 16),
       license: ownLicense ? (/LICENSE/i.test(ownLicense) ? 'See LICENSE.txt' : ownLicense.slice(0, 40)) : (files.some((f) => /^LICEN[CS]E/i.test(f)) ? 'See LICENSE.txt' : repoLicense || 'Unknown'),
       scripts: files.filter((f) => f.startsWith('scripts/') || SCRIPT_EXT.test(f)),
       trust: src.trust,
       ...(h.plugin ? { plugin: h.plugin, ...(market[h.plugin]?.category ? { category: market[h.plugin].category } : {}) } : {}),
     }
   })).filter((e): e is CatalogEntry => !!e)
-  return { entries, bodies, failed }
+  return { entries, bodies, failed, tooLarge }
 }
 
 // ── Fetching ─────────────────────────────────────────────────────────────────
@@ -151,7 +154,8 @@ async function snapshotViaApi(repo: string): Promise<Snapshot> {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('bad commit sha')
   const t = await fetch(`${GH_API}/repos/${repo}/git/trees/${sha}?recursive=1`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20000) })
   if (!t.ok) throw new Error(`tree ${t.status}`)
-  const tree = await t.json() as { tree?: { path: string; type: string }[] }
+  const tree = await t.json() as { tree?: { path: string; type: string }[]; truncated?: boolean }
+  if (tree.truncated) throw new Error('tree listing truncated')  // a partial listing would cache as complete; git lists it all
   return { sha, paths: (tree.tree || []).filter((n) => n.type === 'blob').map((n) => n.path) }
 }
 
@@ -174,12 +178,14 @@ async function snapshot(repo: string): Promise<Snapshot> {
 }
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
+export class TooLarge extends Error {}
 async function rawBytes(repo: string, sha: string, path: string): Promise<Buffer | null> {
   const r = await fetch(`${GH_RAW}/${repo}/${sha}/${path.split('/').map(encodeURIComponent).join('/')}`, { signal: AbortSignal.timeout(20000) })
   if (r.status === 404) return null
   if (!r.ok) throw new Error(`raw ${r.status}`)  // rate limit / outage: a failure, not a missing file
   const buf = Buffer.from(await r.arrayBuffer())
-  return buf.length > MAX_FILE_BYTES ? null : buf
+  if (buf.length > MAX_FILE_BYTES) throw new TooLarge(`${path} is larger than ${MAX_FILE_BYTES >> 20} MB`)  // never read as a missing file
+  return buf
 }
 const rawReader = (repo: string, sha: string): Reader => async (p) => (await rawBytes(repo, sha, p))?.toString('utf-8') ?? null
 
@@ -188,12 +194,12 @@ const rawReader = (repo: string, sha: string): Reader => async (p) => (await raw
 const TTL_MS = 60 * 60 * 1000
 const cacheDir = () => join(homedir(), '.osborn', 'store-cache')
 
-interface SourceCache { source: string; repo: string; sha: string; fetchedAt: number; entries: CatalogEntry[]; bodies: Record<string, string>; error?: string }
+interface SourceCache { source: string; repo: string; sha: string; fetchedAt: number; entries: CatalogEntry[]; bodies: Record<string, string>; error?: string; note?: string }
 
 const inflight = new Map<string, Promise<SourceCache>>()
 
 async function loadSource(src: CatalogSource, opts: { refresh?: boolean; dir?: string } = {}): Promise<SourceCache> {
-  const file = join(opts.dir || cacheDir(), `${src.id}.v2.json`)  // v2: entries carry scripts[]
+  const file = join(opts.dir || cacheDir(), `${src.id}.v3.json`)  // v3: entries carry rev
   let cached: SourceCache | null = null
   try { cached = JSON.parse(readFileSync(file, 'utf-8')) } catch { /* none yet */ }
   if (cached && !opts.refresh && Date.now() - cached.fetchedAt < TTL_MS) return cached
@@ -201,8 +207,9 @@ async function loadSource(src: CatalogSource, opts: { refresh?: boolean; dir?: s
   const p = (async () => {
     try {
       const snap = await snapshot(src.repo)
-      const { entries, bodies, failed } = await normaliseSource(src, snap, rawReader(src.repo, snap.sha))
-      const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies }
+      const { entries, bodies, failed, tooLarge } = await normaliseSource(src, snap, rawReader(src.repo, snap.sha))
+      // Oversize entries are left out on purpose; the source says so rather than looking complete.
+      const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies, ...(tooLarge ? { note: `${tooLarge} entr${tooLarge === 1 ? 'y is' : 'ies are'} over ${MAX_FILE_BYTES >> 20} MB and not listed` } : {}) }
       // Some files could not be read: never cache a partial catalog over a good one.
       if (failed) {
         const error = `${failed} file(s) could not be read from GitHub`
@@ -270,7 +277,8 @@ export async function installSkill(
   try {
     let total = 0
     for (const f of entry.files) {
-      const buf = await fetchFile(`${entry.path}/${f}`)
+      let buf: Buffer | null
+      try { buf = await fetchFile(`${entry.path}/${f}`) } catch (e) { if (e instanceof TooLarge) return { error: e.message }; throw e }
       if (!buf) return { error: `could not fetch ${f}` }
       total += buf.length
       if (total > MAX_SKILL_BYTES) return { error: 'skill is larger than 10 MB' }
@@ -301,7 +309,7 @@ export function agentDraft(entry: CatalogEntry, body: string): { name: string; d
   return {
     name: storeName(entry.name).slice(0, AGENT_LIMITS.name),
     description: (entry.description || entry.name).slice(0, AGENT_LIMITS.description),
-    prompt: body.slice(0, AGENT_LIMITS.prompt),
+    prompt: body,  // never cut: /store/install refuses one over AGENT_LIMITS.prompt
     model, tools, role: draftRole(tools),
     forked_from: catalogOrigin(entry),
   }
