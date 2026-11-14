@@ -1065,20 +1065,18 @@ export function decideWrite(
 ): { decision: 'allow' | 'defer' | 'deny'; reason?: string } {
   const rule: WriteRule = role ? ROLES[role].write : 'workspace'
   if (rule === 'anywhere') return { decision: 'defer' }
+  // Fail closed for every limited role: an edit with no path is denied.
+  if (!filePath) return { decision: 'deny', reason: 'Write denied: could not determine target file path. Failing closed.' }
   if (rule === 'workspace') {
-    // Fail closed like the extension rule below: an edit with no path is not a workspace write.
-    if (!filePath || !isWorkspacePath(filePath)) {
+    if (!isWorkspacePath(filePath)) {
       return { decision: 'deny', reason: 'Research mode: writes restricted to session workspace.' }
     }
     return { decision: 'allow' }
   }
-  // Extension whitelist — fail closed (empty/unknown path denied).
-  const target = rule.matchBasename ? (filePath ? basename(resolve(filePath)) : '') : filePath
-  if (!filePath || !rule.extensions.test(target)) {
-    const reason = filePath
-      ? `Write denied: ${filePath} is not a ${rule.label} file. This agent may only write ${rule.label} files.`
-      : 'Write denied: could not determine target file path. Failing closed.'
-    return { decision: 'deny', reason }
+  // Extension whitelist.
+  const target = rule.matchBasename ? basename(resolve(filePath)) : filePath
+  if (!rule.extensions.test(target)) {
+    return { decision: 'deny', reason: `Write denied: ${filePath} is not a ${rule.label} file. This agent may only write ${rule.label} files.` }
   }
   return { decision: 'defer' }
 }
