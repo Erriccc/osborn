@@ -104,7 +104,7 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   const install = async (e: CatalogEntry) => {
     setBusy(e.id); setNote(null)
     try {
-      const { ok, d } = await request(`store/install?id=${encodeURIComponent(e.id)}`, { method: 'POST' })
+      const { ok, d } = await request(`store/install?id=${encodeURIComponent(e.id)}&sha=${encodeURIComponent(e.sha)}`, { method: 'POST' })
       if (!ok) { setNote({ id: e.id, ok: false, text: d?.error || 'Install failed' }); return }
       if (e.kind === 'skill') {
         if (Array.isArray(d?.skills)) onSkillsChanged?.(d.skills)

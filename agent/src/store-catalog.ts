@@ -88,8 +88,8 @@ async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): 
 }
 
 /** Turns a repo snapshot into catalog entries (pure apart from `read`). Returns the bodies too. */
-export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string>; failed: number }> {
-  let failed = 0
+export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string>; failed: number; tooLarge: number }> {
+  let failed = 0, tooLarge = 0
   const paths = snap.paths
   const repoLicense = detectLicense(await read(paths.find((p) => /^LICEN[CS]E(\.md|\.txt)?$/i.test(p)) || 'LICENSE').catch(() => null))
   const market: Record<string, { category?: string }> = {}
@@ -106,7 +106,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
   })
   const bodies: Record<string, string> = {}
   const entries = (await mapLimit(hits, 8, async (h): Promise<CatalogEntry | null> => {
-    const md = await read(h.file).catch(() => { failed++; return null })
+    const md = await read(h.file).catch((e) => { if (e instanceof TooLarge) tooLarge++; else failed++; return null })
     if (!md) return null
     const { meta, body } = parseFrontMatter(md)
     const dir = h.kind === 'skill' ? posix.dirname(h.file) : h.file
@@ -132,7 +132,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
       ...(h.plugin ? { plugin: h.plugin, ...(market[h.plugin]?.category ? { category: market[h.plugin].category } : {}) } : {}),
     }
   })).filter((e): e is CatalogEntry => !!e)
-  return { entries, bodies, failed }
+  return { entries, bodies, failed, tooLarge }
 }
 
 // ── Fetching ─────────────────────────────────────────────────────────────────
@@ -151,7 +151,8 @@ async function snapshotViaApi(repo: string): Promise<Snapshot> {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('bad commit sha')
   const t = await fetch(`${GH_API}/repos/${repo}/git/trees/${sha}?recursive=1`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20000) })
   if (!t.ok) throw new Error(`tree ${t.status}`)
-  const tree = await t.json() as { tree?: { path: string; type: string }[] }
+  const tree = await t.json() as { tree?: { path: string; type: string }[]; truncated?: boolean }
+  if (tree.truncated) throw new Error('tree listing truncated')  // a partial listing would cache as complete; git lists it all
   return { sha, paths: (tree.tree || []).filter((n) => n.type === 'blob').map((n) => n.path) }
 }
 
@@ -174,12 +175,14 @@ async function snapshot(repo: string): Promise<Snapshot> {
 }
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
+export class TooLarge extends Error {}
 async function rawBytes(repo: string, sha: string, path: string): Promise<Buffer | null> {
   const r = await fetch(`${GH_RAW}/${repo}/${sha}/${path.split('/').map(encodeURIComponent).join('/')}`, { signal: AbortSignal.timeout(20000) })
   if (r.status === 404) return null
   if (!r.ok) throw new Error(`raw ${r.status}`)  // rate limit / outage: a failure, not a missing file
   const buf = Buffer.from(await r.arrayBuffer())
-  return buf.length > MAX_FILE_BYTES ? null : buf
+  if (buf.length > MAX_FILE_BYTES) throw new TooLarge(`${path} is larger than 2 MB`)  // never read as a missing file
+  return buf
 }
 const rawReader = (repo: string, sha: string): Reader => async (p) => (await rawBytes(repo, sha, p))?.toString('utf-8') ?? null
 
@@ -201,8 +204,9 @@ async function loadSource(src: CatalogSource, opts: { refresh?: boolean; dir?: s
   const p = (async () => {
     try {
       const snap = await snapshot(src.repo)
-      const { entries, bodies, failed } = await normaliseSource(src, snap, rawReader(src.repo, snap.sha))
-      const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies }
+      const { entries, bodies, failed, tooLarge } = await normaliseSource(src, snap, rawReader(src.repo, snap.sha))
+      // Oversize entries are left out on purpose; the source says so rather than looking complete.
+      const fresh: SourceCache = { source: src.id, repo: src.repo, sha: snap.sha, fetchedAt: Date.now(), entries, bodies, ...(tooLarge ? { error: `${tooLarge} entr${tooLarge === 1 ? 'y is' : 'ies are'} over 2 MB and not listed` } : {}) }
       // Some files could not be read: never cache a partial catalog over a good one.
       if (failed) {
         const error = `${failed} file(s) could not be read from GitHub`

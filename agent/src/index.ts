@@ -851,6 +851,9 @@ function startApiServer(workingDir: string, port: number): void {
         if (req.method === 'GET' && url.pathname === '/store/entry') {
           const found = await findEntry(url.searchParams.get('id') || '')
           if (!found) return reply(404, { error: 'not in the catalog' })
+          // Install exactly what was reviewed: the card carries the sha it showed.
+          const reviewed = url.searchParams.get('sha')
+          if (reviewed && reviewed !== found.entry.sha) return reply(409, { error: 'This changed upstream since you viewed it. Refresh and review it again.' })
           // An agent's detail carries the draft it would install as (its starting role included).
           return reply(200, { entry: found.entry, content: found.body, ...(found.entry.kind === 'agent' ? { draft: agentDraft(found.entry, found.body) } : {}) })
         }

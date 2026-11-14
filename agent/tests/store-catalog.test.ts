@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync }
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SOURCES, normaliseSource, installSkill, agentDraft, recommend, installedIds, safeRelPath, skillProvenance, PROVENANCE_FILE, type CatalogEntry } from '../src/store-catalog.js'
+import { SOURCES, normaliseSource, installSkill, agentDraft, recommend, installedIds, safeRelPath, skillProvenance, PROVENANCE_FILE, TooLarge, type CatalogEntry } from '../src/store-catalog.js'
 import { parseUserAgents, parseFrontMatter } from '../src/agent-store.js'
 
 const fx = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'store-catalog.json'), 'utf-8'))
@@ -24,6 +24,8 @@ const run = async () => {
   assert.equal(failed, 0)
   const flaky = await normaliseSource(src, { sha: fx.sha, paths: fx.paths }, (p: string) => (/frontend-dev/.test(p) ? Promise.reject(new Error('429')) : read(p)))
   assert.ok(flaky.failed > 0 && !flaky.entries.some((e) => e.name === 'frontend-dev'), 'a failed read is counted, so a partial catalog is not cached as good')
+  const big = await normaliseSource(src, { sha: fx.sha, paths: fx.paths }, (p: string) => (/frontend-dev/.test(p) ? Promise.reject(new TooLarge('big')) : read(p)))
+  assert.ok(big.tooLarge === 1 && big.failed === 0 && !big.entries.some((e) => e.name === 'frontend-dev'), 'an oversize file is counted apart from a missing one')
   const by = Object.fromEntries(entries.map((e) => [e.name, e]))
   assert.deepEqual(Object.keys(by).sort(), ['frontend-dev', 'pg-migrations', 'react-testing', 'sql-reviewer'], 'MCP entries and external_plugins are skipped')
 
