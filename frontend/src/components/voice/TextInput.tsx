@@ -149,33 +149,33 @@ export function TextInput({
           session-scoped and warns once on first use. */}
       {approvalMode && onApprovalModeChange && (
         <div className="flex items-center gap-1 px-3 max-[400px]:px-2 pt-2 pb-0.5">
-        {/* Only the approval pills may scroll; the call controls sit outside the
-            scroller so End can never scroll off-screen. */}
-        <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto">
-          <span className={`text-[10px] uppercase tracking-wider text-gray-500 shrink-0${controls ? ' max-sm:hidden' : ''}`}>Approvals</span>
-          <div className="flex items-center gap-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 p-0.5 shrink-0">
-            {APPROVAL_MODES.map((m) => {
-              const active = approvalMode === m.value
-              const activeCls = m.value === 'allow-all'
-                ? 'bg-amber-500/90 text-gray-950'
-                : 'bg-gray-700 text-white'
-              return (
-                <button
-                  key={m.value}
-                  type="button"
-                  onClick={() => onApprovalModeChange(m.value)}
-                  title={m.hint}
-                  aria-pressed={active}
-                  className={`px-2.5 max-[400px]:px-2 max-[340px]:px-1.5 py-1 rounded-full text-[11px] max-[340px]:text-[10px] font-medium whitespace-nowrap transition-colors ${
-                    active ? activeCls : 'text-gray-400 hover:text-gray-200'
-                  }`}
-                >
-                  {m.label}
-                </button>
-              )
-            })}
+          {/* Only the approval pills may scroll; the call controls sit outside the
+              scroller so End can never scroll off-screen. */}
+          <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto">
+            <span className={`text-[10px] uppercase tracking-wider text-gray-500 shrink-0${controls ? ' max-sm:hidden' : ''}`}>Approvals</span>
+            <div className="flex items-center gap-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 p-0.5 shrink-0">
+              {APPROVAL_MODES.map((m) => {
+                const active = approvalMode === m.value
+                const activeCls = m.value === 'allow-all'
+                  ? 'bg-amber-500/90 text-gray-950'
+                  : 'bg-gray-700 text-white'
+                return (
+                  <button
+                    key={m.value}
+                    type="button"
+                    onClick={() => onApprovalModeChange(m.value)}
+                    title={m.hint}
+                    aria-pressed={active}
+                    className={`px-2.5 max-[400px]:px-2 max-[340px]:px-1.5 py-1 rounded-full text-[11px] max-[340px]:text-[10px] font-medium whitespace-nowrap transition-colors ${
+                      active ? activeCls : 'text-gray-400 hover:text-gray-200'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                )
+              })}
+            </div>
           </div>
-        </div>
           {controls && <div className="flex items-center gap-1 shrink-0">{controls}</div>}
         </div>
       )}

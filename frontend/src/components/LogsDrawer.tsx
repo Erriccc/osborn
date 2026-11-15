@@ -566,10 +566,11 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
   const [drawerHeight, setDrawerHeight] = useState(() =>
     typeof window === 'undefined' ? DRAWER_DEFAULT_HEIGHT : defaultDrawerHeight(window.innerHeight))
   // Until the user drags, the drawer follows the viewport (rotation, URL bar, split
-  // view); after a drag it keeps their height, clamped to the new viewport.
-  const userSizedRef = useRef(false)
+  // view); after a drag it keeps the dragged height, clamped to each new viewport
+  // from that height, so a keyboard opening and closing gives it back.
+  const userHeightRef = useRef<number | null>(null)
   useEffect(() => {
-    const fit = () => setDrawerHeight((h) => userSizedRef.current ? clampDrawerHeight(h, window.innerHeight) : defaultDrawerHeight(window.innerHeight))
+    const fit = () => setDrawerHeight(userHeightRef.current != null ? clampDrawerHeight(userHeightRef.current, window.innerHeight) : defaultDrawerHeight(window.innerHeight))
     window.addEventListener('resize', fit)
     window.addEventListener('orientationchange', fit)
     return () => { window.removeEventListener('resize', fit); window.removeEventListener('orientationchange', fit) }
@@ -589,8 +590,8 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
     if (!dragStartRef.current) return
     // Dragging UP (negative delta) grows the drawer; dragging DOWN shrinks it
     const delta = dragStartRef.current.y - e.clientY
-    userSizedRef.current = true
-    setDrawerHeight(clampDrawerHeight(dragStartRef.current.height + delta, window.innerHeight))
+    userHeightRef.current = clampDrawerHeight(dragStartRef.current.height + delta, window.innerHeight)
+    setDrawerHeight(userHeightRef.current)
   }
 
   const handleDragHandlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {

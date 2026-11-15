@@ -26,6 +26,12 @@ t('the 120px floor gives way on a very short viewport, so 65% always holds', () 
   ok(defaultDrawerHeight(150) <= 150 * 0.65, 'short viewport default')
 })
 
+t('a dragged height comes back after the viewport shrinks and grows (keyboard)', () => {
+  const dragged = 500
+  eq(clampDrawerHeight(dragged, 450), 292, 'keyboard open')
+  eq(clampDrawerHeight(dragged, 800), 500, 'keyboard closed: clamped from the dragged height, not the shrunk one')
+})
+
 let failed = 0
 for (const [name, pass, err] of results) {
   console.log(`${pass ? '✅' : '❌'} ${name}${err ? ` — ${err}` : ''}`)
