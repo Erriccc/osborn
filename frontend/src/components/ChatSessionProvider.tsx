@@ -390,7 +390,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         }
         // Unmount LiveKitRoom (by clearing token/connected state) and show
         // the idle overlay — no navigation, no restart loop.
-        connectGenRef.current++  // an in-flight rejoin must not mint a token into the paused page
+        // An in-flight rejoin must not mint a token into the paused page; it
+        // bails without clearing `connecting`, so clear it here as disconnect() does.
+        connectGenRef.current++
+        setConnecting(false)
+        setStatusMsg(null)
         setIdleStopped(true)
         setConnected(false)
         setAgentReady(false)
