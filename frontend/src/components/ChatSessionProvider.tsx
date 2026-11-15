@@ -414,6 +414,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setConnecting(true)
     setAgentReady(false)
     setError(null)
+    // A reconnect after the idle stop: the room only mounts while !idleStopped,
+    // and agent_ready (which used to clear it) can't arrive without the room.
+    setIdleStopped(false)
     let resolvedUrl = agentUrl
 
     // CONNECT TIMING: stamp the dashboard button click and log every frontend

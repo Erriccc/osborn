@@ -179,6 +179,12 @@ t('VoiceRoom reports modal state + auth resolution to the provider (#78)', () =>
   ok(provider.includes('nextAuthRequired(prev, messageType)'), 'provider clears via nextAuthRequired')
 })
 
+t('a reconnect after the idle stop clears idleStopped so the room can mount', () => {
+  const body = provider.slice(provider.indexOf('const connect = useCallback'), provider.indexOf('const res = await fetch(url)'))
+  ok(body.includes('setIdleStopped(false)'), 'connect() clears idleStopped')
+  ok(provider.includes('token && roomCode && !idleStopped'), 'the room is gated on idleStopped')
+})
+
 // ── Report ────────────────────────────────────────────────────────────────
 let failed = 0
 for (const [name, pass, err] of results) {
