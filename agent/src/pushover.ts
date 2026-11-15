@@ -152,6 +152,34 @@ export function isNtfyEnabled(): boolean {
   return ntfyConfig() !== null
 }
 
+// One send per provider, shared by the permission push and plain notices.
+const postPushover = (cfg: PushoverConfig, fields: Record<string, string>): Promise<Response> =>
+  fetch(`${PUSH_API}/messages.json`, {
+    method: 'POST',
+    body: new URLSearchParams({ token: cfg.token, user: cfg.userKey, title: 'Voice Native', ...fields }),
+  })
+
+const postNtfy = (ntfy: NtfyConfig, fields: Record<string, unknown>): Promise<Response> =>
+  fetch(ntfy.url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(ntfy.token ? { Authorization: `Bearer ${ntfy.token}` } : {}) },
+    body: JSON.stringify({ topic: ntfy.topic, title: 'Voice Native', tags: ['computer'], click: `${osbornFrontendUrl()}/dashboard`, ...fields }),
+  })
+
+/** A plain notice to the phone (Pushover and/or ntfy), e.g. "background work finished".
+ *  False when neither provider is configured or every send failed. */
+export async function notifyPhone(message: string): Promise<boolean> {
+  const cfg = pushoverConfig()
+  const ntfy = ntfyConfig()
+  const text = message.slice(0, 1000)
+  const sends: Promise<Response>[] = []
+  if (cfg) sends.push(postPushover(cfg, { message: text, url: `${osbornFrontendUrl()}/dashboard` }))
+  if (ntfy) sends.push(postNtfy(ntfy, { message: text }))
+  const ok = (await Promise.allSettled(sends)).some((r) => r.status === 'fulfilled' && r.value.ok)
+  if (sends.length && !ok) console.log('📱 notifyPhone: not delivered')
+  return ok
+}
+
 /**
  * Mirror a blocking permission request to the wrist. Fire-and-forget: any
  * failure (network, Pushover 4xx, missing env) just logs — the web UI remains
@@ -194,18 +222,12 @@ export async function armPermissionPush(opts: { toolName: string; description: s
 
   if (cfg) {
     try {
-      const res = await fetch(`${PUSH_API}/messages.json`, {
-        method: 'POST',
-        body: new URLSearchParams({
-          token: cfg.token,
-          user: cfg.userKey,
-          title: 'Voice Native',
-          message: `${opts.description}\n\nTap to approve · ignore to deny`.slice(0, 1000),
-          priority: '2',
-          retry: String(RETRY_S),
-          expire: String(EXPIRE_S),
-          callback: `${frontendUrl}${ACK_PATH}/${qid}`,
-        }),
+      const res = await postPushover(cfg, {
+        message: `${opts.description}\n\nTap to approve · ignore to deny`.slice(0, 1000),
+        priority: '2',
+        retry: String(RETRY_S),
+        expire: String(EXPIRE_S),
+        callback: `${frontendUrl}${ACK_PATH}/${qid}`,
       })
       const body = (await res.json().catch(() => ({}))) as { receipt?: string; errors?: string[] }
       if (!res.ok || !body.receipt) {
@@ -221,34 +243,13 @@ export async function armPermissionPush(opts: { toolName: string; description: s
   if (ntfy) {
     // Approve/Deny buttons hit the SAME signed ack route with ?ans=1|0.
     try {
-      const res = await fetch(ntfy.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(ntfy.token ? { Authorization: `Bearer ${ntfy.token}` } : {}),
-        },
-        body: JSON.stringify({
-          topic: ntfy.topic,
-          title: 'Voice Native',
-          message: opts.description.slice(0, 1000),
-          priority: 4,
-          tags: ['computer'],
-          click: `${frontendUrl}/dashboard`,
-          actions: [
-            {
-              action: 'http',
-              label: 'Approve',
-              method: 'GET',
-              url: `${frontendUrl}${ACK_PATH}/${qid}?ans=1`,
-            },
-            {
-              action: 'http',
-              label: 'Deny',
-              method: 'GET',
-              url: `${frontendUrl}${ACK_PATH}/${qid}?ans=0`,
-            },
-          ],
-        }),
+      const res = await postNtfy(ntfy, {
+        message: opts.description.slice(0, 1000),
+        priority: 4,
+        actions: [
+          { action: 'http', label: 'Approve', method: 'GET', url: `${frontendUrl}${ACK_PATH}/${qid}?ans=1` },
+          { action: 'http', label: 'Deny', method: 'GET', url: `${frontendUrl}${ACK_PATH}/${qid}?ans=0` },
+        ],
       })
       if (!res.ok) console.log(`⌚️ Watch bridge: ntfy rejected (${res.status})`)
     } catch (e) {

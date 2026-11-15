@@ -1617,9 +1617,9 @@ function VoiceRoomInner({
   // ── Outputs drawer data flow (L4; UI#13/19) ──────────────────────────────
   // Re-list the session workspace with REPLACE semantics on open, on focus and
   // after file events; fetch a file body only when it is previewed (no storm).
-  const sendJson = useCallback((m: Record<string, unknown>) => {
-    sendToAgent(new TextEncoder().encode(JSON.stringify(m)), { reliable: true })
-  }, [sendToAgent])
+  const sendJson = useCallback((m: Record<string, unknown>) =>
+    sendToAgent(new TextEncoder().encode(JSON.stringify(m)), { reliable: true }),
+  [sendToAgent])
   // Request/reply over the data channel: resolves with the next message of replyType
   // (handleDataMessage hands it over), or an error after 15s (e.g. an older machine).
   const replyWaiters = useRef(new Map<string, ((d: any) => void)[]>())
@@ -1643,6 +1643,24 @@ function VoiceRoomInner({
   const getAgentPrompt = useCallback((name: string) =>
     askAgent({ type: 'get_agent_prompt', name }, 'agent_prompt').then((d) => (typeof d?.prompt === 'string' ? d.prompt : null)),
   [askAgent])
+  // End: if the agent is mid-task, offer to let it keep working after the hang-up
+  // (the agent serves its cap and whether it can reach the phone). An agent that
+  // does not answer within 1.5s, or has no keep-working (capMin 0), just ends.
+  const [endChoice, setEndChoice] = useState<{ capMin: number; phone: boolean } | null>(null)
+  const handleEnd = useCallback(async () => {
+    if (!onDisconnect) return
+    const d = await Promise.race([
+      askAgent({ type: 'get_busy' }, 'busy_state'),
+      new Promise<null>((r) => setTimeout(() => r(null), 1500)),
+    ])
+    if (d?.idle === false && d.capMin > 0) setEndChoice({ capMin: d.capMin, phone: !!d.phone })
+    else onDisconnect()
+  }, [askAgent, onDisconnect])
+  const endKeepWorking = useCallback(async () => {
+    setEndChoice(null)
+    try { await sendJson({ type: 'keep_working' }) } catch { /* ends anyway */ }
+    onDisconnect?.()
+  }, [sendJson, onDisconnect])
   const currentSessionIdRef = useRef(currentSessionId)
   useEffect(() => { currentSessionIdRef.current = currentSessionId }, [currentSessionId])
   const generatedFilesRef = useRef(generatedFiles)
@@ -3775,6 +3793,20 @@ function VoiceRoomInner({
 
   return (
     <PanelDataProvider value={panelData}>
+      {endChoice && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setEndChoice(null)}>
+          <div role="dialog" aria-modal="true" aria-labelledby="end-choice-title" onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-sm bg-gray-900 border border-gray-700 rounded-t-2xl sm:rounded-xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
+            <h3 id="end-choice-title" className="text-base font-semibold text-white">Osborn is still working</h3>
+            <p className="mt-1 text-sm text-gray-400">Keep it working after you hang up? It stops after {endChoice.capMin} minutes at most{endChoice.phone ? " and pings your phone when it's done" : ''}. Reconnect to this chat to pick up; opening another chat stops it.</p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button onClick={endKeepWorking} className="min-h-11 rounded-lg bg-amber-500/90 text-gray-950 text-sm font-semibold hover:bg-amber-500">Keep working in the background</button>
+              <button onClick={() => { setEndChoice(null); onDisconnect?.() }} className="min-h-11 rounded-lg bg-red-500/90 text-white text-sm font-semibold hover:bg-red-500">Stop now and hang up</button>
+              <button onClick={() => setEndChoice(null)} className="min-h-11 rounded-lg text-gray-400 text-sm hover:text-gray-200">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Claude Auth Modal — shown during first-time OAuth flow in cloud deployments */}
       {claudeAuthStatus !== 'none' && claudeAuthStatus !== 'complete' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -4419,7 +4451,7 @@ function VoiceRoomInner({
                   shrink-0 keeps it from clipping in the desktop width fight. */}
               {onDisconnect && (
                 <button
-                  onClick={onDisconnect}
+                  onClick={handleEnd}
                   aria-label="End session"
                   className="hidden sm:flex shrink-0 items-center justify-center w-10 h-10 ml-2 rounded-lg transition-all bg-red-500/90 text-white hover:bg-red-500"
                   title="End session (saves LiveKit minutes — session stays resumable)"
@@ -4717,7 +4749,7 @@ function VoiceRoomInner({
               (icon-only 44px round was too small to hit reliably). */}
           {onDisconnect && (
             <button
-              onClick={onDisconnect}
+              onClick={handleEnd}
               aria-label="End session"
               className="sm:hidden shrink-0 flex items-center gap-1.5 min-h-11 min-w-11 justify-center px-3 max-[400px]:px-2.5 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
               title="Hang up — end session (saves minutes, session stays resumable)"

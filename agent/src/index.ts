@@ -67,7 +67,7 @@ import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
-import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl } from './pushover.js'
+import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
@@ -2400,7 +2400,10 @@ async function main() {
   // P1: room stays alive while the host anchor is active or any background slot
   // is running. Teardown timers below early-return on this so a dashboard-started
   // session + its background dispatches aren't killed by the empty-room grace.
-  const agentsActive = (): boolean => hostActive || slots.size > 0
+  // Work the user left running when they hung up (keep-working, below) holds the
+  // machine the same way, until it finishes or hits its cap.
+  let keepWorkingActive = false
+  const agentsActive = (): boolean => hostActive || slots.size > 0 || keepWorkingActive
   // Release the host anchor + hard-kill background slots at a genuine session-end
   // boundary so the room can idle-exit (agentsActive → false). Idempotent. MUST be
   // called before arming idle-exit on EVERY path where the session ends, or the
@@ -2582,11 +2585,56 @@ async function main() {
     'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate', 'tool_blocked',
   ] as const
 
+  // ── KEEP WORKING AFTER HANG-UP ──
+  // When the user ends the call while the agent is mid-task and chooses "Keep
+  // working" (data message keep_working), the keep-warm park below drops its
+  // short grace: the brain runs until its turn and tasks finish (then a phone
+  // notice, and the normal re-attach grace), or until the machine's own idle
+  // timeout (IDLE_EXIT_GRACE_MS, 15 min) has passed since the hang-up, when it
+  // is stopped. keepWorkingActive holds the machine (idle-exit, recycle); the
+  // room still tears down. A reconnect re-attaches through claimWarm.
+  let keepWorkingRequested = false
+  let keepWorkingPoll: ReturnType<typeof setInterval> | null = null
+  let keepWorkingCap: ReturnType<typeof setTimeout> | null = null
+  const stopKeepWorking = (): void => {
+    if (keepWorkingPoll) { clearInterval(keepWorkingPoll); keepWorkingPoll = null }
+    if (keepWorkingCap) { clearTimeout(keepWorkingCap); keepWorkingCap = null }
+    keepWorkingActive = false
+  }
+  // Every timer that can end or free the parked brain.
+  const clearWarmTimers = (): void => {
+    stopKeepWorking()
+    if (warmGraceTimer) { clearTimeout(warmGraceTimer); warmGraceTimer = null }
+    if (warmWatchdog) { clearTimeout(warmWatchdog); warmWatchdog = null }
+  }
+  // Called right after parkWarm, once the room teardown is armed.
+  const keepWorkingAfterLeave = (): void => {
+    if (!warmLLM) return
+    clearWarmTimers()
+    const started = Date.now()
+    warmExpiry = started + IDLE_EXIT_GRACE_MS  // a reconnect while it works re-attaches
+    keepWorkingActive = true
+    console.log(`🏃 [KEEP-WORKING] user hung up mid-task — working on for up to ${IDLE_EXIT_GRACE_MS / 60000} min`)
+    keepWorkingPoll = setInterval(() => {
+      if (!((warmLLM as any)?.busyState?.()?.idle ?? true)) return
+      stopKeepWorking()
+      const mins = Math.max(1, Math.round((Date.now() - started) / 60000))
+      console.log(`🏁 [KEEP-WORKING] finished after ~${mins} min — normal re-attach grace from here`)
+      void notifyPhone(`Osborn finished the work you left running (${mins} min). Open Voice Native to see the result.`)
+      warmExpiry = Date.now() + REATTACH_GRACE_MS
+      armWarmTimers()
+    }, 15_000)
+    keepWorkingCap = setTimeout(() => {
+      console.log(`⏱️ [KEEP-WORKING] cap reached (${IDLE_EXIT_GRACE_MS / 60000} min) — stopping`)
+      freeWarm('keep_working_cap')
+      void notifyPhone(`Osborn stopped the work you left running after ${IDLE_EXIT_GRACE_MS / 60000} minutes. Reconnect to continue it.`)
+    }, IDLE_EXIT_GRACE_MS)
+  }
+
   // Abort + clear the parked brain. Clears BOTH timers so grace/watchdog can't
   // double-fire. Used on grace expiry, watchdog, and session mismatch.
   const killWarm = (reason: string): void => {
-    if (warmGraceTimer) { clearTimeout(warmGraceTimer); warmGraceTimer = null }
-    if (warmWatchdog) { clearTimeout(warmWatchdog); warmWatchdog = null }
+    clearWarmTimers()
     if (warmLLM) {
       try {
         const llm = warmLLM as any
@@ -2605,8 +2653,14 @@ async function main() {
   }
 
   // Grace timer (free memory if no reconnect) + INDEPENDENT watchdog ceiling.
-  // Both end in the SAME teardown: kill warm → releaseAgents → arm idle-exit, so
-  // the machine always self-stops within WARM_HARD_CEILING_MS + idle-grace.
+  // Both end in the SAME teardown (freeWarm, also keep-working's cap): kill warm →
+  // releaseAgents → arm idle-exit, so the machine always self-stops within
+  // WARM_HARD_CEILING_MS + idle-grace.
+  const freeWarm = (reason: string): void => {
+    killWarm(reason)
+    releaseAgents()
+    armIdleExitTimer(`warm-${reason}`)
+  }
   const armWarmTimers = (): void => {
     if (warmGraceTimer) clearTimeout(warmGraceTimer)
     if (warmWatchdog) clearTimeout(warmWatchdog)
@@ -2614,17 +2668,13 @@ async function main() {
       warmGraceTimer = null
       warmStats.wastedTimeouts++
       console.log('🧊 [KEEP-WARM] grace expired with no reconnect — freeing warm slot')
-      killWarm('grace_expired')
-      releaseAgents()
-      armIdleExitTimer('warm-grace-expired')
+      freeWarm('grace_expired')
     }, REATTACH_GRACE_MS)
     warmWatchdog = setTimeout(() => {
       warmWatchdog = null
       warmStats.watchdogKills++
       console.warn('🧊 [KEEP-WARM] WATCHDOG ceiling hit — hard-freeing warm slot (backstop)')
-      killWarm('watchdog_ceiling')
-      releaseAgents()
-      armIdleExitTimer('warm-watchdog')
+      freeWarm('watchdog_ceiling')
     }, WARM_HARD_CEILING_MS)
   }
 
@@ -2656,8 +2706,7 @@ async function main() {
   // Detach the parked brain for reuse WITHOUT aborting it, cancelling its timers.
   // Caller takes ownership (becomes currentLLM via createDirectSession).
   const claimWarm = (): ReturnType<typeof createClaudeLLM> | null => {
-    if (warmGraceTimer) { clearTimeout(warmGraceTimer); warmGraceTimer = null }
-    if (warmWatchdog) { clearTimeout(warmWatchdog); warmWatchdog = null }
+    clearWarmTimers()
     const llm = warmLLM
     warmLLM = null
     warmSessionId = null
@@ -5187,6 +5236,7 @@ async function main() {
   // connect callback, not via events).
   participantConnectedHandler = async (participant: RemoteParticipant) => {
     console.log(`\n👤 User joined: ${participant.identity}`)
+    keepWorkingRequested = false  // a request belongs to the hang-up it preceded
     // The meeting canvas joining as a listener = browser-parity audio path is
     // LIVE: the agent's normal session.say plays through the canvas into the
     // meeting, so tts_say suppression/redirect must stand down.
@@ -6252,6 +6302,8 @@ async function main() {
       releaseAgents()
       armMeetingLeaveGrace()
       armFastLeaveTimer()
+      // "Keep working" chosen at End: after the teardown is armed (it checks agentsActive()).
+      if (keepWorkingRequested) { keepWorkingRequested = false; keepWorkingAfterLeave() }
     } else {
       // Kill the Claude SDK subprocess BEFORE dropping the reference, otherwise the
       // persistent session keeps running tools and pushing TTS into a dead session.
@@ -6587,6 +6639,14 @@ async function main() {
         const sessionId = data.sessionId as string
         const hint = typeof data.workingDirectory === 'string' ? data.workingDirectory : undefined
         await requestSessionSwitch(sessionId, hint, { force: !!data.force, origin: 'switch_session' })
+      }
+      else if (data.type === 'get_busy') {
+        // End asks before hanging up: a busy agent may keep working (keep_working).
+        await sendToFrontend({ type: 'busy_state', idle: (currentLLM as any)?.busyState?.()?.idle ?? true, capMin: KEEP_WARM ? IDLE_EXIT_GRACE_MS / 60000 : 0, phone: isWatchBridgeEnabled() })
+      }
+      else if (data.type === 'keep_working') {
+        keepWorkingRequested = true
+        console.log('🏃 [KEEP-WORKING] requested — the next hang-up keeps the agent working')
       }
       else if (data.type === 'cancel_session_switch') {
         if (pendingSwitch) cancelPendingSwitch('user_cancelled')
