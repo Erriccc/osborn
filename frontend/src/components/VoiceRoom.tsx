@@ -4995,32 +4995,8 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, idleStopped, preSelectedSessionId, agentUrl, seedPrompt, isController } =
+  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, preSelectedSessionId, agentUrl, seedPrompt, isController } =
     useChatSession()
-
-  if (idleStopped) {
-    return (
-      <div className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center gap-6 p-8">
-        <div className="text-4xl">😴</div>
-        <div className="text-center">
-          <p className="text-lg font-medium text-[var(--text)]">Session paused</p>
-          <p className="text-sm text-[var(--muted)] mt-1">No activity for 15 min — machine stopped to save credits</p>
-        </div>
-        <button
-          onClick={() => window.location.reload()}
-          className="px-6 py-3 bg-[var(--accent)] text-black font-semibold rounded-xl hover:opacity-90 transition-opacity"
-        >
-          Resume
-        </button>
-        <button
-          onClick={disconnect}
-          className="text-sm text-[var(--muted)] hover:text-[var(--text)] transition-colors"
-        >
-          Back to dashboard
-        </button>
-      </div>
-    )
-  }
 
   return (
     <VoiceRoomInner

@@ -73,9 +73,6 @@ interface ChatSessionContextValue {
   // thinking/speaking). Resets the idle-stop timer — voice is the primary
   // activity signal; DOM events are removed as they're unreliable on mobile.
   markVoiceActivity: () => void
-  // True when the session was stopped due to inactivity. VoiceRoom renders
-  // a resume overlay instead of the normal UI. Cleared on reconnect.
-  idleStopped: boolean
   // True while THIS tab controls the session (bug 619af155). A second tab
   // stays out of the room until the user takes over.
   isController: boolean
@@ -368,8 +365,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // machine spins up again immediately.
   //
   // Instead: set idleStopped=true which (a) unmounts LiveKitRoom so the
-  // WebRTC connection closes and credits stop, and (b) shows a resume overlay
-  // on the same page. User clicks Resume → connect() restarts everything.
+  // WebRTC connection closes and credits stop, and (b) leaves the chat page on
+  // its "Session paused" screen. Reconnect → connect() restarts everything.
   //
   // Activity signal: voice only — user_transcript (user spoke) and agent_state
   // changes (agent thinking/speaking). DOM events removed — unreliable on
@@ -393,6 +390,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         }
         // Unmount LiveKitRoom (by clearing token/connected state) and show
         // the idle overlay — no navigation, no restart loop.
+        connectGenRef.current++  // an in-flight rejoin must not mint a token into the paused page
         setIdleStopped(true)
         setConnected(false)
         setAgentReady(false)
@@ -415,7 +413,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setAgentReady(false)
     setError(null)
     // A reconnect after the idle stop: the room only mounts while !idleStopped,
-    // and agent_ready (which used to clear it) can't arrive without the room.
+    // and agent_ready can't arrive without the room.
     setIdleStopped(false)
     let resolvedUrl = agentUrl
 
@@ -859,10 +857,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   }, [router, captureSessionLog, connect])
 
   const markAgentReady = useCallback(() => {
-    // Reset activity clock + clear idle state on connection so the machine
-    // gets a full 15 min grace period from the moment voice is ready.
+    // Reset activity clock on connection so the machine gets a full 15 min
+    // grace period from the moment voice is ready.
     setLastActivityAt(Date.now())
-    setIdleStopped(false)
     setConnected(true)
     setAgentReady(true)
     // A clean ready = reconnect succeeded → reset the auto-rejoin budget.
@@ -1002,7 +999,6 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     markAuthResolved,
     markAuthInProgress,
     markVoiceActivity,
-    idleStopped,
     isController: controlsEnabled(tabRole),
   }
 
