@@ -187,8 +187,10 @@ t('a reconnect after the idle stop clears idleStopped so the room can mount', ()
 
 t('the idle stop cancels an in-flight connect and leaves the paused screen', () => {
   const body = provider.slice(provider.indexOf('if (idleMs > IDLE_MS)'), provider.indexOf('setIdleStopped(true)'))
-  ok(body.includes('connectGenRef.current++'), 'idle stop bumps the connect generation')
-  ok(body.includes('setConnecting(false)'), 'idle stop clears connecting (a bailed connect leaves it set)')
+  ok(body.includes('cancelConnect()'), 'idle stop cancels the in-flight connect')
+  const cancel = provider.slice(provider.indexOf('const cancelConnect = useCallback'), provider.indexOf('}, [])', provider.indexOf('const cancelConnect = useCallback')))
+  ok(cancel.includes('connectGenRef.current++'), 'cancelConnect bumps the connect generation')
+  ok(cancel.includes('setConnecting(false)'), 'cancelConnect clears connecting (a bailed connect leaves it set)')
 })
 
 // ── Report ────────────────────────────────────────────────────────────────

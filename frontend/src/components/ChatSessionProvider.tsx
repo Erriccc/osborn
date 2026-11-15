@@ -182,6 +182,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // slow fetch would re-set token/connecting AFTER the user navigated away,
   // re-showing the "Connecting…" overlay and making Cancel look like a no-op.
   const connectGenRef = useRef(0)
+  // Cancel any in-flight connect() and clear its spinner (disconnect, idle stop).
+  const cancelConnect = useCallback(() => {
+    connectGenRef.current++
+    setConnecting(false)
+    setStatusMsg(null)
+  }, [])
 
   // ── One controlling tab per browser (bug 619af155, frontend minimum) ──────
   // The agent hands the session to the newest joiner and greets it, so a
@@ -390,11 +396,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         }
         // Unmount LiveKitRoom (by clearing token/connected state) and show
         // the idle overlay — no navigation, no restart loop.
-        // An in-flight rejoin must not mint a token into the paused page; it
-        // bails without clearing `connecting`, so clear it here as disconnect() does.
-        connectGenRef.current++
-        setConnecting(false)
-        setStatusMsg(null)
+        // An in-flight rejoin must not mint a token into the paused page.
+        cancelConnect()
         setIdleStopped(true)
         setConnected(false)
         setAgentReady(false)
@@ -790,9 +793,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     // behaviour, issue #53). Then clear the connecting state synchronously so
     // the overlay disappears immediately — the room-leave/log fetches below are
     // fire-and-forget and never block the navigation.
-    connectGenRef.current++
-    setConnecting(false)
-    setStatusMsg(null)
+    cancelConnect()
     if (activeSandboxId) {
       fetch('/api/sandbox', {
         method: 'POST',
@@ -807,7 +808,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
     captureSessionLog()
     router.push('/dashboard')
-  }, [router, activeSandboxId, agentUrl, captureSessionLog])
+  }, [router, activeSandboxId, agentUrl, captureSessionLog, cancelConnect])
 
   // Reconnect-attempt guard: bound auto-rejoin so a truly-down machine can't
   // spin the full connect() flow forever. Reset on a successful ready.
