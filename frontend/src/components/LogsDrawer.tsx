@@ -559,7 +559,10 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
   const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
   const [lastSeenCount, setLastSeenCount] = useState(0)
   const [showJumpPill, setShowJumpPill] = useState(false)
-  const [drawerHeight, setDrawerHeight] = useState(DRAWER_DEFAULT_HEIGHT)
+  // On a phone the default height would leave the chat a couple of lines, so the
+  // drawer starts at most ~40% of the viewport there.
+  const [drawerHeight, setDrawerHeight] = useState(() =>
+    typeof window === 'undefined' ? DRAWER_DEFAULT_HEIGHT : Math.max(DRAWER_MIN_HEIGHT, Math.min(DRAWER_DEFAULT_HEIGHT, Math.round(window.innerHeight * 0.4))))
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
   const dragStartRef = useRef<{ y: number; height: number } | null>(null)
@@ -576,7 +579,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
     // Dragging UP (negative delta) grows the drawer; dragging DOWN shrinks it
     const delta = dragStartRef.current.y - e.clientY
     const newHeight = dragStartRef.current.height + delta
-    const maxHeight = window.innerHeight * 0.8
+    const maxHeight = window.innerHeight * 0.65  // keep a readable slice of chat above
     setDrawerHeight(Math.max(DRAWER_MIN_HEIGHT, Math.min(maxHeight, newHeight)))
   }
 
@@ -630,33 +633,45 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
 
   return (
     <div className="border-t border-gray-700/50">
-      {/* Toggle button */}
+      {/* Header row: the toggle, plus the code editor and machine usage, reachable
+          without opening the drawer or the Machine tab. */}
+      <div className="flex items-center gap-2 pr-3 hover:bg-gray-800/50 transition-colors">
       <button
         onClick={() => {
           setIsOpen(!isOpen)
           if (!isOpen) setLastSeenCount(messages.length)
         }}
-        className="w-full flex items-center justify-between px-4 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-800/50 transition-colors"
+        aria-expanded={isOpen}
+        className="flex-1 min-w-0 flex items-center gap-2 pl-4 py-2.5 text-xs text-gray-400 hover:text-gray-200 transition-colors text-left"
       >
-        <div className="flex items-center gap-2">
-          <svg className={`w-3 h-3 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className={`w-3 h-3 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
-          <span>Activity log</span>
-        </div>
-        {/* Right cluster: live machine usage (always visible — no need to open the
-            Machine tab first) + unread-log badge. */}
-        <div className="flex items-center gap-2">
-          {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
-            <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
-          )}
+          <span className="truncate">Activity log</span>
           {unreadCount > 0 && !isOpen && (
             <span className="bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full text-[10px]">
               {unreadCount}
             </span>
           )}
-        </div>
       </button>
+      {onEditorOpen && (
+        <button
+          onClick={onEditorOpen}
+          disabled={ideState === 'starting'}
+          title={ideState === 'running' ? 'Open the code editor in a new tab' : ideState === 'starting' ? 'Code editor starting…' : 'Start the code editor'}
+          className="shrink-0 flex items-center gap-1.5 rounded-full border border-gray-700/60 px-2 py-1 text-[11px] text-gray-300 hover:text-white hover:bg-gray-700/50 disabled:opacity-60 transition-colors"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${ideState === 'running' ? 'bg-emerald-400' : ideState === 'starting' ? 'bg-amber-400 animate-pulse' : 'bg-gray-500'}`} />
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
+          <span>Code</span>
+        </button>
+      )}
+      {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
+        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" className="shrink-0">
+          <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
+        </button>
+      )}
+      </div>
 
       {/* Collapsible panel with two tabs: Log and Running */}
       {isOpen && (
