@@ -4162,7 +4162,7 @@ function VoiceRoomInner({
             <div className="flex items-center gap-1 sm:gap-3 shrink-0">
 
             {/* Named agents + Skills — desktop header only. On mobile these
-                live in the composer control strip next to the input (Claude-
+                live in the approvals row above the input (Claude-
                 style), so the top bar carries only status/stats + hangup. */}
             <div className="hidden sm:flex items-center gap-1.5">
               <AgentsPopover agents={namedAgents} roles={agentRoles} activity={backgroundFlows} disabled={!agentConnected}
@@ -4391,7 +4391,7 @@ function VoiceRoomInner({
                   menu above — the loose header icon row is consolidated. */}
 
               {/* Mute button — desktop header only; mobile mute lives in the
-                  composer control strip next to the input. */}
+                  approvals row above the input. */}
               <button
                 onClick={toggleMute}
                 className={`hidden sm:block p-2 rounded-lg transition-all ${
@@ -4414,7 +4414,7 @@ function VoiceRoomInner({
               </button>
 
               {/* Disconnect button — DESKTOP header only. On mobile the hangup
-                  lives in the composer control strip beside the input (next to
+                  lives in the approvals row above the input (next to
                   Mute), so the top bar carries only status/clock + the burger.
                   shrink-0 keeps it from clipping in the desktop width fight. */}
               {onDisconnect && (
@@ -4681,25 +4681,23 @@ function VoiceRoomInner({
           />
         )}
 
-        {/* Bottom composer area — the panel anchor. The Outputs bottom sheet
-            overlays everything below xl, so it must stay above WHATEVER sits at
-            the bottom of the chat column. The anchor used to be the mic strip
-            below, which is phone-only (sm:hidden): at tablet widths it has no
-            layout box, the sheet fell back to the viewport bottom, and it
-            covered the composer (issue #118 follow-up). Anchoring the whole
-            area instead gives the sheet a real edge at EVERY width without
-            showing the phone pills on tablet, and its ResizeObserver now also
-            tracks the composer growing as the textarea autosizes. */}
+        {/* Anchors the Outputs sheet above the composer at every width. */}
         <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="shrink-0">
-        {/* Mobile composer control strip — 3-6-9 rule (2026-10-24): the voice
-            screen's primary actionables are exactly Mic + End (+ the composer
-            input itself). Everything that used to live here — Auto/Ask,
-            Agents, Skills, Filter — collapsed into the burger sheet (tray
-            rule), which sits at 8 rows ≤ the technical-9 cap. */}
-        <div className="sm:hidden flex items-center justify-end gap-2 px-3 pt-2 pb-1 bg-gray-900/50 backdrop-blur-sm">
+        {/* Input */}
+        <TextInput
+          onSend={handleSendText}
+          attachedFiles={attachedFiles}
+          onAttachFile={handleAttachFile}
+          onRemoveFile={handleRemoveFile}
+          approvalMode={approvalMode}
+          onApprovalModeChange={setApprovalMode}
+          controls={<>
+          {/* Phone call controls share the approvals row (desktop has them in the
+              header): Mic + End stay the voice screen's primary actionables. */}
           <button
             onClick={toggleMute}
-            className={`flex items-center gap-1.5 min-h-11 px-3.5 py-2 rounded-full text-xs font-medium transition-all ${
+            aria-label={shownMuted ? 'Unmute mic' : 'Mute mic'}
+            className={`sm:hidden flex items-center justify-center gap-1.5 min-h-11 min-w-11 px-2.5 rounded-full text-xs font-medium transition-all ${
               shownMuted
                 ? 'bg-red-500/20 text-red-400'
                 : 'text-gray-400 hover:bg-gray-800/60'
@@ -4711,7 +4709,7 @@ function VoiceRoomInner({
             ) : (
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
             )}
-            <span>{shownMuted ? 'Muted' : 'Mic'}</span>
+            <span className="max-[380px]:sr-only">{shownMuted ? 'Muted' : 'Mic'}</span>
           </button>
 
           {/* Hangup — rightmost, next to Mute (moved off the top bar). Labeled
@@ -4721,7 +4719,7 @@ function VoiceRoomInner({
             <button
               onClick={onDisconnect}
               aria-label="End session"
-              className="shrink-0 flex items-center gap-1.5 min-h-11 ml-1 px-3.5 py-2 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
+              className="sm:hidden shrink-0 flex items-center gap-1.5 min-h-11 min-w-11 justify-center px-3 max-[400px]:px-2.5 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
               title="Hang up — end session (saves minutes, session stays resumable)"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -4730,16 +4728,7 @@ function VoiceRoomInner({
               <span>End</span>
             </button>
           )}
-        </div>
-
-        {/* Input */}
-        <TextInput
-          onSend={handleSendText}
-          attachedFiles={attachedFiles}
-          onAttachFile={handleAttachFile}
-          onRemoveFile={handleRemoveFile}
-          approvalMode={approvalMode}
-          onApprovalModeChange={setApprovalMode}
+          </>}
         />
         </div>
       </div>

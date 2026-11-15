@@ -25,6 +25,7 @@ export function TextInput({
   onRemoveFile,
   approvalMode,
   onApprovalModeChange,
+  controls,
 }: {
   onSend: (text: string, files?: AttachedFile[]) => void
   attachedFiles: AttachedFile[]
@@ -33,6 +34,8 @@ export function TextInput({
   // Session-scoped tool-approval mode (NOT persisted — resets each session).
   approvalMode?: ApprovalMode
   onApprovalModeChange?: (mode: ApprovalMode) => void
+  // Call controls (mic, end) that share the approvals row on a phone.
+  controls?: React.ReactNode
 }) {
   const [text, setText] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -145,8 +148,8 @@ export function TextInput({
           invisible blanket "Allow". Only "Allow all" auto-approves; it is
           session-scoped and warns once on first use. */}
       {approvalMode && onApprovalModeChange && (
-        <div className="flex items-center gap-1.5 px-3 pt-2 pb-0.5 overflow-x-auto">
-          <span className="text-[10px] uppercase tracking-wider text-gray-500 shrink-0">Approvals</span>
+        <div className="flex items-center gap-1.5 px-3 max-[400px]:px-2 pt-2 pb-0.5 overflow-x-auto">
+          <span className={`text-[10px] uppercase tracking-wider text-gray-500 shrink-0${controls ? ' max-sm:hidden' : ''}`}>Approvals</span>
           <div className="flex items-center gap-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 p-0.5 shrink-0">
             {APPROVAL_MODES.map((m) => {
               const active = approvalMode === m.value
@@ -160,7 +163,7 @@ export function TextInput({
                   onClick={() => onApprovalModeChange(m.value)}
                   title={m.hint}
                   aria-pressed={active}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition-colors ${
+                  className={`px-2.5 max-[400px]:px-2 max-[340px]:px-1.5 py-1 rounded-full text-[11px] max-[340px]:text-[10px] font-medium whitespace-nowrap transition-colors ${
                     active ? activeCls : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
@@ -169,6 +172,7 @@ export function TextInput({
               )
             })}
           </div>
+          {controls && <div className="ml-auto flex items-center gap-1 shrink-0">{controls}</div>}
         </div>
       )}
 
