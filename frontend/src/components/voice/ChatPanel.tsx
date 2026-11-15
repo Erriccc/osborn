@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react'
 import { MessageBubble } from './MessageBubble'
 import { ApprovalCard, type PermissionRequest } from './PermissionModal'
 import type { ChatMessage, SpeakingChunk } from './shared'
@@ -26,6 +26,7 @@ export function ChatPanel({
   pendingPermission,
   onPermissionRespond,
   reviewMode,
+  corner,
 }: {
   messages: ChatMessage[]
   onSuggestionClick?: (text: string) => void
@@ -41,6 +42,9 @@ export function ChatPanel({
   pendingPermission?: PermissionRequest | null
   onPermissionRespond?: (response: 'allow' | 'deny' | 'always_allow') => void
   reviewMode?: boolean
+  // Pinned top-right over the transcript (the call controls); the transcript
+  // keeps a right gutter so the corner never covers text.
+  corner?: ReactNode
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
@@ -139,10 +143,11 @@ export function ChatPanel({
           </svg>
         </button>
       )}
+      {corner && <div className="absolute top-2 right-2 z-20">{corner}</div>}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-3 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+        className={`h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 ${corner ? 'pr-16 sm:pr-16' : ''} py-3 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent`}
       >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">

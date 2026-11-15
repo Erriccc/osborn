@@ -92,9 +92,9 @@ Wrapper states (`chat/page.tsx`): (1) pre-token orb spinner + **Cancel**; (2) er
 |---|---|---|---|---|---|---|
 | Message composer (input, send) | 990–1100 | — | — | DC `user_text` | ✅ 🟡 auto-zoom ⏳P1.5 | **Primary 1** (composer group) |
 | Attachment picker (file input + paste-image) | 958–963, composer | File/paste/clipboardData | — | `/api/upload` | 🟡 ⏳P1.5/P1.10 | in composer group |
-| Mic mute toggle | 2592, mobile 5396–5445 | setMicrophoneEnabled | — | — | ✅ | **Primary 2** |
+| Mic mute toggle | call pill (`voice/CallPill.tsx`) | setMicrophoneEnabled | — | — | ✅ | **Primary 2** |
 | Noise-cancel toggle | 3005 | DC `noise_cancel` | — | — | ✅ | More menu (tech) |
-| End session / Leave | header | — | — | `/api/sandbox leave-room` + `fetch-log` | ✅ | **Primary 3** |
+| End session / Leave | call pill (`voice/CallPill.tsx`, over the transcript) | — | — | `/api/sandbox leave-room` + `fetch-log` | ✅ | **Primary 3** |
 | Header: back, status pill, connection quality, More menu | 5150–5200 | — | — | — | ✅ | chrome (not actionables) |
 | Permission modal (approve/deny) + auto-approve toggle | 3351–3376 | — | `osborn-auto-approve-permissions` | DC `permission_response` | ✅ | modal (event-driven) |
 | Claude OAuth flow (URL display, paste-code input, submit) | 3646–3680 | clipboard r | — | DC | 🟡 ⏳P1.5 | modal (event-driven) |
@@ -112,8 +112,8 @@ Wrapper states (`chat/page.tsx`): (1) pre-token orb spinner + **Cancel**; (2) er
 | More menu (viewport-cut fallback @5707) | 5707 | — | — | — | ✅ | **technical page (≤9)** |
 
 #### IA (3-6-9) — voice screen (✅ shipped P1.e, commit series Oct 2026)
-- **Primary 3:** mic · composer (incl. attach) · End session — the mobile composer strip
-  now carries exactly Mic + End (Auto/Ask, Agents, Skills, Filter were removed from it)
+- **Primary 3:** mic · composer (incl. attach) · End session — Mic + End live in one
+  floating call pill over the transcript at every width (`voice/CallPill.tsx`)
 - **Extended (≤6, only while relevant):** resume-prompt modal, permission modal, OAuth
   modal, reconnect overlay, autoplay-unlock bar, mic-denied dialog — all *event-driven*,
   never ambient
