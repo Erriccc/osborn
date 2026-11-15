@@ -663,15 +663,18 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           onClick={onEditorOpen}
           disabled={ideState === 'starting'}
           title={ideState === 'running' ? 'Open the code editor in a new tab' : ideState === 'starting' ? 'Code editor starting…' : 'Start the code editor'}
-          className="shrink-0 flex items-center gap-1.5 rounded-full border border-gray-700/60 px-2 py-1 text-[11px] text-gray-300 hover:text-white hover:bg-gray-700/50 disabled:opacity-60 transition-colors"
+          className="group shrink-0 flex items-center max-sm:min-h-11 text-[11px] text-gray-300 hover:text-white disabled:opacity-60 transition-colors"
         >
-          <span className={`w-1.5 h-1.5 rounded-full ${IDE_DOT_CLASS[ideState]}`} />
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d={CODE_ICON_PATH} /></svg>
-          <span>Code</span>
+          {/* The pill stays small; the button around it is the 44px tap target on phones. */}
+          <span className="flex items-center gap-1.5 rounded-full border border-gray-700/60 px-2 py-1 group-hover:bg-gray-700/50">
+            <span className={`w-1.5 h-1.5 rounded-full ${IDE_DOT_CLASS[ideState]}`} />
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d={CODE_ICON_PATH} /></svg>
+            <span>Code</span>
+          </span>
         </button>
       )}
       {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
-        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" className="shrink-0">
+        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" className="shrink-0 max-sm:min-h-11 flex items-center">
           <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
         </button>
       )}

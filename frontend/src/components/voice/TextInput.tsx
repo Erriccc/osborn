@@ -163,7 +163,7 @@ export function TextInput({
                   onClick={() => onApprovalModeChange(m.value)}
                   title={m.hint}
                   aria-pressed={active}
-                  className={`px-2.5 max-[400px]:px-2 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition-colors ${
+                  className={`px-2.5 max-[400px]:px-2 max-[340px]:px-1.5 py-1 rounded-full text-[11px] max-[340px]:text-[10px] font-medium whitespace-nowrap transition-colors ${
                     active ? activeCls : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
