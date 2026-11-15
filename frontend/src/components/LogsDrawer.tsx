@@ -511,6 +511,9 @@ function FlowResultText({ text }: { text: string }) {
 const DRAWER_MIN_HEIGHT = 120
 const DRAWER_DEFAULT_HEIGHT = 256
 
+// Code editor status dot, shared by the header chip and the Machine tab's editor row.
+const IDE_DOT_CLASS = { running: 'bg-emerald-400', starting: 'bg-amber-400 animate-pulse', stopped: 'bg-gray-600' } as const
+
 // ---------------------------------------------------------------------------
 // MachineChipBadge — compact RAM% + process-count badge for the Machine tab chip.
 // Color tier = worst of RAM and process signals.
@@ -661,7 +664,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           title={ideState === 'running' ? 'Open the code editor in a new tab' : ideState === 'starting' ? 'Code editor starting…' : 'Start the code editor'}
           className="shrink-0 flex items-center gap-1.5 rounded-full border border-gray-700/60 px-2 py-1 text-[11px] text-gray-300 hover:text-white hover:bg-gray-700/50 disabled:opacity-60 transition-colors"
         >
-          <span className={`w-1.5 h-1.5 rounded-full ${ideState === 'running' ? 'bg-emerald-400' : ideState === 'starting' ? 'bg-amber-400 animate-pulse' : 'bg-gray-500'}`} />
+          <span className={`w-1.5 h-1.5 rounded-full ${IDE_DOT_CLASS[ideState]}`} />
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
           <span>Code</span>
         </button>
@@ -884,13 +887,12 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
               {(() => {
                 const isRunning = ideState === 'running'
                 const isStarting = ideState === 'starting'
-                const dotColor = isRunning ? 'bg-emerald-400' : isStarting ? 'bg-amber-400 animate-pulse' : 'bg-gray-600'
                 const stateLabel = isRunning ? 'Running' : isStarting ? 'Starting…' : 'Stopped'
                 const stateLabelColor = isRunning ? 'text-emerald-400' : isStarting ? 'text-amber-400' : 'text-gray-500'
                 return (
                   <div className="flex items-center gap-2 rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-2">
                     {/* Status dot */}
-                    <span className={`shrink-0 w-2 h-2 rounded-full ${dotColor}`} />
+                    <span className={`shrink-0 w-2 h-2 rounded-full ${IDE_DOT_CLASS[ideState]}`} />
                     {/* Code icon */}
                     <svg className="shrink-0 w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
