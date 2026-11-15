@@ -179,6 +179,20 @@ t('VoiceRoom reports modal state + auth resolution to the provider (#78)', () =>
   ok(provider.includes('nextAuthRequired(prev, messageType)'), 'provider clears via nextAuthRequired')
 })
 
+t('a reconnect after the idle stop clears idleStopped so the room can mount', () => {
+  const body = provider.slice(provider.indexOf('const connect = useCallback'), provider.indexOf('const res = await fetch(url)'))
+  ok(body.includes('setIdleStopped(false)'), 'connect() clears idleStopped')
+  ok(provider.includes('token && roomCode && !idleStopped'), 'the room is gated on idleStopped')
+})
+
+t('the idle stop cancels an in-flight connect and leaves the paused screen', () => {
+  const body = provider.slice(provider.indexOf('if (idleMs > IDLE_MS)'), provider.indexOf('setIdleStopped(true)'))
+  ok(body.includes('cancelConnect()'), 'idle stop cancels the in-flight connect')
+  const cancel = provider.slice(provider.indexOf('const cancelConnect = useCallback'), provider.indexOf('}, [])', provider.indexOf('const cancelConnect = useCallback')))
+  ok(cancel.includes('connectGenRef.current++'), 'cancelConnect bumps the connect generation')
+  ok(cancel.includes('setConnecting(false)'), 'cancelConnect clears connecting (a bailed connect leaves it set)')
+})
+
 // ── Report ────────────────────────────────────────────────────────────────
 let failed = 0
 for (const [name, pass, err] of results) {
