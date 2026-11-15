@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { clampDrawerHeight, defaultDrawerHeight, DRAWER_DEFAULT_HEIGHT } from '@/lib/drawer-height'
 import { redactSecrets } from '../lib/redactSecrets'
 import { MarkdownMessage } from './MarkdownMessage'
 
@@ -508,8 +509,6 @@ function FlowResultText({ text }: { text: string }) {
   )
 }
 
-const DRAWER_MIN_HEIGHT = 120
-const DRAWER_DEFAULT_HEIGHT = 256
 
 // Code editor status dot and icon, shared by the header chip and the Machine tab's editor row.
 const IDE_DOT_CLASS = { running: 'bg-emerald-400', starting: 'bg-amber-400 animate-pulse', stopped: 'bg-gray-600' } as const
@@ -563,10 +562,17 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
   const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
   const [lastSeenCount, setLastSeenCount] = useState(0)
   const [showJumpPill, setShowJumpPill] = useState(false)
-  // On a phone the default height would leave the chat a couple of lines, so the
-  // drawer starts at most ~40% of the viewport there.
   const [drawerHeight, setDrawerHeight] = useState(() =>
-    typeof window === 'undefined' ? DRAWER_DEFAULT_HEIGHT : Math.max(DRAWER_MIN_HEIGHT, Math.min(DRAWER_DEFAULT_HEIGHT, Math.round(window.innerHeight * 0.4))))
+    typeof window === 'undefined' ? DRAWER_DEFAULT_HEIGHT : defaultDrawerHeight(window.innerHeight))
+  // Until the user drags, the drawer follows the viewport (rotation, URL bar, split
+  // view); after a drag it keeps their height, clamped to the new viewport.
+  const userSizedRef = useRef(false)
+  useEffect(() => {
+    const fit = () => setDrawerHeight((h) => userSizedRef.current ? clampDrawerHeight(h, window.innerHeight) : defaultDrawerHeight(window.innerHeight))
+    window.addEventListener('resize', fit)
+    window.addEventListener('orientationchange', fit)
+    return () => { window.removeEventListener('resize', fit); window.removeEventListener('orientationchange', fit) }
+  }, [])
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
   const dragStartRef = useRef<{ y: number; height: number } | null>(null)
@@ -582,9 +588,8 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
     if (!dragStartRef.current) return
     // Dragging UP (negative delta) grows the drawer; dragging DOWN shrinks it
     const delta = dragStartRef.current.y - e.clientY
-    const newHeight = dragStartRef.current.height + delta
-    const maxHeight = window.innerHeight * 0.65  // keep a readable slice of chat above
-    setDrawerHeight(Math.max(DRAWER_MIN_HEIGHT, Math.min(maxHeight, newHeight)))
+    userSizedRef.current = true
+    setDrawerHeight(clampDrawerHeight(dragStartRef.current.height + delta, window.innerHeight))
   }
 
   const handleDragHandlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -663,9 +668,10 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           onClick={onEditorOpen}
           disabled={ideState === 'starting'}
           title={ideState === 'running' ? 'Open the code editor in a new tab' : ideState === 'starting' ? 'Code editor starting…' : 'Start the code editor'}
-          className="group shrink-0 flex items-center max-sm:min-h-11 text-[11px] text-gray-300 hover:text-white disabled:opacity-60 transition-colors"
+          aria-label={`Code editor (${ideState === 'running' ? 'running' : ideState === 'starting' ? 'starting' : 'stopped'})`}
+          className="group shrink-0 flex items-center max-sm:min-h-11 [@media(pointer:coarse)]:min-h-11 text-[11px] text-gray-300 hover:text-white disabled:opacity-60 transition-colors"
         >
-          {/* The pill stays small; the button around it is the 44px tap target on phones. */}
+          {/* The pill stays small; the button around it is the 44px tap target on touch screens. */}
           <span className="flex items-center gap-1.5 rounded-full border border-gray-700/60 px-2 py-1 group-hover:bg-gray-700/50">
             <span className={`w-1.5 h-1.5 rounded-full ${IDE_DOT_CLASS[ideState]}`} />
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d={CODE_ICON_PATH} /></svg>
@@ -674,7 +680,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
         </button>
       )}
       {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
-        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" className="shrink-0 max-sm:min-h-11 flex items-center">
+        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" aria-label={`Open the Machine tab (RAM ${machineChipRamPct}%, ${machineChipProcCount} processes)`} className="shrink-0 max-sm:min-h-11 [@media(pointer:coarse)]:min-h-11 flex items-center">
           <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
         </button>
       )}

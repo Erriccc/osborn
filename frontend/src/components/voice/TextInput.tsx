@@ -148,7 +148,10 @@ export function TextInput({
           invisible blanket "Allow". Only "Allow all" auto-approves; it is
           session-scoped and warns once on first use. */}
       {approvalMode && onApprovalModeChange && (
-        <div className="flex items-center gap-1.5 px-3 max-[400px]:px-2 pt-2 pb-0.5 overflow-x-auto">
+        <div className="flex items-center gap-1 px-3 max-[400px]:px-2 pt-2 pb-0.5">
+        {/* Only the approval pills may scroll; the call controls sit outside the
+            scroller so End can never scroll off-screen. */}
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto">
           <span className={`text-[10px] uppercase tracking-wider text-gray-500 shrink-0${controls ? ' max-sm:hidden' : ''}`}>Approvals</span>
           <div className="flex items-center gap-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 p-0.5 shrink-0">
             {APPROVAL_MODES.map((m) => {
@@ -172,7 +175,8 @@ export function TextInput({
               )
             })}
           </div>
-          {controls && <div className="ml-auto flex items-center gap-1 shrink-0">{controls}</div>}
+        </div>
+          {controls && <div className="flex items-center gap-1 shrink-0">{controls}</div>}
         </div>
       )}
 
