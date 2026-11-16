@@ -16,12 +16,12 @@ Pick one:
    ```bash
    git push origin HEAD:check/<topic>
    ```
-2. Start it on a branch that is already pushed (the `packages` input defaults to both):
+2. Start it on a branch that is already pushed (`packages` is both, agent or frontend; default both):
    ```bash
    gh workflow run typecheck.yml --ref <branch> -f packages="agent"
    ```
 
-A pull request that touches `agent/` runs the agent check by itself. `frontend-lint.yml`
+A pull request that changes `agent/src` TypeScript or its package files runs the agent check by itself. `frontend-lint.yml`
 already checks the frontend on pull requests.
 
 Both ways need a push, and every `git push` (a `check/` branch too) is refused until the
