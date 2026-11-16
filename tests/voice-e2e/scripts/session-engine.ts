@@ -69,7 +69,7 @@ import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
-import { attachDevtools, type DevtoolsBuffer } from '../lib/devtools'
+import { attachDevtools, redactSecrets, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
@@ -982,7 +982,7 @@ async function main() {
         if (!t) return json(res, { error: `run ${m[1]} task ${m[2]} is no longer stored (runs are pruned to the newest ${KEEP_RUNS})` }, 404)
         if (m[3] === 'txt') {
           res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' })
-          return res.end(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`)
+          return res.end(redactSecrets(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`))
         }
         const file = m[3] === 'mp4' ? t.clip : t.artifact
         // A clip that failed after the reply carries its reason (#299): say it, not just "missing".

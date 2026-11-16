@@ -18,11 +18,22 @@ export type DevtoolsBuffer = {
   summary: () => string
 }
 
+/**
+ * Diagnostics land in public evidence logs, so secrets are blanked before they
+ * are stored (and the public task log is passed through again when served):
+ * credential-like URL parameters (a LiveKit room URL carries its
+ * access_token) and any JWT.
+ */
+const SECRET_PARAM = /([?&#](?:access_token|refresh_token|id_token|token|apikey|api_key|key|auth|code|password|secret|client_secret|signature|sig)=)[^&#\s]+/gi
+const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g
+export const redactSecrets = (line: string): string =>
+  line.replace(SECRET_PARAM, '$1[redacted]').replace(JWT, '[redacted-jwt]')
+
 export function attachDevtools(page: Page, cap = 250): DevtoolsBuffer {
   const consoleBuf: string[] = []
   const networkBuf: string[] = []
   const push = (buf: string[], line: string) => {
-    buf.push(`${new Date().toISOString().slice(11, 19)} ${line.slice(0, 300)}`)
+    buf.push(`${new Date().toISOString().slice(11, 19)} ${redactSecrets(line).slice(0, 300)}`)
     if (buf.length > cap) buf.shift()
   }
   page.on('console', (m) => push(consoleBuf, `[${m.type()}] ${m.text()}`))
