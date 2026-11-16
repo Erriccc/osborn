@@ -52,8 +52,8 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   server is listening.
 - **`/act` response**: `effect {changed, noop, urlBefore, urlAfter, titleAfter,
   scrollBefore, scrollAfter}`, `warning`, `result.did`, `brainModel`. Failures:
-  `brain_error` (502, provider message), `brain_unavailable` (503),
-  `bad_request` (400).
+  `noop` (`ok:false`, nothing on the page matched), `brain_error` (502, provider
+  message), `brain_unavailable` (503), `bad_request` (400), `too_large` (413).
 - **Async**: `POST /act|/say {"async":true}` → 202 `{job, resultUrl}`;
   `GET /result?id=<job>` → 202 `{done:false, runningSec}` or 200
   `{done:true, status, ...the synchronous response}`.

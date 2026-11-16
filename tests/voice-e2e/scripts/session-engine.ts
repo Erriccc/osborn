@@ -22,8 +22,8 @@
  *   POST /act    {instruction}→ brain acts (Stagehand, cached). Returns clip.
  *   POST /say    {text}       → speak into the mic. Returns clip + heard reply.
  *   POST /hear   {lastMs}     → transcript of what the agent said recently
- *   POST /shot                → base64 screenshot (on-demand look; NOT the
- *                               per-task proof — video is)
+ *   POST /shot                → screenshot evidence link (base64 with inline:true;
+ *                               an on-demand look, NOT the per-task proof — video is)
  *   POST /tab    {op,url,i}   → open | switch | list tabs
  *   POST /brain               → re-init a detached Stagehand brain in place
  *   POST /recover             → reload the active tab (unstick a blank page)
@@ -429,7 +429,27 @@ async function main() {
   let agentUnreachable: string | null = null
 
   const json = (res: any, body: any, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
-  const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({}) } }) })
+  // goto with a clean error: 400 for a bad URL, 502 for a failed load (no ANSI codes),
+  // and no error when the tab reached the page anyway (an interrupted-but-landed load).
+  const badUrl = (raw: unknown): { status: number; body: any } | null => {
+    let u: URL
+    try { u = new URL(String(raw)) } catch { return { status: 400, body: { ok: false, code: 'bad_url', error: `not a URL: ${String(raw).slice(0, 200)}` } } }
+    return /^https?:$/.test(u.protocol) ? null : { status: 400, body: { ok: false, code: 'bad_url', error: 'only http(s) URLs can be opened' } }
+  }
+  const gotoChecked = async (page: Page, raw: unknown): Promise<{ status: number; body: any } | null> => {
+    const bad = badUrl(raw); if (bad) return bad
+    const u = new URL(String(raw))
+    const noHash = (h: string) => h.split('#')[0]
+    const before = noHash(page.url())
+    try { await page.goto(u.href, { timeout: 45000 }); return null } catch (e) {
+      const msg = (e as Error).message.replace(/\u001b\[[0-9;]*m/g, '').split('\n')[0]
+      // An interrupted load that still reached the target (and was not already showing it) is a success.
+      const now = noHash(page.url())
+      if (now === noHash(u.href) && before !== now) return null
+      return { status: 502, body: { ok: false, code: 'nav_failed', netError: (msg.match(/net::[A-Z_]+/) || [null])[0], error: msg.slice(0, 300) } }
+    }
+  }
+  const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({ __badJson: true }) } }) })
 
   let reqN = 0
   const jobs = new Map<string, { done: boolean; path: string; startedAt: number; code?: number; body?: unknown }>()
@@ -1102,6 +1122,7 @@ async function main() {
         return json(res, { run: RUN_STAMP, runDir: RUN_DIR, model: 'per-task video; rel0/rel1 are ms on the audio-capture timeline', recordingStartedAt: tCapture, tasks })
       }
       const body = await readBody(req)
+      if (body?.__badJson) return json(res, { ok: false, code: 'bad_json', error: 'the request body is not valid JSON' }, 400)
       // LONG ACTIONS WITHOUT A HELD-OPEN REQUEST: {"async":true} on /act or
       // /say answers 202 with a job id at once and runs the action in the
       // background; GET /result?id=<job> returns pending or the exact response
@@ -1147,6 +1168,7 @@ async function main() {
           const owned = guardOwnership(driver)
           if (owned) return json(res, owned, 409)
           if (typeof body.instruction !== 'string' || !body.instruction.trim()) return json(res, { ok: false, code: 'bad_request', error: '/act needs {"instruction": "<what to do>"}' }, 400)
+          if (body.instruction.length > 4000) return json(res, { ok: false, code: 'too_large', error: 'instruction is over 4000 characters — split it into steps' }, 413)
           if (!brainAlive) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
           const t0 = Date.now()
           await updateTabHud()
@@ -1301,8 +1323,9 @@ async function main() {
         if (clip) mark(`clip: ${clip}`)
         const shot = await reqShot(n, 'act', page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
+        if (clipError) { (window as any).clipError = clipError; writeManifest() }
         addStep('act', String(body.instruction))
-        return json(res, { ok: true, task: n, result: r, effect, warning, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)
@@ -1473,7 +1496,7 @@ async function main() {
           const shot = await reqShot(n, 'shot', active)
           if (!shot) return json(res, { ok: false, code: 'no_screenshot', error: 'the page could not be captured', driver }, 500)
           stampTask(n, 'shot', t0, null, shot, undefined, undefined, active)
-          return json(res, { jpegB64: readFileSync(shot).toString('base64'), task: n, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { shot: true }), driver })
+          return json(res, { ok: true, ...(body.inline === true || new URL(req.url || '', 'http://x').searchParams.get('inline') === '1' ? { jpegB64: readFileSync(shot).toString('base64') } : {}), task: n, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { shot: true }), driver })
         })
       }
       if (path === '/eval') {
@@ -1507,6 +1530,9 @@ async function main() {
         body.owner = driver
         const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'list']
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
+        // close with no i closes YOUR tab (the quick-start's last step).
+        if (body.op === 'close' && body.i == null) { const mine = driverActive.get(driver); const idx = mine ? allPages().indexOf(mine) : -1; if (idx > 0) body.i = idx }
+        if (body.op === 'open' && body.url) { const bad = badUrl(body.url); if (bad) return json(res, bad.body, bad.status) }
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
@@ -1525,10 +1551,15 @@ async function main() {
               const host = new URL(body.url).hostname
               const pages = allPages()
               const cand = pages.find((p, idx) => { try { return idx > 0 && pageProfile.get(p) === profileOf(req) && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
-              if (cand) { await cand.goto(String(body.url), { timeout: 45000 }); active = cand; reused = true }
+              if (cand && !(await gotoChecked(cand, body.url))) { active = cand; reused = true }
             } catch { /* fall through to a fresh tab */ }
           }
-          if (!reused) { active = await openTab(await contextFor(profileOf(req)), body.url); watchPage(active) }
+          if (!reused) {
+            const prev = active
+            active = await openTab(await contextFor(profileOf(req))); watchPage(active)
+            const nav = body.url ? await gotoChecked(active, body.url) : null
+            if (nav) { await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
+          }
           if (body.viewport === 'mobile') await active.setViewportSize({ width: 390, height: 844 })
           else if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
           if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
@@ -1538,11 +1569,14 @@ async function main() {
         }
         else if (body.op === 'navigate') {
           // Point an EXISTING tab at a new URL (the reuse primitive).
-          const target = body.i != null ? allPages()[body.i] : active
+          // Default: the caller's own tab, never whichever tab another driver fronted last.
+          const mine = driverActive.get(driver)
+          const target = body.i != null ? allPages()[body.i] : (mine && !mine.isClosed() ? mine : active)
           if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
           const o = ownerOf(target)
           if (o && body.owner !== o) return json(res, { error: `tab is claimed by "${o}"` }, 409)
-          await target.goto(String(body.url), { timeout: 45000 })
+          const nav = await gotoChecked(target, body.url)
+          if (nav) return json(res, nav.body, nav.status)
           active = target; touchTab(active)
           await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
         }
