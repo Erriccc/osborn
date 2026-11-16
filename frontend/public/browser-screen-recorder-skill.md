@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 51
+Version: 52
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -197,6 +197,11 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v52
+- A stuck command no longer freezes the engine: after 4 minutes (`OSBORN_LOCK_MAX_MS`) the next driver's command may run, while the stuck caller still gets its own answer.
+- Low memory (under `OSBORN_MIN_FREE_MB`, default 300) closes the least recently used tab that no working driver owns or is in; `/status.freeMemoryMb` shows what is left. After a restart at most 3 tabs are reopened (`OSBORN_RESTORE_MAX`): the active tab and owned tabs first. Close tabs you are done with.
+- A plain scroll (`/act "scroll down"`) works while the brain is down: it never used the brain.
 
 ## What's new in v51
 - Every engine reply, `/events` event and webhook is redacted like the public logs: tokens, keys and `NAME=secret` values in URLs, transcripts and results read `••••`. Only `/eval` values and `/shot`'s `jpegB64` are raw, so read a raw URL (an OAuth callback, a magic link) with `/eval` `location.href`. Spoken-turn clip captions are redacted too; the audio track cannot be.
