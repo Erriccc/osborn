@@ -67,7 +67,7 @@ import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
-import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled } from './pushover.js'
+import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled, phonePushPending } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
@@ -2512,7 +2512,8 @@ async function main() {
   //      fast-leave) — the parked brain does NOT hold the room (it's no longer
   //      `currentLLM` nor in `slots`, so agentsActive() is false);
   //   2. a grace timer frees the parked brain if no reconnect arrives;
-  //   3. an INDEPENDENT watchdog hard-kills it at a ceiling even if (2) is buggy.
+  //   3. an INDEPENDENT watchdog hard-kills it at a ceiling even if (2) is buggy
+  //      (while keep-working runs, its cap timer replaces (2) and (3).)
   // One-owner invariant: the subprocess is owned by exactly one of
   // {currentLLM, warmLLM}, or it's aborted — never two live, never orphaned.
   // DEFAULT-ON (user, 2026-10-21): the three backstops above — not the flag —
@@ -2618,12 +2619,12 @@ async function main() {
     keepWorkingPoll = setInterval(() => {
       const busy = (warmLLM as any)?.busyState?.()
       if (busy?.permissionPending) {
-        // Blocked on an approval. With the phone bridge, armPermissionPush already
-        // asked and its answer reaches the parked brain, so keep waiting (the cap
-        // still applies); without it nobody can answer, so fall back to the grace.
-        if (isWatchBridgeEnabled()) return
+        // Blocked on an approval. If a phone push is out, its answer reaches the
+        // parked brain, so keep waiting (the cap still applies); otherwise nobody
+        // can answer, so fall back to the grace.
+        if (phonePushPending()) return
         stopKeepWorking()
-        console.log('✋ [KEEP-WORKING] waiting on an approval with no phone bridge — normal re-attach grace from here')
+        console.log('✋ [KEEP-WORKING] waiting on an approval no phone can answer — normal re-attach grace from here')
         warmExpiry = Date.now() + REATTACH_GRACE_MS
         armWarmTimers()
         return
@@ -2667,7 +2668,8 @@ async function main() {
   // Grace timer (free memory if no reconnect) + INDEPENDENT watchdog ceiling.
   // Both end in the SAME teardown (freeWarm, also keep-working's cap): kill warm →
   // releaseAgents → fast-leave (a room the kept slots held) → arm idle-exit, so the
-  // machine always self-stops within WARM_HARD_CEILING_MS + idle-grace.
+  // machine always self-stops within WARM_HARD_CEILING_MS + idle-grace (keep-working:
+  // its cap + the re-attach grace + idle-grace).
   const freeWarm = (reason: string): void => {
     killWarm(reason)
     releaseAgents()
@@ -5447,7 +5449,8 @@ async function main() {
       agent = result.agent
       reattached = true
       const pending = (reused as any)?.getPendingPermission?.()
-      if (pending) await sendToFrontend({ type: 'permission_request', toolName: pending.toolName, input: pending.input, description: `Waiting for your approval: ${pending.toolName}`, agentRole: 'direct' })
+      // Its prompt went to the old room: re-show it through the wired listener (diff included).
+      if (pending) (reused as any).events?.emit('permission_request', pending)
     } else if (warmLLM) {
       killWarm(warmSessionId && warmSessionId !== resumeSessionId ? 'reattach_session_mismatch' : 'reattach_expired')
     }

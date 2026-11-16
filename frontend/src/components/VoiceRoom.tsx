@@ -1655,11 +1655,11 @@ function VoiceRoomInner({
     if (!onDisconnect || endingRef.current) return
     endingRef.current = true
     try {
-      const d = agentKeepsWorkingRef.current ? await askAgent({ type: 'get_busy' }, 'busy_state', 1500) : null
+      const d = agentKeepsWorkingRef.current && agentConnected ? await askAgent({ type: 'get_busy' }, 'busy_state', 1500) : null
       if (d?.idle === false && d.capMin > 0) setEndChoice({ capMin: d.capMin, phone: !!d.phone })
       else onDisconnect()
     } finally { endingRef.current = false }
-  }, [askAgent, onDisconnect])
+  }, [askAgent, onDisconnect, agentConnected])
   const endKeepWorking = useCallback(async () => {
     setEndChoice(null)
     try { await sendJson({ type: 'keep_working' }) } catch { /* ends anyway */ }
@@ -3806,7 +3806,7 @@ function VoiceRoomInner({
             <p className="mt-1 text-sm text-gray-400">Keep it working after you hang up? It stops after {endChoice.capMin} minutes at most{endChoice.phone ? " and pings your phone when it's done" : ''}. Reconnect to this chat to pick up; opening another chat stops it.</p>
             <div className="mt-4 flex flex-col gap-2">
               <button onClick={endKeepWorking} className="min-h-11 rounded-lg bg-amber-500/90 text-gray-950 text-sm font-semibold hover:bg-amber-500">Keep working in the background</button>
-              <button onClick={() => { setEndChoice(null); onDisconnect?.() }} className="min-h-11 rounded-lg bg-red-500/90 text-white text-sm font-semibold hover:bg-red-500">Stop now and hang up</button>
+              <button onClick={() => { setEndChoice(null); onDisconnect?.() }} className="min-h-11 rounded-lg bg-red-500/90 text-white text-sm font-semibold hover:bg-red-500">Hang up</button>
               <button onClick={() => setEndChoice(null)} className="min-h-11 rounded-lg text-gray-400 text-sm hover:text-gray-200">Cancel</button>
             </div>
           </div>

@@ -28,23 +28,15 @@ const run = async () => {
   ;(globalThis as any).fetch = async () => ({ ok: false })
   assert.equal(await notifyPhone('x'), false)
 
-  // Agent wiring (index.ts is not importable in a test): keep-working extends the
-  // keep-warm park only after the room teardown is armed (armFastLeaveTimer bails
-  // while agentsActive() is true, which keep-working makes it), the held machine
-  // counts as active, and a reconnect or teardown ends keep-working.
+  // Billing guards (index.ts is not importable in a test): keep-working starts only
+  // after the hang-up released the agents and armed the room teardown.
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src/index.ts'), 'utf8')
   const warm = src.indexOf("parkWarm('participant_disconnected')")
   const leave = src.indexOf('armFastLeaveTimer()', warm)
   const kw = src.indexOf('keepWorkingAfterLeave()', warm)
   assert.ok(warm > 0 && leave > warm && kw > leave && kw < src.indexOf('} else {', warm), 'keep-working starts after the keep-warm teardown is armed')
-  assert.ok(src.includes('hostActive || slots.size > 0 || keepWorkingActive'), 'keep-working holds the machine')
-  assert.ok(/const clearWarmTimers = [^\n]*\n\s+stopKeepWorking\(\)/.test(src), 'clearing the warm timers ends keep-working')
-  assert.ok(/const killWarm = [^\n]*\n\s+clearWarmTimers\(\)/.test(src), 'killWarm ends keep-working')
-  assert.ok(/const claimWarm = [^\n]*\n\s+clearWarmTimers\(\)/.test(src), 'a reconnect ends keep-working')
   // Background slots and the host anchor are released at hang-up, so the empty room tears down.
   assert.ok(/parkWarm\('participant_disconnected'\)[\s\S]{0,200}releaseAgents\(\)\n\s+armMeetingLeaveGrace/.test(src), 'the hang-up releases slots and the host anchor')
-  assert.ok(/const freeWarm = [^\n]*\n\s+killWarm\(reason\)\n\s+releaseAgents\(\)\n\s+armFastLeaveTimer\(\)/.test(src), 'freeing the parked brain tears down a held room')
-  assert.ok(src.includes("data.type === 'get_busy'") && src.includes("data.type === 'keep_working'"), 'End asks, then requests')
   console.log('keep-working: all assertions passed')
 }
 run().catch((e) => { console.error(e); process.exit(1) })

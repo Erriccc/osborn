@@ -65,6 +65,8 @@ interface PendingPush {
 /** Pending pushes by qid. The permission system is single-slot, so in practice
  *  this holds at most one live record — a Map keeps ack matching O(1) anyway. */
 const pending = new Map<string, PendingPush>()
+/** An approval push went out and is still waiting for its answer. */
+export const phonePushPending = (): boolean => [...pending.values()].some(p => !p.settled)
 
 /** Registered by index.ts: resolves the currently-pending permission. */
 let resultHandler: ((allow: boolean, toolName: string) => void) | null = null
