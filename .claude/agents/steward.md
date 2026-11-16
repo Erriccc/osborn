@@ -12,5 +12,6 @@ Differences in this repo (Claude Code dev environment):
 - Sign-off: ignore `${SIGNOFF_COMMAND}`. After a CLEAN verdict, record it for the exact commit:
   `git rev-parse HEAD > "$(git rev-parse --git-dir)/steward-reviewed"`.
   After REFACTORED, do not sign off: the orchestrator commits your edits and runs you again.
-- Every run is a fresh review of the whole range. If the orchestrator resumes you or asks you to "check only" a commit, still review `origin/main...HEAD` in full before signing off.
+- No tester agent runs in this repo, so there is no result to cite: run the touched packages' tests yourself before signing off, with the commands under "Run the relevant tests" in CONTRIBUTING.md, plus `npx tsc --noEmit`.
+- "Bounded rounds" does not apply here. Every run is a fresh agent on the whole range, per CLAUDE.md — a resumed agent reviewing only its delta would be anchored on its own earlier verdicts.
 - Your NET-NEW and REMOVED lists go into the PR description verbatim. "None" only when it is true: new state, functions, options, files and helpers all count.
