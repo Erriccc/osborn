@@ -3,7 +3,7 @@
 // alias) can serve it in deployments where the repo's tests/ directory is pruned
 // from the runtime container (Railway). Writes both the new bundle filename and
 // the legacy one for backwards compatibility.
-import { readFileSync, readdirSync, existsSync, statSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync, mkdirSync, copyFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -30,6 +30,9 @@ if (!existsSync(root)) {
   console.warn('[harness-bundle] tests/voice-e2e not found — keeping existing bundle if any')
   process.exit(0)
 }
+// One secret redactor: the engine's evidence logs use the frontend's, copied in
+// (the engine image is built from tests/voice-e2e alone, so it cannot import it).
+copyFileSync(join(__dirname, '..', 'src', 'lib', 'redactSecrets.ts'), join(root, 'lib', 'redactSecrets.ts'))
 const files = {}
 for (const f of INCLUDE_ROOT) {
   const p = join(root, f)
