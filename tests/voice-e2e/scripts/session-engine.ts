@@ -289,7 +289,7 @@ async function main() {
     try {
       const dump = allPages().map((p, i) => {
         const b = devtoolsBufs.get(p)
-        return b ? `===== TAB ${i} — ${p.url()}\n--- console\n${b.console.join('\n')}\n--- network\n${b.network.join('\n')}` : ''
+        return b ? `===== TAB ${i} — ${redactDiagnostics(p.url())}\n--- console\n${b.console.join('\n')}\n--- network\n${b.network.join('\n')}` : ''
       }).filter(Boolean).join('\n\n')
       writeFileSync(join(RUN_DIR, 'devtools.txt'), dump)
     } catch { /* ignore */ }
@@ -460,7 +460,9 @@ async function main() {
   // WHY instead of the chat spinning on "Connecting…" forever.
   let agentUnreachable: string | null = null
 
-  const json = (res: any, body: any, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+  // Every reply, event and webhook is redacted like the public logs (#328); stored records stay raw for replay.
+  const redactJson = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === 'string' ? redactDiagnostics(x) : x))
+  const json = (res: any, body: any, code = 200, raw = false) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(raw ? JSON.stringify(body) : redactJson(body)) }
   // goto with a clean error: 400 for a bad URL, 502 for a failed load (no ANSI codes),
   // and no error when the tab reached the page anyway (an interrupted-but-landed load).
   const badUrl = (raw: unknown): { status: number; body: any } | null => {
@@ -646,7 +648,8 @@ async function main() {
       const saidAt = said ? Math.max(0, (playStartMs - clip.startMs) / 1000) : 0
       const saidFor = said ? Math.max(1.5, (await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', saidWav!]).then((r) => Number(String(r.stdout).trim()) || 3).catch(() => 3))) : 0
       const box = `box=1:boxcolor=black@0.65:boxborderw=${px(10)}:fontcolor=white:fontsize=${Math.max(12, px(24))}:x=${px(24)}`
-      const wrap = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 220).replace(/(.{1,80})(\s|$)/g, '$1\n').trim()
+      // Captions are burned into a public clip: redact first (the audio track itself cannot be).
+      const wrap = (t: string) => redactDiagnostics(t).replace(/\s+/g, ' ').trim().slice(0, 220).replace(/(.{1,80})(\s|$)/g, '$1\n').trim()
       const cap = (name: string, text: string) => { const f = join(RUN_DIR, `_cap-${n}-${name}.txt`); writeFileSync(f, text); capFiles.push(f); return f.replace(/\\/g, '/').replace(/:/g, '\\:') }
       if (said) vchain += `,drawtext=textfile='${cap('said', `TESTER SAID: ${wrap(captions.said)}`)}':${box}:y=${px(24)}:enable='between(t\\,${saidAt.toFixed(2)}\\,${(saidAt + saidFor).toFixed(2)})'`
       const replyFrom = said ? saidAt + saidFor : 0
@@ -863,16 +866,16 @@ async function main() {
   // so subscribers KNOW the stream died on purpose. SSE listeners do NOT hold
   // the engine awake (commands and stream viewers do).
   const eventClients = new Set<import('http').ServerResponse>()
-  const eventRing: Array<Record<string, unknown>> = []
+  const eventRing: string[] = []
   const notify = (event: string, payload: Record<string, unknown> = {}) => {
-    const evt = { event, t: Date.now(), run: RUN_STAMP, ...payload }
+    const evt = redactJson({ event, t: Date.now(), run: RUN_STAMP, ...payload })  // serialized once, already redacted
     eventRing.push(evt); if (eventRing.length > 25) eventRing.shift()
-    for (const c of eventClients) { try { c.write(`data: ${JSON.stringify(evt)}\n\n`) } catch { eventClients.delete(c) } }
+    for (const c of eventClients) { try { c.write(`data: ${evt}\n\n`) } catch { eventClients.delete(c) } }
     if (!WEBHOOK_URL) return
     fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(WEBHOOK_TOKEN ? { 'x-engine-token': WEBHOOK_TOKEN } : {}) },
-      body: JSON.stringify(evt),
+      body: evt,
       signal: AbortSignal.timeout(5000),
     }).then(() => { webhookFailures = 0 })
       .catch(() => { if (++webhookFailures === 1) mark(`webhook delivery failing → ${WEBHOOK_URL}`) })
@@ -1199,7 +1202,7 @@ async function main() {
         // Subscribe: SSE feed of everything the engine does, live.
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' })
         res.write(`: engine events — run ${RUN_STAMP}\n\n`)
-        for (const e of eventRing) res.write(`data: ${JSON.stringify(e)}\n\n`)
+        for (const e of eventRing) res.write(`data: ${e}\n\n`)
         eventClients.add(res)
         req.on('close', () => eventClients.delete(res))
         return
@@ -1546,7 +1549,7 @@ async function main() {
           const shot = await reqShot(n, 'shot', active)
           if (!shot) return json(res, { ok: false, code: 'no_screenshot', error: 'the page could not be captured', driver }, 500)
           stampTask(n, 'shot', t0, null, shot, undefined, undefined, active)
-          return json(res, { ok: true, ...(body.inline === true || new URL(req.url || '', 'http://x').searchParams.get('inline') === '1' ? { jpegB64: readFileSync(shot).toString('base64') } : {}), task: n, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { shot: true }), driver })
+          return json(res, { ok: true, ...(body.inline === true || new URL(req.url || '', 'http://x').searchParams.get('inline') === '1' ? { jpegB64: readFileSync(shot).toString('base64') } : {}), task: n, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { shot: true }), driver }, 200, true)
         })
       }
       if (path === '/eval') {
@@ -1566,7 +1569,7 @@ async function main() {
           // Evals are journey steps too — the cloud meeting run saved a
           // 0-step recipe because it was driven entirely via /eval.
           addStep('eval', String(body.expression).slice(0, 140))
-          return json(res, { ok: true, value, driver })
+          return json(res, { ok: true, value, driver }, 200, true)
         } catch (e) { return json(res, { ok: false, error: (e as Error).message }) }
         })
       }

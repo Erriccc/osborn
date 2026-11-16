@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 50
+Version: 51
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -197,6 +197,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v51
+- Every engine reply, `/events` event and webhook is redacted like the public logs: tokens, keys and `NAME=secret` values in URLs, transcripts and results read `••••`. Only `/eval` values and `/shot`'s `jpegB64` are raw, so read a raw URL (an OAuth callback, a magic link) with `/eval` `location.href`. Spoken-turn clip captions are redacted too; the audio track cannot be.
 
 ## What's new in v50
 - `/say` and `/hear` find the reply by position in the recording, not by wall clock. On a CPU-throttled engine the tab's audio ran slower than real time (0.37x measured), so wall-clock windows landed in the wrong part of the recording and came back "nothing heard". Clip audio is aligned the same way.
