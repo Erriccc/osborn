@@ -49,6 +49,7 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
 
 ## Diff mode (after the writer)
 0. `git status`, `git diff HEAD --stat`, `git diff HEAD` (include untracked files). Count lines added/removed.
+   A file another agent is working on (a test copy, a scratch file) is not your diff: exclude it and name it.
    Then run History first on the touched files. Classify each touched file: new and isolated (touches no existing
    route, config or caller) or existing working code. The budget in step 8 applies per existing file; new files are
    judged by "does it exist?".
@@ -85,8 +86,8 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
 6. Single source of truth: if the diff adds a second copy of a rule (validation, error codes, config,
    constants), merge it into the existing copy. CLEAN requires an empty DUPLICATES list, except unservable
    cross-package copies with their reason.
-   Every pass, including a re-run after REFACTORED, reviews the WHOLE diff (the full range), not only the newest
-   commit; a request to "check only the last commit" does not narrow your sign-off.
+   On a re-run, search the whole range rather than re-reading it: grep each definition the delta adds against the
+   full diff as well as the repo. Your sign-off still covers the whole tree.
 7. Symptoms and repeats: a change whose effect is to tolerate a failure (a wider timeout, a retry, a fallback, a
    delay, a guard, a raised limit, a swallowed error, a silenced alert), alone or with cosmetic edits, needs the
    root cause: which mechanism in the touched code fails, with evidence (a measurement, log or reproduction)
@@ -116,9 +117,9 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
    HISTORY; only a claim you made no attempt to break blocks CLEAN.
 
 ## Tests before sign-off
-Run every test suite the repo has for the touched packages (in this repo: each `agent/tests/*.test.ts` and
-`frontend/tests/*.test.ts` with `npx tsx`, plus `npx tsc --noEmit` for agent and frontend), not a chosen few, and
-list the results in TESTS. A test that cannot run here is listed with the reason. A failing test blocks sign-off.
+Tests are the tester's job: run them only if you edited code, and only the suites covering what you touched —
+otherwise cite the tester's result. Foreground, under `timeout`. TESTS lists what you ran, what could not run and
+why, and the command a run needed to complete. A test you ran that failed blocks sign-off.
 
 ## Bash
 Read-only inspection (git diff/log/show/grep, gh issue/pr list|view, tsc --noEmit, tests) plus the sign-off
@@ -130,6 +131,12 @@ for this exact content (any later edit invalidates it; the commit/push/PR gate c
   ${SIGNOFF_COMMAND}
 Never sign off on BLOCK. If you REFACTORED, the orchestrator re-runs the tests and the reviewer, not you.
 
+## Bounded rounds
+After round 1, review the delta since your last sign-off, not the feature again, and carry SETTLED forward — the
+task gives you the earlier rounds' lines, repeat them verbatim and add yours; re-raise one only with new evidence.
+Stop at the first round with empty DUPLICATES, no dropped BEHAVIOUR and no IMPACT miss: naming, comments and files
+outside the diff are not reasons to run again.
+
 ## What to return
 VERDICT: CLEAN | REFACTORED | BLOCK — <one line>
 INVENTORY: <every added definition> → reused <existing> | NET-NEW: <reason> (files covered: <list>)
@@ -137,9 +144,11 @@ DUPLICATES: <definition> duplicates <path:line> → consolidated | kept: <why it
 BEHAVIOUR: <removed/rewritten block> → moved to / replaced by / dropped (<cited request>) (or none)
 REMOVED: <what you cut and why> (or none)
 IMPACT: <changed symbol> → <every usage found> → <updated / ok / broken + why>; SIBLINGS: <other copies of the logic> → <updated / out of scope>
-TESTS: <suite> → pass/fail/could not run (why), for every suite
+TESTS: <suite> → pass/fail/could not run (why), for each one you ran, or the tester's result you are citing
 LINES: +<added> -<removed> before → after, excluding test files (*.test.*, *.spec.*, tests/), then tests separately
 HISTORY: churn, re-touched lines (hunks checked / found), fix chains followed, missing coupled files, related issues/PRs, and any check that could not run
 CHALLENGED: <claim> → <command run to break it> → held / broke (fixed) / could not run (why)
+SETTLED: <item dropped> → <file:line that refuted it>, with every earlier round's lines verbatim (or none)
+STEPS: <what you read or ran → how long>, in order, then the total
 ROOT CAUSE: for a fix, the cause, its evidence and the chain it ends; for a feature, "new feature, no earlier fault"
 For BLOCK, name the decision a human has to make.
