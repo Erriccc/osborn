@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 45
+Version: 46
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -118,6 +118,19 @@ and prints `REVIEW+SEND these to the user`. Because the command fails without
 media, "action succeeded but media missing" is impossible — the reproducibility
 problem is solved mechanically, not by remembering.
 
+**No harness checkout (curl only)?** The control API is `<engine>/control/<endpoint>`
+(deployed: `https://osborn-voice-e2e-n.fly.dev/control`), JSON bodies, `x-engine-token`
+when the engine has one, `x-driver-id: <you>` on every call. Open your OWN tab first:
+```bash
+E=https://osborn-voice-e2e-n.fly.dev/control; H=(-H 'content-type: application/json' -H "x-driver-id: me" -H "x-engine-token: $TOKEN")
+curl -s "${H[@]}" -X POST $E/tab -d '{"op":"open","url":"https://example.com"}'   # your tab; navigate/act/shot go to it
+curl -s "${H[@]}" -X POST $E/act -d '{"instruction":"click Learn more"}'           # → evidence.screenshot / evidence.clip (public URLs)
+curl -s "${H[@]}" -X POST $E/shot -d '{}'                                         # → evidence.screenshot (add "inline":true for base64)
+curl -s "${H[@]}" -X POST $E/tab -d '{"op":"close"}'                               # close your tab when done
+```
+Check `ok` on every reply: `/act` returns `ok:false, code:"noop"` when nothing on the page
+matched. Reading page content: use `/eval` (there is no extract endpoint).
+
 ## LIVE RELAY — review and forward media DURING the run, not after
 The loop is **drive → review → relay**, interleaved: run `drive.sh act …`, it
 hands you a VIDEO and FRAME path, READ the frame, say what it shows, send both
@@ -184,6 +197,14 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v46
+- `/act` returns `ok:false` with `code:"noop"` when the brain found nothing to do (it used to say `ok:true` plus a warning). A compound instruction can still do only part of the job: check `result.did` and the screenshot.
+- `/tab navigate` with no `i` acts on YOUR tab, not whichever tab another driver fronted last.
+- Navigation errors are clean: `400 bad_url` for a non-http(s) or malformed URL, `502 nav_failed` with `netError` for a failed load, and no error when the page loaded anyway.
+- A failed `/act` clip returns `clipUrl:null` and keeps its `clipError` on `/clip?n=N`. Malformed JSON gets `400 bad_json`; an instruction over 4,000 characters gets `413 too_large`.
+- `/shot` no longer inlines the image as base64 unless you pass `"inline":true` (or `?inline=1`); use `evidence.screenshot`. It now returns `ok:true`.
+- A plain curl quick-start is in "DRIVE THE ENGINE" above.
 
 ## What's new in v45
 - A `/say` clip that fails after the reply now says why: `/clip?n=N` and its public evidence link return 404 with `clipError` (the encoder's message) instead of a bare "not found". Retry the say, or use `/audio` for the voice.

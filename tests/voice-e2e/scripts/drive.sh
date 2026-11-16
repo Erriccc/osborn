@@ -80,7 +80,8 @@ case "$CMD" in
     cc --max-time 30 "$ENGINE/artifact?n=$n" -o "$shot" 2>/dev/null || true
     file "$clip" 2>/dev/null | grep -q "MP4\|ISO Media" || { echo "DRIVE FAILED — no video for task $n after 3 tries (engine: $(head -c 160 "$clip" 2>/dev/null))" >&2; exit 4; }
     file "$shot" 2>/dev/null | grep -qi "jpeg\|jpg" || rm -f "$shot"
-    echo "task $n [$CMD]: ok"
+    noop=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('warning') or 'nothing matched') if d.get('code')=='noop' else '')" 2>/dev/null || true)
+    if [ -n "$noop" ]; then echo "task $n [$CMD]: NOOP — $noop (rephrase or check the FRAME)"; else echo "task $n [$CMD]: ok"; fi
     [ -n "$heard" ] && echo "  heard: $heard"
     [ -n "$nag" ] && echo "  ⚠ NAG: $nag"
     cont=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('contention') or '')" 2>/dev/null || true)
