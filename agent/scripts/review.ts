@@ -7,14 +7,11 @@
  *   2. Extract voice mode + provider from the log via regex.
  *   3. Dynamic-import the current prompts from `../src/prompts.ts` so the
  *      reviewer sees the LATEST version of each prompt (not a snapshot).
- *   4. Extract the pipeline fast-brain `buildSystemPrompt` function source
- *      from `../src/pipeline-fastbrain.ts` (which is module-private and
- *      cannot be dynamic-imported as a value).
- *   5. Build a markdown review brief: session summary + raw log + active
+ *   4. Build a markdown review brief: session summary + raw log + active
  *      prompts + review task instructions.
- *   6. Size-check — if too large for argv, write the brief to a file and
+ *   5. Size-check — if too large for argv, write the brief to a file and
  *      pass a pointer instead.
- *   7. Spawn `claude` CLI with `stdio: 'inherit'` and `--add-dir agent/src`
+ *   6. Spawn `claude` CLI with `stdio: 'inherit'` and `--add-dir agent/src`
  *      so the reviewing Claude can Read / Grep / Edit the prompt files.
  *
  * Usage:
@@ -141,11 +138,9 @@ async function loadPrompts(mode: string, wd: string): Promise<PromptSection[]> {
       label: 'Research System Prompt (Claude SDK — agent/src/prompts.ts: getResearchSystemPrompt)',
       text: promptsModule.getResearchSystemPrompt?.(wd) ?? '(export not found)',
     })
-    // Pipeline fast brain system prompt — see extractPipelineFastBrainSource below.
-    const pfbSource = extractPipelineFastBrainSource()
     sections.push({
-      label: 'Pipeline Fast Brain — buildSystemPrompt function source (agent/src/pipeline-fastbrain.ts)',
-      text: pfbSource ?? '(extraction failed — pipeline-fastbrain.ts format may have changed)',
+      label: 'Pipeline Fast Brain System Prompt (agent/src/prompts/pipeline-fast-brain.md: getPipelineFastBrainPrompt)',
+      text: promptsModule.getPipelineFastBrainPrompt?.() ?? '(export not found)',
     })
   } else if (mode === 'realtime') {
     sections.push({
@@ -163,61 +158,6 @@ async function loadPrompts(mode: string, wd: string): Promise<PromptSection[]> {
   }
 
   return sections
-}
-
-// ============================================================================
-// buildSystemPrompt extractor (brace-match, since it's not exported)
-// ============================================================================
-
-function extractPipelineFastBrainSource(): string | null {
-  const pfbPath = join(agentSrcDir, 'pipeline-fastbrain.ts')
-  if (!existsSync(pfbPath)) return null
-  const src = readFileSync(pfbPath, 'utf-8')
-
-  const startIdx = src.indexOf('function buildSystemPrompt')
-  if (startIdx === -1) return null
-
-  // Step 1: find the opening PAREN of the parameter list.
-  const openParenIdx = src.indexOf('(', startIdx)
-  if (openParenIdx === -1) return null
-
-  // Step 2: paren-match to find the closing paren. We MUST skip past the
-  // parameter list before looking for the function body's opening brace,
-  // because TypeScript parameter type annotations contain braces
-  // (e.g. `chatHistory?: { role: string; content: string }[]`). A naive
-  // brace walker would latch onto the first `{` inside the param list,
-  // decrement on its matching `}`, and return a 2-line "function body"
-  // that's just the signature prefix.
-  let parenDepth = 1
-  let i = openParenIdx + 1
-  while (i < src.length && parenDepth > 0) {
-    const ch = src[i]
-    if (ch === '(') parenDepth++
-    else if (ch === ')') parenDepth--
-    i++
-  }
-  if (parenDepth !== 0) return null
-  const afterParamsIdx = i // position just after the closing `)`
-
-  // Step 3: find the function body's opening brace AFTER the parameter list.
-  // This skips any optional `: ReturnType` annotation between `)` and `{`.
-  const openBraceIdx = src.indexOf('{', afterParamsIdx)
-  if (openBraceIdx === -1) return null
-
-  // Step 4: brace-match the function body. Doesn't handle braces in strings
-  // or comments, which is fine for the current source (template literals
-  // with `${...}` interpolations are balanced).
-  let braceDepth = 1
-  i = openBraceIdx + 1
-  while (i < src.length && braceDepth > 0) {
-    const ch = src[i]
-    if (ch === '{') braceDepth++
-    else if (ch === '}') braceDepth--
-    i++
-  }
-  if (braceDepth !== 0) return null
-
-  return src.substring(startIdx, i)
 }
 
 // ============================================================================
@@ -319,7 +259,7 @@ Do NOT batch-propose a list of six edits. Each proposed change should be brought
 
 Only after the user has explicitly agreed to a specific change, use the Edit tool on:
 - \`${agentSrcDir}/prompts.ts\`
-- \`${agentSrcDir}/pipeline-fastbrain.ts\`
+- \`${agentSrcDir}/prompts/pipeline-fast-brain.md\`
 
 ---
 

@@ -51,6 +51,7 @@ import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from '.
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds } from './store-catalog.js'
 import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
+import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
@@ -4426,6 +4427,18 @@ async function main() {
     }
   }
 
+  // Pipeline fast brain → provisional chat answer. Both pipeline sessions (connect and recovery) use it.
+  const onPipelineFastBrainResult = (r: FastBrainPanelResult) => {
+    console.log(`🧠⚡ [FAST_BRAIN ${r.type.toUpperCase()} +${r.elapsedMs}ms]: "${r.answer.substring(0, 60)}"`)
+    // A hand-off to the main agent has nothing to say yet; its answer follows.
+    if (r.type === 'research_needed') return
+    sendToFrontend({
+      type: 'fast_brain_response', text: r.answer, responseType: r.type,
+      elapsedMs: r.elapsedMs, question: r.question, toolsUsed: r.toolsUsed,
+      agentRole: 'pipeline-fast-brain',
+    })
+  }
+
   // Create DIRECT session (STT + Claude Agent SDK + TTS)
   async function createDirectSession(resumeSessionId?: string, llmOverride?: any): Promise<{ session: voice.AgentSession; agent: voice.Agent }> {
     console.log('🎯 Creating direct session...')
@@ -5486,18 +5499,7 @@ async function main() {
         },
         getAndConsumeInterruptionContext,
         getAndConsumeClientNotes,
-        onFastBrainResult: (result) => {
-          console.log(`🧠⚡ [FAST_BRAIN ${result.type.toUpperCase()} +${result.elapsedMs}ms]: "${result.answer.substring(0, 60)}"`)
-          sendToFrontend({
-            type: 'fast_brain_response',
-            text: result.answer,
-            responseType: result.type,
-            elapsedMs: result.elapsedMs,
-            question: result.question,
-            toolsUsed: result.toolsUsed,
-            agentRole: 'pipeline-fast-brain',
-          })
-        },
+        onFastBrainResult: onPipelineFastBrainResult,
       })
       // Pass pipelineLLM to createDirectSession so it uses it instead of creating a new ClaudeLLM
       const result = await createDirectSession(resumeSessionId, pipelineLLM)
@@ -5982,14 +5984,7 @@ async function main() {
                 },
                 getAndConsumeInterruptionContext,
                 getAndConsumeClientNotes,
-                onFastBrainResult: (r) => {
-                  console.log(`🧠⚡ [FAST_BRAIN ${r.type.toUpperCase()} +${r.elapsedMs}ms]: "${r.answer.substring(0, 60)}"`)
-                  sendToFrontend({
-                    type: 'fast_brain_response', text: r.answer, responseType: r.type,
-                    elapsedMs: r.elapsedMs, question: r.question, toolsUsed: r.toolsUsed,
-                    agentRole: 'pipeline-fast-brain',
-                  })
-                },
+                onFastBrainResult: onPipelineFastBrainResult,
               })
               result = await createDirectSession(recoverySessionId, pipelineLLM)
             }

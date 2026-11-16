@@ -15,7 +15,7 @@ The system has layered prompts at different levels — all centralized in `promp
 | **Proactive prompts** | `prompts.ts` (`PROACTIVE_PROMPT_SYSTEM`) | `generateProactivePrompt()` | Priority order: ALIGN > NARROW > CONNECT > PROGRESS > NOTHING. 15s loop, 4-prompt cap. |
 | **Visual document** | `prompts.ts` (`VISUAL_DOCUMENT_SYSTEM`) | `generateVisualDocument()` | Mermaid diagrams, comparison tables, analysis docs. |
 | **Research completion** | `prompts.ts` (`RESEARCH_COMPLETION_SYSTEM`) | Spoken briefing after research | Fact-fidelity mandate, no hallucinated file names. |
-| **Pipeline fast brain** | `pipeline-fastbrain.ts` (`buildSystemPrompt`) | Pipeline mode every turn | AFC agent rules for `search_session`, `get_recent`, `emergency_stop`. |
+| **Pipeline fast brain** | `prompts/pipeline-fast-brain.md` (`getPipelineFastBrainPrompt`) | Pipeline mode every turn | AFC agent rules for `search_session`, `get_recent`, `emergency_stop`. |
 | **Notifications** | `prompts.ts` (`getNotificationInjection()`) | Any mode | `[NOTIFICATION] {text}. Acknowledge briefly. Do NOT call any tools.` |
 | **Voice script injections** | `prompts.ts` (`getScriptInjection()`, `getProactiveInjection()`, `getResearchUpdateInjection()`, `getResearchCompleteInjection()`) | Voice queue items | `[SCRIPT]`, `[PROACTIVE]`, `[RESEARCH UPDATE — STILL IN PROGRESS]`, `[RESEARCH COMPLETE]` prefixes with fact-fidelity mandates. |
 | **Session context briefings** | `fast-brain.ts` (`prepareBriefingScript`, `prepareRecoveryScript`) | Session resume/recovery | LLM-rewritten briefings matching the user's vocabulary from chatHistory. |

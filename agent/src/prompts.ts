@@ -493,6 +493,11 @@ export function getChainReminder(role: string, agent: string = role): string | n
   try { return readFileSync(join(PROMPTS_FILE_DIR, `chain-after-${role}.md`), 'utf-8').trim().replaceAll('{{agent}}', agent) || null } catch { return null }
 }
 
+/** The pipeline fast brain's system prompt (pipeline-fastbrain.ts). Static: the providers cache by prefix. */
+export function getPipelineFastBrainPrompt(): string {
+  return readFileSync(join(PROMPTS_FILE_DIR, 'pipeline-fast-brain.md'), 'utf-8').trimEnd()
+}
+
 export function getDirectModeResearchPrompt(workspacePath: string | null): string {
   // Read the prompt body from a co-located markdown file at every call.
   // This makes hot-reloading the prompt as simple as: edit the .md file, reconnect the
