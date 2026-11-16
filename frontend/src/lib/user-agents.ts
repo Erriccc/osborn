@@ -44,7 +44,8 @@ export function useUserAgents() {
   }, [withUser])
 
   /** Resolves to an error message, or null once saved. */
-  const save = useCallback(async (a: UserAgentDraft): Promise<string | null> => {
+  /** keepEnabled: an update of an existing row leaves it on or off as it was. */
+  const save = useCallback(async (a: UserAgentDraft, opts: { keepEnabled?: boolean } = {}): Promise<string | null> => {
     const name = agentName(a.name)
     const err = await withUser((sb, userId) => {
       const row = {
@@ -53,12 +54,12 @@ export function useUserAgents() {
         role: a.role,
       }
       return sb.from('user_agents')
-        .upsert({ user_id: userId, ...row, enabled: true, updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })
+        .upsert({ user_id: userId, ...row, ...(opts.keepEnabled ? {} : { enabled: true }), updated_at: new Date().toISOString() }, { onConflict: 'user_id,name' })
         .then(({ error }) => {
           if (error) { console.error('user_agents upsert failed:', error.message); return error.message }
           setRows((prev) => {
             const old = (prev || []).find((r) => r.name === name)
-            return [...(prev || []).filter((r) => r.name !== name), { ...old, ...row, enabled: true }]
+            return [...(prev || []).filter((r) => r.name !== name), { ...old, ...row, enabled: opts.keepEnabled ? old?.enabled ?? true : true }]
           })
           return null
         })

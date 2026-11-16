@@ -48,7 +48,7 @@ import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
-import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds } from './store-catalog.js'
+import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds, findUpdates } from './store-catalog.js'
 import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
@@ -834,6 +834,9 @@ function startApiServer(workingDir: string, port: number): void {
           const skills = loadSkillsList(homedir())
           const myAgents = (url.searchParams.get('agents') || '').split(',').map(storeName).filter(Boolean).slice(0, 50)
           const installed = installedIds(entries, new Set(skills.map((s) => s.folder)), url.searchParams.getAll('origin').slice(0, 50))
+          // Each store agent row arrives as "<name> <forked_from>"; skills are read from their provenance.
+          const rows = url.searchParams.getAll('row').slice(0, 50).map((r) => { const i = r.indexOf(' '); return { name: storeName(r.slice(0, i)), origin: r.slice(i + 1) } }).filter((r) => r.name && r.origin)
+          const updates = await findUpdates(entries, homeSkillsDir(), skills.filter((s) => s.installedFrom).map((s) => s.folder), rows)
           const signals = [
             ...skills.map((s) => ({ text: `${s.folder} ${s.name} ${s.description}`, reason: `because you use the ${s.folder} skill` })),
             ...myAgents.map((n) => ({ text: n, reason: `because you have the ${n} agent` })),
@@ -846,6 +849,7 @@ function startApiServer(workingDir: string, port: number): void {
             }),
             entries,
             installed: [...installed],
+            updates,
             recommended: recommend(entries, signals, installed),
           })
         }
@@ -865,7 +869,8 @@ function startApiServer(workingDir: string, port: number): void {
           // An agent whose prompt is over the limit is refused, never cut: what was reviewed is what installs.
           if (found.entry.kind === 'agent' && found.body.length > AGENT_LIMITS.prompt) return reply(400, { error: `this agent's prompt is ${found.body.length} characters; the limit is ${AGENT_LIMITS.prompt}` })
           if (found.entry.kind === 'agent') return reply(200, { draft: agentDraft(found.entry, found.body) })
-          const out = await installSkill(found.entry, homeSkillsDir(), coreSkillNames(PKG_SKILLS_DIR))
+          // update=1 replaces the copy this entry installed before (one-click update).
+          const out = await installSkill(found.entry, homeSkillsDir(), coreSkillNames(PKG_SKILLS_DIR), undefined, { update: url.searchParams.get('update') === '1' })
           return reply('ok' in out ? 200 : 400, { ...out, skills: loadSkillsList(homedir()) })
         }
         return reply(404, { error: 'not found' })

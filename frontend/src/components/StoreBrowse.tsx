@@ -33,7 +33,9 @@ interface CatalogEntry {
 }
 interface SourceInfo { id: string; label: string; repo: string; trust: string; sha: string; fetchedAt: number; count: number; error?: string; note?: string }
 /** installed: ids of the entries already on the machine or in the user's agents. */
-interface Catalog { sources: SourceInfo[]; entries: CatalogEntry[]; installed: string[]; recommended: { id: string; score: number; reason: string }[] }
+/** updates: installed skills (target = folder) and agents (target = row name) whose entry changed upstream. Absent on older machines. */
+interface StoreUpdate { id: string; kind: 'skill' | 'agent'; target: string; from: string; to: string }
+interface Catalog { sources: SourceInfo[]; entries: CatalogEntry[]; installed: string[]; updates?: StoreUpdate[]; recommended: { id: string; score: number; reason: string }[] }
 
 const PAGE = 60
 
@@ -56,7 +58,7 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   request: AgentRequest
   /** The user's agents (null when signed out): marks installed agents and feeds recommendations. */
   yours: UserAgentRow[] | null
-  onInstallAgent?: (a: UserAgentDraft) => Promise<string | null> | void
+  onInstallAgent?: (a: UserAgentDraft, opts?: { keepEnabled?: boolean }) => Promise<string | null> | void
   onSkillsChanged?: (skills: SkillInfo[]) => void
   /** Every agent name in use (core + yours), so an install never overwrites one. */
   takenAgentNames: Set<string>
@@ -74,11 +76,12 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ id: string; text: string; ok: boolean } | null>(null)
   const [justInstalled, setJustInstalled] = useState<Set<string>>(new Set())
+  const [justUpdated, setJustUpdated] = useState<Set<string>>(new Set())
 
   // Names feed recommendations; each row's forked_from lets the machine mark installed agents.
   const mine = useMemo(() => {
     const q = new URLSearchParams({ agents: (yours || []).map((r) => r.name).join(',') })
-    for (const r of yours || []) if (r.forked_from) q.append('origin', r.forked_from)
+    for (const r of yours || []) if (r.forked_from) { q.append('origin', r.forked_from); q.append('row', `${r.name} ${r.forked_from}`) }
     return q.toString()
   }, [yours])
   const load = useCallback((refresh = false) => {
@@ -91,6 +94,8 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   useEffect(() => { load() }, [load])
 
   const isInstalled = (e: CatalogEntry) => justInstalled.has(e.id) || !!data?.installed.includes(e.id)
+  const updates = (data?.updates || []).filter((u) => !justUpdated.has(u.id))
+  const updatesFor = (e: CatalogEntry) => updates.filter((u) => u.id === e.id)
   const srcOf = (id: string) => data?.sources.find((s) => s.id === id)
 
   const filtered = useMemo(() => {
@@ -120,13 +125,37 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
     } catch { setNote({ id: e.id, ok: false, text: UNREACHABLE }) } finally { setBusy(null) }
   }
 
+  // One click: a skill is replaced in place (its folder must come from this entry); each agent row
+  // installed from it gets the new prompt, tools, model and description, keeping its name, role and on/off.
+  const update = async (e: CatalogEntry) => {
+    setBusy(e.id); setNote(null)
+    try {
+      const { ok, status, d } = await request(`store/install?id=${encodeURIComponent(e.id)}&rev=${encodeURIComponent(e.rev)}&update=1`, { method: 'POST' })
+      if (!ok) { setNote({ id: e.id, ok: false, text: agentError(status, d, 'Update failed') }); return }
+      if (e.kind === 'skill') {
+        if (Array.isArray(d?.skills)) onSkillsChanged?.(d.skills)
+      } else {
+        for (const u of updatesFor(e)) {
+          const row = (yours || []).find((r) => r.name === u.target)
+          if (!row) continue
+          const err = await onInstallAgent?.({ ...d.draft, name: row.name, role: row.role }, { keepEnabled: true })
+          if (err) { setNote({ id: e.id, ok: false, text: err }); return }
+        }
+      }
+      setNote({ id: e.id, ok: true, text: `Updated to @${e.sha.slice(0, 7)} — applies from the next session.` })
+      setJustUpdated((s) => new Set(s).add(e.id))
+    } catch { setNote({ id: e.id, ok: false, text: UNREACHABLE }) } finally { setBusy(null) }
+  }
+
   const openDetail = (e: CatalogEntry) => {
     setDetail({ entry: e, content: null })
     request(`store/entry?id=${encodeURIComponent(e.id)}`).then(({ ok, status, d }) => setDetail((cur) => (cur?.entry.id === e.id ? { entry: e, content: ok ? d.content : agentError(status, d, 'Not available'), role: d?.draft?.role } : cur)))
       .catch(() => setDetail((cur) => (cur?.entry.id === e.id ? { entry: e, content: UNREACHABLE } : cur)))
   }
 
-  const InstallButton = ({ e }: { e: CatalogEntry }) => isInstalled(e)
+  const InstallButton = ({ e }: { e: CatalogEntry }) => updatesFor(e).length > 0 && (e.kind === 'skill' || onInstallAgent)
+    ? <button className="rounded bg-amber-500/20 px-2 py-0.5 text-[11px] text-amber-300 hover:bg-amber-500/30 disabled:opacity-50" disabled={busy === e.id} title={`Installed @${updatesFor(e)[0].from.slice(0, 7)}; the catalog has a newer version`} onClick={() => update(e)}>{busy === e.id ? 'Updating…' : 'Update'}</button>
+    : isInstalled(e)
     ? <span className="text-[11px] text-emerald-400">✓ Installed</span>
     : (e.kind === 'agent' && !onInstallAgent)
       ? <span className="text-[11px] text-[var(--text-muted)]">Sign in to add</span>
@@ -215,6 +244,14 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
       <p className="text-[10px] leading-snug text-[var(--text-muted)]">Read live from GitHub by your machine and pinned to the commit shown. Skills and named agents only — MCP servers, hooks and other plugin parts are not installed.</p>
       {error && <p className="text-[11px] text-red-400">{error}</p>}
       {loading && !data && <p className="text-[11px] text-[var(--text-muted)]">Reading the catalogs from GitHub… the first load can take half a minute.</p>}
+
+      {updates.length > 0 && (
+        <div>
+          <h5 className={heading}>Updates available</h5>
+          <p className="mb-1 text-[10px] leading-snug text-[var(--text-muted)]">The source changed these since you installed them. Open Details to read the new version first; updating replaces the installed copy, so local edits to a skill's files are lost.</p>
+          <div className="space-y-1.5">{Array.from(new Set(updates.map((u) => u.id)), (id) => byId.get(id)).filter((e): e is CatalogEntry => !!e).map((e) => <Card key={e.id} e={e} />)}</div>
+        </div>
+      )}
 
       {data && !q && source === 'all' && kind === 'all' && recommended.length > 0 && (
         <div>

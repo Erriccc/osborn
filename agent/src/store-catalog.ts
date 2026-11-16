@@ -90,6 +90,9 @@ async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): 
 }
 
 /** Turns a repo snapshot into catalog entries (pure apart from `read`). Returns the bodies too. */
+/** An entry's rev: its main file's text and its file list. A commit elsewhere in the repo leaves it alone. */
+export const revOf = (md: string, files: string[]) => createHash('sha256').update(md).update('\0' + files.join('\n')).digest('hex').slice(0, 16)
+
 export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string>; failed: number; tooLarge: number }> {
   let failed = 0, tooLarge = 0
   const paths = snap.paths
@@ -128,7 +131,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
       description: str(meta.description).slice(0, 600),
       tools, ...(str(meta.model) ? { model: str(meta.model) } : {}),
       files, repo: src.repo, path: dir, sha: snap.sha,
-      rev: createHash('sha256').update(md).update('\0' + files.join('\n')).digest('hex').slice(0, 16),
+      rev: revOf(md, files),
       license: ownLicense ? (/LICENSE/i.test(ownLicense) ? 'See LICENSE.txt' : ownLicense.slice(0, 40)) : (files.some((f) => /^LICEN[CS]E/i.test(f)) ? 'See LICENSE.txt' : repoLicense || 'Unknown'),
       scripts: files.filter((f) => f.startsWith('scripts/') || SCRIPT_EXT.test(f)),
       trust: src.trust,
@@ -260,13 +263,18 @@ export function safeRelPath(rel: string): boolean {
 export async function installSkill(
   entry: CatalogEntry, skillsDir: string, coreSkills: Set<string>,
   fetchFile: (path: string) => Promise<Buffer | null> = (p) => rawBytes(entry.repo, entry.sha, p),
+  opts: { update?: boolean } = {},
 ): Promise<{ ok: true; name: string } | { error: string }> {
   if (entry.kind !== 'skill') return { error: 'not a skill' }
   const name = storeName(entry.name)
   if (!name) return { error: 'invalid skill name' }
   if (coreSkills.has(name)) return { error: `${name} is a built-in skill name — fork the built-in instead` }
   const dst = join(skillsDir, name)
-  if (existsSync(dst)) return { error: `a skill named ${name} is already installed` }
+  if (opts.update) {
+    // An update replaces only a folder this store installed from the same file.
+    const p = readProvenance(skillsDir, name)
+    if (!p || p.source !== entry.source || p.path !== entry.path) return { error: `${name} was not installed from this catalog entry` }
+  } else if (existsSync(dst)) return { error: `a skill named ${name} is already installed` }
   if (!entry.files.includes('SKILL.md')) return { error: 'skill has no SKILL.md' }
   if (entry.files.length > MAX_SKILL_FILES) return { error: `skill has too many files (${entry.files.length})` }
   for (const f of entry.files) {
@@ -288,18 +296,73 @@ export async function installSkill(
     }
     writeFileSync(join(tmp, PROVENANCE_FILE), JSON.stringify({
       source: entry.source, repo: entry.repo, sha: entry.sha, path: entry.path, license: entry.license,
-      files: entry.files, scripts: entry.scripts, installedAt: new Date().toISOString(),
+      files: entry.files, scripts: entry.scripts, rev: entry.rev, installedAt: new Date().toISOString(),
     }, null, 2))
-    renameSync(tmp, dst)
+    if (!opts.update) { renameSync(tmp, dst); return { ok: true, name } }
+    // Swap: the old copy is moved aside first and put back if the new one cannot take its place.
+    const old = `${tmp}-old`
+    renameSync(dst, old)
+    try { renameSync(tmp, dst) } catch (e) { renameSync(old, dst); throw e }
+    rmSync(old, { recursive: true, force: true })
     return { ok: true, name }
   } finally { rmSync(tmp, { recursive: true, force: true }) }
 }
 
-export function skillProvenance(skillsDir: string, folder: string): { source: string; repo: string; sha: string } | undefined {
+interface Provenance { source: string; repo: string; sha: string; path: string; files: string[]; rev?: string }
+function readProvenance(skillsDir: string, folder: string): Provenance | undefined {
   try {
     const p = JSON.parse(readFileSync(join(skillsDir, folder, PROVENANCE_FILE), 'utf-8'))
-    return p?.source && p?.sha ? { source: String(p.source), repo: String(p.repo), sha: String(p.sha) } : undefined
+    if (!p?.source || !p?.sha) return undefined
+    return { source: String(p.source), repo: String(p.repo), sha: String(p.sha), path: String(p.path || ''), files: Array.isArray(p.files) ? p.files.map(String) : [], ...(p.rev ? { rev: String(p.rev) } : {}) }
   } catch { return undefined }
+}
+
+export function skillProvenance(skillsDir: string, folder: string): { source: string; repo: string; sha: string } | undefined {
+  const p = readProvenance(skillsDir, folder)
+  return p && { source: p.source, repo: p.repo, sha: p.sha }
+}
+
+// ── Updates ──────────────────────────────────────────────────────────────────
+
+/** An installed skill folder or user agent whose catalog entry changed since it was installed. */
+export interface StoreUpdate { id: string; kind: EntryKind; target: string; from: string; to: string }
+
+// A rev at a pinned commit never changes, so it is remembered for the life of the process.
+const pinnedRevs = new Map<string, Promise<string | null>>()
+function revAtCommit(kind: EntryKind, repo: string, sha: string, path: string, files: string[], read: Reader): Promise<string | null> {
+  const key = `${repo}@${sha}/${path}`
+  if (!pinnedRevs.has(key)) {
+    const p = read(kind === 'skill' ? `${path}/SKILL.md` : path).then((md) => (md == null ? null : revOf(md, files)), () => null)
+    pinnedRevs.set(key, p)
+    p.then((r) => { if (r == null) pinnedRevs.delete(key) })  // a failed read is tried again next time
+  }
+  return pinnedRevs.get(key)!
+}
+
+/** Installed store skills (by folder) and agents (by forked_from) whose entry's text or file list
+ *  moved on since the commit they were installed at. An older install without a stored rev has
+ *  it worked out once from that commit. A commit that leaves the entry alone is no update. */
+export async function findUpdates(
+  entries: CatalogEntry[], skillsDir: string, skillFolders: string[], agents: { name: string; origin: string }[],
+  readAt: (repo: string, sha: string) => Reader = rawReader,
+): Promise<StoreUpdate[]> {
+  const byOrigin = new Map(entries.map((e) => [unpinnedOrigin(catalogOrigin(e)), e]))
+  const checks: { e: CatalogEntry; target: string; sha: string; rev?: string; files: string[] }[] = []
+  for (const folder of skillFolders) {
+    const p = readProvenance(skillsDir, folder)
+    const e = p && entries.find((x) => x.kind === 'skill' && x.source === p.source && x.path === p.path)
+    if (e && p.sha !== e.sha) checks.push({ e, target: folder, sha: p.sha, rev: p.rev, files: p.files })
+  }
+  for (const a of agents) {
+    const e = byOrigin.get(unpinnedOrigin(a.origin))
+    const sha = /@([0-9a-f]{7,40})\//.exec(a.origin)?.[1]
+    if (e?.kind === 'agent' && sha && sha !== e.sha) checks.push({ e, target: a.name, sha, files: e.files })
+  }
+  const out = await mapLimit(checks, 6, async (c): Promise<StoreUpdate | null> => {
+    const was = c.rev ?? await revAtCommit(c.e.kind, c.e.repo, c.sha, c.e.path, c.files, readAt(c.e.repo, c.sha))
+    return was && was !== c.e.rev ? { id: c.e.id, kind: c.e.kind, target: c.target, from: c.sha, to: c.e.sha } : null
+  })
+  return out.filter((u): u is StoreUpdate => !!u)
 }
 
 /** A user_agents draft for a catalog agent; the frontend saves it. Its role starts from its tools (draftRole). */
