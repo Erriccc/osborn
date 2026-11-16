@@ -345,6 +345,11 @@ async function main() {
   // doing nothing. It exists to exercise everything AROUND the brain — effect
   // detection, warnings, the scroll fallback, clips — without a model key.
   const BRAIN_STUB = process.env.OSBORN_BRAIN_STUB === '1'
+  // Settles with `p`, or rejects with `msg` after `ms` (the timer is always cleared).
+  const withTimeout = <T,>(p: Promise<T>, ms: number, msg: string): Promise<T> => {
+    let t: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error(msg)), ms) })]).finally(() => clearTimeout(t))
+  }
   const initBrain = async () => {
     brainAlive = false
     if (BRAIN_STUB) { brainAlive = true; brainError = null; brainModel = 'stub (does nothing)'; mark('brain STUB active — /act performs no action'); return }
@@ -364,7 +369,11 @@ async function main() {
         env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
         model: picked.model as any, modelClientOptions: picked.opts, verbose: 0,
       })
-      await stagehand.init()
+      // Bounded: a Stagehand init that never settles would leave every later
+      // revive joined to a promise that never ends (#327).
+      const sh = stagehand
+      await withTimeout(sh.init(), 60000, 'Stagehand init did not finish within 60s')
+        .catch((e) => { void sh.close().catch(() => {}); throw e })
       brainAlive = true; brainError = null; brainModel = picked.model
       mark(`brain ready on ${picked.model}`)
     } catch (e) {
@@ -394,29 +403,29 @@ async function main() {
     if (out.length && bad.length === out.length) notify('stt_unavailable', { providers: out })
   }
   void probeStt()
-  // Re-init a detached brain in place. Single-flight until the init settles;
-  // /act's automatic try (inside the action lock) waits at most 20s for it and,
-  // after a failure, does not try again for a minute.
+  // Re-init a detached brain in place. Single-flight until the init settles (the
+  // init itself is bounded). /act's automatic try (inside the action lock) starts
+  // a revive and waits at most 20s for it; an /act that finds one already running
+  // does not wait, and after a failure none starts another for a minute. Waiting
+  // out the 20s is not a failure: the revive keeps going and its own result counts.
   let reviveFailedAt = 0
   let reviving: Promise<boolean> | null = null
   const reviveBrain = async (auto = false): Promise<boolean> => {
+    if (reviving && auto) return false  // another request is reviving: fail fast, keep the lock free
     if (!reviving) {
       if (auto && Date.now() - reviveFailedAt < 60000) return false
       reviving = (async () => {
-        try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
+        if (stagehand) await withTimeout(stagehand.close(), 10000, 'close').catch(() => {})  // a hung close must not stall the revive
         try { await initBrain(); reviveFailedAt = 0; mark('brain re-initialized'); return true }
         catch { reviveFailedAt = Date.now(); mark(`brain re-init failed — ${brainError}`); return false }
         finally { reviving = null }
       })()
     }
     if (!auto) return reviving
-    let timer: NodeJS.Timeout | undefined
-    const timedOut = new Promise<boolean>((done) => { timer = setTimeout(() => {
-      reviveFailedAt = Date.now(); brainError = 'brain re-init timed out after 20s'; mark(brainError); done(false)
-    }, 20000) })
-    try { return await Promise.race([reviving, timedOut]) } finally { clearTimeout(timer) }
+    return withTimeout(reviving, 20000, 'still reviving').catch(() => false)
   }
-  const brainDownMsg = () => `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
+  const brainDownMsg = () => reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
+    : `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
@@ -490,11 +499,6 @@ async function main() {
       if (out) { mark(`clip: ${out}`); return { clip: out, clipError: null } }
       return { clip: null, clipError: live.clipFailure() ?? 'clip failed' }
     } catch (e) { return { clip: null, clipError: (e as Error).message } }
-  }
-  // Settles with `p`, or rejects with `msg` after `ms` (the timer is always cleared).
-  const withTimeout = <T,>(p: Promise<T>, ms: number, msg: string): Promise<T> => {
-    let t: ReturnType<typeof setTimeout> | undefined
-    return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error(msg)), ms) })]).finally(() => clearTimeout(t))
   }
   const reqShot = async (n: number, label: string, page: Page = active): Promise<string | null> => {
     const p = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-${label}.jpg`)
@@ -1051,7 +1055,7 @@ async function main() {
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
           agentUrl: AGENT_URL || null, agentUnreachable,
-          brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, stt: sttHealth, useAuth, live: live?.url,
+          brain: brainAlive ? 'ready' : reviving ? 'reviving' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, stt: sttHealth, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
           // #120: previousRun is set when THIS process adopted a journey from a
@@ -1720,6 +1724,9 @@ async function main() {
       }
       if (path === '/brain') {
         // Recover a detached Stagehand without restarting the whole engine.
+        // Retire the brain under the action lock, so an in-flight /act finishes first
+        // (#331); re-init outside it, so /eval, /tab and /shot keep answering meanwhile.
+        if (!reviving) await withLock(async () => { brainAlive = false })
         if (!(await reviveBrain())) return json(res, { ok: false, brain: 'dead', code: 'brain_unavailable', error: brainDownMsg() }, 503)
         await probeStt()
         return json(res, { ok: true, brain: 'ready', brainModel, stt: sttHealth })
