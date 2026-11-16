@@ -206,9 +206,11 @@ assertion was the liar.
   tapped source (room join), NOT at capture start — Deepgram word.start was
   38.3s "early" vs wall clock and `hearSince` filtered every real word out,
   returning '' while the audio provably contained the answer. Fixed 2026-07-31:
-  `__osbornAudioAnchor` stamps first-tap epoch; `hearSince` converts wall-clock
-  windows to file time via `anchorOffsetMs` from `peekCapture`. Never compare
-  transcript timestamps to wall-clock windows without the anchor.
+  `__osbornAudioAnchor` stamps first-tap epoch. The file also runs on the page's
+  audio clock, which a throttled CPU slows (0.37x on the Fly engine), so
+  `hearSince` converts wall-clock windows to file time through `peekCapture`'s
+  `clock` samples + `recordingMsAt`. Never compare transcript timestamps to
+  wall-clock windows without them.
 - Never `.catch(() => '')` around hearing/asserting paths — that exact silent
   catch in `/hear` masked the timeline-skew bug as "agent said nothing".
 - Engine teardown MUST be time-bounded (Stagehand/CDP close can hang forever);

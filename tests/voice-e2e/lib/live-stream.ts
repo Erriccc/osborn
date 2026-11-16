@@ -93,7 +93,18 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   // allowance on its own, so by default the engine records the page via CDP.
   const DISPLAY = process.env.OSBORN_DISPLAY && process.env.OSBORN_CAPTURE === 'display' ? process.env.OSBORN_DISPLAY : null
   const CAPTURE_FPS = DISPLAY ? 5 : 12
-  const SCREENCAST = { format: 'jpeg' as const, quality: 55, everyNthFrame: 1, maxWidth: 1280, maxHeight: 720 }
+  // Small clips: a quarter of the pixels to encode on a throttled CPU, still readable.
+  const CLIP_W = Number(process.env.OSBORN_CLIP_WIDTH ?? 640), CLIP_H = Math.round(CLIP_W * 0.625 / 2) * 2
+  // Full size only while someone watches the live stream; otherwise frames only feed
+  // clips (CLIP_W wide), so a smaller screencast keeps the shared CPU unthrottled.
+  const IDLE_W = Math.min(1280, Math.max(960, CLIP_W))
+  const screencast = (idle = clients.size === 0) => ({ format: 'jpeg' as const, quality: 55, everyNthFrame: 1,
+    ...(idle ? { maxWidth: IDLE_W, maxHeight: Math.round(IDLE_W * 9 / 16) } : { maxWidth: 1280, maxHeight: 720 }) })
+  // Re-start the screencast at the new size when the first viewer arrives or the last one leaves.
+  const viewersChanged = async () => {
+    if (DISPLAY || !cdp) return
+    try { await cdp.send('Page.stopScreencast'); await cdp.send('Page.startScreencast', screencast()) } catch { /* tab gone: retarget re-attaches */ }
+  }
   let cdp: CDPSession | null = null
   let target: Page | null = null  // the tab the screencast is attached to
   const pushFrame = (buf: Buffer) => {
@@ -111,12 +122,13 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     }
   }
   const attach = async (p: Page, push: (b: Buffer) => void = pushFrame): Promise<CDPSession> => {
+    const idle = push !== pushFrame  // per-tab recorders feed clips only, never the live stream
     const s = await p.context().newCDPSession(p)
     s.on('Page.screencastFrame', async (f: any) => {
       try { await s.send('Page.screencastFrameAck', { sessionId: f.sessionId }) } catch { /* page gone */ }
       push(Buffer.from(f.data, 'base64'))
     })
-    await s.send('Page.startScreencast', SCREENCAST)
+    await s.send('Page.startScreencast', screencast(idle || undefined))
     return s
   }
 
@@ -239,8 +251,9 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
         'Cache-Control': 'no-store', Connection: 'close',
       })
       clients.add(res); resume()
+      if (clients.size === 1) void viewersChanged()
       if (latest) { res.write(`--osbframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${latest.length}\r\n\r\n`); res.write(latest); res.write('\r\n') }
-      req.on('close', () => clients.delete(res))
+      req.on('close', () => { if (clients.delete(res) && clients.size === 0) void viewersChanged() })
       return
     }
     // Viewer page — shows a "waking up" banner until frames flow (a visitor
@@ -330,8 +343,6 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       // (12s of wall clock) into a 48s clip.
       const OUT_FPS = DISPLAY ? CAPTURE_FPS : 10  // display frames arrive at CAPTURE_FPS
       const MIN_GAP_MS = 100
-      // Small clips: a quarter of the pixels to encode on a throttled CPU, still readable.
-      const CLIP_W = Number(process.env.OSBORN_CLIP_WIDTH ?? 640), CLIP_H = Math.round(CLIP_W * 0.625 / 2) * 2
       const kept: typeof frames = []
       for (const f of frames) if (!kept.length || f.t - kept[kept.length - 1].t >= MIN_GAP_MS) kept.push(f)
       const lines: string[] = ['ffconcat version 1.0']
