@@ -25,7 +25,7 @@ export interface StewardVerdict {
 
 const LABELS: Record<string, string> = {
   'VERDICT': 'verdict', 'REUSE MAP': 'reuse', 'INVENTORY': 'reuse', 'DUPLICATES': 'reuse', 'BEHAVIOUR': 'regressions', 'NET-NEW': 'netNew', 'REMOVED': 'removed',
-  'REGRESSION MAP': 'regressions', 'IMPACT': 'regressions', 'LINES': 'lines', 'HISTORY': 'history', 'ROOT CAUSE': 'rootCause',
+  'REGRESSION MAP': 'regressions', 'IMPACT': 'regressions', 'CHALLENGED': 'regressions', 'LINES': 'lines', 'HISTORY': 'history', 'ROOT CAUSE': 'rootCause',
   'DECISION': 'decision', 'HUMAN DECISION': 'decision', 'DECISION NEEDED': 'decision',
 }
 // A label line, tolerant of markdown: "- **VERDICT:** ...", "## HISTORY", "ROOT CAUSE — ...".

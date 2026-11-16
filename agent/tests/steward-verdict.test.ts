@@ -73,6 +73,12 @@ t('prose that starts with a label word is not a section', () => {
   assert.deepEqual(v.history, ['churn low', 'History shows no reverts'])
 })
 
+t('a CHALLENGED section stays in raw and does not break the history split', () => {
+  const v = parseStewardVerdict('VERDICT: CLEAN — ok\nHISTORY: churn 3; re-touched 4/0\nCHALLENGED: no dup → git grep -F x → held')!
+  assert.deepEqual(v.history, ['churn 3', 're-touched 4/0'])
+  assert.ok(v.raw.includes('CHALLENGED'))
+})
+
 t('sidecar: append + read back, torn line skipped', () => {
   const root = mkdtempSync(join(tmpdir(), 'steward-verdict-test-'))
   process.env.CLAUDE_CONFIG_DIR = join(root, 'claude')
