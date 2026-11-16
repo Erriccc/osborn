@@ -20,9 +20,10 @@ harness itself or trusting any surprising result.
 ## Audio
 - **Audio file timeline ≠ wall clock.** The ears recording starts at the FIRST
   tapped source (room join), not capture start — a 38.3s skew once made
-  `hearSince` filter out every real word. `__osbornAudioAnchor` +
-  `anchorOffsetMs` convert between timelines; never compare transcript
-  timestamps to wall-clock windows without the anchor.
+  `hearSince` filter out every real word — and it runs on the page's audio
+  clock, which a throttled CPU slows (0.37x on the Fly engine). `peekCapture`'s
+  `clock` samples + `recordingMsAt` convert between timelines; never compare
+  transcript timestamps to wall-clock windows without them.
 - `--use-file-for-fake-audio-capture` hijacks tab capture AND loops — the
   reactive mic + element-tap ears replace it entirely.
 - LiveKit mutes silent synthetic mics (`LocalAudioSilenceDetected`) — comfort

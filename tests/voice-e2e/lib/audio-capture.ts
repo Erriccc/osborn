@@ -137,19 +137,32 @@ export async function startElementCapture(page: Page): Promise<void> {
     // new MediaStream is not recorded (and played through) twice, while a call
     // that ends and restarts (new tracks) is tapped again. Regular src elements
     // are captured once (captureStream follows the element).
+    // AUDIO CLOCK — the recording runs on this context's clock, which is not the
+    // wall clock: on a CPU-throttled machine it ran at 0.37x (measured on the Fly
+    // engine, 2026-11-16), so a wall-clock window lands in the wrong part of the
+    // file. Each sample maps a wall-clock instant to a recording position.
+    const clock: Array<[number, number]> = []
+    let anchorCtxMs: number | null = null
+    const sampleClock = () => { if (anchorCtxMs != null) clock.push([Date.now(), ctx.currentTime * 1000 - anchorCtxMs]) }
+    // rate(): how fast the recording advanced over the last 30s (1 = real time).
+    const rate = () => {
+      if (clock.length < 2) return null
+      const e = clock[clock.length - 1], b = clock.find((x) => x[0] >= e[0] - 30000) ?? clock[0]
+      return e[0] > b[0] ? Math.round(((e[1] - b[1]) / (e[0] - b[0])) * 100) / 100 : null
+    }
+    ;(window as any).__osbornClock = { clock, sample: sampleClock, rate }
     const tappedTracks = new WeakSet<MediaStreamTrack>()
     const byEl = new WeakMap<HTMLMediaElement, { nodes: AudioNode[]; tracks: MediaStreamTrack[]; captured?: boolean }>()
     const fresh = (ms: MediaStream) => ms.getAudioTracks().filter((t) => t.readyState === 'live' && !tappedTracks.has(t))
     // TIMELINE ANCHOR — the recording's audio timeline effectively starts
     // when the FIRST source connects (verified 2026-07-31: words landed
     // 38.3s "early" in the file vs wall clock, exactly the login→room-join
-    // gap before any <audio> existed). hearSince converts wall-clock
-    // windows into file time using this anchor.
+    // gap before any <audio> existed). The clock samples below start here.
     const tapStream = (ms: MediaStream): MediaStreamAudioSourceNode => {
       const src = ctx.createMediaStreamSource(ms)
       src.connect(dest)
       src.connect(analyser)
-      if (!(window as any).__osbornAudioAnchor) (window as any).__osbornAudioAnchor = Date.now()
+      if (!(window as any).__osbornAudioAnchor) { (window as any).__osbornAudioAnchor = Date.now(); anchorCtxMs = ctx.currentTime * 1000; sampleClock() }
       return src
     }
     const untap = (el: HTMLMediaElement) => {
@@ -202,7 +215,8 @@ export async function startElementCapture(page: Page): Promise<void> {
       }
     }
     scan()
-    const interval = setInterval(scan, 500) // catch late srcObject assignment
+    let ticks = 0
+    const interval = setInterval(() => { scan(); if (++ticks % 2 === 0) sampleClock() }, 500) // late srcObject + clock
     const observer = new MutationObserver(scan)
     observer.observe(document.documentElement, { childList: true, subtree: true })
     const rec = new MediaRecorder(dest.stream, { mimeType: 'audio/webm;codecs=opus' })
@@ -221,24 +235,43 @@ export async function startElementCapture(page: Page): Promise<void> {
  * word timestamps, and comprehension comes from AUDIO — no reliance on the
  * app having a text transcript in its UI.
  */
-export async function peekCapture(page: Page): Promise<{ base64: string; sinceStartMs: number; anchorOffsetMs: number; fileZeroAt: number }> {
+/** [wall-clock ms, recording ms] samples: where the recording was at each instant. */
+export type AudioClock = Array<[number, number]>
+
+/** Recording position (ms) at a wall-clock instant, interpolated between clock samples.
+ *  Past the last sample it keeps the last rate; before the first one, the gap is wall time
+ *  (nothing was recording yet). */
+export function recordingMsAt(clock: AudioClock, wallMs: number): number {
+  if (!clock.length) return 0
+  if (wallMs <= clock[0][0]) return clock[0][1] - (clock[0][0] - wallMs)
+  let i = clock.findIndex(([w]) => w >= wallMs)
+  if (i === -1) i = clock.length - 1
+  const [w1, f1] = clock[Math.max(0, i)]
+  const [w0, f0] = clock[Math.max(0, i - 1)]
+  const rate = w1 > w0 ? (f1 - f0) / (w1 - w0) : 1
+  return f1 + (wallMs - w1) * rate
+}
+
+export async function peekCapture(page: Page): Promise<{ base64: string; sinceStartMs: number; captureStartedAt: number; clock: AudioClock }> {
   return await page.evaluate(async () => {
     const cap = (window as any).__osbornCapture
     if (!cap) throw new Error('startCapture was never called')
     cap.rec.requestData?.() // flush the in-flight chunk
     await new Promise((r) => setTimeout(r, 120))
+    const clk = (window as any).__osbornClock
+    clk?.sample()
     const blob = new Blob(cap.chunks, { type: 'audio/webm' })
     const buf = await blob.arrayBuffer()
     let bin = ''
     const bytes = new Uint8Array(buf)
     for (let i = 0; i < bytes.length; i += 0x8000)
       bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-    // anchorOffsetMs: ms between capture start and the recording's actual
-    // audio-timeline zero (first tapped source). 0 if no source ever tapped.
+    // fileZeroAt: wall-clock time of the recording's zero (the first tapped source),
+    // the clock's only sample when nothing has been tapped yet.
     const anchor = (window as any).__osbornAudioAnchor ?? cap.startedAt
-    // fileZeroAt: wall-clock time of the recording's zero, stamped in the page so
-    // the time taken to copy the recording out does not shift it.
-    return { base64: btoa(bin), sinceStartMs: Date.now() - cap.startedAt, anchorOffsetMs: Math.max(0, anchor - cap.startedAt), fileZeroAt: Math.max(anchor, cap.startedAt) }
+    const fileZeroAt = Math.max(anchor, cap.startedAt)
+    return { base64: btoa(bin), sinceStartMs: Date.now() - cap.startedAt, captureStartedAt: cap.startedAt,
+      clock: (clk?.clock?.length ? clk.clock : [[fileZeroAt, 0]]) as Array<[number, number]> }
   })
 }
 

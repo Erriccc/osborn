@@ -201,6 +201,11 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 ## What's new in v51
 - Every engine reply, `/events` event and webhook is redacted like the public logs: tokens, keys and `NAME=secret` values in URLs, transcripts and results read `••••`. Only `/eval` values and `/shot`'s `jpegB64` are raw, so read a raw URL (an OAuth callback, a magic link) with `/eval` `location.href`. Spoken-turn clip captions are redacted too; the audio track cannot be.
 
+## What's new in v50
+- `/say` and `/hear` find the reply by position in the recording, not by wall clock. On a CPU-throttled engine the tab's audio ran slower than real time (0.37x measured), so wall-clock windows landed in the wrong part of the recording and came back "nothing heard". Clip audio is aligned the same way.
+- `ears.audioClock` (in `/say`, `/hear` and every `ears` object) is how fast the tab's audio ran over the last 30s; 1 is real time. Under 0.9, `/say` adds a warning: the recording is time-compressed against the video and the page may have heard and played audio slowed down.
+- The screencast fits 960×540 while nobody watches the live stream (clips are 640 wide, so they lose nothing) and 1280×720 while someone does, to keep the engine's CPU under its share. Per-tab clip recorders always use the smaller size.
+
 ## What's new in v49
 - Public evidence logs hide more credential shapes (`Authorization: Token|Basic …`, `NAME=secret` settings, Google `AIza…`, GitHub `ghs_/ghu_/ghr_`, Fly tokens, `session_token`-style URL parameters) using the same redactor as the Voice Native app; hidden values read `••••`.
 
@@ -212,7 +217,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 
 ## What's new in v47
 - Evidence logs no longer leak secrets: tokens in URLs (a LiveKit room's `access_token`, OAuth `code`, `#access_token=` fragments, api keys) and any JWT are blanked in the public `/media/<run>/<n>.txt` log and the DevTools buffers.
-- A detached brain heals itself: `/act` re-initialises it once before answering `brain_unavailable` (after a failed try it waits a minute before trying again). If you still get `brain_unavailable`, `POST /brain {}` re-picks it without restarting the engine; `/eval`, `/tab` and `/shot` keep working meanwhile.
+- A detached brain heals itself: `/act` re-initialises it once before answering `brain_unavailable` (after a failed try it waits a minute before trying again). A `brain_unavailable` whose error says *re-initializing* means a revive is already running: retry in a few seconds, do not `POST /brain`. If you still get `brain_unavailable`, `POST /brain {}` re-picks it without restarting the engine; `/eval`, `/tab` and `/shot` keep working meanwhile.
 
 ## What's new in v46
 - `/act` returns `ok:false` with `code:"noop"` when the brain found nothing to do (it used to say `ok:true` plus a warning). A compound instruction can still do only part of the job: check `result.did` and the screenshot.
