@@ -1722,7 +1722,7 @@ export default function Dashboard() {
           {/* Rooms (desktop): the chat room's own session list, so the dashboard
               reads like the room you land in. Projects below keep their actions. */}
           {agentOnline !== false && (
-            <div className="hidden lg:block h-[min(28rem,55vh)] mb-4">
+            <div className="hidden lg:block h-[min(24rem,45vh)] mb-4">
               <RoomsSidebar embedded
                 sessions={sessions}
                 slots={[]} currentSessionId={null}

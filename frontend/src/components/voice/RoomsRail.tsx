@@ -97,10 +97,13 @@ function RoomRowButton({
   room,
   disabled,
   onSwitchRoom,
+  hideStatus,
 }: {
   room: Room
   disabled?: boolean
   onSwitchRoom: (room: Room) => void
+  /** No live/running state is known here (the dashboard has no slots), so no pill. */
+  hideStatus?: boolean
 }) {
   const isLive = room.status === 'live'
   const identity = roomIdentityLabel(room)
@@ -119,7 +122,7 @@ function RoomRowButton({
       <div className="flex items-center gap-2">
         <IdentityAvatar room={room} size="sm" />
         <span className="flex-1 min-w-0 text-[12.5px] text-gray-200 truncate">{room.title}</span>
-        <span
+        {!hideStatus && <span
           className={`shrink-0 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
             room.status === 'live'
               ? 'bg-amber-500/20 text-amber-300'
@@ -129,7 +132,7 @@ function RoomRowButton({
           }`}
         >
           {room.switching ? 'Switching…' : STATUS_LABEL[room.status]}
-        </span>
+        </span>}
       </div>
       <div className="text-[10px] text-gray-500 truncate pl-7 mt-0.5">{roomMeta(room)}</div>
     </button>
@@ -179,10 +182,10 @@ export function RoomsSidebar({
   const [hideSystem, setHideSystem] = useState(false)
   useEffect(() => {
     try {
-      setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1')
+      if (!embedded) setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1')  // the chat's preference; the dashboard list never collapses
       setHideSystem(localStorage.getItem(HIDE_SYSTEM_KEY) === '1')
     } catch { /* storage blocked */ }
-  }, [])
+  },[embedded])
   const toggleCollapsed = () => {
     setCollapsed((v) => {
       const next = !v
@@ -296,7 +299,7 @@ export function RoomsSidebar({
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5M5 9a7 7 0 0112-3.5L20 9M19 15a7 7 0 01-12 3.5L4 15" />
             </svg>
           </button>
-          <button
+          {!embedded && <button
             onClick={toggleCollapsed}
             aria-label="Collapse rooms sidebar"
             title="Collapse"
@@ -305,7 +308,7 @@ export function RoomsSidebar({
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 5l-7 7 7 7" />
             </svg>
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -341,7 +344,7 @@ export function RoomsSidebar({
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
         {/* Live + Running — pinned above the grouped recents. */}
         {topRooms.map((room) => (
-          <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+          <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} hideStatus={embedded} />
         ))}
         {/* One empty state. A query only filters the IDLE rows, so judge it on
             those — a live session makes `rooms` non-empty, which would both
@@ -358,7 +361,7 @@ export function RoomsSidebar({
                 hash their own title, so no one colour can match them all. */}
             <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
             {group.map((room) => (
-              <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+              <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} hideStatus={embedded} />
             ))}
           </div>
         ))}
