@@ -61,6 +61,7 @@ import { promisify } from 'util'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, createReadStream, statSync, renameSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { freemem } from 'os'
 import { installReactiveMic, speakText, warmUpSpeech } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
@@ -268,6 +269,9 @@ async function main() {
   // Per-tab last-use for the staleness sweep (touched by act/say/eval/tab ops).
   const tabLastUsed = new Map<Page, number>()
   const touchTab = (p: Page) => tabLastUsed.set(p, Date.now())
+  // MB the machine can still give out (on Linux freemem() is MemAvailable); null
+  // elsewhere — macOS counts only unused pages, which would close tabs needlessly.
+  const freeMemoryMb = (): number | null => process.platform === 'linux' ? Math.round(freemem() / 1048576) : null
   const watchPage = (p: Page) => {
     if (devtoolsBufs.has(p)) return
     devtoolsBufs.set(p, attachDevtools(p))
@@ -426,14 +430,14 @@ async function main() {
   }
   const brainDownMsg = () => reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
     : `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
-  const brain = async (i: string) => {
+  const brain = async (i: string, p: Page = active) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
     const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) > 0 ? Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) : 120000
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await Promise.race([
-        actWithCache(stagehand, active, i),
+        actWithCache(stagehand, p, i),
         new Promise<never>((_, rej) => { timer = setTimeout(() => { brainAlive = false; brainError = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`; void stagehand?.close().catch(() => {}); rej(new Error(brainError)) }, BRAIN_TIMEOUT_MS) }),
       ])
     }
@@ -722,14 +726,28 @@ async function main() {
   const isWorking = (d: string) => Date.now() - (driverSeen.get(d) ?? 0) < 600000 && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
   let actionChain: Promise<unknown> = Promise.resolve()
   let inflight = 0  // commands running or queued; capture never pauses under one
+  // One stuck command (a mouth whose voice services all hang, a page that never
+  // settles) must not freeze every driver: after LOCK_MAX_MS the next command
+  // may start, while the caller still waits for its own result.
+  const LOCK_MAX_MS = Number(process.env.OSBORN_LOCK_MAX_MS) > 0 ? Number(process.env.OSBORN_LOCK_MAX_MS) : 240000
+  // A plain page scroll is done by the engine itself (mouse wheel), never the brain.
+  const PLAIN_SCROLL = /^\s*(?:please\s+)?scroll\s+(?:(?:the\s+)?(?:page|window)\s+)?(?:(down|up)|(?:back\s+)?to\s+the\s+(?:very\s+)?(top|bottom|beginning|end|start))(?:\s+(?:of\s+)?(?:the\s+)?(?:page|window))?(?:\s+(?:by\s+)?(?:about\s+|roughly\s+)?(?:(\d+)\s*(?:px|pixels?)|(a|one|two|three|half\s+a)\s+(?:screen|page|viewport)s?|a\s+(?:bit|little)))?\s*\.?\s*$/i
   const withLock = <T>(fn: () => Promise<T>): Promise<T> => {
-    const run = actionChain.then(fn, fn)
+    // The cap counts from when this command STARTS, not when it was queued, so
+    // commands waiting behind a stuck one are released one at a time.
+    let timer: NodeJS.Timeout | undefined
+    let release!: () => void
+    const released = new Promise<void>((done) => { release = done })
+    const start = () => { timer = setTimeout(() => { mark(`a command held the action lock past ${LOCK_MAX_MS / 1000}s — letting the next one run`); release() }, LOCK_MAX_MS); return fn() }
+    const run = actionChain.then(start, start)
     inflight++
-    actionChain = run.then(() => { inflight-- }, () => { inflight-- })
+    actionChain = released
+    run.then(() => { inflight--; clearTimeout(timer); release() }, () => { inflight--; clearTimeout(timer); release() })
     return run as Promise<T>
   }
   // Point the module-level `active` at the driver's tab + bring it to front.
-  // Called ONLY under withLock, so mutating shared `active` is safe.
+  // Called ONLY under withLock. /act and /say keep their own tab (`page`), so a
+  // command still running past LOCK_MAX_MS never acts on the next driver's tab.
   const focusDriverTab = async (driver: string): Promise<void> => {
     driverSeen.set(driver, Date.now())
     const tab = driverTab(driver) || allPages()[0]
@@ -954,7 +972,7 @@ async function main() {
   // saved into each journey so the recipes self-classify action|process.
   const visitedPages = new Set<string>()
   let actionCount = 0
-  const noteVisit = () => { try { visitedPages.add(new URL(active.url()).pathname) } catch { /* ignore */ } }
+  const noteVisit = (p: Page) => { try { visitedPages.add(new URL(p.url()).pathname) } catch { /* ignore */ } }
   const depthNow = () => ({ pages: visitedPages.size, actions: actionCount, kind: actionCount <= 1 ? 'action' : 'process', thin: visitedPages.size <= 1 && actionCount <= 1 })
   // GRACEFUL SHUTDOWN — used by POST /end AND the idle watchdog. Every step
   // bounded + a hard watchdog: a hung Stagehand/CDP close must never wedge
@@ -1061,7 +1079,7 @@ async function main() {
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
           agentUrl: AGENT_URL || null, agentUnreachable,
-          brain: brainAlive ? 'ready' : reviving ? 'reviving' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, stt: sttHealth, useAuth, live: live?.url,
+          freeMemoryMb: freeMemoryMb(), brain: brainAlive ? 'ready' : reviving ? 'reviving' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, stt: sttHealth, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
           taskCount: tasks.length, journey: journey?.name ?? null,
           // #120: previousRun is set when THIS process adopted a journey from a
@@ -1218,7 +1236,8 @@ async function main() {
           if (owned) return json(res, owned, 409)
           if (typeof body.instruction !== 'string' || !body.instruction.trim()) return json(res, { ok: false, code: 'bad_request', error: '/act needs {"instruction": "<what to do>"}' }, 400)
           if (body.instruction.length > 4000) return json(res, { ok: false, code: 'too_large', error: 'instruction is over 4000 characters — split it into steps' }, 413)
-          if (!brainAlive && !(await reviveBrain(true))) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
+          // A brain-free action (a plain scroll) does not wait on, or fail for, the brain.
+          if (!brainAlive && !PLAIN_SCROLL.test(String(body.instruction)) && !(await reviveBrain(true))) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
           // Ears on the acted tab, so its clip can carry what the page plays (/clip?n&audio=1).
           await ensureEars(page)
           const t0 = Date.now()
@@ -1229,7 +1248,7 @@ async function main() {
           // did not throw". Snapshot the page before and after so the response
           // says what actually changed (url, title, scroll, form/text signature).
           const snap = () => Promise.race([
-            active.evaluate(() => {
+            page.evaluate(() => {
               const v = [...document.querySelectorAll('input,textarea,select')].slice(0, 200).map((e: any) => `${(e.value || '').length}:${e.checked ? 1 : 0}`).join(',')
               // Scroll position of inner scroll containers too (a page whose
               // window never scrolls can still scroll a panel).
@@ -1253,7 +1272,7 @@ async function main() {
           // scroll that never moved report changed:true, with no warning, and
           // the dead recipe stayed in the action cache.
           const pre = await snap()
-          await active.waitForTimeout(350).catch(() => {})
+          await page.waitForTimeout(350).catch(() => {})
           const before = await snap()
           const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
@@ -1262,18 +1281,18 @@ async function main() {
           // the identical repeat, scrolled back UP to the top for "scroll down".
           // A scroll with no named target needs no model: it is a mouse-wheel
           // gesture of a known size and direction — exact, instant and free.
-          const plainScroll = /^\s*(?:please\s+)?scroll\s+(?:(?:the\s+)?(?:page|window)\s+)?(?:(down|up)|(?:back\s+)?to\s+the\s+(?:very\s+)?(top|bottom|beginning|end|start))(?:\s+(?:of\s+)?(?:the\s+)?(?:page|window))?(?:\s+(?:by\s+)?(?:about\s+|roughly\s+)?(?:(\d+)\s*(?:px|pixels?)|(a|one|two|three|half\s+a)\s+(?:screen|page|viewport)s?|a\s+(?:bit|little)))?\s*\.?\s*$/i.exec(String(body.instruction))
+          const plainScroll = PLAIN_SCROLL.exec(String(body.instruction))
           if (plainScroll) {
-            const vp = active.viewportSize() ?? { width: 1280, height: 720 }
+            const vp = page.viewportSize() ?? { width: 1280, height: 720 }
             const [, dir, edge, px, screens] = plainScroll
             const size = px ? Number(px) : Math.round(vp.height * 0.9 * (screens ? ({ a: 1, one: 1, two: 2, three: 3 } as Record<string, number>)[screens.toLowerCase()] ?? 0.5 : /bit|little/i.test(plainScroll[0]) ? 0.3 : 1))
             const dy = edge ? (/top|beginning|start/i.test(edge) ? -1e6 : 1e6) : (dir.toLowerCase() === 'up' ? -size : size)
-            await active.mouse.move(Math.round(vp.width / 2), Math.round(vp.height / 2)).catch(() => {})
-            await active.mouse.wheel(0, dy).catch(() => {})
+            await page.mouse.move(Math.round(vp.width / 2), Math.round(vp.height / 2)).catch(() => {})
+            await page.mouse.wheel(0, dy).catch(() => {})
             r = { cached: false, healed: false, did: `engine mouse-wheel scroll ${edge ? `to the ${edge.toLowerCase()}` : `${dir.toLowerCase()} ${size}px`} (no model call)`, engine: true }
             mark(`act[${driver}]: ${r.did}`)
           } else
-          try { r = await brain(body.instruction) }
+          try { r = await brain(body.instruction, page) }
           catch (e0) {
             let e = e0
             // The provider itself refused (credits ran out, key revoked, rate
@@ -1287,7 +1306,7 @@ async function main() {
               mark(`act[${driver}]: provider refused on ${before} — re-picking a brain provider`)
               await reviveBrain()
               if (brainAlive && brainModel !== before) {
-                try { r = await brain(body.instruction); healed = true } catch (e1) { e = e1 }
+                try { r = await brain(body.instruction, page); healed = true } catch (e1) { e = e1 }
               }
             }
             if (!healed) {
@@ -1295,14 +1314,14 @@ async function main() {
               mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
               // A failed act is still a task: it must not vanish from the run.
               const fn = ++reqN
-              const fshot = await reqShot(fn, 'act')
-              stampTask(fn, 'act', t0, null, fshot, body.instruction)
+              const fshot = await reqShot(fn, 'act', page)
+              stampTask(fn, 'act', t0, null, fshot, body.instruction, undefined, page)
               return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
             }
           }
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
-          await active.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
+          await page.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
           let after = await snap()
           const moved = (a: typeof before, b: typeof before) => !!a && !!b && (a.scrollY !== b.scrollY || a.innerScroll !== b.innerScroll)
           // SCROLL FALLBACK (#146): on some pages the brain's scroll action
@@ -1313,12 +1332,12 @@ async function main() {
           let fallback: string | null = null
           if (scrollIntent && !r?.engine && before && after && before.url === after.url && !moved(before, after) && !r?.noop) {
             const ins = String(body.instruction).toLowerCase()
-            const vp = active.viewportSize() ?? { width: 1280, height: 720 }
+            const vp = page.viewportSize() ?? { width: 1280, height: 720 }
             const dy = /\b(top|beginning|start)\b/.test(ins) ? -1e6 : /\b(bottom|end)\b/.test(ins) ? 1e6 : (/\bup\b/.test(ins) ? -1 : 1) * Math.round(vp.height * 0.9)
             try {
-              await active.mouse.move(Math.round(vp.width / 2), Math.round(vp.height / 2))
-              await active.mouse.wheel(0, dy)
-              await active.waitForTimeout(700)
+              await page.mouse.move(Math.round(vp.width / 2), Math.round(vp.height / 2))
+              await page.mouse.wheel(0, dy)
+              await page.waitForTimeout(700)
               const again = await snap()
               if (moved(before, again)) { after = again; fallback = 'mouse-wheel' ; mark(`act[${driver}]: brain scroll moved nothing — mouse-wheel fallback scrolled the page`) }
             } catch { /* keep the original result */ }
@@ -1360,7 +1379,7 @@ async function main() {
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
           const prevTask = [...tasks].reverse().find((t) => t.label !== 'shot')  // a /shot in between must not hide an unreviewed clip
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
-          actionCount++; noteVisit()
+          actionCount++; noteVisit(page)
           const n = ++reqN
           return { page, n, t0, r, effect, warning, nag, endMs: Date.now() }
         })
@@ -1403,7 +1422,7 @@ async function main() {
           // PRECONDITION failure is NOT retried — it will not fix itself (the
           // tab never opened a getUserMedia mic). (A full process death can't be
           // retried here; the caller's re-attach — see drive.sh — covers that.)
-          const ears = await ensureEars(active)
+          const ears = await ensureEars(page)
           const saidWav = join(RUN_DIR, `said-${Date.now()}.wav`)
           let playStartMs = 0
           const MAX_SAY_ATTEMPTS = Math.max(1, Number(process.env.OSBORN_SAY_RETRIES ?? 2))
@@ -1413,7 +1432,7 @@ async function main() {
             // cancelled so it can't play later, and is not retried.
             let cancelled = false
             try {
-              const st = await withTimeout(speakText(active, body.text, { keepWav: saidWav, onPlayStart: () => { if (cancelled) throw new Error('cancelled'); playStartMs = Date.now() } }),
+              const st = await withTimeout(speakText(page, body.text, { keepWav: saidWav, onPlayStart: () => { if (cancelled) throw new Error('cancelled'); playStartMs = Date.now() } }),
                 Math.max(1000, tReq + 35000 - Date.now()), 'speaking ran out of time').catch((e) => { cancelled = true; throw e })
               timings.synth = st.synthMs; timings.play = st.playMs; voice = st.provider
               sayErr = null; break
@@ -1424,7 +1443,7 @@ async function main() {
               if (/mic|ran out of time/i.test(m)) break
               if (attempt < MAX_SAY_ATTEMPTS) {
                 mark(`say[${driver}] transient fail (attempt ${attempt}/${MAX_SAY_ATTEMPTS}): ${m.slice(0, 60)} — retrying`)
-                await active.waitForTimeout(retryDelayMs(attempt)).catch(() => {})
+                await page.waitForTimeout(retryDelayMs(attempt)).catch(() => {})
               }
             }
           }
@@ -1435,8 +1454,8 @@ async function main() {
             try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
             timings.speak = Date.now() - tReq  // before the screenshot, so it isn't counted as speaking
             const fn = ++reqN
-            const fshot = await reqShot(fn, 'say')
-            const fw = stampTask(fn, 'say', t0, null, fshot, body.text)
+            const fshot = await reqShot(fn, 'say', page)
+            const fw = stampTask(fn, 'say', t0, null, fshot, body.text, undefined, page)
             timings.total = Date.now() - tReq; (fw as any).timings = timings; writeManifest()
             return json(res, {
               ok: false,
@@ -1908,15 +1927,23 @@ async function main() {
         const extra = (st.tabs ?? []).slice(1).filter((t: { url: string }) => {
           try { return new URL(t.url).pathname !== '/chat' } catch { return true }
         })
-        for (const t of extra) {
+        // At most OSBORN_RESTORE_MAX (each tab is a renderer; six OOM'd a 2GB engine):
+        // the active tab and owned tabs first, then the most recently opened; order kept.
+        const wasActive = (st.tabs ?? [])[st.activeIndex ?? 0]
+        const rank = (t: { owner?: string }) => (t === wasActive ? 2 : t.owner ? 1 : 0)
+        const keep = new Set(extra.map((t: any, i: number) => ({ t, i })).sort((a: any, b: any) => rank(b.t) - rank(a.t) || b.i - a.i)
+          .slice(0, Number(process.env.OSBORN_RESTORE_MAX ?? 3)).map((x: any) => x.t))
+        let restoredActive: Page | null = null
+        for (const t of extra.filter((t: any) => keep.has(t))) {
           active = await openTab(await contextFor(t.profile || ''), t.url); watchPage(active)
           if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
+          if (t === wasActive) restoredActive = active
         }
-        if (extra.length) {
+        if (keep.size) {
           const pages = allPages()
-          active = await switchTab(tabs, Math.min(st.activeIndex ?? 0, pages.length - 1))
+          active = await switchTab(tabs, restoredActive ? pages.indexOf(restoredActive) : 0)
           await live?.retarget(active).catch(() => {})
-          mark(`restored ${extra.length} tab(s) from pre-sleep state`)
+          mark(`restored ${keep.size} of ${extra.length} tab(s) from pre-sleep state`)
         }
       } catch (e) { mark(`tab restore failed: ${(e as Error).message.slice(0, 100)}`) }
     }
@@ -1954,20 +1981,32 @@ async function main() {
   // for OSBORN_TAB_STALE_MS (default 30min; 0 disables) get closed so tabs
   // never silently stack up. Tab 0 (the voice room) and the active tab are
   // exempt. Closes directly (no focus steal) and announces via events.
+  // LOW MEMORY: under OSBORN_MIN_FREE_MB the least recently used of those same
+  // tabs is closed at once, one per sweep — on a 2GB engine, six tabs left Chrome
+  // with 46MB and every command and voice call timed out (2026-11-16).
   const TAB_STALE_MS = Number(process.env.OSBORN_TAB_STALE_MS ?? 1800000)
+  const MIN_FREE_MB = Number(process.env.OSBORN_MIN_FREE_MB ?? 300)
   setInterval(async () => {
-    if (ending || !TAB_STALE_MS) return
+    if (ending) return
+    const lowMemory = (freeMemoryMb() ?? Infinity) < MIN_FREE_MB
+    if (!TAB_STALE_MS && !lowMemory) return
     const pages = allPages()
+    const idle = (p: Page) => !(p === active || [...driverActive.entries()].some(([d, t]) => t === p && isWorking(d)))
+    for (const p of pages) if (!tabLastUsed.has(p)) touchTab(p)  // a new popup is fresh, not the oldest
+    // A tab owned by a driver who is still working is never the low-memory pick.
+    const spare = (p: Page) => idle(p) && !(ownerOf(p) && isWorking(ownerOf(p)!))
+    const oldest = lowMemory ? pages.slice(1).filter(spare).sort((a, b) => (tabLastUsed.get(a) ?? 0) - (tabLastUsed.get(b) ?? 0))[0] : undefined
     for (let i = pages.length - 1; i >= 1; i--) {
       const p = pages[i]
-      if (p === active || [...driverActive.entries()].some(([d, t]) => t === p && isWorking(d))) continue  // someone is working in it
-      if (!tabLastUsed.has(p)) { touchTab(p); continue }
-      if (Date.now() - (tabLastUsed.get(p) ?? 0) <= TAB_STALE_MS) continue
+      if (!(p === oldest ? spare(p) : idle(p))) continue  // someone is working in it (re-checked: an earlier close awaited)
+      if (p !== oldest) {
+        if (!TAB_STALE_MS || Date.now() - (tabLastUsed.get(p) ?? 0) <= TAB_STALE_MS) continue
+      }
       const url = p.url(); const owner = ownerOf(p)
       await p.close({ runBeforeUnload: false }).catch(() => {})
       if (!p.isClosed()) { mark(`stale tab ${i} refused to close: ${url.slice(0, 50)}`); continue }
       tabOwners.delete(p); tabLastUsed.delete(p)
-      mark(`tab ${i} auto-closed (stale ${Math.round(TAB_STALE_MS / 60000)}min): ${url.slice(0, 50)}`)
+      mark(`tab ${i} auto-closed (${p === oldest ? `low memory, ${freeMemoryMb()}MB free` : `stale ${Math.round(TAB_STALE_MS / 60000)}min`}): ${url.slice(0, 50)}`)
       notify('tab_stale_closed', { i, url, owner })
       saveTabState()
     }

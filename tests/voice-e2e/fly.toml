@@ -29,7 +29,7 @@ primary_region = "ord"
 
 [[vm]]
   size = "shared-cpu-4x"  # 2x was throttled under active testing (#215)
-  memory = "2048mb"
+  memory = "4096mb"  # 2GB ran out with six tabs: Chrome thrashed and every command timed out (2026-11-16)
 
 # Live browser stream (screencast/x11grab → MJPEG) served during a run.
 # auto_start: a request to a STOPPED engine boots the machine (~2min to ready);
