@@ -16,14 +16,15 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
+import { agentTimeoutMs } from '@/lib/agent-read'
 
 // Agent & skill store (agent/src/index.ts): listing, prompts, skill changes and the catalog.
 const STORE_GET = ['agents', 'skills', 'skills/content', 'store/catalog', 'store/entry']
 const STORE_POST = ['skills/fork', 'skills/remove', 'store/install']
 const PROXYABLE_GET = new Set(['sessions', 'session-messages', 'sessions/export-one', ...STORE_GET])
 const PROXYABLE_POST = new Set(['sessions/import', ...STORE_POST])
-// The first catalog read lists three GitHub repos; give it longer than a session read.
-const timeoutFor = (path: string, ms: number) => (path.startsWith('store/') ? 90000 : ms)
+// Not "Not found": agentError reads that as the machine's catch-all (an outdated machine).
+const notProxyable = () => NextResponse.json({ error: 'This page cannot reach that route on your machine. Reload the page.' }, { status: 404 })
 
 // Resolve the signed-in user's own machine base URL + sync token. Returns an
 // error NextResponse when unavailable, else { base, token }.
@@ -49,13 +50,13 @@ export async function GET(
   { params }: { params: Promise<{ path: string[] }> },
 ) {
   const joined = ((await params).path ?? []).join('/')
-  if (!PROXYABLE_GET.has(joined)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!PROXYABLE_GET.has(joined)) return notProxyable()
   const m = await resolveMachine()
   if ('error' in m) return m.error
   try {
     const upstream = await fetch(`${m.base}/${joined}${req.nextUrl.search}`, {
       headers: m.token ? { Authorization: `Bearer ${m.token}` } : {},
-      signal: AbortSignal.timeout(timeoutFor(joined, 20000)),
+      signal: AbortSignal.timeout(agentTimeoutMs(joined)),
       cache: 'no-store',
     })
     // Forward the raw body (JSON, or the binary tar.gz from export-one) as-is.
@@ -73,7 +74,7 @@ export async function POST(
   { params }: { params: Promise<{ path: string[] }> },
 ) {
   const joined = ((await params).path ?? []).join('/')
-  if (!PROXYABLE_POST.has(joined)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!PROXYABLE_POST.has(joined)) return notProxyable()
   const m = await resolveMachine()
   if ('error' in m) return m.error
   const body = await req.arrayBuffer()
@@ -85,7 +86,7 @@ export async function POST(
         'Content-Type': req.headers.get('content-type') ?? 'application/octet-stream',
       },
       body,
-      signal: AbortSignal.timeout(timeoutFor(joined, 30000)),
+      signal: AbortSignal.timeout(agentTimeoutMs(joined, 'POST')),
       cache: 'no-store',
     })
     return new NextResponse(await upstream.arrayBuffer(), {

@@ -8,11 +8,11 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
-import { AgentStore, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, type RolesData } from '@/components/AgentStore'
+import { AgentStore, ListState, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, type RolesData } from '@/components/AgentStore'
 import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
 import { useSkillStore, httpSkills } from '@/lib/skill-store'
-import { agentRequest, agentError, UNREACHABLE } from '@/lib/agent-read'
+import { agentRequest, agentError, listError, UNREACHABLE } from '@/lib/agent-read'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 
@@ -72,8 +72,11 @@ export default function SettingsPage() {
   // authenticated /api/agent proxy (the same client the chat uses).
   const skillHttp = useMemo(() => httpSkills(agentUrl), [agentUrl])
   const skillStore = useSkillStore(skillHttp)
+  const [skillsLoading, setSkillsLoading] = useState(true)
+  const [skillsError, setSkillsError] = useState<string | null>(null)
   const storeRequest = useMemo(() => agentRequest(agentUrl), [agentUrl])
   const [syncToken, setSyncToken] = useState<string | null>(null)
+  const [keysError, setKeysError] = useState<string | null>(null)
   const [dashSecrets, setDashSecrets] = useState<{ key: string; set: boolean; secret: boolean; masked: string; source: 'store' | 'env' | 'none' }[]>([])
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({})
   const [savingSecret, setSavingSecret] = useState<string | null>(null)
@@ -167,22 +170,27 @@ export default function SettingsPage() {
     setAgentsLoading(true)
     storeRequest('agents').then(({ ok, status, d }) => {
       if (ok && Array.isArray(d?.agents)) done(d.agents, rolesData(d), null)
-      else done([], null, agentError(status, d, ok ? 'Your machine sent no agent list' : UNREACHABLE))
+      else done([], null, listError(ok, status, d, 'agent list'))
     }).catch(() => done([], null, UNREACHABLE))
   }, [storeRequest])
+
+  // The machine's skills, the same way; the previous machine's list is cleared while loading.
+  const skillsLoad = useRef(0)
+  const loadSkills = useCallback(() => {
+    const run = ++skillsLoad.current
+    setSkillsLoading(true); skillStore.setSkills([])
+    skillHttp.list().then((r) => {
+      if (run !== skillsLoad.current) return
+      skillStore.setSkills(r.skills ?? []); setSkillsError(r.error ?? null); setSkillsLoading(false)
+    })
+  }, [skillHttp]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch skills + named agents + secrets from the agent's HTTP API on load.
   useEffect(() => {
     if (!agentUrl) return
-    const base = agentUrl.replace(/\/$/, '')
-    skillHttp.list().then((list) => { if (list) skillStore.setSkills(list) })
+    loadSkills()
     loadAgents()
-    if (syncToken) {
-      fetch(`${base}/secrets`, { headers: { 'Authorization': `Bearer ${syncToken}` } })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => { if (Array.isArray(d?.secrets)) setDashSecrets(d.secrets) })
-        .catch(() => {})
-    }
+    refreshSecrets()
   }, [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Machine location (agent /health region).
@@ -276,12 +284,12 @@ export default function SettingsPage() {
       })
       .catch(() => setSandboxAvailable(false))
     fetch('/api/instance')
-      .then(r => r.json())
+      .then(r => (r.ok ? r.json() : Promise.reject()))
       .then(d => {
         if (d.instance?.sync_token) setSyncToken(d.instance.sync_token)
         if (typeof d.instance?.turbo === 'boolean') setTurbo(d.instance.turbo)
       })
-      .catch(() => {})
+      .catch(() => setKeysError("Could not load your account's machine details. Reload to try again."))
   }, [user, loading])
 
   const isCloud = connectionMode === 'cloud'
@@ -629,17 +637,22 @@ export default function SettingsPage() {
     window.location.href = '/'
   }
 
+  // The machine's keys; the latest request wins (typing the machine URL starts one per keystroke).
+  const secretsLoad = useRef(0)
   const refreshSecrets = async () => {
     if (!agentUrl || !syncToken) return
+    const run = ++secretsLoad.current
+    const done = (secrets: typeof dashSecrets, error: string | null) => {
+      if (run === secretsLoad.current) { setDashSecrets(secrets); setKeysError(error) }
+    }
     try {
       const r = await fetch(`${agentUrl.replace(/\/$/, '')}/secrets`, {
         headers: { 'Authorization': `Bearer ${syncToken}` },
       })
-      if (r.ok) {
-        const d = await r.json()
-        if (Array.isArray(d?.secrets)) setDashSecrets(d.secrets)
-      }
-    } catch { /* ignore */ }
+      const d = await r.json().catch(() => ({}))
+      if (r.ok && Array.isArray(d?.secrets)) done(d.secrets, null)
+      else done([], listError(r.ok, r.status, d, 'key list'))
+    } catch { done([], UNREACHABLE) }
   }
 
   const handleSaveSecret = async (key: string) => {
@@ -1201,7 +1214,7 @@ export default function SettingsPage() {
           )
         })
       ) : (
-        <SettingsRow label="No keys available" sublabel={syncToken ? 'Connect your machine to manage keys.' : 'Connect your machine to manage keys.'} />
+        <SettingsRow label={keysError ? 'Could not load keys' : 'No keys available'} sublabel={keysError || 'Connect your machine to manage keys.'} />
       )}
     </SettingsSection>
   )
@@ -1240,7 +1253,9 @@ export default function SettingsPage() {
 
       <SettingsSection title={`Skills${skillStore.skills.length ? ` (${skillStore.skills.length})` : ''}`} description="Capabilities available to the agent on your machine.">
         <div className="px-4 py-3.5">
-          {skillStore.skills.length > 0 ? <SkillStore store={skillStore} /> : <p className="text-[12px] text-[var(--text-muted)]">Connect your machine to see its skills.</p>}
+          {skillStore.skills.length > 0 ? <SkillStore store={skillStore} />
+            : <ListState className="text-[12px]" loading={skillsLoading} error={skillsError} onRetry={loadSkills}
+              loadingText="Loading your machine's skills…" emptyText="Your machine has no skills installed." />}
           <SkillViewer skill={skillStore.viewed} onClose={skillStore.closeView} />
         </div>
       </SettingsSection>

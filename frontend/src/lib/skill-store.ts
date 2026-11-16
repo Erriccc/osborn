@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
-import { agentRequest, UNREACHABLE } from './agent-read'
+import { agentRequest, agentError, listError, UNREACHABLE } from './agent-read'
 
 /** A skill as the machine lists it (agent/src/index.ts loadSkillsList). */
 export interface SkillInfo {
@@ -29,13 +29,15 @@ const unreachable: Reply = { error: UNREACHABLE }
 
 /** Settings (no LiveKit room): the agent's /skills routes, through the /api/agent proxy in the cloud.
  *  View, fork and remove only: Settings adds skills from the catalog (/store/install). */
-export function httpSkills(agentUrl: string | null | undefined): SkillTransport & { list: () => Promise<SkillInfo[] | null> } {
+export function httpSkills(agentUrl: string | null | undefined): SkillTransport & { list: () => Promise<Reply> } {
   const request = agentRequest(agentUrl)
   return {
-    list: () => request('skills').then(({ ok, d }) => (ok && Array.isArray(d?.skills) ? d.skills : null)).catch(() => null),
-    view: (folder) => request(`skills/content?name=${q(folder)}`).then(({ d }) => d).catch(() => unreachable),
+    list: () => request('skills').then(({ ok, status, d }) => (ok && Array.isArray(d?.skills) ? { skills: d.skills }
+      : { error: listError(ok, status, d, 'skill list') })).catch(() => unreachable),
+    view: (folder) => request(`skills/content?name=${q(folder)}`)
+      .then(({ ok, status, d }) => (ok ? d : { ...d, error: agentError(status, d, 'Skill not found') })).catch(() => unreachable),
     change: (op, name, arg) => request(`skills/${op}?name=${q(name)}${op === 'fork' ? `&to=${q(arg ?? '')}` : ''}`, { method: 'POST' })
-      .then(({ ok, d }) => (ok ? d : { ...d, error: d?.error || 'Request failed' })).catch(() => unreachable),
+      .then(({ ok, status, d }) => (ok ? d : { ...d, error: agentError(status, d, 'Request failed') })).catch(() => unreachable),
   }
 }
 

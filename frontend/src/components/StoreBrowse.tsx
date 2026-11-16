@@ -105,8 +105,8 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   const install = async (e: CatalogEntry) => {
     setBusy(e.id); setNote(null)
     try {
-      const { ok, d } = await request(`store/install?id=${encodeURIComponent(e.id)}&rev=${encodeURIComponent(e.rev)}`, { method: 'POST' })
-      if (!ok) { setNote({ id: e.id, ok: false, text: d?.error || 'Install failed' }); return }
+      const { ok, status, d } = await request(`store/install?id=${encodeURIComponent(e.id)}&rev=${encodeURIComponent(e.rev)}`, { method: 'POST' })
+      if (!ok) { setNote({ id: e.id, ok: false, text: agentError(status, d, 'Install failed') }); return }
       if (e.kind === 'skill') {
         if (Array.isArray(d?.skills)) onSkillsChanged?.(d.skills)
         setNote({ id: e.id, ok: true, text: `Installed as ${d.name} — available from the next session.` })
@@ -122,7 +122,7 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
 
   const openDetail = (e: CatalogEntry) => {
     setDetail({ entry: e, content: null })
-    request(`store/entry?id=${encodeURIComponent(e.id)}`).then(({ ok, d }) => setDetail((cur) => (cur?.entry.id === e.id ? { entry: e, content: ok ? d.content : (d?.error || 'Not available'), role: d?.draft?.role } : cur)))
+    request(`store/entry?id=${encodeURIComponent(e.id)}`).then(({ ok, status, d }) => setDetail((cur) => (cur?.entry.id === e.id ? { entry: e, content: ok ? d.content : agentError(status, d, 'Not available'), role: d?.draft?.role } : cur)))
       .catch(() => setDetail((cur) => (cur?.entry.id === e.id ? { entry: e, content: UNREACHABLE } : cur)))
   }
 
