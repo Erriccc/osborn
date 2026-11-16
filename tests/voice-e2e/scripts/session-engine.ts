@@ -22,8 +22,8 @@
  *   POST /act    {instruction}→ brain acts (Stagehand, cached). Returns clip.
  *   POST /say    {text}       → speak into the mic. Returns clip + heard reply.
  *   POST /hear   {lastMs}     → transcript of what the agent said recently
- *   POST /shot                → base64 screenshot (on-demand look; NOT the
- *                               per-task proof — video is)
+ *   POST /shot                → screenshot evidence link (base64 with inline:true;
+ *                               an on-demand look, NOT the per-task proof — video is)
  *   POST /tab    {op,url,i}   → open | switch | list tabs
  *   POST /brain               → re-init a detached Stagehand brain in place
  *   POST /recover             → reload the active tab (unstick a blank page)
@@ -431,14 +431,21 @@ async function main() {
   const json = (res: any, body: any, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
   // goto with a clean error: 400 for a bad URL, 502 for a failed load (no ANSI codes),
   // and no error when the tab reached the page anyway (an interrupted-but-landed load).
-  const gotoChecked = async (page: Page, raw: unknown): Promise<{ status: number; body: any } | null> => {
+  const badUrl = (raw: unknown): { status: number; body: any } | null => {
     let u: URL
     try { u = new URL(String(raw)) } catch { return { status: 400, body: { ok: false, code: 'bad_url', error: `not a URL: ${String(raw).slice(0, 200)}` } } }
-    if (!/^https?:$/.test(u.protocol)) return { status: 400, body: { ok: false, code: 'bad_url', error: 'only http(s) URLs can be opened' } }
+    return /^https?:$/.test(u.protocol) ? null : { status: 400, body: { ok: false, code: 'bad_url', error: 'only http(s) URLs can be opened' } }
+  }
+  const gotoChecked = async (page: Page, raw: unknown): Promise<{ status: number; body: any } | null> => {
+    const bad = badUrl(raw); if (bad) return bad
+    const u = new URL(String(raw))
+    const noHash = (h: string) => h.split('#')[0]
+    const before = noHash(page.url())
     try { await page.goto(u.href, { timeout: 45000 }); return null } catch (e) {
       const msg = (e as Error).message.replace(/\u001b\[[0-9;]*m/g, '').split('\n')[0]
-      const landed = (() => { try { const now = new URL(page.url()); return now.host === u.host && now.pathname === u.pathname } catch { return false } })()
-      if (landed) return null
+      // An interrupted load that still reached the target (and was not already showing it) is a success.
+      const now = noHash(page.url())
+      if (now === noHash(u.href) && before !== now) return null
       return { status: 502, body: { ok: false, code: 'nav_failed', netError: (msg.match(/net::[A-Z_]+/) || [null])[0], error: msg.slice(0, 300) } }
     }
   }
@@ -1523,6 +1530,9 @@ async function main() {
         body.owner = driver
         const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'list']
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
+        // close with no i closes YOUR tab (the quick-start's last step).
+        if (body.op === 'close' && body.i == null) { const mine = driverActive.get(driver); const idx = mine ? allPages().indexOf(mine) : -1; if (idx > 0) body.i = idx }
+        if (body.op === 'open' && body.url) { const bad = badUrl(body.url); if (bad) return json(res, bad.body, bad.status) }
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.

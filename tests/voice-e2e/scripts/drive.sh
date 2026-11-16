@@ -89,6 +89,7 @@ case "$CMD" in
     echo "REVIEW+SEND these to the user (both exist — this command guarantees it):"
     echo "  VIDEO: $clip"
     [ -f "$shot" ] && echo "  FRAME: $shot"
+    [ -n "$noop" ] && exit 5  # nothing happened: stop a chained run
     ;;
   status|tasks|runs|logs)  cc --max-time 20 "$ENGINE/$CMD" ;;
   clip|artifact)           cc --max-time 60 "$ENGINE/$CMD?n=$ARG" -o "$OUT/pull-$ARG.${CMD/clip/mp4}"; echo "$OUT/pull-$ARG" ;;

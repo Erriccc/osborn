@@ -200,7 +200,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 
 ## What's new in v46
 - `/act` returns `ok:false` with `code:"noop"` when the brain found nothing to do (it used to say `ok:true` plus a warning). A compound instruction can still do only part of the job: check `result.did` and the screenshot.
-- `/tab navigate` with no `i` acts on YOUR tab, not whichever tab another driver fronted last.
+- `/tab navigate` and `/tab close` with no `i` act on YOUR tab, not whichever tab another driver fronted last. `drive.sh act` prints NOOP and exits 5 when nothing matched.
 - Navigation errors are clean: `400 bad_url` for a non-http(s) or malformed URL, `502 nav_failed` with `netError` for a failed load, and no error when the page loaded anyway.
 - A failed `/act` clip returns `clipUrl:null` and keeps its `clipError` on `/clip?n=N`. Malformed JSON gets `400 bad_json`; an instruction over 4,000 characters gets `413 too_large`.
 - `/shot` no longer inlines the image as base64 unless you pass `"inline":true` (or `?inline=1`); use `evidence.screenshot`. It now returns `ok:true`.
