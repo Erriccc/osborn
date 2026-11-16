@@ -345,10 +345,11 @@ function readAtCommit(kind: EntryKind, repo: string, sha: string, path: string, 
   return rec.p
 }
 
+const pick = ({ prompt, tools, model, description }: ReturnType<typeof agentDraft>) => ({ prompt, tools, model, description })
+
 /** Installed store skills (by folder) and agents (by forked_from) whose entry's text or file list
  *  moved on since the commit they were installed at. An older install without a stored rev has
  *  it worked out once from that commit. A commit that leaves the entry alone is no update. */
-const pick = ({ prompt, tools, model, description }: ReturnType<typeof agentDraft>) => ({ prompt, tools, model, description })
 
 export async function findUpdates(
   entries: CatalogEntry[], skillsDir: string, skillFolders: string[], agents: { name: string; origin: string }[],
