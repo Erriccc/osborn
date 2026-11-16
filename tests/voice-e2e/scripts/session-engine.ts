@@ -69,7 +69,7 @@ import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
-import { attachDevtools, redactSecrets, type DevtoolsBuffer } from '../lib/devtools'
+import { attachDevtools, redactDiagnostics, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
@@ -349,7 +349,7 @@ async function main() {
     if (BRAIN_STUB) { brainAlive = true; brainError = null; brainModel = 'stub (does nothing)'; mark('brain STUB active — /act performs no action'); return }
     try {
       const picked = await pickBrainModel()
-      const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())
+      const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`, { signal: AbortSignal.timeout(5000) }).then((r) => r.json())
       if (picked.model.startsWith('google/')) process.env.GOOGLE_GENERATIVE_AI_API_KEY = picked.opts.apiKey
       // The Anthropic-compatible path (z.ai) lost its key when only passed as
       // a client option alongside a custom baseURL ("Anthropic API key is
@@ -393,16 +393,27 @@ async function main() {
     if (out.length && bad.length === out.length) notify('stt_unavailable', { providers: out })
   }
   void probeStt()
-  // Re-init a detached brain in place (no engine restart). Used by /brain, by
-  // /act's provider re-pick and, once per call, by /act before it gives up with
-  // brain_unavailable. That automatic try runs inside the action lock and costs
-  // up to three provider probes, so after a failed re-init it waits a minute.
+  // Re-init a detached brain in place. Single-flight until the init settles;
+  // /act's automatic try (inside the action lock) waits at most 20s for it and,
+  // after a failure, does not try again for a minute.
   let reviveFailedAt = 0
+  let reviving: Promise<boolean> | null = null
   const reviveBrain = async (auto = false): Promise<boolean> => {
-    if (auto && Date.now() - reviveFailedAt < 60000) return false
-    try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
-    try { await initBrain(); mark('brain re-initialized'); return true }
-    catch { reviveFailedAt = Date.now(); mark(`brain re-init failed — ${brainError}`); return false }
+    if (!reviving) {
+      if (auto && Date.now() - reviveFailedAt < 60000) return false
+      reviving = (async () => {
+        try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
+        try { await initBrain(); reviveFailedAt = 0; mark('brain re-initialized'); return true }
+        catch { reviveFailedAt = Date.now(); mark(`brain re-init failed — ${brainError}`); return false }
+        finally { reviving = null }
+      })()
+    }
+    if (!auto) return reviving
+    let timer: NodeJS.Timeout | undefined
+    const timedOut = new Promise<boolean>((done) => { timer = setTimeout(() => {
+      reviveFailedAt = Date.now(); brainError = 'brain re-init timed out after 20s'; mark(brainError); done(false)
+    }, 20000) })
+    try { return await Promise.race([reviving, timedOut]) } finally { clearTimeout(timer) }
   }
   const brainDownMsg = () => `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string) => {
@@ -993,7 +1004,7 @@ async function main() {
         if (!t) return json(res, { error: `run ${m[1]} task ${m[2]} is no longer stored (runs are pruned to the newest ${KEEP_RUNS})` }, 404)
         if (m[3] === 'txt') {
           res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' })
-          return res.end(redactSecrets(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`))
+          return res.end(redactDiagnostics(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`))
         }
         const file = m[3] === 'mp4' ? t.clip : t.artifact
         // A clip that failed after the reply carries its reason (#299): say it, not just "missing".
