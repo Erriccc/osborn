@@ -1,11 +1,11 @@
 // Store catalog: normalisation from a fixture snapshot, install refusals, recommendations.
 // Run with `npx tsx agent/tests/store-catalog.test.ts`. No network.
 import assert from 'node:assert'
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SOURCES, normaliseSource, installSkill, agentDraft, recommend, installedIds, safeRelPath, skillProvenance, PROVENANCE_FILE, TooLarge, type CatalogEntry } from '../src/store-catalog.js'
+import { SOURCES, normaliseSource, installSkill, findUpdates, revOf, agentDraft, recommend, installedIds, safeRelPath, skillProvenance, PROVENANCE_FILE, TooLarge, type CatalogEntry } from '../src/store-catalog.js'
 import { parseUserAgents, parseFrontMatter } from '../src/agent-store.js'
 
 const fx = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'store-catalog.json'), 'utf-8'))
@@ -49,7 +49,7 @@ const run = async () => {
   const rt = by['react-testing']
   assert.equal(rt.kind, 'skill')
   assert.equal(rt.path, 'plugins/web/skills/react-testing')
-  assert.deepEqual(rt.files.sort(), ['SKILL.md', 'references/guide.md', 'scripts/run.sh'], 'hidden files are left out')
+  assert.deepEqual([...rt.files].sort(), ['SKILL.md', 'references/guide.md', 'scripts/run.sh'], 'hidden files are left out')
   assert.deepEqual(rt.scripts, ['scripts/run.sh'])
   assert.equal(rt.description, 'Write and run React component tests with Playwright and Jest.')
   assert.deepEqual(by['sql-reviewer'].tools, ['Read', 'Grep'])
@@ -92,7 +92,38 @@ const run = async () => {
     assert.ok('error' in await installSkill({ ...rt, name: 'big', files: ['SKILL.md'] }, root, new Set(), async () => Buffer.alloc(11 * 1024 * 1024)))
     assert.ok('error' in await installSkill(fe, root, new Set(), fetchFile), 'agents are not installed as skills')
     assert.match((await installSkill({ ...rt, name: 'huge' }, root, new Set(), async () => { throw new TooLarge('SKILL.md is larger than 2 MB') }) as any).error, /larger than 2 MB/, 'an oversize file is a refusal, not a crash')
+
+    // Updates: same text at a new commit is no update; changed text is, and one click replaces the folder.
+    const newSha = 'e'.repeat(40)
+    const noReads = () => async () => { throw new Error('a stored rev needs no read') }
+    assert.deepEqual(await findUpdates([{ ...rt, sha: newSha }], root, ['react-testing'], [], noReads), [], 'a commit elsewhere is no update')
+    const rt2 = { ...rt, sha: newSha, rev: revOf(fx.files[`${rt.path}/SKILL.md`] + 'v2', rt.files) }
+    assert.deepEqual(await findUpdates([rt2], root, ['react-testing'], [], noReads), [{ id: rt.id, kind: 'skill', target: 'react-testing', from: fx.sha, to: newSha }])
+    assert.deepEqual(await findUpdates([{ ...rt2, name: 'react-tests' }], root, ['react-testing'], [], noReads), [], 'a skill renamed upstream is not offered (its update would target another folder)')
+    const v2 = async (p: string) => Buffer.from(p.endsWith('SKILL.md') ? 'v2 skill' : fx.files[p])
+    assert.match((await installSkill({ ...rt2, path: 'other/path' }, root, new Set(), v2, { update: true }) as any).error, /not installed from this catalog entry/, 'an update never replaces a folder from another entry')
+    assert.deepEqual(await installSkill(rt2, root, new Set(), v2, { update: true }), { ok: true, name: 'react-testing' })
+    assert.equal(readFileSync(join(root, 'react-testing', 'SKILL.md'), 'utf-8'), 'v2 skill')
+    assert.equal(skillProvenance(root, 'react-testing')?.sha, newSha)
+    assert.deepEqual(await findUpdates([rt2], root, ['react-testing'], [], noReads), [], 'up to date after the update')
+    assert.ok(!readdirSync(root).some((n) => n.startsWith('.installing')), 'swap leaves no temp folders')
+    // An install from before revs were stored: its rev is worked out once from its pinned commit.
+    const prov = JSON.parse(readFileSync(join(root, 'react-testing', PROVENANCE_FILE), 'utf-8'))
+    delete prov.rev; prov.sha = fx.sha
+    writeFileSync(join(root, 'react-testing', PROVENANCE_FILE), JSON.stringify(prov))
+    const atOld = () => read
+    assert.equal((await findUpdates([rt2], root, ['react-testing'], [], atOld)).length, 1, 'legacy install: old text differs, so an update shows')
+    assert.equal((await findUpdates([{ ...rt, sha: newSha }], root, ['react-testing'], [], atOld)).length, 0, 'legacy install: same text, no update')
   } finally { rmSync(root, { recursive: true, force: true }) }
+
+  // Agent updates: matched by the row's forked_from; the old rev is read at the pinned commit.
+  const fe2 = { ...fe, sha: 'd'.repeat(40), rev: 'changed0rev00000' }
+  const row = { name: 'my-fe', origin: draft.forked_from }
+  const [au] = await findUpdates([fe2], tmpdir(), [], [row], () => read)
+  assert.deepEqual({ ...au, base: undefined }, { id: fe.id, kind: 'agent', target: 'my-fe', from: fx.sha, to: fe2.sha, base: undefined })
+  assert.deepEqual(au.base, { prompt: draft.prompt, tools: draft.tools, model: draft.model, description: draft.description }, 'the pinned draft fields come back, so an edited row can be told apart')
+  assert.deepEqual(await findUpdates([{ ...fe, sha: 'd'.repeat(40) }], tmpdir(), [], [row], () => read), [], 'agent: same text at a new commit is no update')
+  assert.deepEqual(await findUpdates([fe2], tmpdir(), [], [{ name: 'x', origin: 'other:a/b@abcdef1/c.md' }], () => read), [], 'unrelated origin')
 
   // Installed: a skill by its folder, an agent by a row installed from the same file (any commit).
   const inst = installedIds(entries, new Set(['react-testing']), [draft.forked_from.replace(fx.sha, 'abcdef1')])
