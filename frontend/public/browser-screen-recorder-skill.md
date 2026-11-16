@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 49
+Version: 50
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -197,6 +197,11 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v50
+- `/say` and `/hear` find the reply by position in the recording, not by wall clock. On a CPU-throttled engine the tab's audio ran slower than real time (0.37x measured), so wall-clock windows landed in the wrong part of the recording and came back "nothing heard". Clip audio is aligned the same way.
+- `ears.audioClock` (in `/say`, `/hear` and every `ears` object) is how fast the tab's audio ran over the last 30s; 1 is real time. Under 0.9, `/say` adds a warning: the recording is time-compressed against the video and the page may have heard and played audio slowed down.
+- The screencast fits 960×540 while nobody watches the live stream (clips are 640 wide, so they lose nothing) and 1280×720 while someone does, to keep the engine's CPU under its share. Per-tab clip recorders always use the smaller size.
 
 ## What's new in v49
 - Public evidence logs hide more credential shapes (`Authorization: Token|Basic …`, `NAME=secret` settings, Google `AIza…`, GitHub `ghs_/ghu_/ghr_`, Fly tokens, `session_token`-style URL parameters) using the same redactor as the Voice Native app; hidden values read `••••`.

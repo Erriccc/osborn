@@ -64,7 +64,7 @@ import { fileURLToPath } from 'url'
 import { installReactiveMic, speakText, warmUpSpeech } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
-import { saveCapture, peekCapture, startElementCapture, installPageAudioTap } from '../lib/audio-capture'
+import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
@@ -514,22 +514,19 @@ async function main() {
   // separately (element-tap → MediaRecorder). Peek that recording and (a) serve
   // it as mp3 (GET /audio) and (b) mux a task's ALIGNED audio slice into its
   // video clip (GET /clip?n=N&audio=1). Alignment maps wall-clock → recording
-  // time via the recording's OWN start (startedAt = now - sinceStartMs), NOT
-  // tCapture — raw manifest rel0/rel1 are on tCapture's timeline and misalign by
-  // the anchor gap (proven: rel-based slicing returned silence).
-  // `startedAt` is the WALL-CLOCK instant of the recording file's time zero.
-  // That is NOT when capture was armed: the recorder's timeline begins at the
-  // first tapped audio source (the anchor), which can be many seconds later
-  // (on the boot tab, the whole room-join gap). It is computed BEFORE the
-  // decode, which for a long recording takes seconds and used to skew it.
+  // time through the page's audio-clock samples (`clock`, see audio-capture):
+  // the recording starts at the first tapped source, not when capture was
+  // armed, and runs on the page's audio clock, which a throttled CPU slows
+  // (0.37x measured on the Fly engine). The samples are taken in the page, so
+  // the time spent copying the recording out does not skew them.
   // `page` defaults to the active tab; callers outside the action lock must
   // pass the tab they mean. Temp files are per call (two muxes used to share
   // `_peek.*` and could read each other's half-written audio).
   let peekSeq = 0
-  const peekAudioToWav = async (page: Page = active, maxMs = 30 * 60 * 1000): Promise<{ wav: string; startedAt: number; durationMs: number } | null> => {
+  const peekAudioToWav = async (page: Page = active, maxMs = 30 * 60 * 1000): Promise<{ wav: string; clock: AudioClock; durationMs: number } | null> => {
     let cleanup: string[] = []
     try {
-      const { base64, sinceStartMs, fileZeroAt: startedAt } = await peekCapture(page)
+      const { base64, sinceStartMs, clock } = await peekCapture(page)
       if (!base64) return null
       // Decoding the whole recording on every turn does not scale (a 2h
       // capture is ~30s of ffmpeg and ~700MB of wav). Past the cap, proof
@@ -545,14 +542,14 @@ async function main() {
       await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav], { timeout: 30000 })
       const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wav]).catch(() => ({ stdout: '0' }))
       cleanup = [webm]
-      return { wav, startedAt, durationMs: Math.round((Number(String(probe.stdout).trim()) || 0) * 1000) }
+      return { wav, clock, durationMs: Math.round((Number(String(probe.stdout).trim()) || 0) * 1000) }
     } catch { return null }
     finally { for (const f of cleanup) try { rmSync(f, { force: true }) } catch { /* ignore */ } }
   }
   // Only a recording that overlaps the clip gives it sound: a seek past the
   // end muxes silence, which must not be reported as page audio.
-  const overlapsClip = (a: { startedAt: number; durationMs: number }, startMs: number, endMs: number) =>
-    startMs - a.startedAt < a.durationMs - 100 && a.startedAt < endMs
+  const overlapsClip = (a: { clock: AudioClock; durationMs: number }, startMs: number, endMs: number) =>
+    recordingMsAt(a.clock, startMs) < a.durationMs - 100 && recordingMsAt(a.clock, endMs) > 0
   const muxClipAudio = async (videoPath: string, endMs: number, n: number, page: Page = active): Promise<string | null> => {
     const a = await peekAudioToWav(page)
     if (!a) return null
@@ -562,12 +559,16 @@ async function main() {
       // Clip video spans ~[endMs - dur, endMs] in wall-clock; map to recording time.
       // Recording started after the clip did (ears armed during the action):
       // delay the audio by the gap instead of pulling it to the clip's start.
-      const offset = (endMs - a.startedAt) / 1000 - dur
+      const offset = recordingMsAt(a.clock, endMs - dur * 1000) / 1000
       if (!overlapsClip(a, endMs - dur * 1000, endMs)) return null
-      const seek = offset >= 0 ? ['-ss', String(offset)] : ['-itsoffset', String(-offset)]
+      // Only what was recorded during the clip: on a slow audio clock the clip's
+      // span is shorter in the recording, so later audio must not run on into it.
+      const span = Math.max(0, recordingMsAt(a.clock, endMs) / 1000 - Math.max(0, offset))
+      const seek = offset >= 0 ? ['-ss', String(offset), '-t', span.toFixed(3)] : ['-itsoffset', String(-offset), '-t', span.toFixed(3)]
       const out = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-withaudio.mp4`)
       await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', videoPath, ...seek, '-i', a.wav,
-        '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
+        // apad: silence after the recorded span, so -shortest keeps the clip's full video.
+        '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-af', 'apad', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
       return existsSync(out) ? out : null
     } catch { return null }
     finally { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } }
@@ -580,7 +581,7 @@ async function main() {
   // from "nobody was listening".
   // `heardSince`: did the ears detect sound (speech-start, or still sounding)
   // since that time? `tapped`: was any page audio source ever recorded?
-  const earsState = async (p: Page, since = 0): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number; tapped?: boolean; heardSince?: boolean }> =>
+  const earsState = async (p: Page, since = 0): Promise<{ armed: boolean; startedAt: number | null; audioElements: number; playing: number; tapped?: boolean; heardSince?: boolean; audioClock?: number | null }> =>
     (await Promise.race([
       p.evaluate((since) => {
         const g = globalThis as any
@@ -589,7 +590,8 @@ async function main() {
         const ev: Array<{ type: string; t: number }> = g.__osbornEars ?? []
         const last = ev[ev.length - 1]
         return { armed: !!c, startedAt: c?.startedAt ?? null, audioElements: els.length, playing: els.filter((e) => !e.paused && (e.srcObject || e.currentSrc)).length,
-          tapped: !!g.__osbornAudioAnchor, heardSince: ev.some((e) => e.type === 'speech-start' && e.t >= since) || last?.type === 'speech-start' }
+          tapped: !!g.__osbornAudioAnchor, heardSince: ev.some((e) => e.type === 'speech-start' && e.t >= since) || last?.type === 'speech-start',
+          audioClock: g.__osbornClock?.rate?.() ?? null }
       }, since),
       new Promise<null>((r) => setTimeout(() => r(null), 3000)),
     ]).catch(() => null)) ?? { armed: false, startedAt: null, audioElements: 0, playing: 0, unknown: true }
@@ -604,7 +606,7 @@ async function main() {
   // AUDIBLE PROOF for a spoken turn: the true-time video clip plus BOTH sides
   // of the audio — what the tester said (the synthesized utterance, placed at
   // the instant it was played into the mic) and what the page played back
-  // (the ears' recording, aligned by wall clock). Returns null when there is
+  // (the ears' recording, aligned through its audio clock). Returns null when there is
   // no audio at all to add.
   const muxSayAudio = async (clip: { path: string; startMs: number; endMs: number }, saidWav: string | null, playStartMs: number, n: number, captions: { said: string; heard: string }, a: Awaited<ReturnType<typeof peekAudioToWav>>, timeoutMs = 45000): Promise<{ path: string; said: boolean; heard: boolean } | null> => {
     const args = ['-y', '-loglevel', 'error', '-i', clip.path]
@@ -620,10 +622,11 @@ async function main() {
       args.push('-i', saidWav!); filters.push(`[${idx}:a]aresample=48000${d > 0 ? `,adelay=${d}:all=1` : ''}[s]`); labels.push('[s]'); idx++
     }
     // `a` is the recording the caller decoded once for this turn; the caller deletes it.
-    const off = a ? (clip.startMs - a.startedAt) / 1000 : 0
+    const off = a ? recordingMsAt(a.clock, clip.startMs) / 1000 : 0
     const heard = !!a && overlapsClip(a, clip.startMs, clip.endMs)
     if (a && heard) {
       if (off >= 0) args.push('-ss', off.toFixed(3))
+      args.push('-t', Math.max(0, recordingMsAt(a.clock, clip.endMs) / 1000 - Math.max(0, off)).toFixed(3))  // nothing recorded after the clip
       args.push('-i', a.wav)
       filters.push(`[${idx}:a]aresample=48000${off < 0 ? `,adelay=${Math.round(-off * 1000)}:all=1` : ''}[h]`); labels.push('[h]'); idx++
     }
@@ -1478,7 +1481,7 @@ async function main() {
           lap('decode')
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
           const budget = left(5000)
-          const heard = nothingToHear ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, t0 - decoded.startedAt).catch(hearRaw) : hearRaw(),
+          const heard = nothingToHear ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, recordingMsAt(decoded.clock, t0)).catch(hearRaw) : hearRaw(),
             budget, `hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           lap('hear')
@@ -1518,7 +1521,11 @@ async function main() {
           writeManifest()
           addStep('say', String(body.text))
           const clipPending = !body.waitClip
-          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: sayWarning, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          // How fast the page's audio ran (1 = real time). Under ~0.9 the page itself
+          // heard and played audio slowed down: say so rather than hide it.
+          const audioClock = earsAfter.audioClock ?? null
+          const clockWarning = audioClock != null && audioClock < 0.9 ? `audio in this tab ran at ${audioClock}x real time (CPU throttling): the recording is time-compressed against the video, and the page may have heard and played audio slowed down` : null
+          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {
