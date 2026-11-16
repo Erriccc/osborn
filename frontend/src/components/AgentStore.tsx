@@ -56,6 +56,14 @@ export const uniqueName = (base: string, taken: Set<string>, max = Infinity) => 
   return n
 }
 
+/** An empty list's line: loading, the reason it failed (with Retry), or that there is nothing. */
+export function ListState({ loading, error, onRetry, loadingText, emptyText, className }: {
+  loading?: boolean; error?: string | null; onRetry?: () => void; loadingText: string; emptyText: string; className: string
+}) {
+  return <p className={`${className} text-[var(--text-muted)]`}>{loading ? loadingText
+    : error ? <>{error} {onRetry && <button onClick={onRetry} className="underline">Retry</button>}</> : emptyText}</p>
+}
+
 function LockBadge() {
   return (
     <span title="Maintained by Voice Native — fork it to make your own" className="inline-flex items-center gap-0.5 rounded border border-[var(--border-subtle)] px-1 py-px text-[9px] uppercase text-[var(--text-secondary)]">
@@ -225,9 +233,8 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
       <div>
         <h5 className={heading}>Built in — maintained by Voice Native</h5>
         <div className="space-y-1.5">
-          {core.length === 0 && <p className="text-[11px] text-[var(--text-muted)]">{listLoading ? 'Loading the built-in agents…'
-            : listError ? <>{listError} {onRetryList && <button onClick={onRetryList} className="underline">Retry</button>}</>
-            : 'Connect your machine to see the built-in agents.'}</p>}
+          {core.length === 0 && <ListState className="text-[11px]" loading={listLoading} error={listError} onRetry={onRetryList}
+            loadingText="Loading the built-in agents…" emptyText="Connect your machine to see the built-in agents." />}
           {core.map((a) => (
             <AgentCard key={a.name} icon={a.icon} title={<span className="capitalize">{a.name}</span>} badges={<><LockBadge />{status?.(a.name)}</>}
               model={a.model} tools={a.tools} text={a.summary || a.description} textTitle={a.description} role={a.role} behaviours={a.behaviours} progress={progress?.(a.name)}

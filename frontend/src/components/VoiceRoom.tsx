@@ -717,7 +717,8 @@ function VoiceRoomInner({
   // MCP server state
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
   // Named agents (skills: skillStore, below sendJson)
-  const [namedAgents, setNamedAgents] = useState<NamedAgent[]>([])
+  // null until the machine sends its list (agent_ready); [] when it sent none.
+  const [namedAgents, setNamedAgents] = useState<NamedAgent[] | null>(null)
   const [agentRoles, setAgentRoles] = useState<RolesData | null>(null)
   const [showAddSkill, setShowAddSkill] = useState(false)
   const [showMobileMenu, setShowMobileMenu] = useState(false)
@@ -1952,9 +1953,7 @@ function VoiceRoomInner({
           setSkills(data.skills)
         }
         // Store named agents from agent_ready (researcher/reasoner/writer)
-        if (data.namedAgents && Array.isArray(data.namedAgents)) {
-          setNamedAgents(data.namedAgents)
-        }
+        setNamedAgents(Array.isArray(data.namedAgents) ? data.namedAgents : [])
         const roles = rolesData(data)
         if (roles) setAgentRoles(roles)
         // Pre-selected session: complete gate immediately (don't need to wait for session list)
@@ -4759,10 +4758,10 @@ function VoiceRoomInner({
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
                 </svg>
                 <span className="text-sm text-gray-200">Agents</span>
-                {backgroundFlows.some(f => f.status === 'running' && namedAgents.some(a => a.name === f.agentType)) && (
+                {backgroundFlows.some(f => f.status === 'running' && namedAgents?.some(a => a.name === f.agentType)) && (
                   <span className="text-xs text-amber-300 animate-pulse">● working</span>
                 )}
-                {namedAgents.length > 0 && (
+                {!!namedAgents?.length && (
                   <span className="ml-auto text-xs bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full">{namedAgents.length}</span>
                 )}
               </button>

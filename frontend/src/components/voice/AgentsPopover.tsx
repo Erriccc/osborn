@@ -4,12 +4,14 @@ import { useState, useEffect, useRef } from 'react'
 import type { BackgroundFlow } from '../LogsDrawer'
 import { AgentStore, type NamedAgent, type RolesData } from '../AgentStore'
 import type { UserAgentDraft, UserAgentRow } from '@/lib/user-agents'
+import { OUTDATED } from '@/lib/agent-read'
 import { PANEL_ANCHORED, PANEL_BOTTOM_SHEET, usePanelExclusive, useViewportClamp } from './shared'
 
 // Agents button + popover. The panel body is the shared AgentStore (same
 // surface as Settings → Agents & Skills) with live run status per agent.
 export function AgentsPopover({ agents, roles, yours, activity, disabled, onSaveAgent, onDeleteAgent, onSetAgentEnabled, getPrompt, requestOpen, hideTrigger }: {
-  agents?: NamedAgent[]
+  /** null until the machine has sent its list. */
+  agents?: NamedAgent[] | null
   roles?: RolesData | null
   yours?: UserAgentRow[] | null
   /** Live sub-agent runs — the same flows the Activity drawer's Running tab shows. */
@@ -91,6 +93,7 @@ export function AgentsPopover({ agents, roles, yours, activity, disabled, onSave
             </div>
             <div className="max-h-[28rem] overflow-y-auto p-3">
               <AgentStore agents={agents ?? []} yours={yours ?? null} roles={roles} browseHref="/settings?section=agents&browse=1"
+                listLoading={!agents} listError={agents?.length === 0 ? OUTDATED : null}
                 onSave={onSaveAgent} onDelete={onDeleteAgent} onSetEnabled={onSetAgentEnabled} getPrompt={getPrompt}
                 status={(name) => {
                   if (isWorking(name)) return <span className="text-[10px] font-semibold normal-case text-amber-300 animate-pulse">● working</span>
