@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 48
+Version: 49
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -197,6 +197,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v49
+- Public evidence logs hide more credential shapes (`Authorization: Token|Basic …`, `NAME=secret` settings, Google `AIza…`, GitHub `ghs_/ghu_/ghr_`, Fly tokens, `session_token`-style URL parameters) using the same redactor as the Voice Native app; hidden values read `••••`.
 
 ## What's new in v48
 - `/say` keeps working after the page stops its mic (a hang-up, a mic toggle, a LiveKit reconnect): each `getUserMedia` call gets its own copy of the synthetic mic, so a restarted call hears you. The no-mic error now says to start the page's mic or call first.

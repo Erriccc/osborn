@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import { redactSecrets } from './redactSecrets'
 
 /**
  * Frontend-only diagnostics — the tester's DevTools sense. App-agnostic by
@@ -24,21 +25,18 @@ export type DevtoolsBuffer = {
  * credential-like URL parameters (a LiveKit room URL carries its
  * access_token) and any JWT.
  */
-const SECRET_PARAM = /([?&#](?:access_token|refresh_token|id_token|token|apikey|api_key|key|auth|code|password|secret|client_secret|signature|sig)=)[^&#\s]+/gi
-// Rules mirror frontend/src/lib/redactSecrets.ts (the harness bundle ships alone,
-// so it cannot import it): a JWT, even truncated to header.payload, bearer
-// headers and well-known key prefixes.
-const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?/g
-const BEARER = /(\b(?:Bearer|Authorization:?|api-key:?|x-api-key:?)\s+)[A-Za-z0-9._~+/=-]{8,}/gi
-const KEY_PREFIX = /\b(?:sk-ant-|sk-|sbp_|ghp_|gho_|github_pat_|xox[bap]-)[A-Za-z0-9_-]{8,}/g
+// URL parameters named like credentials, compound names included (session_token,
+// x-auth-token); every other shape (JWTs, auth headers, key prefixes, NAME=value
+// settings) is the product's one redactor, copied in by the harness build.
+const SECRET_PARAM = /([?&#](?:[\w-]*(?:token|secret|password|signature)|apikey|api_key|key|auth|code|sig)=)[^&#\s]+/gi
 export const redactDiagnostics = (line: string): string =>
-  line.replace(SECRET_PARAM, '$1[redacted]').replace(JWT, '[redacted-jwt]').replace(BEARER, '$1[redacted]').replace(KEY_PREFIX, '[redacted-key]')
+  redactSecrets(line.replace(SECRET_PARAM, '$1••••'))
 
 export function attachDevtools(page: Page, cap = 250): DevtoolsBuffer {
   const consoleBuf: string[] = []
   const networkBuf: string[] = []
   const push = (buf: string[], line: string) => {
-    buf.push(`${new Date().toISOString().slice(11, 19)} ${redactDiagnostics(line).slice(0, 300)}`)
+    buf.push(`${new Date().toISOString().slice(11, 19)} ${redactDiagnostics(line.slice(0, 4000)).slice(0, 300)}`)
     if (buf.length > cap) buf.shift()
   }
   page.on('console', (m) => push(consoleBuf, `[${m.type()}] ${m.text()}`))

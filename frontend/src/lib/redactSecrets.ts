@@ -12,9 +12,14 @@
 //
 // Rules overlap the agent-side sanitizer's (agent/src/content/transcript-sanitizer
 // .ts SECRET_RULES) but are not identical; re-typed because that module imports
-// node:fs. Still unmasked on their own here: npm_, AIza, xox*, AKIA, fw_, snx_,
-// PEM. The durable fix is to split that file's pure rule array into an fs-free
-// module both packages import instead of re-typing it a third time.
+// node:fs. Still unmasked on their own here: npm_, AKIA, fw_, snx_, PEM. The
+// durable fix is to split that file's pure rule array into an fs-free module both
+// packages import instead of re-typing it a third time.
+//
+// The browser engine's public evidence logs use this file too: the harness build
+// (frontend/scripts/build-harness-bundle.mjs) copies it byte for byte to
+// tests/voice-e2e/lib/redactSecrets.ts, and tests/voice-e2e/lib/devtools.test.ts fails when
+// the two differ. Edit this file, then rebuild the bundle.
 //
 // RULES FOR EDITORS, each learned from a shipped bug:
 //  - Never raise a floor to make text read better. A LiveKit key is "API" + ~12
@@ -44,6 +49,8 @@ export function redactSecrets(s: string | undefined | null): string {
     // — it would take down the whole chunk, not just redaction.
     .replace(/([^A-Za-z0-9]|^)sk-(?:(?:ant|or|proj|svcacct)-[A-Za-z0-9_-]{12,}|[A-Za-z0-9]{20,})/g, '$1sk-••••')
     .replace(/sbp_[A-Za-z0-9]{10,}/g, 'sbp_••••')
+    .replace(/\bAIza[0-9A-Za-z_-]{30,}/g, 'AIza••••')
+    .replace(/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'xox••••')
     // Two rules at the agent's floor of 30, not one folded rule: folding them
     // lets the `_` the fine-grained class needs match an identifier like
     // `ghs_installation_cache`, and stops a real github_pat_ body at its first
@@ -67,5 +74,5 @@ export function redactSecrets(s: string | undefined | null): string {
     // so JSX and TS forms — `token={token}`, `token: (row?.sync_token as string)`
     // — are left alone, and the final guard spares a type annotation
     // (`token: AccessTokenPayload = decode(raw)`) that only this rule can reach.
-    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|[_-]KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|[_-]PASS|PRIVATE[_-]?KEY|TOKEN))(["']?\s*[=:]\s*["']?)(?=[A-Za-z0-9])(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])[^\s"'(){}<]{6,}/gi, '$1$2••••')
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|[_-]KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|[_-]PASS|PRIVATE[_-]?KEY|TOKEN))(["']?\s*[=:]\s*["']?)(?=[A-Za-z0-9])(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])(?![A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b)[^\s"'(){}<]{6,}/gi, '$1$2••••')
 }
