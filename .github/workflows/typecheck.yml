@@ -1,0 +1,54 @@
+# Type checks on GitHub, so an agent never has to install or build to check
+# its work: push the work to a `check/**` branch, or start this workflow on any
+# branch, then read the result (see .claude/skills/ci-typecheck/SKILL.md).
+# Pull requests that touch agent/ get the agent check too (frontend-lint.yml
+# already checks the frontend on pull requests).
+
+name: typecheck
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Packages to check (space separated): agent, frontend'
+        default: 'agent frontend'
+  push:
+    branches: ['check/**']
+  pull_request:
+    paths: ['agent/**', '.github/workflows/typecheck.yml']
+
+concurrency:
+  group: typecheck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tsc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [agent, frontend]
+    steps:
+      - name: Skip packages not asked for
+        id: want
+        env:
+          PACKAGES: ${{ github.event_name == 'pull_request' && 'agent' || inputs.packages || 'agent frontend' }}
+        run: echo "run=$([[ " $PACKAGES " == *" ${{ matrix.package }} "* ]] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.want.outputs.run == 'yes'
+      - uses: actions/setup-node@v4
+        if: steps.want.outputs.run == 'yes'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.package }}/package-lock.json
+      # Types only: no install scripts, so native modules are not built.
+      - name: Install
+        if: steps.want.outputs.run == 'yes'
+        working-directory: ${{ matrix.package }}
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: tsc --noEmit
+        if: steps.want.outputs.run == 'yes'
+        working-directory: ${{ matrix.package }}
+        run: npx --no-install tsc --noEmit --pretty false
