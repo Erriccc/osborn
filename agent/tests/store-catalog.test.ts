@@ -121,7 +121,7 @@ const run = async () => {
   const row = { name: 'my-fe', origin: draft.forked_from }
   const [au] = await findUpdates([fe2], tmpdir(), [], [row], () => read)
   assert.deepEqual({ ...au, base: undefined }, { id: fe.id, kind: 'agent', target: 'my-fe', from: fx.sha, to: fe2.sha, base: undefined })
-  assert.deepEqual(au.base, { prompt: bodies[fe.id], tools: fe.tools }, 'the pinned prompt and tools come back, so an edited row can be told apart')
+  assert.deepEqual(au.base, { prompt: draft.prompt, tools: draft.tools, model: draft.model, description: draft.description }, 'the pinned draft fields come back, so an edited row can be told apart')
   assert.deepEqual(await findUpdates([{ ...fe, sha: 'd'.repeat(40) }], tmpdir(), [], [row], () => read), [], 'agent: same text at a new commit is no update')
   assert.deepEqual(await findUpdates([fe2], tmpdir(), [], [{ name: 'x', origin: 'other:a/b@abcdef1/c.md' }], () => read), [], 'unrelated origin')
 

@@ -327,8 +327,8 @@ export function skillProvenance(skillsDir: string, folder: string): { source: st
 // ── Updates ──────────────────────────────────────────────────────────────────
 
 /** An installed skill folder or user agent whose catalog entry changed since it was installed.
- *  base: an agent's prompt and tools at its pinned commit, so the UI can tell a row the user edited. */
-export interface StoreUpdate { id: string; kind: EntryKind; target: string; from: string; to: string; base?: { prompt: string; tools: string[] } }
+ *  base: an agent's draft fields at its pinned commit, so the UI can tell a row the user edited. */
+export interface StoreUpdate { id: string; kind: EntryKind; target: string; from: string; to: string; base?: { prompt: string; tools: string[]; model: string; description: string } }
 
 // A file at a pinned commit never changes, so it is remembered for the life of the process.
 // A failed read is remembered for a few minutes, so a rate limit does not cost every catalog load.
@@ -340,6 +340,7 @@ function readAtCommit(kind: EntryKind, repo: string, sha: string, path: string, 
   if (hit && !(hit.failedAt && Date.now() - hit.failedAt > RETRY_MS)) return hit.p
   const rec = { p: read(kind === 'skill' ? `${path}/SKILL.md` : path).then((md) => (md == null ? null : { rev: revOf(md, files), md }), () => null), failedAt: 0 }
   rec.p.then((r) => { if (!r) rec.failedAt = Date.now() })
+  if (pinnedReads.size >= 500) pinnedReads.clear()  // bounded: the shas come from the caller
   pinnedReads.set(key, rec)
   return rec.p
 }
@@ -347,6 +348,8 @@ function readAtCommit(kind: EntryKind, repo: string, sha: string, path: string, 
 /** Installed store skills (by folder) and agents (by forked_from) whose entry's text or file list
  *  moved on since the commit they were installed at. An older install without a stored rev has
  *  it worked out once from that commit. A commit that leaves the entry alone is no update. */
+const pick = ({ prompt, tools, model, description }: ReturnType<typeof agentDraft>) => ({ prompt, tools, model, description })
+
 export async function findUpdates(
   entries: CatalogEntry[], skillsDir: string, skillFolders: string[], agents: { name: string; origin: string }[],
   readAt: (repo: string, sha: string) => Reader = rawReader,
@@ -370,7 +373,7 @@ export async function findUpdates(
     if (!was || was === c.e.rev) return null
     const fm = c.e.kind === 'agent' && old ? parseFrontMatter(old.md) : null
     return { id: c.e.id, kind: c.e.kind, target: c.target, from: c.sha, to: c.e.sha,
-      ...(fm ? { base: { prompt: fm.body.trim(), tools: toolsOf(fm.meta) } } : {}) }
+      ...(fm ? { base: pick(agentDraft({ ...c.e, tools: toolsOf(fm.meta), model: str(fm.meta.model) || undefined, description: str(fm.meta.description) }, fm.body.trim())) } : {}) }
   })
   return out.filter((u): u is StoreUpdate => !!u)
 }
