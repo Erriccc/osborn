@@ -48,12 +48,16 @@ export async function installReactiveMic(page: Page) {
         noiseSrc.loop = true
         noiseSrc.connect(dest)
         noiseSrc.start()
+        ;(ctx as any).__osbornNoTap = true  // the mic is not page output: keep it out of the ears
         w.__mic.ctx = ctx
         w.__mic.dest = dest
         w.__mic.ready = true
       }
       const out = new MediaStream()
-      for (const t of w.__mic.dest.stream.getAudioTracks()) out.addTrack(t)
+      // A clone per call: an app that stops its mic (hang-up, mic toggle, a
+      // LiveKit disconnect) must not end the source, or every later
+      // getUserMedia hands back an ended track and the app hears nothing.
+      for (const t of w.__mic.dest.stream.getAudioTracks()) out.addTrack(t.clone())
       if (constraints.video) {
         try {
           const v = await real({ video: constraints.video })

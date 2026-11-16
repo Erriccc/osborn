@@ -10,11 +10,11 @@
 | `GET /status` | ground truth: roomReady, pageUrl, pageState, idlePaused, brain ready/dead, activeTab, tabs+owners, lastFrameAgeMs, journey, **agentUrl / agentUnreachable** (#49: null when the auto-joined chat's agent is reachable, else `"agent unreachable: <host>"` — the in-app Browser panel reads this via its /status proxy), **previousRun / restartRecovered** (#120: set when this process ADOPTED a journey from a process that died mid-journey — `restartRecovered:true` means "engine restarted, journey carried over", and `/clip?run=<previousRun>` reaches the pre-restart media) |
 | `GET /tasks` | this run's task index (same as manifest.json) |
 | `GET /clip?n=N` / `GET /artifact?n=N` | download task N's mp4 / screenshot |
-| `GET /clip?n=N&audio=1` | task N's clip WITH the agent's aligned audio muxed in (mp4 video+audio). Current run only; decodes+aligns via the recording's own start, not rel0/rel1 |
-| `GET /audio` | the whole run's captured audio as mp3 (the agent's voice — absent from the video-only clips/stream). Room-mode/ears only |
+| `GET /clip?n=N&audio=1` | task N's clip WITH the page's aligned audio muxed in (mp4 video+audio). Current run only; decodes+aligns via the recording's own start, not rel0/rel1. Header `X-Clip-Audio: yes` when an audio track was muxed in (it can still be silent), `none` when no page audio could be added (video only): the tab recorded nothing during the clip, or the task's tab has since closed or moved to another URL |
+| `GET /audio` | your tab's captured audio as mp3 (`<audio>`/`<video>` elements and WebAudio output — absent from the video-only clips/stream). 404 with `ears` until the tab has recorded something; it does not arm them (`/act`, `/say` or `/hear` does). WebAudio output of the top page only, not iframes |
 | `GET /logs` | full console+network+websocket buffers, all tabs |
 | `GET /events` | SSE: live navigation/task/tab/journey/transcript/agent_output/lifecycle events (25-event replay on connect; `engine_stopping` announces sleep) |
-| `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab |
+| `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab; arms the ears on the tab so `/clip?n=N&audio=1` can carry its sound |
 | `POST /say {text, ...}` | speak into the mic; returns a screenshot, `heard` (agent's spoken reply, transcribed) and a `clipUrl` that waits until the clip is encoded (`clipPending: true`; pass `waitClip: true` to get the clip in the reply) |
 | `POST /hear {lastMs}` | transcript of recent agent audio |
 | `POST /eval {expression}` | run JS in the page (the website console, programmatic); recorded as a journey step |
