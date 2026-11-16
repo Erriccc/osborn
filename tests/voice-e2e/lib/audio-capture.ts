@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { BrowserContext, Page } from '@playwright/test'
 
 /**
  * The "ears": capture the tab's own audio output from inside the page.
@@ -38,6 +38,57 @@ export async function startCapture(page: Page): Promise<void> {
 }
 
 /**
+ * WebAudio tap, installed BEFORE page scripts: whatever a page plays straight
+ * through an AudioContext (no <audio>/<video> element — tone generators,
+ * games, voice SDKs that render through WebAudio) is mirrored into a
+ * per-context MediaStream listed on window.__osbornWebAudio, which the ears
+ * below record alongside the elements. Contexts flagged __osbornNoTap (the
+ * synthetic mic, the ears' own) are skipped.
+ */
+export async function installPageAudioTap(target: Page | BrowserContext): Promise<void> {
+  await target.addInitScript(() => {
+    const w = window as any
+    // Top frame only: the ears run in the top frame and read its list.
+    if (w.__osbornWebAudio || typeof AudioNode === 'undefined' || window !== window.top) return
+    const streams: MediaStream[] = []
+    w.__osbornWebAudio = streams
+    const taps = new WeakMap<BaseAudioContext, MediaStreamAudioDestinationNode>()
+    const tapFor = (ctx: any): MediaStreamAudioDestinationNode | null => {
+      if (ctx.__osbornNoTap || typeof ctx.createMediaStreamDestination !== 'function') return null
+      let t = taps.get(ctx)
+      if (!t) {
+        const made: MediaStreamAudioDestinationNode = ctx.createMediaStreamDestination()
+        t = made; taps.set(ctx, made); streams.push(made.stream)
+        // A closed context plays nothing again: drop its stream so pages that
+        // make a context per sound do not grow the list forever.
+        ctx.addEventListener?.('statechange', () => { if (ctx.state === 'closed') { const i = streams.indexOf(made.stream); if (i >= 0) streams.splice(i, 1) } })
+      }
+      return t!
+    }
+    // An element routed into WebAudio is heard through the tap above; the
+    // element ears skip it so it is not recorded twice.
+    const fromElement = (BaseAudioContext.prototype as any).createMediaElementSource
+    if (fromElement) (BaseAudioContext.prototype as any).createMediaElementSource = function (this: BaseAudioContext, el: any) {
+      const r = fromElement.call(this, el)
+      try { if (!(this as any).__osbornNoTap) el.__osbornViaWebAudio = true } catch { /* never break the page */ }
+      return r
+    }
+    const connect = AudioNode.prototype.connect as any
+    const disconnect = AudioNode.prototype.disconnect as any
+    AudioNode.prototype.connect = function (this: AudioNode, dest: any, ...rest: any[]) {
+      const r = connect.call(this, dest, ...rest)
+      if (dest instanceof AudioDestinationNode) { try { const t = tapFor(this.context); if (t) connect.call(this, t) } catch { /* never break the page */ } }
+      return r
+    } as any
+    AudioNode.prototype.disconnect = function (this: AudioNode, ...args: any[]) {
+      const r = disconnect.apply(this, args)
+      if (args[0] instanceof AudioDestinationNode) { try { const t = taps.get(this.context); if (t) disconnect.call(this, t) } catch { /* not connected */ } }
+      return r
+    } as any
+  })
+}
+
+/**
  * Element-tap ears: record everything <audio>/<video> elements play, by
  * routing their streams into a WebAudio destination + MediaRecorder.
  *
@@ -53,6 +104,7 @@ export async function startCapture(page: Page): Promise<void> {
 export async function startElementCapture(page: Page): Promise<void> {
   await page.evaluate(() => {
     const ctx = new AudioContext()
+    ;(ctx as any).__osbornNoTap = true  // its speaker passthrough is not new page audio
     const dest = ctx.createMediaStreamDestination()
     // Speech-event analyser: RMS energy over the same mix feeding the
     // recorder. Emits { type: 'speech-start'|'speech-stop', t } into
@@ -81,41 +133,74 @@ export async function startElementCapture(page: Page): Promise<void> {
         events.push({ type: 'speech-stop', t: lastLoudAt })
       }
     }, 50)
-    const tapped = new WeakSet<HTMLMediaElement>()
+    // Tapped per audio TRACK, so a page that re-wraps the same live track in a
+    // new MediaStream is not recorded (and played through) twice, while a call
+    // that ends and restarts (new tracks) is tapped again. Regular src elements
+    // are captured once (captureStream follows the element).
+    const tappedTracks = new WeakSet<MediaStreamTrack>()
+    const byEl = new WeakMap<HTMLMediaElement, { nodes: AudioNode[]; tracks: MediaStreamTrack[]; captured?: boolean }>()
+    const fresh = (ms: MediaStream) => ms.getAudioTracks().filter((t) => t.readyState === 'live' && !tappedTracks.has(t))
+    // TIMELINE ANCHOR — the recording's audio timeline effectively starts
+    // when the FIRST source connects (verified 2026-07-31: words landed
+    // 38.3s "early" in the file vs wall clock, exactly the login→room-join
+    // gap before any <audio> existed). hearSince converts wall-clock
+    // windows into file time using this anchor.
+    const tapStream = (ms: MediaStream): MediaStreamAudioSourceNode => {
+      const src = ctx.createMediaStreamSource(ms)
+      src.connect(dest)
+      src.connect(analyser)
+      if (!(window as any).__osbornAudioAnchor) (window as any).__osbornAudioAnchor = Date.now()
+      return src
+    }
+    const untap = (el: HTMLMediaElement) => {
+      const e = byEl.get(el)
+      if (!e) return
+      for (const n of e.nodes) try { n.disconnect() } catch { /* already gone */ }
+      for (const t of e.tracks) tappedTracks.delete(t)
+      byEl.delete(el)
+    }
     const tap = (el: HTMLMediaElement) => {
-      if (tapped.has(el)) return
+      // A muted element plays nothing (e.g. a page's own mic/camera preview, a
+      // muted participant): recording it would put sound in the file the page
+      // never played. Checked on every scan, so muting later stops the tap.
+      if (el.muted || (el as any).__osbornViaWebAudio) return untap(el)
       try {
-        const ms: MediaStream | null =
-          el.srcObject instanceof MediaStream
-            ? el.srcObject
-            : (el as any).captureStream?.() ?? null
-        if (!ms || ms.getAudioTracks().length === 0) return
-        const src = ctx.createMediaStreamSource(ms)
-        src.connect(dest)
-        src.connect(analyser)
+        const obj = el.srcObject instanceof MediaStream ? el.srcObject : null
+        if (!obj) {
+          if (byEl.get(el)?.captured) return
+          const ms: MediaStream | null = (el as any).captureStream?.() ?? null
+          if (!ms || ms.getAudioTracks().length === 0) return
+          byEl.set(el, { nodes: [tapStream(ms)], tracks: [], captured: true })
+          return
+        }
+        const tracks = fresh(obj)
+        if (!tracks.length) return
+        const src = tapStream(new MediaStream(tracks))
         // SPEAKER PASSTHROUGH (fix 2026-08-07): pulling a remote WebRTC track
         // (LiveKit srcObject — the agent's TTS) into WebAudio via
         // createMediaStreamSource STARVES the <audio> element's own output —
         // Chrome routes the track exclusively into the graph, so the agent goes
-        // SILENT on the speakers even though el.muted=false/volume=1 (regression
-        // the ears introduced: "used to hear the agent, now don't"). Reconnect
+        // SILENT on the speakers even though el.muted=false/volume=1. Reconnect
         // to the speakers so headed/local runs stay audible (no-op on headless
         // cloud — no output device). Only srcObject taps: captureStream taps
-        // (regular <audio>/<video>) still drive the element, so routing them
-        // here would double the audio.
-        if (el.srcObject instanceof MediaStream) src.connect(ctx.destination)
-        tapped.add(el)
-        // TIMELINE ANCHOR — the recording's audio timeline effectively starts
-        // when the FIRST source connects (verified 2026-07-31: words landed
-        // 38.3s "early" in the file vs wall clock, exactly the login→room-join
-        // gap before any <audio> existed). hearSince converts wall-clock
-        // windows into file time using this anchor.
-        if (!(window as any).__osbornAudioAnchor) (window as any).__osbornAudioAnchor = Date.now()
+        // still drive the element, so routing them here would double the audio.
+        src.connect(ctx.destination)
+        for (const t of tracks) tappedTracks.add(t)
+        const e = byEl.get(el) ?? { nodes: [], tracks: [] }
+        e.nodes.push(src); e.tracks.push(...tracks); byEl.set(el, e)
       } catch {
         /* element not ready yet — rescan will retry */
       }
     }
-    const scan = () => document.querySelectorAll('audio, video').forEach((el) => tap(el as HTMLMediaElement))
+    const scan = () => {
+      document.querySelectorAll('audio, video').forEach((el) => tap(el as HTMLMediaElement))
+      // WebAudio output mirrored by installPageAudioTap.
+      for (const ms of ((window as any).__osbornWebAudio ?? []) as MediaStream[]) {
+        const tracks = fresh(ms)
+        if (!tracks.length) continue
+        try { tapStream(new MediaStream(tracks)); for (const t of tracks) tappedTracks.add(t) } catch { /* retried on the next scan */ }
+      }
+    }
     scan()
     const interval = setInterval(scan, 500) // catch late srcObject assignment
     const observer = new MutationObserver(scan)

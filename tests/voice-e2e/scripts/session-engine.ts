@@ -64,7 +64,7 @@ import { fileURLToPath } from 'url'
 import { installReactiveMic, speakText, warmUpSpeech } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
-import { saveCapture, peekCapture, startElementCapture } from '../lib/audio-capture'
+import { saveCapture, peekCapture, startElementCapture, installPageAudioTap } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
@@ -222,6 +222,7 @@ async function main() {
     await c.addInitScript(() => { (globalThis as any).__name = (globalThis as any).__name || ((f: any) => f) })
     // Lets a page know it is inside the engine (the in-app Browser hides its own live view there).
     await c.addInitScript(() => { (globalThis as any).__osbornEngine = true })
+    await installPageAudioTap(c)  // every tab and popup: WebAudio output reaches the ears
   }
   await prepareContext(context)
   // PROFILES: each person (the /browser panel's signed-in user) or agent that names
@@ -544,6 +545,10 @@ async function main() {
     } catch { return null }
     finally { for (const f of cleanup) try { rmSync(f, { force: true }) } catch { /* ignore */ } }
   }
+  // Only a recording that overlaps the clip gives it sound: a seek past the
+  // end muxes silence, which must not be reported as page audio.
+  const overlapsClip = (a: { startedAt: number; durationMs: number }, startMs: number, endMs: number) =>
+    startMs - a.startedAt < a.durationMs - 100 && a.startedAt < endMs
   const muxClipAudio = async (videoPath: string, endMs: number, n: number, page: Page = active): Promise<string | null> => {
     const a = await peekAudioToWav(page)
     if (!a) return null
@@ -551,9 +556,13 @@ async function main() {
       const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', videoPath])
       const dur = Math.max(1, Number(String(probe.stdout).trim()) || 14)
       // Clip video spans ~[endMs - dur, endMs] in wall-clock; map to recording time.
-      const startSec = Math.max(0, (endMs - a.startedAt) / 1000 - dur)
+      // Recording started after the clip did (ears armed during the action):
+      // delay the audio by the gap instead of pulling it to the clip's start.
+      const offset = (endMs - a.startedAt) / 1000 - dur
+      if (!overlapsClip(a, endMs - dur * 1000, endMs)) return null
+      const seek = offset >= 0 ? ['-ss', String(offset)] : ['-itsoffset', String(-offset)]
       const out = join(RUN_DIR, `req-${String(n).padStart(3, '0')}-withaudio.mp4`)
-      await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', videoPath, '-ss', String(startSec), '-i', a.wav,
+      await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', videoPath, ...seek, '-i', a.wav,
         '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', out])
       return existsSync(out) ? out : null
     } catch { return null }
@@ -607,11 +616,8 @@ async function main() {
       args.push('-i', saidWav!); filters.push(`[${idx}:a]aresample=48000${d > 0 ? `,adelay=${d}:all=1` : ''}[s]`); labels.push('[s]'); idx++
     }
     // `a` is the recording the caller decoded once for this turn; the caller deletes it.
-    // Only a slice that actually overlaps the clip counts as a heard track: a
-    // seek past the end of the recording muxes silence and must not be
-    // reported as page audio.
     const off = a ? (clip.startMs - a.startedAt) / 1000 : 0
-    const heard = !!a && off * 1000 < a.durationMs - 100 && a.startedAt < clip.endMs
+    const heard = !!a && overlapsClip(a, clip.startMs, clip.endMs)
     if (a && heard) {
       if (off >= 0) args.push('-ss', off.toFixed(3))
       args.push('-i', a.wav)
@@ -695,6 +701,12 @@ async function main() {
     return d.startsWith('person:') && d.length > 7 ? d : ''
   }
   const driverActive = new Map<string, Page>()  // driver → its current tab
+  // The driver's own tab: its current one, else the newest tab it owns.
+  const driverTab = (driver: string): Page | undefined => {
+    const t = driverActive.get(driver)
+    return t && !t.isClosed() ? t : [...allPages()].reverse().find((p) => tabOwners.get(p)?.owner === driver)
+  }
+  const callerTab = (driver: string): Page => driverTab(driver) ?? active
   // When each driver last sent a command: a driver counts as still working for 10 minutes.
   const driverSeen = new Map<string, number>()
   const isWorking = (d: string) => Date.now() - (driverSeen.get(d) ?? 0) < 600000 && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
@@ -710,11 +722,8 @@ async function main() {
   // Called ONLY under withLock, so mutating shared `active` is safe.
   const focusDriverTab = async (driver: string): Promise<void> => {
     driverSeen.set(driver, Date.now())
-    let tab = driverActive.get(driver)
-    if (!tab || tab.isClosed()) {
-      tab = [...allPages()].reverse().find((p) => tabOwners.get(p)?.owner === driver) || allPages()[0]
-      driverActive.set(driver, tab)
-    }
+    const tab = driverTab(driver) || allPages()[0]
+    driverActive.set(driver, tab)
     active = tab
     await tab.bringToFront().catch(() => {})
     await live?.retarget(tab).catch(() => {})
@@ -738,7 +747,7 @@ async function main() {
     }
   }, 60000).unref()
   const guardOwnership = (driver: string): Record<string, unknown> | null => {
-    const t = driverActive.get(driver) ?? active
+    const t = callerTab(driver)
     const o = tabOwners.get(t)?.owner
     if (!o || o === driver) return null
     const tk = takeovers.get(t)
@@ -1093,7 +1102,10 @@ async function main() {
           // Otherwise mux from the tab the task ran on, not whichever tab
           // another driver has fronted since.
           const taskPage = allPages().find((p) => p.url() === t?.tab?.url && ownerOf(p) === (t?.tab?.owner ?? null))
-          if (t?.endMs && !alreadyAudible) { const m = await muxClipAudio(file, t.endMs, n, taskPage ?? active); if (m) file = m }
+          // No tab left that matches the task: no audio, rather than another tab's.
+          if (t?.endMs && !alreadyAudible && taskPage) { const m = await muxClipAudio(file, t.endMs, n, taskPage); if (m) file = m }
+          // Say whether audio made it in: no recording on the tab during the clip gives video only.
+          res.setHeader('X-Clip-Audio', alreadyAudible || file !== t?.clip ? 'yes' : 'none')
         }
         if (!file || !existsSync(file)) {
           // A clip that failed after the reply carries its reason (#299).
@@ -1115,16 +1127,21 @@ async function main() {
       }
       if (req.method === 'GET' && path === '/audio') {
         // The whole run's captured audio as mp3 (the agent's voice — which is
-        // ABSENT from the video-only clips/stream). Room-mode/ears only; on a
+        // ABSENT from the video-only clips/stream), from the caller's tab; on a
         // headless cloud engine this is the only way to hear the agent.
-        const a = await peekAudioToWav()
-        if (!a) return json(res, { error: 'no audio captured — room-mode ears required (ENTRY=none has none)' }, 404)
-        const mp3 = join(RUN_DIR, '_run-audio.mp3')
+        const audioPage = callerTab(driverId(req))
+        const a = await peekAudioToWav(audioPage)
+        if (!a) {
+          // A GET only reports: arming happens on /act, /say and /hear.
+          const ears = await earsState(audioPage)
+          return json(res, { error: ears.armed ? 'no audio captured on this tab yet' : 'the ears are not armed on this tab — /act, /say or /hear arms them; then have the page play audio and call /audio again', ears }, 404)
+        }
+        const mp3 = join(RUN_DIR, `_run-audio-${++peekSeq}.mp3`)
         try { await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', a.wav, '-c:a', 'libmp3lame', '-q:a', '4', mp3]) }
         catch (e) { return json(res, { error: 'transcode failed: ' + (e as Error).message }, 500) }
         finally { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } }
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': statSync(mp3).size })
-        createReadStream(mp3).on('error', () => res.destroy()).pipe(res)
+        createReadStream(mp3).on('error', () => res.destroy()).on('close', () => { try { rmSync(mp3, { force: true }) } catch { /* ignore */ } }).pipe(res)
         return
       }
       if (req.method === 'GET' && path === '/evidence') {
@@ -1192,6 +1209,8 @@ async function main() {
           if (typeof body.instruction !== 'string' || !body.instruction.trim()) return json(res, { ok: false, code: 'bad_request', error: '/act needs {"instruction": "<what to do>"}' }, 400)
           if (body.instruction.length > 4000) return json(res, { ok: false, code: 'too_large', error: 'instruction is over 4000 characters — split it into steps' }, 413)
           if (!brainAlive && !(await reviveBrain(true))) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
+          // Ears on the acted tab, so its clip can carry what the page plays (/clip?n&audio=1).
+          await ensureEars(page)
           const t0 = Date.now()
           await updateTabHud()
           // A model/API failure (quota, 429, 5xx, bad key) is an ANSWER, not a
@@ -1414,7 +1433,7 @@ async function main() {
               timings,
               code: noMic ? 'no_mic' : 'speak_failed',
               error: noMic
-                ? `this page has no open microphone — Say needs a Voice Native /chat tab (open one first). (${msg})`
+                ? `this page has not opened a microphone (getUserMedia) yet — start the page's mic or call first, then /say. (${msg})`
                 : `could not speak: ${msg}`,
               artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null, driver,
             }, noMic ? 422 : 502)
@@ -1500,8 +1519,7 @@ async function main() {
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
-        // The CALLER's tab, not whichever tab another driver fronted last.
-        const hearTab = driverActive.get(driverId(req)); const hearPage = hearTab && !hearTab.isClosed() ? hearTab : active
+        const hearPage = callerTab(driverId(req))
         const hearEars = await ensureEars(hearPage)
         if (hearEars.armedNow) return json(res, { heard: '', ears: hearEars, warning: 'the ears were not armed on this tab until this call, so nothing earlier was recorded — have the page play audio again (or /say), then call /hear' })
         const since = Date.now() - (hearEars.startedAt ?? tCapture) - (body.lastMs ?? 20000)
@@ -1557,7 +1575,7 @@ async function main() {
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
-        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(driverActive.get(driver) ?? active), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]) })) })
+        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(callerTab(driver)), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]) })) })
         // Serialized with /act and /say so a tab change never lands mid-action.
         return await withLock(async () => {
         // After ANY change of active tab the screencast is retargeted so the
@@ -1591,8 +1609,7 @@ async function main() {
         else if (body.op === 'navigate') {
           // Point an EXISTING tab at a new URL (the reuse primitive).
           // Default: the caller's own tab, never whichever tab another driver fronted last.
-          const mine = driverActive.get(driver)
-          const target = body.i != null ? allPages()[body.i] : (mine && !mine.isClosed() ? mine : active)
+          const target = body.i != null ? allPages()[body.i] : callerTab(driver)
           if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
           const o = ownerOf(target)
           if (o && body.owner !== o) return json(res, { error: `tab is claimed by "${o}"` }, 409)

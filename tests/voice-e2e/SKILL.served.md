@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 47
+Version: 48
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -68,7 +68,7 @@ You are NOT limited to clicking. Every one of these is on the running engine:
 |---|---|---|
 | Do an action + its proof | `drive.sh act "<nl>"` | video + frame (local files) |
 | Speak / hear the app | `drive.sh say "<nl>"` | clip + `heard:` transcript |
-| **Hear the agent (audio)** | `GET /audio` · `GET /clip?n=N&audio=1` | whole-run mp3 / a clip WITH the agent's voice muxed in (stream + clips are otherwise video-only) |
+| **Hear the agent (audio)** | `GET /audio` · `GET /clip?n=N&audio=1` | your tab's mp3 / a clip WITH the page's audio muxed in (`X-Clip-Audio: yes\|none`; stream + clips are otherwise video-only) |
 | **Console + network + websocket logs** | `drive.sh logs` (`GET /logs`) | per-tab console errors, failed requests, ws events |
 | **DevTools panel ON the video** | boot with `OSBORN_DEVTOOLS=1` | Elements/Console visible in every clip |
 | **Run JS in the page (site console)** | `drive.sh eval "<expr>"` | the value; also lands in /logs |
@@ -197,6 +197,12 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v48
+- `/say` keeps working after the page stops its mic (a hang-up, a mic toggle, a LiveKit reconnect): each `getUserMedia` call gets its own copy of the synthetic mic, so a restarted call hears you. The no-mic error now says to start the page's mic or call first.
+- The ears hear more: sound the top page plays through WebAudio (no `<audio>` element; not inside iframes) is recorded once, an element whose call ended and restarted (new tracks) is recorded again, and a muted element (a page's own mic or camera preview, a muted participant) is not recorded while it is muted.
+- `/act` arms the ears on its tab, so `GET /clip?n=N&audio=1` carries what the page played during the action, delayed to match the picture when the recording began mid-action. An action that navigates to a new page starts a fresh page with no recording, so its clip is video only until the next `/act`, `/say` or `/hear` on that page. The reply has header `X-Clip-Audio: yes` when an audio track was muxed in (it can still be silent) or `none` when no page audio could be added (video only): the tab recorded nothing during the clip, or the task's tab has since closed or moved to another URL.
+- `GET /audio` reads YOUR tab, not whichever tab another driver fronted last. With nothing recorded yet it returns 404 with `ears`; it never arms them itself (`/act`, `/say` or `/hear` does), so have the page play audio, then call again.
 
 ## What's new in v47
 - Evidence logs no longer leak secrets: tokens in URLs (a LiveKit room's `access_token`, OAuth `code`, `#access_token=` fragments, api keys) and any JWT are blanked in the public `/media/<run>/<n>.txt` log and the DevTools buffers.
