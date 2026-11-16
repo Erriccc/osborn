@@ -150,6 +150,8 @@ interface RoomsProps {
   liveTitle?: string | null
   /** Session a deferred switch is waiting to open (shows "Switching…"). */
   pendingId?: string | null
+  /** Fill the parent at every width (the dashboard's left column) instead of the chat's xl+ rail. */
+  embedded?: boolean
 }
 
 const COLLAPSE_KEY = 'vn-rooms-collapsed'
@@ -169,6 +171,7 @@ export function RoomsSidebar({
   disabled,
   liveTitle,
   pendingId,
+  embedded,
 }: RoomsProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [query, setQuery] = useState('')
@@ -220,7 +223,7 @@ export function RoomsSidebar({
     return (
       <aside
         aria-label="Rooms"
-        className="hidden xl:flex w-12 shrink-0 flex-col items-center gap-2 py-2 bg-gray-900 rounded-xl border border-gray-800/50"
+        className={`${embedded ? 'flex h-full' : 'hidden xl:flex'} w-12 shrink-0 flex-col items-center gap-2 py-2 bg-gray-900 rounded-xl border border-gray-800/50`}
       >
         <button
           onClick={toggleCollapsed}
@@ -267,7 +270,7 @@ export function RoomsSidebar({
   return (
     <aside
       aria-label="Rooms"
-      className="hidden xl:flex w-60 shrink-0 flex-col bg-gray-900 rounded-xl border border-gray-800/50 overflow-hidden"
+      className={`${embedded ? 'flex w-full h-full' : 'hidden xl:flex w-60'} shrink-0 flex-col bg-gray-900 rounded-xl border border-gray-800/50 overflow-hidden`}
     >
       <div className="flex items-center gap-1.5 px-3 py-2.5 border-b border-gray-800/60 shrink-0">
         <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
