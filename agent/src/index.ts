@@ -2409,12 +2409,10 @@ async function main() {
   // called before arming idle-exit on EVERY path where the session ends, or the
   // empty-room billing burn returns — the keep-alive guard is only as safe as its
   // release sites (endMeeting / intentional-leave / destroyRoomSession / disconnect).
-  // keepSlots (keep-working hang-up): the slots run on and freeWarm releases them.
-  const releaseAgents = (keepSlots = false): void => {
+  const releaseAgents = (): void => {
     hostActive = false
     hostSessionId = null
     hostWorkingDir = null
-    if (keepSlots) return
     for (const [, s] of slots) { try { (s.llm as any).abortQuery?.(); (s.llm as any).abortAgent?.() } catch {} }
     slots.clear()
   }
@@ -6318,7 +6316,7 @@ async function main() {
       parkWarm('participant_disconnected')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
-      releaseAgents(keepWorkingRequested && !!warmLLM)
+      releaseAgents()
       armMeetingLeaveGrace()
       armFastLeaveTimer()
       // "Keep working" chosen at End: after the teardown is armed (it checks agentsActive()).
