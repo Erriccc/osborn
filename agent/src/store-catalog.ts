@@ -68,6 +68,8 @@ type Reader = (path: string) => Promise<string | null>
 const str = (v: unknown) => (Array.isArray(v) ? v.join(', ') : String(v ?? '')).trim()
 const list = (v: unknown): string[] =>
   (Array.isArray(v) ? v : String(v ?? '').split(',')).map((t) => String(t).trim()).filter(Boolean)
+/** A skill's or agent's tools, from its front matter. */
+const toolsOf = (meta: Record<string, unknown>) => list(meta.tools ?? meta['allowed-tools'])
 const SCRIPT_EXT = /\.(py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl|ps1|php)$/i
 const isHidden = (rel: string) => rel.split('/').some((s) => s.startsWith('.'))
 
@@ -118,7 +120,7 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
     const files = h.kind === 'skill'
       ? paths.filter((p) => p.startsWith(dir + '/')).map((p) => p.slice(dir.length + 1)).filter((r) => !isHidden(r))
       : [posix.basename(h.file)]
-    const tools = list(meta.tools ?? meta['allowed-tools'])
+    const tools = toolsOf(meta)
     // Out of scope: anything that needs an MCP server.
     if (tools.some((t) => /^mcp__/.test(t)) || paths.some((p) => p.startsWith(dir + '/') && posix.basename(p) === '.mcp.json')) return null
     const name = storeName(str(meta.name) || (h.kind === 'skill' ? posix.basename(dir) : posix.basename(h.file, '.md')))
@@ -324,8 +326,8 @@ export function skillProvenance(skillsDir: string, folder: string): { source: st
 
 // ── Updates ──────────────────────────────────────────────────────────────────
 
-/** An installed skill folder or user agent whose catalog entry changed since it was installed. */
-/** base: an agent's prompt and tools at its pinned commit, so the UI can tell a row the user edited. */
+/** An installed skill folder or user agent whose catalog entry changed since it was installed.
+ *  base: an agent's prompt and tools at its pinned commit, so the UI can tell a row the user edited. */
 export interface StoreUpdate { id: string; kind: EntryKind; target: string; from: string; to: string; base?: { prompt: string; tools: string[] } }
 
 // A file at a pinned commit never changes, so it is remembered for the life of the process.
@@ -368,7 +370,7 @@ export async function findUpdates(
     if (!was || was === c.e.rev) return null
     const fm = c.e.kind === 'agent' && old ? parseFrontMatter(old.md) : null
     return { id: c.e.id, kind: c.e.kind, target: c.target, from: c.sha, to: c.e.sha,
-      ...(fm ? { base: { prompt: fm.body.trim(), tools: list(fm.meta.tools ?? fm.meta['allowed-tools']).filter((t) => !/^mcp__/.test(t)) } } : {}) }
+      ...(fm ? { base: { prompt: fm.body.trim(), tools: toolsOf(fm.meta) } } : {}) }
   })
   return out.filter((u): u is StoreUpdate => !!u)
 }

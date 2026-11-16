@@ -835,7 +835,7 @@ function startApiServer(workingDir: string, port: number): void {
           const myAgents = (url.searchParams.get('agents') || '').split(',').map(storeName).filter(Boolean).slice(0, 50)
           const installed = installedIds(entries, new Set(skills.map((s) => s.folder)), url.searchParams.getAll('origin').slice(0, 50))
           // Each store agent row arrives as "<name> <forked_from>"; skills are read from their provenance.
-          const rows = url.searchParams.getAll('row').slice(0, 50).map((r) => { const i = r.indexOf(' '); return { name: storeName(r.slice(0, i)), origin: r.slice(i + 1) } }).filter((r) => r.name && r.origin)
+          const rows = url.searchParams.getAll('row').slice(0, 50).map((r) => { const i = r.indexOf(' '); return i > 0 ? { name: storeName(r.slice(0, i)), origin: r.slice(i + 1) } : null }).filter((r) => r?.name && r.origin)
           // Never held up by GitHub: what is not known within 3s shows on a later load (reads are cached).
           const updates = await Promise.race([
             findUpdates(entries, homeSkillsDir(), skills.filter((s) => s.installedFrom).map((s) => s.folder), rows),
