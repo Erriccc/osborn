@@ -99,6 +99,7 @@ const run = async () => {
     assert.deepEqual(await findUpdates([{ ...rt, sha: newSha }], root, ['react-testing'], [], noReads), [], 'a commit elsewhere is no update')
     const rt2 = { ...rt, sha: newSha, rev: revOf(fx.files[`${rt.path}/SKILL.md`] + 'v2', rt.files) }
     assert.deepEqual(await findUpdates([rt2], root, ['react-testing'], [], noReads), [{ id: rt.id, kind: 'skill', target: 'react-testing', from: fx.sha, to: newSha }])
+    assert.deepEqual(await findUpdates([{ ...rt2, name: 'react-tests' }], root, ['react-testing'], [], noReads), [], 'a skill renamed upstream is not offered (its update would target another folder)')
     const v2 = async (p: string) => Buffer.from(p.endsWith('SKILL.md') ? 'v2 skill' : fx.files[p])
     assert.match((await installSkill({ ...rt2, path: 'other/path' }, root, new Set(), v2, { update: true }) as any).error, /not installed from this catalog entry/, 'an update never replaces a folder from another entry')
     assert.deepEqual(await installSkill(rt2, root, new Set(), v2, { update: true }), { ok: true, name: 'react-testing' })
@@ -118,7 +119,9 @@ const run = async () => {
   // Agent updates: matched by the row's forked_from; the old rev is read at the pinned commit.
   const fe2 = { ...fe, sha: 'd'.repeat(40), rev: 'changed0rev00000' }
   const row = { name: 'my-fe', origin: draft.forked_from }
-  assert.deepEqual(await findUpdates([fe2], tmpdir(), [], [row], () => read), [{ id: fe.id, kind: 'agent', target: 'my-fe', from: fx.sha, to: fe2.sha }])
+  const [au] = await findUpdates([fe2], tmpdir(), [], [row], () => read)
+  assert.deepEqual({ ...au, base: undefined }, { id: fe.id, kind: 'agent', target: 'my-fe', from: fx.sha, to: fe2.sha, base: undefined })
+  assert.deepEqual(au.base, { prompt: bodies[fe.id], tools: fe.tools }, 'the pinned prompt and tools come back, so an edited row can be told apart')
   assert.deepEqual(await findUpdates([{ ...fe, sha: 'd'.repeat(40) }], tmpdir(), [], [row], () => read), [], 'agent: same text at a new commit is no update')
   assert.deepEqual(await findUpdates([fe2], tmpdir(), [], [{ name: 'x', origin: 'other:a/b@abcdef1/c.md' }], () => read), [], 'unrelated origin')
 

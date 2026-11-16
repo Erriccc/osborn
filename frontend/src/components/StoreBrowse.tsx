@@ -34,7 +34,7 @@ interface CatalogEntry {
 interface SourceInfo { id: string; label: string; repo: string; trust: string; sha: string; fetchedAt: number; count: number; error?: string; note?: string }
 /** installed: ids of the entries already on the machine or in the user's agents. */
 /** updates: installed skills (target = folder) and agents (target = row name) whose entry changed upstream. Absent on older machines. */
-interface StoreUpdate { id: string; kind: 'skill' | 'agent'; target: string; from: string; to: string }
+interface StoreUpdate { id: string; kind: 'skill' | 'agent'; target: string; from: string; to: string; base?: { prompt: string; tools: string[] } }
 interface Catalog { sources: SourceInfo[]; entries: CatalogEntry[]; installed: string[]; updates?: StoreUpdate[]; recommended: { id: string; score: number; reason: string }[] }
 
 const PAGE = 60
@@ -128,6 +128,12 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   // One click: a skill is replaced in place (its folder must come from this entry); each agent row
   // installed from it gets the new prompt, tools, model and description, keeping its name, role and on/off.
   const update = async (e: CatalogEntry) => {
+    // A row the user changed since installing (prompt or tools differ from the pinned version) is only replaced on confirm.
+    const edited = updatesFor(e).filter((u) => {
+      const row = (yours || []).find((r) => r.name === u.target)
+      return row && u.base && (row.prompt.trim() !== u.base.prompt || [...row.tools].sort().join() !== [...u.base.tools].sort().join())
+    }).map((u) => u.target)
+    if (edited.length && !window.confirm(`You changed ${edited.join(', ')} since installing it. Updating replaces its prompt and tools with the new version (name, role and on/off are kept). Update anyway?`)) return
     setBusy(e.id); setNote(null)
     try {
       const { ok, status, d } = await request(`store/install?id=${encodeURIComponent(e.id)}&rev=${encodeURIComponent(e.rev)}&update=1`, { method: 'POST' })
@@ -248,7 +254,7 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
       {updates.length > 0 && (
         <div>
           <h5 className={heading}>Updates available</h5>
-          <p className="mb-1 text-[10px] leading-snug text-[var(--text-muted)]">The source changed these since you installed them. Open Details to read the new version first; updating replaces the installed copy, so local edits to a skill's files are lost.</p>
+          <p className="mb-1 text-[10px] leading-snug text-[var(--text-muted)]">The source changed these since you installed them. Open Details to read the new version first; updating replaces the installed copy: local edits to a skill's files are lost, and an agent gets the new prompt and tools (you are asked first if you changed it).</p>
           <div className="space-y-1.5">{Array.from(new Set(updates.map((u) => u.id)), (id) => byId.get(id)).filter((e): e is CatalogEntry => !!e).map((e) => <Card key={e.id} e={e} />)}</div>
         </div>
       )}

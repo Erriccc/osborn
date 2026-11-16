@@ -325,18 +325,21 @@ export function skillProvenance(skillsDir: string, folder: string): { source: st
 // ── Updates ──────────────────────────────────────────────────────────────────
 
 /** An installed skill folder or user agent whose catalog entry changed since it was installed. */
-export interface StoreUpdate { id: string; kind: EntryKind; target: string; from: string; to: string }
+/** base: an agent's prompt and tools at its pinned commit, so the UI can tell a row the user edited. */
+export interface StoreUpdate { id: string; kind: EntryKind; target: string; from: string; to: string; base?: { prompt: string; tools: string[] } }
 
-// A rev at a pinned commit never changes, so it is remembered for the life of the process.
-const pinnedRevs = new Map<string, Promise<string | null>>()
-function revAtCommit(kind: EntryKind, repo: string, sha: string, path: string, files: string[], read: Reader): Promise<string | null> {
+// A file at a pinned commit never changes, so it is remembered for the life of the process.
+// A failed read is remembered for a few minutes, so a rate limit does not cost every catalog load.
+const RETRY_MS = 5 * 60 * 1000
+const pinnedReads = new Map<string, { p: Promise<{ rev: string; md: string } | null>; failedAt: number }>()
+function readAtCommit(kind: EntryKind, repo: string, sha: string, path: string, files: string[], read: Reader): Promise<{ rev: string; md: string } | null> {
   const key = `${repo}@${sha}/${path}`
-  if (!pinnedRevs.has(key)) {
-    const p = read(kind === 'skill' ? `${path}/SKILL.md` : path).then((md) => (md == null ? null : revOf(md, files)), () => null)
-    pinnedRevs.set(key, p)
-    p.then((r) => { if (r == null) pinnedRevs.delete(key) })  // a failed read is tried again next time
-  }
-  return pinnedRevs.get(key)!
+  const hit = pinnedReads.get(key)
+  if (hit && !(hit.failedAt && Date.now() - hit.failedAt > RETRY_MS)) return hit.p
+  const rec = { p: read(kind === 'skill' ? `${path}/SKILL.md` : path).then((md) => (md == null ? null : { rev: revOf(md, files), md }), () => null), failedAt: 0 }
+  rec.p.then((r) => { if (!r) rec.failedAt = Date.now() })
+  pinnedReads.set(key, rec)
+  return rec.p
 }
 
 /** Installed store skills (by folder) and agents (by forked_from) whose entry's text or file list
@@ -351,7 +354,8 @@ export async function findUpdates(
   for (const folder of skillFolders) {
     const p = readProvenance(skillsDir, folder)
     const e = p && entries.find((x) => x.kind === 'skill' && x.source === p.source && x.path === p.path)
-    if (e && p.sha !== e.sha) checks.push({ e, target: folder, sha: p.sha, rev: p.rev, files: p.files })
+    // A skill renamed upstream would install into another folder, so it is not offered as an update.
+    if (e && p.sha !== e.sha && storeName(e.name) === folder) checks.push({ e, target: folder, sha: p.sha, rev: p.rev, files: p.files })
   }
   for (const a of agents) {
     const e = byOrigin.get(unpinnedOrigin(a.origin))
@@ -359,8 +363,12 @@ export async function findUpdates(
     if (e?.kind === 'agent' && sha && sha !== e.sha) checks.push({ e, target: a.name, sha, files: e.files })
   }
   const out = await mapLimit(checks, 6, async (c): Promise<StoreUpdate | null> => {
-    const was = c.rev ?? await revAtCommit(c.e.kind, c.e.repo, c.sha, c.e.path, c.files, readAt(c.e.repo, c.sha))
-    return was && was !== c.e.rev ? { id: c.e.id, kind: c.e.kind, target: c.target, from: c.sha, to: c.e.sha } : null
+    const old = c.rev ? null : await readAtCommit(c.e.kind, c.e.repo, c.sha, c.e.path, c.files, readAt(c.e.repo, c.sha))
+    const was = c.rev ?? old?.rev
+    if (!was || was === c.e.rev) return null
+    const fm = c.e.kind === 'agent' && old ? parseFrontMatter(old.md) : null
+    return { id: c.e.id, kind: c.e.kind, target: c.target, from: c.sha, to: c.e.sha,
+      ...(fm ? { base: { prompt: fm.body.trim(), tools: list(fm.meta.tools ?? fm.meta['allowed-tools']).filter((t) => !/^mcp__/.test(t)) } } : {}) }
   })
   return out.filter((u): u is StoreUpdate => !!u)
 }
