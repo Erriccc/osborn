@@ -185,7 +185,7 @@ export function RoomsSidebar({
       if (!embedded) setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1')  // the chat's preference; the dashboard list never collapses
       setHideSystem(localStorage.getItem(HIDE_SYSTEM_KEY) === '1')
     } catch { /* storage blocked */ }
-  },[embedded])
+  }, [embedded])
   const toggleCollapsed = () => {
     setCollapsed((v) => {
       const next = !v
@@ -227,7 +227,7 @@ export function RoomsSidebar({
     return (
       <aside
         aria-label="Rooms"
-        className={`${embedded ? 'flex h-full' : 'hidden xl:flex'} w-12 shrink-0 flex-col items-center gap-2 py-2 bg-gray-900 rounded-xl border border-gray-800/50`}
+        className="hidden xl:flex w-12 shrink-0 flex-col items-center gap-2 py-2 bg-gray-900 rounded-xl border border-gray-800/50"
       >
         <button
           onClick={toggleCollapsed}
