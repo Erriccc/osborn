@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
-import { agentRequest } from './agent-read'
+import { agentRequest, UNREACHABLE } from './agent-read'
 
 /** A skill as the machine lists it (agent/src/index.ts loadSkillsList). */
 export interface SkillInfo {
@@ -25,7 +25,7 @@ export interface SkillTransport {
 }
 
 const q = encodeURIComponent
-const unreachable: Reply = { error: 'Could not reach your machine' }
+const unreachable: Reply = { error: UNREACHABLE }
 
 /** Settings (no LiveKit room): the agent's /skills routes, through the /api/agent proxy in the cloud.
  *  View, fork and remove only: Settings adds skills from the catalog (/store/install). */

@@ -19,12 +19,18 @@ export function agentReadUrl(agentUrl: string | null | undefined, path: string):
   return `/api/agent/${p}`
 }
 
-/** JSON request to a proxied agent route: resolves { ok, d } (d = parsed body). */
-export type AgentRequest = (path: string, init?: { method?: 'GET' | 'POST'; body?: unknown }) => Promise<{ ok: boolean; d: any }>
+/** JSON request to a proxied agent route: resolves { ok, status, d } (d = parsed body). */
+export type AgentRequest = (path: string, init?: { method?: 'GET' | 'POST'; body?: unknown }) => Promise<{ ok: boolean; status: number; d: any }>
 
 export const agentRequest = (agentUrl: string | null | undefined): AgentRequest => (path, init = {}) =>
   fetch(agentReadUrl(agentUrl, path), {
     method: init.method || 'GET',
     // Every POST is JSON: the agent refuses store writes that are not (no cross-site form or text/plain POST).
     ...(init.method === 'POST' || init.body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(init.body ?? {}) } : {}),
-  }).then((r) => r.json().catch(() => ({})).then((d) => ({ ok: r.ok, d })))
+  }).then((r) => r.json().catch(() => ({})).then((d) => ({ ok: r.ok, status: r.status, d })))
+
+export const UNREACHABLE = 'Could not reach your machine'
+
+/** What to show for a failed agent request: a 404 is an Osborn older than the route; else the agent's own message. */
+export const agentError = (status: number, d: any, fallback: string): string =>
+  status === 404 ? 'Your machine runs an older Osborn. Update Osborn on your machine, then try again.' : (d?.error || fallback)
