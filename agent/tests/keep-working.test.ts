@@ -41,6 +41,10 @@ const run = async () => {
   assert.ok(/const clearWarmTimers = [^\n]*\n\s+stopKeepWorking\(\)/.test(src), 'clearing the warm timers ends keep-working')
   assert.ok(/const killWarm = [^\n]*\n\s+clearWarmTimers\(\)/.test(src), 'killWarm ends keep-working')
   assert.ok(/const claimWarm = [^\n]*\n\s+clearWarmTimers\(\)/.test(src), 'a reconnect ends keep-working')
+  // The host anchor is always released at hang-up (it would hold the empty room);
+  // kept slots hold it until freeWarm, which then arms the room teardown.
+  assert.ok(src.includes('releaseAgents(keepWorkingRequested && !!warmLLM)'), 'the hang-up releases the host anchor')
+  assert.ok(/const freeWarm = [^\n]*\n\s+killWarm\(reason\)\n\s+releaseAgents\(\)\n\s+armFastLeaveTimer\(\)/.test(src), 'freeing the parked brain tears down a held room')
   assert.ok(src.includes("data.type === 'get_busy'") && src.includes("data.type === 'keep_working'"), 'End asks, then requests')
   console.log('keep-working: all assertions passed')
 }

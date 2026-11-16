@@ -2409,10 +2409,12 @@ async function main() {
   // called before arming idle-exit on EVERY path where the session ends, or the
   // empty-room billing burn returns — the keep-alive guard is only as safe as its
   // release sites (endMeeting / intentional-leave / destroyRoomSession / disconnect).
-  const releaseAgents = (): void => {
+  // keepSlots (keep-working hang-up): the slots run on and freeWarm releases them.
+  const releaseAgents = (keepSlots = false): void => {
     hostActive = false
     hostSessionId = null
     hostWorkingDir = null
+    if (keepSlots) return
     for (const [, s] of slots) { try { (s.llm as any).abortQuery?.(); (s.llm as any).abortAgent?.() } catch {} }
     slots.clear()
   }
@@ -2618,11 +2620,12 @@ async function main() {
     keepWorkingPoll = setInterval(() => {
       const busy = (warmLLM as any)?.busyState?.()
       if (busy?.permissionPending) {
-        // Blocked on an approval: the phone push (armPermissionPush) can answer it;
-        // otherwise fall back to the normal grace instead of holding to the cap.
+        // Blocked on an approval. With the phone bridge, armPermissionPush already
+        // asked and its answer reaches the parked brain, so keep waiting (the cap
+        // still applies); without it nobody can answer, so fall back to the grace.
+        if (isWatchBridgeEnabled()) return
         stopKeepWorking()
-        console.log('✋ [KEEP-WORKING] waiting on an approval — normal re-attach grace from here')
-        void notifyPhone('Osborn needs your approval to continue the work you left running. Reconnect to answer it.')
+        console.log('✋ [KEEP-WORKING] waiting on an approval with no phone bridge — normal re-attach grace from here')
         warmExpiry = Date.now() + REATTACH_GRACE_MS
         armWarmTimers()
         return
@@ -2665,11 +2668,12 @@ async function main() {
 
   // Grace timer (free memory if no reconnect) + INDEPENDENT watchdog ceiling.
   // Both end in the SAME teardown (freeWarm, also keep-working's cap): kill warm →
-  // releaseAgents → arm idle-exit, so the machine always self-stops within
-  // WARM_HARD_CEILING_MS + idle-grace.
+  // releaseAgents → fast-leave (a room the kept slots held) → arm idle-exit, so the
+  // machine always self-stops within WARM_HARD_CEILING_MS + idle-grace.
   const freeWarm = (reason: string): void => {
     killWarm(reason)
     releaseAgents()
+    armFastLeaveTimer()
     armIdleExitTimer(`warm-${reason}`)
   }
   const armWarmTimers = (): void => {
@@ -6314,7 +6318,7 @@ async function main() {
       parkWarm('participant_disconnected')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
-      if (!keepWorkingRequested) releaseAgents()
+      releaseAgents(keepWorkingRequested && !!warmLLM)
       armMeetingLeaveGrace()
       armFastLeaveTimer()
       // "Keep working" chosen at End: after the teardown is armed (it checks agentsActive()).
