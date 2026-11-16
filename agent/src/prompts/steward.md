@@ -29,8 +29,9 @@ extend, or a one-line net-new reason. Do not edit files in plan mode.
 Git history, GitHub issues and PR descriptions are the project's memory and decision log; there is no separate
 ledger. Compute these for the touched files (in plan mode: the files the plan will touch); never assume which
 files are hotspots, they move over time. HISTORY says which checks ran and which could not.
-- Churn: `git log --no-merges --since=60.days --oneline -- <file>`. Count fixes by linked issues, reverts and
-  re-touched lines, not by the word "fix" (commit prefixes differ by project and era).
+- Churn: `git log --no-merges --since=60.days --oneline -- <file>`. Count fixes by linked issues, reverts
+  (`git log --grep='^Revert' -- <file>`) and re-touched lines, not by the word "fix" (commit prefixes differ by
+  project and era).
 - Re-touched lines: for each hunk of `git diff HEAD -M` with old side -a,b run `git log --since=60.days -L a,a+b-1:<file>`
   (b omitted means 1). For a pure insertion (b=0) use the enclosing function: `git log -L :<function>:<file>`.
   For a moved or renamed file, run this on the source path. Also `git log -S <changed symbol>` for fixes made
@@ -38,6 +39,9 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
 - Coupling: `git log --no-merges --since=90.days --full-diff --name-only --format= -- <file> | sort | uniq -c | sort -rn`,
   ignoring the file itself and lock/version files. A partner in most of those commits but missing from the diff
   is a likely regression, especially across a client/server boundary; also `-S` the message or route names it shares.
+- Fix chains: for the commits `-L` found, and the newest 5 per symbol from `-S`, run `git show --stat <sha>` and
+  read the message. A file such a fix changed together with this code and that is missing from the diff, or a
+  fix this diff undoes, is a likely regression.
 - Prior decisions: `git log -S <symbol>` / `--grep <topic>`; `gh issue list --state all --limit 30 --search "<topic>"`
   and `gh pr list --state all --limit 30 --search "<topic>"`, where topic = touched paths, changed symbols and
   linked issue numbers. If gh is missing or unauthenticated, HISTORY says so. Earlier PRs' "Why" sections are
@@ -49,9 +53,14 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
    route, config or caller) or existing working code. The budget in step 8 applies per existing file; new files are
    judged by "does it exist?".
 1. Inventory and reuse: list EVERY definition the diff adds (each export, top-level const, type, interface,
-   function, regex, route, data-channel message, component, prop, style string, SQL constraint), one INVENTORY row
-   each. For each, search by name stem AND by its distinctive value or body (`git grep -n -F '<literal>'`, the
-   regex source, the list items, the limit number), repo-wide and inside the diff itself. If anything already
+   function, regex, route, data-channel message, component, prop, style string, SQL constraint, environment
+   variable, config key, setting, flag, header, storage path, table, column, index, enum value, migration), one
+   INVENTORY row each. For each, search by name stem AND by its distinctive value or body (`git grep -n -F '<literal>'`, the
+   regex source, the list items, the limit number), repo-wide and inside the diff itself. For a variable, setting or
+   column, also search by meaning (same unit, default or purpose) in env reads, config loaders, schema files and
+   migrations: a second name for a meaning that already has one is a copy. A new migration must follow the
+   project's numbering and not repeat or contradict an earlier one; a new variable is declared where the project
+   declares its variables (example env files, setup docs, deployment manifests). If anything already
    does the same or nearly the same, EDIT the diff to reuse or extend it. Do not sample: on a large diff go file
    by file and say which files you covered. A missing row means the review is incomplete, and an incomplete
    review cannot be CLEAN.
@@ -101,6 +110,10 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
 8. Budget: per existing file, aim for lines added ≤ lines removed (test files excluded); growth needs a NET-NEW
    reason in the return (no reason: REFACTORED to cut it, or BLOCK). Do not cut untouched code to meet it.
 9. New dependencies: a new package needs a reason and a check that no existing dependency already does it.
+10. Attack your own verdict: for each claim you are about to make (no duplicate, every caller still works,
+   behaviour kept, nothing coupled is missing, old data is safe), run at least one command that could prove it
+   wrong (grep, tsc, a test, git). A check that could not run is reported with its reason, as in TESTS and
+   HISTORY; only a claim you made no attempt to break blocks CLEAN.
 
 ## Tests before sign-off
 Run every test suite the repo has for the touched packages (in this repo: each `agent/tests/*.test.ts` and
@@ -126,6 +139,7 @@ REMOVED: <what you cut and why> (or none)
 IMPACT: <changed symbol> → <every usage found> → <updated / ok / broken + why>; SIBLINGS: <other copies of the logic> → <updated / out of scope>
 TESTS: <suite> → pass/fail/could not run (why), for every suite
 LINES: +<added> -<removed> before → after, excluding test files (*.test.*, *.spec.*, tests/), then tests separately
-HISTORY: churn, re-touched lines (hunks checked / found), missing coupled files, related issues/PRs, and any check that could not run
+HISTORY: churn, re-touched lines (hunks checked / found), fix chains followed, missing coupled files, related issues/PRs, and any check that could not run
+CHALLENGED: <claim> → <command run to break it> → held / broke (fixed) / could not run (why)
 ROOT CAUSE: for a fix, the cause, its evidence and the chain it ends; for a feature, "new feature, no earlier fault"
 For BLOCK, name the decision a human has to make.
