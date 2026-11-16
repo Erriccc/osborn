@@ -389,6 +389,31 @@ async function callOpenRouter(messages: any[], tools: any[], apiKey: string): Pr
 // MAIN FUNCTION
 // ============================================================
 
+// The fast brain stating its own limits is a hand-off (the main agent has those tools);
+// recall that mentions a tool or an inability stays an answer (see the guard test).
+const CAPABILITY_DENIAL = new RegExp([
+  /(?:\bI(?:'m| am)?|\bsorry,?)\s+(?:not able to|unable to|can't|cannot|can not|(?:don't|do not) have (?:the ability|a way|any way) to)\s+(?:actually\s+|directly\s+)?/.source +
+    /(?:browse|record (?:a |the )?(?:video|audio|screen|clip|page)|take (?:a )?screenshots?|edit|build|run|execute|open|visit|fetch|download|access)\b(?!\s+(?:through|over|down)\b)/.source,
+  /\bI(?:'m| am)?\s+(?:not able to|unable to|don't|do not|can't|cannot|can not|have no|lack)\b(?!\s+(?:find|see|locate|recall|spot|remember|know|tell|wait|record|details)\b)/.source +
+    /[^.!?\n]{0,60}?\b(?:browser|bash|shell|terminal|internet)\b(?!\s+(?:output|logs?|command|script|session|history)\b)/.source,
+].join('|'), 'i')
+
+export const isHandOff = (text: string): boolean =>
+  text.includes('[RESEARCH_NEEDED]') || CAPABILITY_DENIAL.test(text.replace(/[\u2018\u2019]/g, "'"))
+
+/** Every exit that carries model text: sanitise, then answer or hand off. A hand-off
+ *  carries no text (nothing for a consumer to post) and is not kept in the fast
+ *  brain's own history, so a suppressed denial cannot prime the next turn. */
+function finish(question: string, raw: string | undefined, toolsUsed: string[]): PipelineFastBrainResult {
+  const text = sanitizeFastBrainAnswer((raw || '').trim())
+  persistentMessages.push({ role: 'user', content: question })
+  console.log(`🧠⚡ [pipeline-fb] ${toolsUsed.length} searches, answer: "${text.substring(0, 80)}"`)
+  if (isHandOff(text)) return { script: '', type: 'research_needed', toolsUsed }
+  if (!text) return { script: "I didn't find that in the session history.", type: 'answer', toolsUsed }
+  persistentMessages.push({ role: 'assistant', content: text })
+  return { script: text, type: 'answer', toolsUsed }
+}
+
 /**
  * Strip internal recall provenance the fast brain may echo into its answer so
  * the user never sees it: citation headers like
@@ -457,6 +482,7 @@ export async function askPipelineFastBrain(
     ...persistentMessages,
     { role: 'user', content: turnContext ? `${turnContext}${question}` : question },
   ]
+  const turnStart = messages.length  // this turn's replies only: never an earlier answer
 
   try {
     let rounds = 0
@@ -491,25 +517,7 @@ export async function askPipelineFastBrain(
 
       const calls = msg.tool_calls
       if (!calls || calls.length === 0) {
-        // Final text response. Strip any internal recall provenance the model
-        // may have echoed (citation headers / line numbers / bare timestamps) —
-        // those leak as ugly "[main L550 · tool_result · both] 2026-…" lines in
-        // the chat bubble. Defense-in-depth alongside the system-prompt rule.
-        const text = sanitizeFastBrainAnswer((msg.content || '').trim())
-
-        // Update persistent history with this exchange
-        persistentMessages.push({ role: 'user', content: question })
-        if (text) persistentMessages.push({ role: 'assistant', content: text })
-
-        console.log(`🧠⚡ [pipeline-fb] ${toolsUsed.length} searches, answer: "${text.substring(0, 80)}"`)
-
-        if (!text) return { script: "I didn't find that in the session history.", type: 'answer', toolsUsed }
-        // A claimed inability ("I don't have a browser / Bash tool") is a hand-off too:
-        // the main agent has those, so it must never reach the chat as an answer.
-        if (text.includes('[RESEARCH_NEEDED]') || /\b(?:don't|do not|can't|cannot|unable to)\b[^.]{0,40}\b(?:browser|bash|shell|screenshot|terminal|run (?:shell|commands?)|open (?:the )?(?:url|site|page|website))/i.test(text)) {
-          return { script: text.replace('[RESEARCH_NEEDED]', '').trim() || 'This needs deeper research.', type: 'research_needed', toolsUsed }
-        }
-        return { script: text, type: 'answer', toolsUsed }
+        return finish(question, msg.content, toolsUsed)
       }
 
       // Execute tool calls
@@ -529,12 +537,9 @@ export async function askPipelineFastBrain(
       }
     }
 
-    // Max rounds hit — extract whatever text we have
-    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content)
-    const fallback = lastAssistant?.content?.trim() || "I didn't find that in the session history."
-    persistentMessages.push({ role: 'user', content: question })
-    if (fallback) persistentMessages.push({ role: 'assistant', content: fallback })
-    return { script: fallback, type: 'answer', toolsUsed }
+    // Max rounds or deadline hit — whatever text we have, classified the same way.
+    const lastAssistant = messages.slice(turnStart).reverse().find(m => m.role === 'assistant' && m.content)
+    return finish(question, lastAssistant?.content, toolsUsed)
 
   } catch (err: any) {
     if (err?.name === 'TimeoutError' || err?.message?.includes('timeout')) {

@@ -11,7 +11,7 @@
  *        THEN sends a redirect prompt via sendPrompt ([EMERGENCY STOP] + reason +
  *        recent user messages); tool result names "background sub-agents unaffected";
  *        emergency_stop is NOT counted in toolsUsed
- *   FB5  [RESEARCH_NEEDED] marker → type 'research_needed', marker stripped
+ *   FB5  [RESEARCH_NEEDED] marker → type 'research_needed', empty script
  *   FB6  result shape { script, type, toolsUsed }
  *
  * Run: npx tsx agent/tests/regression/fastbrain-contract.ts  (self-sandboxes HOME)
@@ -149,8 +149,7 @@ try {
     responseQueue = [assistantText('This needs live code analysis [RESEARCH_NEEDED]')]
     const r = await fb.askPipelineFastBrain(workingDir, 'sess-research', 'refactor the auth layer')
     check('FB5a', r.type === 'research_needed', `marker → type research_needed (got ${r.type})`)
-    check('FB5b', !r.script.includes('[RESEARCH_NEEDED]') && r.script.includes('live code analysis'),
-      `marker stripped from script: "${r.script}"`)
+    check('FB5b', r.script === '', `a hand-off carries no script (#323): "${r.script}"`)
   }
 } finally {
   globalThis.fetch = realFetch
