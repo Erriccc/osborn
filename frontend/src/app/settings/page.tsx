@@ -12,7 +12,7 @@ import { AgentStore, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, 
 import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
 import { useSkillStore, httpSkills } from '@/lib/skill-store'
-import { agentRequest } from '@/lib/agent-read'
+import { agentRequest, agentError, UNREACHABLE } from '@/lib/agent-read'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 
@@ -63,6 +63,8 @@ export default function SettingsPage() {
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [dashAgents, setDashAgents] = useState<NamedAgent[]>([])
+  const [agentsLoading, setAgentsLoading] = useState(true)
+  const [agentsError, setAgentsError] = useState<string | null>(null)
   const [dashRoles, setDashRoles] = useState<RolesData | null>(null)
   const [storeTab, setStoreTab] = useState<'installed' | 'browse'>('installed')
   const userAgents = useUserAgents()
@@ -154,15 +156,27 @@ export default function SettingsPage() {
     if (m) setConnectionMode(m)
   }, [])
 
+  // The built-in list; the latest request wins (the first goes to the default URL).
+  const agentsLoad = useRef(0)
+  const loadAgents = useCallback(() => {
+    const run = ++agentsLoad.current
+    const done = (agents: NamedAgent[], roles: ReturnType<typeof rolesData>, error: string | null) => {
+      if (run !== agentsLoad.current) return
+      setDashAgents(agents); setDashRoles(roles); setAgentsError(error); setAgentsLoading(false)
+    }
+    setAgentsLoading(true)
+    storeRequest('agents').then(({ ok, status, d }) => {
+      if (ok && Array.isArray(d?.agents)) done(d.agents, rolesData(d), null)
+      else done([], null, agentError(status, d, ok ? 'Your machine sent no agent list' : UNREACHABLE))
+    }).catch(() => done([], null, UNREACHABLE))
+  }, [storeRequest])
+
   // Fetch skills + named agents + secrets from the agent's HTTP API on load.
   useEffect(() => {
     if (!agentUrl) return
     const base = agentUrl.replace(/\/$/, '')
     skillHttp.list().then((list) => { if (list) skillStore.setSkills(list) })
-    storeRequest('agents').then(({ ok, d }) => {
-      if (ok && Array.isArray(d?.agents)) setDashAgents(d.agents)
-      setDashRoles(rolesData(d))
-    }).catch(() => {})
+    loadAgents()
     if (syncToken) {
       fetch(`${base}/secrets`, { headers: { 'Authorization': `Bearer ${syncToken}` } })
         .then((r) => (r.ok ? r.json() : null))
@@ -1219,7 +1233,7 @@ export default function SettingsPage() {
       <SettingsSection title="Agents" description="The specialists your voice agent can dispatch to. Built-in agents are maintained by Voice Native; fork one to make it your own.">
         <div className="px-4 py-3.5">
           {storeTabs}
-          <AgentStore agents={dashAgents} yours={userAgents.rows} roles={dashRoles}
+          <AgentStore agents={dashAgents} yours={userAgents.rows} roles={dashRoles} listLoading={agentsLoading} listError={agentsError} onRetryList={loadAgents}
             onSave={userAgents.save} onDelete={userAgents.remove} onSetEnabled={userAgents.setEnabled} />
         </div>
       </SettingsSection>

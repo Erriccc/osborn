@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { UserAgentDraft, UserAgentRow } from '@/lib/user-agents'
 import type { SkillInfo } from '@/lib/skill-store'
-import type { AgentRequest } from '@/lib/agent-read'
+import { agentError, UNREACHABLE, type AgentRequest } from '@/lib/agent-read'
 import { card, field, link, heading, pill, uniqueName } from './AgentStore'
 
 // Browse tab of the agent & skill store: skills and named agents from trusted
@@ -84,8 +84,8 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
   const load = useCallback((refresh = false) => {
     setLoading(true); setError(null)
     request(`store/catalog?${mine}${refresh ? '&refresh=1' : ''}`)
-      .then(({ ok, d }) => { if (ok) setData(d); else setError(d?.error || 'Could not load the catalog') })
-      .catch(() => setError('Could not reach your machine'))
+      .then(({ ok, status, d }) => { if (ok) setData(d); else setError(agentError(status, d, 'Could not load the catalog')) })
+      .catch(() => setError(UNREACHABLE))
       .finally(() => setLoading(false))
   }, [request, mine])
   useEffect(() => { load() }, [load])
@@ -117,13 +117,13 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
         setNote({ id: e.id, ok: true, text: `Added as ${name} (${d.draft.role}) — applies next session.` })
       }
       setJustInstalled((s) => new Set(s).add(e.id))
-    } catch { setNote({ id: e.id, ok: false, text: 'Could not reach your machine' }) } finally { setBusy(null) }
+    } catch { setNote({ id: e.id, ok: false, text: UNREACHABLE }) } finally { setBusy(null) }
   }
 
   const openDetail = (e: CatalogEntry) => {
     setDetail({ entry: e, content: null })
     request(`store/entry?id=${encodeURIComponent(e.id)}`).then(({ ok, d }) => setDetail((cur) => (cur?.entry.id === e.id ? { entry: e, content: ok ? d.content : (d?.error || 'Not available'), role: d?.draft?.role } : cur)))
-      .catch(() => setDetail((cur) => (cur?.entry.id === e.id ? { entry: e, content: 'Could not reach your machine' } : cur)))
+      .catch(() => setDetail((cur) => (cur?.entry.id === e.id ? { entry: e, content: UNREACHABLE } : cur)))
   }
 
   const InstallButton = ({ e }: { e: CatalogEntry }) => isInstalled(e)

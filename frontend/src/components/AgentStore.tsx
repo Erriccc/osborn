@@ -140,7 +140,7 @@ function AgentCard({ icon, title, badges, actions, model, tools, text, textTitle
 
 type Editing = { draft: UserAgentDraft; isNew: boolean }
 
-export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, status, progress, getPrompt, roles, browseHref }: {
+export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, status, progress, getPrompt, roles, browseHref, listLoading, listError, onRetryList }: {
   /** Agents reported by the machine; the core ones fill "Built in". */
   agents: NamedAgent[]
   /** The user's rows; null when signed out or not loaded. */
@@ -158,6 +158,10 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   roles?: RolesData | null
   /** Where "Browse catalogs" goes (omitted = no link). */
   browseHref?: string
+  /** Settings' fetch of the list: loading, or the reason it failed (with Retry), is not "no machine". */
+  listLoading?: boolean
+  listError?: string | null
+  onRetryList?: () => void
 }) {
   // The built-ins. An older machine sends no core flag (it marks the user's own agents
   // custom instead), so anything not marked as the user's is listed here, read-only.
@@ -221,7 +225,9 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
       <div>
         <h5 className={heading}>Built in — maintained by Voice Native</h5>
         <div className="space-y-1.5">
-          {core.length === 0 && <p className="text-[11px] text-[var(--text-muted)]">Connect your machine to see the built-in agents.</p>}
+          {core.length === 0 && <p className="text-[11px] text-[var(--text-muted)]">{listLoading ? 'Loading the built-in agents…'
+            : listError ? <>{listError} {onRetryList && <button onClick={onRetryList} className="underline">Retry</button>}</>
+            : 'Connect your machine to see the built-in agents.'}</p>}
           {core.map((a) => (
             <AgentCard key={a.name} icon={a.icon} title={<span className="capitalize">{a.name}</span>} badges={<><LockBadge />{status?.(a.name)}</>}
               model={a.model} tools={a.tools} text={a.summary || a.description} textTitle={a.description} role={a.role} behaviours={a.behaviours} progress={progress?.(a.name)}
@@ -290,7 +296,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
         )}
         <div className="space-y-1.5">
           {yours === null && <p className="text-[11px] text-[var(--text-muted)]">Sign in to create and fork agents.</p>}
-          {yours && !roles && <p className="text-[11px] text-[var(--text-muted)]">{agents.length ? 'Update osborn on your machine to create or edit agents.' : 'Connect your machine to create or edit agents.'}</p>}
+          {yours && !roles && !listLoading && !listError && <p className="text-[11px] text-[var(--text-muted)]">{agents.length ? 'Update osborn on your machine to create or edit agents.' : 'Connect your machine to create or edit agents.'}</p>}
           {yours && mine.length === 0 && !d && <p className="text-[11px] text-[var(--text-muted)]">No agents of your own yet. Fork a built-in or create one.</p>}
           {mine.map((r) => {
             const role = roleInfo(r.role)
