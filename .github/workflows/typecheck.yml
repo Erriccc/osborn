@@ -1,0 +1,43 @@
+# tsc on GitHub so an agent can check its work without installing: see .claude/skills/ci-typecheck/SKILL.md
+name: typecheck
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Packages to check'
+        type: choice
+        options: [both, agent, frontend]
+        default: both
+  push:
+    branches: ['check/**']
+  pull_request:
+    # Only what can change agent tsc output (tsconfig includes src/ only). frontend-lint.yml checks the frontend on PRs.
+    paths: ['agent/src/**/*.ts', 'agent/tsconfig.json', 'agent/package.json', 'agent/package-lock.json', '.github/workflows/typecheck.yml']
+
+concurrency:
+  group: typecheck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tsc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON((github.event_name == 'pull_request' || inputs.packages == 'agent') && '["agent"]' || inputs.packages == 'frontend' && '["frontend"]' || '["agent","frontend"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.package }}/package-lock.json
+      # Types only: no install scripts, so native modules are not built.
+      - name: Install
+        working-directory: ${{ matrix.package }}
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: tsc --noEmit
+        working-directory: ${{ matrix.package }}
+        run: npx --no-install tsc --noEmit --pretty false
