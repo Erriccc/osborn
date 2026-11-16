@@ -23,12 +23,13 @@
 // additive: VoiceRoom renders <RoomsSidebar/> (the vertical rail, desktop xl+
 // only) and <RoomsBar/> (the slim horizontal switcher, below xl — phone AND
 // tablet, so the conversation keeps full width instead of a three-column
-// squeeze, issue #118) and nothing else changes.
+// squeeze, issue #118) and nothing else changes. The dashboard embeds the
+// same <RoomsSidebar embedded/> as its left column.
 
 import { useEffect, useMemo, useState } from 'react'
 import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, SEARCH_IDLE_CAP, type RoomRow, type RoomStatus } from '@/lib/rooms'
-import { prepareSessions, sessionMatchesQuery } from '@/lib/session-list'
-import type { SessionInfo, SlotInfo } from './shared'
+import { prepareSessions, sessionMatchesQuery, type SessionListItem } from '@/lib/session-list'
+import type { SlotInfo } from './shared'
 
 export type { RoomStatus }
 export type Room = RoomRow
@@ -136,7 +137,7 @@ function RoomRowButton({
 }
 
 interface RoomsProps {
-  sessions: SessionInfo[]
+  sessions: SessionListItem[]
   slots: SlotInfo[]
   currentSessionId: string | null
   /** Resume a room into the foreground (non-live rooms only). */

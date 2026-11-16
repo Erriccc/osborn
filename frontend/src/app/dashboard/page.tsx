@@ -1724,7 +1724,7 @@ export default function Dashboard() {
           {agentOnline !== false && (
             <div className="hidden lg:block h-[min(28rem,55vh)] mb-4">
               <RoomsSidebar embedded
-                sessions={sessions.map((s) => ({ ...s, messageCount: s.messageCount ?? 0 }))}
+                sessions={sessions}
                 slots={[]} currentSessionId={null}
                 onSwitchRoom={(room) => startChat(room.id, room.cwd)}
                 onNewRoom={handleNewSession}
