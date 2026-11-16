@@ -209,7 +209,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 
 ## What's new in v47
 - Evidence logs no longer leak secrets: tokens in URLs (a LiveKit room's `access_token`, OAuth `code`, `#access_token=` fragments, api keys) and any JWT are blanked in the public `/media/<run>/<n>.txt` log and the DevTools buffers.
-- A detached brain heals itself: `/act` re-initialises it once before answering `brain_unavailable` (after a failed try it waits a minute before trying again). If you still get `brain_unavailable`, `POST /brain {}` re-picks it without restarting the engine; `/eval`, `/tab` and `/shot` keep working meanwhile.
+- A detached brain heals itself: `/act` re-initialises it once before answering `brain_unavailable` (after a failed try it waits a minute before trying again). A `brain_unavailable` whose error says *re-initializing* means a revive is already running: retry in a few seconds, do not `POST /brain`. If you still get `brain_unavailable`, `POST /brain {}` re-picks it without restarting the engine; `/eval`, `/tab` and `/shot` keep working meanwhile.
 
 ## What's new in v46
 - `/act` returns `ok:false` with `code:"noop"` when the brain found nothing to do (it used to say `ok:true` plus a warning). A compound instruction can still do only part of the job: check `result.did` and the screenshot.
