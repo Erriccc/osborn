@@ -50,6 +50,7 @@ import { useUserAgents } from '../lib/user-agents'
 import { SkillsPopover } from './voice/SkillsPanel'
 import { ControlMenu } from './voice/ControlMenu'
 import { ChatPanel } from './voice/ChatPanel'
+import { CallPill } from './voice/CallPill'
 import { MeetingMuteControl, type MeetingMuteState } from './voice/MeetingMuteControl'
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
@@ -1617,17 +1618,17 @@ function VoiceRoomInner({
   // ── Outputs drawer data flow (L4; UI#13/19) ──────────────────────────────
   // Re-list the session workspace with REPLACE semantics on open, on focus and
   // after file events; fetch a file body only when it is previewed (no storm).
-  const sendJson = useCallback((m: Record<string, unknown>) => {
-    sendToAgent(new TextEncoder().encode(JSON.stringify(m)), { reliable: true })
-  }, [sendToAgent])
+  const sendJson = useCallback((m: Record<string, unknown>) =>
+    sendToAgent(new TextEncoder().encode(JSON.stringify(m)), { reliable: true }),
+  [sendToAgent])
   // Request/reply over the data channel: resolves with the next message of replyType
-  // (handleDataMessage hands it over), or an error after 15s (e.g. an older machine).
+  // (handleDataMessage hands it over), or an error after timeoutMs (e.g. an older machine).
   const replyWaiters = useRef(new Map<string, ((d: any) => void)[]>())
-  const askAgent = useCallback((m: Record<string, unknown>, replyType: string) => new Promise<any>((resolve) => {
+  const askAgent = useCallback((m: Record<string, unknown>, replyType: string, timeoutMs = 15000) => new Promise<any>((resolve) => {
     const waiting = replyWaiters.current.get(replyType) ?? []
     replyWaiters.current.set(replyType, waiting)
     const done = (d: any) => { clearTimeout(timer); const i = waiting.indexOf(done); if (i >= 0) waiting.splice(i, 1); resolve(d) }
-    const timer = setTimeout(() => done({ error: 'No answer from your machine' }), 15000)
+    const timer = setTimeout(() => done({ error: 'No answer from your machine' }), timeoutMs)
     waiting.push(done)
     sendJson(m)
   }), [sendJson])
@@ -1643,6 +1644,27 @@ function VoiceRoomInner({
   const getAgentPrompt = useCallback((name: string) =>
     askAgent({ type: 'get_agent_prompt', name }, 'agent_prompt').then((d) => (typeof d?.prompt === 'string' ? d.prompt : null)),
   [askAgent])
+  // End: if the agent is mid-task, offer to let it keep working after the hang-up
+  // (the agent serves its cap and whether it can reach the phone). An agent that
+  // does not answer within 1.5s, or has no keep-working (capMin 0), just ends.
+  const [endChoice, setEndChoice] = useState<{ capMin: number; phone: boolean } | null>(null)
+  // Set from agent_ready.keepWorking: an agent without it is never asked.
+  const agentKeepsWorkingRef = useRef(false)
+  const endingRef = useRef(false)
+  const handleEnd = useCallback(async () => {
+    if (!onDisconnect || endingRef.current) return
+    endingRef.current = true
+    try {
+      const d = agentKeepsWorkingRef.current && agentConnected ? await askAgent({ type: 'get_busy' }, 'busy_state', 1500) : null
+      if (d?.idle === false && d.capMin > 0) setEndChoice({ capMin: d.capMin, phone: !!d.phone })
+      else onDisconnect()
+    } finally { endingRef.current = false }
+  }, [askAgent, onDisconnect, agentConnected])
+  const endKeepWorking = useCallback(async () => {
+    setEndChoice(null)
+    try { await sendJson({ type: 'keep_working' }) } catch { /* ends anyway */ }
+    onDisconnect?.()
+  }, [sendJson, onDisconnect])
   const currentSessionIdRef = useRef(currentSessionId)
   useEffect(() => { currentSessionIdRef.current = currentSessionId }, [currentSessionId])
   const generatedFilesRef = useRef(generatedFiles)
@@ -1892,6 +1914,7 @@ function VoiceRoomInner({
       console.log('📨 Received data message:', data.type, data)
 
       if (data.type === 'agent_ready') {
+        agentKeepsWorkingRef.current = data.keepWorking === true
         const cts = (window as any).__osbornClickTs
         if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms agent_ready received → setConnected(true)`)
         setAgentConnected(true)
@@ -3775,6 +3798,20 @@ function VoiceRoomInner({
 
   return (
     <PanelDataProvider value={panelData}>
+      {endChoice && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setEndChoice(null)}>
+          <div role="dialog" aria-modal="true" aria-labelledby="end-choice-title" onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-sm bg-gray-900 border border-gray-700 rounded-t-2xl sm:rounded-xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
+            <h3 id="end-choice-title" className="text-base font-semibold text-white">Osborn is still working</h3>
+            <p className="mt-1 text-sm text-gray-400">Keep it working after you hang up? It stops after {endChoice.capMin} minutes at most{endChoice.phone ? " and pings your phone when it's done" : ''}. Reconnect to this chat to pick up; opening another chat stops it.</p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button onClick={endKeepWorking} className="min-h-11 rounded-lg bg-amber-500/90 text-gray-950 text-sm font-semibold hover:bg-amber-500">Keep working in the background</button>
+              <button onClick={() => { setEndChoice(null); onDisconnect?.() }} className="min-h-11 rounded-lg bg-red-500/90 text-white text-sm font-semibold hover:bg-red-500">Hang up</button>
+              <button onClick={() => setEndChoice(null)} className="min-h-11 rounded-lg text-gray-400 text-sm hover:text-gray-200">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Claude Auth Modal — shown during first-time OAuth flow in cloud deployments */}
       {claudeAuthStatus !== 'none' && claudeAuthStatus !== 'complete' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -4390,45 +4427,6 @@ function VoiceRoomInner({
               {/* Auto-approve, Copy-all, and Noise-filter moved into the "More"
                   menu above — the loose header icon row is consolidated. */}
 
-              {/* Mute button — desktop header only; mobile mute lives in the
-                  approvals row above the input. */}
-              <button
-                onClick={toggleMute}
-                className={`hidden sm:block p-2 rounded-lg transition-all ${
-                  shownMuted
-                    ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                    : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
-                }`}
-                title={shownMuted ? 'Unmute' : 'Mute'}
-              >
-                {shownMuted ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                  </svg>
-                )}
-              </button>
-
-              {/* Disconnect button — DESKTOP header only. On mobile the hangup
-                  lives in the approvals row above the input (next to
-                  Mute), so the top bar carries only status/clock + the burger.
-                  shrink-0 keeps it from clipping in the desktop width fight. */}
-              {onDisconnect && (
-                <button
-                  onClick={onDisconnect}
-                  aria-label="End session"
-                  className="hidden sm:flex shrink-0 items-center justify-center w-10 h-10 ml-2 rounded-lg transition-all bg-red-500/90 text-white hover:bg-red-500"
-                  title="End session (saves LiveKit minutes — session stays resumable)"
-                >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
-                  </svg>
-                </button>
-              )}
             </div>
 
             {/* Mobile menu button — far right, by itself. Per the 3-6-9 rule
@@ -4592,6 +4590,7 @@ function VoiceRoomInner({
           pendingPermission={pendingPermission}
           onPermissionRespond={handlePermissionResponse}
           reviewMode={approvalMode === 'auto-review'}
+          corner={<CallPill muted={shownMuted} onToggleMute={toggleMute} onEnd={onDisconnect ? handleEnd : undefined} />}
         />
 
         {/* Logs drawer */}
@@ -4691,44 +4690,6 @@ function VoiceRoomInner({
           onRemoveFile={handleRemoveFile}
           approvalMode={approvalMode}
           onApprovalModeChange={setApprovalMode}
-          controls={<>
-          {/* Phone call controls share the approvals row (desktop has them in the
-              header): Mic + End stay the voice screen's primary actionables. */}
-          <button
-            onClick={toggleMute}
-            aria-label={shownMuted ? 'Unmute mic' : 'Mute mic'}
-            className={`sm:hidden flex items-center justify-center gap-1.5 min-h-11 min-w-11 px-2.5 rounded-full text-xs font-medium transition-all ${
-              shownMuted
-                ? 'bg-red-500/20 text-red-400'
-                : 'text-gray-400 hover:bg-gray-800/60'
-            }`}
-            title={shownMuted ? 'Unmute mic' : 'Mute mic'}
-          >
-            {shownMuted ? (
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path strokeLinecap="round" strokeLinejoin="round" d="M17 14l4-4m0 4l-4-4" /></svg>
-            ) : (
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-            )}
-            <span className="max-[380px]:sr-only">{shownMuted ? 'Muted' : 'Mic'}</span>
-          </button>
-
-          {/* Hangup — rightmost, next to Mute (moved off the top bar). Labeled
-              red pill so it's an easy, unmistakable tap target on mobile
-              (icon-only 44px round was too small to hit reliably). */}
-          {onDisconnect && (
-            <button
-              onClick={onDisconnect}
-              aria-label="End session"
-              className="sm:hidden shrink-0 flex items-center gap-1.5 min-h-11 min-w-11 justify-center px-3 max-[400px]:px-2.5 rounded-full bg-red-500/90 text-white text-xs font-semibold hover:bg-red-500 transition-all"
-              title="Hang up — end session (saves minutes, session stays resumable)"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
-              </svg>
-              <span>End</span>
-            </button>
-          )}
-          </>}
         />
         </div>
       </div>

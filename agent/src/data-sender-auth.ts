@@ -23,7 +23,7 @@
  *     favorite_changed
  *   Open (read-only, listed in READ_ONLY_MESSAGE_TYPES):
  *     get_current_session, get_session_artifacts, get_plan_file,
- *     get_research_artifact, get_mcp_status, get_skills, skill_get
+ *     get_research_artifact, get_mcp_status, get_skills, skill_get, get_busy
  * list_sessions / list_slots / list_processes are read-only but return session
  * and process ids that the gated commands (dispatch_background etc.) take as
  * targets, so they are gated too.
@@ -50,6 +50,8 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'switch_session',
   // Cancels a deferred switch (#74) — state-changing, controller-only.
   'cancel_session_switch',
+  // Keeps the agent working after the hang-up — state-changing, controller-only.
+  'keep_working',
   'session_selected',
   'mcp_toggle',
   'set_agents',
@@ -84,6 +86,8 @@ export const READ_ONLY_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'get_mcp_status',
   'get_skills',
   'skill_get',
+  // End asks whether the agent is mid-task before offering keep-working.
+  'get_busy',
 ])
 
 /** Identity prefix /api/token gives every user participant. */
