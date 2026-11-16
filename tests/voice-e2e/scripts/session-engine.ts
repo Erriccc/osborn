@@ -393,6 +393,17 @@ async function main() {
     if (out.length && bad.length === out.length) notify('stt_unavailable', { providers: out })
   }
   void probeStt()
+  // Re-init a detached brain in place (no engine restart). Used by /brain, by
+  // /act's provider re-pick and, once per call, by /act before it gives up with
+  // brain_unavailable. That automatic try runs inside the action lock and costs
+  // up to three provider probes, so after a failed re-init it waits a minute.
+  let reviveFailedAt = 0
+  const reviveBrain = async (auto = false): Promise<boolean> => {
+    if (auto && Date.now() - reviveFailedAt < 60000) return false
+    try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
+    try { await initBrain(); mark('brain re-initialized'); return true }
+    catch { reviveFailedAt = Date.now(); mark(`brain re-init failed — ${brainError}`); return false }
+  }
   const brainDownMsg = () => `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
@@ -1169,7 +1180,7 @@ async function main() {
           if (owned) return json(res, owned, 409)
           if (typeof body.instruction !== 'string' || !body.instruction.trim()) return json(res, { ok: false, code: 'bad_request', error: '/act needs {"instruction": "<what to do>"}' }, 400)
           if (body.instruction.length > 4000) return json(res, { ok: false, code: 'too_large', error: 'instruction is over 4000 characters — split it into steps' }, 413)
-          if (!brainAlive) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
+          if (!brainAlive && !(await reviveBrain(true))) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
           const t0 = Date.now()
           await updateTabHud()
           // A model/API failure (quota, 429, 5xx, bad key) is an ANSWER, not a
@@ -1234,8 +1245,7 @@ async function main() {
             if (providerDown) {
               const before = brainModel
               mark(`act[${driver}]: provider refused on ${before} — re-picking a brain provider`)
-              try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
-              await initBrain().catch(() => {})
+              await reviveBrain()
               if (brainAlive && brainModel !== before) {
                 try { r = await brain(body.instruction); healed = true } catch (e1) { e = e1 }
               }
@@ -1682,10 +1692,7 @@ async function main() {
       }
       if (path === '/brain') {
         // Recover a detached Stagehand without restarting the whole engine.
-        try { await stagehand?.close().catch(() => {}) } catch { /* ignore */ }
-        try { await initBrain() }
-        catch { mark(`brain re-init failed — ${brainError}`); return json(res, { ok: false, brain: 'dead', code: 'brain_unavailable', error: brainDownMsg() }, 503) }
-        mark('brain re-initialized')
+        if (!(await reviveBrain())) return json(res, { ok: false, brain: 'dead', code: 'brain_unavailable', error: brainDownMsg() }, 503)
         await probeStt()
         return json(res, { ok: true, brain: 'ready', brainModel, stt: sttHealth })
       }
