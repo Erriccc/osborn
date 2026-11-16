@@ -145,8 +145,11 @@ export const describeRoles = () => ({
 // '<source>:<owner>/<repo>@<sha>/<path>' (user_agents check, migration 016).
 
 export const catalogOrigin = (e: { source: string; repo: string; sha: string; path: string }) => `${e.source}:${e.repo}@${e.sha}/${e.path}`
+const PIN = /@([0-9a-f]{7,40})\//
 /** The same catalog file at any commit. */
-export const unpinnedOrigin = (origin: string) => origin.replace(/@[0-9a-f]{7,40}\//, '/')
+export const unpinnedOrigin = (origin: string) => origin.replace(PIN, '/')
+/** The commit a catalog origin is pinned to. */
+export const pinnedSha = (origin: string) => PIN.exec(origin)?.[1]
 /** Where a user agent came from, for people: its built-in parent's name, or 'owner/repo @sha7'. */
 const originLabel = (forkedFrom: string, core: CoreAgents): string | undefined => {
   if (coreRole(forkedFrom, core)) return forkedFrom

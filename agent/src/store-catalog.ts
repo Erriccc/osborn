@@ -10,7 +10,7 @@ import { dirname, join, resolve, sep, posix } from 'node:path'
 import { promisify } from 'node:util'
 import MiniSearch from 'minisearch'
 import { STOPWORDS } from './stopwords.js'
-import { storeName, draftRole, isAgentModel, parseFrontMatter, catalogOrigin, unpinnedOrigin, AGENT_LIMITS, type Role } from './agent-store.js'
+import { storeName, draftRole, isAgentModel, parseFrontMatter, catalogOrigin, unpinnedOrigin, pinnedSha, AGENT_LIMITS, type Role } from './agent-store.js'
 
 const run = promisify(execFile)
 
@@ -89,10 +89,10 @@ async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): 
   return out
 }
 
-/** Turns a repo snapshot into catalog entries (pure apart from `read`). Returns the bodies too. */
 /** An entry's rev: its main file's text and its file list. A commit elsewhere in the repo leaves it alone. */
 export const revOf = (md: string, files: string[]) => createHash('sha256').update(md).update('\0' + files.join('\n')).digest('hex').slice(0, 16)
 
+/** Turns a repo snapshot into catalog entries (pure apart from `read`). Returns the bodies too. */
 export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string>; failed: number; tooLarge: number }> {
   let failed = 0, tooLarge = 0
   const paths = snap.paths
@@ -355,7 +355,7 @@ export async function findUpdates(
   }
   for (const a of agents) {
     const e = byOrigin.get(unpinnedOrigin(a.origin))
-    const sha = /@([0-9a-f]{7,40})\//.exec(a.origin)?.[1]
+    const sha = pinnedSha(a.origin)
     if (e?.kind === 'agent' && sha && sha !== e.sha) checks.push({ e, target: a.name, sha, files: e.files })
   }
   const out = await mapLimit(checks, 6, async (c): Promise<StoreUpdate | null> => {
