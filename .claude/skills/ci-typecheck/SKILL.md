@@ -24,6 +24,11 @@ Pick one:
 A pull request that touches `agent/` runs the agent check by itself. `frontend-lint.yml`
 already checks the frontend on pull requests.
 
+Both ways need a push, and every `git push` (a `check/` branch too) is refused until the
+steward has signed off that commit (`.claude/hooks/pre-pr-gate.py` here,
+`agent/src/steward-gate.ts` in Osborn). `gh workflow run` only works once this workflow is
+on the default branch.
+
 ## Read the result
 
 ```bash
