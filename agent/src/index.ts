@@ -2616,7 +2616,18 @@ async function main() {
     keepWorkingActive = true
     console.log(`🏃 [KEEP-WORKING] user hung up mid-task — working on for up to ${IDLE_EXIT_GRACE_MS / 60000} min`)
     keepWorkingPoll = setInterval(() => {
-      if (!((warmLLM as any)?.busyState?.()?.idle ?? true)) return
+      const busy = (warmLLM as any)?.busyState?.()
+      if (busy?.permissionPending) {
+        // Blocked on an approval: the phone push (armPermissionPush) can answer it;
+        // otherwise fall back to the normal grace instead of holding to the cap.
+        stopKeepWorking()
+        console.log('✋ [KEEP-WORKING] waiting on an approval — normal re-attach grace from here')
+        void notifyPhone('Osborn needs your approval to continue the work you left running. Reconnect to answer it.')
+        warmExpiry = Date.now() + REATTACH_GRACE_MS
+        armWarmTimers()
+        return
+      }
+      if (!(busy?.idle ?? true)) return
       stopKeepWorking()
       const mins = Math.max(1, Math.round((Date.now() - started) / 60000))
       console.log(`🏁 [KEEP-WORKING] finished after ~${mins} min — normal re-attach grace from here`)
@@ -4440,8 +4451,9 @@ async function main() {
     // permission is currently pending. Re-registered per session — harmless,
     // the latest closure wins and they all resolve through currentLLM.
     setWatchResultHandler((allow, toolName) => {
-      if (currentLLM?.hasPendingPermission?.()) {
-        currentLLM.respondToPermission(allow)
+      const target: any = currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
+      if (target) {
+        target.respondToPermission(allow)
         console.log(`⌚️ Watch bridge settled ${toolName}: ${allow ? 'approve' : 'deny'}`)
       } else {
         // Already answered via the web UI — a late ack/expiry is a no-op.
@@ -5432,6 +5444,8 @@ async function main() {
       session = result.session
       agent = result.agent
       reattached = true
+      const pending = (reused as any)?.getPendingPermission?.()
+      if (pending) await sendToFrontend({ type: 'permission_request', toolName: pending.toolName, input: pending.input, description: `Waiting for your approval: ${pending.toolName}`, agentRole: 'direct' })
     } else if (warmLLM) {
       killWarm(warmSessionId && warmSessionId !== resumeSessionId ? 'reattach_session_mismatch' : 'reattach_expired')
     }
@@ -6088,6 +6102,7 @@ async function main() {
           skills: loadSkillsList(homedir()),
           namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles, false, userAgentOrigins),
           ...describeRoles(),
+          keepWorking: true,
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -6299,7 +6314,7 @@ async function main() {
       parkWarm('participant_disconnected')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
-      releaseAgents()
+      if (!keepWorkingRequested) releaseAgents()
       armMeetingLeaveGrace()
       armFastLeaveTimer()
       // "Keep working" chosen at End: after the teardown is armed (it checks agentsActive()).
@@ -6642,7 +6657,11 @@ async function main() {
       }
       else if (data.type === 'get_busy') {
         // End asks before hanging up: a busy agent may keep working (keep_working).
-        await sendToFrontend({ type: 'busy_state', idle: (currentLLM as any)?.busyState?.()?.idle ?? true, capMin: KEEP_WARM ? IDLE_EXIT_GRACE_MS / 60000 : 0, phone: isWatchBridgeEnabled() })
+        // Offered only when the hang-up will park the brain (the KEEP_WARM branch of
+        // the disconnect handler) and it is working, not just waiting on an approval.
+        const busy = (currentLLM as any)?.busyState?.()
+        const parks = KEEP_WARM && !activeMeetingBotId && !!(currentLLM as any)?.sessionId
+        await sendToFrontend({ type: 'busy_state', idle: (busy?.idle ?? true) || !!busy?.permissionPending, capMin: parks ? IDLE_EXIT_GRACE_MS / 60000 : 0, phone: isWatchBridgeEnabled() }, participant?.identity)
       }
       else if (data.type === 'keep_working') {
         keepWorkingRequested = true

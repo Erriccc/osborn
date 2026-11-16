@@ -1648,11 +1648,17 @@ function VoiceRoomInner({
   // (the agent serves its cap and whether it can reach the phone). An agent that
   // does not answer within 1.5s, or has no keep-working (capMin 0), just ends.
   const [endChoice, setEndChoice] = useState<{ capMin: number; phone: boolean } | null>(null)
+  // Set from agent_ready.keepWorking: an agent without it is never asked.
+  const agentKeepsWorkingRef = useRef(false)
+  const endingRef = useRef(false)
   const handleEnd = useCallback(async () => {
-    if (!onDisconnect) return
-    const d = await askAgent({ type: 'get_busy' }, 'busy_state', 1500)
-    if (d?.idle === false && d.capMin > 0) setEndChoice({ capMin: d.capMin, phone: !!d.phone })
-    else onDisconnect()
+    if (!onDisconnect || endingRef.current) return
+    endingRef.current = true
+    try {
+      const d = agentKeepsWorkingRef.current ? await askAgent({ type: 'get_busy' }, 'busy_state', 1500) : null
+      if (d?.idle === false && d.capMin > 0) setEndChoice({ capMin: d.capMin, phone: !!d.phone })
+      else onDisconnect()
+    } finally { endingRef.current = false }
   }, [askAgent, onDisconnect])
   const endKeepWorking = useCallback(async () => {
     setEndChoice(null)
@@ -1908,6 +1914,7 @@ function VoiceRoomInner({
       console.log('📨 Received data message:', data.type, data)
 
       if (data.type === 'agent_ready') {
+        agentKeepsWorkingRef.current = data.keepWorking === true
         const cts = (window as any).__osbornClickTs
         if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms agent_ready received → setConnected(true)`)
         setAgentConnected(true)

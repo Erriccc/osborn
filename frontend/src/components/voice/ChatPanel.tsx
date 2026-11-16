@@ -147,7 +147,7 @@ export function ChatPanel({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className={`h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 ${corner ? 'pr-16 sm:pr-16' : ''} py-3 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent`}
+        className={`h-full overflow-y-auto overflow-x-hidden px-3 sm:px-4 ${corner ? 'pr-16' : ''} py-3 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent`}
       >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
