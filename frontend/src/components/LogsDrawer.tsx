@@ -675,7 +675,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           disabled={ideState === 'starting'}
           title={ideState === 'running' ? 'Open the code editor in a new tab' : ideState === 'starting' ? 'Code editor starting…' : 'Start the code editor'}
           aria-label={`Code editor (${ideState})`}
-          className={`group shrink-0 flex items-center ${HEADER_TAP_TARGET} text-[11px] text-gray-300 hover:text-white disabled:opacity-60 transition-colors`}
+          className={`group shrink-0 flex items-center ${HEADER_TAP_TARGET} text-[11px] text-gray-300 hover:text-ink disabled:opacity-60 transition-colors`}
         >
           <span className="flex items-center gap-1.5 rounded-full border border-gray-700/60 px-2 py-1 group-hover:bg-gray-700/50">
             <span className={`w-1.5 h-1.5 rounded-full ${IDE_DOT_CLASS[ideState]}`} />

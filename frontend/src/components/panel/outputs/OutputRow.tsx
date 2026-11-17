@@ -42,7 +42,7 @@ export function OutputRow({
   return (
     <div data-testid="output-row" data-file-path={file.filePath}
       className={`group w-full min-h-[44px] px-3 py-2 flex items-start gap-2 transition-colors motion-reduce:transition-none ${
-        selected ? 'bg-[var(--accent)]/15 border-l-2 border-[var(--accent)]' : 'hover:bg-gray-800/50 border-l-2 border-transparent'
+        selected ? 'bg-accent/15 border-l-2 border-[var(--accent)]' : 'hover:bg-gray-800/50 border-l-2 border-transparent'
       }`}>
       <button onClick={() => onOpen(file)} title={file.filePath}
         className="flex items-start gap-2 min-w-0 flex-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded">

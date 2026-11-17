@@ -182,7 +182,7 @@ export function RightPanel() {
           })}
         </div>
         <button onClick={closePanel} aria-label="Close side panel" title="Close"
-          className="ml-auto p-1.5 rounded text-gray-400 hover:text-white hover:bg-gray-800 shrink-0">
+          className="ml-auto p-1.5 rounded text-gray-400 hover:text-ink hover:bg-gray-800 shrink-0">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
         </button>
       </div>

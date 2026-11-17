@@ -37,7 +37,7 @@ export function ApprovalPicker({ mode, onChange }: { mode: ApprovalMode; onChang
                 title={m.hint}
                 aria-pressed={active}
                 className={`px-2.5 py-1 [@media(pointer:coarse)]:min-h-11 rounded-full text-[11px] font-medium whitespace-nowrap transition-colors ${
-                  active ? (m.value === 'allow-all' ? 'bg-amber-500/90 text-gray-950' : 'bg-gray-700 text-white') : 'text-gray-400 hover:text-gray-200'
+                  active ? (m.value === 'allow-all' ? 'bg-amber-500/90 text-gray-950' : 'bg-gray-700 text-ink') : 'text-gray-400 hover:text-gray-200'
                 }`}
               >
                 {m.label}

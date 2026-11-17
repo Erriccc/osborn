@@ -42,12 +42,12 @@ export const rolesData = (d: any): RolesData | null =>
 
 const ICONS: Record<string, typeof Robot> = { search: MagnifyingGlass, brain: Brain, pen: PenNib, test: TestTube, list: ListChecks, shield: ShieldCheck, eye: Eye, robot: Robot }
 
-export const card = 'rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)]/60 p-2.5'
+export const card = 'rounded-lg border border-[var(--border-subtle)] bg-surface-2/60 p-2.5'
 export const field = 'w-full rounded border border-[var(--border-subtle)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none'
 export const link = 'text-[11px] text-[var(--accent)] hover:opacity-80 disabled:opacity-40'
 export const heading = 'mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]'
 /** Rounded toggle chip (store tabs, catalog filters). */
-export const pill = (on: boolean) => `rounded-full border px-2.5 py-0.5 text-[11px] ${on ? 'border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]' : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`
+export const pill = (on: boolean) => `rounded-full border px-2.5 py-0.5 text-[11px] ${on ? 'border-[var(--accent)] bg-accent/15 text-[var(--accent)]' : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`
 
 /** First free name: base, base-2, base-3 … (kept within max characters). */
 export const uniqueName = (base: string, taken: Set<string>, max = Infinity) => {
@@ -76,7 +76,7 @@ function LockBadge() {
 function RoleLine({ role, behaviours }: { role: string; behaviours?: string[] }) {
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-snug text-[var(--text-muted)]">
-      <span className="rounded border border-[var(--accent)]/40 px-1 py-px font-semibold uppercase tracking-wide text-[var(--accent)]">{role}</span>
+      <span className="rounded border border-accent/40 px-1 py-px font-semibold uppercase tracking-wide text-[var(--accent)]">{role}</span>
       {behaviours?.map((b, i) => <span key={i}>{i > 0 && '· '}{b}</span>)}
     </div>
   )
@@ -127,7 +127,7 @@ function AgentCard({ icon, title, badges, actions, model, tools, text, textTitle
         <div className="flex items-start justify-between gap-2">
           <span className="flex flex-wrap items-center gap-1.5 text-[13px] font-semibold tracking-tight text-[var(--text-primary)]">{title}{badges}</span>
           <span className="flex shrink-0 items-center gap-2">
-            {model && <span className="rounded-full border border-[var(--accent-dim)]/25 bg-[var(--accent-dim)]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[var(--accent)]">{model}</span>}
+            {model && <span className="rounded-full border border-accent-dim/25 bg-accent-dim/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[var(--accent)]">{model}</span>}
             {tools && tools.length > 0 && <span title={tools.join(', ')} className="font-mono text-[10px] text-[var(--text-muted)]">{tools.length}⚒</span>}
             {actions}
           </span>
@@ -296,7 +296,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
                 setSaveError(err || null)
                 if (!err) setEditing(null)
               }}
-              className="w-full rounded bg-[var(--accent)]/20 py-1.5 text-xs text-[var(--accent)] hover:bg-[var(--accent)]/30 disabled:cursor-not-allowed disabled:opacity-50"
+              className="w-full rounded bg-accent/20 py-1.5 text-xs text-[var(--accent)] hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
             >Save agent (applies next session)</button>
             {saveError && <p className="text-[11px] text-red-400">Not saved: {saveError}</p>}
           </div>
@@ -346,12 +346,12 @@ export function SkillViewer({ skill, onClose }: { skill: { name: string; content
       <div className="bg-gray-900 border border-gray-700 rounded-t-2xl sm:rounded-xl w-full max-w-2xl max-h-[85vh] sm:max-h-[80vh] flex flex-col shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0" onClick={(e) => e.stopPropagation()}>
         <div className="sm:hidden w-10 h-1 rounded-full bg-gray-700 mx-auto mt-2 mb-0.5" aria-hidden="true" />
         <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-800">
-          <h3 className="text-sm font-semibold text-white truncate">📚 {skill.name}</h3>
+          <h3 className="text-sm font-semibold text-ink truncate">📚 {skill.name}</h3>
           <button
             onClick={onClose}
             aria-label="Close skill viewer"
             title="Close"
-            className="shrink-0 -mr-1.5 flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+            className="shrink-0 -mr-1.5 flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg text-gray-400 hover:text-ink hover:bg-gray-800 transition-colors"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>

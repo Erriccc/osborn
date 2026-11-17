@@ -41,9 +41,9 @@ export default function RecentsList<T extends SessionListItem>({ sessions, onOpe
               <button
                 onClick={() => onOpen(s)}
                 title={title}
-                className="group flex w-full items-baseline gap-3 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--surface-2)]/60"
+                className="group flex w-full items-baseline gap-3 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-surface-2/60"
               >
-                <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-primary)]/85 group-hover:text-[var(--text-primary)]">{title}</span>
+                <span className="min-w-0 flex-1 truncate text-[13px] text-text-primary/85 group-hover:text-[var(--text-primary)]">{title}</span>
                 {t && <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-secondary)]">{formatDate(t)}</span>}
               </button>
             </li>

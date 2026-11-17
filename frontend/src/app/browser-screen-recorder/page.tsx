@@ -26,7 +26,7 @@ export default function BrowserScreenRecorderLanding() {
       <div className="max-w-2xl w-full space-y-10">
         <header className="space-y-3 text-center">
           <div className="text-4xl">🎥🧠</div>
-          <h1 className="text-3xl font-semibold text-white">Browser Screen Recorder</h1>
+          <h1 className="text-3xl font-semibold text-ink">Browser Screen Recorder</h1>
           <p className="text-lg text-amber-400">Give it an app + an intent — it drives the browser and records proof it worked</p>
           <div className="pt-2">
             <a href="/browser" className="inline-block rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-black transition hover:bg-amber-400">
@@ -38,10 +38,10 @@ export default function BrowserScreenRecorderLanding() {
         <section className="space-y-4 text-sm leading-relaxed text-gray-300">
           <p>
             Browser Screen Recorder is an agent-attachable skill. Give it a target URL and what you want done, and your
-            coding agent opens a real browser, <span className="text-white">acts it out</span> — clicking via a
-            natural-language brain (no selectors, self-healing action cache), <span className="text-white">speaking into
-            the page&apos;s microphone</span> (synthesized on the fly), <span className="text-white">hearing and transcribing
-            everything the app plays back</span> — and hands you back <span className="text-white">per-action screenshots +
+            coding agent opens a real browser, <span className="text-ink">acts it out</span> — clicking via a
+            natural-language brain (no selectors, self-healing action cache), <span className="text-ink">speaking into
+            the page&apos;s microphone</span> (synthesized on the fly), <span className="text-ink">hearing and transcribing
+            everything the app plays back</span> — and hands you back <span className="text-ink">per-action screenshots +
             video clips</span>, audio captures, DevTools diagnostics, and structured metrics that prove what happened.
           </p>
           <p>
@@ -57,7 +57,7 @@ export default function BrowserScreenRecorderLanding() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-white font-medium">Install: copy this message to your coding agent</h2>
+          <h2 className="text-ink font-medium">Install: copy this message to your coding agent</h2>
           <div className="relative rounded-xl border border-gray-800 bg-gray-950 p-4">
             <pre className="whitespace-pre-wrap text-xs text-gray-300 leading-relaxed">{AGENT_MESSAGE}</pre>
             <CopyButton

@@ -77,7 +77,7 @@ export function OutputsTab({ active }: PanelTabProps) {
           <input type="text" value={query} onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape' && query) { e.stopPropagation(); setQuery('') } }}
             placeholder="Search names and contents" aria-label="Search outputs"
-            className="w-full pl-8 pr-7 py-1.5 text-base sm:text-sm bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:border-[var(--accent)]/50" />
+            className="w-full pl-8 pr-7 py-1.5 text-base sm:text-sm bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:border-accent/50" />
           {query && (
             <button onClick={() => setQuery('')} aria-label="Clear search"
               className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-200">
@@ -86,7 +86,7 @@ export function OutputsTab({ active }: PanelTabProps) {
           )}
         </div>
         <button onClick={outputs.expand} title="Expand to full screen" aria-label="Expand outputs"
-          className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-gray-800">
+          className="p-1.5 rounded text-gray-400 hover:text-ink hover:bg-gray-800">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" /></svg>
         </button>
       </div>
@@ -121,7 +121,7 @@ export function OutputsTab({ active }: PanelTabProps) {
     return (
       <div className="flex flex-col h-full min-h-0">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 shrink-0">
-          <button onClick={() => outputs.openPreview(null)} className="flex items-center gap-1 text-xs text-gray-400 hover:text-white" aria-label="Back to outputs">
+          <button onClick={() => outputs.openPreview(null)} className="flex items-center gap-1 text-xs text-gray-400 hover:text-ink" aria-label="Back to outputs">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
             Outputs
           </button>

@@ -159,7 +159,7 @@ export function TextInput({
             onChange={(e) => setText(e.target.value)}
             onPaste={handlePaste}
             placeholder="Message Osborn…"
-            className="flex-1 min-w-0 bg-transparent text-[15px] text-white px-1 py-2 focus:outline-none placeholder:text-gray-500"
+            className="flex-1 min-w-0 bg-transparent text-[15px] text-ink px-1 py-2 focus:outline-none placeholder:text-gray-500"
           />
 
           {/* Send — 44pt target on touch (P1.10) */}

@@ -455,7 +455,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
   return (
     <main className="min-h-screen bg-[var(--background)] flex flex-col">
       {/* Header — logo home + breadcrumb, mirrors the dashboard chrome */}
-      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md pt-[env(safe-area-inset-top)]">
+      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-background/80 backdrop-blur-md pt-[env(safe-area-inset-top)]">
         <div className="max-w-6xl mx-auto px-4 lg:px-6 h-12 flex items-center justify-between">
           <div className="flex items-center gap-2.5 min-w-0">
             <Link href="/dashboard" className="flex items-center gap-2 hover:opacity-80 transition-opacity shrink-0">
@@ -506,7 +506,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search library…"
-              className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-xl pl-9 pr-3 py-2 max-sm:py-2.5 text-[13px] max-sm:text-base text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]/50"
+              className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-xl pl-9 pr-3 py-2 max-sm:py-2.5 text-[13px] max-sm:text-base text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-accent/50"
             />
           </div>
         </div>
@@ -541,7 +541,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
             {featured && (
               <div className="mb-7 rounded-3xl border border-[var(--border-subtle)] bg-gradient-to-br from-[var(--surface)] to-[var(--surface-2)] p-6 sm:p-8">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--accent-dim)]/25 text-[var(--accent)]">Featured</span>
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-accent-dim/25 text-[var(--accent)]">Featured</span>
                   <span className="text-[11px] text-[var(--text-muted)]">{fmtDate(featured.published_at)}</span>
                   {featured.type && <><span className="text-[var(--text-muted)] opacity-40">·</span><span className="text-[11px] text-[var(--text-muted)] capitalize">{featured.type.replace(/_/g, ' ')}</span></>}
                 </div>
@@ -556,7 +556,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
                   </button>
                   {publicUrl(featured) && (
                     <button onClick={() => copyLink(publicUrl(featured)!)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--text-secondary)] px-4 py-2 text-[13px] font-medium hover:text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 transition-all">
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--text-secondary)] px-4 py-2 text-[13px] font-medium hover:text-[var(--text-primary)] hover:border-accent-dim/50 transition-all">
                       {copied ? 'Copied ✓' : 'Copy link'}
                     </button>
                   )}
@@ -570,9 +570,9 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
               const published = item.status === 'published'
               return (
                 <button key={item.id} onClick={() => openItem(item)}
-                  className="group text-left flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-4 hover:border-[var(--accent-dim)]/50 hover:-translate-y-0.5 hover:shadow-[0_8px_30px_-12px_rgba(0,0,0,0.6)] transition-all">
+                  className="group text-left flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-4 hover:border-accent-dim/50 hover:-translate-y-0.5 hover:shadow-[0_8px_30px_-12px_rgba(0,0,0,0.6)] transition-all">
                   <div className="flex items-center justify-between mb-3">
-                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${published ? 'bg-[var(--accent-dim)]/25 text-[var(--accent)]' : 'bg-[var(--surface-2)] text-[var(--text-muted)]'}`}>
+                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${published ? 'bg-accent-dim/25 text-[var(--accent)]' : 'bg-[var(--surface-2)] text-[var(--text-muted)]'}`}>
                       <DocIcon className="w-[18px] h-[18px]" />
                     </div>
                     <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${
@@ -667,7 +667,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
                         className={`px-3 py-1.5 rounded-xl text-[12.5px] font-medium border transition-all ${
                           platform === p.id
                             ? 'bg-[var(--accent)] text-[var(--background)] border-[var(--accent)]'
-                            : 'bg-[var(--surface-2)] text-[var(--text-secondary)] border-[var(--border-subtle)] hover:border-[var(--accent-dim)]/50'
+                            : 'bg-[var(--surface-2)] text-[var(--text-secondary)] border-[var(--border-subtle)] hover:border-accent-dim/50'
                         }`}>
                         {p.label}
                       </button>
@@ -689,7 +689,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
                       const rp = REFINE_PLATFORMS.find(p => p.id === platform)
                       if (rp) router.push(buildSeededChatUrl(refineSeed(rp, reading)))
                     }}
-                    className="flex flex-col items-start gap-0.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)]/40 px-4 py-3 text-left text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)] transition-all">
+                    className="flex flex-col items-start gap-0.5 rounded-xl border border-[var(--border-subtle)] bg-surface-2/40 px-4 py-3 text-left text-[var(--text-primary)] hover:border-accent-dim/50 hover:bg-[var(--surface-2)] transition-all">
                     <span className="text-[13px] font-semibold">Refine by talking →</span>
                     <span className="text-[11px] text-[var(--text-muted)]">Opens a voice session seeded with this draft.</span>
                   </button>
@@ -701,26 +701,26 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
 
                 {/* Editable draft of the generated rendition */}
                 {draft && (
-                  <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-2)]/40 p-4 flex flex-col gap-3">
+                  <div className="rounded-2xl border border-[var(--border-subtle)] bg-surface-2/40 p-4 flex flex-col gap-3">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--accent-dim)]/25 text-[var(--accent)] capitalize">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-accent-dim/25 text-[var(--accent)] capitalize">
                         {(draft.type ?? '').replace(/_/g, ' ')} · draft
                       </span>
                     </div>
                     <label className="flex flex-col gap-1">
                       <span className="text-[11px] text-[var(--text-muted)]">Title</span>
                       <input value={draft.title ?? ''} onChange={e => patchDraft('title', e.target.value)}
-                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]/50" />
+                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] focus:outline-none focus:border-accent/50" />
                     </label>
                     <label className="flex flex-col gap-1">
                       <span className="text-[11px] text-[var(--text-muted)]">Hook</span>
                       <input value={draft.hook ?? ''} onChange={e => patchDraft('hook', e.target.value)}
-                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]/50" />
+                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] focus:outline-none focus:border-accent/50" />
                     </label>
                     <label className="flex flex-col gap-1">
                       <span className="text-[11px] text-[var(--text-muted)]">Body</span>
                       <textarea value={draft.body ?? ''} onChange={e => patchDraft('body', e.target.value)} rows={10}
-                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-secondary)] leading-relaxed font-sans resize-y focus:outline-none focus:border-[var(--accent)]/50" />
+                        className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--text-secondary)] leading-relaxed font-sans resize-y focus:outline-none focus:border-accent/50" />
                     </label>
 
                     {/* Chat-to-refine */}
@@ -730,9 +730,9 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
                         <input value={instruction} onChange={e => setInstruction(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter' && instruction.trim()) runRefine({ iterate: true }) }}
                           placeholder="make it punchier · target enterprise CTOs · shorten"
-                          className="flex-1 bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]/50" />
+                          className="flex-1 bg-[var(--surface)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-[13px] max-sm:text-base text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-accent/50" />
                         <button disabled={generating || !instruction.trim()} onClick={() => runRefine({ iterate: true })}
-                          className="shrink-0 rounded-lg bg-[var(--surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)] px-3 py-2 text-[12.5px] font-medium hover:text-[var(--text-primary)] hover:border-[var(--accent-dim)]/50 disabled:opacity-50 transition-all">
+                          className="shrink-0 rounded-lg bg-[var(--surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)] px-3 py-2 text-[12.5px] font-medium hover:text-[var(--text-primary)] hover:border-accent-dim/50 disabled:opacity-50 transition-all">
                           {generating && instruction ? 'Refining…' : 'Refine'}
                         </button>
                       </div>
@@ -762,7 +762,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
                       {renditions.map(r => {
                         const url = publicUrl(r)
                         return (
-                          <div key={r.id} className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)]/30 px-3 py-2.5 flex items-center justify-between gap-3">
+                          <div key={r.id} className="rounded-xl border border-[var(--border-subtle)] bg-surface-2/30 px-3 py-2.5 flex items-center justify-between gap-3">
                             <button onClick={() => setDraft(r)} className="min-w-0 text-left flex-1 group">
                               <div className="flex items-center gap-2">
                                 <span className="text-[11px] text-[var(--text-muted)] capitalize shrink-0">{(r.type ?? '').replace(/_/g, ' ')}</span>

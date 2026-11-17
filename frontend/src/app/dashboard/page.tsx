@@ -1406,7 +1406,7 @@ export default function Dashboard() {
       `}</style>
       <main className="min-h-screen bg-[var(--background)] flex flex-col">
         {/* ── Header ──────────────────────────────── */}
-        <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md pt-[env(safe-area-inset-top)]">
+        <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-background/80 backdrop-blur-md pt-[env(safe-area-inset-top)]">
           <div className="max-w-3xl lg:max-w-6xl mx-auto px-4 h-12 flex items-center justify-between">
             {/* Logo → home (voice-native.com). Clickable from the dashboard back to root. */}
             <Link href="/" title="Home" className="flex items-center gap-3 rounded-lg -mx-1 px-1 py-0.5 hover:opacity-80 transition-opacity">
@@ -1479,7 +1479,7 @@ export default function Dashboard() {
               <div className="relative shrink-0" ref={profileMenuRef}>
                 <button onClick={() => setShowProfileMenu(s => !s)} title="Account"
                   aria-haspopup="menu" aria-expanded={showProfileMenu}
-                  className={`shrink-0 p-1 rounded-full transition-all ${showProfileMenu ? 'bg-[var(--accent-dim)]/20 ring-1 ring-[var(--accent)]/50' : 'hover:bg-[var(--surface)]'}`}>
+                  className={`shrink-0 p-1 rounded-full transition-all ${showProfileMenu ? 'bg-accent-dim/20 ring-1 ring-accent/50' : 'hover:bg-[var(--surface)]'}`}>
                   {user?.user_metadata?.avatar_url ? (
                     <img src={user.user_metadata.avatar_url} alt="" className={`w-7 h-7 rounded-full object-cover shrink-0 ring-1 ${showProfileMenu ? 'ring-[var(--accent)]' : 'ring-[var(--border)]'}`} />
                   ) : user?.email ? (
@@ -1507,7 +1507,7 @@ export default function Dashboard() {
                           time this menu can be opened it has settled. */}
                       {isAdmin ? (
                         <button onClick={() => { setShowProfileMenu(false); router.push('/admin') }}
-                          className="w-full text-left px-3 py-2 rounded-lg text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)]/50 transition-colors flex items-center gap-2.5">
+                          className="w-full text-left px-3 py-2 rounded-lg text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-surface-2/50 transition-colors flex items-center gap-2.5">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
                           Admin
                         </button>
@@ -1589,9 +1589,9 @@ export default function Dashboard() {
             const pv = prettySessionPreview(recent)
             return (
               <button onClick={() => startChat(recent.sessionId, recent.cwd)}
-                className="w-full mb-3 flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)]/40 transition-all group"
+                className="w-full mb-3 flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-accent-dim/50 hover:bg-surface-2/40 transition-all group"
                 style={{ animation: 'fadeSlideIn .45s ease both' }}>
-                <div className="w-10 h-10 rounded-xl bg-[var(--accent-dim)]/20 flex items-center justify-center shrink-0 text-[var(--accent)]">
+                <div className="w-10 h-10 rounded-xl bg-accent-dim/20 flex items-center justify-center shrink-0 text-[var(--accent)]">
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                 </div>
                 <div className="flex-1 min-w-0">
@@ -1632,7 +1632,7 @@ export default function Dashboard() {
               {/* Browse your library → /library */}
               <Link
                 href="/library"
-                className="group w-full flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)]/40 transition-all"
+                className="group w-full flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-accent-dim/50 hover:bg-surface-2/40 transition-all"
               >
                 <div className="w-9 h-9 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-[var(--text-secondary)] group-hover:text-[var(--accent)] transition-colors">
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
@@ -1649,7 +1649,7 @@ export default function Dashboard() {
           {/* Agent offline states */}
           {agentOnline === false && isCloud && provisioning && (
             <div className="text-center py-12" style={{ animation: 'fadeIn 0.3s ease both' }}>
-              <div className="w-10 h-10 rounded-full bg-[var(--accent-dim)]/20 flex items-center justify-center mx-auto mb-3">
+              <div className="w-10 h-10 rounded-full bg-accent-dim/20 flex items-center justify-center mx-auto mb-3">
                 <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
               </div>
               <p className="text-[var(--accent)] text-sm">Setting up your cloud workspace</p>
@@ -1698,7 +1698,7 @@ export default function Dashboard() {
               estate; below lg it's `order-2` with no chrome — the plain
               single-column projects list that shipped before. Same markup,
               same handlers; CSS/grid decides where it lives. */}
-          <aside className="order-2 lg:order-1 w-full lg:sticky lg:top-[4.5rem] lg:self-start lg:max-h-[calc(100dvh-5.5rem)] lg:overflow-y-auto lg:rounded-2xl lg:border lg:border-[var(--border-subtle)] lg:bg-[var(--surface)]/40 lg:p-3 mt-6 lg:mt-0">
+          <aside className="order-2 lg:order-1 w-full lg:sticky lg:top-[4.5rem] lg:self-start lg:max-h-[calc(100dvh-5.5rem)] lg:overflow-y-auto lg:rounded-2xl lg:border lg:border-[var(--border-subtle)] lg:bg-surface/40 lg:p-3 mt-6 lg:mt-0">
 
           {/* Recents (desktop): newest sessions first; on phones the main column's
               Continue card and Recent activity already lead with them. */}
@@ -1781,7 +1781,7 @@ export default function Dashboard() {
 
               {/* Shared with me (0.9.123) */}
               {(sharedWithMe.length > 0 || importMsg) && (
-                <div className="mb-3 rounded-2xl border border-[var(--accent-dim)]/30 bg-[var(--accent-dim)]/[0.06] p-3">
+                <div className="mb-3 rounded-2xl border border-accent-dim/30 bg-accent-dim/[0.06] p-3">
                   <div className="flex items-center gap-2 mb-2">
                     <svg className="w-4 h-4 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg>
                     <span className="text-sm font-semibold text-[var(--text-primary)]">Shared with me</span>
@@ -1789,7 +1789,7 @@ export default function Dashboard() {
                   {importMsg && <p className="text-xs text-[var(--text-muted)] mb-2">{importMsg}</p>}
                   <div className="space-y-1.5">
                     {sharedWithMe.map((share) => (
-                      <div key={share.id} className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-[var(--surface-2)]/60">
+                      <div key={share.id} className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-surface-2/60">
                         <div className="min-w-0">
                           <p className="text-sm text-[var(--text-primary)] truncate">{share.session_title}</p>
                           <p className="text-[11px] text-[var(--text-muted)]">from {share.owner_email}</p>
@@ -1798,7 +1798,7 @@ export default function Dashboard() {
                           onClick={() => doImport(share)}
                           disabled={importingId === share.id || !agentOnline}
                           title={!agentOnline ? 'Connect your machine first' : 'Add to my sessions'}
-                          className="shrink-0 px-3 py-1.5 text-xs bg-[var(--accent-dim)]/25 text-[var(--accent)] rounded-lg hover:bg-[var(--accent-dim)]/40 disabled:opacity-50 transition-colors"
+                          className="shrink-0 px-3 py-1.5 text-xs bg-accent-dim/25 text-[var(--accent)] rounded-lg hover:bg-accent-dim/40 disabled:opacity-50 transition-colors"
                         >
                           {importingId === share.id ? 'Adding…' : 'Add to my sessions'}
                         </button>
@@ -1844,9 +1844,9 @@ export default function Dashboard() {
               ) : preparedSessions.sessions.length === 0 && agentOnline ? (
                 <p className="px-4 text-sm text-[var(--muted)]">No conversations to show.</p>
               ) : (
-                <div className="rounded-xl border border-[var(--border-subtle)]/60 bg-[var(--surface)] divide-y divide-[var(--border-subtle)]/40">{/* Slack-style flush list: one bordered container, rows divided by hairlines — replaces the old per-project bubble cards (space-y-2 + rounded-2xl each) */}
+                <div className="rounded-xl border border-border-subtle/60 bg-[var(--surface)] divide-y divide-border-subtle/40">{/* Slack-style flush list: one bordered container, rows divided by hairlines — replaces the old per-project bubble cards (space-y-2 + rounded-2xl each) */}
                   {groupByProject(preparedSessions.sessions, baseCwd).map(project => (
-                    <div key={project.cwd} className={`relative transition-colors first:rounded-t-xl last:rounded-b-xl ${openProjectMenu === project.cwd ? 'z-30' : 'z-0'} ${expandedProjects.has(project.cwd) ? 'bg-[var(--surface-2)]/30' : 'hover:bg-[var(--surface-2)]/40'}`}>{/* relative + z-30 when its ⋯ menu is open so the dropdown floats ABOVE sibling rows (was ghosting through them). no overflow-hidden — it clipped the dropdown */}
+                    <div key={project.cwd} className={`relative transition-colors first:rounded-t-xl last:rounded-b-xl ${openProjectMenu === project.cwd ? 'z-30' : 'z-0'} ${expandedProjects.has(project.cwd) ? 'bg-surface-2/30' : 'hover:bg-surface-2/40'}`}>{/* relative + z-30 when its ⋯ menu is open so the dropdown floats ABOVE sibling rows (was ghosting through them). no overflow-hidden — it clipped the dropdown */}
                       {/* Project header row */}
                       <div className={`relative flex items-center gap-3 px-3 py-2.5 ${openProjectMenu === project.cwd ? 'z-40' : ''}`}>
                         <button
@@ -1998,21 +1998,21 @@ export default function Dashboard() {
 
                       {/* Expanded session list — cards with staggered reveal */}
                       {expandedProjects.has(project.cwd) && (
-                        <div className="border-t border-[var(--border-subtle)]/40 py-1">{/* flat nested rows (Slack-style) — no per-session bubble cards, no stagger/lift animation */}
+                        <div className="border-t border-border-subtle/40 py-1">{/* flat nested rows (Slack-style) — no per-session bubble cards, no stagger/lift animation */}
                           {(expandedSessionLists.has(project.cwd)
                             ? project.sessions
                             : project.sessions.slice(0, 15)
                           ).map((s) => { const pv = prettySessionPreview(s); return (
                             <div
                               key={s.sessionId}
-                              className="relative hover:bg-[var(--surface-2)]/50 transition-colors group/sess"
+                              className="relative hover:bg-surface-2/50 transition-colors group/sess"
                             >
                               <button
                                 onClick={() => startChat(s.sessionId, s.cwd)}
                                 className="w-full pl-[44px] pr-3 py-2 text-left"
                               >
                                 <div className="flex items-start gap-2.5 pr-9">
-                                  <div className={`mt-0.5 w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : pv.kind === 'task' ? 'bg-[var(--surface-2)] text-[var(--text-muted)]' : 'bg-[var(--surface-2)] text-[var(--text-secondary)] group-hover/sess:text-[var(--accent)]'}`}>
+                                  <div className={`mt-0.5 w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors ${pv.kind === 'meeting' ? 'bg-accent-dim/20 text-[var(--accent)]' : pv.kind === 'task' ? 'bg-[var(--surface-2)] text-[var(--text-muted)]' : 'bg-[var(--surface-2)] text-[var(--text-secondary)] group-hover/sess:text-[var(--accent)]'}`}>
                                     {pv.kind === 'meeting' ? (
                                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                                     ) : pv.kind === 'task' ? (
@@ -2027,7 +2027,7 @@ export default function Dashboard() {
                                     </div>
                                     <div className="text-[11px] text-[var(--text-muted)] mt-0.5 flex items-center gap-1.5">
                                       {pv.kind !== 'chat' && (
-                                        <span className={`px-1.5 py-px rounded-full text-[10px] font-medium ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : 'bg-[var(--surface)] text-[var(--text-muted)]'}`}>{pv.label}</span>
+                                        <span className={`px-1.5 py-px rounded-full text-[10px] font-medium ${pv.kind === 'meeting' ? 'bg-accent-dim/20 text-[var(--accent)]' : 'bg-[var(--surface)] text-[var(--text-muted)]'}`}>{pv.label}</span>
                                       )}
                                       <span>{formatDate(sessionActivityTime(s))}</span>
                                       {s.messageCount ? (
@@ -2089,8 +2089,8 @@ export default function Dashboard() {
             <div className="overflow-y-auto p-2.5">
               <button
                 onClick={() => { setShowSessionPicker(false); startChat() }}
-                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-[var(--surface-2)]/60 transition-colors">
-                <div className="w-8 h-8 rounded-lg bg-[var(--accent-dim)]/20 flex items-center justify-center shrink-0 text-[var(--accent)]">
+                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-2/60 transition-colors">
+                <div className="w-8 h-8 rounded-lg bg-accent-dim/20 flex items-center justify-center shrink-0 text-[var(--accent)]">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" /></svg>
                 </div>
                 <div className="min-w-0">
@@ -2101,7 +2101,7 @@ export default function Dashboard() {
               {groupByProject(sessions, baseCwd).map(project => (
                 <button key={project.cwd}
                   onClick={() => { setShowSessionPicker(false); startChat(undefined, project.cwd) }}
-                  className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-[var(--surface-2)]/60 transition-colors">
+                  className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-2/60 transition-colors">
                   <div className="w-8 h-8 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-sm">
                     {project.name === 'General' ? '📁' : '🗂️'}
                   </div>
@@ -2117,7 +2117,7 @@ export default function Dashboard() {
             <div className="shrink-0 border-t border-[var(--border-subtle)] px-3 py-2.5">
               <button
                 onClick={() => { setShowSessionPicker(false); setProjectNameError(null); setShowNewProject(true) }}
-                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--surface-2)]/60 hover:text-[var(--text-primary)] transition-colors">
+                className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl text-[var(--text-secondary)] hover:bg-surface-2/60 hover:text-[var(--text-primary)] transition-colors">
                 <div className="w-8 h-8 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-[var(--text-muted)]">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" /></svg>
                 </div>
