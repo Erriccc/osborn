@@ -44,7 +44,6 @@ const TYPE_LABEL: Record<string, string> = {
 // visually too, but slicing keeps a 50KB brief from mounting in full.
 const PREVIEW_CHARS = 1200
 
-
 export default function CompletionCard({
   item,
   isNew,

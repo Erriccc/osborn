@@ -21,7 +21,6 @@ interface FeedNote { id: string; text: string; created_at: string; attachments?:
 interface FeedSession { sessionId: string; timestamp: string; lastMessage?: string; cwd?: string; title?: string | null; lastActivityAt?: string | null }
 type Filter = 'all' | 'note' | 'session'
 
-
 export default function ActivityFeed({
   sessions,
   sessionsLoading,

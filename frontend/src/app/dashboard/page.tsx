@@ -1174,9 +1174,6 @@ export default function Dashboard() {
     else startChat()
   }
 
-  // One time format across the dashboard: the shelf, completions, Recents and Projects.
-  const formatDate = (ts: string) => formatTime(ts)
-
   const toggleProject = (cwd: string) => {
     setExpandedProjects(prev => {
       const next = new Set(prev)
@@ -1590,7 +1587,7 @@ export default function Dashboard() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--accent)]">Continue</span>
-                    <span className="text-[11px] text-[var(--text-muted)]">{formatDate(sessionActivityTime(recent))}</span>
+                    <span className="text-[11px] text-[var(--text-muted)]">{formatTime(sessionActivityTime(recent))}</span>
                   </div>
                   <div className="text-sm font-medium text-[var(--text-primary)] truncate mt-0.5">{pv.text}</div>
                 </div>
@@ -1697,7 +1694,7 @@ export default function Dashboard() {
               Continue card and Recent activity already lead with them. */}
           {agentOnline !== false && recentSessions.length > 0 && (
             <div className="hidden lg:block">
-              <RecentsList sessions={recentSessions} onOpen={(s) => startChat(s.sessionId, s.cwd)} formatDate={formatDate} />
+              <RecentsList sessions={recentSessions} onOpen={(s) => startChat(s.sessionId, s.cwd)} formatDate={formatTime} />
             </div>
           )}
           {agentOnline === false && !(isCloud && !user && !loading) && (
@@ -1860,7 +1857,7 @@ export default function Dashboard() {
                                 </>
                               )}
                               <span className="opacity-40">·</span>
-                              <span>{formatDate(project.lastActive)}</span>
+                              <span>{formatTime(project.lastActive)}</span>
                             </div>
                           </div>
                           <svg
@@ -2022,7 +2019,7 @@ export default function Dashboard() {
                                       {pv.kind !== 'chat' && (
                                         <span className={`px-1.5 py-px rounded-full text-[10px] font-medium ${pv.kind === 'meeting' ? 'bg-[var(--accent-dim)]/20 text-[var(--accent)]' : 'bg-[var(--surface)] text-[var(--text-muted)]'}`}>{pv.label}</span>
                                       )}
-                                      <span>{formatDate(sessionActivityTime(s))}</span>
+                                      <span>{formatTime(sessionActivityTime(s))}</span>
                                       {s.messageCount ? (
                                         <>
                                           <span className="opacity-40">·</span>
