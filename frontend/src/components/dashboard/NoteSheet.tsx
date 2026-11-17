@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { TodayNote } from '@/lib/today'
 
-export function noteCopyText(note: { text: string; attachments?: string[] }): string {
+function noteCopyText(note: { text: string; attachments?: string[] }): string {
   const atts = note.attachments || []
   return atts.length ? `${note.text}\n${atts.join('\n')}` : note.text
 }

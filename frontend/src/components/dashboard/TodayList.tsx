@@ -7,7 +7,8 @@ import NoteSheet from './NoteSheet'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { formatTime } from '@/lib/sessions'
 import { sessionMatchesQuery, type SessionListItem } from '@/lib/session-list'
-import { buildTodayRows, groupByDay, type TodayBrief, type TodayKind, type TodayNote, type TodayRow } from '@/lib/today'
+import { groupByDay } from '@/lib/outputs-model'
+import { buildTodayRows, type TodayBrief, type TodayKind, type TodayNote, type TodayRow } from '@/lib/today'
 
 /**
  * Recent: the dashboard's one list (rows from lib/today.ts). MODEL: Things 3
@@ -168,10 +169,10 @@ export default function TodayList({
         </p>
       ) : (
         <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-1.5">
-          {groupByDay(shown).map(g => (
-            <div key={g.group}>
-              <h3 className="px-2.5 pt-2 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">{g.group}</h3>
-              <ul className="space-y-px">{g.rows.map(row)}</ul>
+          {groupByDay(shown, r => r.at).map(g => (
+            <div key={g.label}>
+              <h3 className="px-2.5 pt-2 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">{g.label}</h3>
+              <ul className="space-y-px">{g.items.map(row)}</ul>
             </div>
           ))}
         </div>

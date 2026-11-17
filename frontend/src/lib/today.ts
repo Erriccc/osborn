@@ -5,7 +5,7 @@
 import { prettySessionPreview, sessionActivityTime } from './sessions'
 import type { SessionListItem } from './session-list'
 import { PLATFORM_LABELS } from './content-refine'
-import { dayBucket, DAY_LABEL, toMs } from './outputs-model'
+import { toMs } from './outputs-model'
 
 export type TodayKind = 'session' | 'note' | 'brief'
 
@@ -37,23 +37,4 @@ export function buildTodayRows(sessions: SessionListItem[], notes: TodayNote[], 
     ...briefs.map((b): TodayRow => ({ kind: 'brief', key: `brief:${b.id}`, id: b.id, at: b.created_at, title: b.title || 'Untitled brief', label: (b.type && (BRIEF_LABEL[b.type] || b.type)) || 'Brief' })),
   ]
   return rows.sort((a, b) => (toMs(b.at) || 0) - (toMs(a.at) || 0))
-}
-
-export type DayGroup = (typeof DAY_LABEL)[keyof typeof DAY_LABEL]
-
-/** Which day heading `at` falls under (outputs-model's calendar-day buckets). */
-export function dayGroup(at: string, now = new Date()): DayGroup {
-  return DAY_LABEL[dayBucket(toMs(at), now.getTime())]
-}
-
-/** Rows split under their day headings, in order, empty groups dropped. */
-export function groupByDay(rows: TodayRow[], now = new Date()): { group: DayGroup; rows: TodayRow[] }[] {
-  const out: { group: DayGroup; rows: TodayRow[] }[] = []
-  for (const r of rows) {
-    const g = dayGroup(r.at, now)
-    const last = out[out.length - 1]
-    if (last && last.group === g) last.rows.push(r)
-    else out.push({ group: g, rows: [r] })
-  }
-  return out
 }

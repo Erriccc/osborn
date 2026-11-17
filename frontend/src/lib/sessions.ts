@@ -4,7 +4,7 @@
 // ============================================================
 
 import { stripSessionWrappers } from './transcript-clean'
-import { dayBucket, DAY_LABEL } from './outputs-model'
+import { groupByDay } from './outputs-model'
 
 export interface SessionInfo {
   sessionId: string
@@ -226,17 +226,9 @@ export function formatTime(timestamp: string, nowMs: number = Date.now()): strin
 }
 
 /**
- * Group sessions under the shared day headings (outputs-model dayBucket), using
+ * Group sessions under the shared day headings (outputs-model groupByDay), using
  * the last-activity time; each group is most-recently-active first.
  */
 export function groupSessionsByDate(sessions: SessionInfo[]): { label: string; sessions: SessionInfo[] }[] {
-  const now = Date.now()
-  const groups: { label: string; sessions: SessionInfo[] }[] = []
-  for (const session of sortSessionsByActivity(sessions)) {
-    const label = DAY_LABEL[dayBucket(new Date(sessionActivityTime(session)).getTime(), now)]
-    const last = groups[groups.length - 1]
-    if (last && last.label === label) last.sessions.push(session)
-    else groups.push({ label, sessions: [session] })
-  }
-  return groups
+  return groupByDay(sortSessionsByActivity(sessions), sessionActivityTime).map(g => ({ label: g.label, sessions: g.items }))
 }

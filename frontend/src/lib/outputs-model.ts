@@ -104,6 +104,18 @@ export function dayBucket(ms: number, now: number): DayBucket {
   return 'older'
 }
 
+/** Items (already newest first) split under their day headings, in order; empty headings dropped. */
+export function groupByDay<T>(items: readonly T[], at: (item: T) => Date | string | number | undefined | null, now = Date.now()): { label: (typeof DAY_LABEL)[DayBucket]; items: T[] }[] {
+  const out: { label: (typeof DAY_LABEL)[DayBucket]; items: T[] }[] = []
+  for (const item of items) {
+    const label = DAY_LABEL[dayBucket(toMs(at(item)), now)]
+    const last = out[out.length - 1]
+    if (last && last.label === label) last.items.push(item)
+    else out.push({ label, items: [item] })
+  }
+  return out
+}
+
 export interface JustMadeContext {
   sessionId: string | null | undefined
   /** When this browser joined the session (ms). */
