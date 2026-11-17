@@ -1,5 +1,6 @@
 'use client'
 
+import LoadingLine from './LoadingLine'
 import { useEffect, useState } from 'react'
 import NoteSheet, { noteCopyText } from './NoteSheet'
 import { sessionActivityTime, prettySessionPreview, formatTime } from '@/lib/sessions'
@@ -87,7 +88,9 @@ export default function ActivityFeed({
         </div>
       </div>
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && sessionsLoading && filter !== 'note' ? (
+        <LoadingLine />
+      ) : rows.length === 0 ? (
         <p className="text-[13px] text-[var(--text-muted)] py-3 px-0.5">Nothing here yet — record a note or start a session.</p>
       ) : (
         <div className="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory">
