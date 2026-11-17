@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import NoteSheet, { noteCopyText } from './NoteSheet'
-import { sessionActivityTime, sessionDisplayTitle } from '@/lib/sessions'
+import { sessionActivityTime, prettySessionPreview } from '@/lib/sessions'
 
 /**
  * ActivityShelf (exported as ActivityFeed) — NOTES + SESSIONS as one shelf.
@@ -60,7 +60,7 @@ export default function ActivityFeed({
 
   const rows = [
     ...notes.map(n => ({ kind: 'note' as const, at: n.created_at, text: n.text, id: n.id, attachments: n.attachments || [] })),
-    ...sessions.map(s => ({ kind: 'session' as const, at: sessionActivityTime(s), text: sessionDisplayTitle(s), id: s.sessionId, cwd: s.cwd })),
+    ...sessions.map(s => ({ kind: 'session' as const, at: sessionActivityTime(s), text: prettySessionPreview(s).text, id: s.sessionId, cwd: s.cwd })),
   ]
     .filter(r => filter === 'all' || r.kind === filter)
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
@@ -98,8 +98,7 @@ export default function ActivityFeed({
       {rows.length === 0 ? (
         <p className="text-[13px] text-[var(--text-muted)] py-3 px-0.5">Nothing here yet — record a note or start a session.</p>
       ) : (
-        <div className="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory"
-          style={{ scrollbarWidth: 'thin' }}>
+        <div className="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory">
           {rows.map(r => (
             <div key={r.kind + r.id}
               className="relative snap-start shrink-0 w-[240px] sm:w-[260px] text-left rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-3.5 hover:border-[var(--accent-dim)]/50 transition-colors group">
