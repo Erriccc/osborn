@@ -290,7 +290,7 @@ Each steward and reviewer run is a FRESH agent on the whole range `origin/main..
 
 A UI change is not done until it has been looked at, judged and fixed, on the real page.
 
-- **Name the reference first.** Before writing UI, state what it is modelled on: an existing page of this app (its layout, spacing and tokens) or an established pattern (for example a full-height conversation sidebar). Never drop a component into a page as-is.
+- **Name the reference first.** Before writing UI, state what it is modelled on: an existing page of this app (its layout, spacing and tokens; the direction is in `docs/design-direction.md`) or an established pattern (for example a full-height conversation sidebar). Never drop a component into a page as-is.
 - **Use the host page's design tokens** (`var(--surface)`, `var(--accent)`, `var(--border-subtle)` …). A component built in another palette (the chat's `gray-900`/navy) is restyled to the page it lands on, never shown in its own colours.
 - **Render before the PR.** Screenshot the change at desktop (1280) and mobile (390) through the Browser Screen Recorder session-engine (see that section above) and critique it against the reference: alignment, spacing, hierarchy, theme, empty and loading states, duplication with what is already on the page. Fix what the critique finds, then put the screenshots in the PR. If the change cannot be reached before merge, say so in the PR and do this review straight after deploy.
 - **Review again after deploy**, with fresh screenshots at both widths. Anything that looks wrong is fixed in a follow-up PR in the same loop. It is never reported as working, and never handed back as a question about taste.
