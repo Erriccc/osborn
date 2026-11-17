@@ -10,7 +10,8 @@ import { useEffect, useRef, useState } from 'react'
  * out of the confirm step); Tab is trapped inside the sheet.
  */
 
-export interface SheetNote { id: string; text: string; created_at: string; attachments?: string[] }
+import type { TodayNote } from '@/lib/today'
+export type SheetNote = TodayNote
 
 export function noteCopyText(note: { text: string; attachments?: string[] }): string {
   const atts = note.attachments || []

@@ -16,9 +16,7 @@ const FLY_REGION_CITIES: Record<string, string> = {
 import LiveClock from '@/components/LiveClock'
 import NotesCard from '@/components/NotesCard'
 import UnifiedCreate from '@/components/dashboard/UnifiedCreate'
-import ActivityFeed from '@/components/dashboard/ActivityFeed'
-import RecentsList from '@/components/dashboard/RecentsList'
-import FeedStream from '@/components/dashboard/FeedStream'
+import TodayList from '@/components/dashboard/TodayList'
 import { ReportBugModal } from '@/components/ReportBugModal'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import { isSupabaseConfigured } from '@/lib/supabase'
@@ -475,7 +473,12 @@ export default function Dashboard() {
   // Fetch sessions, with a localStorage TTL cache to skip the JSONL crawl on repeat loads.
   // Pass force=true to bypass the cache (after import/delete operations).
   const fetchSessions = useCallback(async (force = false) => {
-    if (!canFetchAgent()) { setAgentOnline(false); setSessions([]); setBaseCwd(null); setSessionsLoading(false); return }
+    if (!canFetchAgent()) {
+      // Cloud, before /api/sandbox has given the machine's URL: the sandbox poll owns
+      // agentOnline, so stay loading rather than declare the machine offline.
+      if (connectionMode === 'cloud' && user && agentUrl.startsWith('http://localhost')) return
+      setAgentOnline(false); setSessions([]); setBaseCwd(null); setSessionsLoading(false); return
+    }
 
     // Serve from cache if fresh and not forced
     if (!force) {
@@ -512,9 +515,11 @@ export default function Dashboard() {
     } finally {
       setSessionsLoading(false)
     }
-  }, [agentUrl, canFetchAgent, SESSIONS_CACHE_KEY, SESSIONS_CACHE_TTL])
+  }, [agentUrl, canFetchAgent, connectionMode, user, SESSIONS_CACHE_KEY, SESSIONS_CACHE_TTL])
 
   useEffect(() => { if (!loading) fetchSessions() }, [loading, fetchSessions])
+  // A machine known to be offline has no sessions coming: end the loading state.
+  useEffect(() => { if (agentOnline === false) setSessionsLoading(false) }, [agentOnline])
 
   // Re-fetch sessions when machine transitions to running (auto-start from idle).
   // Without this, sessions stay empty if the initial fetch fires while the
@@ -1558,44 +1563,14 @@ export default function Dashboard() {
           {/* ── MAIN column (desktop) / primary stack (mobile) ── */}
           <div className="order-1 lg:order-2 w-full lg:max-w-3xl lg:mx-auto">
 
-          {/* Serif greeting — only in the empty state. Once there's a Continue
-              card (sessions exist), the greeting is redundant with it, so we
-              drop it and let Continue be the single orienting header. */}
-          {!(agentOnline !== false && sessions.length > 0) && (
-            <div className="mb-4 mt-1" style={{ animation: 'fadeSlideIn .4s ease both' }}>
-              <h1 className="font-display text-[26px] sm:text-3xl font-medium text-[var(--text-primary)] leading-tight">
-                {(() => { const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening' })()}
-                {user?.user_metadata?.full_name ? `, ${String(user.user_metadata.full_name).split(' ')[0]}` : ''}.
-              </h1>
-              <p className="mt-1 text-[13px] text-[var(--text-secondary)]">What should we look into?</p>
-            </div>
-          )}
-
-          {/* Continue where you left off — featured resume of the most-recent
-              session (agenda-card idiom: one clear primary action using real
-              data, surfaced above the full list). */}
-          {agentOnline !== false && sessions.length > 0 && (() => {
-            const recent = sortSessionsByActivity(sessions)[0]
-            if (!recent) return null
-            const pv = prettySessionPreview(recent)
-            return (
-              <button onClick={() => startChat(recent.sessionId, recent.cwd)}
-                className="w-full mb-3 flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-accent-dim/50 hover:bg-surface-2/40 transition-all group"
-                style={{ animation: 'fadeSlideIn .45s ease both' }}>
-                <div className="w-10 h-10 rounded-xl bg-accent-dim/20 flex items-center justify-center shrink-0 text-[var(--accent)]">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--accent)]">Continue</span>
-                    <span className="text-[11px] text-[var(--text-muted)]">{formatTime(sessionActivityTime(recent))}</span>
-                  </div>
-                  <div className="text-sm font-medium text-[var(--text-primary)] truncate mt-0.5">{pv.text}</div>
-                </div>
-                <svg className="w-5 h-5 shrink-0 text-[var(--text-muted)] group-hover:text-[var(--accent)] group-hover:translate-x-0.5 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-              </button>
-            )
-          })()}
+          {/* Serif greeting: the page's orienting header. */}
+          <div className="mb-4 mt-1" style={{ animation: 'fadeSlideIn .4s ease both' }}>
+            <h1 className="font-display text-[26px] sm:text-3xl font-medium text-[var(--text-primary)] leading-tight">
+              {(() => { const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening' })()}
+              {user?.user_metadata?.full_name ? `, ${String(user.user_metadata.full_name).split(' ')[0]}` : ''}.
+            </h1>
+            <p className="mt-1 text-[13px] text-[var(--text-secondary)]">What should we look into?</p>
+          </div>
 
           {/* Unified create — Notion "+ New ▾" model: session / note / project */}
           <UnifiedCreate
@@ -1606,13 +1581,8 @@ export default function Dashboard() {
           {/* Quick voice notes — record → transcribe → saved to the account */}
           <NotesCard />
 
-          {/* Notes + previous sessions — one bounded chronological feed */}
-          <ActivityFeed sessions={sessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} />
-
-          {/* COMPLETIONS stream (dashboard-as-feed, phase 1) — finished work with
-              proof: content_items briefs + finished sessions as passive cards,
-              newest first. Desktop/landscape only. Replaces the old <LibraryBriefs/>. */}
-          <FeedStream kind="completions" sessions={sessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} />
+          {/* Today: sessions (once each), notes and finished briefs in one list. */}
+          <TodayList sessions={recentSessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} />
 
           {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary
               actions visible: the amber CTA above + these two. Each is a single
@@ -1691,13 +1661,6 @@ export default function Dashboard() {
               same handlers; CSS/grid decides where it lives. */}
           <aside className="order-2 lg:order-1 w-full lg:sticky lg:top-[4.5rem] lg:self-start lg:max-h-[calc(100dvh-5.5rem)] lg:overflow-y-auto lg:rounded-2xl lg:border lg:border-[var(--border-subtle)] lg:bg-surface/40 lg:p-3 mt-6 lg:mt-0">
 
-          {/* Recents (desktop): newest sessions first; on phones the main column's
-              Continue card and Recent activity already lead with them. */}
-          {agentOnline !== false && recentSessions.length > 0 && (
-            <div className="hidden lg:block">
-              <RecentsList sessions={recentSessions} onOpen={(s) => startChat(s.sessionId, s.cwd)} />
-            </div>
-          )}
           {agentOnline === false && !(isCloud && !user && !loading) && (
             <p className="hidden lg:block px-1 py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
               Your sessions and projects appear here when your machine is online.

@@ -49,20 +49,21 @@ function interactiveDepth(src: string): number {
   return max
 }
 
-const feed = read('src/components/dashboard/ActivityFeed.tsx')
+const feed = read('src/components/dashboard/TodayList.tsx')
+const today = read('src/lib/today.ts')
 const sheet = read('src/components/dashboard/NoteSheet.tsx')
 
-t('ActivityFeed: no button nested inside a button', () => {
+t('TodayList: no button nested inside a button', () => {
   ok(!/role="button"/.test(feed), 'role="button" wrapper would still nest the Copy button (axe nested-interactive)')
   ok(interactiveDepth(feed) === 1, `interactive nesting depth ${interactiveDepth(feed)}`)
 })
 t('NoteSheet: no button nested inside a button', () => ok(interactiveDepth(sheet) === 1, `depth ${interactiveDepth(sheet)}`))
-t('ActivityFeed: note rows carry attachments', () => ok(/kind: 'note' as const[^\n]*attachments/.test(feed), 'attachments dropped from note rows'))
-t('ActivityFeed: note card opens NoteSheet', () => {
+t('TodayList: note rows carry attachments', () => ok(/kind: 'note'[^\n]*attachments/.test(today), 'attachments dropped from note rows'))
+t('TodayList: note card opens NoteSheet', () => {
   ok(/<NoteSheet\b/.test(feed), 'NoteSheet not rendered')
   ok(/setOpenNote\(n\)/.test(feed), 'card click does not open the sheet')
 })
-t('ActivityFeed: deleted note leaves the list', () => ok(/onDeleted=\{[^}]*setNotes\(ns => ns\.filter/.test(feed), 'no list removal on delete'))
+t('TodayList: deleted note leaves the list', () => ok(/onDeleted=\{[^}]*setNotes\(ns => ns\.filter/.test(feed), 'no list removal on delete'))
 t('NoteSheet: DELETE /api/notes?id= only after a confirm step', () => {
   ok(/fetch\(`\/api\/notes\?id=\$\{encodeURIComponent\(note\.id\)\}`, \{ method: 'DELETE' \}\)/.test(sheet), 'no DELETE call')
   ok(/onClick=\{\(\) => setConfirming\(true\)\}/.test(sheet), 'first Delete does not arm a confirm')

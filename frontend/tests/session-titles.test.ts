@@ -2,7 +2,7 @@
 // Spec (lane L2b frontend, "dashtitles"): the agent's /sessions + sessions_list
 // entries now carry `title` (already cleaned), `firstTs` and `lastActivityAt`.
 // Every session list (dashboard prettySessionPreview + CONTINUE card,
-// sessions.ts deriveSessionTitle, SessionBrowser, ActivityFeed, mobile list):
+// sessions.ts deriveSessionTitle, SessionBrowser, TodayList, mobile list):
 //   - prefers the agent's `title`; otherwise cleans the old `lastMessage` preview
 //   - never shows a title starting with `[` or `<`, or an empty one ->
 //     "Untitled session"

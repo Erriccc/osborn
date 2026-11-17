@@ -6,10 +6,10 @@ import { micErrorKind, micHelp } from '@/lib/mic-permission'
 /**
  * NotesRecorder — the dashboard's note CAPTURE control (record-only).
  * Founder consolidation (10-24): the saved-notes list was redundant with the
- * Recent Activity shelf — this section is now JUST the recorder. Record →
+ * dashboard's Today list — this section is now JUST the recorder. Record →
  * (pause/resume) → stop → transcribe → confirm (edit + ATTACH files via the
  * same /api/upload pipeline chat uses → stored URLs ride the note) → save →
- * the note lands in Recent Activity. Model: Apple Voice Memos record bar.
+ * the note lands in Today. Model: Apple Voice Memos record bar.
  */
 
 type Phase = 'idle' | 'recording' | 'transcribing' | 'confirm'
@@ -135,7 +135,7 @@ export default function NotesCard() {
         <button onClick={start}
           className="w-full sm:w-auto min-h-[44px] px-5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] flex items-center justify-center gap-2 text-[13.5px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-accent-dim/60 transition-all active:scale-[0.99]">
           <svg className="w-4 h-4 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-14 0m7 7v3m0-3a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-          {savedFlash ? 'Saved — see Recent activity ✓' : 'Record a note'}
+          {savedFlash ? 'Saved — see Recent ✓' : 'Record a note'}
         </button>
       )}
 
