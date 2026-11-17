@@ -1729,7 +1729,7 @@ export default function Dashboard() {
           )}
           {agentOnline === false && (
             <p className="hidden lg:block px-1 py-2 text-xs leading-relaxed text-[var(--text-muted)]">
-              Your machine is asleep. Your sessions and projects appear here when it wakes; starting or resuming a session wakes it.
+              Your sessions and projects appear here when your machine is online.
             </p>
           )}
 

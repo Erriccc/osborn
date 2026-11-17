@@ -12,7 +12,7 @@ import { sessionMatchesQuery, type SessionListItem } from '@/lib/session-list'
 const SHOWN = 8
 
 export default function RecentsList<T extends SessionListItem>({ sessions, onOpen, formatDate }: {
-  /** Already prepared and sorted newest first (prepareSessions). */
+  /** Already prepared (prepareSessions) and sorted newest first (sortSessionsByActivity). */
   sessions: T[]
   onOpen: (s: T) => void
   formatDate: (iso: string) => string
