@@ -8,7 +8,7 @@
 import {
   AUTO_OPEN_OUTPUTS_ON_WRITE,
   fileFromToolEvent, upsertAgentFile, markUnread, agentCanServe, fileTypeOf,
-  replaceArtifacts, contentRequestFor, isSensitivePath, normalizeAgentPath, summarize, searchOutputs,
+  replaceArtifacts, contentRequestFor, isSensitivePath, normalizeAgentPath, summarize, searchOutputs, fileIdentity, oneCardPerFile,
   LOAD_ERROR_DENIED, LOAD_ERROR_OUTSIDE,
   type OutputFile,
 } from '../src/lib/outputs-model'
@@ -186,6 +186,21 @@ t('secret-looking files never show a summary or a content match', () => {
   const env: OutputFile = { filePath: `${OSB}/.env`, fileName: '.env', type: 'other', updatedAt: NOW, content: 'API_KEY=sk-live-123' }
   eq(summarize(env), null, 'summary')
   eq(searchOutputs([env], 'sk-live').byContent.length, 0, 'content search')
+})
+
+t('one in-chat card per file: aliases of the same file fold, different files stay', () => {
+  eq(fileIdentity('/root/.claude/projects/-workspace/osb/s/report.md'), fileIdentity('/workspace/.claude/projects/-workspace/osb/s/report.md'), 'claude folder aliases')
+  eq(fileIdentity('/workspace//out/a.md'), '/workspace/out/a.md', 'double slash')
+  ok(fileIdentity('/workspace/report.md') !== fileIdentity('/workspace/.claude/projects/p/osb/s/report.md'), 'same name, different files')
+  const card = (id: string, filePath: string) => ({ id, fileRef: { filePath } })
+  const rows = [
+    card('a', '/root/.claude/projects/p/osb/s/report.md'),
+    { id: 'text' },
+    card('b', '/workspace/.claude/projects/p/osb/s/report.md'),
+    card('c', '/workspace/report.md'),
+    { id: 'text2' },
+  ]
+  eq(oneCardPerFile(rows).map((r) => r.id), ['a', 'text', 'c', 'text2'], 'first card kept, other rows untouched')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

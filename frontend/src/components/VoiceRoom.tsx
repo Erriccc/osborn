@@ -57,7 +57,7 @@ import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightP
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
-import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
@@ -1712,8 +1712,11 @@ function VoiceRoomInner({
   // and (only if enabled) open the drawer. Called from handleDataMessage via a
   // ref so its subscription deps stay unchanged.
   const onAgentFileEvent = useCallback((filePath: string, fileName: string) => {
-    if (!generatedFilesRef.current.some((f) => f.filePath === filePath) && !announcedFilesRef.current.has(filePath)) {
-      announcedFilesRef.current.add(filePath)
+    // One card per file: keyed by fileIdentity, so the same file named two ways
+    // (a write and an edit, or the tool event and the artifact event) shows once.
+    const key = fileIdentity(filePath)
+    if (!generatedFilesRef.current.some((f) => fileIdentity(f.filePath) === key) && !announcedFilesRef.current.has(key)) {
+      announcedFilesRef.current.add(key)
       setMessages((prev) => [...prev, {
         id: `file-${filePath}`, role: 'system', content: `Saved ${fileName}`, timestamp: new Date(),
         category: 'chat', fileRef: { filePath, fileName },

@@ -349,6 +349,29 @@ export function fileFromToolEvent(
   }
 }
 
+/** One key per file on disk, for the in-chat card: the canonical path, minus
+ *  everything before `/.claude/`, because a machine reaches its one Claude folder
+ *  by several names (`/root/.claude` links to `/workspace/.claude` on the cloud
+ *  machines), so a write and a later edit can name the same file two ways. */
+export function fileIdentity(filePath: string): string {
+  const norm = normalizeAgentPath(filePath) ?? filePath
+  const i = norm.indexOf('/.claude/')
+  return i >= 0 ? norm.slice(i) : norm
+}
+
+/** Transcript rows with at most one file card per file (the first); every
+ *  other row, and cards for different files, pass through untouched. */
+export function oneCardPerFile<T extends { fileRef?: { filePath: string } }>(rows: readonly T[]): T[] {
+  const seen = new Set<string>()
+  return rows.filter((r) => {
+    if (!r.fileRef) return true
+    const key = fileIdentity(r.fileRef.filePath)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 /** Insert a freshly written file (newest first) or refresh the existing row:
  *  first-seen time kept, cached body dropped so the next open refetches. */
 export function upsertAgentFile<T extends OutputFile>(prev: readonly T[], file: T): T[] {
