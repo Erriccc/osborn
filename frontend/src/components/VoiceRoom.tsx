@@ -1965,7 +1965,7 @@ function VoiceRoomInner({
         }
         // No preselected session = fresh conversation. Start immediately,
         // no gate. The dashboard is the session picker now — "Continue where
-        // you left off", "Resume a session", and every session-list row all
+        // you left off", the Recents list, and every session-list row all
         // route to /chat?session=…, so re-prompting here was redundant (the
         // "Previous Sessions" popup). Users switch sessions mid-chat from the
         // in-chat session browser; the list below keeps it warm.
