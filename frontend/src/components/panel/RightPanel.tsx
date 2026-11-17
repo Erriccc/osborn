@@ -64,7 +64,7 @@ export function PanelToggleButton({ className = '' }: { className?: string }) {
       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
         <rect x="3" y="4" width="18" height="16" rx="2" /><path strokeLinecap="round" d="M14 4v16" />
       </svg>
-      <span className="hidden pane-lg:inline">Outputs</span>
+      <span className="hidden pane-xl:inline">Outputs</span>
       {hidden > 0 && (
         <span data-testid="panel-toggle-badge" className="min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-amber-500 text-gray-900 text-[10px] font-bold leading-[1.1rem] text-center">
           {hidden > 99 ? '99+' : hidden}
