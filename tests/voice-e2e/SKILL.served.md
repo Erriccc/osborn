@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 52
+Version: 53
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -45,7 +45,9 @@ delivered to the user. No silent runs.
   (DevTools on camera), reproduce, read `GET /logs` (console+network) next to
   the video. Never diagnose a frontend from code alone.
 - **User says "it looks broken / doesn't work on my phone"?** → REPRO:
-  `/tab {"op":"open","url":…,"viewport":"mobile"}` — real 390×844 render.
+  `/tab {"op":"open","url":…,"viewport":"mobile"}` — an emulated iPhone 13
+  (touch, mobile user agent, 3× pixels, `(hover:none) and (pointer:coarse)`
+  match), signed in like your desktop tabs. `"tablet"` = iPad (gen 7).
 - **Meeting needs a live browser on camera?** → STREAM: Fly engine's public
   MJPEG into canvas `stream` mode. NO tunnels. → references/streaming.md
 - **Exploring/researching any site?** → RESEARCH: `OSBORN_ENTRY=none` +
@@ -73,7 +75,7 @@ You are NOT limited to clicking. Every one of these is on the running engine:
 | **DevTools panel ON the video** | boot with `OSBORN_DEVTOOLS=1` | Elements/Console visible in every clip |
 | **Run JS in the page (site console)** | `drive.sh eval "<expr>"` | the value; also lands in /logs |
 | Live event stream (navigation/task/transcript/agent_output) | `GET /events` (SSE) | push updates as they happen |
-| Mobile / any viewport | `drive.sh tab '{"op":"open","url":…,"viewport":"mobile"}'` | real 390×844 render |
+| Phone / tablet / any viewport | `drive.sh tab '{"op":"open","url":…,"viewport":"mobile"}'` (or `"tablet"`, or `{"width":…,"height":…}`) | emulated iPhone 13 / iPad (gen 7) with touch; a size is a desktop window resized |
 | Past-run media (after a restart) | `GET /clip?run=<stamp>&n=N`, `GET /runs` | old clips/frames |
 | **Action-vs-process depth** | `drive.sh status` → `.depth` | `{pages, actions, kind, thin}` |
 | Learned recipes for this site | `drive.sh journey '{"op":"list"}'` | saved processes + step counts |
@@ -197,6 +199,12 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v53
+- `viewport:"mobile"` is now a real phone: the tab opens in its own browser context from Playwright's `iPhone 13` descriptor (touch, iOS user agent, devicePixelRatio 3, 390×664 page), so `(hover:none)`/`(pointer:coarse)` CSS and touch-only code run. `viewport:"tablet"` = `iPad (gen 7)` (810×1080, 2×). A `{width,height}` viewport is still a desktop window resized.
+- The device tab starts with the same sign-ins (cookies, localStorage) as your desktop tabs; a sign-in made inside it is not saved back. It is reused only for another open with the same device, and its context closes with its last tab.
+- `/tab` replies, `/status.tabs` and `/status.emulatedTabs` mark device tabs (`device`, `emulates`). `/act`, `/eval`, `/shot` and clips work on them; screenshots come at device pixels (1170 px wide for the phone).
+- It is Chromium emulating a phone, not iOS Safari: Safari-only behaviour (zooming into a focused field under 16px, safe-area insets, rubber-band scrolling) does not happen. Check those with `/eval` (a field's computed `font-size`) instead.
 
 ## What's new in v52
 - A stuck command no longer freezes the engine: after 4 minutes (`OSBORN_LOCK_MAX_MS`) the next driver's command may run, while the stuck caller still gets its own answer.

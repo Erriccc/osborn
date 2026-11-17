@@ -12,7 +12,7 @@ mp4, audio, DevTools diagnostics, latency metrics).
    the video. Never debug a frontend blind from code alone.
 2. **Verification — MANDATORY before claiming a deployed web change works**:
    run a journey exercising it, attach the clip. No recorded proof = a claim.
-3. Reproducing user-reported issues (incl. mobile: `viewport:"mobile"`).
+3. Reproducing user-reported issues (incl. phones: `viewport:"mobile"` is an emulated iPhone 13 with touch; `"tablet"` an iPad).
 4. Meetings: the engine is the approved cast source for the meeting canvas
    (public MJPEG → `stream` mode, no tunnels) and can drive the join UI.
 5. Research/exploration of any site — browse with proof, accumulate journeys.

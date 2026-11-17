@@ -65,7 +65,7 @@ function saveStore(hostname: string, store: Record<string, CachedAction>) {
  * `stagehand` needs `.observe(instruction)` and `.act(actionOrInstruction)`.
  */
 export async function actWithCache(
-  stagehand: { observe: (i: string) => Promise<any>; act: (a: any) => Promise<any> },
+  stagehand: { observe: (i: string, o?: { page?: Page }) => Promise<any>; act: (a: any, o?: { page?: Page }) => Promise<any> },
   page: Page,
   instruction: string,
 ): Promise<{ cached: boolean; healed: boolean; noop?: boolean; did?: string | null }> {
@@ -97,7 +97,7 @@ export async function actWithCache(
     }
     if (valid) {
       try {
-        await stagehand.act(hit.action)
+        await stagehand.act(hit.action, { page })
         hit.hits += 1
         hit.lastUsedAt = new Date().toISOString()
         saveStore(url.hostname, store)
@@ -109,7 +109,7 @@ export async function actWithCache(
     }
   }
 
-  const observed = await stagehand.observe(instruction)
+  const observed = await stagehand.observe(instruction, { page })
   const action = Array.isArray(observed) ? observed[0] : observed
   if (!action) {
     // Conditional instructions ("if X ... otherwise do nothing") legitimately
@@ -118,7 +118,7 @@ export async function actWithCache(
     console.log(`[step-cache] NO-OP (${url.hostname}) — nothing to do for: "${instruction.slice(0, 60)}"`)
     return { cached: false, healed: false, noop: true, did: null }
   }
-  await stagehand.act(action)
+  await stagehand.act(action, { page })
   const newSel = (action as { selector?: string })?.selector
   store[key] = {
     instruction,
