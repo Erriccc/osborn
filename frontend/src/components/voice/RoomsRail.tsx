@@ -412,7 +412,7 @@ export function RoomsBar({
   // primary-action budget.
   if (rooms.length <= 1) return null
   return (
-    <div className="xl:hidden flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto border-b border-gray-800/50 bg-gray-900/40">
+    <div className="xl:hidden flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto scrollbar-none border-b border-gray-800/50 bg-gray-900/40">
       {rooms.map((room) => {
         const isLive = room.status === 'live'
         return (

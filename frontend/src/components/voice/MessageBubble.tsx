@@ -364,6 +364,21 @@ export const MessageBubble = React.memo(function MessageBubble({
     setTimeout(() => setCopyDone(false), 1500)
     onCopy?.()
   }, [displayContent, onCopy])
+  // Copy sits under both the user's bubble and Osborn's reply.
+  const copyButton = (
+    <button onClick={handleCopy} className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95" title="Copy" aria-label="Copy">
+      {copyDone ? (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+        </svg>
+      )}
+    </button>
+  )
 
   // Parse content into parts for assistant messages
   const parts = useMemo(() => {
@@ -407,24 +422,48 @@ export const MessageBubble = React.memo(function MessageBubble({
     )
   }
 
+  // The user's turn: a right-aligned bubble (ChatGPT/Claude iOS), no avatar or
+  // "You" label; its position says who spoke. Copy and Ignore sit under it.
+  if (isUser) {
+    return (
+      <div className={`flex w-full justify-end group ${grouped ? 'pt-0.5' : 'pt-2'} pb-0.5`} data-message-id={message.messageId ?? undefined}>
+        <div className="flex flex-col items-end min-w-0 max-w-[80%]">
+          <div className={`min-w-0 max-w-full break-words rounded-2xl rounded-br-md bg-gray-800/80 border border-gray-700/50 px-3.5 py-2 text-gray-100 ${message.isStreaming ? 'opacity-95' : ''}`}>
+            <MessageContent content={userText as string} />
+          </div>
+          {!message.isStreaming && (
+            <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity">
+              {message.timestamp.getTime() > 0 && (
+                <span className="mr-1 text-[10px] text-gray-500 select-none">
+                  {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
+              {copyButton}
+              <button onClick={onIgnore} className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95" title="Ignore" aria-label="Ignore">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                </svg>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex min-w-0 w-full justify-start group rounded-md px-2 py-1 -mx-2 hover:bg-white/[0.02] transition-colors" data-message-id={message.messageId ?? undefined}>{/* Slack model: every message is a left-aligned row; sender identity comes from the avatar + name line, not bubble position */}
+    <div className="flex min-w-0 w-full justify-start group rounded-md px-2 py-1 -mx-2 hover:bg-white/[0.02] transition-colors" data-message-id={message.messageId ?? undefined}>{/* Slack model: assistant and system rows are left-aligned; sender identity comes from the avatar + name line */}
       {/* Avatar — flat rounded square, only on the FIRST message of a run; a
           spacer keeps grouped rows aligned. Hidden on mobile to save space. */}
       {!isSystem && message.toolName !== 'fast-brain' && (
         grouped ? (
           <div className="hidden sm:block w-7 mr-2.5 shrink-0" aria-hidden="true" />
         ) : (
-          <div className={`hidden sm:flex w-7 h-7 rounded-md items-center justify-center mr-2.5 mt-0.5 shrink-0 ${isUser ? 'bg-gray-700' : 'bg-amber-600'}`}>
-            {isUser ? (
-              <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-            )}
+          <div className="hidden sm:flex w-7 h-7 rounded-md items-center justify-center mr-2.5 mt-0.5 shrink-0 bg-amber-600">
+            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
           </div>
         )
       )}
@@ -441,7 +480,7 @@ export const MessageBubble = React.memo(function MessageBubble({
         {/* Sender line — only on the first message of a run (Slack grouping) */}
         {!isSystem && message.toolName !== 'fast-brain' && !grouped && (
           <div className="flex items-baseline gap-2">
-            <span className={`text-[13px] font-bold ${isUser ? 'text-sky-300' : 'text-amber-300'}`}>{isUser ? 'You' : 'Osborn'}</span>
+            <span className="font-display text-[14px] font-semibold text-amber-300">Osborn</span>
             {message.timestamp.getTime() > 0 && (
               <span className="text-[10px] text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity select-none">
                 {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -513,7 +552,7 @@ export const MessageBubble = React.memo(function MessageBubble({
             {message.isStreaming && <StreamingDots />}
           </div>
         ) : (
-          <MessageContent content={isUser ? (userText as string) : message.content} />
+          <MessageContent content={message.content} />
         )}
 
         {/* Time moved into the sender line (Slack model); keep only the live streaming badge */}
@@ -525,66 +564,35 @@ export const MessageBubble = React.memo(function MessageBubble({
             touch (no hover): max-sm:opacity-100 (P1.10 — actions were
             unreachable on phones). Targets padded to 44pt-equivalent spacing. */}
         {!isSystem && !message.isStreaming && (
-          <div className={`flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity ${isUser ? 'justify-end' : 'justify-start'}`}>
+          <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity">
+            {copyButton}
             <button
-              onClick={handleCopy}
-              className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
-              title="Copy"
+              onClick={onLike}
+              className={`p-1.5 -m-1 rounded transition-colors active:scale-95 ${isLiked ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-gray-200'}`}
+              title="Like"
             >
-              {copyDone ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
+              {isLiked ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3H14z" />
+                  <path d="M7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3" />
                 </svg>
               ) : (
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                  <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                  <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3H14z" />
+                  <path d="M7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3" />
                 </svg>
               )}
             </button>
-            {!isUser && (
-              <button
-                onClick={onLike}
-                className={`p-1.5 -m-1 rounded transition-colors active:scale-95 ${isLiked ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-gray-200'}`}
-                title="Like"
-              >
-                {isLiked ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3H14z" />
-                    <path d="M7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3" />
-                  </svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3H14z" />
-                    <path d="M7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3" />
-                  </svg>
-                )}
-              </button>
-            )}
-            {!isUser && (
-              <button
-                onClick={onReplay}
-                className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
-                title="Replay"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="1 4 1 10 7 10" />
-                  <path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
-                </svg>
-              </button>
-            )}
-            {isUser && (
-              <button
-                onClick={onIgnore}
-                className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
-                title="Ignore"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-                </svg>
-              </button>
-            )}
+            <button
+              onClick={onReplay}
+              className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
+              title="Replay"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1 4 1 10 7 10" />
+                <path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
+              </svg>
+            </button>
           </div>
         )}
       </div>

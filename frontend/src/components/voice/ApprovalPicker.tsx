@@ -4,7 +4,7 @@ import type { ApprovalMode } from './PermissionModal'
 
 // The session's approval mode: the one visible control that replaced the hidden
 // auto-approve toggles. NOT persisted: it resets to "Ask me" on every reload.
-// Lives in the Activity log row; a native picker on phones, a segmented control above.
+// Lives in the Activity log row; a chip over a native picker on phones, a segmented control above.
 const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
   { value: 'ask', label: 'Ask me', hint: 'Pause and ask before each tool action (default)' },
   { value: 'auto-review', label: 'Auto-review', hint: 'Auto-approve low-risk actions (reading files, in-workspace edits); still ask before anything risky' },
@@ -12,14 +12,22 @@ const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
 ]
 
 export function ApprovalPicker({ mode, onChange }: { mode: ApprovalMode; onChange: (m: ApprovalMode) => void }) {
+  const current = APPROVAL_MODES.find((m) => m.value === mode) ?? APPROVAL_MODES[0]
   return (
     <>
-      <label className="sm:hidden shrink-0 flex items-center min-h-11">
-        <span className="sr-only">Approvals</span>
+      {/* Phones: a compact chip over a transparent native select. The select fills
+          the 44pt chip and keeps 16px text, so iOS opens its picker without zooming. */}
+      <label className="group sm:hidden relative shrink-0 flex items-center min-h-11" title={current.hint}>
+        <span aria-hidden="true" className={`pointer-events-none flex items-center gap-1 rounded-full border group-has-[:focus-visible]:ring-2 group-has-[:focus-visible]:ring-amber-400/60 px-2.5 py-1 text-[11px] font-medium whitespace-nowrap ${mode === 'allow-all' ? 'border-amber-500/60 bg-amber-500/15 text-amber-300' : 'border-gray-700/60 bg-gray-800/60 text-gray-200'}`}>
+          <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+          {current.label}
+          <svg className="w-3 h-3 shrink-0 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+        </span>
         <select
+          aria-label={`Approvals: ${current.label}`}
           value={mode}
           onChange={(e) => onChange(e.target.value as ApprovalMode)}
-          className={`rounded-full border px-2.5 py-0.5 text-base font-medium outline-none ${mode === 'allow-all' ? 'border-amber-500/60 bg-amber-500/15 text-amber-300' : 'border-gray-700/60 bg-gray-800/60 text-gray-200'}`}
+          className="absolute inset-0 w-full h-full opacity-0 text-base cursor-pointer appearance-none"
         >
           {APPROVAL_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
         </select>

@@ -111,6 +111,11 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+/* A horizontal chip row that scrolls by swipe: no bar. A styled WebKit bar is
+   always drawn (not an overlay), so under a chip row it reads as a stuck
+   loading bar. */
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
 /* Firefox has no ::-webkit-scrollbar; give it the same thin themed bar. */
 @supports not selector(::-webkit-scrollbar) {
   * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }

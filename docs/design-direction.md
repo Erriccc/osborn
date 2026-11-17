@@ -65,7 +65,7 @@ tier; viewport width decides its HOME, never its existence:
 |---|---|---|---|
 | 1 · State | voice orb + label, clock | header, always | header |
 | 2 · Critical action | **Disconnect** (stops billing) | header, `shrink-0` — never loses the width fight | header |
-| 3 · Frequent | Agents, Skills, mobile menu | header (icon+badge) | header (icon+label) |
+| 3 · Frequent | Agents, Skills, mobile menu | header (icon+badge) | header: icon+badge below `lg` (one row on an iPad), icon+label from `lg` |
 | 4 · Occasional | auto-approve, mute, meeting, files, copy | **collapse into mobile menu** (with state badges, e.g. ON/OFF) | header |
 | 5 · Identity | settings + profile | ONE control: avatar opens settings sheet | same |
 
