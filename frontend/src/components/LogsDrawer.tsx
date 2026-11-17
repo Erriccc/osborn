@@ -553,9 +553,10 @@ function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: nu
       {/* Labelled so every number on screen says what it is (#86) */}
       <span className="text-gray-400 font-normal">RAM</span>
       <span className="tabular-nums">{ramPct}%</span>
-      <span className="text-gray-600 font-normal">·</span>
-      <span className="tabular-nums">{procCount}</span>
-      <span className="text-gray-400 font-normal">proc</span>
+      {/* Phones keep the dot and RAM %; the process count waits for the Machine tab */}
+      <span className="max-sm:hidden text-gray-600 font-normal">·</span>
+      <span className="max-sm:hidden tabular-nums">{procCount}</span>
+      <span className="max-sm:hidden text-gray-400 font-normal">proc</span>
     </span>
   )
 }
@@ -684,7 +685,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
         </button>
       )}
       {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
-        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" aria-label={`Open the Machine tab (RAM ${machineChipRamPct}%, ${machineChipProcCount} processes)`} className={`max-sm:hidden shrink-0 ${HEADER_TAP_TARGET} flex items-center`}>
+        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" aria-label={`Open the Machine tab (RAM ${machineChipRamPct}%, ${machineChipProcCount} processes)`} className={`shrink-0 ${HEADER_TAP_TARGET} flex items-center`}>
           <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
         </button>
       )}

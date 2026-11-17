@@ -14,7 +14,7 @@ const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
 export function ApprovalPicker({ mode, onChange }: { mode: ApprovalMode; onChange: (m: ApprovalMode) => void }) {
   return (
     <>
-      <label className="sm:hidden shrink-0 flex items-center">
+      <label className="sm:hidden shrink-0 flex items-center min-h-11">
         <span className="sr-only">Approvals</span>
         <select
           value={mode}
@@ -36,7 +36,7 @@ export function ApprovalPicker({ mode, onChange }: { mode: ApprovalMode; onChang
                 onClick={() => onChange(m.value)}
                 title={m.hint}
                 aria-pressed={active}
-                className={`px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition-colors ${
+                className={`px-2.5 py-1 [@media(pointer:coarse)]:min-h-11 rounded-full text-[11px] font-medium whitespace-nowrap transition-colors ${
                   active ? (m.value === 'allow-all' ? 'bg-amber-500/90 text-gray-950' : 'bg-gray-700 text-white') : 'text-gray-400 hover:text-gray-200'
                 }`}
               >

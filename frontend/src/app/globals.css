@@ -129,10 +129,11 @@ button, [role="button"], a, label, summary {
   touch-action: manipulation;
 }
 /* iOS never auto-zooms a ≥16px input. Scoped to coarse-pointer touch devices
-   so desktop input density (11–15px in dense panels) is untouched. (P1.5) */
+   so desktop input density (11–15px in dense panels) is untouched. (P1.5)
+   !important: a utility class (text-[15px]) otherwise wins and the page zooms. */
 @media (hover: none) and (pointer: coarse) {
   input, textarea, select {
-    font-size: max(16px, 1em);
+    font-size: max(16px, 1em) !important;
   }
 }
 @media (display-mode: standalone) {

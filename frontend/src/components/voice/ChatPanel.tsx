@@ -121,7 +121,7 @@ export function ChatPanel({
             isAtBottomRef.current = true
             setShowJumpPill(false)
           }}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 min-h-9 px-3.5 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
+          className="absolute bottom-3 max-lg:bottom-[4.75rem] left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 min-h-9 px-3.5 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
         >
           Jump to latest
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
