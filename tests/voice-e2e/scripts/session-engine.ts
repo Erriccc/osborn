@@ -261,7 +261,9 @@ async function main() {
     const have = owned.get(id)
     if (have) return have
     const file = profileFile(key)
-    const state = device ? await (await contextFor(key)).storageState().catch(() => undefined) : existsSync(file) ? file : undefined
+    // A device context copies the profile's live sign-ins, or its saved file when no desktop tab has opened it.
+    const signedIn = device ? contexts.get(key) : undefined
+    const state = signedIn ? await signedIn.storageState().catch(() => undefined) : existsSync(file) ? file : undefined
     const c = await browser.newContext({ ...(device ? devices[DEVICE_PRESETS[device]] : {}), permissions: ['microphone'], ...(state ? { storageState: state } : {}) })
     if (device) c.on('page', (p) => {
       pageDevice.set(p, device)
@@ -1113,7 +1115,6 @@ async function main() {
           depth: depthNow(),
           takeovers: [...takeovers.entries()].map(([p, t]) => ({ i: allPages().indexOf(p), by: t.by, prevOwner: t.prevOwner, since: t.since })),
           drivers: [...driverActive.keys()], tabsByOwner: allPages().map((p,i)=>({i, owner: ownerOf(p)})),
-          emulatedTabs: allPages().flatMap((p, i) => pageDevice.get(p) ? [{ i, ...deviceOf(p), viewport: p.viewportSize() }] : []),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: allPages().indexOf(active), url: active.url() },
           tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, ...deviceOf(allPages()[t.index]) })), marks: marks.slice(-12),
@@ -1300,6 +1301,11 @@ async function main() {
           const before = await snap()
           const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
+          // A tab the action opens (target=_blank, window.open) becomes this driver's tab
+          // after the act, so the next /act works where the click led.
+          let popup: Page | null = null
+          const onPopup = (p: Page) => { popup ??= p }
+          page.on('popup', onPopup)
           // PLAIN PAGE SCROLLS ARE DONE BY THE ENGINE, NOT THE BRAIN. On the live
           // landing page the brain's scroll action first moved nothing and, on
           // the identical repeat, scrolled back UP to the top for "scroll down".
@@ -1334,6 +1340,7 @@ async function main() {
               }
             }
             if (!healed) {
+              page.off('popup', onPopup)
               const msg = ((e as Error).message || String(e)).slice(0, 300)
               mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
               // A failed act is still a task: it must not vanish from the run.
@@ -1346,6 +1353,14 @@ async function main() {
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
           await page.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
+          page.off('popup', onPopup)
+          const opened = popup as Page | null
+          if (opened && !opened.isClosed()) {
+            watchPage(opened); touchTab(opened)
+            driverActive.set(driver, opened); active = opened
+            await opened.bringToFront().catch(() => {}); await live?.retarget(opened).catch(() => {})
+            mark(`act[${driver}]: the action opened a new tab (${allPages().indexOf(opened)}) — it is now this driver's tab: ${opened.url().slice(0, 60)}`)
+          }
           let after = await snap()
           const moved = (a: typeof before, b: typeof before) => !!a && !!b && (a.scrollY !== b.scrollY || a.innerScroll !== b.innerScroll)
           // SCROLL FALLBACK (#146): on some pages the brain's scroll action
@@ -1366,7 +1381,7 @@ async function main() {
               if (moved(before, again)) { after = again; fallback = 'mouse-wheel' ; mark(`act[${driver}]: brain scroll moved nothing — mouse-wheel fallback scrolled the page`) }
             } catch { /* keep the original result */ }
           }
-          const structural = !!before && !!after && (before.url !== after.url || before.title !== after.title || moved(before, after) || before.form !== after.form)
+          const structural = !!opened || !!before && !!after && (before.url !== after.url || before.title !== after.title || moved(before, after) || before.form !== after.form)
           const textChanged = !!before && !!after && before.text !== after.text
           const changed = !before || !after ? null
             // A scroll instruction is judged on scroll position (or navigation) alone.
@@ -1378,6 +1393,7 @@ async function main() {
             // the action, so text was not used as evidence of an effect.
             textVolatile,
             urlBefore: before?.url ?? null, urlAfter: after?.url ?? null,
+            openedTab: opened && !opened.isClosed() ? activeTab(opened) : null,
             titleAfter: after?.title ?? null, scrollBefore: before?.scrollY ?? null, scrollAfter: after?.scrollY ?? null,
           }
           // Nothing observable changed: say so, and never keep the cached
@@ -1405,16 +1421,16 @@ async function main() {
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit(page)
           const n = ++reqN
-          return { page, n, t0, r, effect, warning, nag, endMs: Date.now() }
+          return { page, opened, n, t0, r, effect, warning, nag, endMs: Date.now() }
         })
         if (!post) return  // answered inside the lock (refused, invalid, or failed)
-        const { page, n, t0, r, effect, warning, nag } = post
+        const { page, opened, n, t0, r, effect, warning, nag } = post
         const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000)
         const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page).catch(() => null) : null
         const clip = actRange?.path ?? null
         const clipError = clip ? null : (live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session')
         if (clip) mark(`clip: ${clip}`)
-        const shot = await reqShot(n, 'act', page)
+        const shot = await reqShot(n, 'act', opened && !opened.isClosed() ? opened : page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
         if (clipError) { (window as any).clipError = clipError; writeManifest() }
         addStep('act', String(body.instruction))

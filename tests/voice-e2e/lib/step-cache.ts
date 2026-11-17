@@ -60,15 +60,43 @@ function saveStore(hostname: string, store: Record<string, CachedAction>) {
   writeFileSync(siteFile(hostname), JSON.stringify(store, null, 2))
 }
 
+type BrainLike = {
+  observe: (i: string, o?: { page?: unknown }) => Promise<any>
+  act: (a: any, o?: { page?: unknown }) => Promise<any>
+  context?: { pages(): Array<{ targetId(): string }> }
+}
+
+// Stagehand's own page object for a Playwright page, found once per page. Handing
+// Stagehand the Playwright page instead makes it open a CDP session on every call
+// and never close it, which piles up over hundreds of /act on one tab.
+const brainPages = new WeakMap<Page, { targetId(): string }>()
+export async function brainPageFor(stagehand: BrainLike, page: Page): Promise<{ targetId(): string } | undefined> {
+  const pages = stagehand.context?.pages?.()
+  if (!Array.isArray(pages)) return undefined
+  const known = brainPages.get(page)
+  if (known && pages.includes(known)) return known  // a re-initialized brain has new page objects
+  let cdp: Awaited<ReturnType<ReturnType<Page['context']>['newCDPSession']>> | undefined
+  try {
+    cdp = await page.context().newCDPSession(page)
+    const { targetInfo } = await cdp.send('Target.getTargetInfo')
+    const found = pages.find((p) => p.targetId() === targetInfo.targetId)
+    if (found) brainPages.set(page, found)
+    return found
+  } catch { return undefined } finally { await cdp?.detach().catch(() => {}) }
+}
+
 /**
  * Cached natural-language action. Drop-in for `stagehand.act(instruction)`.
  * `stagehand` needs `.observe(instruction)` and `.act(actionOrInstruction)`.
+ * It acts on `page`; if Stagehand cannot find that page it acts on its own active page.
  */
 export async function actWithCache(
-  stagehand: { observe: (i: string, o?: { page?: Page }) => Promise<any>; act: (a: any, o?: { page?: Page }) => Promise<any> },
+  stagehand: BrainLike,
   page: Page,
   instruction: string,
 ): Promise<{ cached: boolean; healed: boolean; noop?: boolean; did?: string | null }> {
+  const brainPage = await brainPageFor(stagehand, page)
+  const on = brainPage ? { page: brainPage } : undefined
   const url = new URL(page.url())
   const key = `${url.pathname} :: ${instruction}`
   const store = loadStore(url.hostname)
@@ -97,7 +125,7 @@ export async function actWithCache(
     }
     if (valid) {
       try {
-        await stagehand.act(hit.action, { page })
+        await stagehand.act(hit.action, on)
         hit.hits += 1
         hit.lastUsedAt = new Date().toISOString()
         saveStore(url.hostname, store)
@@ -109,7 +137,7 @@ export async function actWithCache(
     }
   }
 
-  const observed = await stagehand.observe(instruction, { page })
+  const observed = await stagehand.observe(instruction, on)
   const action = Array.isArray(observed) ? observed[0] : observed
   if (!action) {
     // Conditional instructions ("if X ... otherwise do nothing") legitimately
@@ -118,7 +146,7 @@ export async function actWithCache(
     console.log(`[step-cache] NO-OP (${url.hostname}) — nothing to do for: "${instruction.slice(0, 60)}"`)
     return { cached: false, healed: false, noop: true, did: null }
   }
-  await stagehand.act(action, { page })
+  await stagehand.act(action, on)
   const newSel = (action as { selector?: string })?.selector
   store[key] = {
     instruction,

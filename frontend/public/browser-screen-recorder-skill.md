@@ -203,7 +203,8 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 ## What's new in v53
 - `viewport:"mobile"` is now a real phone: the tab opens in its own browser context from Playwright's `iPhone 13` descriptor (touch, iOS user agent, devicePixelRatio 3, 390×664 page), so `(hover:none)`/`(pointer:coarse)` CSS and touch-only code run. `viewport:"tablet"` = `iPad (gen 7)` (810×1080, 2×). A `{width,height}` viewport is still a desktop window resized.
 - The device tab starts with the same sign-ins (cookies, localStorage) as your desktop tabs; a sign-in made inside it is not saved back. It is reused only for another open with the same device, and its context closes with its last tab.
-- `/tab` replies, `/status.tabs` and `/status.emulatedTabs` mark device tabs (`device`, `emulates`). `/act`, `/eval`, `/shot` and clips work on them; screenshots come at device pixels (1170 px wide for the phone).
+- `/tab` replies, `activeTab` and `/status.tabs` mark device tabs (`device`, `emulates`). `/act`, `/eval`, `/shot` and clips work on them; screenshots come at device pixels (1170 px wide for the phone).
+- `/act` always acts on your own tab. When the action opens a new tab (a `target=_blank` link, `window.open`), that tab becomes your tab: the reply's `effect.openedTab` names it, its screenshot is the reply's artifact, and your next `/act` runs there. `/tab {"op":"switch","i":…}` goes back.
 - It is Chromium emulating a phone, not iOS Safari: Safari-only behaviour (zooming into a focused field under 16px, safe-area insets, rubber-band scrolling) does not happen. Check those with `/eval` (a field's computed `font-size`) instead.
 
 ## What's new in v52
