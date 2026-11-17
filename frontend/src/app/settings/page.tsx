@@ -867,7 +867,6 @@ export default function SettingsPage() {
   const VoiceSection = (
     <SettingsSection title="Voice & Audio" description="How your voice session is wired.">
       <SettingsRow label="Voice mode" sublabel="Speech-to-text → agent → text-to-speech">
-        {/* One mode today, so a value, not a one-option control. */}
         <span className="text-[13px] font-medium text-[var(--text-secondary)]">Pipeline</span>
       </SettingsRow>
     </SettingsSection>

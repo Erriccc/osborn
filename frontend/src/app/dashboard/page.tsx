@@ -198,7 +198,8 @@ export default function Dashboard() {
   // groupByProject to know which sessions are "Workspace" sessions vs
   // project-card sessions. See the comment block above groupByProject.
   const [baseCwd, setBaseCwd] = useState<string | null>(null)
-  const [sessionsLoading, setSessionsLoading] = useState(false)
+  // True until the first fetchSessions settles, so the feeds never flash their empty state first.
+  const [sessionsLoading, setSessionsLoading] = useState(true)
   // #107: session-list hygiene. The same session is filed under several slug
   // folders (1092 duplicate ids on the owner's machine — the "three identical
   // rows" complaint), so prepareSessions folds the copies into one row before
@@ -474,7 +475,7 @@ export default function Dashboard() {
   // Fetch sessions, with a localStorage TTL cache to skip the JSONL crawl on repeat loads.
   // Pass force=true to bypass the cache (after import/delete operations).
   const fetchSessions = useCallback(async (force = false) => {
-    if (!canFetchAgent()) { setAgentOnline(false); setSessions([]); setBaseCwd(null); return }
+    if (!canFetchAgent()) { setAgentOnline(false); setSessions([]); setBaseCwd(null); setSessionsLoading(false); return }
 
     // Serve from cache if fresh and not forced
     if (!force) {

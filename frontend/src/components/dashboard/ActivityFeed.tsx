@@ -88,7 +88,7 @@ export default function ActivityFeed({
         </div>
       </div>
 
-      {rows.length === 0 && sessionsLoading ? (
+      {rows.length === 0 && sessionsLoading && filter !== 'note' ? (
         <LoadingLine />
       ) : rows.length === 0 ? (
         <p className="text-[13px] text-[var(--text-muted)] py-3 px-0.5">Nothing here yet — record a note or start a session.</p>

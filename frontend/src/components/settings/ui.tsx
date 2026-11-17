@@ -101,7 +101,7 @@ export function Switch({
   )
 }
 
-// Single-choice pill group (Voice mode, Appearance). A radiogroup labelled by
+// Single-choice pill group (Appearance). A radiogroup labelled by
 // `label`; each option is a radio.
 export function Segmented<T extends string>({
   label,
