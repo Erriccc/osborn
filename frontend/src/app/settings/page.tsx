@@ -888,7 +888,7 @@ export default function SettingsPage() {
   const PreferencesSection = (
     <SettingsSection title="Preferences" description="Defaults applied to every conversation.">
       {/* Tool approval is controlled by the session-scoped "Approvals" picker in
-          the conversation composer (Ask me / Auto-review / Allow all) — it is
+          the chat's Activity log row (Ask me / Auto-review / Allow all) — it is
           intentionally not persisted here, so a blanket allow can never silently
           survive a reload. The old dead "Auto-approve" switch has been removed. */}
       {user && (

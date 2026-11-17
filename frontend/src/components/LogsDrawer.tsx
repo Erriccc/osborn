@@ -118,6 +118,8 @@ interface LogsDrawerProps {
   ideState?: 'stopped' | 'starting' | 'running'
   ideUrl?: string
   onEditorOpen?: () => void
+  /** The session's approvals picker, shown in this row so the composer keeps one row of chrome. */
+  approvals?: React.ReactNode
   onEditorStop?: () => void
   onEditorRestart?: () => void
   // Live chip data — fed by VoiceRoom's always-on polls (independent of which tab is active)
@@ -551,14 +553,15 @@ function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: nu
       {/* Labelled so every number on screen says what it is (#86) */}
       <span className="text-gray-400 font-normal">RAM</span>
       <span className="tabular-nums">{ramPct}%</span>
-      <span className="text-gray-600 font-normal">·</span>
-      <span className="tabular-nums">{procCount}</span>
-      <span className="text-gray-400 font-normal">proc</span>
+      {/* Phones keep the dot and RAM %; the process count waits for the Machine tab */}
+      <span className="max-sm:hidden text-gray-600 font-normal">·</span>
+      <span className="max-sm:hidden tabular-nums">{procCount}</span>
+      <span className="max-sm:hidden text-gray-400 font-normal">proc</span>
     </span>
   )
 }
 
-export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError, approvals }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
   const [lastSeenCount, setLastSeenCount] = useState(0)
@@ -644,8 +647,8 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
 
   return (
     <div className="border-t border-gray-700/50">
-      {/* Header row: the toggle, plus the code editor and machine usage, reachable
-          without opening the drawer or the Machine tab. */}
+      {/* Header row: the toggle, the approvals picker, the code editor and machine usage
+          (desktop), reachable without opening the drawer or the Machine tab. */}
       <div className="flex items-center gap-2 pr-3 hover:bg-gray-800/50 transition-colors">
       <button
         onClick={() => {
@@ -665,6 +668,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
             </span>
           )}
       </button>
+      {approvals}
       {onEditorOpen && (
         <button
           onClick={onEditorOpen}

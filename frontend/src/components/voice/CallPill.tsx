@@ -1,9 +1,9 @@
 'use client'
 
 /**
- * The in-call controls: End above Mic in one small floating pill, pinned to the
- * top-right of the transcript at every width (ChatPanel `corner`). One copy
- * replaces the desktop-header and phone-composer pairs.
+ * The in-call controls in one small floating pill (ChatPanel `corner`): side by
+ * side at the bottom-right on phones and tablets, where voice apps put them and
+ * the text keeps its full width; End above Mic at the top-right on desktop.
  */
 export function CallPill({ muted, onToggleMute, onEnd }: {
   muted: boolean
@@ -12,7 +12,7 @@ export function CallPill({ muted, onToggleMute, onEnd }: {
 }) {
   return (
     <div role="group" aria-label="Call controls"
-      className="flex flex-col items-center gap-1 p-1 rounded-full bg-gray-800/90 border border-gray-700/60 shadow-lg backdrop-blur-sm">
+      className="flex flex-row lg:flex-col items-center gap-1 p-1 rounded-full bg-gray-800/90 border border-gray-700/60 shadow-lg backdrop-blur-sm">
       {onEnd && (
         <button onClick={onEnd} aria-label="End call" title="Hang up (the session stays resumable)"
           className="w-11 min-h-11 py-1.5 flex flex-col items-center justify-center gap-0.5 rounded-full bg-red-500/90 text-white hover:bg-red-500 transition-colors">

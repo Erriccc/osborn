@@ -16,6 +16,7 @@ import AgentHealthNotice from './AgentHealthNotice'
 import type { KeyHealthEntry } from '@/lib/agent-health'
 import { fastBrainLabel } from '@/lib/modelBadge'
 import { LogsDrawer, type MachineData } from './LogsDrawer'
+import { ApprovalPicker } from './voice/ApprovalPicker'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
@@ -327,7 +328,7 @@ function VoiceRoomInner({
     try { window.dispatchEvent(new Event(MIC_DENIED_EVENT)) } catch { /* SSR */ }
   }, [])
   // Session-scoped tool-approval mode — the single visible control (rendered in
-  // the composer) that replaces the three old auto-approve toggles. It is
+  // the Activity log row) that replaces the three old auto-approve toggles. It is
   // deliberately NOT persisted to localStorage: it resets to 'ask' on every
   // reload/new session, which is the fix for the old 'osborn-auto-approve-
   // permissions' toggle — an unbounded, invisible "Allow all" that survived
@@ -4198,8 +4199,8 @@ function VoiceRoomInner({
             <div className="flex items-center gap-1 sm:gap-3 shrink-0">
 
             {/* Named agents + Skills — desktop header only. On mobile these
-                live in the approvals row above the input (Claude-
-                style), so the top bar carries only status/stats + hangup. */}
+                live in the burger sheet, so the top bar carries only
+                status/stats. */}
             <div className="hidden sm:flex items-center gap-1.5">
               <AgentsPopover agents={namedAgents} roles={agentRoles} activity={backgroundFlows} disabled={!agentConnected}
                 yours={userAgentRows}
@@ -4607,6 +4608,7 @@ function VoiceRoomInner({
             // come back — the user must always be able to dismiss a stuck row.
             setBackgroundFlows(prev => prev.filter(f => f.agentId !== agentId))
           }}
+          approvals={<ApprovalPicker mode={approvalMode} onChange={setApprovalMode} />}
           machineData={machineData}
           agentMemory={agentMemory}
           onMachineTabActive={setMachineTabActive}
@@ -4687,8 +4689,6 @@ function VoiceRoomInner({
           attachedFiles={attachedFiles}
           onAttachFile={handleAttachFile}
           onRemoveFile={handleRemoveFile}
-          approvalMode={approvalMode}
-          onApprovalModeChange={setApprovalMode}
         />
         </div>
       </div>
@@ -4712,8 +4712,8 @@ function VoiceRoomInner({
                   control, nothing just disappears. */}
 
               {/* Auto-approve is no longer a hidden toggle — the single, visible,
-                  session-scoped "Approvals" mode picker lives in the composer
-                  (see TextInput), so there's nothing to mirror here. */}
+                  session-scoped "Approvals" mode picker lives in the Activity log row
+                  (see ApprovalPicker), so there's nothing to mirror here. */}
 
               {/* Noise filter — moved here from the composer strip (3-6-9).
                   The count chip is the send-anyway recovery for the latest

@@ -42,8 +42,8 @@ export function ChatPanel({
   pendingPermission?: PermissionRequest | null
   onPermissionRespond?: (response: 'allow' | 'deny' | 'always_allow') => void
   reviewMode?: boolean
-  // Pinned top-right over the transcript (the call controls); the transcript
-  // keeps a right gutter so the corner never covers text.
+  // The call controls over the transcript: bottom-right below lg (the transcript
+  // keeps bottom room for it), top-right on lg+ (the transcript keeps a right gutter).
   corner?: ReactNode
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -121,7 +121,7 @@ export function ChatPanel({
             isAtBottomRef.current = true
             setShowJumpPill(false)
           }}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 min-h-9 px-3.5 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
+          className="absolute bottom-3 max-lg:bottom-[4.75rem] left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 min-h-9 px-3.5 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
         >
           Jump to latest
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -143,11 +143,11 @@ export function ChatPanel({
           </svg>
         </button>
       )}
-      {corner && <div className="absolute top-2 right-2 z-20">{corner}</div>}
+      {corner && <div className="absolute bottom-3 right-3 lg:bottom-auto lg:top-2 lg:right-2 z-20">{corner}</div>}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className={`h-full overflow-y-auto overflow-x-hidden ${corner ? 'pl-3 sm:pl-4 pr-16' : 'px-3 sm:px-4'} py-3 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent`}
+        className={`h-full overflow-y-auto overflow-x-hidden ${corner ? 'px-3 sm:px-4 lg:pr-16 pt-3 pb-20 lg:pb-3' : 'px-3 sm:px-4 py-3'} scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent`}
       >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">

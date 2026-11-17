@@ -1,13 +1,6 @@
 'use client'
 
 import React, { useState, useRef } from 'react'
-import type { ApprovalMode } from './PermissionModal'
-
-const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
-  { value: 'ask', label: 'Ask me', hint: 'Pause and ask before each tool action (default)' },
-  { value: 'auto-review', label: 'Auto-review', hint: 'Auto-approve low-risk actions (reading files, in-workspace edits); still ask before anything risky' },
-  { value: 'allow-all', label: 'Allow all', hint: 'Approve every tool action for this session (resets on reload)' },
-]
 
 export interface AttachedFile {
   file: File
@@ -23,16 +16,11 @@ export function TextInput({
   attachedFiles,
   onAttachFile,
   onRemoveFile,
-  approvalMode,
-  onApprovalModeChange,
 }: {
   onSend: (text: string, files?: AttachedFile[]) => void
   attachedFiles: AttachedFile[]
   onAttachFile: (files: FileList) => void
   onRemoveFile: (index: number) => void
-  // Session-scoped tool-approval mode (NOT persisted — resets each session).
-  approvalMode?: ApprovalMode
-  onApprovalModeChange?: (mode: ApprovalMode) => void
 }) {
   const [text, setText] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -136,41 +124,6 @@ export function TextInput({
               </button>
             </div>
           ))}
-        </div>
-      )}
-
-      {/* Approval-mode picker — the single, visible, session-scoped control that
-          replaces the three hidden auto-approve toggles. NOT persisted: it
-          resets to "Ask me" on every reload, so there is no lingering,
-          invisible blanket "Allow". Only "Allow all" auto-approves; it is
-          session-scoped and warns once on first use. */}
-      {approvalMode && onApprovalModeChange && (
-        <div className="flex items-center gap-1 px-3 max-[400px]:px-2 pt-2 pb-0.5">
-          <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500 shrink-0">Approvals</span>
-            <div className="flex items-center gap-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 p-0.5 shrink-0">
-              {APPROVAL_MODES.map((m) => {
-                const active = approvalMode === m.value
-                const activeCls = m.value === 'allow-all'
-                  ? 'bg-amber-500/90 text-gray-950'
-                  : 'bg-gray-700 text-white'
-                return (
-                  <button
-                    key={m.value}
-                    type="button"
-                    onClick={() => onApprovalModeChange(m.value)}
-                    title={m.hint}
-                    aria-pressed={active}
-                    className={`px-2.5 max-[400px]:px-2 max-[340px]:px-1.5 py-1 rounded-full text-[11px] max-[340px]:text-[10px] font-medium whitespace-nowrap transition-colors ${
-                      active ? activeCls : 'text-gray-400 hover:text-gray-200'
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
         </div>
       )}
 
