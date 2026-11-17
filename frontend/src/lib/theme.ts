@@ -8,8 +8,8 @@ export type ThemePref = 'system' | 'light' | 'dark'
 export type ResolvedTheme = 'light' | 'dark'
 
 export const THEME_STORAGE_KEY = 'osborn-theme'
-/** Pages that are always dark (the meeting canvas is a camera feed). */
-const ALWAYS_DARK_PATHS = ['/meeting-canvas', '/v2'] // camera feed; landing preview built on dark photo scrims
+/** Pages that are always dark: the meeting canvas (a camera feed) and /v2 (text on dark photo scrims). */
+const ALWAYS_DARK_PATHS = ['/meeting-canvas', '/v2']
 /** Browser chrome colour per theme (matches --background in globals.css,
  *  which CSS cannot import; the light page shade in tailwind.config uses it). */
 export const THEME_COLOR: Record<ResolvedTheme, string> = { dark: '#0c0b09', light: '#faf9f6' }

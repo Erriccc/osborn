@@ -1,6 +1,6 @@
 // Run: cd frontend && npx --yes tsx tests/theme.test.ts
 // The pre-paint script resolves the theme choice: the device by default, a
-// stored choice over it, and the meeting canvas always dark.
+// stored choice over it, and the meeting canvas and /v2 always dark.
 import { parseThemePref, THEME_INIT_SCRIPT, THEME_STORAGE_KEY, THEME_COLOR } from '../src/lib/theme'
 
 const results: [string, boolean, string?][] = []
@@ -43,10 +43,11 @@ t('script: a stored choice wins and sets the browser colour', () => {
   eq(runScript('dark', true).theme, 'dark', 'dark')
 })
 t('script: garbage in storage is system', () => eq(runScript('purple', true).theme, 'light', 'garbage'))
-t('script: the meeting canvas (a camera feed) is always dark', () => {
+t('script: the meeting canvas (a camera feed) and /v2 are always dark', () => {
   eq(runScript('light', true, '/meeting-canvas').theme, 'dark', 'canvas')
   eq(runScript('light', true, '/meeting-canvas/x').theme, 'dark', 'canvas child')
   eq(runScript('light', true, '/meeting-canvasx').theme, 'light', 'prefix only')
+  eq(runScript('light', true, '/v2').theme, 'dark', 'v2')
 })
 
 const failed = results.filter(r => !r[1])
