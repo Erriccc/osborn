@@ -4124,10 +4124,12 @@ function VoiceRoomInner({
             {/* Status */}
             <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} bargeIn={bargeIn} />
 
-            {/* Project/workspace chip — which repo this session is attached to. */}
+            {/* Project/workspace chip — which repo this session is attached to. From lg
+                up; below that it is the first row of the More menu, so the header stays
+                one row on a tablet (tier rule: collapse, never wrap). */}
             {projectName && (
               <span title={sessionCwd || projectName}
-                className="hidden sm:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
+                className="hidden lg:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
                 <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
                 <span className="truncate">{projectName}</span>
               </span>
@@ -4150,7 +4152,7 @@ function VoiceRoomInner({
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
-            <LiveClock showDate />
+            <LiveClock showDate dateClassName="hidden lg:inline" />
 
             {/* Compaction status pill — header-level summary (always visible during compact) */}
             {compactionStatus !== 'idle' && (
@@ -4387,6 +4389,12 @@ function VoiceRoomInner({
                 </button>
                 {showHeaderMore && (
                     <div ref={moreMenuRef} role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
+                      {projectName && (
+                        <div className="lg:hidden flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-400 border-b border-gray-800" title={sessionCwd || projectName}>
+                          <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                          <span className="truncate">{projectName}</span>
+                        </div>
+                      )}
                       {/* Bug #59: a dedicated Files Explorer entry — the Outputs
                           drawer was the only files surface. Opens the full
                           FilesExplorerModal. */}

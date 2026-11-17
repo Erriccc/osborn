@@ -92,10 +92,11 @@ export function ControlMenu({
         aria-expanded={isOpen}
         className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-all text-xs ${isOpen ? 'bg-gray-800/60 text-gray-200' : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
         title="Session history & tools"
+        aria-label="Session history and tools"
       >
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-        <span className="font-medium">History</span>
-        <svg className={`w-3 h-3 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <span className="hidden lg:inline font-medium">History</span>
+        <svg className={`hidden lg:block w-3 h-3 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
