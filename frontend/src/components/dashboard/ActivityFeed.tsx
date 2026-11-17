@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import NoteSheet, { noteCopyText } from './NoteSheet'
-import { sessionActivityTime, sessionDisplayTitle } from '@/lib/sessions'
+import { sessionActivityTime, prettySessionPreview } from '@/lib/sessions'
 
 /**
  * ActivityShelf (exported as ActivityFeed) — NOTES + SESSIONS as one shelf.
@@ -60,7 +60,7 @@ export default function ActivityFeed({
 
   const rows = [
     ...notes.map(n => ({ kind: 'note' as const, at: n.created_at, text: n.text, id: n.id, attachments: n.attachments || [] })),
-    ...sessions.map(s => ({ kind: 'session' as const, at: sessionActivityTime(s), text: sessionDisplayTitle(s), id: s.sessionId, cwd: s.cwd })),
+    ...sessions.map(s => ({ kind: 'session' as const, at: sessionActivityTime(s), text: prettySessionPreview(s).text, id: s.sessionId, cwd: s.cwd })),
   ]
     .filter(r => filter === 'all' || r.kind === filter)
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())

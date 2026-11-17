@@ -32,7 +32,7 @@ export default function RecentsList<T extends SessionListItem>({ sessions, onOpe
           className="mb-1.5 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] px-3 py-1.5 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent-dim)]"
         />
       )}
-      <ul className={`space-y-px ${q || all ? 'max-h-[45vh] overflow-y-auto' : ''}`}>
+      <ul className="space-y-px">
         {rows.map((s) => {
           const t = sessionActivityTime(s)
           const title = prettySessionPreview(s).text

@@ -220,7 +220,7 @@ export default function Dashboard() {
     () => prepareSessions(sessions, { hideSystem: hideSystemSessions }),
     [sessions, hideSystemSessions],
   )
-  const recentSessions = useMemo(() => sortSessionsByActivity(prepareSessions(sessions).sessions), [sessions])
+  const recentSessions = useMemo(() => sortSessionsByActivity(preparedSessions.sessions), [preparedSessions])
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -1707,7 +1707,7 @@ export default function Dashboard() {
               <RecentsList sessions={recentSessions} onOpen={(s) => startChat(s.sessionId, s.cwd)} formatDate={formatDate} />
             </div>
           )}
-          {agentOnline === false && (
+          {agentOnline === false && !(isCloud && !user && !loading) && (
             <p className="hidden lg:block px-1 py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
               Your sessions and projects appear here when your machine is online.
             </p>
