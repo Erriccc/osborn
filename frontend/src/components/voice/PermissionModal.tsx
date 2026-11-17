@@ -14,7 +14,7 @@ export interface PermissionRequest {
   autoApproved?: boolean
 }
 
-// Session approval modes, surfaced as the visible picker in the composer.
+// Session approval modes, surfaced as the visible picker in the Activity log row (ApprovalPicker).
 // Only 'allow-all' auto-approves; 'ask' and 'auto-review' always require an
 // explicit human decision on the inline card (DENY always wins).
 export type ApprovalMode = 'ask' | 'auto-review' | 'allow-all'

@@ -328,7 +328,7 @@ function VoiceRoomInner({
     try { window.dispatchEvent(new Event(MIC_DENIED_EVENT)) } catch { /* SSR */ }
   }, [])
   // Session-scoped tool-approval mode — the single visible control (rendered in
-  // the composer) that replaces the three old auto-approve toggles. It is
+  // the Activity log row) that replaces the three old auto-approve toggles. It is
   // deliberately NOT persisted to localStorage: it resets to 'ask' on every
   // reload/new session, which is the fix for the old 'osborn-auto-approve-
   // permissions' toggle — an unbounded, invisible "Allow all" that survived
@@ -4712,8 +4712,8 @@ function VoiceRoomInner({
                   control, nothing just disappears. */}
 
               {/* Auto-approve is no longer a hidden toggle — the single, visible,
-                  session-scoped "Approvals" mode picker lives in the composer
-                  (see TextInput), so there's nothing to mirror here. */}
+                  session-scoped "Approvals" mode picker lives in the Activity log row
+                  (see ApprovalPicker), so there's nothing to mirror here. */}
 
               {/* Noise filter — moved here from the composer strip (3-6-9).
                   The count chip is the send-anyway recovery for the latest
