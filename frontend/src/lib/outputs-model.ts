@@ -349,6 +349,18 @@ export function fileFromToolEvent(
   }
 }
 
+/** One key per file on disk, for the in-chat card and the unread count: the
+ *  canonical path, with the one known alias folded. On the cloud machines
+ *  `/root/.claude` is a link to `/workspace/.claude` (agent/Dockerfile), so a write
+ *  and a later edit can name the same file both ways. Any other `.claude` folder
+ *  (a repo's, the packaged agent's) is a different file and keeps its own key. */
+const CLAUDE_ALIAS = '/root/.claude/'
+const CLAUDE_HOME = '/workspace/.claude/'
+export function fileIdentity(filePath: string): string {
+  const norm = normalizeAgentPath(filePath) ?? filePath
+  return norm.startsWith(CLAUDE_ALIAS) ? CLAUDE_HOME + norm.slice(CLAUDE_ALIAS.length) : norm
+}
+
 /** Insert a freshly written file (newest first) or refresh the existing row:
  *  first-seen time kept, cached body dropped so the next open refetches. */
 export function upsertAgentFile<T extends OutputFile>(prev: readonly T[], file: T): T[] {

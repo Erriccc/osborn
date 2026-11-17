@@ -15,7 +15,7 @@ import ModelBadge from './ModelBadge'
 import AgentHealthNotice from './AgentHealthNotice'
 import type { KeyHealthEntry } from '@/lib/agent-health'
 import { fastBrainLabel } from '@/lib/modelBadge'
-import { LogsDrawer, type MachineData } from './LogsDrawer'
+import { LogsDrawer, MachineChipBadge, IDE_DOT_CLASS, IDE_STATE_LABEL, CODE_ICON_PATH, type MachineData } from './LogsDrawer'
 import { ApprovalPicker } from './voice/ApprovalPicker'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
@@ -57,7 +57,10 @@ import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightP
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
-import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
+
+// Folder icon: the workspace chip, its More-menu row below lg, and Files Explorer.
+const FOLDER_ICON_PATH = 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'
 
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
@@ -728,6 +731,8 @@ function VoiceRoomInner({
   // after the sheet has closed.
   const [agentsOpenReq, setAgentsOpenReq] = useState(0)
   const [skillsOpenReq, setSkillsOpenReq] = useState(0)
+  // The phone menu's Machine row opens the Activity log on its Machine tab.
+  const [machineOpenReq, setMachineOpenReq] = useState(0)
   const [newSkillName, setNewSkillName] = useState('')
   const [newSkillContent, setNewSkillContent] = useState('')
   // Research tracking state
@@ -1712,14 +1717,18 @@ function VoiceRoomInner({
   // and (only if enabled) open the drawer. Called from handleDataMessage via a
   // ref so its subscription deps stay unchanged.
   const onAgentFileEvent = useCallback((filePath: string, fileName: string) => {
-    if (!generatedFilesRef.current.some((f) => f.filePath === filePath) && !announcedFilesRef.current.has(filePath)) {
-      announcedFilesRef.current.add(filePath)
+    // One card and one unread count per file: keyed by fileIdentity, so the same
+    // file named two ways (a write and an edit, or the tool event and the artifact
+    // event) shows once.
+    const key = fileIdentity(filePath)
+    if (!generatedFilesRef.current.some((f) => fileIdentity(f.filePath) === key) && !announcedFilesRef.current.has(key)) {
+      announcedFilesRef.current.add(key)
       setMessages((prev) => [...prev, {
         id: `file-${filePath}`, role: 'system', content: `Saved ${fileName}`, timestamp: new Date(),
         category: 'chat', fileRef: { filePath, fileName },
       }])
     }
-    setUnreadOutputs((prev) => markUnread(prev, filePath, outputsVisibleRef.current))
+    setUnreadOutputs((prev) => markUnread(prev, key, outputsVisibleRef.current))
     if (AUTO_OPEN_OUTPUTS_ON_WRITE) {
       panel.openPanel('outputs')
       setSelectedFilePath(filePath)
@@ -3796,6 +3805,13 @@ function VoiceRoomInner({
     )
   }
 
+  // Code editor state and machine RAM, shared by the Activity log row (sm up)
+  // and the phone menu sheet, where those two chips live below sm.
+  const ideState = ideStatus === 'ready' ? 'running' : ideStatus === 'starting' ? 'starting' : 'stopped'
+  const machineRamPct = agentMemory?.usedPct ??
+    (machineData?.memory ? Math.round((machineData.memory.usedMb / Math.max(machineData.memory.totalMb, 1)) * 100) : undefined)
+  const machineProcCount = machineData?.totalCount ?? machineData?.processes.length
+
   return (
     <PanelDataProvider value={panelData}>
       {endChoice && (
@@ -4112,11 +4128,13 @@ function VoiceRoomInner({
             {/* Status */}
             <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} bargeIn={bargeIn} />
 
-            {/* Project/workspace chip — which repo this session is attached to. */}
+            {/* Project/workspace chip — which repo this session is attached to. From lg
+                up; below that it is the first row of the More menu, so the header stays
+                one row on a tablet (tier rule: collapse, never wrap). */}
             {projectName && (
               <span title={sessionCwd || projectName}
-                className="hidden sm:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
-                <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                className="hidden lg:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
+                <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
                 <span className="truncate">{projectName}</span>
               </span>
             )}
@@ -4138,7 +4156,7 @@ function VoiceRoomInner({
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
-            <LiveClock showDate />
+            <LiveClock showDate dateClassName="hidden lg:inline" />
 
             {/* Compaction status pill — header-level summary (always visible during compact) */}
             {compactionStatus !== 'idle' && (
@@ -4375,12 +4393,18 @@ function VoiceRoomInner({
                 </button>
                 {showHeaderMore && (
                     <div ref={moreMenuRef} role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
+                      {projectName && (
+                        <div className="lg:hidden flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-400 border-b border-gray-800" title={sessionCwd || projectName}>
+                          <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
+                          <span className="truncate">{projectName}</span>
+                        </div>
+                      )}
                       {/* Bug #59: a dedicated Files Explorer entry — the Outputs
                           drawer was the only files surface. Opens the full
                           FilesExplorerModal. */}
                       <button role="menuitem" onClick={() => { setShowHeaderMore(false); setIsFilesModalOpen(true) }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
-                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
                         <span className="flex-1">Files Explorer</span>
                         {/* Issue #113: the entry itself carries the generated-files
                             count (matching the explorer window's "Files Explorer (N)"),
@@ -4612,19 +4636,16 @@ function VoiceRoomInner({
           machineData={machineData}
           agentMemory={agentMemory}
           onMachineTabActive={setMachineTabActive}
-          ideState={ideStatus === 'ready' ? 'running' : ideStatus === 'starting' ? 'starting' : 'stopped'}
+          ideState={ideState}
           ideUrl={ideUrl ?? undefined}
           onEditorOpen={handleOpenEditor}
           onEditorStop={handleEditorStop}
           onEditorRestart={handleEditorRestart}
           ideError={ideError}
-          machineChipRamPct={
-            agentMemory?.usedPct ??
-            (machineData?.memory
-              ? Math.round((machineData.memory.usedMb / Math.max(machineData.memory.totalMb, 1)) * 100)
-              : undefined)
-          }
-          machineChipProcCount={machineData?.totalCount ?? machineData?.processes.length}
+          machineChipRamPct={machineRamPct}
+          machineChipProcCount={machineProcCount}
+          requestOpen={machineOpenReq}
+          promptPending={!!pendingPermission}
         />
 
         {resumeChip && (
@@ -4798,6 +4819,31 @@ function VoiceRoomInner({
                   <span className="ml-auto text-xs bg-emerald-500/30 text-emerald-300 px-2 py-0.5 rounded-full">{slots.length}</span>
                 )}
               </button>
+
+              {/* Code editor and Machine — the Activity log row carries these from sm
+                  up; on phones they collapse here with their state badges (tier 4). */}
+              <button onClick={() => { handleOpenEditor(); setShowMobileMenu(false) }}
+                disabled={ideState === 'starting'}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left disabled:opacity-60">
+                <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d={CODE_ICON_PATH} />
+                </svg>
+                <span className="text-sm text-gray-200">Code editor</span>
+                <span className="ml-auto flex items-center gap-1.5 text-[11px] text-gray-400">
+                  <span className={`w-1.5 h-1.5 rounded-full ${IDE_DOT_CLASS[ideState]}`} />
+                  {IDE_STATE_LABEL[ideState]}
+                </span>
+              </button>
+              {typeof machineRamPct === 'number' && typeof machineProcCount === 'number' && (
+                <button onClick={() => { setMachineOpenReq(n => n + 1); setShowMobileMenu(false) }}
+                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
+                  <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <rect x="3" y="4" width="18" height="12" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M8 20h8M12 16v4" />
+                  </svg>
+                  <span className="text-sm text-gray-200">Machine</span>
+                  <span className="ml-auto"><MachineChipBadge ramPct={machineRamPct} procCount={machineProcCount} /></span>
+                </button>
+              )}
 
               {/* Files */}
               <button onClick={() => { panel.openPanel('outputs'); setShowMobileMenu(false) }}
