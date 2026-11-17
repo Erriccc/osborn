@@ -1611,7 +1611,7 @@ export default function Dashboard() {
           {/* COMPLETIONS stream (dashboard-as-feed, phase 1) — finished work with
               proof: content_items briefs + finished sessions as passive cards,
               newest first. Desktop/landscape only. Replaces the old <LibraryBriefs/>. */}
-          <FeedStream kind="completions" sessions={sessions} onResume={(id, cwd) => startChat(id, cwd)} />
+          <FeedStream kind="completions" sessions={sessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} />
 
           {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary
               actions visible: the amber CTA above + these two. Each is a single

@@ -1,5 +1,6 @@
 'use client'
 
+import LoadingLine from './LoadingLine'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
@@ -61,12 +62,15 @@ interface FeedSession {
 export default function FeedStream({
   kind = 'completions',
   sessions,
+  sessionsLoading = false,
   onResume,
 }: {
   // Only 'completions' is built in phase 1; the prop exists so the page can
   // name the stream and future phases can add 'offers' / 'live'.
   kind?: 'completions'
   sessions: FeedSession[]
+  /** Finished sessions are part of the stream, so it is not "empty" until they load. */
+  sessionsLoading?: boolean
   onResume: (sessionId: string, cwd?: string) => void
 }) {
   const [briefs, setBriefs] = useState<Brief[]>([])
@@ -158,11 +162,8 @@ export default function FeedStream({
         </Link>
       </div>
 
-      {!loaded ? (
-        <div className="flex items-center gap-2 py-4">
-          <span className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-          <span className="text-[13px] text-[var(--text-muted)]">Loading…</span>
-        </div>
+      {!loaded || (sessionsLoading && items.length === 0) ? (
+        <LoadingLine />
       ) : items.length === 0 ? (
         <p className="text-[13px] text-[var(--text-muted)] py-3 px-0.5">
           No completions yet — finished sessions and briefs you create in a session show up here as proof of work.
