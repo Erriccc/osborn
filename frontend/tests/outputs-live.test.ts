@@ -192,6 +192,10 @@ t('one in-chat card per file: aliases of the same file share one identity, diffe
   eq(fileIdentity('/root/.claude/projects/-workspace/osb/s/report.md'), fileIdentity('/workspace/.claude/projects/-workspace/osb/s/report.md'), 'claude folder aliases')
   eq(fileIdentity('/workspace//out/a.md'), '/workspace/out/a.md', 'double slash')
   ok(fileIdentity('/workspace/report.md') !== fileIdentity('/workspace/.claude/projects/p/osb/s/report.md'), 'same name, different files')
+  eq(fileIdentity('/root/.claude/x'), fileIdentity('/workspace/.claude/x'), '/root/.claude is /workspace/.claude')
+  ok(fileIdentity('/workspace/a/.claude/x') !== fileIdentity('/workspace/.claude/x'), "a repo's .claude is its own folder")
+  ok(fileIdentity('/workspace/myrepo/.claude/skills/foo/SKILL.md') !== fileIdentity('/workspace/.claude/skills/foo/SKILL.md'), 'repo skill vs machine skill')
+  ok(fileIdentity('/workspace/osborn/.claude/skills/x/SKILL.md') !== fileIdentity('/workspace/osborn/agent/.claude/skills/x/SKILL.md'), 'root vs agent/ skill')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
