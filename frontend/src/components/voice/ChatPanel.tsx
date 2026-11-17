@@ -42,8 +42,8 @@ export function ChatPanel({
   pendingPermission?: PermissionRequest | null
   onPermissionRespond?: (response: 'allow' | 'deny' | 'always_allow') => void
   reviewMode?: boolean
-  // Pinned top-right over the transcript (the call controls); the transcript
-  // keeps a right gutter so the corner never covers text.
+  // The call controls over the transcript: bottom-right below lg (the transcript
+  // keeps bottom room for it), top-right on lg+ (the transcript keeps a right gutter).
   corner?: ReactNode
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)

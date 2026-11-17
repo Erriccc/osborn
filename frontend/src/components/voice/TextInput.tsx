@@ -2,7 +2,6 @@
 
 import React, { useState, useRef } from 'react'
 
-
 export interface AttachedFile {
   file: File
   preview?: string
@@ -127,7 +126,6 @@ export function TextInput({
           ))}
         </div>
       )}
-
 
       {/* Composer — pill input, integrated attach, accent send; safe-area
           padding so the iOS home indicator never crowds it. */}

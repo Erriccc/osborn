@@ -4199,8 +4199,8 @@ function VoiceRoomInner({
             <div className="flex items-center gap-1 sm:gap-3 shrink-0">
 
             {/* Named agents + Skills — desktop header only. On mobile these
-                live in the approvals row above the input (Claude-
-                style), so the top bar carries only status/stats + hangup. */}
+                live in the burger sheet, so the top bar carries only
+                status/stats. */}
             <div className="hidden sm:flex items-center gap-1.5">
               <AgentsPopover agents={namedAgents} roles={agentRoles} activity={backgroundFlows} disabled={!agentConnected}
                 yours={userAgentRows}
