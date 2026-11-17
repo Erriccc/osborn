@@ -16,6 +16,7 @@ import AgentHealthNotice from './AgentHealthNotice'
 import type { KeyHealthEntry } from '@/lib/agent-health'
 import { fastBrainLabel } from '@/lib/modelBadge'
 import { LogsDrawer, type MachineData } from './LogsDrawer'
+import { ApprovalPicker } from './voice/ApprovalPicker'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
@@ -4607,6 +4608,7 @@ function VoiceRoomInner({
             // come back — the user must always be able to dismiss a stuck row.
             setBackgroundFlows(prev => prev.filter(f => f.agentId !== agentId))
           }}
+          approvals={<ApprovalPicker mode={approvalMode} onChange={setApprovalMode} />}
           machineData={machineData}
           agentMemory={agentMemory}
           onMachineTabActive={setMachineTabActive}
@@ -4687,8 +4689,6 @@ function VoiceRoomInner({
           attachedFiles={attachedFiles}
           onAttachFile={handleAttachFile}
           onRemoveFile={handleRemoveFile}
-          approvalMode={approvalMode}
-          onApprovalModeChange={setApprovalMode}
         />
         </div>
       </div>

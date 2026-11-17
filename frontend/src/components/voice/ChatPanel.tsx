@@ -143,11 +143,11 @@ export function ChatPanel({
           </svg>
         </button>
       )}
-      {corner && <div className="absolute top-2 right-2 z-20">{corner}</div>}
+      {corner && <div className="absolute bottom-3 right-3 lg:bottom-auto lg:top-2 lg:right-2 z-20">{corner}</div>}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className={`h-full overflow-y-auto overflow-x-hidden ${corner ? 'pl-3 sm:pl-4 pr-16' : 'px-3 sm:px-4'} py-3 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent`}
+        className={`h-full overflow-y-auto overflow-x-hidden ${corner ? 'px-3 sm:px-4 lg:pr-16 pt-3 pb-20 lg:pb-3' : 'px-3 sm:px-4 py-3'} scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent`}
       >
       {messages.length === 0 && !activeResearch && (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
