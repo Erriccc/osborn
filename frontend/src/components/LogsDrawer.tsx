@@ -522,7 +522,7 @@ export const IDE_DOT_CLASS = { running: 'bg-emerald-400', starting: 'bg-amber-40
 export const IDE_STATE_LABEL = { running: 'Running', starting: 'Starting…', stopped: 'Stopped' } as const
 export const CODE_ICON_PATH = 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4'
 // Header chips stay small; the button around each is a 44px tap target on phones and touch screens.
-const HEADER_TAP_TARGET = 'max-sm:min-h-11 [@media(pointer:coarse)]:min-h-11'
+export const HEADER_TAP_TARGET = 'max-sm:min-h-11 [@media(pointer:coarse)]:min-h-11'
 
 // ---------------------------------------------------------------------------
 // MachineChipBadge — compact RAM% + process-count badge for the Machine tab chip.
@@ -691,12 +691,12 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           if (!isOpen) setLastSeenCount(messages.length)
         }}
         aria-expanded={isOpen}
-        className="flex-1 min-w-0 flex items-center gap-2 pl-4 py-2.5 text-xs text-gray-400 hover:text-gray-200 transition-colors text-left"
+        className="flex-1 min-w-0 overflow-hidden flex items-center gap-2 pl-4 py-2.5 text-xs text-gray-400 hover:text-gray-200 transition-colors text-left"
       >
           <svg className={`w-3 h-3 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
-          <span className="whitespace-nowrap">Activity log</span>
+          <span className="truncate">Activity log</span>
           {unreadCount > 0 && !isOpen && (
             <span className="bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full text-[10px]">
               {unreadCount}

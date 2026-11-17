@@ -2,6 +2,7 @@ import type { Config } from 'tailwindcss'
 import plugin from 'tailwindcss/plugin'
 import defaultColors from 'tailwindcss/colors'
 import { THEME_COLOR } from './src/lib/theme'
+import { PANE_BREAKPOINTS } from './src/lib/pane-size'
 
 // Light / dark theme (see src/lib/theme.ts). The chat is written with Tailwind's
 // gray scales and colour shades tuned for a dark page. Rather than edit those
@@ -114,6 +115,10 @@ const config: Config = {
         ':root, [data-theme="dark"]': dark,
         '[data-theme="light"]': light,
       })
+    }),
+    plugin(({ addVariant }) => {
+      // pane-sm/md/xl: min-width of the chat column (lib/pane-size.ts), not the window.
+      for (const k of Object.keys(PANE_BREAKPOINTS)) addVariant(`pane-${k}`, `[data-pane~="${k}"] &`)
     }),
   ],
 }

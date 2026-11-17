@@ -40,7 +40,7 @@ export default function ModelBadge({
         </span>
         <span>Model</span>
         <span className="text-gray-600">&mdash;</span>
-        {badge.version && <span className="hidden lg:inline text-gray-600">v{badge.version}</span>}
+        {badge.version && <span className="hidden pane-xl:inline text-gray-600">v{badge.version}</span>}
       </span>
     )
   }
@@ -56,7 +56,7 @@ export default function ModelBadge({
       </svg>
       <span className="font-medium">{badge.label}</span>
       {badge.version && (
-        <span className="hidden lg:inline text-indigo-300/70 font-mono tabular-nums">v{badge.version}</span>
+        <span className="hidden pane-xl:inline text-indigo-300/70 font-mono tabular-nums">v{badge.version}</span>
       )}
     </span>
   )
