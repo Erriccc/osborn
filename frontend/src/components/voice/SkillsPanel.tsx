@@ -116,7 +116,7 @@ export function SkillsPopover(props: SkillsPanelProps & { disabled?: boolean; re
       <button
         onClick={() => setOpen((v) => !v)}
         disabled={props.disabled}
-        aria-label="Skills"
+        aria-label={`Skills${count ? `, ${count}` : ''}`}
         data-testid="skills-button"
         title="Skills"
         className={`relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all border ${

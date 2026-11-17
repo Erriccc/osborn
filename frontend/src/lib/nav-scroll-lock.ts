@@ -1,4 +1,4 @@
-// Pure breakpoint / scroll-lock rules for the landing nav (no DOM / React
+// Pure breakpoint rules (the shared `lg` check) and the landing nav's scroll lock (no DOM / React
 // imports so it can be unit-tested with plain tsx).
 //
 // The landing nav swaps desktop row <-> hamburger sheet at Tailwind `lg`
@@ -8,12 +8,20 @@
 // visible control to release it. The lock must therefore only hold while the
 // sheet is open AND the viewport is below `lg`.
 
-export const LANDING_DESKTOP_MIN_WIDTH = 1024
+/** Tailwind's `lg` breakpoint, where phone/tablet layouts give way to desktop ones. */
+export const LG_MIN_WIDTH = 1024
+
+/** True at Tailwind `lg` and up. */
+export function isLgViewport(viewportWidth: number): boolean {
+  return Number.isFinite(viewportWidth) && viewportWidth >= LG_MIN_WIDTH
+}
+
+export const LANDING_DESKTOP_MIN_WIDTH = LG_MIN_WIDTH
 export const LANDING_DESKTOP_QUERY = `(min-width: ${LANDING_DESKTOP_MIN_WIDTH}px)`
 
 /** True when the viewport shows the desktop nav row (Tailwind `lg` and up). */
 export function isLandingDesktop(viewportWidth: number): boolean {
-  return Number.isFinite(viewportWidth) && viewportWidth >= LANDING_DESKTOP_MIN_WIDTH
+  return isLgViewport(viewportWidth)
 }
 
 /** Body scroll is locked only while the mobile sheet is open below `lg`. */

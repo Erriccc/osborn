@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { clampDrawerHeight, defaultDrawerHeight, DRAWER_DEFAULT_HEIGHT } from '@/lib/drawer-height'
 import { redactSecrets } from '../lib/redactSecrets'
-import { isLandingDesktop } from '@/lib/nav-scroll-lock'
+import { isLgViewport } from '@/lib/nav-scroll-lock'
 import { MarkdownMessage } from './MarkdownMessage'
 
 // ---------------------------------------------------------------------------
@@ -129,6 +129,8 @@ interface LogsDrawerProps {
   ideError?: string | null
   /** Bump to open the drawer on its Machine tab (the phone menu's Machine row). */
   requestOpen?: number
+  /** A permission prompt is waiting: below lg the sheet closes so its backdrop never hides the prompt. */
+  promptPending?: boolean
 }
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
@@ -566,7 +568,7 @@ export function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCo
   )
 }
 
-export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError, approvals, requestOpen }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError, approvals, requestOpen, promptPending }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
   useEffect(() => {
@@ -574,10 +576,25 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
     setActiveTab('machine')
     setIsOpen(true)
   }, [requestOpen])
+  // Below lg the drawer is a modal sheet over the chat (backdrop, Esc, focus moves
+  // into it); from lg up it stays an inline panel.
+  const [asSheet, setAsSheet] = useState(false)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!isOpen) return
+    const sheet = !isLgViewport(window.innerWidth)
+    setAsSheet(sheet)
+    if (sheet) closeRef.current?.focus()
+  }, [isOpen])
+  // The sheet's backdrop would cover the transcript's approval card, the approvals
+  // picker and End: a waiting prompt closes it.
+  useEffect(() => {
+    if (promptPending && !isLgViewport(window.innerWidth)) setIsOpen(false)
+  }, [promptPending])
   // Below lg the drawer is a sheet over the chat: Esc closes it like the backdrop.
   useEffect(() => {
     if (!isOpen) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !isLandingDesktop(window.innerWidth)) setIsOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !isLgViewport(window.innerWidth)) setIsOpen(false) }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [isOpen])
@@ -717,7 +734,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
         <>
         <div className="lg:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setIsOpen(false)} aria-hidden="true" data-testid="activity-sheet-backdrop" />
         <div className="relative max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:z-50 max-lg:rounded-t-2xl max-lg:border-t max-lg:border-gray-700 max-lg:bg-gray-900 max-lg:shadow-2xl max-lg:overflow-hidden max-lg:pb-[env(safe-area-inset-bottom)]"
-          role="region" aria-label="Activity log">
+          {...(asSheet ? { role: 'dialog', 'aria-modal': true } : { role: 'region' })} aria-label="Activity log">
           {/* Drag handle — grab this to resize the drawer height */}
           <div
             onPointerDown={handleDragHandlePointerDown}
@@ -790,6 +807,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                   </button>
                 )}
                 <button
+                  ref={closeRef}
                   onClick={() => setIsOpen(false)}
                   aria-label="Close activity log"
                   title="Close"

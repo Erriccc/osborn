@@ -59,7 +59,7 @@ export function AgentsPopover({ agents, roles, yours, activity, disabled, onSave
       <button
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
-        aria-label="Agents"
+        aria-label={`Agents${count ? `, ${count}` : ''}${working ? `, ${working} working` : ''}`}
         data-testid="agents-button"
         title="Named agents"
         className={`relative flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all border ${

@@ -4642,6 +4642,7 @@ function VoiceRoomInner({
           machineChipRamPct={machineRamPct}
           machineChipProcCount={machineProcCount}
           requestOpen={machineOpenReq}
+          promptPending={!!pendingPermission}
         />
 
         {resumeChip && (
