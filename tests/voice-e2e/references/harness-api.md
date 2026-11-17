@@ -14,12 +14,12 @@
 | `GET /audio` | your tab's captured audio as mp3 (`<audio>`/`<video>` elements and WebAudio output — absent from the video-only clips/stream). 404 with `ears` until the tab has recorded something; it does not arm them (`/act`, `/say` or `/hear` does). WebAudio output of the top page only, not iframes |
 | `GET /logs` | full console+network+websocket buffers, all tabs |
 | `GET /events` | SSE: live navigation/task/tab/journey/transcript/agent_output/lifecycle events (25-event replay on connect; `engine_stopping` announces sleep) |
-| `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab; arms the ears on the tab so `/clip?n=N&audio=1` can carry its sound |
+| `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab; arms the ears on the tab so `/clip?n=N&audio=1` can carry its sound; a tab the action opens becomes your tab (`effect.openedTab`) |
 | `POST /say {text, ...}` | speak into the mic; returns a screenshot, `heard` (agent's spoken reply, transcribed) and a `clipUrl` that waits until the clip is encoded (`clipPending: true`; pass `waitClip: true` to get the clip in the reply) |
 | `POST /hear {lastMs}` | transcript of recent agent audio |
 | `POST /eval {expression}` | run JS in the page (the website console, programmatic); recorded as a journey step |
 | `POST /shot` | on-demand screenshot of your tab; recorded as a task, so it returns `task` and public `evidence` links to paste into an issue |
-| `POST /tab {op: open\|navigate\|switch\|close\|claim\|release, url?, i?, viewport?, reuse?}` (owner = your `x-driver-id`) | tab ops. `open` REUSES a same-site tab unless `reuse:false`; `viewport:"mobile"` = 390×844; owners guard against other directors (409) |
+| `POST /tab {op: open\|navigate\|switch\|close\|claim\|release, url?, i?, viewport?, reuse?}` (owner = your `x-driver-id`) | tab ops. `open` REUSES a same-site tab unless `reuse:false`; `viewport:"mobile"` = emulated iPhone 13 and `"tablet"` = iPad (gen 7) (own context: touch, mobile UA, device pixels, same sign-ins; closed with its last tab), `{width,height}` = desktop window resized; owners guard against other directors (409) |
 | `POST /journey {op: start\|end\|list, name?, goal?, save?, cleanup?}` | journey framing — see below |
 | (all replies) | JSON replies, `/events` and webhooks are redacted (`••••`); `/eval` values and `/shot` `jpegB64` are raw — read raw URLs with `/eval location.href` |
 | `POST /brain` | re-init a detached Stagehand in place |

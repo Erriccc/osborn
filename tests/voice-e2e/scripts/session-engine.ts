@@ -52,7 +52,7 @@
  * Auth flow by default (profiles/<OSBORN_TEST_PROFILE>, default osborn-tester)
  * when a saved profile exists; guest link if not.
  */
-import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test'
+import { chromium, devices, type Browser, type BrowserContext, type Page } from '@playwright/test'
 import { Stagehand } from '@browserbasehq/stagehand'
 import { createServer } from 'http'
 import { execFile } from 'child_process'
@@ -244,13 +244,38 @@ async function main() {
   const allPages = () => tabOrder.filter((p) => !p.isClosed())
   const tabs = { pages: allPages } as unknown as BrowserContext  // the tab helpers only read pages()
   const profileFile = (key: string) => key ? join(PROFILES_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 20)}.json`) : SHARED_PROFILE
-  const contextFor = async (key: string): Promise<BrowserContext> => {
-    const have = contexts.get(key)
+  // DEVICE EMULATION: /tab open with viewport "mobile" | "tablet" puts the tab in its own
+  // context built from a Playwright device descriptor (touch, mobile user agent, device
+  // pixel ratio, isMobile), so (hover:none) and (pointer:coarse) match. It starts with the
+  // profile's current sign-ins; one context per profile and device, closed with its last
+  // tab so its memory goes back. Sign-ins made inside it are not saved back to the profile.
+  const DEVICE_PRESETS = { mobile: 'iPhone 13', tablet: 'iPad (gen 7)' } as const
+  type DeviceKind = keyof typeof DEVICE_PRESETS
+  const isDeviceKind = (v: unknown): v is DeviceKind => typeof v === 'string' && Object.hasOwn(DEVICE_PRESETS, v)
+  const deviceContexts = new Map<string, BrowserContext>()
+  const pageDevice = new WeakMap<Page, DeviceKind>()
+  const deviceOf = (p: Page) => { const d = pageDevice.get(p); return d ? { device: d, emulates: DEVICE_PRESETS[d] } : {} }
+  const contextFor = async (key: string, device?: DeviceKind): Promise<BrowserContext> => {
+    const id = device ? `${key}\n${device}` : key
+    const owned = device ? deviceContexts : contexts
+    const have = owned.get(id)
     if (have) return have
     const file = profileFile(key)
-    const c = await browser.newContext({ permissions: ['microphone'], ...(existsSync(file) ? { storageState: file } : {}) })
-    await prepareContext(c); trackContext(c, key); contexts.set(key, c)
-    mark(`profile opened${existsSync(file) ? ' (restored)' : ''}`)
+    // A device context copies the profile's live sign-ins, or its saved file when no desktop tab has opened it.
+    const signedIn = device ? contexts.get(key) : undefined
+    const state = signedIn ? await signedIn.storageState().catch(() => undefined) : existsSync(file) ? file : undefined
+    const c = await browser.newContext({ ...(device ? devices[DEVICE_PRESETS[device]] : {}), permissions: ['microphone'], ...(state ? { storageState: state } : {}) })
+    if (device) c.on('page', (p) => {
+      pageDevice.set(p, device)
+      p.once('close', () => {
+        if (c.pages().some((x) => x !== p && !x.isClosed())) return
+        if (deviceContexts.get(id) === c) deviceContexts.delete(id)
+        void c.close().catch(() => {})
+        mark(`${device} device context closed (last tab gone)`)
+      })
+    })
+    await prepareContext(c); trackContext(c, key); owned.set(id, c)
+    mark(device ? `${device} device context opened (${DEVICE_PRESETS[device]})` : `profile opened${state ? ' (restored)' : ''}`)
     return c
   }
   const saveProfiles = async () => {
@@ -750,7 +775,10 @@ async function main() {
   // command still running past LOCK_MAX_MS never acts on the next driver's tab.
   const focusDriverTab = async (driver: string): Promise<void> => {
     driverSeen.set(driver, Date.now())
-    const tab = driverTab(driver) || allPages()[0]
+    await focusTab(driver, driverTab(driver) || allPages()[0])
+  }
+  // Make `tab` the driver's tab and the one on screen (front + live stream).
+  const focusTab = async (driver: string, tab: Page): Promise<void> => {
     driverActive.set(driver, tab)
     active = tab
     await tab.bringToFront().catch(() => {})
@@ -794,7 +822,7 @@ async function main() {
       const pages = allPages()
       writeFileSync(TAB_STATE, JSON.stringify({
         savedAt: Date.now(), activeIndex: pages.indexOf(active),
-        tabs: pages.map((p) => ({ url: p.url(), owner: ownerOf(p), profile: pageProfile.get(p) || undefined })),
+        tabs: pages.map((p) => ({ url: p.url(), owner: ownerOf(p), profile: pageProfile.get(p) || undefined, device: pageDevice.get(p) })),
       }, null, 2))
     } catch { /* ignore */ }
   }
@@ -803,7 +831,7 @@ async function main() {
   // (the audio timeline), so transcript windows line up with task windows.
   // Every task records WHICH TAB it ran on ({i, url} at execution time) — the
   // per-tab memory that lets a director reconstruct what happened where.
-  const activeTab = (p: Page = active) => ({ i: allPages().indexOf(p), url: p.url(), owner: ownerOf(p) })
+  const activeTab = (p: Page = active) => ({ i: allPages().indexOf(p), url: p.url(), owner: ownerOf(p), ...deviceOf(p) })
   // Clips still encoding after their reply; GET /clip and /media wait on them.
   const pendingClips = new Map<number, Promise<unknown>>()
   const awaitClip = async (n: number) => { const p = pendingClips.get(n); if (p) await Promise.race([p, new Promise((r) => setTimeout(r, 90000))]) }
@@ -1092,7 +1120,7 @@ async function main() {
           drivers: [...driverActive.keys()], tabsByOwner: allPages().map((p,i)=>({i, owner: ownerOf(p)})),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: allPages().indexOf(active), url: active.url() },
-          tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url })), marks: marks.slice(-12),
+          tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, ...deviceOf(allPages()[t.index]) })), marks: marks.slice(-12),
         })
       }
       if (req.method === 'GET' && path === '/runs') {
@@ -1276,6 +1304,11 @@ async function main() {
           const before = await snap()
           const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
+          // A tab the action opens (target=_blank, window.open) becomes this driver's tab
+          // after the act, so the next /act works where the click led.
+          let popup: Page | null = null
+          const onPopup = (p: Page) => { popup ??= p }
+          page.on('popup', onPopup)
           // PLAIN PAGE SCROLLS ARE DONE BY THE ENGINE, NOT THE BRAIN. On the live
           // landing page the brain's scroll action first moved nothing and, on
           // the identical repeat, scrolled back UP to the top for "scroll down".
@@ -1310,6 +1343,7 @@ async function main() {
               }
             }
             if (!healed) {
+              page.off('popup', onPopup)
               const msg = ((e as Error).message || String(e)).slice(0, 300)
               mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
               // A failed act is still a task: it must not vanish from the run.
@@ -1322,6 +1356,15 @@ async function main() {
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
           await page.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
+          page.off('popup', onPopup)
+          const opened = popup as Page | null
+          if (opened && !opened.isClosed()) {
+            // The popup belongs to whoever owns the tab that opened it, so another driver can't reuse it.
+            const owner = tabOwners.get(page)
+            if (owner) tabOwners.set(opened, { owner: owner.owner, claimedAt: Date.now() })
+            watchPage(opened); await focusTab(driver, opened)
+            mark(`act[${driver}]: the action opened a new tab (${allPages().indexOf(opened)}) — it is now this driver's tab: ${opened.url().slice(0, 60)}`)
+          }
           let after = await snap()
           const moved = (a: typeof before, b: typeof before) => !!a && !!b && (a.scrollY !== b.scrollY || a.innerScroll !== b.innerScroll)
           // SCROLL FALLBACK (#146): on some pages the brain's scroll action
@@ -1342,7 +1385,7 @@ async function main() {
               if (moved(before, again)) { after = again; fallback = 'mouse-wheel' ; mark(`act[${driver}]: brain scroll moved nothing — mouse-wheel fallback scrolled the page`) }
             } catch { /* keep the original result */ }
           }
-          const structural = !!before && !!after && (before.url !== after.url || before.title !== after.title || moved(before, after) || before.form !== after.form)
+          const structural = !!opened || !!before && !!after && (before.url !== after.url || before.title !== after.title || moved(before, after) || before.form !== after.form)
           const textChanged = !!before && !!after && before.text !== after.text
           const changed = !before || !after ? null
             // A scroll instruction is judged on scroll position (or navigation) alone.
@@ -1354,6 +1397,7 @@ async function main() {
             // the action, so text was not used as evidence of an effect.
             textVolatile,
             urlBefore: before?.url ?? null, urlAfter: after?.url ?? null,
+            openedTab: opened && !opened.isClosed() ? activeTab(opened) : null,
             titleAfter: after?.title ?? null, scrollBefore: before?.scrollY ?? null, scrollAfter: after?.scrollY ?? null,
           }
           // Nothing observable changed: say so, and never keep the cached
@@ -1381,16 +1425,16 @@ async function main() {
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit(page)
           const n = ++reqN
-          return { page, n, t0, r, effect, warning, nag, endMs: Date.now() }
+          return { page, opened, n, t0, r, effect, warning, nag, endMs: Date.now() }
         })
         if (!post) return  // answered inside the lock (refused, invalid, or failed)
-        const { page, n, t0, r, effect, warning, nag } = post
+        const { page, opened, n, t0, r, effect, warning, nag } = post
         const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000)
         const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page).catch(() => null) : null
         const clip = actRange?.path ?? null
         const clipError = clip ? null : (live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session')
         if (clip) mark(`clip: ${clip}`)
-        const shot = await reqShot(n, 'act', page)
+        const shot = await reqShot(n, 'act', opened && !opened.isClosed() ? opened : page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
         if (clipError) { (window as any).clipError = clipError; writeManifest() }
         addStep('act', String(body.instruction))
@@ -1605,10 +1649,13 @@ async function main() {
         // close with no i closes YOUR tab (the quick-start's last step).
         if (body.op === 'close' && body.i == null) { const mine = driverActive.get(driver); const idx = mine ? allPages().indexOf(mine) : -1; if (idx > 0) body.i = idx }
         if (body.op === 'open' && body.url) { const bad = badUrl(body.url); if (bad) return json(res, bad.body, bad.status) }
+        if (body.op === 'open' && typeof body.viewport === 'string' && !isDeviceKind(body.viewport))
+          return json(res, { ok: false, code: 'bad_request', error: `viewport must be ${Object.keys(DEVICE_PRESETS).map((k) => `"${k}"`).join(' | ')} or {"width":…,"height":…}` }, 400)
+        const device: DeviceKind | undefined = body.op === 'open' && isDeviceKind(body.viewport) ? body.viewport : undefined
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
-        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(callerTab(driver)), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]) })) })
+        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(callerTab(driver)), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
         // Serialized with /act and /say so a tab change never lands mid-action.
         return await withLock(async () => {
         // After ANY change of active tab the screencast is retargeted so the
@@ -1622,22 +1669,21 @@ async function main() {
             try {
               const host = new URL(body.url).hostname
               const pages = allPages()
-              const cand = pages.find((p, idx) => { try { return idx > 0 && pageProfile.get(p) === profileOf(req) && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
+              const cand = pages.find((p, idx) => { try { return idx > 0 && pageProfile.get(p) === profileOf(req) && pageDevice.get(p) === device && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
               if (cand && !(await gotoChecked(cand, body.url))) { active = cand; reused = true }
             } catch { /* fall through to a fresh tab */ }
           }
           if (!reused) {
             const prev = active
-            active = await openTab(await contextFor(profileOf(req))); watchPage(active)
+            active = await openTab(await contextFor(profileOf(req), device)); watchPage(active)
             const nav = body.url ? await gotoChecked(active, body.url) : null
             if (nav) { await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
           }
-          if (body.viewport === 'mobile') await active.setViewportSize({ width: 390, height: 844 })
-          else if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
+          if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
           if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
           driverActive.set(driver, active)  // this becomes the driver's active tab
           touchTab(active)
-          await live?.retarget(active).catch(() => {}); mark(`tab ${reused ? 'reuse' : 'open'}: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${body.viewport ? ' (mobile)' : ''}`)
+          await live?.retarget(active).catch(() => {}); mark(`tab ${reused ? 'reuse' : 'open'}: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${device ? ` (${device}: ${DEVICE_PRESETS[device]})` : body.viewport?.width ? ` (${body.viewport.width}x${body.viewport.height})` : ''}`)
         }
         else if (body.op === 'navigate') {
           // Point an EXISTING tab at a new URL (the reuse primitive).
@@ -1654,7 +1700,7 @@ async function main() {
         else if (body.op === 'switch') {
           const so = ownerOf(allPages()[body.i])
           if (so && so !== body.owner) return json(res, { error: `tab ${body.i} is owned by "${so}" — you are "${body.owner}"` }, 409)
-          active = await switchTab(tabs, body.i); driverActive.set(driver, active); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`)
+          await focusTab(driver, allPages()[body.i]); touchTab(active); mark(`tab switch: ${body.i}`)
         }
         else if (body.op === 'close') {
           const target = allPages()[body.i]
@@ -1686,8 +1732,7 @@ async function main() {
           if (prev === body.owner) return json(res, { ok: false, code: 'bad_request', error: `tab ${body.i} is already yours` }, 400)
           takeovers.set(target, { by: String(body.owner), prevOwner: prev, since: Date.now() })
           tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() })
-          active = target; driverActive.set(driver, target); touchTab(target)
-          await target.bringToFront().catch(() => {}); await live?.retarget(target).catch(() => {})
+          touchTab(target); await focusTab(driver, target)
           mark(`tab TAKEOVER: ${body.i} by ${body.owner}${prev ? ` (from ${prev})` : ''}`)
           notify('takeover', { i: body.i, by: body.owner, prevOwner: prev })
         }
@@ -1705,12 +1750,12 @@ async function main() {
         // Tab ops are journey steps too — a recipe missing "open the mobile
         // tab" is not a recipe (first saved journey had steps:1 for this).
         if (['open', 'switch', 'close', 'navigate'].includes(body.op)) {
-          addStep('tab', `${body.op}${body.url ? ' ' + body.url : ''}${body.viewport ? ' viewport=mobile' : ''}${body.i != null ? ' i=' + body.i : ''}`)
+          addStep('tab', `${body.op}${body.url ? ' ' + body.url : ''}${device ? ' viewport=' + device : body.viewport?.width ? ` viewport=${body.viewport.width}x${body.viewport.height}` : ''}${body.i != null ? ' i=' + body.i : ''}`)
           writeScenario()
         }
         await updateTabHud(); saveTabState()
         notify('tab', { op: body.op, activeTab: activeTab(), tabCount: allPages().length })
-        return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]) })) })
+        return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
         })
       }
       if (path === '/journey') {
@@ -1935,7 +1980,7 @@ async function main() {
           .slice(0, Number(process.env.OSBORN_RESTORE_MAX ?? 3)).map((x: any) => x.t))
         let restoredActive: Page | null = null
         for (const t of extra.filter((t: any) => keep.has(t))) {
-          active = await openTab(await contextFor(t.profile || ''), t.url); watchPage(active)
+          active = await openTab(await contextFor(t.profile || '', isDeviceKind(t.device) ? t.device : undefined), t.url); watchPage(active)
           if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
           if (t === wasActive) restoredActive = active
         }
