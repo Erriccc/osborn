@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { formatTime } from '@/lib/sessions'
 
 /**
  * CompletionCard — a single passive "completion with proof" card in the
@@ -43,12 +44,6 @@ const TYPE_LABEL: Record<string, string> = {
 // visually too, but slicing keeps a 50KB brief from mounting in full.
 const PREVIEW_CHARS = 1200
 
-function ago(iso: string): string {
-  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
-  if (s < 3600) return `${Math.max(1, Math.floor(s / 60))}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return `${Math.floor(s / 86400)}d ago`
-}
 
 export default function CompletionCard({
   item,
@@ -88,7 +83,7 @@ export default function CompletionCard({
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)]" /> New
           </span>
         )}
-        <time className="ml-auto text-[11px] text-[var(--text-muted)]">{ago(item.at)}</time>
+        <time className="ml-auto text-[11px] text-[var(--text-muted)]">{formatTime(item.at)}</time>
       </header>
 
       {item.kind === 'brief' ? (

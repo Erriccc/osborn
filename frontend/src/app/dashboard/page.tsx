@@ -23,7 +23,7 @@ import { ReportBugModal } from '@/components/ReportBugModal'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import { isSupabaseConfigured } from '@/lib/supabase'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
-import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle } from '@/lib/sessions'
+import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle, formatTime } from '@/lib/sessions'
 import { prepareSessions } from '@/lib/session-list'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
@@ -1174,15 +1174,8 @@ export default function Dashboard() {
     else startChat()
   }
 
-  const formatDate = (ts: string) => {
-    const d = new Date(ts)
-    const diff = Date.now() - d.getTime()
-    if (diff < 60000) return 'Just now'
-    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
-    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
-    if (diff < 604800000) return d.toLocaleDateString('en', { weekday: 'short' })
-    return d.toLocaleDateString('en', { month: 'short', day: 'numeric' })
-  }
+  // One time format across the dashboard: the shelf, completions, Recents and Projects.
+  const formatDate = (ts: string) => formatTime(ts)
 
   const toggleProject = (cwd: string) => {
     setExpandedProjects(prev => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import NoteSheet, { noteCopyText } from './NoteSheet'
-import { sessionActivityTime, prettySessionPreview } from '@/lib/sessions'
+import { sessionActivityTime, prettySessionPreview, formatTime } from '@/lib/sessions'
 
 /**
  * ActivityShelf (exported as ActivityFeed) — NOTES + SESSIONS as one shelf.
@@ -21,13 +21,6 @@ interface FeedNote { id: string; text: string; created_at: string; attachments?:
 interface FeedSession { sessionId: string; timestamp: string; lastMessage?: string; cwd?: string; title?: string | null; lastActivityAt?: string | null }
 type Filter = 'all' | 'note' | 'session'
 
-function ago(iso: string): string {
-  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
-  if (s < 60) return 'just now'
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return `${Math.floor(s / 86400)}d ago`
-}
 
 export default function ActivityFeed({
   sessions,
@@ -122,7 +115,7 @@ export default function ActivityFeed({
                 <span className="text-[10.5px] uppercase tracking-wide text-[var(--text-muted)] font-medium">
                   {r.kind === 'note' ? 'Note' : 'Session'}
                 </span>
-                <span className="ml-auto text-[10.5px] text-[var(--text-muted)]">{ago(r.at)}</span>
+                <span className="ml-auto text-[10.5px] text-[var(--text-muted)]">{formatTime(r.at)}</span>
               </div>
               <p className="text-[13px] text-[var(--text-secondary)] leading-snug line-clamp-3 group-hover:text-[var(--text-primary)] transition-colors">
                 {r.text}
