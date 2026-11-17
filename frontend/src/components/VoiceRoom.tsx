@@ -3829,6 +3829,9 @@ function VoiceRoomInner({
   const machineRamPct = agentMemory?.usedPct ??
     (machineData?.memory ? Math.round((machineData.memory.usedMb / Math.max(machineData.memory.totalMb, 1)) * 100) : undefined)
   const machineProcCount = machineData?.totalCount ?? machineData?.processes.length
+  // The More button's dot: an active setting inside, or running background agents
+  // while their row is in the menu (a column below pane-sm).
+  const moreSettingOn = approvalMode !== 'ask' || noiseCancelOn || (!outputsVisible && unreadOutputs.size > 0)
 
   return (
     <PanelDataProvider value={panelData}>
@@ -4313,7 +4316,7 @@ function VoiceRoomInner({
                             handleJoinMeeting(meetingUrlInput.trim())
                             setMeetingUrlInput('')
                             setShowMeetingInput(false)
-                          } else if (e.key === 'Escape') setShowMeetingInput(false)
+                          }
                         }}
                         placeholder="Paste Zoom or Google Meet URL"
                         className="w-full px-2 py-1.5 text-xs bg-gray-950 border border-gray-700 rounded text-gray-200 placeholder-gray-600 focus:outline-none focus:border-amber-500"
@@ -4395,8 +4398,8 @@ function VoiceRoomInner({
                   title="More controls"
                 >
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
-                  {(approvalMode !== 'ask' || noiseCancelOn || slots.length > 1 || spawnPending || (!outputsVisible && unreadOutputs.size > 0)) && (
-                    <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  {(moreSettingOn || slots.length > 1 || spawnPending) && (
+                    <span className={`absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400 ${moreSettingOn ? '' : 'pane-sm:hidden'}`} />
                   )}
                 </button>
                 {showHeaderMore && (
