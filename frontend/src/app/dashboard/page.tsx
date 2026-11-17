@@ -1694,7 +1694,7 @@ export default function Dashboard() {
               Continue card and Recent activity already lead with them. */}
           {agentOnline !== false && recentSessions.length > 0 && (
             <div className="hidden lg:block">
-              <RecentsList sessions={recentSessions} onOpen={(s) => startChat(s.sessionId, s.cwd)} formatDate={formatTime} />
+              <RecentsList sessions={recentSessions} onOpen={(s) => startChat(s.sessionId, s.cwd)} />
             </div>
           )}
           {agentOnline === false && !(isCloud && !user && !loading) && (
