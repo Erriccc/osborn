@@ -54,6 +54,7 @@ import { ChatPanel } from './voice/ChatPanel'
 import { CallPill } from './voice/CallPill'
 import { MeetingMuteControl, type MeetingMuteState } from './voice/MeetingMuteControl'
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
+import { usePaneSize } from '@/lib/pane-size'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
@@ -95,7 +96,7 @@ function AudioPopover({ disabled }: { disabled?: boolean }) {
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
         </svg>
-        <span className="hidden sm:inline">Audio</span>
+        <span className="hidden pane-lg:inline">Audio</span>
       </button>
       {open && (
         <>
@@ -761,6 +762,8 @@ function VoiceRoomInner({
   // (via moreWrapRef) and keeps mutual exclusion (same 'vn:header-panel-open'
   // bus as usePanelExclusive), so the backdrop can be dropped entirely.
   const moreWrapRef = useRef<HTMLDivElement>(null)
+  const chatPaneRef = useRef<HTMLDivElement>(null)
+  const paneSize = usePaneSize(chatPaneRef)
   useHeaderPanel('more', showHeaderMore, setShowHeaderMore, moreWrapRef)
   const meetingPopRef = useViewportClamp(showMeetingInput)
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
@@ -2978,6 +2981,14 @@ function VoiceRoomInner({
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent])
 
+  // Refresh the slot list AND the session list whenever the panel opens, so the
+  // picker shows current, titled sessions.
+  const openInstancesPanel = useCallback(() => {
+    setShowInstancesPanel(true)
+    sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
+    handleLoadSessions()
+  }, [sendToAgent, handleLoadSessions])
+
   // INITIAL resume-on-connect only (the `showResumePrompt` gate + ControlMenu's
   // Continue). This sends `resume_session`, which merely STORES the target id for
   // the connect/`session_selected` flow to apply — it does NOT tear down a live
@@ -4066,7 +4077,7 @@ function VoiceRoomInner({
           panel back is the remedy. Lowering the 70% cap is NOT the fix — 70%
           is fine from 1440px up; only a pixel-aware clamp on the drag would
           serve both, and that is a bigger change than this bug needs. */}
-      <div className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
+      <div ref={chatPaneRef} data-pane={paneSize} className="flex-1 min-w-0 flex flex-col bg-gray-900 sm:rounded-xl overflow-hidden border-0 sm:border border-gray-800/50">
         {/* Persistent Anthropic sign-in gate (issue #53/#78). The agent blocks
             before creating the voice session until Claude OAuth completes, so a
             fresh account that dismisses the modal would otherwise sit on a
@@ -4115,25 +4126,25 @@ function VoiceRoomInner({
         )}
         {/* Header - Streamlined */}
         <div className="relative z-30 px-1.5 sm:px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
-          {/* Two groups, NOT one wrapping row (issue #85). The left info group
-              wraps within itself; the right control strip is shrink-0 and pinned
-              top-right so the End button never drops onto a second row over the
-              transcript when the Outputs panel shrinks the chat pane. items-start
-              keeps the strip in the header band when the left group wraps. */}
-          <div className="flex items-start gap-1 sm:gap-3">
-            <div className="flex flex-wrap items-center gap-1 sm:gap-3 min-w-0 flex-1">
-            {/* Visualizer — only visible when speaking */}
-            {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
-
-            {/* Status */}
-            <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} bargeIn={bargeIn} />
+          {/* Status, info, controls (issue #85). The control strip is shrink-0 and
+              stays on the first row beside the status, so End never drops over the
+              transcript. Phones and a wide column keep one row (info wraps within
+              itself); a narrow desktop column (Rooms + Outputs open) moves the info
+              group to a second full-width row instead of squeezing it to a sliver. */}
+          <div className="flex flex-wrap items-start gap-x-1 sm:gap-x-2 pane-md:gap-x-3 gap-y-1">
+            <div className="order-1 shrink-0 flex items-center gap-1 sm:gap-2">
+              {/* Visualizer — only visible when speaking */}
+              {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
+              <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} bargeIn={bargeIn} />
+            </div>
+            <div className="order-3 basis-full max-sm:order-2 max-sm:basis-0 max-sm:flex-1 pane-lg:order-2 pane-lg:basis-0 pane-lg:flex-1 flex flex-wrap items-center gap-1 sm:gap-2 pane-md:gap-3 min-w-0">
 
             {/* Project/workspace chip — which repo this session is attached to. From lg
                 up; below that it is the first row of the More menu, so the header stays
                 one row on a tablet (tier rule: collapse, never wrap). */}
             {projectName && (
               <span title={sessionCwd || projectName}
-                className="hidden lg:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
+                className="hidden pane-lg:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
                 <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
                 <span className="truncate">{projectName}</span>
               </span>
@@ -4156,7 +4167,7 @@ function VoiceRoomInner({
 
             {/* Live clock — sits right beside the status so the time + date read
                 at a glance and every screenshot carries a timestamp. */}
-            <LiveClock showDate dateClassName="hidden lg:inline" />
+            <LiveClock showDate dateClassName="hidden pane-lg:inline" />
 
             {/* Compaction status pill — header-level summary (always visible during compact) */}
             {compactionStatus !== 'idle' && (
@@ -4214,7 +4225,7 @@ function VoiceRoomInner({
             {/* Right control strip — pinned top-right, never wraps (issue #85):
                 Agents/Skills, Meeting/More/Mute/End, and the mobile burger stay
                 together on the header line so End can't float over the transcript. */}
-            <div className="flex items-center gap-1 sm:gap-3 shrink-0">
+            <div className="order-2 max-sm:order-3 ml-auto pane-lg:order-3 flex items-center gap-1 sm:gap-2 pane-md:gap-3 shrink-0">
 
             {/* Named agents + Skills — desktop header only. On mobile these
                 live in the burger sheet, so the top bar carries only
@@ -4266,7 +4277,7 @@ function VoiceRoomInner({
                     disabled={!agentConnected}
                     aria-label="Join a meeting"
                     data-testid="join-meeting"
-                    className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all ${
+                    className={`hidden pane-sm:flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all ${
                       !agentConnected
                         ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
                         : showMeetingInput
@@ -4278,7 +4289,7 @@ function VoiceRoomInner({
                     <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
-                    <span className="hidden lg:inline text-xs font-medium">Meeting</span>
+                    <span className="hidden pane-lg:inline text-xs font-medium">Meeting</span>
                   </button>
                   {showMeetingInput && (
                     <div ref={meetingPopRef} className="absolute top-11 right-0 w-72 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-[100] p-3">
@@ -4323,19 +4334,9 @@ function VoiceRoomInner({
                   open it too (wrapper stays in flow, button hidden on mobile). */}
               <div className="relative">
                 <button
-                  onClick={() => {
-                    const next = !showInstancesPanel
-                    setShowInstancesPanel(next)
-                    if (next) {
-                      // Refresh slot list AND session list whenever the user opens the panel,
-                      // so the picker shows current, titled sessions.
-                      const enc = new TextEncoder()
-                      sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
-                      handleLoadSessions()
-                    }
-                  }}
+                  onClick={() => showInstancesPanel ? setShowInstancesPanel(false) : openInstancesPanel()}
                   disabled={!agentConnected}
-                  className={`hidden sm:block p-2 rounded-lg transition-all ${
+                  className={`hidden pane-sm:block p-2 rounded-lg transition-all ${
                     !agentConnected
                       ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
                       : showInstancesPanel
@@ -4394,11 +4395,24 @@ function VoiceRoomInner({
                 {showHeaderMore && (
                     <div ref={moreMenuRef} role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
                       {projectName && (
-                        <div className="lg:hidden flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-400 border-b border-gray-800" title={sessionCwd || projectName}>
+                        <div className="pane-lg:hidden flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-400 border-b border-gray-800" title={sessionCwd || projectName}>
                           <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
                           <span className="truncate">{projectName}</span>
                         </div>
                       )}
+                      {/* A narrow chat column hides the Meeting and Background agents
+                          buttons; their panels stay mounted, so these rows open them. */}
+                      <button role="menuitem" disabled={!agentConnected} onClick={() => { setShowHeaderMore(false); setShowMeetingInput(true) }}
+                        className="pane-sm:hidden w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 disabled:opacity-50 transition-colors">
+                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                        <span className="flex-1">Join a meeting</span>
+                      </button>
+                      <button role="menuitem" disabled={!agentConnected} onClick={() => { setShowHeaderMore(false); openInstancesPanel() }}
+                        className="pane-sm:hidden w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 disabled:opacity-50 transition-colors">
+                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}><circle cx="9" cy="12" r="5" /><circle cx="15" cy="12" r="5" /></svg>
+                        <span className="flex-1">Background agents</span>
+                        {slots.length > 1 && <span className="text-[11px] font-semibold text-emerald-400">{slots.length}</span>}
+                      </button>
                       {/* Bug #59: a dedicated Files Explorer entry — the Outputs
                           drawer was the only files surface. Opens the full
                           FilesExplorerModal. */}
@@ -4802,13 +4816,7 @@ function VoiceRoomInner({
 
               {/* Background agents — opens the Instances bottom-sheet (now
                   reachable on mobile; the sheet renders at header level). */}
-              <button onClick={() => {
-                  setShowMobileMenu(false)
-                  setShowInstancesPanel(true)
-                  const enc = new TextEncoder()
-                  sendToAgent(enc.encode(JSON.stringify({ type: 'list_slots' })), { reliable: true })
-                  handleLoadSessions()
-                }}
+              <button onClick={() => { setShowMobileMenu(false); openInstancesPanel() }}
                 disabled={!agentConnected}
                 className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left disabled:opacity-40 disabled:cursor-not-allowed">
                 <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>

@@ -691,12 +691,12 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           if (!isOpen) setLastSeenCount(messages.length)
         }}
         aria-expanded={isOpen}
-        className="flex-1 min-w-0 flex items-center gap-2 pl-4 py-2.5 text-xs text-gray-400 hover:text-gray-200 transition-colors text-left"
+        className="flex-1 min-w-0 overflow-hidden flex items-center gap-2 pl-4 py-2.5 text-xs text-gray-400 hover:text-gray-200 transition-colors text-left"
       >
           <svg className={`w-3 h-3 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
-          <span className="whitespace-nowrap">Activity log</span>
+          <span className="truncate">Activity log</span>
           {unreadCount > 0 && !isOpen && (
             <span className="bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full text-[10px]">
               {unreadCount}
