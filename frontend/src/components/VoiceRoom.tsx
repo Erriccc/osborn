@@ -54,7 +54,7 @@ import { ChatPanel } from './voice/ChatPanel'
 import { CallPill } from './voice/CallPill'
 import { MeetingMuteControl, type MeetingMuteState } from './voice/MeetingMuteControl'
 import { RightPanel, PanelToggleButton, PANEL_ANCHOR_ATTR } from './panel/RightPanel'
-import { usePaneSize } from '@/lib/pane-size'
+import { usePaneSize } from '@/lib/use-pane-size'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
@@ -767,8 +767,7 @@ function VoiceRoomInner({
   // (via moreWrapRef) and keeps mutual exclusion (same 'vn:header-panel-open'
   // bus as usePanelExclusive), so the backdrop can be dropped entirely.
   const moreWrapRef = useRef<HTMLDivElement>(null)
-  const chatPaneRef = useRef<HTMLDivElement>(null)
-  const paneSize = usePaneSize(chatPaneRef)
+  const [chatPaneRef, paneSize] = usePaneSize()
   useHeaderPanel('more', showHeaderMore, setShowHeaderMore, moreWrapRef)
   const meetingPopRef = useViewportClamp(showMeetingInput)
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
@@ -4133,8 +4132,8 @@ function VoiceRoomInner({
         <div className="relative z-30 px-1.5 sm:px-3 py-2 border-b border-gray-800/50 bg-gray-900/50 backdrop-blur-sm">
           {/* Status, info, controls (issue #85). The control strip is shrink-0 and
               stays on the first row beside the status, so the controls never drop
-              over the transcript. Phones and a column from pane-lg keep one row (info
-              wraps within itself); a narrower desktop column (Rooms + Outputs open)
+              over the transcript. Phones and a column from pane-sm keep one row (info
+              wraps within itself); a desktop column under 512px (Rooms + Outputs open)
               moves the info group to a second full-width row instead of squeezing it
               to a sliver. */}
           <div className="flex flex-wrap items-start gap-x-1 sm:gap-x-2 pane-md:gap-x-3 gap-y-1">
@@ -4143,7 +4142,7 @@ function VoiceRoomInner({
               {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
               <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} bargeIn={bargeIn} />
             </div>
-            <div className="order-3 basis-full max-sm:order-2 max-sm:basis-0 max-sm:flex-1 pane-lg:order-2 pane-lg:basis-0 pane-lg:flex-1 flex flex-wrap items-center gap-1 sm:gap-2 pane-md:gap-3 min-w-0">
+            <div className="order-2 basis-0 flex-1 sm:order-3 sm:basis-full pane-sm:order-2 pane-sm:basis-0 flex flex-wrap items-center gap-1 sm:gap-2 pane-md:gap-3 min-w-0">
 
             {/* Project/workspace chip — which repo this session is attached to. From a
                 pane-xl column up; below that it is the first row of the More menu, so the
@@ -4231,7 +4230,7 @@ function VoiceRoomInner({
             {/* Right control strip — pinned top-right, never wraps (issue #85):
                 Agents/Skills, Meeting/More/Mute/End, and the mobile burger stay
                 together on the header line so End can't float over the transcript. */}
-            <div className="order-2 max-sm:order-3 ml-auto pane-lg:order-3 flex items-center gap-1 sm:gap-2 pane-md:gap-3 shrink-0">
+            <div className="order-3 sm:order-2 pane-sm:order-3 ml-auto flex items-center gap-1 sm:gap-2 pane-md:gap-3 shrink-0">
 
             {/* Named agents + Skills — desktop header only. On mobile these
                 live in the burger sheet, so the top bar carries only
