@@ -522,7 +522,7 @@ export const IDE_DOT_CLASS = { running: 'bg-emerald-400', starting: 'bg-amber-40
 export const IDE_STATE_LABEL = { running: 'Running', starting: 'Starting…', stopped: 'Stopped' } as const
 export const CODE_ICON_PATH = 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4'
 // Header chips stay small; the button around each is a 44px tap target on phones and touch screens.
-const HEADER_TAP_TARGET = 'max-sm:min-h-11 [@media(pointer:coarse)]:min-h-11'
+export const HEADER_TAP_TARGET = 'max-sm:min-h-11 [@media(pointer:coarse)]:min-h-11'
 
 // ---------------------------------------------------------------------------
 // MachineChipBadge — compact RAM% + process-count badge for the Machine tab chip.

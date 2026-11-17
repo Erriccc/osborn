@@ -757,7 +757,6 @@ function VoiceRoomInner({
   const [showMeetingInput, setShowMeetingInput] = useState(false)
   // Keep the header dropdowns mutually exclusive (no stacking/overlap).
   usePanelExclusive('instances', showInstancesPanel, setShowInstancesPanel)
-  usePanelExclusive('meeting', showMeetingInput, setShowMeetingInput)
   // Keep the More menu / meeting popover on screen when the header wraps and
   // their right-anchored triggers land on the left (iPad portrait).
   const moreMenuRef = useViewportClamp(showHeaderMore)
@@ -769,6 +768,10 @@ function VoiceRoomInner({
   const moreWrapRef = useRef<HTMLDivElement>(null)
   const [chatPaneRef, paneSize] = usePaneSize()
   useHeaderPanel('more', showHeaderMore, setShowHeaderMore, moreWrapRef)
+  // Esc and click-outside too: in a narrow column the popover opens from More,
+  // with its header toggle hidden.
+  const meetingWrapRef = useRef<HTMLDivElement>(null)
+  useHeaderPanel('meeting', showMeetingInput, setShowMeetingInput, meetingWrapRef)
   const meetingPopRef = useViewportClamp(showMeetingInput)
   const [meetingUrlInput, setMeetingUrlInput] = useState('')
   const [meetingBotId, setMeetingBotId] = useState<string | null>(null)
@@ -4276,7 +4279,7 @@ function VoiceRoomInner({
                   Joining...
                 </span>
               ) : (
-                <div className="hidden sm:block relative">
+                <div ref={meetingWrapRef} className="hidden sm:block relative">
                   <button
                     onClick={() => setShowMeetingInput((v) => !v)}
                     disabled={!agentConnected}
@@ -4392,7 +4395,7 @@ function VoiceRoomInner({
                   title="More controls"
                 >
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
-                  {(approvalMode !== 'ask' || noiseCancelOn || (!outputsVisible && unreadOutputs.size > 0)) && (
+                  {(approvalMode !== 'ask' || noiseCancelOn || slots.length > 1 || spawnPending || (!outputsVisible && unreadOutputs.size > 0)) && (
                     <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400" />
                   )}
                 </button>
