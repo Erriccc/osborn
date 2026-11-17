@@ -98,8 +98,7 @@ export default function ActivityFeed({
       {rows.length === 0 ? (
         <p className="text-[13px] text-[var(--text-muted)] py-3 px-0.5">Nothing here yet — record a note or start a session.</p>
       ) : (
-        <div className="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory"
-          style={{ scrollbarWidth: 'thin' }}>
+        <div className="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory">
           {rows.map(r => (
             <div key={r.kind + r.id}
               className="relative snap-start shrink-0 w-[240px] sm:w-[260px] text-left rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-3.5 hover:border-[var(--accent-dim)]/50 transition-colors group">

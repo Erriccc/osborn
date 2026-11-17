@@ -1,12 +1,9 @@
 'use client'
 
-// Recents: the dashboard's conversation list, modelled on the left sidebar of
-// Claude's app (docs/design-direction.md): a quiet section label, a search when
-// the list is long, and one plain row per session (title, time), newest first.
-// Dashboard tokens only; it sits above Projects in the left column.
+// Recents: newest-first session list for the dashboard's left column, modelled on Claude's app sidebar.
 
 import { useMemo, useState } from 'react'
-import { sessionDisplayTitle, sessionActivityTime } from '@/lib/sessions'
+import { prettySessionPreview, sessionActivityTime } from '@/lib/sessions'
 import { sessionMatchesQuery, type SessionListItem } from '@/lib/session-list'
 
 const SHOWN = 8
@@ -35,18 +32,19 @@ export default function RecentsList<T extends SessionListItem>({ sessions, onOpe
           className="mb-1.5 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] px-3 py-1.5 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent-dim)]"
         />
       )}
-      <ul className="space-y-px">
+      <ul className={`space-y-px ${q || all ? 'max-h-[45vh] overflow-y-auto' : ''}`}>
         {rows.map((s) => {
           const t = sessionActivityTime(s)
+          const title = prettySessionPreview(s).text
           return (
             <li key={s.sessionId}>
               <button
                 onClick={() => onOpen(s)}
-                title={sessionDisplayTitle(s)}
+                title={title}
                 className="group flex w-full items-baseline gap-3 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--surface-2)]/60"
               >
-                <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]">{sessionDisplayTitle(s)}</span>
-                {t && <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-muted)]">{formatDate(t)}</span>}
+                <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-primary)]/85 group-hover:text-[var(--text-primary)]">{title}</span>
+                {t && <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-secondary)]">{formatDate(t)}</span>}
               </button>
             </li>
           )

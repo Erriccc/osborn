@@ -220,7 +220,7 @@ export default function Dashboard() {
     () => prepareSessions(sessions, { hideSystem: hideSystemSessions }),
     [sessions, hideSystemSessions],
   )
-  const recentSessions = useMemo(() => sortSessionsByActivity(preparedSessions.sessions), [preparedSessions])
+  const recentSessions = useMemo(() => sortSessionsByActivity(prepareSessions(sessions).sessions), [sessions])
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -1629,26 +1629,6 @@ export default function Dashboard() {
               Hidden on mobile so the phone flow stays the lean single column. */}
           {agentOnline !== false && (
             <div className="hidden lg:flex lg:flex-col gap-2.5 mb-6" style={{ animation: 'fadeSlideIn .5s ease both' }}>
-              {/* Resume a session — jumps straight into the most-recent session
-                  if one exists; otherwise falls back to a fresh conversation. */}
-              <button
-                onClick={() => {
-                  const recent = sortSessionsByActivity(sessions)[0]
-                  if (recent) startChat(recent.sessionId, recent.cwd)
-                  else startChat()
-                }}
-                className="group w-full flex items-center gap-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3.5 text-left hover:border-[var(--accent-dim)]/50 hover:bg-[var(--surface-2)]/40 transition-all"
-              >
-                <div className="w-9 h-9 rounded-lg bg-[var(--surface-2)] flex items-center justify-center shrink-0 text-[var(--text-secondary)] group-hover:text-[var(--accent)] transition-colors">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h11M9 21V3m-6 7l4-4m-4 4l4 4" /><path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-9-9" /></svg>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-[var(--text-primary)]">Resume a session</div>
-                  <div className="text-[12px] text-[var(--text-muted)] truncate">{sessions.length > 0 ? 'Pick up your most recent conversation' : 'Start a fresh conversation'}</div>
-                </div>
-                <svg className="w-5 h-5 shrink-0 text-[var(--text-muted)] group-hover:text-[var(--accent)] group-hover:translate-x-0.5 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-              </button>
-
               {/* Browse your library → /library */}
               <Link
                 href="/library"
@@ -1728,7 +1708,7 @@ export default function Dashboard() {
             </div>
           )}
           {agentOnline === false && (
-            <p className="hidden lg:block px-1 py-2 text-xs leading-relaxed text-[var(--text-muted)]">
+            <p className="hidden lg:block px-1 py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
               Your sessions and projects appear here when your machine is online.
             </p>
           )}
