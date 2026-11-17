@@ -29,6 +29,7 @@ import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
+import { RoomsSidebar } from '@/components/voice/RoomsRail'
 import Link from 'next/link'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 
@@ -1717,6 +1718,20 @@ export default function Dashboard() {
               single-column projects list that shipped before. Same markup,
               same handlers; CSS/grid decides where it lives. */}
           <aside className="order-2 lg:order-1 w-full lg:sticky lg:top-[4.5rem] lg:self-start lg:max-h-[calc(100dvh-5.5rem)] lg:overflow-y-auto lg:rounded-2xl lg:border lg:border-[var(--border-subtle)] lg:bg-[var(--surface)]/40 lg:p-3 mt-6 lg:mt-0">
+
+          {/* Rooms (desktop): the chat room's own session list, so the dashboard
+              reads like the room you land in. Projects below keep their actions. */}
+          {agentOnline !== false && (
+            <div className="hidden lg:block h-[min(24rem,45vh)] mb-4">
+              <RoomsSidebar embedded
+                sessions={sessions}
+                slots={[]} currentSessionId={null}
+                onSwitchRoom={(room) => startChat(room.id, room.cwd)}
+                onNewRoom={handleNewSession}
+                onRefresh={() => fetchSessions(true)}
+                disabled={sessionsLoading && sessions.length === 0} />
+            </div>
+          )}
 
           {/* Projects section — only shown when agent is reachable */}
           {agentOnline !== false && (
