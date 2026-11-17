@@ -15,7 +15,7 @@ import ModelBadge from './ModelBadge'
 import AgentHealthNotice from './AgentHealthNotice'
 import type { KeyHealthEntry } from '@/lib/agent-health'
 import { fastBrainLabel } from '@/lib/modelBadge'
-import { LogsDrawer, MachineChipBadge, IDE_DOT_CLASS, CODE_ICON_PATH, type MachineData, type DrawerTab } from './LogsDrawer'
+import { LogsDrawer, MachineChipBadge, IDE_DOT_CLASS, IDE_STATE_LABEL, CODE_ICON_PATH, type MachineData } from './LogsDrawer'
 import { ApprovalPicker } from './voice/ApprovalPicker'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
@@ -729,7 +729,7 @@ function VoiceRoomInner({
   const [agentsOpenReq, setAgentsOpenReq] = useState(0)
   const [skillsOpenReq, setSkillsOpenReq] = useState(0)
   // The phone menu's Machine row opens the Activity log on its Machine tab.
-  const [drawerOpenReq, setDrawerOpenReq] = useState<{ tab: DrawerTab; n: number }>({ tab: 'machine', n: 0 })
+  const [machineOpenReq, setMachineOpenReq] = useState(0)
   const [newSkillName, setNewSkillName] = useState('')
   const [newSkillContent, setNewSkillContent] = useState('')
   // Research tracking state
@@ -1714,8 +1714,9 @@ function VoiceRoomInner({
   // and (only if enabled) open the drawer. Called from handleDataMessage via a
   // ref so its subscription deps stay unchanged.
   const onAgentFileEvent = useCallback((filePath: string, fileName: string) => {
-    // One card per file: keyed by fileIdentity, so the same file named two ways
-    // (a write and an edit, or the tool event and the artifact event) shows once.
+    // One card and one unread count per file: keyed by fileIdentity, so the same
+    // file named two ways (a write and an edit, or the tool event and the artifact
+    // event) shows once.
     const key = fileIdentity(filePath)
     if (!generatedFilesRef.current.some((f) => fileIdentity(f.filePath) === key) && !announcedFilesRef.current.has(key)) {
       announcedFilesRef.current.add(key)
@@ -1724,7 +1725,7 @@ function VoiceRoomInner({
         category: 'chat', fileRef: { filePath, fileName },
       }])
     }
-    setUnreadOutputs((prev) => markUnread(prev, filePath, outputsVisibleRef.current))
+    setUnreadOutputs((prev) => markUnread(prev, key, outputsVisibleRef.current))
     if (AUTO_OPEN_OUTPUTS_ON_WRITE) {
       panel.openPanel('outputs')
       setSelectedFilePath(filePath)
@@ -4640,7 +4641,7 @@ function VoiceRoomInner({
           ideError={ideError}
           machineChipRamPct={machineRamPct}
           machineChipProcCount={machineProcCount}
-          openRequest={drawerOpenReq}
+          requestOpen={machineOpenReq}
         />
 
         {resumeChip && (
@@ -4826,11 +4827,11 @@ function VoiceRoomInner({
                 <span className="text-sm text-gray-200">Code editor</span>
                 <span className="ml-auto flex items-center gap-1.5 text-[11px] text-gray-400">
                   <span className={`w-1.5 h-1.5 rounded-full ${IDE_DOT_CLASS[ideState]}`} />
-                  {ideState === 'running' ? 'Running' : ideState === 'starting' ? 'Starting…' : 'Stopped'}
+                  {IDE_STATE_LABEL[ideState]}
                 </span>
               </button>
               {typeof machineRamPct === 'number' && typeof machineProcCount === 'number' && (
-                <button onClick={() => { setDrawerOpenReq(r => ({ tab: 'machine', n: r.n + 1 })); setShowMobileMenu(false) }}
+                <button onClick={() => { setMachineOpenReq(n => n + 1); setShowMobileMenu(false) }}
                   className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
                   <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <rect x="3" y="4" width="18" height="12" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M8 20h8M12 16v4" />

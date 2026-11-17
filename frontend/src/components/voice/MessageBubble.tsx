@@ -128,24 +128,6 @@ function StewardVerdictCard({ data }: { data: StewardVerdict }) {
   )
 }
 
-const CopyIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-  </svg>
-)
-const CheckIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="20 6 9 17 4 12" />
-  </svg>
-)
-const IgnoreIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="10" />
-    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-  </svg>
-)
-
 // Streaming indicator dots
 function StreamingDots() {
   return (
@@ -382,6 +364,21 @@ export const MessageBubble = React.memo(function MessageBubble({
     setTimeout(() => setCopyDone(false), 1500)
     onCopy?.()
   }, [displayContent, onCopy])
+  // Copy sits under both the user's bubble and Osborn's reply.
+  const copyButton = (
+    <button onClick={handleCopy} className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95" title="Copy" aria-label="Copy">
+      {copyDone ? (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+        </svg>
+      )}
+    </button>
+  )
 
   // Parse content into parts for assistant messages
   const parts = useMemo(() => {
@@ -441,11 +438,12 @@ export const MessageBubble = React.memo(function MessageBubble({
                   {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
               )}
-              <button onClick={handleCopy} className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95" title="Copy" aria-label="Copy">
-                {copyDone ? <CheckIcon /> : <CopyIcon />}
-              </button>
+              {copyButton}
               <button onClick={onIgnore} className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95" title="Ignore" aria-label="Ignore">
-                <IgnoreIcon />
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                </svg>
               </button>
             </div>
           )}
@@ -567,13 +565,7 @@ export const MessageBubble = React.memo(function MessageBubble({
             unreachable on phones). Targets padded to 44pt-equivalent spacing. */}
         {!isSystem && !message.isStreaming && (
           <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity">
-            <button
-              onClick={handleCopy}
-              className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
-              title="Copy"
-            >
-              {copyDone ? <CheckIcon /> : <CopyIcon />}
-            </button>
+            {copyButton}
             <button
               onClick={onLike}
               className={`p-1.5 -m-1 rounded transition-colors active:scale-95 ${isLiked ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-gray-200'}`}

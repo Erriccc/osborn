@@ -4,7 +4,6 @@ import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react'
 import { MessageBubble } from './MessageBubble'
 import { ApprovalCard, type PermissionRequest } from './PermissionModal'
 import type { ChatMessage, SpeakingChunk } from './shared'
-import { oneCardPerFile } from '@/lib/outputs-model'
 
 // Suggestion prompts (AI SDK style)
 const SUGGESTIONS = [
@@ -191,7 +190,7 @@ export function ChatPanel({
           lines stop running 180 chars on wide monitors (Slack/Claude width). */}
       <div className="w-full lg:max-w-3xl lg:mx-auto space-y-1">
       {(() => {
-        const shown = oneCardPerFile(messages.filter(m => m.category !== 'log'))
+        const shown = messages.filter(m => m.category !== 'log')
         return shown.map((msg, i) => {
           // Slack-style grouping: show the avatar + sender name only on the
           // FIRST message of a run from the same sender (same role + kind).

@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { clampDrawerHeight, defaultDrawerHeight, DRAWER_DEFAULT_HEIGHT } from '@/lib/drawer-height'
 import { redactSecrets } from '../lib/redactSecrets'
+import { isLandingDesktop } from '@/lib/nav-scroll-lock'
 import { MarkdownMessage } from './MarkdownMessage'
 
 // ---------------------------------------------------------------------------
@@ -126,11 +127,9 @@ interface LogsDrawerProps {
   machineChipRamPct?: number   // 0-100 integer
   machineChipProcCount?: number // total process count
   ideError?: string | null
-  /** Opens the drawer on a tab; bump `n` to ask again (the phone menu's Machine row). */
-  openRequest?: { tab: DrawerTab; n: number }
+  /** Bump to open the drawer on its Machine tab (the phone menu's Machine row). */
+  requestOpen?: number
 }
-
-export type DrawerTab = 'log' | 'running' | 'machine'
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
 // the log reads like a changelog ("Edited VoiceRoom.tsx", "Ran build").
@@ -515,8 +514,10 @@ function FlowResultText({ text }: { text: string }) {
   )
 }
 
-// Code editor status dot and icon, shared by the header chip and the Machine tab's editor row.
+// Code editor status dot, label and icon, shared by the header chip, the Machine tab's
+// editor row and the phone menu's Code editor row.
 export const IDE_DOT_CLASS = { running: 'bg-emerald-400', starting: 'bg-amber-400 animate-pulse', stopped: 'bg-gray-600' } as const
+export const IDE_STATE_LABEL = { running: 'Running', starting: 'Starting…', stopped: 'Stopped' } as const
 export const CODE_ICON_PATH = 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4'
 // Header chips stay small; the button around each is a 44px tap target on phones and touch screens.
 const HEADER_TAP_TARGET = 'max-sm:min-h-11 [@media(pointer:coarse)]:min-h-11'
@@ -565,18 +566,18 @@ export function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCo
   )
 }
 
-export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError, approvals, openRequest }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError, approvals, requestOpen }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<DrawerTab>('log')
+  const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
   useEffect(() => {
-    if (!openRequest?.n) return
-    setActiveTab(openRequest.tab)
+    if (!requestOpen) return
+    setActiveTab('machine')
     setIsOpen(true)
-  }, [openRequest?.n, openRequest?.tab])
+  }, [requestOpen])
   // Below lg the drawer is a sheet over the chat: Esc closes it like the backdrop.
   useEffect(() => {
     if (!isOpen) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && window.innerWidth < 1024) setIsOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !isLandingDesktop(window.innerWidth)) setIsOpen(false) }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [isOpen])
@@ -930,7 +931,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
               {(() => {
                 const isRunning = ideState === 'running'
                 const isStarting = ideState === 'starting'
-                const stateLabel = isRunning ? 'Running' : isStarting ? 'Starting…' : 'Stopped'
+                const stateLabel = IDE_STATE_LABEL[ideState]
                 const stateLabelColor = isRunning ? 'text-emerald-400' : isStarting ? 'text-amber-400' : 'text-gray-500'
                 return (
                   <div className="flex items-center gap-2 rounded-md border border-gray-700/50 bg-gray-800/40 px-2.5 py-2">
