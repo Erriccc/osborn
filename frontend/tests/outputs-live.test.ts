@@ -192,8 +192,9 @@ t('one in-chat card per file: aliases of the same file fold, different files sta
   eq(fileIdentity('/root/.claude/projects/-workspace/osb/s/report.md'), fileIdentity('/workspace/.claude/projects/-workspace/osb/s/report.md'), 'claude folder aliases')
   eq(fileIdentity('/workspace//out/a.md'), '/workspace/out/a.md', 'double slash')
   ok(fileIdentity('/workspace/report.md') !== fileIdentity('/workspace/.claude/projects/p/osb/s/report.md'), 'same name, different files')
-  const card = (id: string, filePath: string) => ({ id, fileRef: { filePath } })
-  const rows = [
+  type Row = { id: string; fileRef?: { filePath: string } }
+  const card = (id: string, filePath: string): Row => ({ id, fileRef: { filePath } })
+  const rows: Row[] = [
     card('a', '/root/.claude/projects/p/osb/s/report.md'),
     { id: 'text' },
     card('b', '/workspace/.claude/projects/p/osb/s/report.md'),
