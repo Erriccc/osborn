@@ -1359,7 +1359,10 @@ async function main() {
           page.off('popup', onPopup)
           const opened = popup as Page | null
           if (opened && !opened.isClosed()) {
-            watchPage(opened); touchTab(opened); await focusTab(driver, opened)
+            // The popup belongs to whoever owns the tab that opened it, so another driver can't reuse it.
+            const owner = tabOwners.get(page)
+            if (owner) tabOwners.set(opened, { owner: owner.owner, claimedAt: Date.now() })
+            watchPage(opened); await focusTab(driver, opened)
             mark(`act[${driver}]: the action opened a new tab (${allPages().indexOf(opened)}) — it is now this driver's tab: ${opened.url().slice(0, 60)}`)
           }
           let after = await snap()
