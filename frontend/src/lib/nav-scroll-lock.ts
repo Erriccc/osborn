@@ -16,13 +16,7 @@ export function isLgViewport(viewportWidth: number): boolean {
   return Number.isFinite(viewportWidth) && viewportWidth >= LG_MIN_WIDTH
 }
 
-export const LANDING_DESKTOP_MIN_WIDTH = LG_MIN_WIDTH
-export const LANDING_DESKTOP_QUERY = `(min-width: ${LANDING_DESKTOP_MIN_WIDTH}px)`
-
-/** True when the viewport shows the desktop nav row (Tailwind `lg` and up). */
-export function isLandingDesktop(viewportWidth: number): boolean {
-  return isLgViewport(viewportWidth)
-}
+export const LANDING_DESKTOP_QUERY = `(min-width: ${LG_MIN_WIDTH}px)`
 
 /** Body scroll is locked only while the mobile sheet is open below `lg`. */
 export function shouldLockBodyScroll(open: boolean, isDesktop: boolean): boolean {
