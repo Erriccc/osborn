@@ -244,20 +244,6 @@ async function main() {
   const allPages = () => tabOrder.filter((p) => !p.isClosed())
   const tabs = { pages: allPages } as unknown as BrowserContext  // the tab helpers only read pages()
   const profileFile = (key: string) => key ? join(PROFILES_DIR, `${createHash('sha256').update(key).digest('hex').slice(0, 20)}.json`) : SHARED_PROFILE
-  const contextFor = async (key: string): Promise<BrowserContext> => {
-    const have = contexts.get(key)
-    if (have) return have
-    const file = profileFile(key)
-    const c = await browser.newContext({ permissions: ['microphone'], ...(existsSync(file) ? { storageState: file } : {}) })
-    await prepareContext(c); trackContext(c, key); contexts.set(key, c)
-    mark(`profile opened${existsSync(file) ? ' (restored)' : ''}`)
-    return c
-  }
-  const saveProfiles = async () => {
-    // Cookies and localStorage (where most sites, Supabase included, keep a sign-in); IndexedDB is not kept.
-    for (const [key, c] of contexts) await c.storageState({ path: profileFile(key) }).catch(() => {})
-  }
-  setInterval(() => { void saveProfiles() }, 60000)
   // DEVICE EMULATION: /tab open with viewport "mobile" | "tablet" puts the tab in its own
   // context built from a Playwright device descriptor (touch, mobile user agent, device
   // pixel ratio, isMobile), so (hover:none) and (pointer:coarse) match. It starts with the
@@ -269,25 +255,32 @@ async function main() {
   const deviceContexts = new Map<string, BrowserContext>()
   const pageDevice = new WeakMap<Page, DeviceKind>()
   const deviceOf = (p: Page) => { const d = pageDevice.get(p); return d ? { device: d, emulates: DEVICE_PRESETS[d] } : {} }
-  const deviceContextFor = async (key: string, kind: DeviceKind): Promise<BrowserContext> => {
-    const id = `${key}\n${kind}`
-    const have = deviceContexts.get(id)
+  const contextFor = async (key: string, device?: DeviceKind): Promise<BrowserContext> => {
+    const id = device ? `${key}\n${device}` : key
+    const owned = device ? deviceContexts : contexts
+    const have = owned.get(id)
     if (have) return have
-    const state = await (await contextFor(key)).storageState().catch(() => undefined)
-    const c = await browser.newContext({ ...devices[DEVICE_PRESETS[kind]], permissions: ['microphone'], ...(state ? { storageState: state } : {}) })
-    c.on('page', (p) => {
-      pageDevice.set(p, kind)
+    const file = profileFile(key)
+    const state = device ? await (await contextFor(key)).storageState().catch(() => undefined) : existsSync(file) ? file : undefined
+    const c = await browser.newContext({ ...(device ? devices[DEVICE_PRESETS[device]] : {}), permissions: ['microphone'], ...(state ? { storageState: state } : {}) })
+    if (device) c.on('page', (p) => {
+      pageDevice.set(p, device)
       p.once('close', () => {
         if (c.pages().some((x) => x !== p && !x.isClosed())) return
         if (deviceContexts.get(id) === c) deviceContexts.delete(id)
         void c.close().catch(() => {})
-        mark(`${kind} device context closed (last tab gone)`)
+        mark(`${device} device context closed (last tab gone)`)
       })
     })
-    await prepareContext(c); trackContext(c, key); deviceContexts.set(id, c)
-    mark(`${kind} device context opened (${DEVICE_PRESETS[kind]})`)
+    await prepareContext(c); trackContext(c, key); owned.set(id, c)
+    mark(device ? `${device} device context opened (${DEVICE_PRESETS[device]})` : `profile opened${state ? ' (restored)' : ''}`)
     return c
   }
+  const saveProfiles = async () => {
+    // Cookies and localStorage (where most sites, Supabase included, keep a sign-in); IndexedDB is not kept.
+    for (const [key, c] of contexts) await c.storageState({ path: profileFile(key) }).catch(() => {})
+  }
+  setInterval(() => { void saveProfiles() }, 60000)
   let active: Page = await context.newPage()
   // DEVTOOLS SENSE per tab — console, page errors, failed network, websocket
   // lifecycle. Every task response carries the active tab's summary so the
@@ -1638,7 +1631,7 @@ async function main() {
         if (body.op === 'open' && body.url) { const bad = badUrl(body.url); if (bad) return json(res, bad.body, bad.status) }
         if (body.op === 'open' && typeof body.viewport === 'string' && !isDeviceKind(body.viewport))
           return json(res, { ok: false, code: 'bad_request', error: `viewport must be ${Object.keys(DEVICE_PRESETS).map((k) => `"${k}"`).join(' | ')} or {"width":…,"height":…}` }, 400)
-        const device = body.op === 'open' && isDeviceKind(body.viewport) ? body.viewport : undefined
+        const device: DeviceKind | undefined = body.op === 'open' && isDeviceKind(body.viewport) ? body.viewport : undefined
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
@@ -1662,11 +1655,11 @@ async function main() {
           }
           if (!reused) {
             const prev = active
-            active = await openTab(device ? await deviceContextFor(profileOf(req), device) : await contextFor(profileOf(req))); watchPage(active)
+            active = await openTab(await contextFor(profileOf(req), device)); watchPage(active)
             const nav = body.url ? await gotoChecked(active, body.url) : null
             if (nav) { await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
           }
-          if (body.viewport?.width && !pageDevice.get(active)) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
+          if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
           if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
           driverActive.set(driver, active)  // this becomes the driver's active tab
           touchTab(active)
@@ -1968,7 +1961,7 @@ async function main() {
           .slice(0, Number(process.env.OSBORN_RESTORE_MAX ?? 3)).map((x: any) => x.t))
         let restoredActive: Page | null = null
         for (const t of extra.filter((t: any) => keep.has(t))) {
-          active = await openTab(isDeviceKind(t.device) ? await deviceContextFor(t.profile || '', t.device) : await contextFor(t.profile || ''), t.url); watchPage(active)
+          active = await openTab(await contextFor(t.profile || '', isDeviceKind(t.device) ? t.device : undefined), t.url); watchPage(active)
           if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
           if (t === wasActive) restoredActive = active
         }
