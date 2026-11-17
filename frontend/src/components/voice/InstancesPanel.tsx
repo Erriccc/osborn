@@ -198,7 +198,7 @@ export function InstancesPanel({
                       title={deriveSessionTitle(s)}
                       className="w-full text-left px-2 py-1.5 rounded-md hover:bg-gray-800/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors group"
                     >
-                      <div className="text-[11px] text-gray-200 truncate group-hover:text-white">{deriveSessionTitle(s)}</div>
+                      <div className="text-[11px] text-gray-200 truncate group-hover:text-ink">{deriveSessionTitle(s)}</div>
                       <div className="text-[10px] text-gray-500">{formatTime(sessionActivityTime(s))}</div>
                     </button>
                   ))}

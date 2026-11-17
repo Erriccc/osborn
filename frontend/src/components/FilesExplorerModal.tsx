@@ -251,7 +251,7 @@ export function FilesExplorerModal({
             <svg className="w-5 h-5 text-[var(--accent)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
-            <span className="text-sm font-semibold text-white">Files Explorer</span>
+            <span className="text-sm font-semibold text-ink">Files Explorer</span>
             <span className="text-xs text-gray-500">({files.length})</span>
           </div>
           <div className="flex items-center gap-2">
@@ -271,7 +271,7 @@ export function FilesExplorerModal({
             {/* Maximize / Restore */}
             <button
               onClick={() => setIsMaximized(!isMaximized)}
-              className="p-1.5 text-gray-400 hover:text-white rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+              className="p-1.5 text-gray-400 hover:text-ink rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               title={isMaximized ? 'Restore' : 'Maximize'}
               aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
             >
@@ -288,7 +288,7 @@ export function FilesExplorerModal({
             {/* Close */}
             <button
               onClick={onClose}
-              className="p-1.5 text-gray-400 hover:text-white rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+              className="p-1.5 text-gray-400 hover:text-ink rounded transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               title="Close (Esc)"
               aria-label="Close files explorer"
             >
@@ -319,7 +319,7 @@ export function FilesExplorerModal({
                   aria-label="Filter files"
                   autoFocus
                   /* text-base (16px) so iOS Safari doesn't zoom on focus. */
-                  className="w-full pl-8 pr-3 py-1.5 text-base bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:border-[var(--accent)]/50 focus:ring-1 focus:ring-[var(--accent)]/20"
+                  className="w-full pl-8 pr-3 py-1.5 text-base bg-gray-800/60 border border-gray-700/50 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20"
                 />
               </div>
             </div>
@@ -416,7 +416,7 @@ export function FilesExplorerModal({
                     {/* Back button — mobile only */}
                     <button
                       onClick={() => setMobileView('list')}
-                      className="sm:hidden flex items-center gap-1 text-xs text-gray-400 hover:text-white shrink-0 mr-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
+                      className="sm:hidden flex items-center gap-1 text-xs text-gray-400 hover:text-ink shrink-0 mr-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
                       title="Back to files"
                       aria-label="Back to files list"
                     >
@@ -435,7 +435,7 @@ export function FilesExplorerModal({
                       return pretty ? (
                         <span className="flex flex-col min-w-0">
                           <span className="text-xs font-medium text-gray-100 truncate">{pretty}</span>
-                          <span className="text-[10px] font-mono text-[var(--accent)]/80 truncate">{selectedFile.fileName}</span>
+                          <span className="text-[10px] font-mono text-accent/80 truncate">{selectedFile.fileName}</span>
                         </span>
                       ) : (
                         <span className="text-xs font-mono text-[var(--accent)] truncate">{selectedFile.fileName}</span>
@@ -612,7 +612,7 @@ function FileListItem({
     <div
       className={`group w-full min-h-[44px] px-3 py-2.5 flex items-center gap-2 transition-colors motion-reduce:transition-none ${
         isSelected
-          ? 'bg-[var(--accent)]/15 border-l-2 border-[var(--accent)]'
+          ? 'bg-accent/15 border-l-2 border-[var(--accent)]'
           : 'hover:bg-gray-800/50 border-l-2 border-transparent'
       }`}
     >

@@ -285,7 +285,7 @@ export function ControlMenu({
           {showSwitchConfirm && (
             <div className="absolute inset-0 bg-black/80 flex items-center justify-center rounded-lg z-10">
               <div className="bg-gray-800 p-4 rounded-lg text-center">
-                <p className="text-sm text-white mb-3">Switch to this session?</p>
+                <p className="text-sm text-ink mb-3">Switch to this session?</p>
                 <p className="text-xs text-gray-400 mb-4">Osborn finishes the current step here first.</p>
                 <div className="flex gap-2 justify-center">
                   <button

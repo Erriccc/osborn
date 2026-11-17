@@ -6,7 +6,7 @@ import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
+import { SettingsSection, SettingsRow, Switch, Segmented } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
 import { AgentStore, ListState, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, type RolesData } from '@/components/AgentStore'
 import { StoreBrowse } from '@/components/StoreBrowse'
@@ -15,6 +15,8 @@ import { useSkillStore, httpSkills } from '@/lib/skill-store'
 import { agentRequest, agentError, listError, UNREACHABLE } from '@/lib/agent-read'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
+import { useThemePref } from '@/lib/use-theme'
+import type { ThemePref } from '@/lib/theme'
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
 // fall back to the uppercased code (still tells you WHERE-ish).
@@ -124,6 +126,7 @@ export default function SettingsPage() {
   // Prefs
   const [provider, setProvider] = useState<Provider>('gemini')
   const [voiceArch, setVoiceArch] = useState<VoiceArch>('pipeline')
+  const [themePref, setThemePref] = useThemePref()
   const [turbo, setTurbo] = useState(false)
   const [turboSaving, setTurboSaving] = useState(false)
 
@@ -864,29 +867,17 @@ export default function SettingsPage() {
   const VoiceSection = (
     <SettingsSection title="Voice & Audio" description="How your voice session is wired.">
       <SettingsRow label="Voice mode" sublabel="Speech-to-text → agent → text-to-speech">
-        <div className="inline-flex rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)] p-0.5">
-          {([['pipeline', 'Pipeline']] as [VoiceArch, string][]).map(([v, l]) => (
-            <button
-              key={v}
-              onClick={() => setVoiceArch(v)}
-              aria-pressed={voiceArch === v}
-              aria-label={`Voice mode: ${l}`}
-              className={`min-h-[36px] rounded-lg px-3 text-[12px] font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                voiceArch === v
-                  ? 'bg-[var(--accent)] font-semibold text-[var(--background)] shadow-sm'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-              }`}
-            >
-              {l}
-            </button>
-          ))}
-        </div>
+        <Segmented label="Voice mode" value={voiceArch} onChange={setVoiceArch} options={[['pipeline', 'Pipeline']]} />
       </SettingsRow>
     </SettingsSection>
   )
 
   const PreferencesSection = (
     <SettingsSection title="Preferences" description="Defaults applied to every conversation.">
+      <SettingsRow label="Appearance" sublabel="System follows your device's light or dark setting">
+        <Segmented<ThemePref> label="Appearance" value={themePref} onChange={setThemePref}
+          options={[['system', 'System'], ['light', 'Light'], ['dark', 'Dark']]} />
+      </SettingsRow>
       {/* Tool approval is controlled by the session-scoped "Approvals" picker in
           the chat's Activity log row (Ask me / Auto-review / Allow all) — it is
           intentionally not persisted here, so a blanket allow can never silently
@@ -1032,7 +1023,7 @@ export default function SettingsPage() {
             <input type="text" value={agentUrl}
               onChange={e => setAgentUrl(e.target.value)}
               placeholder="http://localhost:8741"
-              className="mt-2 h-11 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 font-mono text-[16px] text-[var(--text-secondary)] outline-none transition-colors placeholder:text-[var(--text-muted)]/40 focus-visible:border-[var(--accent)]/50" />
+              className="mt-2 h-11 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 font-mono text-[16px] text-[var(--text-secondary)] outline-none transition-colors placeholder:text-text-muted/40 focus-visible:border-accent/50" />
           )}
           {provisioning && (
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-[var(--surface-2)]">
@@ -1163,7 +1154,7 @@ export default function SettingsPage() {
                 <span>{m.label}</span>
                 {s.set ? (
                   <span className="flex shrink-0 items-center gap-1.5">
-                    <span className="rounded-full border border-[var(--accent-dim)]/25 bg-[var(--accent-dim)]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[var(--accent)]">
+                    <span className="rounded-full border border-accent-dim/25 bg-accent-dim/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[var(--accent)]">
                       {s.source === 'env' ? 'platform' : 'set'}
                     </span>
                     <span className="font-mono text-[11px] text-[var(--text-muted)]">{s.masked}</span>
@@ -1187,7 +1178,7 @@ export default function SettingsPage() {
                   <button
                     onClick={() => handleSaveSecret(s.key)}
                     disabled={busy || !draft.trim()}
-                    className="shrink-0 rounded-lg border border-[var(--accent-dim)]/25 bg-[var(--accent-dim)]/15 px-2.5 py-2.5 text-[12px] text-[var(--accent)] transition-colors hover:bg-[var(--accent-dim)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="shrink-0 rounded-lg border border-accent-dim/25 bg-accent-dim/15 px-2.5 py-2.5 text-[12px] text-[var(--accent)] transition-colors hover:bg-accent-dim/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {busy ? '…' : 'Save'}
                   </button>
@@ -1278,7 +1269,7 @@ export default function SettingsPage() {
     <>
       <main className="flex min-h-screen flex-col bg-[var(--background)]">
         {/* ── Header: back-to-dashboard + title ── */}
-        <header className="sticky top-0 z-30 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
+        <header className="sticky top-0 z-30 border-b border-[var(--border-subtle)] bg-background/80 backdrop-blur-md">
           <div className="mx-auto flex h-14 max-w-5xl items-center gap-3 px-4 pt-[env(safe-area-inset-top)]">
             <button
               onClick={() => {

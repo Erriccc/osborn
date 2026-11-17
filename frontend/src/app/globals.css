@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* Dark is the default theme; [data-theme="dark"] also re-applies it inside a
+   dark island on a light page. */
+:root, [data-theme="dark"] {
   --foreground: #e8e4de;
   --background: #0c0b09;
   --surface: #141310;
@@ -36,6 +38,59 @@
   --voice-speaking: #6faf8f;    /* sage — calm confirmation */
   --voice-error: #c4756b;       /* terracotta, not alarm-red */
 }
+
+/* ── Light theme (System / Light / Dark in Settings → Preferences) ──
+   src/lib/theme.ts sets data-theme on <html> before first paint. Dark is the
+   :root default above; these are the light values of the same tokens. The
+   Tailwind gray scales and colour shades flip too (tailwind.config.ts).
+   Contrast on --background: primary 15.6:1, secondary 6.6:1, muted 4.9:1,
+   accent 5.2:1 (and white on accent 5.5:1). */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --foreground: #1f1d19;
+  --background: #faf9f6;
+  --surface: #ffffff;
+  --surface-raised: #f5f3ee;
+  --surface-2: #f1eee8;
+  --border: #dcd7cc;
+  --border-subtle: #e7e3da;
+  --accent: #8a6210;
+  --accent-dim: #6f4e0b;
+  --accent-glow: #8a621022;
+  --text-primary: #1f1d19;
+  --text-secondary: #5c574e;
+  --text-muted: #6b665c;
+  --voice-idle: #a8a296;
+  --voice-listening: #9c7016;
+  --voice-thinking: #7062a8;
+  --voice-speaking: #347a59;
+  --voice-error: #b5554a;
+}
+/* A dark island inside a light page (the live browser feed): the tokens are
+   re-declared there by tailwind.config.ts; re-seat the inherited text colour. */
+[data-theme="dark"]:not(:root) { color: var(--foreground); }
+
+/* Code blocks: github-dark (MarkdownMessage) is the dark theme; GitHub light
+   colours for the light theme. */
+[data-theme="light"] .hljs { color: #24292e; background: transparent; }
+[data-theme="light"] .hljs-doctag, [data-theme="light"] .hljs-keyword, [data-theme="light"] .hljs-meta .hljs-keyword,
+[data-theme="light"] .hljs-template-tag, [data-theme="light"] .hljs-template-variable, [data-theme="light"] .hljs-type,
+[data-theme="light"] .hljs-variable.language_ { color: #d73a49; }
+[data-theme="light"] .hljs-title, [data-theme="light"] .hljs-title.class_, [data-theme="light"] .hljs-title.class_.inherited__,
+[data-theme="light"] .hljs-title.function_ { color: #6f42c1; }
+[data-theme="light"] .hljs-attr, [data-theme="light"] .hljs-attribute, [data-theme="light"] .hljs-literal,
+[data-theme="light"] .hljs-meta, [data-theme="light"] .hljs-number, [data-theme="light"] .hljs-operator,
+[data-theme="light"] .hljs-variable, [data-theme="light"] .hljs-selector-attr, [data-theme="light"] .hljs-selector-class,
+[data-theme="light"] .hljs-selector-id, [data-theme="light"] .hljs-section { color: #005cc5; }
+[data-theme="light"] .hljs-regexp, [data-theme="light"] .hljs-string, [data-theme="light"] .hljs-meta .hljs-string { color: #032f62; }
+[data-theme="light"] .hljs-built_in, [data-theme="light"] .hljs-symbol { color: #e36209; }
+[data-theme="light"] .hljs-comment, [data-theme="light"] .hljs-code, [data-theme="light"] .hljs-formula { color: #6a737d; }
+[data-theme="light"] .hljs-name, [data-theme="light"] .hljs-quote, [data-theme="light"] .hljs-selector-tag,
+[data-theme="light"] .hljs-selector-pseudo { color: #22863a; }
+[data-theme="light"] .hljs-subst, [data-theme="light"] .hljs-emphasis, [data-theme="light"] .hljs-strong { color: #24292e; }
+[data-theme="light"] .hljs-bullet { color: #735c0f; }
+[data-theme="light"] .hljs-addition { color: #22863a; background-color: #f0fff4; }
+[data-theme="light"] .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
 
 .font-display { font-family: var(--font-display); }
 
@@ -156,7 +211,7 @@ button, [role="button"], a, label, summary {
    `prose-osborn` was referenced but never defined, so react-markdown output
    rendered with raw browser defaults (unstyled tables, off-theme headings,
    and in the Library the body showed literal "##" / "**" markers). This styles
-   it to the app's dark theme — clean, scannable content like a feed card. */
+   it to the app's theme — clean, scannable content like a feed card. */
 .prose-osborn { color: var(--text-secondary); word-break: break-word; }
 .prose-osborn > :first-child { margin-top: 0; }
 .prose-osborn h1, .prose-osborn h2, .prose-osborn h3, .prose-osborn h4 {

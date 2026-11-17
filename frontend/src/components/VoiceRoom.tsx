@@ -3670,7 +3670,7 @@ function VoiceRoomInner({
                   <span className="text-xl">🔑</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="text-lg font-semibold text-white">Claude Authentication</h3>
+                  <h3 className="text-lg font-semibold text-ink">Claude Authentication</h3>
                   <p className="text-sm text-gray-400">
                     {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
                   </p>
@@ -3717,7 +3717,7 @@ function VoiceRoomInner({
                         value={claudeAuthCode}
                         onChange={(e) => setClaudeAuthCode(e.target.value)}
                         placeholder="Paste code here..."
-                        className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                        className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-ink placeholder-gray-500 focus:outline-none focus:border-amber-500"
                       />
                       <button
                         onClick={() => {
@@ -3748,7 +3748,7 @@ function VoiceRoomInner({
                       onChange={(e) => setClaudeAuthCode(e.target.value)}
                       placeholder="Paste code here..."
                       autoFocus
-                      className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                      className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-ink placeholder-gray-500 focus:outline-none focus:border-amber-500"
                     />
                     <button
                       onClick={() => {
@@ -3781,7 +3781,7 @@ function VoiceRoomInner({
                   </p>
                   <button
                     onClick={dismissAuthModal}
-                    className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
+                    className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-ink text-sm rounded-lg transition-colors"
                   >
                     Dismiss
                   </button>
@@ -3818,7 +3818,7 @@ function VoiceRoomInner({
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setEndChoice(null)}>
           <div role="dialog" aria-modal="true" aria-labelledby="end-choice-title" onClick={(e) => e.stopPropagation()}
             className="w-full sm:max-w-sm bg-gray-900 border border-gray-700 rounded-t-2xl sm:rounded-xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
-            <h3 id="end-choice-title" className="text-base font-semibold text-white">Osborn is still working</h3>
+            <h3 id="end-choice-title" className="text-base font-semibold text-ink">Osborn is still working</h3>
             <p className="mt-1 text-sm text-gray-400">Keep it working after you hang up? It stops after {endChoice.capMin} minutes at most{endChoice.phone ? " and pings your phone when it's done" : ''}. Reconnect to this chat to pick up; opening another chat stops it.</p>
             <div className="mt-4 flex flex-col gap-2">
               <button onClick={endKeepWorking} className="min-h-11 rounded-lg bg-amber-500/90 text-gray-950 text-sm font-semibold hover:bg-amber-500">Keep working in the background</button>
@@ -3837,7 +3837,7 @@ function VoiceRoomInner({
                 <span className="text-xl">🔑</span>
               </div>
               <div className="flex-1 min-w-0">
-                <h3 className="text-lg font-semibold text-white">Claude Authentication</h3>
+                <h3 className="text-lg font-semibold text-ink">Claude Authentication</h3>
                 <p className="text-sm text-gray-400">
                   {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
                 </p>
@@ -3880,7 +3880,7 @@ function VoiceRoomInner({
                       onChange={(e) => setClaudeAuthCode(e.target.value)}
                       placeholder="Paste code here..."
                       autoFocus
-                      className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                      className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-ink placeholder-gray-500 focus:outline-none focus:border-amber-500"
                     />
                     <button
                       onClick={() => {
@@ -3912,7 +3912,7 @@ function VoiceRoomInner({
                     onChange={(e) => setClaudeAuthCode(e.target.value)}
                     placeholder="Paste code here..."
                     autoFocus
-                    className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500"
+                    className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-sm text-ink placeholder-gray-500 focus:outline-none focus:border-amber-500"
                   />
                   <button
                     onClick={() => {
@@ -3972,7 +3972,7 @@ function VoiceRoomInner({
                 <span className="text-xl">📂</span>
               </div>
               <div>
-                <h3 className="text-lg font-semibold text-white">Previous Sessions</h3>
+                <h3 className="text-lg font-semibold text-ink">Previous Sessions</h3>
                 <p className="text-sm text-gray-400">Continue or start fresh</p>
               </div>
             </div>
@@ -4009,7 +4009,7 @@ function VoiceRoomInner({
                           }`}
                         >
                           <div className="flex justify-between items-start">
-                            <span className="text-sm font-medium text-white">
+                            <span className="text-sm font-medium text-ink">
                               {formatTime(sessionActivityTime(session))}
                               {group.label === 'Today' && index === 0 && <span className="ml-2 text-amber-400">(Latest)</span>}
                             </span>
@@ -4029,7 +4029,7 @@ function VoiceRoomInner({
             {/* Start Fresh button */}
             <button
               onClick={handleResumePromptStartFresh}
-              className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+              className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-ink rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
             >
               <span>🆕</span>
               Start Fresh

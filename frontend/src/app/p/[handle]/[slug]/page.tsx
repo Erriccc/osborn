@@ -115,7 +115,7 @@ export default async function PublicArticlePage({ params }: PageParams) {
       />
 
       {/* Minimal public header */}
-      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
+      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-background/80 backdrop-blur-md">
         <div className="max-w-4xl mx-auto px-5 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
             <span className="w-6 h-6 rounded-full bg-[var(--accent)] flex items-center justify-center">

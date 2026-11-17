@@ -95,7 +95,7 @@ export default async function BlogIndexPage() {
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           {GUIDES.map((g) => (
             <Link key={g.href} href={g.href}
-              className="group flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-6 hover:border-[var(--accent)]/40 hover:-translate-y-0.5 transition-all">
+              className="group flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-6 hover:border-accent/40 hover:-translate-y-0.5 transition-all">
               <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-[var(--accent)]">{g.eyebrow}</span>
               <h3 className="mt-2 font-display text-xl text-[var(--text-primary)] group-hover:text-[var(--accent)] transition-colors">{g.title}</h3>
               <p className="mt-2 text-[14px] text-[var(--text-secondary)] leading-relaxed">{g.blurb}</p>
@@ -116,7 +116,7 @@ export default async function BlogIndexPage() {
           <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {items.map((item) => (
               <Link key={item.id} href={`/p/${encodeURIComponent(item.handle || '')}/${item.slug}`}
-                className="group flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-5 hover:border-[var(--accent)]/40 hover:-translate-y-0.5 transition-all">
+                className="group flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-5 hover:border-accent/40 hover:-translate-y-0.5 transition-all">
                 <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
                   {item.type && <span className="capitalize">{item.type.replace(/_/g, ' ')}</span>}
                   {item.published_at && <><span className="opacity-40">·</span><time dateTime={item.published_at}>{fmtDate(item.published_at)}</time></>}

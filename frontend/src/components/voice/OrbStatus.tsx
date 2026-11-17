@@ -60,10 +60,10 @@ export function StatusIndicator({ state, isMuted, micBlocked, blocked, reconnect
         {label}
       </span>
       {view.mutedBadge && view.key !== 'muted' && (
-        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-[var(--voice-error)]/40 text-[var(--voice-error)]">muted</span>
+        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-voice-error/40 text-[var(--voice-error)]">muted</span>
       )}
       {view.blockedBadge && view.key !== 'blocked' && (
-        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-[var(--voice-error)]/40 text-[var(--voice-error)]">mic blocked</span>
+        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border border-voice-error/40 text-[var(--voice-error)]">mic blocked</span>
       )}
     </div>
   )

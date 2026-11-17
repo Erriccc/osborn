@@ -40,22 +40,22 @@ export default function UnifiedCreate({
         onClick={() => setOpen(v => !v)}
         aria-label="More create options"
         aria-haspopup="menu" aria-expanded={open}
-        className="min-h-[44px] px-3 rounded-r-lg -ml-px font-semibold text-[13px] transition-colors border border-[var(--accent)]/40"
+        className="min-h-[44px] px-3 rounded-r-lg -ml-px font-semibold text-[13px] transition-colors border border-accent/40"
         style={{ background: 'color-mix(in oklab, var(--accent) 14%, var(--surface))', color: 'var(--accent)' }}>
         ▾
       </button>
       {open && (
         <div role="menu" className="absolute top-full left-0 mt-2 w-56 max-w-[calc(100vw-1.5rem)] rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] shadow-2xl overflow-hidden z-50 py-1">
           <button role="menuitem" onClick={() => fire(onNewSession)}
-            className="w-full text-left px-4 min-h-[44px] flex items-center gap-3 text-[13.5px] text-[var(--text-secondary)] hover:bg-[var(--surface-2)]/50 hover:text-[var(--text-primary)] transition-colors">
+            className="w-full text-left px-4 min-h-[44px] flex items-center gap-3 text-[13.5px] text-[var(--text-secondary)] hover:bg-surface-2/50 hover:text-[var(--text-primary)] transition-colors">
             <SVG kind="session" /> New session
           </button>
           <button role="menuitem" onClick={() => fire(() => window.dispatchEvent(new CustomEvent('vn:new-note')))}
-            className="w-full text-left px-4 min-h-[44px] flex items-center gap-3 text-[13.5px] text-[var(--text-secondary)] hover:bg-[var(--surface-2)]/50 hover:text-[var(--text-primary)] transition-colors">
+            className="w-full text-left px-4 min-h-[44px] flex items-center gap-3 text-[13.5px] text-[var(--text-secondary)] hover:bg-surface-2/50 hover:text-[var(--text-primary)] transition-colors">
             <SVG kind="note" /> New note
           </button>
           <button role="menuitem" onClick={() => fire(onNewProject)}
-            className="w-full text-left px-4 min-h-[44px] flex items-center gap-3 text-[13.5px] text-[var(--text-secondary)] hover:bg-[var(--surface-2)]/50 hover:text-[var(--text-primary)] transition-colors">
+            className="w-full text-left px-4 min-h-[44px] flex items-center gap-3 text-[13.5px] text-[var(--text-secondary)] hover:bg-surface-2/50 hover:text-[var(--text-primary)] transition-colors">
             <SVG kind="project" /> New project
           </button>
         </div>

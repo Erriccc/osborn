@@ -97,7 +97,7 @@ export default function DeleteSandboxDialog({
             if (e.key === 'Enter' && confirmEnabled) onConfirm()
           }}
           placeholder="delete"
-          className="mt-4 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-raised)] px-3 py-2.5 text-[16px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)]/50 focus-visible:border-red-400/60 focus-visible:outline-none"
+          className="mt-4 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-raised)] px-3 py-2.5 text-[16px] text-[var(--text-primary)] placeholder:text-text-muted/50 focus-visible:border-red-400/60 focus-visible:outline-none"
         />
         <div className="mt-4 flex items-center justify-end gap-2">
           <button

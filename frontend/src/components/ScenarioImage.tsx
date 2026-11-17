@@ -25,7 +25,7 @@ export default function ScenarioImage({
   const [failed, setFailed] = useState(false)
 
   return (
-    <div className="relative w-full aspect-video overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)]">
+    <div data-theme="dark" className="relative w-full aspect-video overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)]">
       {/* Placeholder (cinematic gradient + voice motif) — always behind */}
       <div
         aria-hidden={!failed}
@@ -39,8 +39,8 @@ export default function ScenarioImage({
       >
         {/* Voice orb motif */}
         <span className="relative flex items-center justify-center">
-          <span className="absolute w-16 h-16 rounded-full bg-[var(--accent)]/15 animate-ping" style={{ animationDuration: '2.4s' }} />
-          <span className="w-10 h-10 rounded-full bg-[var(--accent)]/70 shadow-[0_0_40px_var(--accent)]" />
+          <span className="absolute w-16 h-16 rounded-full bg-accent/15 animate-ping" style={{ animationDuration: '2.4s' }} />
+          <span className="w-10 h-10 rounded-full bg-accent/70 shadow-[0_0_40px_var(--accent)]" />
         </span>
         <p className="mt-5 font-mono text-[10.5px] uppercase tracking-[0.16em] text-[var(--text-muted)]">
           {style === 'cabin' ? 'Cabin POV · cinematic render' : 'Scene · cinematic render'}

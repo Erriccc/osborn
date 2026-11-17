@@ -495,6 +495,7 @@ export function BrowserPanel() {
         onClick={onPictureClick}
         onKeyDown={onPictureKey}
         onWheel={onPictureWheel}
+        data-theme="dark" /* a video frame: its overlays stay dark in the light theme */
         className={`relative aspect-video w-full overflow-hidden rounded-xl border bg-black outline-none ${inControl ? 'cursor-crosshair border-emerald-600' : 'border-neutral-800'}`}>
         {watching ? (
           <>

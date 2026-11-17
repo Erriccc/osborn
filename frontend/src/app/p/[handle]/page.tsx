@@ -60,7 +60,7 @@ export default async function AuthorIndexPage({ params }: PageParams) {
 
   return (
     <main className="min-h-screen bg-[var(--background)] flex flex-col">
-      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--background)]/80 backdrop-blur-md">
+      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-background/80 backdrop-blur-md">
         <div className="max-w-4xl mx-auto px-5 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
             <span className="w-6 h-6 rounded-full bg-[var(--accent)] flex items-center justify-center">
@@ -86,7 +86,7 @@ export default async function AuthorIndexPage({ params }: PageParams) {
           <div className="mt-8 grid gap-4 sm:grid-cols-2">
             {items.map(item => (
               <Link key={item.id} href={`/p/${encodeURIComponent(handle)}/${item.slug}`}
-                className="group flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-5 hover:border-[var(--accent-dim)]/50 hover:-translate-y-0.5 transition-all">
+                className="group flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-5 hover:border-accent-dim/50 hover:-translate-y-0.5 transition-all">
                 <h2 className="font-display text-lg text-[var(--text-primary)] leading-snug line-clamp-2 group-hover:text-[var(--accent)] transition-colors">
                   {item.title || item.slug}
                 </h2>

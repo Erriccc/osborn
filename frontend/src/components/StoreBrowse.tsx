@@ -161,7 +161,7 @@ export function StoreBrowse({ request, yours, onInstallAgent, onSkillsChanged, t
     ? <span className="text-[11px] text-emerald-400">✓ Installed</span>
     : (e.kind === 'agent' && !onInstallAgent)
       ? <span className="text-[11px] text-[var(--text-muted)]">Sign in to add</span>
-      : <button className="rounded bg-[var(--accent)]/20 px-2 py-0.5 text-[11px] text-[var(--accent)] hover:bg-[var(--accent)]/30 disabled:opacity-50" disabled={busy === e.id} onClick={() => install(e)}>{busy === e.id ? 'Installing…' : 'Install'}</button>
+      : <button className="rounded bg-accent/20 px-2 py-0.5 text-[11px] text-[var(--accent)] hover:bg-accent/30 disabled:opacity-50" disabled={busy === e.id} onClick={() => install(e)}>{busy === e.id ? 'Installing…' : 'Install'}</button>
 
   const Card = ({ e, reason }: { e: CatalogEntry; reason?: string }) => {
     const s = srcOf(e.source)

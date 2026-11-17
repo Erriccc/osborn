@@ -174,7 +174,7 @@ export default function SessionBrowser({
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Osborn</h1>
+          <h1 className="text-2xl font-bold text-ink">Osborn</h1>
           <div className="flex items-center gap-2">
             <p className="text-sm text-gray-400">Voice AI Coding Assistant</p>
             {onRerunSetup && (
@@ -204,7 +204,7 @@ export default function SessionBrowser({
             onChange={(e) => { setRoomInput(e.target.value); setNeedsRoomCode(false) }}
             onKeyDown={(e) => e.key === 'Enter' && handleJoin(null)}
             placeholder="Enter room code from agent..."
-            className={`flex-1 px-3 py-2.5 bg-gray-900 border rounded-lg text-white placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm font-mono ${
+            className={`flex-1 px-3 py-2.5 bg-gray-900 border rounded-lg text-ink placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm font-mono ${
               needsRoomCode ? 'border-red-500/70' : 'border-gray-700'
             }`}
           />
@@ -240,12 +240,12 @@ export default function SessionBrowser({
             onChange={(e) => { onAgentUrlChange(e.target.value); setAgentConnected(false); setHasFetched(false) }}
             onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
             placeholder="http://localhost:8741"
-            className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm font-mono"
+            className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-ink placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm font-mono"
           />
           <button
             onClick={handleConnect}
             disabled={!agentUrl.trim() || isLoading}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 rounded-lg text-white text-sm font-medium transition-colors shrink-0"
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 rounded-lg text-ink text-sm font-medium transition-colors shrink-0"
           >
             {isLoading ? 'Loading...' : agentConnected ? 'Refresh' : 'Connect'}
           </button>
@@ -264,7 +264,7 @@ export default function SessionBrowser({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
-            <span className="text-sm font-semibold text-white">Settings</span>
+            <span className="text-sm font-semibold text-ink">Settings</span>
             {!settingsOpen && (
               <span className="text-xs text-gray-400 ml-2">{settingsSummary}</span>
             )}
@@ -375,7 +375,7 @@ export default function SessionBrowser({
               <div className="pt-2 border-t border-gray-700/50">
                 <button
                   onClick={onRerunSetup}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-700/50 hover:bg-gray-600/50 rounded-lg text-sm text-gray-300 hover:text-white transition-colors"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-700/50 hover:bg-gray-600/50 rounded-lg text-sm text-gray-300 hover:text-ink transition-colors"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -402,7 +402,7 @@ export default function SessionBrowser({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search sessions..."
-                className="w-full pl-10 pr-4 py-2.5 bg-gray-800/50 border border-gray-700/50 rounded-xl text-white placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm"
+                className="w-full pl-10 pr-4 py-2.5 bg-gray-800/50 border border-gray-700/50 rounded-xl text-ink placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm"
               />
             </div>
           )}
@@ -463,7 +463,7 @@ export default function SessionBrowser({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
               </svg>
             </div>
-            <h3 className="text-white font-medium mb-1">Ready to connect</h3>
+            <h3 className="text-ink font-medium mb-1">Ready to connect</h3>
             <p className="text-gray-400 text-sm max-w-xs">
               Enter a room code to join, or connect to your agent server to browse previous sessions
             </p>
@@ -476,7 +476,7 @@ export default function SessionBrowser({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
               </svg>
             </div>
-            <h3 className="text-white font-medium mb-1">Could not reach agent</h3>
+            <h3 className="text-ink font-medium mb-1">Could not reach agent</h3>
             <p className="text-gray-400 text-sm max-w-xs">
               Make sure the agent server is running and the URL is correct
             </p>
@@ -488,7 +488,7 @@ export default function SessionBrowser({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 01-3 3z" />
               </svg>
             </div>
-            <h3 className="text-white font-medium mb-1">
+            <h3 className="text-ink font-medium mb-1">
               {searchQuery ? 'No matching sessions' : 'No previous sessions'}
             </h3>
             <p className="text-gray-400 text-sm mb-4 max-w-xs">
@@ -515,7 +515,7 @@ export default function SessionBrowser({
                       className="w-full text-left p-4"
                     >
                       <div className="flex items-start justify-between gap-3 pr-8">
-                        <p className="text-sm font-semibold text-gray-100 group-hover:text-white transition-colors truncate flex-1">
+                        <p className="text-sm font-semibold text-gray-100 group-hover:text-ink transition-colors truncate flex-1">
                           {deriveSessionTitle(session)}
                         </p>
                         <span className="text-xs text-gray-500 shrink-0 mt-0.5">{session.messageCount} msgs</span>
@@ -548,7 +548,7 @@ export default function SessionBrowser({
           <button
             onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
             disabled={currentPage === 0}
-            className="px-3 py-1.5 text-sm text-gray-400 hover:text-white disabled:text-gray-600 disabled:cursor-not-allowed transition-colors"
+            className="px-3 py-1.5 text-sm text-gray-400 hover:text-ink disabled:text-gray-600 disabled:cursor-not-allowed transition-colors"
           >
             Prev
           </button>
@@ -558,7 +558,7 @@ export default function SessionBrowser({
           <button
             onClick={() => setCurrentPage(p => Math.min(totalPages - 1, p + 1))}
             disabled={currentPage >= totalPages - 1}
-            className="px-3 py-1.5 text-sm text-gray-400 hover:text-white disabled:text-gray-600 disabled:cursor-not-allowed transition-colors"
+            className="px-3 py-1.5 text-sm text-gray-400 hover:text-ink disabled:text-gray-600 disabled:cursor-not-allowed transition-colors"
           >
             Next
           </button>
@@ -569,7 +569,7 @@ export default function SessionBrowser({
       {shareTarget && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4" onClick={() => !shareBusy && setShareTarget(null)}>
           <div className="w-full max-w-sm bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-5" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-white mb-1">Share session</h3>
+            <h3 className="text-lg font-semibold text-ink mb-1">Share session</h3>
             <p className="text-sm text-gray-400 mb-4 line-clamp-2">{shareTarget.title}</p>
             <label className="block text-xs font-medium text-gray-400 mb-1.5">Recipient email</label>
             <input
@@ -585,7 +585,7 @@ export default function SessionBrowser({
               <p className={`mt-2 text-sm ${shareMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{shareMsg.text}</p>
             )}
             <div className="flex items-center justify-end gap-2 mt-4">
-              <button onClick={() => setShareTarget(null)} disabled={shareBusy} className="px-3 py-1.5 text-sm text-gray-400 hover:text-white disabled:opacity-50">Close</button>
+              <button onClick={() => setShareTarget(null)} disabled={shareBusy} className="px-3 py-1.5 text-sm text-gray-400 hover:text-ink disabled:opacity-50">Close</button>
               <button onClick={doShare} disabled={shareBusy || !shareEmail.trim()} className="px-4 py-1.5 text-sm bg-violet-500/20 text-violet-300 rounded-lg hover:bg-violet-500/30 disabled:opacity-50 transition-colors">{shareBusy ? 'Sharing…' : 'Share'}</button>
             </div>
             <p className="mt-3 text-[11px] text-gray-500 leading-relaxed">They get their own copy under &ldquo;Shared with me&rdquo; — it becomes an independent session on their account.</p>

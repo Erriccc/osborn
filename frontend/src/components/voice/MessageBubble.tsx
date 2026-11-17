@@ -310,7 +310,7 @@ function MessageContent({ content }: { content: string }) {
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm text-gray-200 truncate group-hover:text-white transition-colors">{p.name || 'File'}</p>
+                <p className="text-sm text-gray-200 truncate group-hover:text-ink transition-colors">{p.name || 'File'}</p>
                 <p className="text-[10px] text-gray-500">Click to open</p>
               </div>
               <svg className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

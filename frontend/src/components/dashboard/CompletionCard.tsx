@@ -63,7 +63,7 @@ export default function CompletionCard({
   const resume = () => { if (item.sessionId && onResume) onResume(item.sessionId, item.cwd) }
 
   return (
-    <article className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-5 hover:border-[var(--accent-dim)]/40 transition-colors">
+    <article className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-5 hover:border-accent-dim/40 transition-colors">
       <header className="flex items-center gap-2 mb-1.5">
         <span className="text-[10.5px] font-medium px-2 py-0.5 rounded-full shrink-0"
           style={{

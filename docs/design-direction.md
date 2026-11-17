@@ -19,6 +19,8 @@ c8dc09f2 (two subagent reports: Claude UI anatomy + example.com tokens/icons/typ
   emoji glyphs in product chrome (agent cards done; sweep the rest).
 - **Palette**: keep the existing warm near-black (`#0c0b09`) + amber
   (`#d4a853`) tokens — already on-direction. One accent, used sparingly.
+  Light theme: warm paper (`#faf9f6`) + deeper amber (`#8a6210`); System /
+  Light / Dark in Settings → Preferences (`frontend/src/lib/theme.ts`).
 - **Machine presence**: the UI always says WHERE the machine runs
   ("Cloud · Chicago" badge, 📍 in machine card — /health `region`, 0.9.100).
 

@@ -162,7 +162,7 @@ export function ChatPanel({
           </div>
 
           {/* Welcome text */}
-          <h2 className="text-xl font-semibold text-white mb-2">
+          <h2 className="text-xl font-semibold text-ink mb-2">
             Hi! I'm Osborn
           </h2>
           <p className="text-gray-400 text-sm mb-6 max-w-xs">
@@ -178,7 +178,7 @@ export function ChatPanel({
                 className="flex items-center gap-2 p-3 bg-gray-800/50 hover:bg-gray-700/50 border border-gray-700/50 hover:border-amber-500/30 rounded-xl transition-all text-left group"
               >
                 <span className="text-lg">{suggestion.icon}</span>
-                <span className="text-xs text-gray-300 group-hover:text-white transition-colors line-clamp-2">
+                <span className="text-xs text-gray-300 group-hover:text-ink transition-colors line-clamp-2">
                   {suggestion.text}
                 </span>
               </button>

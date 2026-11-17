@@ -117,7 +117,7 @@ export function ApprovalCard({
           </svg>
         </div>
         <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-white">{permission.autoApproved ? 'Auto-approved' : 'Permission requested'}</h3>
+          <h3 className="text-sm font-semibold text-ink">{permission.autoApproved ? 'Auto-approved' : 'Permission requested'}</h3>
           <div className="flex items-center gap-2 mt-0.5">
             <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 text-xs font-mono rounded">
               {permission.toolName}

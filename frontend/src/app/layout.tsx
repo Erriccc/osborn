@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from 'next'
 import localFont from 'next/font/local'
 import './globals.css'
+import { THEME_INIT_SCRIPT, THEME_COLOR } from '@/lib/theme'
+import { ThemeSync } from '@/lib/use-theme'
 
 // "Warm Oracle" type system (2026-08 redesign): Fraunces — a wonky old-style
 // variable serif — is the VOICE (display, greetings, assistant identity);
@@ -38,7 +40,11 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
-  themeColor: '#0c0b09',
+  // Follows the system until the inline theme script applies the saved choice.
+  themeColor: [
+    { media: '(prefers-color-scheme: dark)', color: THEME_COLOR.dark },
+    { media: '(prefers-color-scheme: light)', color: THEME_COLOR.light },
+  ],
 }
 
 export const metadata: Metadata = {
@@ -78,8 +84,16 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className={`${display.variable} ${sans.variable} ${mono.variable}`}>
-      <body>{children}</body>
+    // data-theme is set before first paint by the inline script (no flash);
+    // suppressHydrationWarning because the server cannot know it.
+    <html lang="en" suppressHydrationWarning className={`${display.variable} ${sans.variable} ${mono.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
+      <body>
+        <ThemeSync />
+        {children}
+      </body>
     </html>
   )
 }

@@ -88,7 +88,7 @@ function ApiKeyInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          className={`w-full px-3 py-2.5 bg-gray-900 border rounded-lg text-white placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm font-mono pr-10 ${
+          className={`w-full px-3 py-2.5 bg-gray-900 border rounded-lg text-ink placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm font-mono pr-10 ${
             error ? 'border-red-500/70' : 'border-gray-700'
           }`}
         />
@@ -169,7 +169,7 @@ function StepCard({
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold text-white mb-1">{title}</h2>
+        <h2 className="text-xl font-bold text-ink mb-1">{title}</h2>
         <p className="text-sm text-gray-400">{description}</p>
       </div>
 
@@ -180,7 +180,7 @@ function StepCard({
           {showBack && onBack && (
             <button
               onClick={onBack}
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors"
+              className="px-4 py-2 text-sm text-gray-400 hover:text-ink transition-colors"
             >
               Back
             </button>
@@ -244,7 +244,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
             </svg>
           </div>
           <div>
-            <h1 className="text-3xl font-bold text-white mb-2">Welcome to Osborn</h1>
+            <h1 className="text-3xl font-bold text-ink mb-2">Welcome to Osborn</h1>
             <p className="text-gray-400 max-w-sm mx-auto">
               Let&apos;s set up your environment. You&apos;ll need API keys for LiveKit, Anthropic, and a voice provider.
             </p>
@@ -469,7 +469,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
               onClick={() => setEnvTab('agent')}
               className={`flex-1 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                 envTab === 'agent'
-                  ? 'bg-gray-700 text-white'
+                  ? 'bg-gray-700 text-ink'
                   : 'text-gray-400 hover:text-gray-200'
               }`}
             >
@@ -479,7 +479,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
               onClick={() => setEnvTab('frontend')}
               className={`flex-1 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                 envTab === 'frontend'
-                  ? 'bg-gray-700 text-white'
+                  ? 'bg-gray-700 text-ink'
                   : 'text-gray-400 hover:text-gray-200'
               }`}
             >
@@ -532,12 +532,12 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
                 value={agentUrl}
                 onChange={(e) => { setAgentUrl(e.target.value); setHealthStatus(null) }}
                 placeholder="http://localhost:8741"
-                className="flex-1 px-3 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm font-mono"
+                className="flex-1 px-3 py-2.5 bg-gray-900 border border-gray-700 rounded-lg text-ink placeholder-gray-500 focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 focus:outline-none transition-all text-sm font-mono"
               />
               <button
                 onClick={handleCheck}
                 disabled={checking || !agentUrl.trim()}
-                className="px-4 py-2.5 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 rounded-lg text-white text-sm font-medium transition-colors shrink-0"
+                className="px-4 py-2.5 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 rounded-lg text-ink text-sm font-medium transition-colors shrink-0"
               >
                 {checking ? (
                   <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
