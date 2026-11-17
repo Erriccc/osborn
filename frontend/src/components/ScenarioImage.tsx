@@ -25,7 +25,7 @@ export default function ScenarioImage({
   const [failed, setFailed] = useState(false)
 
   return (
-    <div className="relative w-full aspect-video overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)]">
+    <div data-theme="dark" className="relative w-full aspect-video overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)]">
       {/* Placeholder (cinematic gradient + voice motif) — always behind */}
       <div
         aria-hidden={!failed}
