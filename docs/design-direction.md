@@ -65,9 +65,11 @@ tier; viewport width decides its HOME, never its existence:
 |---|---|---|---|
 | 1 · State | voice orb + label, clock | header, always | header |
 | 2 · Critical action | **Disconnect** (stops billing) | header, `shrink-0` — never loses the width fight | header |
-| 3 · Frequent | Agents, Skills, mobile menu | header (icon+badge) | header: icon+badge below `lg` (one row on an iPad), icon+label from `lg` |
-| 4 · Occasional | auto-approve, mute, meeting, files, copy | **collapse into mobile menu** (with state badges, e.g. ON/OFF) | header |
+| 3 · Frequent | Agents, Skills, mobile menu | header (icon+badge) | header: icon+badge below a 1024px chat column (`pane-xl`; one row on an iPad), icon+label from it |
+| 4 · Occasional | auto-approve, mute, meeting, files, copy | **collapse into mobile menu** (with state badges, e.g. ON/OFF) | header; below a 512px chat column (`pane-sm`, Rooms and Outputs open) meeting and background agents move into More |
 | 5 · Identity | settings + profile | ONE control: avatar opens settings sheet | same |
+
+Desktop widths here are the chat column's, not the window's (`lib/pane-size.ts`): the Rooms rail and the Outputs panel narrow it.
 
 Grounding (research): iOS HIG 44pt touch targets + ≤5 top-level actions;
 progressive disclosure ("priority+overflow" nav pattern — visible = state +

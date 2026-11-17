@@ -60,7 +60,7 @@ import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
 import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
-// Folder icon: the workspace chip, its More-menu row below lg, and Files Explorer.
+// Folder icon: the workspace chip, its More-menu row below pane-xl, and Files Explorer.
 const FOLDER_ICON_PATH = 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'
 // Meeting (camera) and Background agents (two circles): header buttons, their More-menu rows, the phone sheet.
 const MEETING_ICON_PATH = 'M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z'
@@ -4145,9 +4145,9 @@ function VoiceRoomInner({
             </div>
             <div className="order-3 basis-full max-sm:order-2 max-sm:basis-0 max-sm:flex-1 pane-lg:order-2 pane-lg:basis-0 pane-lg:flex-1 flex flex-wrap items-center gap-1 sm:gap-2 pane-md:gap-3 min-w-0">
 
-            {/* Project/workspace chip — which repo this session is attached to. From lg
-                up; below that it is the first row of the More menu, so the header stays
-                one row on a tablet (tier rule: collapse, never wrap). */}
+            {/* Project/workspace chip — which repo this session is attached to. From a
+                pane-xl column up; below that it is the first row of the More menu, so the
+                header stays one row on a tablet (tier rule: collapse, never wrap). */}
             {projectName && (
               <span title={sessionCwd || projectName}
                 className="hidden pane-xl:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">

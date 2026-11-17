@@ -117,7 +117,7 @@ const config: Config = {
       })
     }),
     plugin(({ addVariant }) => {
-      // pane-sm/md/lg: min-width of the chat column (lib/pane-size.ts), not the window.
+      // pane-sm/md/lg/xl: min-width of the chat column (lib/pane-size.ts), not the window.
       for (const k of Object.keys(PANE_BREAKPOINTS)) addVariant(`pane-${k}`, `[data-pane~="${k}"] &`)
     }),
   ],
