@@ -26,10 +26,9 @@ c8dc09f2 (two subagent reports: Claude UI anatomy + example.com tokens/icons/typ
 1. Voice state is the hero; chrome recedes during conversation.
 2. Serif = the voice speaking; sans = the interface; mono = the machine.
 3. Dashboard is a launcher (greeting → talk → recent context), not an admin panel.
-4. Mobile-first, verified: every change captured at iPhone 12 (390×844), iPad
-   (768×1024), iPad landscape (1024×768), desktop (1440) before it counts as
-   done. Rig: /tmp/responsive-audit.mjs pattern (headless Chrome +
-   osborn-tester storageState, CDP shots).
+4. Mobile-first, verified: the review loop and required widths are in
+   CLAUDE.md "UI changes (required)"; a layout change is also captured at iPad
+   (768×1024) and iPad landscape (1024×768).
 5. Motion is state, not decoration: staggered reveals on lists, breathing on
    idle, shimmer on thinking. One well-orchestrated moment beats many
    micro-effects.

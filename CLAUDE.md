@@ -286,6 +286,15 @@ MCP servers extend Claude with external tools (GitHub, YouTube, etc.). Three tra
 
 Each steward and reviewer run is a FRESH agent on the whole range `origin/main...HEAD` (never a resumed agent told to check only the newest commit; that anchors it on its earlier verdicts). Before opening a pull request, run the `steward` agent (`.claude/agents/steward.md`, the same rules as Osborn's steward in `agent/src/prompts/steward.md`) on `origin/main...HEAD`. It refactors toward reuse and returns CLEAN, REFACTORED or BLOCK with the Net-new and Removed lists that go into the PR description; on CLEAN it records `steward-reviewed` for the commit. Then run the `pre-pr-reviewer` agent (`.claude/agents/pre-pr-reviewer.md`) on `origin/main...HEAD`. It hunts regressions, ownership problems and reinvented or duplicated logic, and lists what to cut. Fix or answer every confirmed finding, then record the review for the exact commit: `git rev-parse HEAD > "$(git rev-parse --git-dir)/pre-pr-reviewed"`. `.claude/hooks/pre-pr-gate.py` refuses to open a PR until that marker matches the PR's head commit, and refuses any `git push` (so any update to an open PR) until the steward's `steward-reviewed` marker matches the commit being pushed. Keep PRs surgical: reuse existing helpers, no history narration in comments, short descriptions.
 
+## UI changes (required)
+
+A UI change is not done until it has been looked at, judged and fixed, on the real page.
+
+- **Name the reference first.** Before writing UI, state what it is modelled on: an existing page of this app (its layout, spacing and tokens; the direction is in `docs/design-direction.md`) or an established pattern (for example a full-height conversation sidebar). Never drop a component into a page as-is.
+- **Use the host page's design tokens** (`var(--surface)`, `var(--accent)`, `var(--border-subtle)` …). A component built in another palette (the chat's `gray-900`/navy) is restyled to the page it lands on, never shown in its own colours.
+- **Render before the PR.** Screenshot the change at desktop (1280) and mobile (390) through the Browser Screen Recorder session-engine (see that section above) and critique it against the reference: alignment, spacing, hierarchy, theme, empty and loading states, duplication with what is already on the page. Fix what the critique finds, then put the screenshots in the PR. If the change cannot be reached before merge, say so in the PR and do this review straight after deploy.
+- **Review again after deploy**, with fresh screenshots at both widths. Anything that looks wrong is fixed in a follow-up PR in the same loop. It is never reported as working, and never handed back as a question about taste.
+
 ## Critical Patterns
 
 Bug fixes and gotchas (persistent session lifecycle, voice queue timing, Gemini quirks, research batching, Smithery proxy, etc.) live in **[docs/critical-patterns.md](docs/critical-patterns.md)**. Read that file when debugging anything non-obvious. Representative first entry:
