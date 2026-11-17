@@ -17,6 +17,7 @@ import LiveClock from '@/components/LiveClock'
 import NotesCard from '@/components/NotesCard'
 import UnifiedCreate from '@/components/dashboard/UnifiedCreate'
 import ActivityFeed from '@/components/dashboard/ActivityFeed'
+import RecentsList from '@/components/dashboard/RecentsList'
 import FeedStream from '@/components/dashboard/FeedStream'
 import { ReportBugModal } from '@/components/ReportBugModal'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
@@ -29,7 +30,6 @@ import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
-import { RoomsSidebar } from '@/components/voice/RoomsRail'
 import Link from 'next/link'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 
@@ -220,6 +220,7 @@ export default function Dashboard() {
     () => prepareSessions(sessions, { hideSystem: hideSystemSessions }),
     [sessions, hideSystemSessions],
   )
+  const recentSessions = useMemo(() => sortSessionsByActivity(preparedSessions.sessions), [preparedSessions])
   const [agentUrl, setAgentUrl] = useState('http://localhost:8741')
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -1719,18 +1720,17 @@ export default function Dashboard() {
               same handlers; CSS/grid decides where it lives. */}
           <aside className="order-2 lg:order-1 w-full lg:sticky lg:top-[4.5rem] lg:self-start lg:max-h-[calc(100dvh-5.5rem)] lg:overflow-y-auto lg:rounded-2xl lg:border lg:border-[var(--border-subtle)] lg:bg-[var(--surface)]/40 lg:p-3 mt-6 lg:mt-0">
 
-          {/* Rooms (desktop): the chat room's own session list, so the dashboard
-              reads like the room you land in. Projects below keep their actions. */}
-          {agentOnline !== false && (
-            <div className="hidden lg:block h-[min(24rem,45vh)] mb-4">
-              <RoomsSidebar embedded
-                sessions={sessions}
-                slots={[]} currentSessionId={null}
-                onSwitchRoom={(room) => startChat(room.id, room.cwd)}
-                onNewRoom={handleNewSession}
-                onRefresh={() => fetchSessions(true)}
-                disabled={sessionsLoading && sessions.length === 0} />
+          {/* Recents (desktop): newest sessions first; on phones the main column's
+              Continue card and Recent activity already lead with them. */}
+          {agentOnline !== false && recentSessions.length > 0 && (
+            <div className="hidden lg:block">
+              <RecentsList sessions={recentSessions} onOpen={(s) => startChat(s.sessionId, s.cwd)} formatDate={formatDate} />
             </div>
+          )}
+          {agentOnline === false && (
+            <p className="hidden lg:block px-1 py-2 text-xs leading-relaxed text-[var(--text-muted)]">
+              Your machine is asleep. Your sessions and projects appear here when it wakes; starting or resuming a session wakes it.
+            </p>
           )}
 
           {/* Projects section — only shown when agent is reachable */}
