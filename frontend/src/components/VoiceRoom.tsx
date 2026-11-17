@@ -4341,7 +4341,7 @@ function VoiceRoomInner({
                 <button
                   onClick={() => showInstancesPanel ? setShowInstancesPanel(false) : openInstancesPanel()}
                   disabled={!agentConnected}
-                  className={`hidden pane-sm:block p-2 rounded-lg transition-all ${
+                  className={`hidden sm:pane-sm:block p-2 rounded-lg transition-all ${
                     !agentConnected
                       ? 'bg-gray-800/30 text-gray-600 cursor-not-allowed'
                       : showInstancesPanel
