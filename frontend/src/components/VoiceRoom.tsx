@@ -59,6 +59,9 @@ import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
 import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
+// Folder icon: the workspace chip, its More-menu row below lg, and Files Explorer.
+const FOLDER_ICON_PATH = 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'
+
 // ── Audio settings panel (Phase C) ───────────────────────────────────────
 // The audit (C / P0-2) wanted an in-app audio panel instead of relying on the
 // browser's mic dialog; this was the genuinely-missing piece. Mic + speaker
@@ -4131,7 +4134,7 @@ function VoiceRoomInner({
             {projectName && (
               <span title={sessionCwd || projectName}
                 className="hidden lg:inline-flex items-center gap-1 max-w-[150px] shrink-0 px-2 py-0.5 rounded-full bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400">
-                <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
                 <span className="truncate">{projectName}</span>
               </span>
             )}
@@ -4392,7 +4395,7 @@ function VoiceRoomInner({
                     <div ref={moreMenuRef} role="menu" className="absolute top-11 right-0 z-50 w-60 rounded-xl bg-gray-900 border border-gray-700/70 shadow-2xl overflow-hidden py-1">
                       {projectName && (
                         <div className="lg:hidden flex items-center gap-2.5 px-3 py-2.5 text-[13px] text-gray-400 border-b border-gray-800" title={sessionCwd || projectName}>
-                          <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                          <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
                           <span className="truncate">{projectName}</span>
                         </div>
                       )}
@@ -4401,7 +4404,7 @@ function VoiceRoomInner({
                           FilesExplorerModal. */}
                       <button role="menuitem" onClick={() => { setShowHeaderMore(false); setIsFilesModalOpen(true) }}
                         className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-gray-300 hover:bg-gray-800/70 transition-colors">
-                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                        <svg className="w-4 h-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
                         <span className="flex-1">Files Explorer</span>
                         {/* Issue #113: the entry itself carries the generated-files
                             count (matching the explorer window's "Files Explorer (N)"),
