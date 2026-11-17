@@ -775,7 +775,10 @@ async function main() {
   // command still running past LOCK_MAX_MS never acts on the next driver's tab.
   const focusDriverTab = async (driver: string): Promise<void> => {
     driverSeen.set(driver, Date.now())
-    const tab = driverTab(driver) || allPages()[0]
+    await focusTab(driver, driverTab(driver) || allPages()[0])
+  }
+  // Make `tab` the driver's tab and the one on screen (front + live stream).
+  const focusTab = async (driver: string, tab: Page): Promise<void> => {
     driverActive.set(driver, tab)
     active = tab
     await tab.bringToFront().catch(() => {})
@@ -1356,9 +1359,7 @@ async function main() {
           page.off('popup', onPopup)
           const opened = popup as Page | null
           if (opened && !opened.isClosed()) {
-            watchPage(opened); touchTab(opened)
-            driverActive.set(driver, opened); active = opened
-            await opened.bringToFront().catch(() => {}); await live?.retarget(opened).catch(() => {})
+            watchPage(opened); touchTab(opened); await focusTab(driver, opened)
             mark(`act[${driver}]: the action opened a new tab (${allPages().indexOf(opened)}) — it is now this driver's tab: ${opened.url().slice(0, 60)}`)
           }
           let after = await snap()
@@ -1696,7 +1697,7 @@ async function main() {
         else if (body.op === 'switch') {
           const so = ownerOf(allPages()[body.i])
           if (so && so !== body.owner) return json(res, { error: `tab ${body.i} is owned by "${so}" — you are "${body.owner}"` }, 409)
-          active = await switchTab(tabs, body.i); driverActive.set(driver, active); touchTab(active); await live?.retarget(active).catch(() => {}); mark(`tab switch: ${body.i}`)
+          await focusTab(driver, allPages()[body.i]); touchTab(active); mark(`tab switch: ${body.i}`)
         }
         else if (body.op === 'close') {
           const target = allPages()[body.i]
@@ -1728,8 +1729,7 @@ async function main() {
           if (prev === body.owner) return json(res, { ok: false, code: 'bad_request', error: `tab ${body.i} is already yours` }, 400)
           takeovers.set(target, { by: String(body.owner), prevOwner: prev, since: Date.now() })
           tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() })
-          active = target; driverActive.set(driver, target); touchTab(target)
-          await target.bringToFront().catch(() => {}); await live?.retarget(target).catch(() => {})
+          touchTab(target); await focusTab(driver, target)
           mark(`tab TAKEOVER: ${body.i} by ${body.owner}${prev ? ` (from ${prev})` : ''}`)
           notify('takeover', { i: body.i, by: body.owner, prevOwner: prev })
         }
