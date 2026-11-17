@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 
 // ── Shared presentational primitives for the Settings page ──
 // These are layout-only; all state/handlers live in the page. Styling matches
-// the shipped dark/amber system (--background/--surface/--surface-2/
+// the theme tokens (--background/--surface/--surface-2/
 // --border-subtle/--accent/--text-*, font-display serif headings).
 
 // A titled section with a serif heading + optional description. Content is a
@@ -98,5 +98,40 @@ export function Switch({
         }`}
       />
     </button>
+  )
+}
+
+// Single-choice pill group (Voice mode, Appearance). A radiogroup labelled by
+// `label`; each option is a radio.
+export function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: T
+  options: [T, string][]
+  onChange: (v: T) => void
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)] p-0.5">
+      {options.map(([v, l]) => (
+        <button
+          key={v}
+          type="button"
+          role="radio"
+          aria-checked={value === v}
+          onClick={() => onChange(v)}
+          className={`min-h-[36px] rounded-lg px-3 text-[12px] font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+            value === v
+              ? 'bg-[var(--accent)] font-semibold text-[var(--background)] shadow-sm'
+              : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+          }`}
+        >
+          {l}
+        </button>
+      ))}
+    </div>
   )
 }

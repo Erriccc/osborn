@@ -6,7 +6,7 @@ import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { SettingsSection, SettingsRow, Switch } from '@/components/settings/ui'
+import { SettingsSection, SettingsRow, Switch, Segmented } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
 import { AgentStore, ListState, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, type RolesData } from '@/components/AgentStore'
 import { StoreBrowse } from '@/components/StoreBrowse'
@@ -867,23 +867,7 @@ export default function SettingsPage() {
   const VoiceSection = (
     <SettingsSection title="Voice & Audio" description="How your voice session is wired.">
       <SettingsRow label="Voice mode" sublabel="Speech-to-text → agent → text-to-speech">
-        <div className="inline-flex rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)] p-0.5">
-          {([['pipeline', 'Pipeline']] as [VoiceArch, string][]).map(([v, l]) => (
-            <button
-              key={v}
-              onClick={() => setVoiceArch(v)}
-              aria-pressed={voiceArch === v}
-              aria-label={`Voice mode: ${l}`}
-              className={`min-h-[36px] rounded-lg px-3 text-[12px] font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                voiceArch === v
-                  ? 'bg-[var(--accent)] font-semibold text-[var(--background)] shadow-sm'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-              }`}
-            >
-              {l}
-            </button>
-          ))}
-        </div>
+        <Segmented label="Voice mode" value={voiceArch} onChange={setVoiceArch} options={[['pipeline', 'Pipeline']]} />
       </SettingsRow>
     </SettingsSection>
   )
@@ -891,23 +875,8 @@ export default function SettingsPage() {
   const PreferencesSection = (
     <SettingsSection title="Preferences" description="Defaults applied to every conversation.">
       <SettingsRow label="Appearance" sublabel="System follows your device's light or dark setting">
-        <div role="radiogroup" aria-label="Appearance" className="inline-flex rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-2)] p-0.5">
-          {([['system', 'System'], ['light', 'Light'], ['dark', 'Dark']] as [ThemePref, string][]).map(([v, l]) => (
-            <button
-              key={v}
-              role="radio"
-              onClick={() => setThemePref(v)}
-              aria-checked={themePref === v}
-              className={`min-h-[36px] rounded-lg px-3 text-[12px] font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                themePref === v
-                  ? 'bg-[var(--accent)] font-semibold text-[var(--background)] shadow-sm'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-              }`}
-            >
-              {l}
-            </button>
-          ))}
-        </div>
+        <Segmented<ThemePref> label="Appearance" value={themePref} onChange={setThemePref}
+          options={[['system', 'System'], ['light', 'Light'], ['dark', 'Dark']]} />
       </SettingsRow>
       {/* Tool approval is controlled by the session-scoped "Approvals" picker in
           the chat's Activity log row (Ask me / Auto-review / Allow all) — it is

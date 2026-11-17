@@ -1,7 +1,7 @@
 // Run: cd frontend && npx --yes tsx tests/theme.test.ts
-// The theme choice resolves the same way in the pre-paint script and in React,
-// the meeting canvas is always dark, and the inline script applies a stored choice.
-import { parseThemePref, resolveTheme, THEME_INIT_SCRIPT, THEME_STORAGE_KEY, THEME_COLOR } from '../src/lib/theme'
+// The pre-paint script resolves the theme choice: the device by default, a
+// stored choice over it, and the meeting canvas always dark.
+import { parseThemePref, THEME_INIT_SCRIPT, THEME_STORAGE_KEY, THEME_COLOR } from '../src/lib/theme'
 
 const results: [string, boolean, string?][] = []
 function t(name: string, fn: () => void) {
@@ -14,20 +14,6 @@ t('unknown stored values fall back to system', () => {
   eq(parseThemePref('light'), 'light', 'light')
   eq(parseThemePref('dark'), 'dark', 'dark')
 })
-t('system follows the device', () => {
-  eq(resolveTheme('system', true), 'light', 'system+light')
-  eq(resolveTheme('system', false), 'dark', 'system+dark')
-})
-t('an explicit choice beats the device', () => {
-  eq(resolveTheme('light', false), 'light', 'light on dark device')
-  eq(resolveTheme('dark', true), 'dark', 'dark on light device')
-})
-t('the meeting canvas (a camera feed) is always dark', () => {
-  eq(resolveTheme('light', true, '/meeting-canvas'), 'dark', 'canvas')
-  eq(resolveTheme('light', true, '/meeting-canvas/x'), 'dark', 'canvas child')
-  eq(resolveTheme('light', true, '/meeting-canvasx'), 'light', 'prefix only')
-})
-
 // Execute the inline script against a minimal DOM.
 function runScript(stored: string | null, prefersLight: boolean, pathname = '/dashboard') {
   const attrs: Record<string, string> = {}
@@ -45,12 +31,11 @@ function runScript(stored: string | null, prefersLight: boolean, pathname = '/da
   }
   g.window = g
   new Function('window', 'document', 'localStorage', 'location', THEME_INIT_SCRIPT)(g, g.document, g.localStorage, g.location)
-  return { theme: attrs['data-theme'], pref: attrs['data-theme-pref'], meta: meta.content }
+  return { theme: attrs['data-theme'], meta: meta.content }
 }
 t('script: no stored choice follows the device', () => {
   eq(runScript(null, true).theme, 'light', 'light device')
   eq(runScript(null, false).theme, 'dark', 'dark device')
-  eq(runScript(null, true).pref, 'system', 'pref')
 })
 t('script: a stored choice wins and sets the browser colour', () => {
   const r = runScript('light', false)
@@ -58,7 +43,11 @@ t('script: a stored choice wins and sets the browser colour', () => {
   eq(runScript('dark', true).theme, 'dark', 'dark')
 })
 t('script: garbage in storage is system', () => eq(runScript('purple', true).theme, 'light', 'garbage'))
-t('script: meeting canvas stays dark', () => eq(runScript('light', true, '/meeting-canvas').theme, 'dark', 'canvas'))
+t('script: the meeting canvas (a camera feed) is always dark', () => {
+  eq(runScript('light', true, '/meeting-canvas').theme, 'dark', 'canvas')
+  eq(runScript('light', true, '/meeting-canvas/x').theme, 'dark', 'canvas child')
+  eq(runScript('light', true, '/meeting-canvasx').theme, 'light', 'prefix only')
+})
 
 const failed = results.filter(r => !r[1])
 for (const [n, ok, m] of results) console.log(`${ok ? 'PASS' : 'FAIL'} ${n}${m ? ' — ' + m : ''}`)

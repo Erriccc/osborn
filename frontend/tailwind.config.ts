@@ -1,6 +1,7 @@
 import type { Config } from 'tailwindcss'
 import plugin from 'tailwindcss/plugin'
 import defaultColors from 'tailwindcss/colors'
+import { THEME_COLOR } from './src/lib/theme'
 
 // Light / dark theme (see src/lib/theme.ts). The chat is written with Tailwind's
 // gray scales and colour shades tuned for a dark page. Rather than edit those
@@ -23,7 +24,7 @@ type Role = 'bg' | 'tx' | 'bd'
 const LIGHT_GRAY: Record<Role, Record<Shade, string | null>> = {
   // Surfaces: the dark ramp mirrored — 950 page, 900 panel, 800 card/input, 700 hover.
   bg: { 50: '#1c1a16', 100: '#2b2822', 200: '#3a362f', 300: '#57524a', 400: '#8a857a', 500: '#a8a296',
-    600: '#cfc9bd', 700: '#e2ded5', 800: '#ece9e2', 900: '#f4f2ed', 950: '#faf9f6' },
+    600: '#cfc9bd', 700: '#e2ded5', 800: '#ece9e2', 900: '#f4f2ed', 950: THEME_COLOR.light },
   // Text: 50–300 primary ink, 400 secondary, 500 muted (AA on every surface above), 600+ disabled.
   tx: { 50: '#1c1a16', 100: '#1f1d19', 200: '#26231e', 300: '#37332c', 400: '#57524a', 500: '#6b665c',
     600: '#857f74', 700: '#a29c90', 800: null, 900: null, 950: null },

@@ -2,7 +2,7 @@
 // React hooks over src/lib/theme.ts (kept apart so the root layout, a server
 // component, can import the theme script without pulling in hooks).
 import { useEffect, useState } from 'react'
-import { THEME_EVENT, readResolvedTheme, readThemePref, setThemePref, type ResolvedTheme, type ThemePref } from './theme'
+import { readResolvedTheme, readThemePref, setThemePref, type ResolvedTheme, type ThemePref } from './theme'
 
 /** The stored choice, and a setter that applies it at once. */
 export function useThemePref(): [ThemePref, (p: ThemePref) => void] {
@@ -10,9 +10,8 @@ export function useThemePref(): [ThemePref, (p: ThemePref) => void] {
   useEffect(() => {
     setPref(readThemePref())
     const sync = () => setPref(readThemePref())
-    window.addEventListener(THEME_EVENT, sync)
-    window.addEventListener('storage', sync)
-    return () => { window.removeEventListener(THEME_EVENT, sync); window.removeEventListener('storage', sync) }
+    window.addEventListener('storage', sync) // another tab changed it
+    return () => window.removeEventListener('storage', sync)
   }, [])
   return [pref, (p: ThemePref) => { setThemePref(p); setPref(p) }]
 }
