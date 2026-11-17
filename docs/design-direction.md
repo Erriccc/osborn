@@ -33,6 +33,27 @@ c8dc09f2 (two subagent reports: Claude UI anatomy + example.com tokens/icons/typ
    idle, shimmer on thinking. One well-orchestrated moment beats many
    micro-effects.
 
+## Productivity references per surface
+
+Each UI change names its model from this table and is scored 1–10 for
+familiarity against it (method: issue #105; 10 = as instantly understood as
+the avatar top-right).
+
+| Surface | Model | Pattern to borrow |
+|---|---|---|
+| Agent work in chat | Cursor / Claude Code agent panel, GitHub Copilot chat | One collapsible row per step ("Edited 3 files ▸"); detail on tap |
+| Messages | ChatGPT / Claude iOS | Assistant full width; the user's turns as right-aligned bubbles |
+| Activity log / Running | Linear activity, Vercel deploy log | Plain-language timeline in a sheet; raw logs behind "View logs" |
+| Approvals | GitHub review states, Cursor auto-run | One mode chip; risky modes coloured and confirmed once |
+| Rooms / sessions | Slack switcher, Linear Cmd+K, Claude sidebar | Search first, unread dots, newest first |
+| Saved files | Notion links, Slack file messages | One compact row per file; preview sheet with share/download |
+| Call controls | Slack huddles, Zoom, Gemini Live | Docked at the bottom, in thumb reach; mute, end, live timer |
+| Meetings | Granola, Otter | Notes as it goes; afterwards summary, actions, transcript |
+| Dashboard | Things 3 Today, Linear My Issues | One "today": running, finished, needs you; no repeated cards |
+| Machine / RAM / Code | Railway, Render metrics | Off the main surface; a status dot opening a metrics sheet |
+| Store | Raycast Store, VS Code Extensions | Installed / Browse, update badges, permissions before install |
+| Theme | Linear, Notion, Things 3 | Follow the system; System / Light / Dark in Preferences |
+
 ## Header/tray management (2026-08-01, from live mobile QA)
 
 **The rule: nothing disappears — it collapses.** Every control has a priority
