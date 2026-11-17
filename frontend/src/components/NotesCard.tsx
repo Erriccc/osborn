@@ -6,10 +6,10 @@ import { micErrorKind, micHelp } from '@/lib/mic-permission'
 /**
  * NotesRecorder — the dashboard's note CAPTURE control (record-only).
  * Founder consolidation (10-24): the saved-notes list was redundant with the
- * dashboard's Today list — this section is now JUST the recorder. Record →
+ * dashboard's Recent list — this section is now JUST the recorder. Record →
  * (pause/resume) → stop → transcribe → confirm (edit + ATTACH files via the
  * same /api/upload pipeline chat uses → stored URLs ride the note) → save →
- * the note lands in Today. Model: Apple Voice Memos record bar.
+ * the note lands in Recent. Model: Apple Voice Memos record bar.
  */
 
 type Phase = 'idle' | 'recording' | 'transcribing' | 'confirm'

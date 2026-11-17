@@ -4,6 +4,7 @@
 // ============================================================
 
 import { stripSessionWrappers } from './transcript-clean'
+import { dayBucket, DAY_LABEL } from './outputs-model'
 
 export interface SessionInfo {
   sessionId: string
@@ -225,36 +226,17 @@ export function formatTime(timestamp: string, nowMs: number = Date.now()): strin
 }
 
 /**
- * Group sessions by date category (Today, Yesterday, This Week, Older), using
+ * Group sessions under the shared day headings (outputs-model dayBucket), using
  * the last-activity time; each group is most-recently-active first.
  */
 export function groupSessionsByDate(sessions: SessionInfo[]): { label: string; sessions: SessionInfo[] }[] {
-  const now = new Date()
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const yesterday = new Date(today.getTime() - 86400000)
-  const weekAgo = new Date(today.getTime() - 7 * 86400000)
-
-  const groups: Record<string, SessionInfo[]> = {
-    'Today': [],
-    'Yesterday': [],
-    'This Week': [],
-    'Older': [],
-  }
-
+  const now = Date.now()
+  const groups: { label: string; sessions: SessionInfo[] }[] = []
   for (const session of sortSessionsByActivity(sessions)) {
-    const date = new Date(sessionActivityTime(session))
-    if (date >= today) {
-      groups['Today'].push(session)
-    } else if (date >= yesterday) {
-      groups['Yesterday'].push(session)
-    } else if (date >= weekAgo) {
-      groups['This Week'].push(session)
-    } else {
-      groups['Older'].push(session)
-    }
+    const label = DAY_LABEL[dayBucket(new Date(sessionActivityTime(session)).getTime(), now)]
+    const last = groups[groups.length - 1]
+    if (last && last.label === label) last.sessions.push(session)
+    else groups.push({ label, sessions: [session] })
   }
-
-  return Object.entries(groups)
-    .filter(([, sessions]) => sessions.length > 0)
-    .map(([label, sessions]) => ({ label, sessions }))
+  return groups
 }

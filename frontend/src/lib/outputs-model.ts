@@ -35,6 +35,8 @@ export interface OutputFile {
 }
 
 export type DayBucket = 'today' | 'yesterday' | 'thisWeek' | 'older'
+/** Heading for each day bucket, shared by every day-grouped list. */
+export const DAY_LABEL = { today: 'Today', yesterday: 'Yesterday', thisWeek: 'This week', older: 'Earlier' } as const
 
 export interface OutputGroups<T extends OutputFile = OutputFile> {
   justMade: T[]

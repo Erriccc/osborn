@@ -1551,12 +1551,12 @@ export default function Dashboard() {
 
         {/* ── Content ──────────────────────────────────
             Desktop (lg+): a two-region workspace — a sticky LEFT SIDEBAR nav
-            rail (projects + shared) beside a MAIN column (greeting, continue,
+            rail (projects + shared) beside a MAIN column (greeting,
             CTA, action cards). The overall grid spans ~max-w-7xl so the sides
             aren't empty, while the main content stays readable (~max-w-3xl).
             Mobile/tablet (<lg): the grid collapses to a single column and
             `order-*` restores the original top-to-bottom flow
-            (greeting → continue → new conversation → projects). Same data,
+            (greeting → new conversation → recent → projects). Same data,
             same handlers — layout only. */}
         <div className="flex-1 w-full max-w-3xl lg:max-w-6xl mx-auto px-4 py-6 lg:grid lg:grid-cols-[360px_minmax(0,1fr)] lg:gap-8 lg:items-start lg:py-8">
 
@@ -1581,7 +1581,7 @@ export default function Dashboard() {
           {/* Quick voice notes — record → transcribe → saved to the account */}
           <NotesCard />
 
-          {/* Today: sessions (once each), notes and finished briefs in one list. */}
+          {/* Recent: sessions (once each), notes and finished briefs in one list. */}
           <TodayList sessions={recentSessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} />
 
           {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary

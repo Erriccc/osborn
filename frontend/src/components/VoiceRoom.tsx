@@ -1984,7 +1984,7 @@ function VoiceRoomInner({
           setCurrentSessionId(preSelectedSessionId || data.preSelectedSessionId)
         }
         // No preselected session = fresh conversation. Start immediately,
-        // no gate. The dashboard is the session picker now — its Today list
+        // no gate. The dashboard is the session picker now — its Recent list
         // and every session-list row route to /chat?session=…, so re-prompting here was redundant (the
         // "Previous Sessions" popup). Users switch sessions mid-chat from the
         // in-chat session browser; the list below keeps it warm.

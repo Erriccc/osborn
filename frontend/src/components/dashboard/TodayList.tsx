@@ -10,11 +10,9 @@ import { sessionMatchesQuery, type SessionListItem } from '@/lib/session-list'
 import { buildTodayRows, groupByDay, type TodayBrief, type TodayKind, type TodayNote, type TodayRow } from '@/lib/today'
 
 /**
- * Today: the dashboard's one list of sessions, notes and finished briefs,
- * newest first under day headings. MODEL: Things 3 "Today" and Linear "My
- * Issues": one list, one row per item, no repeated cards. Session rows resume,
- * note rows open a NoteSheet, brief rows open the library. Each row is a single
- * button, so nothing interactive nests.
+ * Recent: the dashboard's one list (rows from lib/today.ts). MODEL: Things 3
+ * "Today" and Linear "My Issues". Session rows resume, note rows open a
+ * NoteSheet, brief rows open the brief. Each row is a single control.
  */
 
 type Filter = 'all' | TodayKind
@@ -120,21 +118,22 @@ export default function TodayList({
   const row = (r: TodayRow) => {
     const inner = (
       <>
-        <svg className={`w-4 h-4 shrink-0 ${r.kind === 'note' ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={ICON[r.kind]} /></svg>
+        <span className="sr-only">{r.kind === 'session' ? 'Resume session:' : r.kind === 'note' ? 'Open note:' : 'Open brief:'}</span>
+        <svg aria-hidden="true" className={`w-4 h-4 shrink-0 ${r.kind === 'note' ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={ICON[r.kind]} /></svg>
         <span className="min-w-0 flex-1 truncate text-[13.5px] text-text-primary/90 group-hover:text-[var(--text-primary)]">{r.title}</span>
         {r.key === continueKey && <span className="shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-semibold text-[var(--accent)] bg-accent-dim/20">Continue</span>}
-        {r.label && <span className="shrink-0 rounded-full px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] bg-[var(--surface-2)]">{r.label}</span>}
+        {r.label && <span className="hidden sm:inline shrink-0 rounded-full px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] bg-[var(--surface-2)]">{r.label}</span>}
         {r.kind === 'note' && r.attachments?.length ? <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{r.attachments.length} file{r.attachments.length > 1 ? 's' : ''}</span> : null}
         {new Date(r.at).getTime() > lastSeen && lastSeen > 0 && <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-[var(--accent)]"><span className="sr-only">New since your last visit</span></span>}
-        <span className="shrink-0 min-w-14 text-right font-mono text-[10.5px] text-[var(--text-secondary)]">{formatTime(r.at)}</span>
+        {r.at && <span className="shrink-0 min-w-14 text-right font-mono text-[10.5px] text-[var(--text-secondary)]">{formatTime(r.at)}</span>}
       </>
     )
-    const cls = 'group flex w-full min-h-[40px] items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
+    const cls = 'group flex w-full min-h-[40px] items-center gap-2 sm:gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
     return (
       <li key={r.key}>
         {r.kind === 'brief'
-          ? <Link href={`/library/${r.id}`} className={cls} title={r.title} aria-label={`Open brief: ${r.title}`}>{inner}</Link>
-          : <button type="button" onClick={() => open(r)} title={r.title} aria-label={`${r.kind === 'note' ? 'Open note' : 'Resume session'}: ${r.title}`} className={cls}>{inner}</button>}
+          ? <Link href={`/library/${r.id}`} className={cls} title={r.title}>{inner}</Link>
+          : <button type="button" onClick={() => open(r)} title={r.title} className={cls}>{inner}</button>}
       </li>
     )
   }
@@ -143,7 +142,7 @@ export default function TodayList({
     <section aria-label="Recent" className="mb-6" style={{ animation: 'fadeSlideIn .5s ease both' }}>
       <div className="flex flex-wrap items-center gap-2 mb-2 px-0.5">
         <h2 className="text-[var(--text-primary)] text-sm font-semibold">Recent</h2>
-        <div className="flex gap-1.5 ml-auto">
+        <div className="flex flex-wrap gap-1.5 ml-auto">
           {chips.map(c => (
             <button key={c.k} type="button" onClick={() => setFilter(c.k)} aria-pressed={filter === c.k}
               className={'min-h-[32px] px-3 rounded-full text-[12px] font-medium transition-colors ' +
@@ -164,14 +163,14 @@ export default function TodayList({
       {shown.length === 0 && waiting ? (
         <LoadingLine />
       ) : shown.length === 0 ? (
-        <p className="text-[13px] text-[var(--text-muted)] py-3 px-0.5">
+        <p className="text-[13px] text-[var(--text-secondary)] py-3 px-0.5">
           {q ? `Nothing matches “${query.trim()}”.` : 'Nothing yet — start a session or record a note.'}
         </p>
       ) : (
         <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-1.5">
           {groupByDay(shown).map(g => (
             <div key={g.group}>
-              <h3 className="px-2.5 pt-2 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-muted)]">{g.group}</h3>
+              <h3 className="px-2.5 pt-2 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">{g.group}</h3>
               <ul className="space-y-px">{g.rows.map(row)}</ul>
             </div>
           ))}

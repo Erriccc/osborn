@@ -154,7 +154,7 @@ ok('derive: filler + 6-word cap', deriveSessionTitle('can you help fix the very 
     { sessionId: 'y', timestamp: oldIso, lastActivityAt: todayIso, messageCount: 1 },
   ])
   const today = g.find((x) => x.label === 'Today')
-  const older = g.find((x) => x.label === 'Older')
+  const older = g.find((x) => x.label === 'Earlier')
   ok('group: uses lastActivityAt', today?.sessions.map((s) => s.sessionId).join('') === 'y' && older?.sessions.map((s) => s.sessionId).join('') === 'x', JSON.stringify(g))
 }
 
