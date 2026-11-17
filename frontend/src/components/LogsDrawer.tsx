@@ -126,7 +126,11 @@ interface LogsDrawerProps {
   machineChipRamPct?: number   // 0-100 integer
   machineChipProcCount?: number // total process count
   ideError?: string | null
+  /** Opens the drawer on a tab; bump `n` to ask again (the phone menu's Machine row). */
+  openRequest?: { tab: DrawerTab; n: number }
 }
+
+export type DrawerTab = 'log' | 'running' | 'machine'
 
 // Map a tool to a { verb, icon } for the review card. Verb is past-tense so
 // the log reads like a changelog ("Edited VoiceRoom.tsx", "Ran build").
@@ -512,8 +516,8 @@ function FlowResultText({ text }: { text: string }) {
 }
 
 // Code editor status dot and icon, shared by the header chip and the Machine tab's editor row.
-const IDE_DOT_CLASS = { running: 'bg-emerald-400', starting: 'bg-amber-400 animate-pulse', stopped: 'bg-gray-600' } as const
-const CODE_ICON_PATH = 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4'
+export const IDE_DOT_CLASS = { running: 'bg-emerald-400', starting: 'bg-amber-400 animate-pulse', stopped: 'bg-gray-600' } as const
+export const CODE_ICON_PATH = 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4'
 // Header chips stay small; the button around each is a 44px tap target on phones and touch screens.
 const HEADER_TAP_TARGET = 'max-sm:min-h-11 [@media(pointer:coarse)]:min-h-11'
 
@@ -543,7 +547,7 @@ const TIER_TEXT_CLASS: Record<HealthTier, string> = {
   red:   'text-red-400',
 }
 
-function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: number }) {
+export function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: number }) {
   const tier = ramTier(ramPct)
   return (
     <span
@@ -561,9 +565,21 @@ function MachineChipBadge({ ramPct, procCount }: { ramPct: number; procCount: nu
   )
 }
 
-export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError, approvals }: LogsDrawerProps) {
+export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgroundFlows, onStopDispatch, machineData, agentMemory, onMachineTabActive, ideState = 'stopped', ideUrl, onEditorOpen, onEditorStop, onEditorRestart, machineChipRamPct, machineChipProcCount, ideError, approvals, openRequest }: LogsDrawerProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<'log' | 'running' | 'machine'>('log')
+  const [activeTab, setActiveTab] = useState<DrawerTab>('log')
+  useEffect(() => {
+    if (!openRequest?.n) return
+    setActiveTab(openRequest.tab)
+    setIsOpen(true)
+  }, [openRequest?.n, openRequest?.tab])
+  // Below lg the drawer is a sheet over the chat: Esc closes it like the backdrop.
+  useEffect(() => {
+    if (!isOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && window.innerWidth < 1024) setIsOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isOpen])
   const [lastSeenCount, setLastSeenCount] = useState(0)
   const [showJumpPill, setShowJumpPill] = useState(false)
   const [drawerHeight, setDrawerHeight] = useState(() =>
@@ -647,8 +663,9 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
 
   return (
     <div className="border-t border-gray-700/50">
-      {/* Header row: the toggle, the approvals picker, the code editor and machine usage
-          (desktop), reachable without opening the drawer or the Machine tab. */}
+      {/* Header row: the toggle, the approvals picker, and from sm up the code editor
+          and machine usage, reachable without opening the drawer or the Machine tab.
+          On phones those two live in the menu sheet, so the toggle keeps its label. */}
       <div className="flex items-center gap-2 pr-3 hover:bg-gray-800/50 transition-colors">
       <button
         onClick={() => {
@@ -661,7 +678,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           <svg className={`w-3 h-3 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
-          <span className="truncate">Activity log</span>
+          <span className="whitespace-nowrap">Activity log</span>
           {unreadCount > 0 && !isOpen && (
             <span className="bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full text-[10px]">
               {unreadCount}
@@ -675,7 +692,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
           disabled={ideState === 'starting'}
           title={ideState === 'running' ? 'Open the code editor in a new tab' : ideState === 'starting' ? 'Code editor starting…' : 'Start the code editor'}
           aria-label={`Code editor (${ideState})`}
-          className={`group shrink-0 flex items-center ${HEADER_TAP_TARGET} text-[11px] text-gray-300 hover:text-white disabled:opacity-60 transition-colors`}
+          className={`group shrink-0 max-sm:hidden flex items-center ${HEADER_TAP_TARGET} text-[11px] text-gray-300 hover:text-white disabled:opacity-60 transition-colors`}
         >
           <span className="flex items-center gap-1.5 rounded-full border border-gray-700/60 px-2 py-1 group-hover:bg-gray-700/50">
             <span className={`w-1.5 h-1.5 rounded-full ${IDE_DOT_CLASS[ideState]}`} />
@@ -685,22 +702,28 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
         </button>
       )}
       {typeof machineChipRamPct === 'number' && typeof machineChipProcCount === 'number' && (
-        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" aria-label={`Open the Machine tab (RAM ${machineChipRamPct}%, ${machineChipProcCount} processes)`} className={`shrink-0 ${HEADER_TAP_TARGET} flex items-center`}>
+        <button onClick={() => { setActiveTab('machine'); setIsOpen(true) }} title="Open the Machine tab" aria-label={`Open the Machine tab (RAM ${machineChipRamPct}%, ${machineChipProcCount} processes)`} className={`shrink-0 max-sm:hidden ${HEADER_TAP_TARGET} flex items-center`}>
           <MachineChipBadge ramPct={machineChipRamPct} procCount={machineChipProcCount} />
         </button>
       )}
       </div>
 
-      {/* Collapsible panel with two tabs: Log and Running */}
+      {/* Collapsible panel with three tabs: Log, Running, Machine. Inline under the
+          chat from lg up; below lg a bottom sheet over the transcript, so opening it
+          never squeezes the chat into a strip. The backdrop and the close button
+          shut it, which gives the composer back. */}
       {isOpen && (
-        <div className="relative">
-          {/* Drag handle — grab this to resize the drawer height (Log tab only) */}
+        <>
+        <div className="lg:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setIsOpen(false)} aria-hidden="true" data-testid="activity-sheet-backdrop" />
+        <div className="relative max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:z-50 max-lg:rounded-t-2xl max-lg:border-t max-lg:border-gray-700 max-lg:bg-gray-900 max-lg:shadow-2xl max-lg:overflow-hidden max-lg:pb-[env(safe-area-inset-bottom)]"
+          role="region" aria-label="Activity log">
+          {/* Drag handle — grab this to resize the drawer height */}
           <div
             onPointerDown={handleDragHandlePointerDown}
             onPointerMove={handleDragHandlePointerMove}
             onPointerUp={handleDragHandlePointerUp}
             onPointerCancel={handleDragHandlePointerUp}
-            className="flex items-center justify-center w-full h-3 cursor-ns-resize select-none touch-none bg-transparent hover:bg-gray-700/30 transition-colors"
+            className="flex items-center justify-center w-full h-3 max-lg:h-5 cursor-ns-resize select-none touch-none bg-transparent hover:bg-gray-700/30 transition-colors"
             title="Drag to resize"
             aria-label="Resize activity log"
           >
@@ -749,30 +772,36 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                 >
                   Machine
                 </button>
+                {/* Jump to latest sits in this row, never over a card's own buttons. */}
+                {activeTab === 'log' && showJumpPill && (
+                  <button
+                    onClick={() => {
+                      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+                      isAtBottomRef.current = true
+                      setShowJumpPill(false)
+                    }}
+                    className="ml-auto mb-1 flex items-center gap-1 px-2.5 py-1 max-lg:min-h-9 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-[11px] font-semibold transition-colors"
+                  >
+                    Latest
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                )}
+                <button
+                  onClick={() => setIsOpen(false)}
+                  aria-label="Close activity log"
+                  title="Close"
+                  className={`lg:hidden ${activeTab === 'log' && showJumpPill ? 'ml-1' : 'ml-auto'} shrink-0 flex items-center justify-center min-h-11 min-w-11 -mr-1 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800/60`}
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
               </div>
             )
           })()}
 
           {/* Log tab content */}
           {activeTab === 'log' && (
-            <>
-              {showJumpPill && (
-                <button
-                  onClick={() => {
-                    if (scrollRef.current) {
-                      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-                    }
-                    isAtBottomRef.current = true
-                    setShowJumpPill(false)
-                  }}
-                  className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/90 hover:bg-amber-400/90 text-gray-900 text-xs font-semibold shadow-lg backdrop-blur-sm transition-colors"
-                >
-                  Jump to latest
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-              )}
               <div
                 ref={scrollRef}
                 onScroll={handleScroll}
@@ -799,7 +828,6 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
                   )
                 )}
               </div>
-            </>
           )}
 
           {/* Running tab content */}
@@ -1051,6 +1079,7 @@ export function LogsDrawer({ messages, onCircleBack, onLike, onDislike, backgrou
             </div>
           )}
         </div>
+        </>
       )}
     </div>
   )
