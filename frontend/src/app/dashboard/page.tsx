@@ -474,9 +474,9 @@ export default function Dashboard() {
   // Pass force=true to bypass the cache (after import/delete operations).
   const fetchSessions = useCallback(async (force = false) => {
     if (!canFetchAgent()) {
-      // Cloud, before /api/sandbox has given the machine's URL: the sandbox poll owns
-      // agentOnline, so stay loading rather than declare the machine offline.
-      if (connectionMode === 'cloud' && user && agentUrl.startsWith('http://localhost')) return
+      // Signed in to cloud: the sandbox poll owns agentOnline (and brings the machine's
+      // URL), so stay loading rather than declare the machine offline.
+      if (connectionMode === 'cloud' && user) return
       setAgentOnline(false); setSessions([]); setBaseCwd(null); setSessionsLoading(false); return
     }
 

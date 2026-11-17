@@ -5,7 +5,7 @@
 import { prettySessionPreview, sessionActivityTime } from './sessions'
 import type { SessionListItem } from './session-list'
 import { PLATFORM_LABELS } from './content-refine'
-import { dayBucket } from './outputs-model'
+import { dayBucket, toMs } from './outputs-model'
 
 export type TodayKind = 'session' | 'note' | 'brief'
 
@@ -36,7 +36,7 @@ export function buildTodayRows(sessions: SessionListItem[], notes: TodayNote[], 
     ...notes.map((n): TodayRow => ({ kind: 'note', key: `note:${n.id}`, id: n.id, at: n.created_at, title: n.text, attachments: n.attachments || [] })),
     ...briefs.map((b): TodayRow => ({ kind: 'brief', key: `brief:${b.id}`, id: b.id, at: b.created_at, title: b.title || 'Untitled brief', label: (b.type && (BRIEF_LABEL[b.type] || b.type)) || 'Brief' })),
   ]
-  return rows.sort((a, b) => time(b.at) - time(a.at))
+  return rows.sort((a, b) => (toMs(b.at) || 0) - (toMs(a.at) || 0))
 }
 
 export type DayGroup = 'Today' | 'Yesterday' | 'This week' | 'Earlier'
@@ -57,9 +57,4 @@ export function groupByDay(rows: TodayRow[], now = new Date()): { group: DayGrou
     else out.push({ group: g, rows: [r] })
   }
   return out
-}
-
-function time(at: string): number {
-  const t = new Date(at).getTime()
-  return Number.isFinite(t) ? t : 0
 }

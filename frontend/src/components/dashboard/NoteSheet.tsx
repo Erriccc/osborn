@@ -11,7 +11,6 @@ import { useEffect, useRef, useState } from 'react'
  */
 
 import type { TodayNote } from '@/lib/today'
-export type SheetNote = TodayNote
 
 export function noteCopyText(note: { text: string; attachments?: string[] }): string {
   const atts = note.attachments || []
@@ -43,7 +42,7 @@ export default function NoteSheet({
   onClose,
   onDeleted,
 }: {
-  note: SheetNote | null
+  note: TodayNote | null
   onClose: () => void
   onDeleted: (id: string) => void
 }) {
