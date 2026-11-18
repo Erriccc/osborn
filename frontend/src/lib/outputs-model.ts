@@ -35,6 +35,8 @@ export interface OutputFile {
 }
 
 export type DayBucket = 'today' | 'yesterday' | 'thisWeek' | 'older'
+/** Heading for each day bucket, shared by every day-grouped list. */
+export const DAY_LABEL = { today: 'Today', yesterday: 'Yesterday', thisWeek: 'This week', older: 'Earlier' } as const
 
 export interface OutputGroups<T extends OutputFile = OutputFile> {
   justMade: T[]
@@ -100,6 +102,18 @@ export function dayBucket(ms: number, now: number): DayBucket {
   const weekStart = startOfDay(today - 6 * 86_400_000)
   if (ms >= weekStart) return 'thisWeek'
   return 'older'
+}
+
+/** Items (already newest first) split under their day headings, in order; empty headings dropped. */
+export function groupByDay<T>(items: readonly T[], at: (item: T) => Date | string | number | undefined | null, now = Date.now()): { label: (typeof DAY_LABEL)[DayBucket]; items: T[] }[] {
+  const out: { label: (typeof DAY_LABEL)[DayBucket]; items: T[] }[] = []
+  for (const item of items) {
+    const label = DAY_LABEL[dayBucket(toMs(at(item)), now)]
+    const last = out[out.length - 1]
+    if (last && last.label === label) last.items.push(item)
+    else out.push({ label, items: [item] })
+  }
+  return out
 }
 
 export interface JustMadeContext {

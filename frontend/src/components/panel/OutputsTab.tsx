@@ -12,7 +12,7 @@ import { OutputRow } from './outputs/OutputRow'
 import { FilePreview } from './outputs/FilePreview'
 import { FavoriteRecovery } from './outputs/FavoriteRecovery'
 import {
-  groupOutputs, groupByProject, searchOutputs, summarize, isNew, fmtSynced, projectOf,
+  groupOutputs, groupByProject, searchOutputs, summarize, isNew, fmtSynced, projectOf, DAY_LABEL,
   type OutputFile,
 } from '@/lib/outputs-model'
 import type { GeneratedFile } from '../voice/shared'
@@ -196,10 +196,10 @@ export function OutputsTab({ active }: PanelTabProps) {
           <>
             <JustMade files={groups.justMade} seenAt={outputs.seenAt} pinnedPaths={pinned} selectedPath={outputs.previewPath} onOpen={open} onTogglePin={pin} />
             <Section title="Pinned" hint="Pinned across sessions and devices" files={groups.pinned} render={(f) => row(f)} />
-            <Section title="Today" files={groups.today} render={(f) => row(f)} />
-            <Section title="Yesterday" files={groups.yesterday} render={(f) => row(f)} />
-            <Section title="This week" files={groups.thisWeek} render={(f) => row(f)} />
-            <Section title="Older" files={groups.older} render={(f) => row(f)} />
+            <Section title={DAY_LABEL.today} files={groups.today} render={(f) => row(f)} />
+            <Section title={DAY_LABEL.yesterday} files={groups.yesterday} render={(f) => row(f)} />
+            <Section title={DAY_LABEL.thisWeek} files={groups.thisWeek} render={(f) => row(f)} />
+            <Section title={DAY_LABEL.older} files={groups.older} render={(f) => row(f)} />
           </>
         )}
       </div>

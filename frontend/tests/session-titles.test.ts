@@ -2,7 +2,7 @@
 // Spec (lane L2b frontend, "dashtitles"): the agent's /sessions + sessions_list
 // entries now carry `title` (already cleaned), `firstTs` and `lastActivityAt`.
 // Every session list (dashboard prettySessionPreview + CONTINUE card,
-// sessions.ts deriveSessionTitle, SessionBrowser, ActivityFeed, mobile list):
+// sessions.ts deriveSessionTitle, SessionBrowser, TodayList, mobile list):
 //   - prefers the agent's `title`; otherwise cleans the old `lastMessage` preview
 //   - never shows a title starting with `[` or `<`, or an empty one ->
 //     "Untitled session"
@@ -154,7 +154,7 @@ ok('derive: filler + 6-word cap', deriveSessionTitle('can you help fix the very 
     { sessionId: 'y', timestamp: oldIso, lastActivityAt: todayIso, messageCount: 1 },
   ])
   const today = g.find((x) => x.label === 'Today')
-  const older = g.find((x) => x.label === 'Older')
+  const older = g.find((x) => x.label === 'Earlier')
   ok('group: uses lastActivityAt', today?.sessions.map((s) => s.sessionId).join('') === 'y' && older?.sessions.map((s) => s.sessionId).join('') === 'x', JSON.stringify(g))
 }
 
