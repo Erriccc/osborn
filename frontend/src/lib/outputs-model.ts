@@ -99,7 +99,9 @@ export function dayBucket(ms: number, now: number): DayBucket {
   if (ms >= today) return 'today'
   const yesterday = startOfDay(today - 1)
   if (ms >= yesterday) return 'yesterday'
-  const weekStart = startOfDay(today - 6 * 86_400_000)
+  // Calendar arithmetic, not 6×24h: a 23-hour DST day would stretch the week to 7 days.
+  const w = new Date(today); w.setDate(w.getDate() - 6)
+  const weekStart = w.getTime()
   if (ms >= weekStart) return 'thisWeek'
   return 'older'
 }
@@ -662,24 +664,6 @@ export function groupByProject<T extends OutputFile>(files: readonly T[]): Proje
     project,
     sessions: Array.from(sessions.entries()).map(([session, list]) => ({ session, files: list })),
   }))
-}
-
-/** Compact relative time for a row: "now", "5m", "3h", "Yesterday", "4d", "Oct 18". */
-export function fmtRelative(d: Date | string | number, now: number = Date.now()): string {
-  const ms = toMs(d)
-  if (!Number.isFinite(ms)) return ''
-  const min = Math.floor((now - ms) / 60000)
-  if (min < 1) return 'now'
-  if (min < 60) return `${min}m`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h`
-  const bucket = dayBucket(ms, now)
-  if (bucket === 'yesterday') return 'Yesterday'
-  const days = Math.round((startOfDay(now) - startOfDay(ms)) / 86_400_000)
-  if (days < 7) return `${days}d`
-  const date = new Date(ms)
-  const sameYear = date.getFullYear() === new Date(now).getFullYear()
-  return date.toLocaleDateString(undefined, sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: '2-digit' })
 }
 
 /** "Synced 12s ago" text for the Refresh row. */
