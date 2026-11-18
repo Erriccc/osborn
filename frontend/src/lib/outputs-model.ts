@@ -116,6 +116,21 @@ export function groupByDay<T>(items: readonly T[], at: (item: T) => Date | strin
   return out
 }
 
+/** A row's time in the form its day heading implies: the clock time under Today
+ *  and Yesterday, the weekday under This week, the date under Earlier. A relative
+ *  "1d ago" under a calendar heading contradicts it. */
+export function timeUnderDay(at: Date | string | number | undefined | null, now = Date.now()): string {
+  const ms = toMs(at)
+  if (!Number.isFinite(ms)) return ''
+  const d = new Date(ms)
+  const bucket = dayBucket(ms, now)
+  if (bucket === 'today' || bucket === 'yesterday') return d.toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' })
+  if (bucket === 'thisWeek') return d.toLocaleDateString('en', { weekday: 'short' })
+  return d.toLocaleDateString('en', d.getFullYear() === new Date(now).getFullYear()
+    ? { month: 'short', day: 'numeric' }
+    : { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
 export interface JustMadeContext {
   sessionId: string | null | undefined
   /** When this browser joined the session (ms). */

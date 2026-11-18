@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { buildTodayRows } from '../src/lib/today'
 import { groupByDay } from '../src/lib/outputs-model'
+import { timeUnderDay } from '../src/lib/outputs-model'
 
 const now = new Date(2026, 10, 17, 20, 0)
 const at = (d: number, h = 12) => new Date(2026, 10, d, h).toISOString()
@@ -23,3 +24,15 @@ assert.equal(buildTodayRows([], [], [{ id: 'b2', type: 'source', title: 'x', cre
 assert.deepEqual(rows[0].attachments, ['a.png'])
 assert.deepEqual(groupByDay(rows, r => r.at, now.getTime()).map(g => [g.label, g.items.length]), [['Today', 2], ['Yesterday', 1], ['Earlier', 1]])
 console.log('today: ok')
+
+// Times agree with their day heading: clock time under Today/Yesterday, weekday this week, date earlier.
+{
+  const ref = new Date(2026, 10, 18, 1, 14).getTime()
+  const t = (d: number, h: number, m = 0) => new Date(2026, 10, d, h, m).toISOString()
+  assert.equal(timeUnderDay(t(17, 19, 12), ref), '7:12 PM', 'yesterday shows the clock time, not "6h ago"')
+  assert.equal(timeUnderDay(t(18, 0, 30), ref), '12:30 AM')
+  assert.equal(timeUnderDay(t(16, 18), ref), 'Mon', 'this week shows the weekday, not "1d ago"')
+  assert.equal(timeUnderDay(t(3, 9), ref), 'Nov 3')
+  assert.equal(timeUnderDay(new Date(2025, 10, 3).toISOString(), ref), 'Nov 3, 2025')
+  assert.equal(timeUnderDay('nope', ref), '')
+}

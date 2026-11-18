@@ -21,7 +21,7 @@ import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
-import { chatDocumentTitle, formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
+import { chatDocumentTitle, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
 import { cacheTranscript, readCachedTranscript } from '@/lib/transcript-cache'
 import { agentReadUrl } from '@/lib/agent-read'
@@ -58,7 +58,7 @@ import { usePaneSize } from '@/lib/use-pane-size'
 import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelDataContext'
 import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
-import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, toMs, upsertAgentFile } from '@/lib/outputs-model'
+import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, timeUnderDay, toMs, upsertAgentFile } from '@/lib/outputs-model'
 
 // Folder icon: the workspace chip, its More-menu row below pane-xl, and Files Explorer.
 const FOLDER_ICON_PATH = 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'
@@ -4030,7 +4030,7 @@ function VoiceRoomInner({
                         >
                           <div className="flex justify-between items-start">
                             <span className="text-sm font-medium text-ink">
-                              {formatTime(sessionActivityTime(session))}
+                              {timeUnderDay(sessionActivityTime(session))}
                               {group.label === 'Today' && index === 0 && <span className="ml-2 text-amber-400">(Latest)</span>}
                             </span>
                             <span className="text-xs text-gray-500">{session.messageCount} msgs</span>
