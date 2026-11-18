@@ -1,9 +1,10 @@
 'use client'
 
 // One Outputs row: type badge, title + literal filename (the agent says names
-// aloud), one-line summary or folder, relative time, "New" pill. The star shows
+// aloud), one-line summary or folder, time, "New" pill. The star shows
 // ONLY on pinned rows (UI#21); unpinned rows get an explicit "Pin" action.
-import { fmtRelative, projectOf, type OutputFile } from '@/lib/outputs-model'
+import { projectOf, timeUnderDay, type OutputFile } from '@/lib/outputs-model'
+import { formatTime } from '@/lib/sessions'
 
 export const TYPE_BADGE: Record<string, { label: string; color: string }> = {
   plan: { label: 'Plan', color: 'bg-violet-500/20 text-violet-400' },
@@ -23,9 +24,13 @@ export function prettyTitle(fileName: string): string | null {
 }
 
 export function OutputRow({
-  file, pinned, isNew, subtitle, selected, onOpen, onTogglePin,
+  file, pinned, isNew, subtitle, selected, underDay, onOpen, onTogglePin,
 }: {
   file: OutputFile
+  /** Under a day heading the time takes the heading's form (timeUnderDay);
+   *  elsewhere (Pinned, Just made, search, By project) a bare clock time could be
+   *  any day, so it is a relative age. */
+  underDay?: boolean
   pinned: boolean
   isNew?: boolean
   /** Summary, content snippet, or null to show the folder. */
@@ -38,7 +43,7 @@ export function OutputRow({
   const pretty = prettyTitle(file.fileName)
   const { project, session } = projectOf(file.filePath)
   const where = session ? `${project} / ${session}` : project
-  const rel = fmtRelative(file.updatedAt)
+  const rel = underDay ? timeUnderDay(file.updatedAt) : formatTime(file.updatedAt)
   return (
     <div data-testid="output-row" data-file-path={file.filePath}
       className={`group w-full min-h-[44px] px-3 py-2 flex items-start gap-2 transition-colors motion-reduce:transition-none ${

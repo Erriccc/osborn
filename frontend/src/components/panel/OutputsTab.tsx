@@ -59,8 +59,8 @@ export function OutputsTab({ active }: PanelTabProps) {
 
   const open = (f: OutputFile) => outputs.openPreview(f.filePath)
   const pin = (f: OutputFile) => outputs.togglePin(f as GeneratedFile)
-  const row = (f: OutputFile, subtitle?: string | null) => (
-    <OutputRow key={f.filePath} file={f} pinned={pinned.has(f.filePath)} isNew={isNew(f, outputs.seenAt)}
+  const row = (f: OutputFile, subtitle?: string | null, underDay = false) => (
+    <OutputRow key={f.filePath} file={f} pinned={pinned.has(f.filePath)} isNew={isNew(f, outputs.seenAt)} underDay={underDay}
       subtitle={subtitle === undefined ? summarize(f) : subtitle} selected={outputs.previewPath === f.filePath}
       onOpen={open} onTogglePin={pin} />
   )
@@ -196,10 +196,10 @@ export function OutputsTab({ active }: PanelTabProps) {
           <>
             <JustMade files={groups.justMade} seenAt={outputs.seenAt} pinnedPaths={pinned} selectedPath={outputs.previewPath} onOpen={open} onTogglePin={pin} />
             <Section title="Pinned" hint="Pinned across sessions and devices" files={groups.pinned} render={(f) => row(f)} />
-            <Section title={DAY_LABEL.today} files={groups.today} render={(f) => row(f)} />
-            <Section title={DAY_LABEL.yesterday} files={groups.yesterday} render={(f) => row(f)} />
-            <Section title={DAY_LABEL.thisWeek} files={groups.thisWeek} render={(f) => row(f)} />
-            <Section title={DAY_LABEL.older} files={groups.older} render={(f) => row(f)} />
+            <Section title={DAY_LABEL.today} files={groups.today} render={(f) => row(f, undefined, true)} />
+            <Section title={DAY_LABEL.yesterday} files={groups.yesterday} render={(f) => row(f, undefined, true)} />
+            <Section title={DAY_LABEL.thisWeek} files={groups.thisWeek} render={(f) => row(f, undefined, true)} />
+            <Section title={DAY_LABEL.older} files={groups.older} render={(f) => row(f, undefined, true)} />
           </>
         )}
       </div>

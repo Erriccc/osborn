@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { formatTime, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sessionDisplayTitle, sortSessionsByActivity, type SessionInfo } from '@/lib/sessions'
+import { groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sessionDisplayTitle, sortSessionsByActivity, type SessionInfo } from '@/lib/sessions'
+import { timeUnderDay } from '@/lib/outputs-model'
 import { sessionMatchesQuery } from '@/lib/session-list'
 import { agentReadUrl } from '@/lib/agent-read'
 import { stripSessionWrappers } from '@/lib/transcript-clean'
@@ -525,7 +526,7 @@ export default function SessionBrowser({
                           {preview}
                         </p>
                       )}
-                      <p className="text-xs text-gray-500 mt-1.5">{formatTime(sessionActivityTime(session))}</p>
+                      <p className="text-xs text-gray-500 mt-1.5">{timeUnderDay(sessionActivityTime(session))}</p>
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); setShareTarget({ sessionId: session.sessionId, title: sessionDisplayTitle(session) }); setShareEmail(''); setShareMsg(null) }}

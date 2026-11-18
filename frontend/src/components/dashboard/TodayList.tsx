@@ -5,9 +5,8 @@ import Link from 'next/link'
 import LoadingLine from './LoadingLine'
 import NoteSheet from './NoteSheet'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
-import { formatTime } from '@/lib/sessions'
 import { sessionMatchesQuery, type SessionListItem } from '@/lib/session-list'
-import { groupByDay } from '@/lib/outputs-model'
+import { groupByDay, timeUnderDay } from '@/lib/outputs-model'
 import { buildTodayRows, type TodayBrief, type TodayKind, type TodayNote, type TodayRow } from '@/lib/today'
 
 /**
@@ -126,7 +125,7 @@ export default function TodayList({
         {r.label && <span className="hidden sm:inline shrink-0 rounded-full px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] bg-[var(--surface-2)]">{r.label}</span>}
         {r.kind === 'note' && r.attachments?.length ? <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{r.attachments.length} file{r.attachments.length > 1 ? 's' : ''}</span> : null}
         {new Date(r.at).getTime() > lastSeen && lastSeen > 0 && <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-[var(--accent)]"><span className="sr-only">New since your last visit</span></span>}
-        {r.at && <span className="shrink-0 min-w-14 text-right font-mono text-[10.5px] text-[var(--text-secondary)]">{formatTime(r.at)}</span>}
+        {r.at && <span className="shrink-0 min-w-14 text-right font-mono text-[10.5px] text-[var(--text-secondary)]">{timeUnderDay(r.at)}</span>}
       </>
     )
     const cls = 'group flex w-full min-h-[40px] items-center gap-2 sm:gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
