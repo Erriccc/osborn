@@ -122,10 +122,15 @@ export function groupByDay<T>(items: readonly T[], at: (item: T) => Date | strin
 export function timeUnderDay(at: Date | string | number | undefined | null, now = Date.now()): string {
   const ms = toMs(at)
   if (!Number.isFinite(ms)) return ''
-  const d = new Date(ms)
   const bucket = dayBucket(ms, now)
-  if (bucket === 'today' || bucket === 'yesterday') return d.toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' })
-  if (bucket === 'thisWeek') return d.toLocaleDateString('en', { weekday: 'short' })
+  if (bucket === 'today' || bucket === 'yesterday') return new Date(ms).toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' })
+  if (bucket === 'thisWeek') return new Date(ms).toLocaleDateString('en', { weekday: 'short' })
+  return shortDate(ms, now)
+}
+
+/** "Nov 3", with the year when it is not `now`'s year: "Nov 3, 2025". */
+export function shortDate(ms: number, now = Date.now()): string {
+  const d = new Date(ms)
   return d.toLocaleDateString('en', d.getFullYear() === new Date(now).getFullYear()
     ? { month: 'short', day: 'numeric' }
     : { month: 'short', day: 'numeric', year: 'numeric' })
