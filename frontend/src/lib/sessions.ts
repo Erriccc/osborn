@@ -208,8 +208,9 @@ function capWords(t: string): string {
  * Format timestamp for display (relative time). `nowMs` defaults to the
  * current time; pass it for deterministic rendering/tests.
  */
-export function formatTime(timestamp: string, nowMs: number = Date.now()): string {
+export function formatTime(timestamp: Date | string | number, nowMs: number = Date.now()): string {
   const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return ''
   const now = new Date(nowMs)
   const diffMs = now.getTime() - date.getTime()
   const diffMins = Math.floor(diffMs / 60000)
