@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { buildTodayRows } from '../src/lib/today'
-import { groupByDay } from '../src/lib/outputs-model'
-import { timeUnderDay } from '../src/lib/outputs-model'
+import { groupByDay, timeUnderDay } from '../src/lib/outputs-model'
 
 const now = new Date(2026, 10, 17, 20, 0)
 const at = (d: number, h = 12) => new Date(2026, 10, d, h).toISOString()
