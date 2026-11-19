@@ -619,7 +619,10 @@ export async function findUserSandbox(userId: string, knownSandboxId?: string): 
   try {
     // Ensure the app exists before checking machines
     await api<FlyApp>('GET', `/v1/apps/${appName}`)
-    const machine = await getFirstMachine(appName)
+    // Not getFirstMachine: it turns a failed list into null, and null reads as
+    // 'stopped' below, so one Fly API blip showed a running machine as asleep.
+    const machines = await api<FlyMachine[]>('GET', `/v1/apps/${appName}/machines`)
+    const machine = machines?.[0] ?? null
     return {
       id: appName,
       status: machine ? mapMachineState(machine.state) : 'stopped',

@@ -117,6 +117,8 @@ export async function GET() {
         userId: user.id,
         createdAt: new Date().toISOString(),
       },
+      // The status is the DB's last record, not the machine's: pollers keep what they show.
+      cached: true,
     })
   }
 

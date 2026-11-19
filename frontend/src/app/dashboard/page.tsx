@@ -23,7 +23,8 @@ import { isSupabaseConfigured } from '@/lib/supabase'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle, formatTime } from '@/lib/sessions'
 import { prepareSessions } from '@/lib/session-list'
-import { agentReadUrl } from '@/lib/agent-read'
+import { agentReadUrl, awaitingCloudUrl } from '@/lib/agent-read'
+import { pollSandbox } from '@/lib/sandbox-poll'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import type { User } from '@supabase/supabase-js'
@@ -463,7 +464,7 @@ export default function Dashboard() {
     // Pinging localhost:8741 in cloud mode just spams ERR_CONNECTION_REFUSED
     // every 15s. The cloud sandbox's health is tracked via sandboxStatus
     // (polled from /api/sandbox) — not by hitting the agent URL directly.
-    if (connectionMode === 'cloud' && agentUrl.startsWith('http://localhost')) return false
+    if (awaitingCloudUrl(agentUrl, connectionMode)) return false
     return true
   }, [agentUrl, connectionMode])
 
@@ -553,24 +554,17 @@ export default function Dashboard() {
       if (cancelled) return
 
       if (connectionMode === 'cloud') {
-        // Cloud: poll sandbox API
-        try {
-          const r = await fetch('/api/sandbox')
-          const d = await r.json()
-          if (cancelled) return
-          setSandboxAvailable(d.available || false)
-          if (d.sandbox) {
-            setSandboxId(d.sandbox.id)
-            setSandboxStatus(d.sandbox.status)
-            if (d.sandbox.previewUrl) setAgentUrl(d.sandbox.previewUrl)
-            setAgentOnline(d.sandbox.status === 'running')
-          } else {
-            setSandboxStatus(null)
-            setAgentOnline(false)
-          }
-        } catch {
-          if (cancelled) return
-          setSandboxAvailable(false)
+        // Cloud: poll sandbox API. A poll that tells nothing keeps the last state.
+        const d = await pollSandbox()
+        if (cancelled || !d) return
+        setSandboxAvailable(d.available)
+        if (d.sandbox) {
+          setSandboxId(d.sandbox.id)
+          setSandboxStatus(d.sandbox.status)
+          if (d.sandbox.previewUrl) setAgentUrl(d.sandbox.previewUrl)
+          setAgentOnline(d.sandbox.status === 'running')
+        } else {
+          setSandboxStatus(null)
           setAgentOnline(false)
         }
         return

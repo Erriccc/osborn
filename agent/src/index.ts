@@ -49,7 +49,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds, findUpdates } from './store-catalog.js'
-import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
+import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, skillHeading, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
@@ -168,11 +168,10 @@ function loadSkillsList(agentDir: string): SkillListing[] {
       const skillFile = join(skillsDir, skillName, 'SKILL.md')
       if (existsSync(skillFile)) {
         const { meta, body } = parseFrontMatter(readFileSync(skillFile, 'utf-8'))
-        // Display name: the first # heading (else the folder); description: front matter, else the paragraph after the heading
-        const titleMatch = body.match(/^#\s+(?:Skill:\s*)?(.+)/m)
-        const name = titleMatch ? titleMatch[1].trim() : skillName
-        const descMatch = body.match(/^#[^\n]+\n+([^\n#]+)/m)
-        const description = typeof meta.description === 'string' && meta.description ? meta.description : descMatch ? descMatch[1].trim() : ''
+        // Display name: the first # heading outside code (else the folder); description: front matter, else the paragraph after the heading
+        const heading = skillHeading(body)
+        const name = heading.title || skillName
+        const description = typeof meta.description === 'string' && meta.description ? meta.description : heading.paragraph || ''
         const forkedFrom = skillForkedFrom(skillsDir, skillName)
         const installedFrom = skillProvenance(skillsDir, skillName)
         skills.push({ name, description, folder: skillName, core: core.has(skillName), ...(forkedFrom ? { forkedFrom } : {}), ...(installedFrom ? { installedFrom } : {}) })

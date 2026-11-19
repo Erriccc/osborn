@@ -13,7 +13,8 @@ import { AgentStore, ListState, SkillStore, SkillViewer, pill, rolesData, type N
 import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
 import { useSkillStore, httpSkills } from '@/lib/skill-store'
-import { agentRequest, agentError, listError, UNREACHABLE } from '@/lib/agent-read'
+import { agentRequest, agentError, awaitingCloudUrl, listError, UNREACHABLE } from '@/lib/agent-read'
+import { pollSandbox } from '@/lib/sandbox-poll'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import { useThemePref } from '@/lib/use-theme'
@@ -164,7 +165,7 @@ export default function SettingsPage() {
     if (m) setConnectionMode(m)
   }, [])
 
-  // The built-in list; the latest request wins (the first goes to the default URL).
+  // The built-in list; the latest request wins (the URL can change while one is in flight).
   const agentsLoad = useRef(0)
   const loadAgents = useCallback(() => {
     const run = ++agentsLoad.current
@@ -192,11 +193,11 @@ export default function SettingsPage() {
 
   // Fetch skills + named agents + secrets from the agent's HTTP API on load.
   useEffect(() => {
-    if (!agentUrl) return
+    if (!agentUrl || awaitingCloudUrl(agentUrl, connectionMode)) return
     loadSkills()
     loadAgents()
     refreshSecrets()
-  }, [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentUrl, connectionMode, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Machine location (agent /health region).
   useEffect(() => {
@@ -226,7 +227,7 @@ export default function SettingsPage() {
     if (typeof window === 'undefined') return false
     if (!agentUrl) return false
     if (window.location.protocol === 'https:' && agentUrl.startsWith('http://')) return false
-    if (connectionMode === 'cloud' && agentUrl.startsWith('http://localhost')) return false
+    if (awaitingCloudUrl(agentUrl, connectionMode)) return false
     return true
   }, [agentUrl, connectionMode])
 
@@ -238,23 +239,17 @@ export default function SettingsPage() {
     const check = async () => {
       if (cancelled) return
       if (connectionMode === 'cloud') {
-        try {
-          const r = await fetch('/api/sandbox')
-          const d = await r.json()
-          if (cancelled) return
-          setSandboxAvailable(d.available || false)
-          if (d.sandbox) {
-            setSandboxId(d.sandbox.id)
-            setSandboxStatus(d.sandbox.status)
-            if (d.sandbox.previewUrl) setAgentUrl(d.sandbox.previewUrl)
-            setAgentOnline(d.sandbox.status === 'running')
-          } else {
-            setSandboxStatus(null)
-            setAgentOnline(false)
-          }
-        } catch {
-          if (cancelled) return
-          setSandboxAvailable(false)
+        // A poll that tells nothing (lib/sandbox-poll) keeps the last state.
+        const d = await pollSandbox()
+        if (cancelled || !d) return
+        setSandboxAvailable(d.available)
+        if (d.sandbox) {
+          setSandboxId(d.sandbox.id)
+          setSandboxStatus(d.sandbox.status)
+          if (d.sandbox.previewUrl) setAgentUrl(d.sandbox.previewUrl)
+          setAgentOnline(d.sandbox.status === 'running')
+        } else {
+          setSandboxStatus(null)
           setAgentOnline(false)
         }
         return
@@ -1042,9 +1037,9 @@ export default function SettingsPage() {
 
         {/* Version + Update / Restart */}
         {isCloud && sandboxId && (
-          <SettingsRow label="Voice Native version" sublabel="Keep the agent on the latest release">
+          <SettingsRow stacked label="Voice Native version" sublabel="Keep the agent on the latest release">
             {!operation && (
-              <>
+              <div className="flex flex-wrap items-center gap-2">
                 {installedVersion && (
                   <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
                     latestVersion && installedVersion !== latestVersion
@@ -1067,7 +1062,7 @@ export default function SettingsPage() {
                   className="rounded-lg px-2 py-1 text-[12px] text-[var(--text-muted)] transition-colors hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400">
                   Restart agent
                 </button>
-              </>
+              </div>
             )}
             {updating && operation && (
               <div className="flex items-center gap-2">
