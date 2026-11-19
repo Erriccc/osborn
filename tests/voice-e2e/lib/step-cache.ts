@@ -113,7 +113,9 @@ export async function actWithCache(
     } catch { return null }
   }
 
-  if (hit?.action) {
+  // An entry holding a secret (cached before this rule) is dropped, never replayed.
+  if (hit && holdsSecret({ key, action: hit.action })) { delete store[key]; saveStore(url.hostname, store) }
+  else if (hit?.action) {
     // Validate before replay: selector must still exist AND still point at
     // the same element (fingerprint match). Otherwise fall through to the
     // LLM — never trust a click on an unverified target.
@@ -168,8 +170,11 @@ export async function actWithCache(
   return { cached: false, healed: !!hit, did: describeAction(action) }
 }
 
-/** True when redaction would change it: such a step stays out of actions.json. */
-export const holdsSecret = (v: unknown): boolean => redactJson(v) !== JSON.stringify(v)
+/** True when redaction would change it, or it types into a password field:
+ *  such a step stays out of actions.json. */
+export const holdsSecret = (v: { key?: string; action?: any }): boolean =>
+  redactJson(v) !== JSON.stringify(v) ||
+  (/^(fill|type)$/.test(v.action?.method ?? '') && /passw/i.test(`${v.action?.description ?? ''} ${v.key ?? ''}`))
 
 /** What the brain decided to do, in one line — returned to the director. */
 function describeAction(action: any): string | null {
