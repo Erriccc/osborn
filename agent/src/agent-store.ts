@@ -173,7 +173,7 @@ export function parseUserAgents(rows: unknown, core: CoreAgents): {
     if (r?.enabled === false) continue
     const reason = !name ? 'no name'
       : Object.hasOwn(core, name) ? 'is a core agent (fork it under a new name)'
-      // 'My Agent' and 'my-agent' are distinct rows but one agent name: the first keeps it.
+      // Hardening against a hand-made set_agents message: the DB (migration 004) already keeps names unique and normalised.
       : Object.hasOwn(agents, name) ? 'same name as another of your agents (rename one)'
       : name.length > AGENT_LIMITS.name ? `name longer than ${AGENT_LIMITS.name}`
       : !description ? 'no description'

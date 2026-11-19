@@ -13,6 +13,8 @@
 // server so the GITHUB_TOKEN never reaches the client. buildBugReportRow stays
 // pure + shared so the route validates/shapes exactly as before.
 
+import { UUID_RE } from './ids'
+
 export type BugReportType = 'bug' | 'feature'
 export type BugReportSeverity = 'low' | 'medium' | 'high' | 'critical'
 
@@ -52,13 +54,18 @@ export type BugReportResult = { ok: true; id?: string } | { ok: false; error: st
 
 const SEVERITIES: BugReportSeverity[] = ['low', 'medium', 'high', 'critical']
 
-export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
 /** The row id: the agent's reportId (a UUID minted once per report) when there is one, so a
  *  redelivered report hits the primary key instead of filing twice; otherwise a fresh id. */
 export function reportRowId(metadata: unknown, mint: () => string): { id: string; idempotent: boolean } {
   const rid = (metadata as { reportId?: unknown } | null)?.reportId
   return typeof rid === 'string' && UUID_RE.test(rid) ? { id: rid.toLowerCase(), idempotent: true } : { id: mint(), idempotent: false }
+}
+
+/** Whether this user already filed report `id`. Scoped to the caller (RLS shows only their own
+ *  reports; the reporter filter says so here too), so another user's row never counts. */
+export async function ownReportExists(db: { from: (table: string) => any }, id: string, userId: string): Promise<boolean> {
+  const { data, error } = await db.from('bug_reports').select('id').eq('id', id).eq('reporter_user_id', userId).maybeSingle()
+  return !error && !!data
 }
 
 // Pure: validate + shape a row for the bug_reports table. Mirrors the server-side

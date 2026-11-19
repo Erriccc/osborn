@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
-import { UUID_RE } from '@/lib/bug-report'
+import { UUID_RE } from '@/lib/ids'
 
 /**
  * /api/notes — the signed-in user's quick-capture NOTES (voice-memo → text).

@@ -37,7 +37,7 @@ assert.deepEqual(parsed.roles, {
 }, 'set role > built-in parent > reader; an unset role is never inferred from tools')
 assert.deepEqual(parsed.dropped.map((d) => d.name), ['writer'])
 assert.ok(parsed.agents.constructor, 'a user agent named constructor is not mistaken for a core agent')
-// Two rows that normalise to one name: the first keeps it, the second is reported, never silently replaces it (#285).
+// A hand-made set_agents message with two names that normalise alike: the first keeps it, the second is reported.
 const clash = parseUserAgents([
   { name: 'My Agent', description: 'd', prompt: 'first' },
   { name: 'my-agent', description: 'd', prompt: 'second' },
