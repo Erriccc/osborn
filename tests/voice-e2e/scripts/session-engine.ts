@@ -74,6 +74,7 @@ import { attachDevtools, redactDiagnostics, type DevtoolsBuffer } from '../lib/d
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
+import { eventOwners, eventVisibleTo } from '../lib/event-scope'
 import { buildJourneyState, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -933,12 +934,15 @@ async function main() {
   // nothing recent). A sleeping engine says goodbye first (engine_stopping),
   // so subscribers KNOW the stream died on purpose. SSE listeners do NOT hold
   // the engine awake (commands and stream viewers do).
-  const eventClients = new Set<import('http').ServerResponse>()
-  const eventRing: string[] = []
+  // Each subscriber with its driver id: a /browser panel person gets only public
+  // events and events about their own tabs (owners read when the event fires).
+  const eventClients = new Map<import('http').ServerResponse, string>()
+  const eventRing: Array<{ evt: string; owners: string[] }> = []
   const notify = (event: string, payload: Record<string, unknown> = {}) => {
     const evt = redactJson({ event, t: Date.now(), run: RUN_STAMP, ...payload })  // serialized once, already redacted
-    eventRing.push(evt); if (eventRing.length > 25) eventRing.shift()
-    for (const c of eventClients) { try { c.write(`data: ${evt}\n\n`) } catch { eventClients.delete(c) } }
+    const owners = eventOwners(payload, (i) => { const p = allPages()[i]; return p ? ownerOf(p) : null })
+    eventRing.push({ evt, owners }); if (eventRing.length > 25) eventRing.shift()
+    for (const [c, d] of eventClients) if (eventVisibleTo(owners, d)) { try { c.write(`data: ${evt}\n\n`) } catch { eventClients.delete(c) } }
     if (!WEBHOOK_URL) return
     fetch(WEBHOOK_URL, {
       method: 'POST',
@@ -1302,8 +1306,9 @@ async function main() {
         // Subscribe: SSE feed of everything the engine does, live.
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' })
         res.write(`: engine events — run ${RUN_STAMP}\n\n`)
-        for (const e of eventRing) res.write(`data: ${e}\n\n`)
-        eventClients.add(res)
+        const subscriber = driverId(req)
+        for (const e of eventRing) if (eventVisibleTo(e.owners, subscriber)) res.write(`data: ${e.evt}\n\n`)
+        eventClients.set(res, subscriber)
         req.on('close', () => eventClients.delete(res))
         return
       }
@@ -1880,7 +1885,7 @@ async function main() {
           const depth = depthNow()
           mark(`journey end: ${journey.name} (${steps.length} step(s), ${depth.kind}, ${depth.pages} page(s)${saved ? ', saved' : ''}${depth.thin ? ' — THIN: single navigation, not exploration' : ''})`)
           const done = { ok: true, name: journey.name, steps: steps.length, depth, saved, tasks: [journey.startTaskN + 1, reqN] }
-          notify('journey_end', { name: journey.name, goal: journey.goal ?? null, steps: steps.length, depth, saved: !!saved })
+          notify('journey_end', { name: journey.name, goal: journey.goal ?? null, owner: journey.owner ?? null, steps: steps.length, depth, saved: !!saved })
           saveJourneyState('ended')  // #120: mark ended BEFORE null so a later boot won't resurrect it
           journey = null
           return json(res, done)
