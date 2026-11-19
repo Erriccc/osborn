@@ -10,11 +10,12 @@
 // agent-authored text can apply the same invariant — and so it is unit-testable
 // (see frontend/tests/activity-redaction.test.ts).
 //
-// Rules overlap the agent-side sanitizer's (agent/src/content/transcript-sanitizer
-// .ts SECRET_RULES) but are not identical; re-typed because that module imports
-// node:fs. Still unmasked on their own here: npm_, AKIA, fw_, snx_, PEM. The
-// durable fix is to split that file's pure rule array into an fs-free module both
-// packages import instead of re-typing it a third time.
+// The rules mirror the agent-side sanitizer's (agent/src/content/secret-rules.ts
+// SECRET_RULES): every shape it redacts is masked here too, and
+// frontend/tests/redaction-parity.test.ts fails when they drift (it runs the
+// agent's own detector over this function's output). Mirrored, not imported:
+// this file is copied on its own into the browser engine (below), and the agent
+// package ships without the frontend. It also masks shapes the agent does not.
 //
 // The browser engine's public evidence logs use this file too: the harness build
 // (frontend/scripts/build-harness-bundle.mjs) copies it byte for byte to
@@ -29,14 +30,22 @@
 //    separator that cannot cross the name's closing quote leaks all of them.
 //  - Do not require a CLOSING quote either: drawer bodies are truncated mid-
 //    string, and `MY_TOKEN: "abc…` must still mask.
-//  - Narrow by SHAPE instead. The three rules that take a free-form value guard
-//    with `(?!\$)` (a `$VAR` reference is not a secret) and
-//    `(?![A-Za-z]{1,11}(?![\w+/=-]))` (one short word — `string`, `number`,
-//    `expired`, `header` — is a type annotation, a diff line or a sentence, not
-//    a credential). The inner class is what makes the guard safe: with a plain
-//    `\b` it also skipped `sk-proj-…`, `xoxb-…` and `glpat-…`, because `\b`
-//    fires before a hyphen. Do not add `.` to it — that re-masks
-//    `docs/api-key: rotation.md`.
+//  - Narrow by SHAPE instead. Values never mask after `$` (a `$VAR` reference),
+//    `<` (a placeholder) or `{` (JSX). The rest depends on the separator:
+//     * `NAME=value` with no space around `=` is a .env line, a shell export or
+//       a URL parameter, never a type annotation: any value of 5+ characters
+//       masks, a symbol-start or quote/paren-split value included, up to the
+//       next whitespace, `&`, `;` or `|`. Only `true`, `false`, `null` and the
+//       like are spared.
+//     * `NAME: value` and spaced `NAME = value` are also code: the guard
+//       `(?![A-Za-z]{1,11}(?![\w+/=-]))` spares one short word — `string`,
+//       `expired`, `process` in `process.env.X` — as a type annotation, a diff
+//       line or a sentence. Its inner class is what keeps it from skipping
+//       `sk-proj-…`, `xoxb-…` and `glpat-…` (a plain `\b` fires before a hyphen).
+//     * A header value (`x-api-key:`, `Authorization:`) is never a type, so it
+//       spares only a word from a short prose list (`header`, `required`, …)
+//       or a word ending at a dot (`docs/api-key: rotation.md`).
+//    Every separator crosses a closing quote, a backtick or a `\"` on the name.
 export function redactSecrets(s: string | undefined | null): string {
   if (!s) return s ?? ''
   return s
@@ -49,6 +58,13 @@ export function redactSecrets(s: string | undefined | null): string {
     // — it would take down the whole chunk, not just redaction.
     .replace(/([^A-Za-z0-9]|^)sk-(?:(?:ant|or|proj|svcacct)-[A-Za-z0-9_-]{12,}|[A-Za-z0-9]{20,})/g, '$1sk-••••')
     .replace(/sbp_[A-Za-z0-9]{10,}/g, 'sbp_••••')
+    .replace(/\bnpm_[A-Za-z0-9]{36,}/g, 'npm_••••')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, 'AKIA••••')
+    .replace(/([^A-Za-z0-9_]|^)fw_[A-Za-z0-9]{20,}/g, '$1fw_••••')
+    .replace(/([^A-Za-z0-9_]|^)snx_(?:proj_[A-Za-z0-9_-]{20,}|(?!proj_)[A-Za-z0-9]{16,})/g, '$1snx_••••')
+    // A private key, terminated or cut off mid-body (a literal `\n` included).
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, 'PRIVATE KEY ••••')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\sA-Za-z0-9+/=]|\\n)*/g, 'PRIVATE KEY ••••')
     .replace(/\bAIza[0-9A-Za-z_-]{30,}/g, 'AIza••••')
     .replace(/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'xox••••')
     // Two rules at the agent's floor of 30, not one folded rule: folding them
@@ -65,14 +81,20 @@ export function redactSecrets(s: string | undefined | null): string {
     .replace(/eyJ[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}/g, 'eyJ••••')
     // `<` is excluded from every value class below: `Authorization: Bearer
     // <access_token>` and `TOKEN=<paste-here>` are placeholders, not credentials.
-    .replace(/(\b(?:x-goog-|x-)?api-key["'`]?\s*[:=]\s*["'`]?)(?!\$)(?![A-Za-z]{1,11}(?![\w+/=-]))[^\s"'`,;}<]{8,}/gi, '$1••••')
-    .replace(/(Authorization["'`]?\s*:\s*["'`]?(?:(?:Bearer|Basic|Token)\s+)?)(?!\$)(?![A-Za-z]{1,11}(?![\w+/=-]))[^\s"'`,;}<]{8,}/gi, '$1••••')
+    .replace(/(\b(?:x-goog-|x-)?api-key(?:\\?["'`])?\s*[:=]\s*(?:\\?["'`])?)(?!\$)(?!(?:header|headers|required|optional|missing|invalid|expired|undefined|null|none|string|empty|unset|redacted|hidden)(?![\w+/=-]))(?![A-Za-z]{1,11}\.)[^\s"'`\\,;}<]{8,}/gi, '$1••••')
+    .replace(/(Authorization(?:\\?["'`])?\s*:\s*(?:\\?["'`])?(?:(?:Bearer|Basic|Token)\s+)?)(?!\$)(?!(?:header|headers|required|optional|missing|invalid|expired|undefined|null|none|string|empty|unset|redacted|hidden)(?![\w+/=-]))(?![A-Za-z]{1,11}\.)[^\s"'`\\,;}<]{8,}/gi, '$1••••')
     .replace(/(Bearer\s+)[A-Za-z0-9._\-+/=]{20,}/gi, '$1••••')
     // `[_-]KEY` and `[_-]PASS` cover this product's own names
     // (SUPABASE_SERVICE_ROLE_KEY, PUSHOVER_USER_KEY, OSBORN_DEMO_PASS) while the
-    // separator keeps `MONKEY=` out. The value class matches its siblings above,
-    // so JSX and TS forms — `token={token}`, `token: (row?.sync_token as string)`
-    // — are left alone, and the final guard spares a type annotation
+    // separator keeps `MONKEY=` out. First the tight `NAME=value` form (see the
+    // editors' rules above): the lazy value stops before an optional closing
+    // quote, so `NAME="…"` keeps its quote. The guard repeats the optional quote
+    // because the regex may skip the separator's: without it `TOKEN="$VAR"` and
+    // an already-masked `TOKEN="••••` would mask (again) from the quote.
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|[_-]KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|[_-]PASS|PRIVATE[_-]?KEY|TOKEN))((?:\\?["'`])?=(?:\\?["'`])?)(?!\\?["'`]?(?:\$|<|\{|\[REDACTED|••••|(?:true|false|null|none|nil|undefined|empty|unset)(?![^\s&;|"'`\\])|[A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b))[^\s&;|]{5,}?(?=["'`]?(?:[\s&;|]|$))/gi, '$1$2••••')
+    // Then `NAME: value` and spaced `NAME = value`. The value class matches the
+    // header rules, so JSX and TS forms — `token={token}`, `token: (row?.sync_token
+    // as string)` — are left alone, and the final guard spares a type annotation
     // (`token: AccessTokenPayload = decode(raw)`) that only this rule can reach.
-    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|[_-]KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|[_-]PASS|PRIVATE[_-]?KEY|TOKEN))(["']?\s*[=:]\s*["']?)(?=[A-Za-z0-9])(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])(?![A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b)[^\s"'(){}<]{6,}/gi, '$1$2••••')
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|[_-]KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|[_-]PASS|PRIVATE[_-]?KEY|TOKEN))((?:\\?["'`])?\s*[=:]\s*(?:\\?["'`])?)(?=[A-Za-z0-9])(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])(?![A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b)[^\s"'`\\(){}<]{6,}/gi, '$1$2••••')
 }

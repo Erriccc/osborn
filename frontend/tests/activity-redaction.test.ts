@@ -56,6 +56,19 @@ const SAMPLES = [
   // Truncated mid-string, as a drawer body routinely is: requiring a CLOSING
   // quote to match the opening one leaked both of these.
   'MY_TOKEN: "abcdef1234567890xyz9', 'MY_TOKEN="abcdef1234567890xyz9',
+  // Standalone shapes the agent's sanitizer always masked and this gate printed
+  // (#189); redaction-parity.test.ts keeps the two rule sets from drifting again.
+  'npm_' + 'aB3dE5gH7j'.repeat(3) + 'kL3mN5', 'AKIAIOSFODNN7EXAMPLE', 'AIzaSy' + 'aB3dE5gH7j'.repeat(3) + 'kL3mN',
+  'xoxp-1234567890-abcdefghij', 'fw_' + 'aB3dE5gH7j'.repeat(2) + 'kL3m', 'snx_proj_' + 'aB3dE5gH7j'.repeat(2) + 'kL3m',
+  '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7bq9\n-----END RSA PRIVATE KEY-----',
+  '-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0B',
+  // A NAME=value line is never a type annotation (#191): a short single-word
+  // password, a symbol-start value, a backtick or escaped-quote separator, a
+  // quote- or paren-split value and a 5-character value all used to print.
+  'PASSWORD=abcdefghij', 'TOKEN=abcdefgh', 'x-api-key: abcdefghij', 'PASSWORD=!supersecret123',
+  'TOKEN=_supersecret123456', 'TOKEN=-supersecret123456', 'TOKEN=`supersecretvalue123`',
+  '\\"MY_TOKEN\\": \\"supersecretvalue123\\"', 'TOKEN=(supersecret123456)', "TOKEN=abc'defghijklmnopqrstuvwxyz123",
+  'PASSWORD=abc12', 'https://api.example.com/v1?access_token=abc123xyz&page=2',
 ]
 
 t('every credential shape is masked in bare text', () => {
@@ -99,6 +112,11 @@ t('code, diffs and prose are left byte-identical', () => {
     'Auth header uses Bearer formatting now', 'the sk-ant- prefix identifies Anthropic keys',
     'GATE: PASS on fix/activity-log-redaction', '**VERDICT: REJECT**', 'ran `npm test` — 12 passed', '2 * 3 = 6',
     'Diff:\n```diff\n- const a = 1\n+ const a = 2\n```',
+    // Assignments that are not credentials: not a secret NAME, a literal, a
+    // reference or a placeholder — the tight NAME=value rule must spare them.
+    'color=red', 'mode=dark', 'token count = 5', 'max_tokens=4096', 'TOKEN=true', 'PASSWORD=false',
+    'API_KEY=null', 'TOKEN="$MY_VAR"', 'TOKEN=${MY_VAR}', 'SECRET=<redacted>', 'password = hashed',
+    'x-api-key: required', 'Authorization: missing', 'TOKEN=Unauthorized',
   ]) {
     assert.equal(redactSecrets(s), s)
   }
