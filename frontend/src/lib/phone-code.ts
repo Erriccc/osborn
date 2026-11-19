@@ -136,7 +136,7 @@ export async function startCallCode(
   const anon = createSupabaseAnon()
   if (!anon) return 'send-failed'
   // Old windows are of no further use.
-  await admin.from('phone_call_codes').delete().lt('expires_at', new Date(now - 24 * 3600_000).toISOString())
+  await admin.from('phone_call_codes').delete().lt('expires_at', new Date(now - DAY_MS).toISOString())
   const { error: rowError } = await admin.from('phone_call_codes').insert({
     room_name: roomName,
     user_id: userId,
