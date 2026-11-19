@@ -1,43 +1,59 @@
 import assert from 'node:assert/strict'
-import { eventOwners, eventVisibleTo, ownerSeenBy, personMayTake, tabsFor } from './event-scope'
+import { eventOwners, eventVisibleTo, ownerSeenBy, personMayTake, personOwns, seesTabOf, tabsFor } from './event-scope'
 
-const owners = [null, 'person:a@x.com', 'agent-1']
+// Tab 0 is the voice room (unowned); tab 1 person A's; tab 2 an agent's; tab 3 unowned; tab 4 person B's.
+const A = 'person:a@x.com', B = 'person:b@x.com', AGENT = 'agent-1'
+const owners = [null, A, AGENT, null, B]
 const at = (i: number) => owners[i]
-const A = 'person:a@x.com', B = 'person:b@x.com'
 
-// Owners read from every tab field the engine's events carry.
-assert.deepEqual(eventOwners({ url: 'https://x', tab: 1 }, at), [A], 'navigation on tab 1')
-assert.deepEqual(eventOwners({ url: 'https://x', tab: 0 }, at), [], 'an unowned tab is public')
-assert.deepEqual(eventOwners({ task: { n: 3, text: 'secret', tab: { owner: 'agent-1' } } }, at), ['agent-1'], 'task')
-assert.deepEqual(eventOwners({ op: 'open', activeTab: { i: 2, owner: 'agent-1' } }, at), ['agent-1'], 'tab op')
-assert.deepEqual(eventOwners({ i: 1, by: B, prevOwner: A }, at), [B, A], 'takeover names both')
-assert.deepEqual(eventOwners({ live: 'https://e', useAuth: true }, at), [], 'engine status has no tab')
+// THE RULE, table-driven: what person A may see and act on, and what an agent may.
+type Row = { name: string; payload: Record<string, unknown>; a: boolean; agent: boolean }
+const rows: Row[] = [
+  { name: 'own tab', payload: { url: 'u', tab: 1 }, a: true, agent: true },
+  { name: "another person's tab", payload: { url: 'u', tab: 4 }, a: false, agent: true },
+  { name: "agent's tab", payload: { url: 'u', tab: 2 }, a: false, agent: true },
+  { name: 'unowned tab', payload: { url: 'u', tab: 3 }, a: false, agent: true },
+  { name: 'tab 0 (voice room)', payload: { text: 'transcript', tab: 0 }, a: false, agent: true },
+  { name: 'task on tab 0', payload: { task: { n: 1, text: 't', tab: { owner: null } } }, a: false, agent: true },
+  { name: 'own task', payload: { task: { n: 2, text: 't', tab: { owner: A } } }, a: true, agent: true },
+  { name: 'tab event about your tab', payload: { op: 'open', by: A, activeTab: { i: 1, owner: A } }, a: true, agent: true },
+  { name: 'tab event with no tab of yours', payload: { op: 'close', by: A }, a: true, agent: true },
+  { name: "agent's tab event", payload: { op: 'open', by: AGENT, activeTab: { i: 2, owner: AGENT } }, a: false, agent: true },
+  { name: 'takeover of an agent tab', payload: { i: 2, by: A, prevOwner: AGENT }, a: false, agent: true },
+  { name: 'tab-less event (engine status)', payload: { live: 'https://e', useAuth: true }, a: true, agent: true },
+  { name: 'journey of no one', payload: { name: 'j', owner: null }, a: false, agent: true },
+]
+for (const r of rows) {
+  const o = eventOwners(r.payload, at)
+  assert.equal(eventVisibleTo(o, A), r.a, `person: ${r.name}`)
+  assert.equal(eventVisibleTo(o, AGENT), r.agent, `agent: ${r.name}`)
+  assert.equal(eventVisibleTo(o, 'default'), true, `no x-driver-id: ${r.name}`)
+}
 
-// Persons see public events and their own; agents see everything.
-assert.equal(eventVisibleTo([], B), true, 'public event')
-assert.equal(eventVisibleTo([A], A), true, 'own tab')
-assert.equal(eventVisibleTo([A], B), false, "another person's tab")
-assert.equal(eventVisibleTo(['agent-1'], B), false, "an agent's tab")
-assert.equal(eventVisibleTo([B, A], A), true, 'a takeover of your tab')
-assert.equal(eventVisibleTo([A], 'agent-1'), true, 'agents keep the full feed')
-assert.equal(eventVisibleTo([A], 'default'), true, 'no x-driver-id keeps the full feed')
-// Tab lists: a person sees other drivers' tabs without their URL; agents see all.
-const urls = ['https://room', 'https://a-private', 'https://agent']
-const list = (viewer: string) => tabsFor([0, 1, 2], at, (i) => urls[i], viewer)
-assert.deepEqual(list(A).map((t) => t.url), ['', 'https://a-private', ''], 'person: own URL only')
-assert.deepEqual(list(B).map((t) => t.url), ['', '', ''], 'another person: no URLs')
-assert.deepEqual(list('agent-1').map((t) => t.url), urls, 'agents keep URLs')
-assert.deepEqual(list(B).map((t) => t.owner), [null, 'person', 'agent-1'], 'another person is just "person"; agent ids stay')
-assert.deepEqual(list(A).map((t) => t.owner), [null, A, 'agent-1'], 'you see your own id')
-assert.deepEqual(list('agent-1').map((t) => t.owner), [null, A, 'agent-1'], 'agents see every id')
-assert.equal(ownerSeenBy(null, B), null)
-
-// A person may not take another person's tab, nor a tab in their profile, even released.
-assert.equal(personMayTake(B, A, 'person:a@x.com'), false, "another person's tab")
+// Seeing and taking tabs, by tab.
+const tabRows: Array<{ i: number; sees: boolean; take: boolean; profile?: string }> = [
+  { i: 1, sees: true, take: true, profile: 'person:a@x.com' },  // own
+  { i: 4, sees: false, take: false, profile: 'person:b@x.com' },  // another person's
+  { i: 2, sees: false, take: true, profile: '' },  // agent's: take control is allowed
+  { i: 3, sees: false, take: false, profile: '' },  // unowned
+  { i: 0, sees: false, take: false, profile: '' },  // tab 0
+]
+for (const t of tabRows) {
+  assert.equal(seesTabOf(at(t.i), A), t.sees, `sees tab ${t.i}`)
+  assert.equal(personMayTake(A, at(t.i), t.profile), t.take, `takes tab ${t.i}`)
+  assert.equal(seesTabOf(at(t.i), AGENT), true, `agent sees tab ${t.i}`)
+  assert.equal(personMayTake(AGENT, at(t.i), t.profile), true, `agent not limited, tab ${t.i}`)
+}
+assert.equal(personOwns(null, A), false, 'nobody owns an unowned tab')
 assert.equal(personMayTake(B, null, 'person:a@x.com'), false, "a released tab in another person's profile")
-assert.equal(personMayTake(B, 'agent-1', ''), true, "an agent's tab (takeover)")
-assert.equal(personMayTake(B, null, ''), true, 'an unowned shared-profile tab')
-assert.equal(personMayTake(B, B, 'person:b@x.com'), true, 'your own tab')
-assert.equal(personMayTake('person:B@X.com', null, 'person:b@x.com'), true, 'your profile, any email case')
-assert.equal(personMayTake('agent-1', A, 'person:a@x.com'), true, 'agents are not limited here')
+assert.equal(personMayTake('person:A@X.com', 'person:A@X.com', 'person:a@x.com'), true, 'your profile, any email case')
+
+// Tab lists: a person sees only their own URL, and other people as "person".
+const urls = ['https://room', 'https://a-private', 'https://agent', 'https://free', 'https://b-private']
+const list = (viewer: string) => tabsFor([0, 1, 2, 3, 4], at, (i) => urls[i], viewer)
+assert.deepEqual(list(A).map((t) => t.url), ['', 'https://a-private', '', '', ''], 'person: own URL only')
+assert.deepEqual(list(AGENT).map((t) => t.url), urls, 'agents keep URLs')
+assert.deepEqual(list(B).map((t) => t.owner), [null, 'person', AGENT, null, B], 'another person is just "person"; agent ids stay')
+assert.deepEqual(list(AGENT).map((t) => t.owner), owners, 'agents see every id')
+assert.equal(ownerSeenBy(null, B), null)
 console.log('event-scope: all assertions passed')

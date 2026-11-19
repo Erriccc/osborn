@@ -1,20 +1,28 @@
 /** A person in the /browser panel: the engine scopes what they can read to their own tabs. */
 export const isPersonDriver = (driver: string) => driver.startsWith('person:')
 
+/**
+ * THE RULE for people: the only tab a person may see or act on is one they own.
+ * Unowned tabs (tab 0, the voice room, included) are invisible and untouchable
+ * to them. Every person check in the engine goes through this.
+ */
+export const personOwns = (owner: string | null | undefined, driver: string) => !!owner && owner === driver
+
 /** Whether `viewer` may see a tab owned by `owner`: a person only their own, every other driver all. */
-export const seesTabOf = (owner: string | null | undefined, viewer: string) => !isPersonDriver(viewer) || owner === viewer
+export const seesTabOf = (owner: string | null | undefined, viewer: string) => !isPersonDriver(viewer) || personOwns(owner, viewer)
 
 /** An owner id as `viewer` may see it: a person sees another person only as "person"; agent ids stay. */
 export const ownerSeenBy = (owner: string | null | undefined, viewer: string): string | null =>
   !owner ? null : isPersonDriver(viewer) && isPersonDriver(owner) && owner !== viewer ? 'person' : owner
 
 /**
- * Whether a person may claim, switch to or take over a tab: never one another
- * person owns, nor one in another person's browser profile (their sign-ins),
- * even after it was released. Agents are not limited here.
+ * Whether a person may claim, switch to or take over a tab: their own, or an
+ * agent's tab (take control). Never an unowned tab (tab 0 included), never one
+ * another person owns, and never one in another person's browser profile (their
+ * sign-ins). Agents are not limited here.
  */
 export const personMayTake = (viewer: string, owner: string | null | undefined, profile: string | null | undefined) =>
-  !isPersonDriver(viewer) || ((!owner || !isPersonDriver(owner) || owner === viewer) && (!profile || !isPersonDriver(profile) || profile === viewer.toLowerCase()))
+  !isPersonDriver(viewer) || ((personOwns(owner, viewer) || (!!owner && !isPersonDriver(owner))) && (!profile || !isPersonDriver(profile) || profile === viewer.toLowerCase()))
 
 /**
  * The engine's tab list as `viewer` may see it: a person sees other drivers'
@@ -28,22 +36,24 @@ export function tabsFor<P>(pages: P[], ownerOf: (p: P) => string | null | undefi
  * Who an engine event is about, so /events can scope it per caller.
  *
  * Owners come from the payload's tab fields, read when the event fires (tab
- * indexes shift later): `tab` (an index), `task.tab.owner`, `activeTab.owner`,
- * and `owner` / `by` / `prevOwner`. An event with none of them (engine status,
- * room, brain) or only about unowned tabs has no owners and is public.
+ * indexes shift later): `tab` (an index), `task.tab`, `activeTab`, and the
+ * `owner` / `by` / `prevOwner` keys. Each field present counts, an unowned tab
+ * as null. An event with none of them (engine status, room, brain) has no tab
+ * context: an empty list.
  */
-export function eventOwners(payload: Record<string, any>, ownerAtIndex: (i: number) => string | null | undefined): string[] {
-  const found = [
-    typeof payload.tab === 'number' ? ownerAtIndex(payload.tab) : undefined,
-    payload.task?.tab?.owner, payload.activeTab?.owner, payload.owner, payload.by, payload.prevOwner,
-  ]
-  return [...new Set(found.filter((o): o is string => typeof o === 'string' && o.length > 0))]
+export function eventOwners(payload: Record<string, any>, ownerAtIndex: (i: number) => string | null | undefined): Array<string | null> {
+  const found: Array<string | null | undefined> = []
+  if (typeof payload.tab === 'number') found.push(ownerAtIndex(payload.tab))
+  if (payload.task?.tab) found.push(payload.task.tab.owner)
+  if (payload.activeTab) found.push(payload.activeTab.owner)
+  for (const k of ['owner', 'by', 'prevOwner']) if (k in payload) found.push(payload[k])
+  return [...new Set(found.map((o) => (typeof o === 'string' && o ? o : null)))]
 }
 
 /**
- * A person in the /browser panel (driver `person:<email>`) gets public events and
- * events about their own tabs; every other driver gets everything, as before.
+ * Every driver but a person gets every event, as before. A person gets an event
+ * only when it has no tab context at all, or when every tab owner in it is them.
  */
-export function eventVisibleTo(owners: string[], driver: string): boolean {
-  return !isPersonDriver(driver) || owners.length === 0 || owners.includes(driver)
+export function eventVisibleTo(owners: Array<string | null>, driver: string): boolean {
+  return !isPersonDriver(driver) || owners.every((o) => personOwns(o, driver))
 }

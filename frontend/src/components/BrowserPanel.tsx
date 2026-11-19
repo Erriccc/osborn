@@ -462,10 +462,10 @@ export function BrowserPanel() {
             const owner = status?.tabsByOwner?.find((o) => o.i === t.i)?.owner
             const on = t.i === activeI
             const shared = status?.cast?.i === t.i
-            // The engine lists other drivers' tabs without their URL.
-            const name = t.url ? shortUrl(t.url) : owner && owner !== me ? 'Private tab' : 'New tab'
+            // The engine gives a person only their own tabs' URLs: any other tab, tab 0 included, is private and cannot be switched to.
+            const name = t.url ? shortUrl(t.url) : owner === me ? 'New tab' : 'Private tab'
             return (
-              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || (!!owner && owner !== me)} title={`${t.url || name}${owner ? ` (driven by ${label(owner)})` : ''}${shared ? ' — shared on the public live view' : ''}`}
+              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || owner !== me} title={`${t.url || name}${owner ? ` (driven by ${label(owner)})` : ''}${shared ? ' — shared on the public live view' : ''}`}
                 className={`flex min-w-0 max-w-[14rem] items-center gap-1 rounded-t-lg border px-2 py-1 text-xs ${on ? 'border-amber-500/70 bg-neutral-800 text-neutral-100' : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}>
                 <span className="truncate">{name}</span>
                 {owner && <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">{label(owner)}</span>}
