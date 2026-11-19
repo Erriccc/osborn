@@ -15,7 +15,7 @@
 // and it is cleared on sign-out. Every read/write is wrapped, so a blocked or
 // full localStorage degrades to "no cache" rather than throwing.
 
-import type { ChatMessage, CompactionMarker, StewardVerdict } from '../components/voice/shared'
+import type { ChatMessage, CompactionMarker, StewardVerdict, StewardGateRecord } from '../components/voice/shared'
 import { clearKeysByPrefix, LIVE_SESSION_KEY, type KeyedStorage } from './chat-url'
 
 export const TRANSCRIPT_CACHE_PREFIX = 'vn-chat-transcript-u'
@@ -47,6 +47,7 @@ export interface CachedMessage {
   ts: string | null
   compaction?: CompactionMarker
   steward?: StewardVerdict
+  stewardGate?: StewardGateRecord
 }
 
 /** One session's cached tail. The user's entry list is oldest-touched first. */
@@ -85,7 +86,7 @@ export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
     // Only what the replay returns: user/assistant turns plus durable
     // compaction markers and steward cards. A local system notice has no counterpart there, so
     // caching it would paint a row nothing can reconcile.
-    if (m.role === 'system' && !m.compaction && !m.steward) continue
+    if (m.role === 'system' && !m.compaction && !m.steward && !m.stewardGate) continue
     const content = typeof m.content === 'string' ? m.content : ''
     // A normal bubble needs text; a compaction marker is kept even when empty.
     if (!content && !m.compaction) continue
@@ -97,6 +98,7 @@ export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
       ts: Number.isNaN(ms) ? null : new Date(ms).toISOString(),
       ...(m.compaction ? { compaction: m.compaction } : {}),
       ...(m.steward ? { steward: m.steward } : {}),
+      ...(m.stewardGate ? { stewardGate: m.stewardGate } : {}),
     })
   }
   return out.slice(-MAX_ITEMS)

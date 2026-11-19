@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const { parseStewardVerdict, appendStewardVerdict, readStewardVerdicts, getStewardLogPath } = await import('../src/steward-verdict.js')
+const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords } = await import('../src/steward-verdict.js')
 
 let pass = 0
 const t = (name: string, fn: () => unknown) => {
@@ -84,14 +84,73 @@ t('sidecar: append + read back, torn line skipped', () => {
   process.env.CLAUDE_CONFIG_DIR = join(root, 'claude')
   try {
     const sid = 'sess-x', wd = join(root, 'proj')
-    assert.deepEqual(readStewardVerdicts(sid, wd), [])
-    appendStewardVerdict(sid, wd, parseStewardVerdict(REFACTORED)!)
+    assert.deepEqual(readStewardRecords(sid, wd), [])
+    appendStewardRecord(sid, wd, parseStewardVerdict(REFACTORED)!)
+    appendStewardRecord(sid, wd, { gate: 'deny', message: 'not signed off', at: '2026-11-13T00:00:01.000Z' })
     appendFileSync(getStewardLogPath(sid, wd), '{"verdict":"CLE')
-    const got = readStewardVerdicts(sid, wd)
-    assert.equal(got.length, 1)
+    const got: any[] = readStewardRecords(sid, wd)
+    assert.equal(got.length, 2)
     assert.equal(got[0].verdict, 'REFACTORED')
+    assert.deepEqual(got[1], { gate: 'deny', message: 'not signed off', at: '2026-11-13T00:00:01.000Z' })
     assert.ok(getStewardLogPath(sid, wd).endsWith('/steward.jsonl'))
   } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+t('#250: CRLF and lone-CR returns parse like LF', () => {
+  const lf = parseStewardVerdict(REFACTORED, 'x')!
+  assert.deepEqual(parseStewardVerdict(REFACTORED.replace(/\n/g, '\r\n'), 'x'), { ...lf, raw: REFACTORED.replace(/\n/g, '\r\n') })
+  assert.equal(parseStewardVerdict('VERDICT: CLEAN — ok\r\nNET-NEW: alpha')!.netNew[0], 'alpha')
+  const mixed = parseStewardVerdict('VERDICT: CLEAN — ok\nNET-NEW: alpha\r\nREMOVED: beta\n')!
+  assert.equal(mixed.summary, 'ok')
+  assert.deepEqual(mixed.netNew, ['alpha'])
+  assert.deepEqual(mixed.removed, ['beta'])
+  assert.equal(parseStewardVerdict('VERDICT: BLOCK — x\rDECISION: y')!.decision, 'y')
+})
+
+t('#250: caps hold after the reuse lift; joined fields and raw are capped with a marker', () => {
+  const many = (p: string) => Array.from({ length: 20 }, (_, i) => `- ${p}${i}`).join('\n')
+  const v = parseStewardVerdict(`VERDICT: CLEAN — ${'s'.repeat(5000)}\nNET-NEW:\n${many('n')}\nREUSE MAP:\n${many('r → NET-NEW: x')}\nROOT CAUSE: ${'c'.repeat(5000)}`)!
+  assert.equal(v.netNew.length, 20)
+  assert.ok(v.summary.length <= 1020 && v.summary.endsWith('… [truncated]'))
+  assert.ok(v.rootCause!.length <= 1020 && v.rootCause!.endsWith('… [truncated]'))
+  assert.ok(v.raw.length <= 6020 && v.raw.endsWith('… [truncated]'))
+  assert.ok(!parseStewardVerdict(REFACTORED)!.raw.includes('[truncated]'))
+})
+
+t('#259: IMPACT is its own bounded field, SIBLINGS included; TESTS does not join it', () => {
+  const v = parseStewardVerdict('VERDICT: CLEAN — ok\nIMPACT: getFoo → a, b → ok; SIBLINGS: copy1 → out of scope\nTESTS: steward-verdict → pass\nLINES: +1 -0')!
+  assert.deepEqual(v.impact, ['getFoo → a, b → ok', 'SIBLINGS: copy1 → out of scope'])
+  assert.equal(v.lines, '+1 -0')
+  assert.equal(parseStewardVerdict('VERDICT: CLEAN — ok')!.impact, undefined)
+  assert.equal(parseStewardVerdict(REFACTORED)!.impact![0], 'getStorePath → session-store, compaction-log → ok')
+})
+
+t('#259: an IMPACT-looking bullet inside HISTORY stays history', () => {
+  for (const b of ['- IMPACT: getFoo changed, caller missed', '> IMPACT: getFoo changed, caller missed', '- impact: getFoo changed, caller missed']) {
+    const v = parseStewardVerdict(`VERDICT: CLEAN — ok\nHISTORY:\n- churn low\n${b}\n- coupled: VoiceRoom.tsx present\nROOT CAUSE: new feature`)!
+    assert.deepEqual(v.history, ['churn low', b.slice(2), 'coupled: VoiceRoom.tsx present'], b)
+    assert.equal(v.impact, undefined)
+    assert.equal(v.rootCause, 'new feature')
+  }
+  // The labels that follow HISTORY still end it, bulleted or not.
+  const v = parseStewardVerdict('VERDICT: BLOCK — x\nHISTORY:\n- churn low\n- CHALLENGED: no dup → held\n- ROOT CAUSE: none found\n- DECISION: keep it?')!
+  assert.deepEqual(v.history, ['churn low'])
+  assert.equal(v.rootCause, 'none found')
+  assert.equal(v.decision, 'keep it?')
+})
+
+t('prior_messages push: last 10 verdicts and last 10 gates kept apart, raw and impact stripped, file order', () => {
+  const v = parseStewardVerdict(REFACTORED, '2026-11-13T00:00:00.000Z')!
+  const recs: any[] = [
+    ...Array.from({ length: 12 }, (_, i) => ({ ...v, summary: `v${i}` })),
+    ...Array.from({ length: 15 }, (_, i) => ({ gate: 'deny', message: `g${i}`, at: v.at })),
+  ]
+  const out: any[] = stewardPushRecords(recs)
+  assert.deepEqual(out.filter((r) => r.verdict).map((r) => r.summary), Array.from({ length: 10 }, (_, i) => `v${i + 2}`))
+  assert.deepEqual(out.filter((r) => r.gate).map((r) => r.message), Array.from({ length: 10 }, (_, i) => `g${i + 5}`))
+  assert.ok(out.every((r) => r.raw === undefined && r.impact === undefined))
+  assert.ok(!JSON.stringify(out).includes('"raw"') && !JSON.stringify(out).includes('getStorePath'))
+  assert.ok(recs[0].raw && recs[0].impact, 'source records untouched')
 })
 
 console.log(`\n${pass} passed`)

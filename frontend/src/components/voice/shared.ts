@@ -183,9 +183,24 @@ export interface StewardVerdict {
   removed?: string[]
   lines?: string
   history?: string[]
+  impact?: string[]
   raw?: string
   at: string
 }
+
+// The steward sign-off gate advised on or refused a commit / push / PR (#254). Kept in the
+// same sidecar as the verdicts and served in the same `steward` list, so a reload rebuilds it.
+export interface StewardGateRecord {
+  gate: 'advise' | 'deny'
+  message: string
+  at: string
+}
+export const stewardGateLine = (g: Pick<StewardGateRecord, 'gate' | 'message'>) =>
+  `Steward gate ${g.gate === 'deny' ? 'refused' : 'warned'}: ${g.message ?? ''}`
+/** The gate's chat row, live or rebuilt on reload: a system line that carries its record so it is cached. */
+export const stewardGateRow = (id: string, gate: StewardGateRecord): ChatMessage => ({
+  id, role: 'system', content: stewardGateLine(gate), timestamp: new Date(gate.at), category: 'chat', stewardGate: gate,
+})
 
 export interface ChatMessage {
   id: string
@@ -202,6 +217,8 @@ export interface ChatMessage {
   compaction?: CompactionMarker
   // Present only on a steward verdict row; renders StewardVerdictCard.
   steward?: StewardVerdict
+  // Present only on a steward gate line (plain system row, persisted like the card).
+  stewardGate?: StewardGateRecord
   messageId?: string
   chunkIndex?: number
   liked?: boolean
