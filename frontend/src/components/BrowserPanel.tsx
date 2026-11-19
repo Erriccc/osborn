@@ -421,7 +421,7 @@ export function BrowserPanel() {
             </button>
           )}
           {watching && (
-            <button onClick={stopEngine} disabled={!!busy} title={SHUT_DOWN_TITLE} className={`hidden sm:block ${HEADER_BTN} text-red-300`}>
+            <button onClick={stopEngine} disabled={!!busy} title={SHUT_DOWN_TITLE} className={`hidden sm:block ${HEADER_BTN} border-red-900/60 hover:bg-red-950/40 text-red-300`}>
               Shut down engine
             </button>
           )}
@@ -486,7 +486,8 @@ export function BrowserPanel() {
       {watching && (() => {
         const all = status?.tabs ?? []
         const mine = all.filter((t) => !!me && status?.tabsByOwner?.find((o) => o.i === t.i)?.owner === me)
-        const others = all.length - mine.length
+        // Count only tabs someone else owns; an unowned tab (the room, a released tab) is not "in use".
+        const others = all.filter((t) => { const o = status?.tabsByOwner?.find((x) => x.i === t.i)?.owner; return !!o && o !== me }).length
         if (!all.length) return null
         return (
           <div className="flex items-center gap-2">
