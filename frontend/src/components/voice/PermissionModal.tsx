@@ -3,6 +3,10 @@
 import { useState } from 'react'
 
 export interface PermissionRequest {
+  /** The agent's id for this request; the answer names it so a late click never settles another request. */
+  requestId?: string
+  /** What "Always" covers, from the agent: "this file", "reading this file", "this exact command", "this exact search", "this exact request". */
+  always?: string
   toolName: string
   description: string
   input?: Record<string, unknown>
@@ -14,9 +18,9 @@ export interface PermissionRequest {
   autoApproved?: boolean
 }
 
-// Session approval modes, surfaced as the visible picker in the Activity log row (ApprovalPicker).
-// Only 'allow-all' auto-approves; 'ask' and 'auto-review' always require an
-// explicit human decision on the inline card (DENY always wins).
+// Approval modes, surfaced as the visible picker in the Activity log row (ApprovalPicker).
+// Kept and applied by the agent (agent/src/approval-policy.ts, #364); the
+// browser shows and changes it. DENY always wins.
 export type ApprovalMode = 'ask' | 'auto-review' | 'allow-all'
 
 // Helper to determine tool risk level
@@ -62,8 +66,8 @@ function parseDiffLines(diff: string) {
  * ApprovalCard — inline permission approval, rendered inside the transcript
  * message flow (NOT a `fixed inset-0 z-50` full-screen overlay). The agent
  * pauses the one task awaiting this decision; the rest of the UI (header,
- * panels, composer) stays live. Spoken "allow"/"deny"/"always allow" resolves
- * the same pending request independently of this card — the card is only a view.
+ * panels, composer) stays live. In the browser only these buttons answer it
+ * (a spoken answer is settled only on a phone call, by the agent).
  *
  * `reviewMode` (session mode 'auto-review') starts the diff expanded so the full
  * change is shown immediately for a fast decision; it does NOT auto-approve.
@@ -216,13 +220,12 @@ export function ApprovalCard({
                 Allow
               </button>
               <button onClick={() => onRespond('always_allow')}
+                title={permission.always ? `Always allow ${permission.always} for this session` : 'Always allow for this session'}
                 className="flex-1 min-h-11 px-3 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 rounded-xl transition-all text-white text-sm font-medium shadow-lg shadow-amber-500/20">
                 Always
+                {permission.always && <span className="block text-[10px] font-normal opacity-90 leading-tight">{permission.always}</span>}
               </button>
             </div>
-            <p className="text-gray-600 text-[10px] text-center">
-              Or say &quot;allow&quot;, &quot;deny&quot;, or &quot;always allow&quot;
-            </p>
           </div>
         )}
       </div>

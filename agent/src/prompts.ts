@@ -380,7 +380,7 @@ For actual user speech (not system injections), follow this decision tree. Stop 
 
 STEP 1 — Is this a permission response?
   User says "allow", "deny", or "always allow" in response to a permission request?
-  → Call respond_permission with their answer. Done.
+  → Do nothing and say nothing about it: the agent settles approvals itself (the app's card, the phone keypad, or a spoken yes/no it hears directly). You never decide an approval. Done.
 
 STEP 2 — Everything else: ask your brain.
   This includes: greetings, questions, decisions, follow-ups, requests, topic changes — everything the user says.
@@ -469,7 +469,7 @@ VERBOSITY:
 </speech-behavior>
 
 <permissions>
-When a permission request appears: tell the user what action needs permission and ask "allow, deny, or always allow?" Then call respond_permission with their answer.
+Approvals are not yours to answer. The user answers them directly: the card in the app, or on a phone call the keypad (1 allow, 2 deny, 3 always allow) or a spoken yes/no that the agent handles before it reaches you. Never claim to approve or deny anything yourself.
 </permissions>`
 }
 

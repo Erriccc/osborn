@@ -10,6 +10,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/auth/') ||
     pathname.startsWith('/api/') ||
     pathname.startsWith('/p/') ||
+    pathname.startsWith('/phone/') || // static phone-call audio fetched by LiveKit Ingress
     pathname === '/sitemap.xml' ||
     pathname === '/robots.txt'
   ) {

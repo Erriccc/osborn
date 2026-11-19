@@ -57,7 +57,7 @@ import { statusManager } from './status-manager.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED } from './prompts.js'
-import { MCP_CATALOG } from './config.js'
+import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled } from './content/lens-launch.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
@@ -74,7 +74,9 @@ import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phonePermissionPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
+import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -3062,8 +3064,20 @@ async function main() {
 
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
-  // Session-level always-allow list: paths the user has approved for this session without prompting
-  let sessionAlwaysAllowPaths = new Set<string>()
+  // Session-level always-allow list ("Always" in the browser, keypad 3 on a call): approved without prompting
+  let sessionAllows = newSessionAllows()
+  // The request a phone caller last heard read out: the keypad and a spoken yes/no answer only that one.
+  let phonePromptedRequestId: string | null = null
+  // Sessions a call's "switch to …" picks from: loaded when the call starts, refreshed by "recent sessions".
+  let phoneSessions: SessionChoice[] = []
+  // "Switch to <title>?" asked on a call: switched only on a yes in the next turn.
+  let phoneSwitchProposal: { target: SessionChoice; expires: number } | null = null
+  // A brain parked after "keep working" on a call: its requests keep the phone
+  // policy (denied, or left pending) until a browser or app session re-attaches it.
+  let phoneParkedBrain: unknown = null
+  // Tool approval mode (#364): saved in config.yaml, set from the app, applied
+  // to every permission request (browser and phone calls).
+  let approvalMode: ApprovalMode = readApprovalMode()
   let userState = 'listening'  // Track user speech state for queue safety
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
   // Authenticated Supabase userId from participant metadata. Used to scope
@@ -4054,13 +4068,14 @@ async function main() {
     return b && !b.idle ? 'busy' : 'idle'
   }
 
-  function cancelPendingSwitch(reason: string, notify = true): void {
+  // `reply`: where the cancel notice goes (default the room; a voice switch passes its own so it can speak it).
+  function cancelPendingSwitch(reason: string, notify = true, reply: typeof sendToFrontend = publishToRoom): void {
     if (!pendingSwitch) return
     const { target, timer } = pendingSwitch
     clearInterval(timer)
     pendingSwitch = null
     console.log(`↩️ Pending switch to ${target.slice(0, 8)} cancelled (${reason})`)
-    if (notify) void sendToFrontend({ type: 'session_switch_cancelled', sessionId: target, reason })
+    if (notify) void reply({ type: 'session_switch_cancelled', sessionId: target, reason })
   }
 
   const SWITCH_REJECT_COPY: Record<string, string> = {
@@ -4096,8 +4111,10 @@ async function main() {
   async function requestSessionSwitch(
     target: string,
     cwdHint: string | null | undefined,
-    opts: { force?: boolean; origin: string },
+    opts: { force?: boolean; origin: string; reply?: typeof sendToFrontend },
   ): Promise<'noop' | 'execute' | 'defer' | 'reject'> {
+    // Replies go to the room, or through the caller's `reply` (a call's voice switch reads them back).
+    const sendToFrontend = opts.reply ?? publishToRoom
     if (!currentLLM || !target) return 'reject'
     const cwd = await resolveCwdForSession(target, cwdHint)
     if (!cwd) {
@@ -4124,7 +4141,7 @@ async function main() {
     console.log(`🔀 Switch request (${opts.origin}) → ${target.slice(0, 8)}: ${decision.action}/${decision.leave} → ${plan.kind} (${plan.reason}) busy=${JSON.stringify(busy)}`)
 
     if (plan.kind === 'noop') {
-      if (pendingSwitch) cancelPendingSwitch('already_live')
+      if (pendingSwitch) cancelPendingSwitch('already_live', true, sendToFrontend)
       else await sendToFrontend({ type: 'session_switch_cancelled', sessionId: target, reason: 'already_live' })
       return 'noop'
     }
@@ -4167,7 +4184,7 @@ async function main() {
       })
       return 'defer'
     }
-    await performSessionSwitch(target, cwd, plan, opts.origin)
+    await performSessionSwitch(target, cwd, plan, opts.origin, opts.reply)
     return 'execute'
   }
 
@@ -4176,7 +4193,10 @@ async function main() {
     cwd: string,
     plan: { reason: string; stopSlotFirst: boolean },
     origin: string,
+    reply?: typeof sendToFrontend,
   ): Promise<void> {
+    // Replies go to the room, or through the caller's `reply` (a call's voice switch reads them back).
+    const sendToFrontend = reply ?? publishToRoom
     if (!currentLLM) return
     // Single-flight: only the teardown/arm/notify section holds the guard; the
     // spoken acknowledgment runs after it is released (a say() that never
@@ -4235,7 +4255,7 @@ async function main() {
       if (hostActive) { hostSessionId = target; hostWorkingDir = cwd }
 
       // 7. Per-session permission grants don't carry over.
-      sessionAlwaysAllowPaths = new Set<string>()
+      sessionAllows = newSessionAllows()
 
       // 8. Workspace + caches.
       ensureSessionWorkspace(cwd, target)
@@ -4526,11 +4546,11 @@ async function main() {
     directLLM?.setPhoneCall?.(inPhoneRoom())
     currentLLM = directLLM
 
-    // Watch bridge (mobile Track 1): a wrist ack/expiry settles whatever
-    // permission is currently pending. Re-registered per session — harmless,
-    // the latest closure wins and they all resolve through currentLLM.
-    setWatchResultHandler((allow, toolName) => {
-      if (settlePendingPermission(allow)) {
+    // Watch bridge (mobile Track 1): a wrist ack/expiry settles the request
+    // its push was armed for (requestId), never a newer one. Re-registered per
+    // session — harmless, the latest closure wins.
+    setWatchResultHandler((allow, toolName, requestId) => {
+      if (settlePendingPermission(allow ? 'allow' : 'deny', requestId)) {
         console.log(`⌚️ Watch bridge settled ${toolName}: ${allow ? 'approve' : 'deny'}`)
       } else {
         // Already answered via the web UI — a late ack/expiry is a no-op.
@@ -4548,7 +4568,7 @@ async function main() {
     if (resumeSessionId) hostSessionId = resumeSessionId
 
     // Reset the session always-allow list for each new direct session
-    sessionAlwaysAllowPaths = new Set<string>()
+    sessionAllows = newSessionAllows()
 
     // For resumed sessions, eagerly create workspace (we know the real ID)
     if (resumeSessionId) {
@@ -4673,36 +4693,31 @@ async function main() {
       console.log(`⚠️ Permission needed: ${data.toolName}`)
       const toolName = data.toolName
       const input = data.input || {}
+      // Every answer names this id (settlePendingPermission); a late one never settles a newer request.
+      const requestId: string = data.requestId
 
-      // A phone caller cannot approve tools until PHONE_KEYPAD_APPROVALS_ENABLED is on: deny straight away.
-      if (phonePermissionPolicy(inPhoneRoom()) === 'deny') {
+      // A phone caller cannot approve tools until PHONE_KEYPAD_APPROVALS_ENABLED is on:
+      // deny straight away. That holds for a brain parked after "keep working" on a
+      // call too, until a browser or app session re-attaches it ('hold' = it waits
+      // for a person; the saved mode and always-allow list never answer it).
+      const phoneRoute = phoneRequestRoute({ liveCall: inPhoneRoom(), parkedFromCall: directLLM === phoneParkedBrain })
+      if (phoneRoute === 'deny') {
         console.log(`📞 Phone call: denied ${toolName} (keypad approvals are off)`)
-        directLLM.respondToPermission(false, PHONE_PERMISSION_DENIED)
+        directLLM.respondToPermission(false, PHONE_PERMISSION_DENIED, requestId)
+        return
+      }
+      const holdForPerson = phoneRoute === 'hold'
+
+      // Check session always-allow list before showing dialog
+      if (!holdForPerson && isAlwaysAllowed(sessionAllows, toolName, input)) {
+        console.log(`✅ Session always-allow: ${toolName} ${input?.file_path || ''}`)
+        directLLM.respondToPermission(true, undefined, requestId)
         return
       }
 
-      // Check session always-allow list before showing dialog
-      if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
-        const filePath = String(input?.file_path || '')
-        if (filePath && sessionAlwaysAllowPaths.has(filePath)) {
-          console.log(`✅ Session always-allow: ${filePath}`)
-          directLLM.respondToPermission(true)
-          return
-        }
-      }
-
-      // Build descriptive message based on tool type
-      let description = `I need permission to use ${toolName}.`
-      if (toolName === 'Bash' && input.command) {
-        const cmd = String(input.command).substring(0, 60)
-        description = `I want to run the command: ${cmd}${String(input.command).length > 60 ? '...' : ''}`
-      } else if (toolName === 'Write' && input.file_path) {
-        description = `I want to create or overwrite the file: ${input.file_path}`
-      } else if (toolName === 'Edit' && input.file_path) {
-        description = `I want to edit the file: ${input.file_path}`
-      } else if (toolName === 'WebFetch' && input.url) {
-        description = `I want to fetch content from: ${input.url}`
-      }
+      const description = describePermission(toolName, input)
+      // What "Always" covers for this request (the button and the phone prompt say it).
+      const always = alwaysScope(toolName, input).label
 
       // Generate diff for Write/Edit/MultiEdit tools
       let diffString: string | undefined
@@ -4759,19 +4774,47 @@ async function main() {
         }
       }
 
+      // The saved approval mode (#364) answers here, for the browser and phone
+      // calls alike; the browser only shows what was approved.
+      const auto = autoApproval(approvalMode, toolName, input, workingDir)
+      if (auto.approve && !holdForPerson) {
+        console.log(`⚡ Auto-approved (${approvalMode}, ${auto.tier}): ${toolName}`)
+        directLLM.respondToPermission(true, undefined, requestId)
+        sendToFrontend({ type: 'permission_auto_approved', requestId, toolName, input: data.input, description, diff: diffString, mode: approvalMode, tier: auto.tier })
+        return
+      }
+
+      // Phone call (keypad approvals on): read the request out; the keypad
+      // answers it through settlePendingPermission, never the model (#363).
+      // The keypad and a spoken yes/no answer it only once the caller has heard
+      // the whole prompt (playout finished); a press before then answers nothing.
+      if (inPhoneRoom()) {
+        phonePromptedRequestId = null
+        phoneSwitchProposal = null  // a "yes" now must never be read as confirming a switch
+        void Promise.resolve((currentSession as any)?.say?.(phoneApprovalPrompt(toolName, input)))
+          .then((handle: any) => promptHeard(handle))
+          .then((heard) => {
+            // Talked over (interrupted) = not heard: the keypad and "yes" stay inert for it.
+            if (heard && pendingPermissionHolder()?.getPendingPermission?.()?.requestId === requestId) phonePromptedRequestId = requestId
+          })
+          .catch(() => {})
+      }
+
       console.log(`🔍 perm payload: diff=${diffString ? `✅ ${diffString.length} chars` : '❌ NONE'} toolName=${toolName}`)
       sendToFrontend({
         type: 'permission_request',
+        requestId,
         toolName: data.toolName,
         input: data.input,
         description,
+        always,
         agentRole: 'direct',
         diff: diffString,
       })
       // Watch bridge (mobile Track 1): mirror this blocking question to the
       // wrist via Pushover. Fire-and-forget — dormant unless PUSHOVER_* env is
       // configured; web-UI answers always win (late wrist acks are no-ops).
-      void armPermissionPush({ toolName, description }).catch(() => {})
+      void armPermissionPush({ toolName, description, requestId }).catch(() => {})
       // Speak the descriptive request so user knows to respond
       //do not delete!! Leave this section commented out
       // say permission, request permission, ask for permission with session.say
@@ -5268,14 +5311,19 @@ async function main() {
     })
   }
 
-  // Settles whatever permission is pending (live session first, then a parked
-  // warm brain). Shared by the watch bridge and the phone keypad. False when
-  // nothing is pending (already answered elsewhere).
-  function settlePendingPermission(allow: boolean): boolean {
-    const target: any = currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
-    if (!target) return false
-    target.respondToPermission(allow)
-    return true
+  /** The LLM holding a pending permission (live session first, then a parked warm brain). */
+  function pendingPermissionHolder(): any {
+    return currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
+  }
+
+  // Settles the ONE request the answer was for (its requestId), on the live
+  // session or a parked warm brain. The one answer path for the browser card,
+  // the watch bridge, the phone keypad and a spoken yes/no. A late answer whose
+  // request is gone settles nothing, never a newer request. 'always_allow' also
+  // adds that request's scope (alwaysScope) to the session's always-allow list.
+  // False when that request is not pending (already answered elsewhere).
+  function settlePendingPermission(answer: PermissionAnswer, requestId: unknown): boolean {
+    return answerPending(pendingPermissionHolder(), answer, requestId, sessionAllows)
   }
 
   // wireRoomHandlers(room): register EVERY room.on(...) listener onto a fresh
@@ -5337,7 +5385,7 @@ async function main() {
     // Phone calls: keypad 2 denies the pending approval; 1 allows only once
     // PHONE_KEYPAD_APPROVALS_ENABLED is on. Only from the caller in an authorised phone room.
     room.on(RoomEvent.DtmfReceived, (_code: number, digit: string, participant: RemoteParticipant) => {
-      const outcome = handlePhoneKeypad({ sip: participant?.kind === ParticipantKind.SIP, inPhoneRoom: inPhoneRoom(), digit }, settlePendingPermission)
+      const outcome = handlePhoneKeypad({ sip: participant?.kind === ParticipantKind.SIP, inPhoneRoom: inPhoneRoom(), digit }, (answer) => settlePendingPermission(answer, phonePromptedRequestId))
       if (outcome !== 'ignored') console.log(`📞 Keypad ${digit}: ${outcome}`)
     })
   }
@@ -5490,6 +5538,8 @@ async function main() {
     // as the machine owner and resumes the most recent session (none = a new one).
     if (isPhoneCaller) {
       currentUserId = OWNER_USER_ID
+      // The sessions a spoken "switch to …" can pick from (the match must be decided before the model turn).
+      listAllClaudeSessions(50).then((all) => { phoneSessions = all.map(sessionListEntry) }).catch(() => {})
       try {
         const [latest] = await listAllClaudeSessions(1)
         const cwd = latest ? await resolveCwdForSession(latest.sessionId, latest.cwd) : null
@@ -5560,6 +5610,8 @@ async function main() {
     if (KEEP_WARM && warmLLM && warmSessionId && resumeSessionId && warmSessionId === resumeSessionId && Date.now() < warmExpiry) {
       console.log(`🔥 [KEEP-WARM] re-attaching session ${warmSessionId.slice(0, 8)} — zero replay`)
       const reused = claimWarm()
+      // Re-attached: its requests follow whoever holds it now (a browser or app, or a new call).
+      if (reused === phoneParkedBrain) phoneParkedBrain = null
       if (pendingSessionClose) { try { await pendingSessionClose } catch {} }
       const result = await createDirectSession(resumeSessionId, reused)
       session = result.session
@@ -5604,6 +5656,7 @@ async function main() {
         getAndConsumeInterruptionContext,
         getAndConsumeClientNotes,
         onFastBrainResult: onPipelineFastBrainResult,
+        takeVoiceAction: takePhoneVoiceAction,
       })
       // Pass pipelineLLM to createDirectSession so it uses it instead of creating a new ClaudeLLM
       const result = await createDirectSession(resumeSessionId, pipelineLLM)
@@ -6089,6 +6142,7 @@ async function main() {
                 getAndConsumeInterruptionContext,
                 getAndConsumeClientNotes,
                 onFastBrainResult: onPipelineFastBrainResult,
+                takeVoiceAction: takePhoneVoiceAction,
               })
               result = await createDirectSession(recoverySessionId, pipelineLLM)
             }
@@ -6207,6 +6261,7 @@ async function main() {
           namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles, false, userAgentOrigins),
           ...describeRoles(),
           keepWorking: true,
+          approvalMode,
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -6343,6 +6398,8 @@ async function main() {
           console.log('⚠️ Greeting failed:', err)
         }
       }
+      // A call has no approvals picker on screen: say which mode is on (#364).
+      if (isPhoneCaller) await greetViaVoice(approvalModeAnnouncement(approvalMode, { toolsOn: PHONE_TOOLS_ENABLED, keypadOn: PHONE_KEYPAD_APPROVALS_ENABLED }))
     } catch (err) {
       console.error('❌ Failed to start session:', err)
     }
@@ -6410,16 +6467,21 @@ async function main() {
       // participantConnectedHandler owns continuation (re-attach or, on a
       // mismatch, it frees the warm slot). The warm watchdog is the backstop.
       console.log('🔀 [KEEP-WARM] duplicate-identity eviction — device handoff; parking brain, keeping room')
+      // A call's brain parked here keeps the phone policy too, until re-attached.
+      phoneParkedBrain = phoneCallerLeft ? currentLLM : null
       parkWarm('duplicate_identity')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
-    } else if (KEEP_WARM && currentLLM && warmParkKey(currentLLM as any) && !phoneCallerLeft) {
+    } else if (KEEP_WARM && currentLLM && warmParkKey(currentLLM as any) && (!phoneCallerLeft || (keepWorkingRequested && PHONE_TOOLS_ENABLED))) {
+      // (A call parks only for "keep working after I hang up", and only once phone tools are on, #367.)
       // KEEP-WARM network/tab-close drop: park the subprocess instead of killing
       // it so a reconnect within the grace re-attaches with ZERO replay. We
       // STILL run the normal room teardown below — the parked brain is
       // independent of the room (no longer currentLLM, not in slots, so
       // agentsActive() is false), so releaseAgents + fast-leave free the empty
       // room with no billing burn. The warm grace/watchdog free the parked brain.
+      // Parked from a call: its requests keep the phone policy until a browser or app re-attaches.
+      phoneParkedBrain = phoneCallerLeft ? currentLLM : null
       parkWarm('participant_disconnected')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
@@ -6473,9 +6535,29 @@ async function main() {
         if (Object.hasOwn(STORE_REPLY_TYPES, data.type) && participant?.identity) {
           await sendToFrontend({ type: STORE_REPLY_TYPES[data.type], success: false, error: 'Another device controls this session' }, participant.identity)
         }
+        // A refused mode change: that tab's picker shows the mode that is really on.
+        if (data.type === 'set_approval_mode' && participant?.identity) {
+          await sendToFrontend({ type: 'approval_mode', mode: approvalMode, error: 'Another device controls this session' }, participant.identity)
+        }
         return
       }
+      await dispatchAction(data, { sender: participant?.identity })
+    } catch {}
+  }
 
+  // The room publish, under a name dispatchAction's `reply` can shadow.
+  const publishToRoom = sendToFrontend
+
+  /**
+   * Runs one app command (a data-channel message whose sender already passed
+   * checkControlSender). A phone call's voice actions (#367) run
+   * the same code through here, restricted to PHONE_ACTION_TYPES. `reply`
+   * receives what would go to the frontend (default: the room), so a call can
+   * speak the result.
+   */
+  const dispatchAction = async (data: any, opts: { sender?: string; reply?: typeof sendToFrontend } = {}) => {
+    const sendToFrontend = opts.reply ?? publishToRoom
+    try {
       if (data.type === 'claude_auth_code' && pendingAuthSubmitCode) {
         console.log('🔑 Received auth code from frontend')
         sendToFrontend({ type: 'claude_auth_submitting', message: 'Submitting code to Claude CLI...' })
@@ -6520,17 +6602,29 @@ async function main() {
           }
         }
       } else if (data.type === 'permission_response') {
-        // Handle permission response for direct mode
-        if (currentLLM && currentLLM.hasPendingPermission?.()) {
-          const allow = data.response === 'allow' || data.response === 'always_allow'
-          // Track always_allow paths for this session so future requests auto-approve
-          if (data.response === 'always_allow' && data.filePath) {
-            sessionAlwaysAllowPaths.add(String(data.filePath))
-            console.log(`🔒 Always-allow added for session: ${data.filePath}`)
-          }
-          currentLLM.respondToPermission(allow)
-          console.log(`✅ Permission: ${data.response}`)
+        // Settles only the request the click was for (requestId); the always-allow
+        // scope comes from that pending request, not from anything the client sent.
+        // A client older than request ids sends none: answerPendingWithoutId (live
+        // session's sole pending request only, Always as allow-once).
+        const answer = data.response
+        const known = answer === 'allow' || answer === 'deny' || answer === 'always_allow'
+        const settled = known && (data.requestId === undefined
+          ? answerPendingWithoutId(currentLLM as any, warmLLM as any, answer)
+          : settlePendingPermission(answer, data.requestId))
+        if (settled) {
+          console.log(`✅ Permission: ${answer}${data.requestId === undefined ? ' (no request id: live request, once)' : ''}`)
+        } else {
+          console.log(`🚫 Permission ${answer} ignored: request ${String(data.requestId ?? 'unnamed')} is not pending`)
         }
+      } else if (data.type === 'set_approval_mode') {
+        // The app's approvals picker (#364). Saved on the agent, so phone calls and
+        // the next browser session use it too. Echoed so every client shows it.
+        if (isApprovalMode(data.mode)) {
+          approvalMode = data.mode
+          const saved = writeApprovalMode(data.mode)
+          console.log(`🛡️ Approval mode: ${data.mode}${saved ? '' : ' (not saved: config.yaml unreadable)'}`)
+        }
+        sendToFrontend({ type: 'approval_mode', mode: approvalMode })
       } else if (data.type === 'favorite_changed') {
         // L2b (UI#21): a favorite is a UI action, not something the user said.
         // Queue it as hidden context for the next real user turn; no reply, no
@@ -6762,7 +6856,7 @@ async function main() {
         // session_switch_cancelled.
         const sessionId = data.sessionId as string
         const hint = typeof data.workingDirectory === 'string' ? data.workingDirectory : undefined
-        await requestSessionSwitch(sessionId, hint, { force: !!data.force, origin: 'switch_session' })
+        await requestSessionSwitch(sessionId, hint, { force: !!data.force, origin: 'switch_session', reply: sendToFrontend })
       }
       else if (data.type === 'get_busy') {
         // End asks before hanging up: a busy agent may keep working (keep_working).
@@ -6770,7 +6864,7 @@ async function main() {
         // the disconnect handler) and it is working, not just waiting on an approval.
         const busy = (currentLLM as any)?.busyState?.()
         const parks = KEEP_WARM && !activeMeetingBotId && !!warmParkKey(currentLLM as any)
-        await sendToFrontend({ type: 'busy_state', idle: (busy?.idle ?? true) || !!busy?.permissionPending, capMin: parks ? IDLE_EXIT_GRACE_MS / 60000 : 0, phone: isWatchBridgeEnabled() }, participant?.identity)
+        await sendToFrontend({ type: 'busy_state', idle: (busy?.idle ?? true) || !!busy?.permissionPending, capMin: parks ? IDLE_EXIT_GRACE_MS / 60000 : 0, phone: isWatchBridgeEnabled() }, opts.sender)
       }
       else if (data.type === 'keep_working') {
         keepWorkingRequested = true
@@ -7521,7 +7615,139 @@ async function main() {
           console.error('❌ list_processes: failed to read /proc:', err)
         }
       }
-    } catch {}
+    } catch (err) {
+      console.warn(`⚠️ action ${data?.type} failed:`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  /**
+   * Runs one PHONE_ACTION_TYPES command for a call's voice action and returns
+   * what it sent to the frontend; it still reaches the room, so an open app
+   * stays in step. Only the SIP caller's speech reaches it (takePhoneVoiceAction):
+   * there is no HTTP route, so the agent's own tools cannot change approvals.
+   */
+  const runAppAction = async (data: Record<string, unknown>): Promise<any[]> => {
+    if (!PHONE_ACTION_TYPES.has(String(data?.type))) throw new Error(`not an allowed action: ${String(data?.type)}`)
+    const replies: any[] = []
+    await dispatchAction(data, { reply: async (d, to) => { replies.push(d); return publishToRoom(d, to) } })
+    return replies
+  }
+
+  // Phone voice actions (#367): on a call, a short command ("stop that", "what
+  // are you doing?", "switch to my billing project", a yes/no to a pending
+  // approval) runs the app's own action instead of a model turn, and the result
+  // is spoken. The model never answers an approval.
+  function takePhoneVoiceAction(text: string): boolean {
+    if (!inPhoneRoom()) return false
+    // A yes/no counts only for the request the caller heard read out.
+    const heard = !!phonePromptedRequestId && pendingPermissionHolder()?.getPendingPermission?.()?.requestId === phonePromptedRequestId
+    // A proposed switch waits one turn for its yes/no (and a minute at most).
+    const switchProposed = !!phoneSwitchProposal && Date.now() < phoneSwitchProposal.expires
+    const action = matchVoiceAction(text, {
+      permissionPending: heard, anyPermissionPending: !!pendingPermissionHolder(), switchProposed, sessions: phoneSessions,
+    })
+    // Any other turn drops the proposal: only the very next yes switches.
+    if (action?.kind !== 'confirm_switch' && action?.kind !== 'switch') phoneSwitchProposal = null
+    if (!action) return false
+    console.log(`📞 Voice action: ${JSON.stringify(action)}`)
+    void runPhoneVoiceAction(action)
+      .then((line) => (currentSession as any)?.say?.(line))
+      .catch((e) => console.warn('⚠️ voice action failed:', e instanceof Error ? e.message : e))
+    return true
+  }
+
+  async function runPhoneVoiceAction(action: VoiceAction): Promise<string> {
+    const llmNow: any = currentLLM
+    switch (action.kind) {
+      case 'answer': {
+        if (!phoneAnswerAllowed(action.answer)) return "I can't approve actions on a call yet. Approve it in the app, or say no to deny it."
+        const requestId = phonePromptedRequestId
+        if (!requestId || pendingPermissionHolder()?.getPendingPermission?.()?.requestId !== requestId) return 'That request is no longer waiting.'
+        await runAppAction({ type: 'permission_response', response: action.answer, requestId })
+        return action.answer === 'allow' ? 'Allowed.' : 'Denied.'
+      }
+      case 'mode': {
+        if (!phoneMayChangeMode(approvalMode, action.mode, PHONE_KEYPAD_APPROVALS_ENABLED)) {
+          return `${approvalModeLabel(approvalMode)} is on. On a call I can only make approvals stricter for now; change it in the app.`
+        }
+        await runAppAction({ type: 'set_approval_mode', mode: action.mode })
+        return sayModeChanged(approvalMode)
+      }
+      case 'status': {
+        const busy = llmNow?.busyState?.() ?? { turnInFlight: false, compacting: false }
+        const pending = pendingPermissionHolder()?.getPendingPermission?.()
+        return sayStatus({
+          turnInFlight: !!busy.turnInFlight, compacting: !!busy.compacting,
+          tasks: llmNow?.getRunningTasks?.() ?? [],
+          pending: pending ? speakablePermission(pending.toolName, pending.input) : null,
+          keypad: PHONE_KEYPAD_APPROVALS_ENABLED,
+          heard: !!pending && pending.requestId === phonePromptedRequestId,
+        })
+      }
+      case 'stop': {
+        if (action.agent) {
+          const want = action.agent.replace(/\s+/g, '').toLowerCase()
+          const d = statusManager.getActiveDispatches().find((x) => (x.subagentType || '').replace(/[\s_-]+/g, '').toLowerCase().includes(want))
+          if (!d) return `No ${action.agent} agent is running.`
+          const replies = await runAppAction({ type: 'stop_dispatch', agentId: d.id })
+          return replies.find((r) => r.type === 'agent_stopped')?.stopped ? `Stopped the ${d.subagentType} agent.` : `I couldn't stop the ${d.subagentType} agent.`
+        }
+        // The main turn: the same graceful interrupt the fast brain uses (the subprocess stays up).
+        const stopped = await (llmNow?.interruptAgent?.() ?? llmNow?.interruptQuery?.())
+        return stopped === false ? "I wasn't doing anything to stop." : 'Stopped.'
+      }
+      case 'sessions': {
+        const replies = await runAppAction({ type: 'list_sessions' })
+        const sessions = replies.find((r) => r.type === 'sessions_list')?.sessions ?? []
+        phoneSessions = sessions
+        return saySessions(sessions)
+      }
+      case 'blocked': {
+        if (action.what === 'switch') phoneSwitchProposal = null
+        const pending = pendingPermissionHolder()?.getPendingPermission?.()
+        const heard = !!pending && pending.requestId === phonePromptedRequestId
+        return sayBlocked(action.what, pending ? speakablePermission(pending.toolName, pending.input) : null, PHONE_KEYPAD_APPROVALS_ENABLED, heard)
+      }
+      case 'switch': {
+        // matchVoiceAction only returns a switch whose name picked a session by
+        // title (pickSession). Nothing switches until the caller says yes.
+        const target = action.target
+        const name = target.title || action.query
+        if (target.sessionId === llmNow?.sessionId) { phoneSwitchProposal = null; return `You're already in ${name}.` }
+        phoneSwitchProposal = { target, expires: Date.now() + 60_000 }
+        return `Switch to ${name}?`
+      }
+      case 'cancel_switch': {
+        phoneSwitchProposal = null
+        return 'OK, staying here.'
+      }
+      case 'confirm_switch': {
+        const target = phoneSwitchProposal?.target
+        phoneSwitchProposal = null
+        if (!target) return 'There is nothing to switch to.'
+        const name = target.title || 'that session'
+        // Speak what the switch really did (done, pending, or why it was refused).
+        const replies = await runAppAction({ type: 'switch_session', sessionId: target.sessionId, workingDirectory: target.cwd })
+        // Replies about this target, plus an already_live cancel (the target was live; a pending switch elsewhere was dropped).
+        return saySwitchOutcome(replies.filter((r) => r?.sessionId === target.sessionId || (r?.type === 'session_switch_cancelled' && r?.reason === 'already_live')), name)
+      }
+      case 'outputs': {
+        const sessionId = llmNow?.sessionId
+        if (!sessionId) return "This session hasn't made any files yet."
+        const replies = await runAppAction({ type: 'get_session_artifacts', sessionId })
+        return sayOutputs(replies.find((r) => r.type === 'session_artifacts')?.artifacts ?? [])
+      }
+      case 'keep_working': {
+        // A hang-up kills the call's brain unless phone tools are on (#362):
+        // work started on a call must not run on with tools after it ends.
+        if (!PHONE_TOOLS_ENABLED) return "On a call I can't keep working after you hang up yet. Use the app for that."
+        const busy = (await runAppAction({ type: 'get_busy' })).find((r) => r.type === 'busy_state')
+        if (!busy || busy.idle) return "I'm not working on anything, so there's nothing to keep going."
+        if (!busy.capMin) return "I can't keep working after this call on this machine."
+        await runAppAction({ type: 'keep_working' })
+        return `OK. Hang up whenever you like. I'll keep working for up to ${busy.capMin} minutes${busy.phone ? " and let you know when I'm done" : ''}.`
+      }
+    }
   }
 
   // ============================================================

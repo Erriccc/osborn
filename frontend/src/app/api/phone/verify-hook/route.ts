@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server'
-import { smsDelivery, whatsappAuthMessage, type SendSmsHookPayload } from '@/lib/phone'
+import {
+  graphVersion, metaSendError, META_SEND_FAILED, smsDelivery, whatsappAuthMessage, whatsappMessageId,
+  type SendSmsHookPayload,
+} from '@/lib/phone'
 import { verifyStandardWebhook } from '@/lib/standard-webhook'
 
 /**
@@ -13,7 +16,8 @@ import { verifyStandardWebhook } from '@/lib/standard-webhook'
  * a failure instead of a code that never arrives.
  */
 
-const GRAPH_VERSION = 'v23.0'
+// Supabase gives an auth hook 5s; give up on Meta first so the user sees our message.
+const META_TIMEOUT_MS = 4_000
 
 function hookError(status: number, message: string) {
   return NextResponse.json({ error: { http_code: status, message } }, { status })
@@ -39,20 +43,25 @@ export async function POST(request: Request) {
   if (!token || !phoneId || !template) return hookError(503, 'WhatsApp delivery is not configured')
 
   try {
-    const r = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(phoneId)}/messages`, {
+    const r = await fetch(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(phoneId)}/messages`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(whatsappAuthMessage(delivery.to, delivery.otp, template, process.env.META_WA_TEMPLATE_LANG || 'en_US')),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(META_TIMEOUT_MS),
     })
+    const reply = await r.json().catch(() => null)
     if (!r.ok) {
-      const detail = await r.text().catch(() => '')
-      console.warn(`[phone] WhatsApp send failed: ${r.status} ${detail.slice(0, 300)}`)
-      return hookError(502, 'Could not send the code on WhatsApp')
+      const { code, message } = metaSendError(reply)
+      console.warn(`[phone] WhatsApp send failed: ${r.status} code=${code ?? '?'} ${JSON.stringify(reply ?? '').slice(0, 300)}`)
+      return hookError(502, message)
     }
+    // The id ties this send to Meta's delivery-status webhooks.
+    console.log(`[phone] WhatsApp code sent, message id ${whatsappMessageId(reply) ?? 'missing'}`)
   } catch (e) {
-    console.warn(`[phone] WhatsApp send threw: ${(e as Error).message}`)
-    return hookError(502, 'Could not send the code on WhatsApp')
+    const name = (e as Error).name
+    const timedOut = name === 'TimeoutError' || name === 'AbortError'
+    console.warn(`[phone] WhatsApp send ${timedOut ? 'timed out' : 'threw'}: ${(e as Error).message}`)
+    return hookError(timedOut ? 504 : 502, timedOut ? 'WhatsApp took too long to accept the code. Try again in a minute.' : META_SEND_FAILED)
   }
   return NextResponse.json({})
 }

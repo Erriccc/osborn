@@ -18,6 +18,7 @@ import {
   keypadAnswer,
   PHONE_KEYPAD_APPROVALS_ENABLED,
   phonePermissionPolicy,
+  phoneRequestRoute,
   PHONE_TOOLS_ENABLED,
   phoneToolPolicy,
   planConnectRoom,
@@ -258,10 +259,11 @@ t('isPhoneRoomName: only call- rooms with a safe charset', () => {
   assert.equal(isPhoneRoomName(undefined), false)
   assert.equal(isPhoneRoomName(42), false)
 })
-t('keypadAnswer: 1 allows, 2 denies, everything else ignored', () => {
-  assert.equal(keypadAnswer('1'), true)
-  assert.equal(keypadAnswer('2'), false)
-  for (const d of ['0', '3', '9', '*', '#', '', undefined, null]) assert.equal(keypadAnswer(d as any), null, String(d))
+t('keypadAnswer: 1 allows, 2 denies, 3 always allows, everything else ignored (#363)', () => {
+  assert.equal(keypadAnswer('1'), 'allow')
+  assert.equal(keypadAnswer('2'), 'deny')
+  assert.equal(keypadAnswer('3'), 'always_allow')
+  for (const d of ['0', '4', '9', '*', '#', '', '11', undefined, null]) assert.equal(keypadAnswer(d as any), null, String(d))
 })
 t('index.ts: /connect-room roomName is behind the sync-token check and validated', () => {
   const start = src.indexOf("url.pathname === '/connect-room'")
@@ -275,19 +277,28 @@ t('index.ts: /connect-room roomName is behind the sync-token check and validated
 t('index.ts: keypad goes through handlePhoneKeypad with the shared settle function', () => {
   const start = src.indexOf('RoomEvent.DtmfReceived')
   const body = src.slice(start, start + 600)
-  assert.match(body, /handlePhoneKeypad\(\{ sip: participant\?\.kind === ParticipantKind\.SIP, inPhoneRoom: inPhoneRoom\(\), digit \}, settlePendingPermission\)/)
-  assert.doesNotMatch(body, /settlePendingPermission\(true\)/)
-  assert.equal((src.match(/target\.respondToPermission\(allow\)/g) || []).length, 1, 'one settle implementation')
+  assert.match(body, /handlePhoneKeypad\(\{ sip: participant\?\.kind === ParticipantKind\.SIP, inPhoneRoom: inPhoneRoom\(\), digit \}, \(answer\) => settlePendingPermission\(answer, phonePromptedRequestId\)\)/, 'the keypad answers only the request the caller heard')
+  assert.doesNotMatch(body, /settlePendingPermission\('allow'\)/)
+  assert.match(src, /function settlePendingPermission\(answer: PermissionAnswer, requestId: unknown\): boolean \{\s+return answerPending\(pendingPermissionHolder\(\), answer, requestId, sessionAllows\)/, 'one settle implementation')
+})
+t('index.ts: browser permission_response settles through the same function (#363)', () => {
+  const start = src.indexOf("data.type === 'permission_response'")
+  const body = src.slice(start, start + 1200)
+  assert.match(body, /settlePendingPermission\(answer, data\.requestId\)/)
+  assert.doesNotMatch(body, /currentLLM\.respondToPermission/)
+  // always_allow's target comes from the pending request, not a client-sent filePath.
+  assert.doesNotMatch(body, /data\.filePath/)
 })
 // Interim (#361): caller ID can be spoofed, so a phone call approves nothing.
 t('keypad approvals are off by default', () => {
   assert.equal(PHONE_KEYPAD_APPROVALS_ENABLED, false)
 })
-t('SIP caller presses 1 while a permission is pending: nothing is approved', () => {
+t('SIP caller presses 1 or 3 while a permission is pending: nothing is approved (flag off)', () => {
   let pending = true
-  const settled: boolean[] = []
-  const settle = (allow: boolean) => { if (!pending) return false; settled.push(allow); pending = false; return true }
+  const settled: string[] = []
+  const settle = (a: string) => { if (!pending) return false; settled.push(a); pending = false; return true }
   assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '1' }, settle), 'ignored')
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '3' }, settle), 'ignored')
   assert.deepEqual(settled, [])
   assert.equal(pending, true)
   // 2 still denies; other keys and non-callers do nothing.
@@ -295,13 +306,18 @@ t('SIP caller presses 1 while a permission is pending: nothing is approved', () 
     assert.equal(handlePhoneKeypad(press, settle), 'ignored')
   }
   assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '2' }, settle), 'denied')
-  assert.deepEqual(settled, [false])
+  assert.deepEqual(settled, ['deny'])
   assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '2' }, settle), 'no pending permission')
 })
-t('with keypad approvals switched on, 1 approves (the slice-2 path is still wired)', () => {
-  const settled: boolean[] = []
-  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '1' }, (a) => { settled.push(a); return true }, true), 'approved')
-  assert.deepEqual(settled, [true])
+t('with keypad approvals switched on: 1 approves, 3 always allows, 2 denies (#363)', () => {
+  const settled: string[] = []
+  const settle = (a: string) => { settled.push(a); return true }
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '1' }, settle, true), 'approved')
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '3' }, settle, true), 'always allowed')
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '2' }, settle, true), 'denied')
+  assert.deepEqual(settled, ['allow', 'always_allow', 'deny'])
+  // Nothing pending: every key is a no-op.
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '1' }, () => false, true), 'no pending permission')
 })
 t('phonePermissionPolicy: every permission during a phone call is denied while approvals are off', () => {
   assert.equal(phonePermissionPolicy(true), 'deny')
@@ -310,11 +326,32 @@ t('phonePermissionPolicy: every permission during a phone call is denied while a
 })
 t('index.ts: permission requests in a phone room are denied before the always-allow list or the prompt', () => {
   const start = src.indexOf("directLLM.events.on('permission_request'")
-  const deny = src.indexOf("if (phonePermissionPolicy(inPhoneRoom()) === 'deny')", start)
+  const deny = src.indexOf("if (phoneRoute === 'deny')", start)
   const respond = src.indexOf('directLLM.respondToPermission(false', deny)
-  const allowList = src.indexOf('sessionAlwaysAllowPaths.has(filePath)', start)
+  const allowList = src.indexOf('isAlwaysAllowed(sessionAllows, toolName, input)', start)
   const prompt = src.indexOf("type: 'permission_request'", start)
   assert.ok(start > 0 && deny > start && respond > deny && respond < allowList && allowList < prompt, 'deny must come first')
+})
+t('phoneRequestRoute: a brain parked from a call keeps the phone policy until re-attached', () => {
+  // Keypad approvals off (today): a live call and a parked-from-call brain are both denied.
+  assert.equal(phoneRequestRoute({ liveCall: true, parkedFromCall: false }), 'deny')
+  assert.equal(phoneRequestRoute({ liveCall: false, parkedFromCall: true }), 'deny')
+  assert.equal(phoneRequestRoute({ liveCall: false, parkedFromCall: false }), 'normal')
+  // Keypad approvals on: a parked brain's requests wait for a person; the live call follows the mode.
+  assert.equal(phoneRequestRoute({ liveCall: false, parkedFromCall: true }, true), 'hold')
+  assert.equal(phoneRequestRoute({ liveCall: true, parkedFromCall: false }, true), 'normal')
+  assert.equal(phoneRequestRoute({ liveCall: false, parkedFromCall: false }, true), 'normal')
+})
+t('index.ts: a held request skips the always-allow list and the saved mode; the brain is marked on a call park and cleared on re-attach', () => {
+  const start = src.indexOf("directLLM.events.on('permission_request'")
+  const body = src.slice(start, start + 9000)
+  assert.match(body, /phoneRequestRoute\(\{ liveCall: inPhoneRoom\(\), parkedFromCall: directLLM === phoneParkedBrain \}\)/)
+  assert.match(body, /if \(!holdForPerson && isAlwaysAllowed\(sessionAllows, toolName, input\)\)/)
+  assert.match(body, /if \(auto\.approve && !holdForPerson\)/)
+  assert.match(src, /phoneParkedBrain = phoneCallerLeft \? currentLLM : null\s+parkWarm\('participant_disconnected'\)/)
+  assert.match(src, /phoneParkedBrain = phoneCallerLeft \? currentLLM : null\s+parkWarm\('duplicate_identity'\)/, 'the device-handoff park marks a call brain too')
+  assert.equal((src.match(/parkWarm\('/g) || []).length, (src.match(/phoneParkedBrain = phoneCallerLeft \? currentLLM : null\s+parkWarm\('/g) || []).length, 'every park marks a call brain')
+  assert.match(src, /const reused = claimWarm\(\)[\s\S]{0,200}if \(reused === phoneParkedBrain\) phoneParkedBrain = null[\s\S]{0,200}createDirectSession\(resumeSessionId, reused\)/)
 })
 
 // Fix round 2: a phone call is talk-only; the caller's room never goes to a browser.
@@ -359,7 +396,9 @@ t('index.ts: inPhoneRoom needs a SIP participant; phoneRoomName clears on caller
   const leave = src.indexOf('const handleParticipantDisconnected')
   const leaveBody = src.slice(leave, leave + 6000)
   assert.match(leaveBody, /const phoneCallerLeft = participant\.kind === ParticipantKind\.SIP\s+if \(phoneCallerLeft\) phoneRoomName = null/)
-  assert.match(leaveBody, /KEEP_WARM && currentLLM && warmParkKey\(currentLLM as any\) && !phoneCallerLeft/, 'a caller\'s brain is never parked')
+  // A caller's brain is parked only for "keep working" once phone tools are on (#367); off today.
+  assert.match(leaveBody, /KEEP_WARM && currentLLM && warmParkKey\(currentLLM as any\) && \(!phoneCallerLeft \|\| \(keepWorkingRequested && PHONE_TOOLS_ENABLED\)\)/, 'a caller\'s brain is never parked while phone tools are off')
+  assert.equal(PHONE_TOOLS_ENABLED, false)
   const destroy = src.indexOf('const destroyRoomSession = async')
   assert.match(src.slice(destroy, destroy + 1500), /activeRoomName = null\s+phoneRoomName = null/)
 })

@@ -172,6 +172,11 @@ export interface PipelineDirectOptions extends ClaudeLLMOptions {
   getAndConsumeInterruptionContext?: () => InterruptionContext | null
   /** Returns pending client notices as a hidden-context block and clears them ('' = none). */
   getAndConsumeClientNotes?: () => string
+  /**
+   * Phone voice actions (#367): true when the utterance was an app command the
+   * caller handled itself (it runs and speaks its own reply); the model never sees it.
+   */
+  takeVoiceAction?: (userText: string) => boolean
 }
 
 export interface FastBrainPanelResult {
@@ -271,7 +276,7 @@ export class PipelineDirectLLM extends llm.LLM {
   get workingDirectory(): string | undefined { return this.#opts.workingDirectory }
   get spawnedResumeId(): string | null { return this.#claudeLLM.spawnedResumeId }
   busyState() { return this.#claudeLLM.busyState() }
-  respondToPermission(allow: boolean, msg?: string) { this.#claudeLLM.respondToPermission(allow, msg) }
+  respondToPermission(allow: boolean, msg?: string, requestId?: string): boolean { return this.#claudeLLM.respondToPermission(allow, msg, requestId) }
   hasPendingPermission() { return this.#claudeLLM.hasPendingPermission() }
   getPendingPermission() { return this.#claudeLLM.getPendingPermission() }
   getMcpServers() { return this.#claudeLLM.getMcpServers() }
@@ -368,6 +373,16 @@ export class PipelineDirectLLM extends llm.LLM {
         gateApproved.add(chatCtx)
         this.chat({ chatCtx, toolCtx, connOptions, abortController })
       })
+    }
+
+    // ── PHONE VOICE ACTIONS (#367) ───────────────────────────────────────────
+    // "stop that", "what are you doing?", a yes/no to a pending approval … run
+    // as the app's own action, not a model turn. Before the interruption
+    // enrichment, so its context waits for the next real turn. The empty
+    // deferred stream gives LiveKit a reply with nothing to say.
+    if (userText.trim() && !userText.startsWith('[MEETING') && this.#opts.takeVoiceAction?.(userText)) {
+      console.log(`📞 [voice-action] handled without the model: "${userText.slice(0, 60)}"`)
+      return new NoiseGateStream(this, { chatCtx, toolCtx, connOptions }, async () => {})
     }
 
     // ── SESSION TAIL injection (seam-only) ───────────────────────────────────
@@ -683,6 +698,8 @@ export function buildGuardedAgentControl(args: {
 // bypass marker so the full normal path (enrichment, Claude, fast brain) runs.
 // Mirrors ClaudeLLMStream's direct-mode shape: run() returns quickly and the
 // pipeline is released; the real reply flows via tts_say/assistant events.
+// A reply stream that only runs `task` (no model output): the noise gate's
+// deferred triage, and an empty reply for a handled phone voice action.
 class NoiseGateStream extends llm.LLMStream {
   #task: () => Promise<void>
   constructor(

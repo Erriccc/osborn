@@ -20,7 +20,7 @@
  *     gate_send_anyway, stop_dispatch, join_meeting, leave_meeting,
  *     mute_participant, start_ide, stop_ide, spawn_background_session,
  *     dispatch_background, stop_background_session, list_slots, list_processes,
- *     favorite_changed
+ *     favorite_changed, set_approval_mode
  *   Open (read-only, listed in READ_ONLY_MESSAGE_TYPES):
  *     get_current_session, get_session_artifacts, get_plan_file,
  *     get_research_artifact, get_mcp_status, get_skills, skill_get, get_busy
@@ -34,6 +34,7 @@
  * become the controller. With no owner configured (single-tenant / local
  * mode) the newest joiner becomes the controller, as before.
  */
+import type { PermissionAnswer } from './approval-policy.js'
 
 /**
  * Known gated types. Informational and for tests: the gate itself is "not
@@ -75,6 +76,8 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'list_processes',
   // Feeds hidden context into the next turn (UI#21), so controller-only.
   'favorite_changed',
+  // Changes which tool requests are approved without asking (#364).
+  'set_approval_mode',
 ])
 
 /** Read-only queries any participant may send. Everything else is gated. */
@@ -88,6 +91,23 @@ export const READ_ONLY_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'skill_get',
   // End asks whether the agent is mid-task before offering keep-working.
   'get_busy',
+])
+
+/**
+ * App commands a phone caller's voice actions (#367) may run through
+ * dispatchAction (index.ts): the same code the app's buttons use. Anything
+ * else is refused there. There is deliberately no HTTP route to these: the
+ * agent's own tools must never be able to loosen or answer its approvals.
+ */
+export const PHONE_ACTION_TYPES: ReadonlySet<string> = new Set([
+  'permission_response',
+  'set_approval_mode',
+  'get_busy',
+  'stop_dispatch',
+  'list_sessions',
+  'switch_session',
+  'get_session_artifacts',
+  'keep_working',
 ])
 
 /** Identity prefix /api/token gives every user participant. */
@@ -152,10 +172,14 @@ export function isPhoneRoomName(name: unknown): name is string {
     && /^[A-Za-z0-9_+\-]+$/.test(name)
 }
 
-/** Keypad answer to a pending approval on a phone call: 1 allows, 2 denies, anything else is ignored. */
-export function keypadAnswer(digit: string | undefined | null): boolean | null {
-  if (digit === '1') return true
-  if (digit === '2') return false
+/**
+ * Keypad answer to a pending approval on a phone call (#363): 1 allows, 2
+ * denies, 3 always allows (the browser's "Always"); anything else is ignored.
+ */
+export function keypadAnswer(digit: string | undefined | null): PermissionAnswer | null {
+  if (digit === '1') return 'allow'
+  if (digit === '2') return 'deny'
+  if (digit === '3') return 'always_allow'
   return null
 }
 
@@ -179,6 +203,23 @@ export const PHONE_TOOLS_ENABLED = false
 /** What happens to a permission raised during a phone call: denied unless keypad approvals are on. */
 export function phonePermissionPolicy(inPhoneCall: boolean, approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED): 'deny' | 'ask' {
   return inPhoneCall && !approvalsEnabled ? 'deny' : 'ask'
+}
+
+/**
+ * How a permission request is handled when its brain belongs to a phone call:
+ * the live call, or a brain parked after "keep working" on a call that no
+ * browser or app session has re-attached yet.
+ * - 'deny': keypad approvals off (phonePermissionPolicy) — denied at once.
+ * - 'hold': parked from a call — left pending for a person; never answered by
+ *   the saved approval mode or the call's always-allow list.
+ * - 'normal': anything else (the live call with keypad approvals on, or no call).
+ */
+export function phoneRequestRoute(
+  s: { liveCall: boolean; parkedFromCall: boolean },
+  approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED,
+): 'deny' | 'hold' | 'normal' {
+  if (phonePermissionPolicy(s.liveCall || s.parkedFromCall, approvalsEnabled) === 'deny') return 'deny'
+  return s.parkedFromCall && !s.liveCall ? 'hold' : 'normal'
 }
 
 /** What happens to any tool call during a phone call: denied unless phone tools are on. */
@@ -216,20 +257,29 @@ export function planConnectRoom(s: {
 }
 
 /**
+ * May a phone caller give this answer (keypad or a spoken yes/no, #367)? A
+ * deny always; an allow only once keypad approvals are on.
+ */
+export function phoneAnswerAllowed(answer: PermissionAnswer, approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED): boolean {
+  return answer === 'deny' || approvalsEnabled
+}
+
+/**
  * Handles one keypad press (index.ts DtmfReceived). Only the SIP caller in an
- * authorised phone room counts; with approvals off a 1 settles nothing (a 2
- * still denies). Returns what was done.
+ * authorised phone room counts; with approvals off a 1 or 3 settles nothing
+ * (a 2 still denies). The answer goes to the same settle path the browser
+ * and watch use; the model never decides it. Returns what was done.
  */
 export function handlePhoneKeypad(
   press: { sip: boolean; inPhoneRoom: boolean; digit: string | undefined | null },
-  settle: (allow: boolean) => boolean,
+  settle: (answer: PermissionAnswer) => boolean,
   approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED,
-): 'ignored' | 'approved' | 'denied' | 'no pending permission' {
+): 'ignored' | 'approved' | 'always allowed' | 'denied' | 'no pending permission' {
   if (!press.sip || !press.inPhoneRoom) return 'ignored'
-  const allow = keypadAnswer(press.digit)
-  if (allow === null || (allow && !approvalsEnabled)) return 'ignored'
-  if (!settle(allow)) return 'no pending permission'
-  return allow ? 'approved' : 'denied'
+  const answer = keypadAnswer(press.digit)
+  if (answer === null || !phoneAnswerAllowed(answer, approvalsEnabled)) return 'ignored'
+  if (!settle(answer)) return 'no pending permission'
+  return answer === 'allow' ? 'approved' : answer === 'always_allow' ? 'always allowed' : 'denied'
 }
 
 /** Most bytes POST /connect-room reads; its body is only `{ roomName }`. */

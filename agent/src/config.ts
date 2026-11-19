@@ -1,9 +1,10 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, chmodSync, realpathSync, lstatSync, readlinkSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
-import { parse, stringify } from 'yaml'
+import { dirname, join, resolve } from 'path'
+import { Document, isMap, parse, parseDocument, stringify } from 'yaml'
 import type { McpServerConfig } from './claude-handler.js'
 import { cleanTurnText } from './content/transcript-sanitizer.js'
+import { DEFAULT_APPROVAL_MODE, isApprovalMode, type ApprovalMode } from './approval-policy.js'
 
 // Config file paths
 const CONFIG_DIR = join(homedir(), '.osborn')
@@ -57,6 +58,58 @@ export interface OsbornConfig {
 
   // Inference model config — admin-owned, not written to config.yaml
   inference?: InferenceConfig
+
+  // Tool approval mode (#364), set from the app; applies to browser and phone calls.
+  approvalMode?: ApprovalMode
+}
+
+/** The saved approval mode (config.yaml `approvalMode`); 'ask' when unset or unreadable. */
+export function readApprovalMode(file = CONFIG_FILE): ApprovalMode {
+  try {
+    const mode = (parse(readFileSync(file, 'utf-8')) as OsbornConfig | null)?.approvalMode
+    return isApprovalMode(mode) ? mode : DEFAULT_APPROVAL_MODE
+  } catch {
+    return DEFAULT_APPROVAL_MODE
+  }
+}
+
+/**
+ * Saves the approval mode into config.yaml. The YAML document is edited in
+ * place, so every other key and its comments survive, and the file keeps its
+ * permissions. Written to a temp file and renamed, so a crash never leaves a
+ * half-written config. Refuses (false) when the existing file cannot be
+ * parsed or is not a mapping, rather than overwrite it.
+ */
+export function writeApprovalMode(mode: ApprovalMode, configFile = CONFIG_FILE): boolean {
+  try {
+    // A symlinked config (dotfiles repo) is written through to its target; the link stays.
+    let file = configFile
+    try {
+      if (lstatSync(configFile).isSymbolicLink()) {
+        file = existsSync(configFile) ? realpathSync(configFile) : resolve(dirname(configFile), readlinkSync(configFile))
+      }
+    } catch { /* no file yet */ }
+    let doc = new Document({})
+    let fileMode = 0o600
+    if (existsSync(file)) {
+      doc = parseDocument(readFileSync(file, 'utf-8'))
+      if (doc.errors.length) return false
+      if (doc.contents !== null && !isMap(doc.contents)) return false
+      if (doc.contents === null) doc.contents = doc.createNode({}) as typeof doc.contents
+      fileMode = statSync(file).mode & 0o777
+    } else {
+      mkdirSync(dirname(file), { recursive: true })
+    }
+    doc.set('approvalMode', mode)
+    const tmp = `${file}.tmp-${process.pid}`
+    writeFileSync(tmp, String(doc), { encoding: 'utf-8', mode: fileMode })
+    chmodSync(tmp, fileMode)
+    renameSync(tmp, file)
+    return true
+  } catch (err) {
+    console.error(`❌ Failed to save approval mode: ${(err as Error).message}`)
+    return false
+  }
 }
 
 interface McpServerConfigYaml {
