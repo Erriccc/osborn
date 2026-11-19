@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 54
+Version: 55
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -48,8 +48,9 @@ delivered to the user. No silent runs.
   `/tab {"op":"open","url":…,"viewport":"mobile"}` — an emulated iPhone 13
   (touch, mobile user agent, 3× pixels, `(hover:none) and (pointer:coarse)`
   match), signed in like your desktop tabs. `"tablet"` = iPad (gen 7).
-- **Meeting needs a live browser on camera?** → STREAM: Fly engine's public
-  MJPEG into canvas `stream` mode. NO tunnels. → references/streaming.md
+- **Meeting needs a live browser on camera?** → STREAM: cast your tab
+  (`/tab {"op":"cast","i":n}`), then put the Fly engine's public MJPEG into
+  canvas `stream` mode. NO tunnels. → references/streaming.md
 - **Exploring/researching any site?** → RESEARCH: `OSBORN_ENTRY=none` +
   `OSBORN_APP_URL=<site>`; save what you learn as journeys.
 - **Testing a PR / deploy / journey that takes more than 3–4 actions?** →
@@ -200,6 +201,20 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v55
+- **The live view is private.** The public viewer (`https://<app>.fly.dev/`) and its `/stream` no longer follow whichever tab is fronted: they show only a tab a driver cast, else a "Nothing is being shared" frame. `/tab {"op":"cast","i":n}` shares one of YOUR tabs there (`409 not_your_tab` for anyone else's); `/tab {"op":"uncast"}` stops it (the caster or the tab's owner). Closing or releasing the tab stops it too. `/status.cast` and every `/tab` reply say which tab is cast. **Casting into a meeting: cast your tab first**, then point the canvas at the engine as before.
+- Any ownership change of a cast tab (takeover, handback, release, `/end`) stops the cast, so a person signing in is never broadcast; the owner casts it again afterwards. Tab 0 (the voice room) is never cast: `409 room_tab`. The cast survives an engine restart (with its tab).
+- **People see only their own tabs.** For a /browser panel person (`x-driver-id: person:<email>`) the only tab they can see or act on is one they own. Unowned tabs, tab 0 (the voice room) included, are invisible and untouchable to them, like every other driver's tab. `claim`, `switch`, `navigate`, `close` and `release` of any tab they do not own are `409 not_your_tab`; `takeover` works only on an agent's tab, and releasing a taken-over tab hands it back; releasing their own-profile tab closes it. With no tab of their own, `/act`, `/say`, `/shot`, `/hear` and `/recover` are `409 no_own_tab` (never tab 0). Other people appear only as `"person"`, and `/end` tells a person how many others still use the engine, not who.
+- People cannot take, claim or switch to tab 0 even after an agent claimed it (`409 room_tab`). A person who took control of a tab gets its `/logs`, `/audio` and `/hear` only from the moment they took control. A person's clips come only from their own tab's recording (no clip rather than the shared screencast). `/status` shows a person only their own journey (`journey`/`mission` null otherwise) and counts only their tasks. `/end {"shutdown":true}` from a person is `409 engine_in_use` while other drivers still hold tabs. Agents and the default driver can still watch any tab, tab 0 included, on `GET /stream` (no `tab`: their current tab).
+- What a person reads is scoped the same way: `/status` and every `/tab` reply show only their own tabs' URLs (other tabs are listed with `url:""`; no marks); with no tab of their own `/status` says `activeTab:null, pageState:"none"`. `/tasks`, `/clip`, `/artifact` (`403 not_your_task`), `/logs`, `/audio` and `/stream` cover only their tabs; `/events` sends them only events with no tab at all (engine status) or about their own tabs, so tab-0 transcripts and navigations never reach them. A tab is theirs from the moment `/tab open` starts loading it. Agents with the engine token, and the default driver, keep the full view.
+- **Watch your own tab:** `GET /stream` on the control API (token + `x-driver-id`) is MJPEG of your current tab, following it as you switch; `?tab=i` picks another tab you own (`409 not_your_tab` otherwise). With no tab of your own it shows "Nothing is being shared". The in-app /browser panel uses this, so each person sees only their own tab (and needs the engine token on the web app).
+- A public engine with no `OSBORN_ENGINE_TOKEN` now locks its control API: every route answers `503 engine_token_missing` (only `GET /health` and signed `/media` links still work). `GET /health` reports `tokenRequired` and `tokenConfigured`. A local run with no Fly app or public URL stays open, and says so at boot.
+- `/shot` refuses a tab another driver owns (`409 tab_owned`, like `/eval`). A failed shot is still a task: the `500 no_screenshot` reply carries its `task` number and log link.
+- A screenshot that times out never falls back to another tab's frame: you get `no_screenshot` (or `artifact:null`) instead of a picture of the wrong tab.
+- `/tab close` and `/tab navigate` with no `i` act only on a tab you own (your current one, else the newest you own), never tab 0 (the voice room) or an unowned tab; with none it is `409 no_own_tab`. Pass `"i"` to act on another tab explicitly. After a close, `/tab list` reports your real tab, never a closed one at `i:-1`.
+- A navigation that lands on another page of the same host (http→https, a trailing slash, `/login` → `/dashboard`) is a success with `redirectedTo`, not `502 nav_failed`. `netError` keeps codes with digits (`net::ERR_HTTP2_PROTOCOL_ERROR`). When `/tab open` reuses a same-site tab and the load fails, the error comes back with `reusedTab` (the tab now showing it) instead of a fresh tab opening silently.
+- `clipUrl`, `audioClipUrl`, `artifactUrl`, `resultUrl` and webhook links are absolute whenever the engine knows its public URL, like `evidence`. Signed `/media` links answer `HEAD`.
 
 ## What's new in v54
 - `/act` can fill a field but does not reliably press keys: "type X and press Enter" leaves X in the box unsent. Press the key yourself: `POST /input {"type":"key","key":"Enter"}` (Playwright key names: `Enter`, `Tab`, `Escape`, `ArrowDown`, `Control+A`). `/input` also takes `{"type":"type","text":…}` (real keystrokes into the focused field), `{"type":"click","x":0.5,"y":0.5}` (fractions of the frame) and `{"type":"scroll","dy":600}`, on your own tab.

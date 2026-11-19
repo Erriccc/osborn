@@ -64,7 +64,9 @@ curl -sS -X POST http://localhost:8741/canvas -H 'Content-Type: application/json
   -d '{"kind":"show","mode":"notes","title":"...","items":["...","..."]}'
 ```
 `mode` = `idle` | `notes` (title+items) | `link` (url) | `web` (iframe url) | `text` (title+text)
-| `stream` (url — renders `<img src="{url}/stream">`, a live MJPEG browser feed).
+| `stream` (url — renders `<img src="{url}/stream">`, a live MJPEG browser feed;
+the engine shows only a tab its driver cast with `/tab {"op":"cast","i":n}`, else
+"Nothing is being shared" — cast first).
 
 **`stream` mode — NO TUNNELS policy:** the feed URL must be PUBLIC. Never
 tunnel a local browser engine to get one (ngrok's free tier burned its entire
@@ -119,14 +121,31 @@ flip the canvas to `link`/`web` mode — that silently replaces the live browser
 feed with a static card (observed failure 2026-08-01: "PULLING UP youtube.com"
 card replaced the stream).
 
-**Drive the engine** (one Bash call, needs `OSBORN_ENGINE_TOKEN` env):
+The engine's public feed shows ONLY a tab its owner cast, so set the cast up
+once per meeting, always with the same driver id (`x-driver-id: meeting`).
+Tab 0 (the voice room) cannot be cast (409 `room_tab`), nor can other drivers'
+tabs (409 `not_your_tab`). Needs `OSBORN_ENGINE_TOKEN` env.
 ```bash
-curl -sS -X POST "https://osborn-voice-e2e-n.fly.dev:8781/act" \
-  -H "x-engine-token: $OSBORN_ENGINE_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"instruction":"go to youtube.com"}'
+E=https://osborn-voice-e2e-n.fly.dev:8781
+H=(-H "x-engine-token: $OSBORN_ENGINE_TOKEN" -H 'Content-Type: application/json' -H 'x-driver-id: meeting')
+# 1. Open your own tab. The reply's activeTab.i is its index.
+curl -sS -X POST "$E/tab" "${H[@]}" -d '{"op":"open","url":"https://example.com","reuse":false}'
+# 2. Cast that index: the bot camera now shows it.
+curl -sS -X POST "$E/tab" "${H[@]}" -d '{"op":"cast","i":<activeTab.i>}'
+# 3. Put the canvas in stream mode (once).
+curl -sS -X POST http://localhost:8741/canvas -H 'Content-Type: application/json' \
+  -d '{"kind":"show","mode":"stream","url":"https://osborn-voice-e2e-n.fly.dev"}'
 ```
-(Or `/tab {"op":"open","url":"https://youtube.com"}` for a direct open. The
-cast keeps showing a REAL browser doing the thing — that's the product.)
+**Drive the cast tab** with the same headers, in one Bash call:
+```bash
+curl -sS -X POST "$E/act" "${H[@]}" -d '{"instruction":"go to youtube.com"}'
+curl -sS -X POST "$E/tab" "${H[@]}" -d '{"op":"navigate","url":"https://youtube.com"}'   # no "i": your tab
+```
+Do NOT `/tab open` another tab for a new site: the cast stays on the old tab.
+Navigate the cast tab instead (or cast the new tab's index). If a person takes
+control of the tab, the cast stops; cast it again after they hand it back.
+When the demo is over: `curl -sS -X POST "$E/tab" "${H[@]}" -d '{"op":"uncast"}'`.
+The cast keeps showing a REAL browser doing the thing — that's the product.
 
 If `OSBORN_ENGINE_TOKEN` isn't set, SAY so ("I can't reach the browser engine
 from here — the engine token isn't configured on this machine") instead of

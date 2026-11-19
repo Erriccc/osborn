@@ -1,9 +1,11 @@
 // Authenticated proxy for the browser-screen-recorder engine (issue #51).
 //
-// The engine is a Fly app with a public MJPEG live view and a token-protected
-// control API on :8781. Rather than hand the raw Fly URL + engine/stream tokens
-// to the browser, the in-app Browser panel calls THIS route; we inject the tokens
-// server-side and forward only allowlisted endpoints.
+// The engine is a Fly app with a token-protected control API on :8781. Rather
+// than hand the raw Fly URL + engine token to the browser, the in-app Browser
+// panel calls THIS route; we inject the token and the person's driver id
+// server-side and forward only allowlisted endpoints. The live view is the
+// person's own tab only (the engine checks ownership), never the engine's
+// fronted tab, which may be someone else's signed-in page.
 //
 // Streaming endpoints (`stream` MJPEG, `events` SSE) are piped through as live
 // bodies; everything else is buffered. `engine-state` is special: it asks the Fly
@@ -136,10 +138,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
     )
   }
 
-  // Live MJPEG — pipe the body through so it streams. Visiting this WAKES the engine.
+  // Live MJPEG of the person's own tab — piped through so it streams. Visiting this WAKES the engine.
   if (action === 'stream') {
+    warnIfEngineTokenMissing(action)
     try {
-      const upstream = await fetch(buildStreamTarget(search), { cache: 'no-store' })
+      const upstream = await fetch(buildStreamTarget(search), { headers: engineHeaders({ 'x-driver-id': personDriver(user) }), cache: 'no-store' })
       if (!upstream.ok || !upstream.body) {
         return NextResponse.json({ error: `stream ${upstream.status}` }, { status: 502 })
       }
@@ -158,11 +161,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
   const target = buildControlTarget('GET', action, search)
   if (!target) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   warnIfEngineTokenMissing(action)
+  // Every read is the person's own view: the engine scopes status, tasks, logs, clips and audio to their tabs.
+  const readHeaders = engineHeaders({ 'x-driver-id': personDriver(user) })
 
   // SSE event stream — pipe through live.
   if (action === 'events') {
     try {
-      const upstream = await fetch(target, { headers: engineHeaders(), cache: 'no-store' })
+      const upstream = await fetch(target, { headers: readHeaders, cache: 'no-store' })
       if (!upstream.ok || !upstream.body) {
         return NextResponse.json({ error: `events ${upstream.status}` }, { status: 502 })
       }
@@ -182,7 +187,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
   // Buffered JSON / binary (status, tasks, logs, clip, artifact, audio).
   try {
     const upstream = await fetch(target, {
-      headers: engineHeaders(),
+      headers: readHeaders,
       cache: 'no-store',
       // /clip waits for a /say clip that is still encoding (up to 90s on the engine).
       signal: AbortSignal.timeout(action === 'clip' ? 95000 : 30000),

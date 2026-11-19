@@ -4,6 +4,7 @@ import { spawn } from 'child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { NOTHING_SHARED_JPEG } from './nothing-shared'
 
 /**
  * Live browser stream — watch the test happen in real time from any browser.
@@ -15,6 +16,13 @@ import { join } from 'path'
  *   https://<machine>.fly.dev/           → the viewer page (auto-refreshing img)
  * to watch clicks, navigation, and the action-visualizer ripples live.
  *
+ * PRIVACY: a viewer only ever sees ONE tab it is allowed to see — never the
+ * engine's fronted tab, which may be another person's signed-in page. The
+ * public viewer and /stream show only the tab a driver CAST (`setCast`), else a
+ * "Nothing is being shared" frame; the engine's own token-checked /stream
+ * serves a driver its own tab through `serveFrames`. Frames come from the
+ * per-tab recorders (`trackPage`), never from the shared screencast.
+ *
  * Vendor-free: the Fly machine is already in the cloud and provides the URL.
  * No Browserbase/Browserless needed. Locally it binds 127.0.0.1 for a preview.
  *
@@ -22,11 +30,11 @@ import { join } from 'path'
  * per-task mp4 on demand — every /act and /say gets its own reviewable video,
  * NOT just a screenshot, so we can confirm the engine actually did the work.
  *
- * MULTI-TAB: the screencast is a per-page CDP session, so it does NOT follow
- * tab focus by itself. `retarget(page)` re-binds the screencast to a new tab —
- * the engine calls it on every /tab open|switch|close so the stream (and the
- * per-task clips cut from it) always show the ACTIVE tab. Without this, clips
- * of actions on tab 2 would show frozen frames of tab 0 — lying proof.
+ * MULTI-TAB: the shared screencast is a per-page CDP session, so it does NOT
+ * follow tab focus by itself. `retarget(page)` re-binds it to a new tab — the
+ * engine calls it on every /tab open|switch|close so clips that fall back to it
+ * show the ACTIVE tab. Without this, clips of actions on tab 2 would show frozen
+ * frames of tab 0 — lying proof. Viewers never see this screencast (PRIVACY).
  */
 
 export type LiveStream = {
@@ -39,7 +47,8 @@ export type LiveStream = {
   // REAL TIME (each frame is held for as long as it was actually on screen),
   // and the returned startMs/endMs are the wall-clock span it covers — what an
   // audio track must be aligned against.
-  clipRange: (outPath: string, fromMs: number, toMs?: number, page?: Page) => Promise<{ path: string; startMs: number; endMs: number } | null>
+  // ownOnly: never fall back to the shared screencast (it may show another tab) — no clip instead.
+  clipRange: (outPath: string, fromMs: number, toMs?: number, page?: Page, ownOnly?: boolean) => Promise<{ path: string; startMs: number; endMs: number } | null>
   // Record a tab on its own; clipRange(..., page) cuts from that recording.
   trackPage: (page: Page) => void
   // Why the last clipRange returned null, and how long its encode took.
@@ -48,9 +57,18 @@ export type LiveStream = {
   // Epoch ms of the most recent screencast frame (null before the first one).
   // A growing age means the page has stopped painting — ground truth for /status.
   lastFrameAt: () => number | null
-  // How many clients are watching /stream right now (idle-stop holds off
+  // How many clients are watching a stream right now (idle-stop holds off
   // while someone is watching).
   viewerCount: () => number
+  // Serve an MJPEG stream of whichever tab `source()` names, re-checked every
+  // second (null = the "Nothing is being shared" frame). The caller decides who
+  // may see which tab; this never shows a tab `source` did not return.
+  serveFrames: (source: () => Page | null, req: import('http').IncomingMessage, res: import('http').ServerResponse) => void
+  // The tab the public viewer and public /stream show (null: nothing is shared).
+  setCast: (page: Page | null) => void
+  castTab: () => Page | null
+  // Epoch ms of the newest frame recorded for one tab (null before its first).
+  tabFrameAt: (page: Page) => number | null
   // Stop/restart screen capture while the engine is idle (a viewer holds it on).
   pause: () => void
   resume: () => void
@@ -72,7 +90,9 @@ export type LiveStream = {
 export async function startLiveStream(page: Page | null, opts?: { port?: number; host?: string }): Promise<LiveStream> {
   const port = opts?.port ?? Number(process.env.LIVE_STREAM_PORT ?? 8080)
   const host = opts?.host ?? (process.env.OSBORN_TEST_CONTAINER ? '0.0.0.0' : '127.0.0.1')
-  const clients = new Set<import('http').ServerResponse>()
+  // Every MJPEG viewer and the tab source it may see; `shown` is what it was last sent.
+  const clients = new Map<import('http').ServerResponse, { source: () => Page | null; shown: Page | null | undefined }>()
+  let cast: Page | null = null
   let latest: Buffer | null = null
   let lastFrameTime: number | null = null
   // Passive-view notice (#49): set by the engine when the auto-joined chat
@@ -95,16 +115,10 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   const CAPTURE_FPS = DISPLAY ? 5 : 12
   // Small clips: a quarter of the pixels to encode on a throttled CPU, still readable.
   const CLIP_W = Number(process.env.OSBORN_CLIP_WIDTH ?? 640), CLIP_H = Math.round(CLIP_W * 0.625 / 2) * 2
-  // Full size only while someone watches the live stream; otherwise frames only feed
-  // clips (CLIP_W wide), so a smaller screencast keeps the shared CPU unthrottled.
-  const IDLE_W = Math.min(1280, Math.max(960, CLIP_W))
-  const screencast = (idle = clients.size === 0) => ({ format: 'jpeg' as const, quality: 55, everyNthFrame: 1,
-    ...(idle ? { maxWidth: IDLE_W, maxHeight: Math.round(IDLE_W * 9 / 16) } : { maxWidth: 1280, maxHeight: 720 }) })
-  // Re-start the screencast at the new size when the first viewer arrives or the last one leaves.
-  const viewersChanged = async () => {
-    if (DISPLAY || !cdp) return
-    try { await cdp.send('Page.stopScreencast'); await cdp.send('Page.startScreencast', screencast()) } catch { /* tab gone: retarget re-attaches */ }
-  }
+  // One small size for every screencast (shared and per-tab, which viewers watch),
+  // so capture keeps the shared CPU unthrottled.
+  const CAST_W = Math.min(1280, Math.max(960, CLIP_W))
+  const SCREENCAST = { format: 'jpeg' as const, quality: 55, everyNthFrame: 1, maxWidth: CAST_W, maxHeight: Math.round(CAST_W * 9 / 16) }
   let cdp: CDPSession | null = null
   let target: Page | null = null  // the tab the screencast is attached to
   const pushFrame = (buf: Buffer) => {
@@ -114,21 +128,20 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     ring.push({ t: now, buf })
     const cutoff = now - BUFFER_MS
     while (ring.length && (ring[0].t < cutoff || ring.length > MAX_FRAMES)) ring.shift()
-    for (const res of clients) {
-      try {
-        res.write(`--osbframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`)
-        res.write(buf); res.write('\r\n')
-      } catch { clients.delete(res) }
-    }
+  }
+  const writeFrame = (res: import('http').ServerResponse, buf: Buffer) => {
+    try {
+      res.write(`--osbframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`)
+      res.write(buf); res.write('\r\n')
+    } catch { clients.delete(res) }
   }
   const attach = async (p: Page, push: (b: Buffer) => void = pushFrame): Promise<CDPSession> => {
-    const idle = push !== pushFrame  // per-tab recorders feed clips only, never the live stream
     const s = await p.context().newCDPSession(p)
     s.on('Page.screencastFrame', async (f: any) => {
       try { await s.send('Page.screencastFrameAck', { sessionId: f.sessionId }) } catch { /* page gone */ }
       push(Buffer.from(f.data, 'base64'))
     })
-    await s.send('Page.startScreencast', screencast(idle || undefined))
+    await s.send('Page.startScreencast', SCREENCAST)
     return s
   }
 
@@ -240,22 +253,13 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       return
     }
     if (req.url === '/ready') {
-      // Wake-up poll for the viewer page: are frames flowing yet?
+      // Wake-up poll for the viewer page: are frames flowing yet, and is anything shared?
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-      res.end(JSON.stringify({ streaming: !!lastFrameTime, lastFrameAgeMs: lastFrameTime ? Date.now() - lastFrameTime : null, notice }))
+      res.end(JSON.stringify({ streaming: !!lastFrameTime, lastFrameAgeMs: lastFrameTime ? Date.now() - lastFrameTime : null, notice, shared: !!castAlive() }))
       return
     }
-    if (pathName === '/stream') {
-      res.writeHead(200, {
-        'Content-Type': 'multipart/x-mixed-replace; boundary=osbframe',
-        'Cache-Control': 'no-store', Connection: 'close',
-      })
-      clients.add(res); resume()
-      if (clients.size === 1) void viewersChanged()
-      if (latest) { res.write(`--osbframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${latest.length}\r\n\r\n`); res.write(latest); res.write('\r\n') }
-      req.on('close', () => { if (clients.delete(res) && clients.size === 0) void viewersChanged() })
-      return
-    }
+    // The public stream shows only the cast tab, never the fronted tab.
+    if (pathName === '/stream') return serveFrames(castAlive, req, res)
     // Viewer page — shows a "waking up" banner until frames flow (a visitor
     // whose request auto-started a sleeping machine sees progress, not a hang).
     res.writeHead(200, { 'Content-Type': 'text/html' })
@@ -314,6 +318,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     const push = (buf: Buffer) => {
       rec.last = Date.now(); rec.ring.push({ t: rec.last, buf })
       while (rec.ring.length && (rec.ring[0].t < rec.last - TAB_MS || rec.ring.length > TAB_FRAMES)) rec.ring.shift()
+      for (const [res, v] of clients) if (v.shown === p) writeFrame(res, buf)
     }
     attach(p, push).then((s) => {
       let beating = false
@@ -323,16 +328,40 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
         try { push(Buffer.from((await s.send('Page.captureScreenshot', { format: 'jpeg', quality: 50 }) as any).data, 'base64')) } catch { /* navigating */ }
         beating = false
       }, 500)
-      p.once('close', () => { clearInterval(hb); tabRecs.delete(p) })
+      p.once('close', () => { clearInterval(hb); tabRecs.delete(p); if (cast === p) cast = null })
     }).catch((e) => { tabRecs.delete(p); console.log(`[live-stream] tab recorder failed: ${(e as Error).message.slice(0, 80)}`) })
   }
 
+  const castAlive = () => (cast && !cast.isClosed() ? cast : null)
+  // Each viewer's tab is re-resolved every second, so a stream follows its driver's
+  // tab changes and goes dark the moment the tab stops being theirs (or is uncast).
+  const reresolve = () => {
+    for (const [res, v] of clients) {
+      let now: Page | null = null
+      try { now = v.source() } catch { now = null }
+      if (now === v.shown) continue
+      v.shown = now
+      if (!now) { writeFrame(res, NOTHING_SHARED_JPEG); continue }
+      trackPage(now)
+      const r = tabRecs.get(now)?.ring
+      if (r?.length) writeFrame(res, r[r.length - 1].buf)
+    }
+  }
+  let resolver: ReturnType<typeof setInterval> | null = null
+  const serveFrames = (source: () => Page | null, req: import('http').IncomingMessage, res: import('http').ServerResponse) => {
+    res.writeHead(200, { 'Content-Type': 'multipart/x-mixed-replace; boundary=osbframe', 'Cache-Control': 'no-store', Connection: 'close' })
+    clients.set(res, { source, shown: undefined }); resume()
+    reresolve()
+    if (!resolver) resolver = setInterval(reresolve, 1000)
+    req.on('close', () => { clients.delete(res); if (!clients.size && resolver) { clearInterval(resolver); resolver = null } })
+  }
+
   let clipFail: string | null = null, encodeMs: number | null = null
-  const clipRange = async (outPath: string, fromMs: number, toMs = Date.now(), page?: Page): Promise<{ path: string; startMs: number; endMs: number } | null> => {
+  const clipRange = async (outPath: string, fromMs: number, toMs = Date.now(), page?: Page, ownOnly = false): Promise<{ path: string; startMs: number; endMs: number } | null> => {
     const inRange = (r: Array<{ t: number; buf: Buffer }>) => r.filter((f) => f.t >= fromMs && f.t <= toMs)
     const own = page ? inRange(tabRecs.get(page)?.ring ?? []) : []
-    // A recorder that only just started has too few frames: use the main ring.
-    const frames = own.length >= 2 ? own : inRange(ring)
+    // A recorder that only just started has too few frames: use the main ring (unless ownOnly).
+    const frames = own.length >= 2 || ownOnly ? own : inRange(ring)
     clipFail = null; encodeMs = null
     if (frames.length < 2) { clipFail = `clip failed — only ${frames.length} frame(s) recorded`; console.log(`[live-stream] clip skipped — ${frames.length} frame(s)`); return null }
     const dir = mkdtempSync(join(tmpdir(), 'osbclip-'))
@@ -386,7 +415,17 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     resume,
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
-    latestFrame: (p?: Page) => { const r = p ? tabRecs.get(p)?.ring : undefined; const b = r?.length ? r[r.length - 1].buf : latest; return b ? b.toString('base64') : null },
+    serveFrames,
+    setCast: (p: Page | null) => { cast = p; if (p) trackPage(p); reresolve() },
+    castTab: castAlive,
+    tabFrameAt: (p: Page) => tabRecs.get(p)?.last || null,
+    // With a page: that tab's own newest frame, else the live stream's frame only while
+    // the screencast is attached to that very tab — never another tab's frame (#256).
+    latestFrame: (p?: Page) => {
+      const r = p ? tabRecs.get(p)?.ring : undefined
+      const b = r?.length ? r[r.length - 1].buf : !p || (!DISPLAY && target === p) ? latest : null
+      return b ? b.toString('base64') : null
+    },
     setNotice: (text: string | null) => { notice = text },
     retarget: async (p: Page) => {
       // Display mode captures the whole window — tab focus IS the retarget.
@@ -401,7 +440,8 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
       stopped = paused = true
       try { grabber?.kill('SIGKILL') } catch { /* ignore */ }
       try { await cdp?.send('Page.stopScreencast') } catch { /* ignore */ }
-      for (const res of clients) { try { res.end() } catch { /* ignore */ } }
+      if (resolver) clearInterval(resolver)
+      for (const res of clients.keys()) { try { res.end() } catch { /* ignore */ } }
       await new Promise<void>((r) => server.close(() => r()))
     },
   }

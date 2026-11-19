@@ -26,7 +26,7 @@ type EngineState = {
   // "state unreadable" badge instead of a bare "unknown" (#81).
   unreachable?: boolean
   // Server-side only reports whether OSBORN_ENGINE_TOKEN is set — never the value.
-  // false ⇒ every drive/output action will 401; the live stream still works.
+  // false ⇒ every drive/output action, and the live stream of your tab, will 401.
   engineTokenConfigured?: boolean
   // This person's driver id on the engine (set server-side by the proxy).
   driver?: string
@@ -42,7 +42,7 @@ type Status = {
   takeovers?: Array<{ i: number; by: string; prevOwner: string | null; since: number }>
   // The engine reports the active tab as { i, url }; older shapes used a bare
   // number/string. Handle both so the readout never renders "[object Object]".
-  activeTab?: number | string | { i?: number; url?: string }
+  activeTab?: number | string | { i?: number; url?: string } | null
   tabs?: Array<{ i: number; url: string }>
   lastFrameAgeMs?: number
   journey?: { name?: string; goal?: string } | string | null
@@ -50,6 +50,8 @@ type Status = {
   // why here (else null). The panel surfaces it instead of spinning on "unknown".
   agentUrl?: string | null
   agentUnreachable?: string | null
+  // The tab shared on the engine's public live view (a meeting's camera), or null.
+  cast?: { i: number; by: string | null } | null
 }
 type Task = { n?: number; index?: number; title?: string; name?: string; goal?: string; journey?: string }
 
@@ -96,6 +98,8 @@ export function BrowserPanel() {
   // Set when a drive/output action comes back 401 from the engine (token missing
   // or mismatched server-side) — drives the same banner as engineTokenConfigured.
   const [tokenError, setTokenError] = useState(false)
+  // The engine itself has no token on a public deployment, so it refuses every control call.
+  const [engineLocked, setEngineLocked] = useState(false)
   // #138: the proxy answers 401 "Not authenticated" to a signed-out visitor.
   // That is NOT an engine problem — say "sign in" and stop polling, instead of a
   // state badge and an endless "Waking…" spinner.
@@ -153,11 +157,15 @@ export function BrowserPanel() {
           const t = await r.text().catch(() => '')
           if (/Not authenticated/.test(t)) { setSignedOut(true); setWatching(false) }
           else setTokenError(true)
+        } else {
+          // /health answers without a token and says when the engine's control API is locked.
+          const h = await jget<{ code?: string }>('health')
+          setEngineLocked(h?.code === 'engine_token_missing')
         }
         return
       }
       const s = (await r.json().catch(() => null)) as Status | null
-      setStatus(s); if (s) setTokenError(false)
+      setStatus(s); if (s) { setTokenError(false); setEngineLocked(false) }
       setUnresponsivePolls((n) => (s?.pageState === 'unresponsive' ? n + 1 : 0))
     }
     tick()
@@ -252,7 +260,7 @@ export function BrowserPanel() {
   // Control changes wait for queued input, so a hand-back can't overtake keystrokes sent just before it.
   const afterInput = <T,>(fn: () => Promise<T>) => { flushPending(); const run = inputChain.current.then(fn, fn); inputChain.current = run.catch(() => {}); return run }
   const takeControl = () => activeI != null && afterInput(() => post('tab', { op: 'takeover', i: activeI }, 'take control'))
-  // A takeover is handed back to the agent; a tab you opened is released.
+  // A takeover is handed back to the agent; a tab you opened (your sign-ins) is closed by the engine.
   const handBack = () => activeI != null && afterInput(() => post('tab', { op: shownTakeover ? 'handback' : 'release', i: activeI }, 'hand back'))
   // One request at a time, in order: a click then fast typing must not race.
   const sendNow = (body: Record<string, unknown>) => {
@@ -309,9 +317,8 @@ export function BrowserPanel() {
     if (!sc.timer) sc.timer = setTimeout(flushScroll, 200)
   }
   const stopEngine = async () => {
-    const drivers = (status?.tabsByOwner ?? []).map((o) => o.owner).filter((o, k, all): o is string => !!o && o !== me && all.indexOf(o) === k)
-    if (!confirm(`Shut down the browser engine? It ends every run on it, for everyone${drivers.length ? ` (now driving: ${drivers.map(label).join(', ')})` : ''}, and the machine sleeps.`)) return
-    if (await post('end', { shutdown: true }, 'shut down')) setWatching(false)  // confirmed: stop it for everyone
+    if (!confirm('Shut down the browser engine? The machine sleeps. It is refused while other people or agents still use it.')) return
+    if (await post('end', { shutdown: true }, 'shut down')) setWatching(false)
   }
   // Scoped end with keep: closes my tabs and hands back takeovers; never stops the engine.
   const closeMyTabs = async () => {
@@ -341,7 +348,8 @@ export function BrowserPanel() {
   const label = (d: string | null | undefined) => (d && d === me ? 'you' : d?.replace(/^person:/, '') ?? '')
   // The engine keeps a browser profile per signed-in person (lowercased driver id), else the shared one.
   const profile = me?.startsWith('person:') ? me.slice(7).toLowerCase() : 'shared'
-  const blank = watching && !!status && blankPage(status.pageUrl)
+  // No tab of your own (activeTab null, pageState 'none') shows the starters, like a blank tab.
+  const blank = watching && !!status && (status.activeTab == null || blankPage(status.pageUrl))
 
   // Closing the page while in control hands the tab back instead of leaving the
   // agent paused (the engine also hands back after 10 idle minutes).
@@ -404,7 +412,7 @@ export function BrowserPanel() {
             </button>
           )}
           {watching && (
-            <button onClick={stopEngine} disabled={!!busy} title="Ends every run on the engine, for everyone, and puts it to sleep" className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">
+            <button onClick={stopEngine} disabled={!!busy} title="Puts the engine to sleep. Refused while other people or agents still use it (use Close my tabs then)" className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">
               Shut down engine
             </button>
           )}
@@ -418,11 +426,19 @@ export function BrowserPanel() {
       {tokenMisconfigured && (
         <div className="rounded-lg border border-amber-600/60 bg-amber-950/40 px-3 py-2 text-xs leading-relaxed text-amber-200">
           <span className="font-semibold">The server isn’t configured with the engine token.</span>{' '}
-          Drive and output actions (Open URL, Say, logs, audio, clips, Stop) are being
-          rejected — ask an admin to set{' '}
+          Drive and output actions (Open URL, Say, logs, audio, clips, Stop) and the live
+          stream of your tab are being rejected — ask an admin to set{' '}
           <code className="rounded bg-black/40 px-1 font-mono text-amber-100">OSBORN_ENGINE_TOKEN</code>{' '}
-          on the Railway frontend to match the engine’s Fly secret. Watching the live
-          stream still works without it.
+          on the Railway frontend to match the engine’s Fly secret.
+        </div>
+      )}
+
+      {engineLocked && (
+        <div className="rounded-lg border border-amber-600/60 bg-amber-950/40 px-3 py-2 text-xs leading-relaxed text-amber-200">
+          <span className="font-semibold">The engine’s controls are locked.</span>{' '}
+          It is publicly reachable but has no{' '}
+          <code className="rounded bg-black/40 px-1 font-mono text-amber-100">OSBORN_ENGINE_TOKEN</code>{' '}
+          set, so it refuses every command — ask an admin to set it as the engine’s Fly secret.
         </div>
       )}
 
@@ -444,11 +460,15 @@ export function BrowserPanel() {
           {status!.tabs!.map((t) => {
             const owner = status?.tabsByOwner?.find((o) => o.i === t.i)?.owner
             const on = t.i === activeI
+            const shared = status?.cast?.i === t.i
+            // The engine gives a person only their own tabs' URLs: any other tab, tab 0 included, is private and cannot be switched to.
+            const name = t.url ? shortUrl(t.url) : owner === me ? 'New tab' : 'Private tab'
             return (
-              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || (!!owner && owner !== me)} title={owner ? `${t.url} (driven by ${label(owner)})` : t.url}
+              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || owner !== me} title={`${t.url || name}${owner ? ` (driven by ${label(owner)})` : ''}${shared ? ' — shared on the public live view' : ''}`}
                 className={`flex min-w-0 max-w-[14rem] items-center gap-1 rounded-t-lg border px-2 py-1 text-xs ${on ? 'border-amber-500/70 bg-neutral-800 text-neutral-100' : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}>
-                <span className="truncate">{shortUrl(t.url)}</span>
+                <span className="truncate">{name}</span>
                 {owner && <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">{label(owner)}</span>}
+                {shared && <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[10px] text-amber-300">shared</span>}
               </button>
             )
           })}
@@ -475,7 +495,7 @@ export function BrowserPanel() {
         inControl ? (
           <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
             <span><span className="font-semibold">You have control.</span> Click, type and scroll in the picture; Escape leaves it.{shownTakeover?.prevOwner ? ` ${label(shownTakeover.prevOwner)} is paused until you hand back.` : ''}</span>
-            <button onClick={handBack} disabled={!!busy} className="rounded-lg bg-emerald-500 px-3 py-1 font-medium text-black hover:bg-emerald-400 disabled:opacity-50">{shownTakeover ? 'I’m done, hand back' : 'Let agents use this tab'}</button>
+            <button onClick={handBack} disabled={!!busy} className="rounded-lg bg-emerald-500 px-3 py-1 font-medium text-black hover:bg-emerald-400 disabled:opacity-50">{shownTakeover ? 'I’m done, hand back' : 'I’m done, close this tab'}</button>
           </div>
         ) : shownTakeover ? (
           <div className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">{label(shownTakeover.by)} has control of this tab.</div>
@@ -572,10 +592,10 @@ export function BrowserPanel() {
           Status, Page, Tab, Brain and Stream are unavailable — engine token not configured.
         </div>
       )}
-      {watching && !tokenMisconfigured && (!status || (status.pageState && status.pageState !== 'complete') || brainReady === false || (status.lastFrameAgeMs ?? 0) > 5000 || status.journey) && (
+      {watching && !tokenMisconfigured && (!status || (status.pageState && status.pageState !== 'complete' && status.pageState !== 'none') || brainReady === false || (status.lastFrameAgeMs ?? 0) > 5000 || status.journey) && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400 sm:grid-cols-4">
           {!status && <Field label="Engine" value="connecting…" />}
-          {status?.pageState && status.pageState !== 'complete' && <Field label="Page" value={status.pageState === 'interactive' ? 'loading' : status.pageState} tone={status.pageState === 'unresponsive' ? 'warn' : undefined} />}
+          {status?.pageState && status.pageState !== 'complete' && status.pageState !== 'none' && <Field label="Page" value={status.pageState === 'interactive' ? 'loading' : status.pageState} tone={status.pageState === 'unresponsive' ? 'warn' : undefined} />}
           {brainReady === false && <Field label="Agent clicks" value="unavailable (brain down)" tone="warn" />}
           {(status?.lastFrameAgeMs ?? 0) > 5000 && <Field label="Last frame" value={`${Math.round(status!.lastFrameAgeMs! / 1000)}s ago`} tone="warn" />}
           {status?.journey && <div className="col-span-2 sm:col-span-4"><span className="text-neutral-500">Journey </span><span className="text-neutral-300">{typeof status.journey === 'string' ? status.journey : status.journey?.name || status.journey?.goal || '—'}</span></div>}

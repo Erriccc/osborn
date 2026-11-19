@@ -52,6 +52,7 @@ test('SESSION TOUR: skills explorer then meeting join, one continuous room sessi
   await installReactiveMic(page)
   await installActionVisualizer(page)
   const live = await startLiveStream(page).catch(() => null)
+  live?.setCast(page)  // a one-tab run: its only tab is the one the live view shows
   if (live) console.log(`[tour] LIVE: ${live.url}`)
 
   const version: any = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`).then((r) => r.json())

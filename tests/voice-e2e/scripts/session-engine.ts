@@ -69,11 +69,12 @@ import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, rec
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
-import { openTab, switchTab, closeTab, listTabs } from '../lib/tabs'
+import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
 import { attachDevtools, redactDiagnostics, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
+import { eventOwners, eventVisibleTo, isPersonDriver, ownerSeenBy, personMayTake, personOwns, seesTabOf, tabsFor } from '../lib/event-scope'
 import { buildJourneyState, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -494,22 +495,29 @@ async function main() {
   const json = (res: any, body: any, code = 200, raw = false) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(raw ? JSON.stringify(body) : redactJson(body)) }
   // goto with a clean error: 400 for a bad URL, 502 for a failed load (no ANSI codes),
   // and no error when the tab reached the page anyway (an interrupted-but-landed load).
+  // Success carries redirectedTo when the tab settled on another URL of the same host
+  // (http→https, a trailing slash, /login → /dashboard): a redirect is not a failure (#316).
   const badUrl = (raw: unknown): { status: number; body: any } | null => {
     let u: URL
     try { u = new URL(String(raw)) } catch { return { status: 400, body: { ok: false, code: 'bad_url', error: `not a URL: ${String(raw).slice(0, 200)}` } } }
     return /^https?:$/.test(u.protocol) ? null : { status: 400, body: { ok: false, code: 'bad_url', error: 'only http(s) URLs can be opened' } }
   }
-  const gotoChecked = async (page: Page, raw: unknown): Promise<{ status: number; body: any } | null> => {
+  type NavFail = { status: number; body: any }
+  const gotoChecked = async (page: Page, raw: unknown): Promise<NavFail | { redirectedTo: string | null }> => {
     const bad = badUrl(raw); if (bad) return bad
     const u = new URL(String(raw))
     const noHash = (h: string) => h.split('#')[0]
+    const hostOf = (h: string) => (badUrl(h) ? null : new URL(h).hostname)
+    const landed = () => { const now = page.url(); return { redirectedTo: noHash(now) === noHash(u.href) ? null : now } }
     const before = noHash(page.url())
-    try { await page.goto(u.href, { timeout: 45000 }); return null } catch (e) {
+    try { await page.goto(u.href, { timeout: 45000 }); return landed() } catch (e) {
       const msg = (e as Error).message.replace(/\u001b\[[0-9;]*m/g, '').split('\n')[0]
-      // An interrupted load that still reached the target (and was not already showing it) is a success.
+      // An interrupted load that still reached the target, or a page of the same host it
+      // redirected to (and was not already showing), is a success once navigation settles.
+      await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
       const now = noHash(page.url())
-      if (now === noHash(u.href) && before !== now) return null
-      return { status: 502, body: { ok: false, code: 'nav_failed', netError: (msg.match(/net::[A-Z_]+/) || [null])[0], error: msg.slice(0, 300) } }
+      if (before !== now && (now === noHash(u.href) || hostOf(now) === u.hostname)) return landed()
+      return { status: 502, body: { ok: false, code: 'nav_failed', netError: (msg.match(/net::[A-Z0-9_]+/) || [null])[0], error: msg.slice(0, 300) } }
     }
   }
   const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({ __badJson: true }) } }) })
@@ -740,12 +748,28 @@ async function main() {
     return d.startsWith('person:') && d.length > 7 ? d : ''
   }
   const driverActive = new Map<string, Page>()  // driver → its current tab
+  let castBy: string | null = null  // who cast the tab the public live view shows
+  // Any ownership change (release, takeover, handback, /end) ends a cast of that tab, so
+  // a person who takes control is never broadcast; the new owner can cast it again.
+  const endCastIf = (p: Page, why: string) => { if (live?.castTab() === p) { live.setCast(null); castBy = null; mark(`cast ended: ${why}`) } }
   // The driver's own tab: its current one, else the newest tab it owns.
   const driverTab = (driver: string): Page | undefined => {
     const t = driverActive.get(driver)
     return t && !t.isClosed() ? t : [...allPages()].reverse().find((p) => tabOwners.get(p)?.owner === driver)
   }
   const callerTab = (driver: string): Page => driverTab(driver) ?? active
+  // What a no-index /tab close|navigate may touch: a tab the driver owns, never tab 0.
+  const ownTab = (driver: string): Page | null => ownDefaultTab(allPages(), driverActive.get(driver), ownerOf, driver)
+  // People in the /browser panel (driver person:<email>) see only their own tabs, tasks,
+  // logs and audio. Token-holding agents keep the full view: a tester's supervisor reviews
+  // the tester's clips and tabs.
+  const seesTab = (driver: string, p: Page) => seesTabOf(ownerOf(p), driver)
+  const seesTask = (driver: string, t: any) => eventVisibleTo([t?.tab?.owner ?? null], driver)
+  // The driver's current tab only while it is theirs: what their /status, /stream and /audio show.
+  const ownedTab = (driver: string): Page | null => { const t = driverTab(driver); return t && ownerOf(t) === driver ? t : null }
+  // The tab list and one tab as `viewer` may see them (/status and every /tab reply).
+  const tabListFor = (viewer: string) => tabsFor(allPages(), ownerOf, (p) => p.url(), viewer).map((t) => ({ ...t, ...deviceOf(allPages()[t.i]) }))
+  const tabSeenBy = (viewer: string, p: Page | null) => (!p ? null : { ...activeTab(p), owner: ownerSeenBy(ownerOf(p), viewer), ...(seesTab(viewer, p) ? {} : { url: '' }) })
   // When each driver last sent a command: a driver counts as still working for 10 minutes.
   const driverSeen = new Map<string, number>()
   const isWorking = (d: string) => Date.now() - (driverSeen.get(d) ?? 0) < 600000 && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
@@ -790,14 +814,22 @@ async function main() {
   // a 409 that says "paused, retry" (not "open your own tab"), and handback
   // restores its ownership so it resumes exactly where the supervisor left it.
   const takeovers = new Map<Page, { by: string; prevOwner: string | null; since: number; seen?: number }>()
+  // When `driver` (a person) took control of `p`: their logs and audio start there.
+  const takenSince = (driver: string, p: Page): number | null => { const tk = takeovers.get(p); return isPersonDriver(driver) && tk?.by === driver ? tk.since : null }
+  // A takeover ends (handback, idle, /end, a person's release): the tab goes back to its
+  // previous owner, or to nobody, and any cast of it ends.
+  const endTakeover = (p: Page, tk: { prevOwner: string | null }, why: string) => {
+    takeovers.delete(p)
+    if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+    endCastIf(p, why)
+  }
   // A person who closes the panel while in control must not pause the agent
   // forever: a takeover with no input for 10 minutes is handed back.
   const TAKEOVER_IDLE_MS = 10 * 60 * 1000
   setInterval(() => {
     for (const [p, tk] of takeovers) {
       if (Date.now() - (tk.seen ?? tk.since) < TAKEOVER_IDLE_MS) continue
-      takeovers.delete(p)
-      if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+      endTakeover(p, tk, 'idle handback')
       mark(`tab HANDBACK (idle takeover by ${tk.by}): ${allPages().indexOf(p)}`); saveTabState()
       notify('handback', { i: allPages().indexOf(p), by: tk.by, owner: tk.prevOwner, url: p.url(), reason: 'idle' })
     }
@@ -805,13 +837,15 @@ async function main() {
   const guardOwnership = (driver: string): Record<string, unknown> | null => {
     const t = callerTab(driver)
     const o = tabOwners.get(t)?.owner
-    if (!o || o === driver) return null
+    if (o === driver) return null
+    // A person acts only on a tab they own (personOwns): never on tab 0 or another unowned tab by fallback.
+    if (!o) return isPersonDriver(driver) && !personOwns(o, driver) ? { ok: false, code: 'no_own_tab', error: 'you have no tab of your own — open one (/tab {"op":"open","url":…}) or take control of one first' } : null
     const tk = takeovers.get(t)
     if (tk && tk.prevOwner === driver) return {
-      ok: false, code: 'paused_by_supervisor', by: tk.by, since: tk.since, retryAfterSec: 5,
-      error: `your tab is temporarily taken over by "${tk.by}" — do NOT open a new tab; retry this same request every ~5s until it succeeds, then re-check the page (the supervisor may have navigated)`,
+      ok: false, code: 'paused_by_supervisor', by: ownerSeenBy(tk.by, driver), since: tk.since, retryAfterSec: 5,
+      error: `your tab is temporarily taken over by "${ownerSeenBy(tk.by, driver)}" — do NOT open a new tab; retry this same request every ~5s until it succeeds, then re-check the page (the supervisor may have navigated)`,
     }
-    return { ok: false, code: 'tab_owned', owner: o, error: `that tab is owned by "${o}" — you are "${driver}"; open your own tab (pass x-driver-id and /tab open)` }
+    return { ok: false, code: 'tab_owned', owner: ownerSeenBy(o, driver), error: `that tab is owned by "${ownerSeenBy(o, driver)}" — you are "${driver}"; open your own tab (pass x-driver-id and /tab open)` }
   }
 
   // STATE ACROSS SLEEP — persist the tab layout (urls, active index, owners)
@@ -822,7 +856,7 @@ async function main() {
       const pages = allPages()
       writeFileSync(TAB_STATE, JSON.stringify({
         savedAt: Date.now(), activeIndex: pages.indexOf(active),
-        tabs: pages.map((p) => ({ url: p.url(), owner: ownerOf(p), profile: pageProfile.get(p) || undefined, device: pageDevice.get(p) })),
+        tabs: pages.map((p) => ({ url: p.url(), owner: ownerOf(p), profile: pageProfile.get(p) || undefined, device: pageDevice.get(p), ...(live?.castTab() === p ? { cast: castBy } : {}) })),
       }, null, 2))
     } catch { /* ignore */ }
   }
@@ -838,14 +872,14 @@ async function main() {
   const stampTask = (n: number, label: string, startMs: number, clip: string | null, artifact: string | null, text?: string, heard?: string, page: Page = active, clipPending = false) => {
     const endMs = Date.now()
     touchTab(page)
-    const devtools = devtoolsBufs.get(page)?.summary() ?? null
+    const devtools = devtoolsBufs.get(page)?.summary(takenSince(ownerOf(page) ?? '', page) ?? undefined) ?? null
     const rec = { n, label, text, heard, tab: activeTab(page), startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), clip, clipPending, artifact, devtools }
     tasks.push(rec); writeManifest(); writeDevtoolsFile(); saveTabState()
     // #120: snapshot journey progress on every task so a restart recovers a
     // journey that points at the work already done (saveJourneyState no-ops
     // when no journey is open).
     saveJourneyState('active')
-    notifyRef('task', { task: { n, label, text, heard, tab: rec.tab }, clipUrl: clip || clipPending ? `/clip?n=${n}` : null, artifactUrl: artifact ? `/artifact?n=${n}` : null })
+    notifyRef('task', { task: { n, label, text, heard, tab: rec.tab }, clipUrl: clip || clipPending ? `${PUBLIC_BASE}/clip?n=${n}` : null, artifactUrl: artifact ? `${PUBLIC_BASE}/artifact?n=${n}` : null })
     return rec
   }
 
@@ -853,6 +887,12 @@ async function main() {
   // Self-host auth: when OSBORN_ENGINE_TOKEN is set (always on public
   // deployments — Fly exposes the control port), every request must carry it.
   const TOKEN = process.env.OSBORN_ENGINE_TOKEN
+  // The engine's public base (Fly app or OSBORN_ENGINE_PUBLIC_URL); '' on a local run.
+  const PUBLIC_BASE = (process.env.OSBORN_ENGINE_PUBLIC_URL || (process.env.FLY_APP_NAME ? `https://${process.env.FLY_APP_NAME}.fly.dev/control` : '')).replace(/\/+$/, '')
+  // Fail closed (#320): a public deployment with no token refuses every control
+  // route (503 engine_token_missing) instead of serving them to anyone. Local
+  // runs (no public base) stay open, as before.
+  const TOKEN_MISSING = !TOKEN && !!PUBLIC_BASE
   // PUBLIC EVIDENCE LINKS — proof an agent can actually paste into an issue.
   // /clip and /artifact need the engine token, so a link to them is a 401 for
   // every reader (and for GitHub's image proxy): testers "had" evidence but
@@ -911,12 +951,15 @@ async function main() {
   // nothing recent). A sleeping engine says goodbye first (engine_stopping),
   // so subscribers KNOW the stream died on purpose. SSE listeners do NOT hold
   // the engine awake (commands and stream viewers do).
-  const eventClients = new Set<import('http').ServerResponse>()
-  const eventRing: string[] = []
+  // Each subscriber with its driver id: a /browser panel person gets only public
+  // events and events about their own tabs (owners read when the event fires).
+  const eventClients = new Map<import('http').ServerResponse, string>()
+  const eventRing: Array<{ evt: string; owners: Array<string | null> }> = []
   const notify = (event: string, payload: Record<string, unknown> = {}) => {
     const evt = redactJson({ event, t: Date.now(), run: RUN_STAMP, ...payload })  // serialized once, already redacted
-    eventRing.push(evt); if (eventRing.length > 25) eventRing.shift()
-    for (const c of eventClients) { try { c.write(`data: ${evt}\n\n`) } catch { eventClients.delete(c) } }
+    const owners = eventOwners(payload, (i) => { const p = allPages()[i]; return p ? ownerOf(p) : null })
+    eventRing.push({ evt, owners }); if (eventRing.length > 25) eventRing.shift()
+    for (const [c, d] of eventClients) if (eventVisibleTo(owners, d)) { try { c.write(`data: ${evt}\n\n`) } catch { eventClients.delete(c) } }
     if (!WEBHOOK_URL) return
     fetch(WEBHOOK_URL, {
       method: 'POST',
@@ -1056,10 +1099,13 @@ async function main() {
       // a remote agent can fetch them as-is instead of guessing what a
       // relative "/clip?n=1" is relative to. Direct :8781 callers get the
       // same relative paths as before.
-      const mediaBase = String(req.headers['x-control-base'] || '')
-      // Public evidence links are absolute even for direct :8781 callers, so they render when pasted into an issue.
-      const evidenceBase = (mediaBase || process.env.OSBORN_ENGINE_PUBLIC_URL || (process.env.FLY_APP_NAME ? `https://${process.env.FLY_APP_NAME}.fly.dev/control` : '')).replace(/\/+$/, '')
-      if (req.method === 'GET' && path.startsWith('/media/')) {
+      // Every link in a response (evidence, clipUrl, artifactUrl, resultUrl) uses one base,
+      // absolute even for direct :8781 callers whenever the engine knows its public URL (#251).
+      const mediaBase = (String(req.headers['x-control-base'] || '') || PUBLIC_BASE).replace(/\/+$/, '')
+      // Liveness and the token posture only — never the token, never engine state.
+      if (req.method === 'GET' && path === '/health') return json(res, { ok: true, tokenRequired: !!TOKEN || TOKEN_MISSING, tokenConfigured: !!TOKEN, ...(TOKEN_MISSING ? { code: 'engine_token_missing' } : {}) })
+      // HEAD is answered like GET with no body, so link checkers see a good link (#251).
+      if ((req.method === 'GET' || req.method === 'HEAD') && path.startsWith('/media/')) {
         // Signed public evidence — checked BEFORE the token gate on purpose.
         const m = path.match(/^\/media\/([A-Za-z0-9T:-]+)\/(\d+)\.(jpg|mp4|txt)$/)
         const sig = new URL(req.url || '', 'http://x').searchParams.get('s') || ''
@@ -1069,6 +1115,7 @@ async function main() {
         if (!t) return json(res, { error: `run ${m[1]} task ${m[2]} is no longer stored (runs are pruned to the newest ${KEEP_RUNS})` }, 404)
         if (m[3] === 'txt') {
           res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' })
+          if (req.method === 'HEAD') return res.end()
           return res.end(redactDiagnostics(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`))
         }
         const file = m[3] === 'mp4' ? t.clip : t.artifact
@@ -1076,9 +1123,11 @@ async function main() {
         if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}`, ...(m[3] === 'mp4' && t.clipError ? { clipError: t.clipError } : {}) }, 404)
         if (m[3] === 'mp4' && m[1] === RUN_STAMP) fetchedClips.add(t.n)  // reviewing via the public link counts
         res.writeHead(200, { 'Content-Type': m[3] === 'mp4' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size, 'Cache-Control': 'public, max-age=86400' })
+        if (req.method === 'HEAD') return res.end()
         createReadStream(file).on('error', () => res.destroy()).pipe(res)
         return
       }
+      if (TOKEN_MISSING) return json(res, { ok: false, code: 'engine_token_missing', error: 'this engine is publicly reachable but OSBORN_ENGINE_TOKEN is not set, so its control API is locked — set the token on the deployment (e.g. fly secrets set OSBORN_ENGINE_TOKEN=…)' }, 503)
       if (TOKEN && req.headers['x-engine-token'] !== TOKEN) return json(res, { error: 'unauthorized — x-engine-token required' }, 401)
       // Any authenticated director command counts as activity for idle-stop.
       // /status is excluded (pollers/health checks must not keep it awake).
@@ -1088,19 +1137,27 @@ async function main() {
       if (req.method === 'GET' && path === '/status') {
         // GROUND TRUTH, not cached flags — the old `inRoom: true` reported a
         // healthy room while the page sat on the "Session paused" idle screen.
+        // A person sees their own tab here (the one their stream shows), never the fronted one.
+        const viewer = driverId(req)
+        const shown: Page | null = isPersonDriver(viewer) ? ownedTab(viewer) : active
         let pageUrl = ''
         let pageState = 'unresponsive'
         let idlePaused = false
         try {
-          pageUrl = active.url()
+          if (!shown) pageState = 'none'  // a person with no tab of their own: nothing to show, not frozen
+          else {
+          pageUrl = shown.url()
           pageState = (await Promise.race([
-            active.evaluate(() => document.readyState),
+            shown.evaluate(() => document.readyState),
             new Promise((r) => setTimeout(() => r('unresponsive'), 3000)),
           ])) as string
           if (pageState !== 'unresponsive')
-            idlePaused = await active.evaluate(() => /session paused/i.test(document.body?.innerText || '')).catch(() => false)
+            idlePaused = await shown.evaluate(() => /session paused/i.test(document.body?.innerText || '')).catch(() => false)
+          }
         } catch { /* page dead */ }
-        const lastFrame = live?.lastFrameAt() ?? null
+        // A person's stream is their own tab's recording, so its age is that tab's.
+        const journeySeen = !!journey && (!isPersonDriver(viewer) || personOwns(journey.owner, viewer))
+        const lastFrame = isPersonDriver(viewer) ? (shown ? live?.tabFrameAt(shown) ?? null : null) : live?.lastFrameAt() ?? null
         return json(res, {
           build: ENGINE_BUILD, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
           // #49: the in-app Browser panel (PR #51 proxy) and any watcher can see
@@ -1109,19 +1166,39 @@ async function main() {
           agentUrl: AGENT_URL || null, agentUnreachable,
           freeMemoryMb: freeMemoryMb(), brain: brainAlive ? 'ready' : reviving ? 'reviving' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, stt: sttHealth, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
-          taskCount: tasks.length, journey: journey?.name ?? null,
+          // A person sees only their own journey and the tasks they may see.
+          taskCount: tasks.filter((t) => seesTask(viewer, t)).length, journey: journeySeen ? journey!.name : null,
           // #120: previousRun is set when THIS process adopted a journey from a
           // process that died mid-journey; restartRecovered lets a caller tell
           // "engine restarted (journey carried over)" apart from an app failure,
           // and reach the pre-restart media via /clip?run=<previousRun>.
           previousRun: restoredFromRun, restartRecovered: restoredFromRun != null,
           depth: depthNow(),
-          takeovers: [...takeovers.entries()].map(([p, t]) => ({ i: allPages().indexOf(p), by: t.by, prevOwner: t.prevOwner, since: t.since })),
-          drivers: [...driverActive.keys()], tabsByOwner: allPages().map((p,i)=>({i, owner: ownerOf(p)})),
-          mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
-          activeTab: { i: allPages().indexOf(active), url: active.url() },
-          tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, ...deviceOf(allPages()[t.index]) })), marks: marks.slice(-12),
+          // A person sees other people only as "person" (ownerSeenBy); agent ids stay.
+          takeovers: [...takeovers.entries()].map(([p, t]) => ({ i: allPages().indexOf(p), by: ownerSeenBy(t.by, viewer), prevOwner: ownerSeenBy(t.prevOwner, viewer), since: t.since })),
+          drivers: [...driverActive.keys()].filter((d) => ownerSeenBy(d, viewer) === d), tabsByOwner: allPages().map((p,i)=>({i, owner: ownerSeenBy(ownerOf(p), viewer)})),
+          mission: journeySeen ? { name: journey!.name, owner: ownerSeenBy(journey!.owner, viewer), startedAt: journey!.startedAt } : null,
+          activeTab: shown ? { i: allPages().indexOf(shown), url: shown.url() } : null,
+          cast: live?.castTab() ? { i: allPages().indexOf(live.castTab()!), by: ownerSeenBy(castBy, viewer) } : null,
+          // Another driver's tab is listed (so it can be taken over) without its URL.
+          tabs: tabListFor(viewer), marks: isPersonDriver(viewer) ? [] : marks.slice(-12),
         })
+      }
+      if (req.method === 'GET' && path === '/stream') {
+        // Live MJPEG of ONE tab the caller owns — never the fronted tab, which may be
+        // someone else's signed-in page. ?tab=i picks one of yours; without it the
+        // stream follows your current tab ("Nothing is being shared" while you have none).
+        const driver = driverId(req)
+        if (!live) return json(res, { ok: false, code: 'stream_unavailable', error: 'the live stream is not running in this engine' }, 503)
+        const q = new URL(req.url || '', 'http://x').searchParams.get('tab')
+        if (q != null) {
+          const tab = allPages()[Number(q)]
+          if (!tab) return json(res, { ok: false, code: 'no_tab', error: `no tab ${q} — ${allPages().length} tab(s) open (0-based)` }, 404)
+          if (!seesTab(driver, tab)) return json(res, { ok: false, code: 'not_your_tab', owner: ownerSeenBy(ownerOf(tab), driver), error: `tab ${q} is not yours ("${driver}") — you can watch only tabs you opened or took over` }, 409)
+          return live.serveFrames(() => (!tab.isClosed() && seesTab(driver, tab) ? tab : null), req, res)
+        }
+        // A person: their own tab only. Agents and the default driver: their current tab (tab 0 included).
+        return live.serveFrames(() => (isPersonDriver(driver) ? ownedTab(driver) : callerTab(driver)), req, res)
       }
       if (req.method === 'GET' && path === '/runs') {
         // All runs on this volume, newest last — pair with /clip?run=.
@@ -1145,6 +1222,7 @@ async function main() {
         const pastRun = !!runParam && runParam !== RUN_STAMP
         if (!pastRun && path === '/clip') await awaitClip(n)
         const t = (loadRunTasks(pastRun ? runParam : RUN_STAMP) ?? []).find((t: any) => t.n === n)
+        if (t && !seesTask(driverId(req), t)) return json(res, { ok: false, code: 'not_your_task', error: `task ${n} ran on another driver's tab` }, 403)
         let file: string | undefined = path === '/clip' ? t?.clip : t?.artifact
         if (!pastRun && path === '/clip' && file) fetchedClips.add(n)
         // audio=1: mux the task's ALIGNED audio slice into the (silent) video
@@ -1175,9 +1253,13 @@ async function main() {
       if (req.method === 'GET' && path === '/logs') {
         // Full devtools state, all tabs — console, network, websockets.
         return json(res, {
-          pages: allPages().map((p, i) => {
+          pages: allPages().flatMap((p, i) => {
+            if (!seesTab(driverId(req), p)) return []
             const b = devtoolsBufs.get(p)
-            return { i, url: p.url(), console: b?.console.slice(-80) ?? [], network: b?.network.slice(-80) ?? [] }
+            // A person who took control sees only what happened since then.
+            const from = takenSince(driverId(req), p)
+            const lines = from == null ? b : b?.since(from)
+            return [{ i, url: p.url(), console: lines?.console.slice(-80) ?? [], network: lines?.network.slice(-80) ?? [] }]
           }),
         })
       }
@@ -1185,7 +1267,9 @@ async function main() {
         // The whole run's captured audio as mp3 (the agent's voice — which is
         // ABSENT from the video-only clips/stream), from the caller's tab; on a
         // headless cloud engine this is the only way to hear the agent.
-        const audioPage = callerTab(driverId(req))
+        const audioDriver = driverId(req)
+        const audioPage = isPersonDriver(audioDriver) ? ownedTab(audioDriver) : callerTab(audioDriver)
+        if (!audioPage) return json(res, { ok: false, code: 'no_own_tab', error: 'you have no tab of your own to hear' }, 409)
         const a = await peekAudioToWav(audioPage)
         if (!a) {
           // A GET only reports: arming happens on /act, /say and /hear.
@@ -1193,7 +1277,10 @@ async function main() {
           return json(res, { error: ears.armed ? 'no audio captured on this tab yet' : 'the ears are not armed on this tab — /act, /say or /hear arms them; then have the page play audio and call /audio again', ears }, 404)
         }
         const mp3 = join(RUN_DIR, `_run-audio-${++peekSeq}.mp3`)
-        try { await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', a.wav, '-c:a', 'libmp3lame', '-q:a', '4', mp3]) }
+        // A person who took control hears only what played since then.
+        const audioFrom = takenSince(audioDriver, audioPage)
+        const skipSec = audioFrom == null ? 0 : Math.max(0, recordingMsAt(a.clock, audioFrom) / 1000)
+        try { await execFileP('ffmpeg', ['-y', '-loglevel', 'error', ...(skipSec ? ['-ss', skipSec.toFixed(3)] : []), '-i', a.wav, '-c:a', 'libmp3lame', '-q:a', '4', mp3]) }
         catch (e) { return json(res, { error: 'transcode failed: ' + (e as Error).message }, 500) }
         finally { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } }
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': statSync(mp3).size })
@@ -1210,11 +1297,11 @@ async function main() {
         if (!list) return json(res, { ok: false, code: 'no_run', error: `run ${run} is not stored — GET /runs lists runs` }, 404)
         const wanted = q.get('n') ? list.filter((t: any) => t.n === Number(q.get('n'))) : list
         if (!wanted.length) return json(res, { ok: false, code: 'no_task', error: `no task ${q.get('n')} in run ${run}` }, 404)
-        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(evidenceBase, run, t.n, { clip: !!(t.clip || t.clipPending), shot: !!t.artifact }) })) })
+        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(mediaBase, run, t.n, { clip: !!(t.clip || t.clipPending), shot: !!t.artifact }) })) })
       }
       if (req.method === 'GET' && path === '/tasks') {
         // This run's task index — same data as manifest.json on disk.
-        return json(res, { run: RUN_STAMP, runDir: RUN_DIR, model: 'per-task video; rel0/rel1 are ms on the audio-capture timeline', recordingStartedAt: tCapture, tasks })
+        return json(res, { run: RUN_STAMP, runDir: RUN_DIR, model: 'per-task video; rel0/rel1 are ms on the audio-capture timeline', recordingStartedAt: tCapture, tasks: tasks.filter((t) => seesTask(driverId(req), t)) })
       }
       const body = await readBody(req)
       if (body?.__badJson) return json(res, { ok: false, code: 'bad_json', error: 'the request body is not valid JSON' }, 400)
@@ -1248,8 +1335,9 @@ async function main() {
         // Subscribe: SSE feed of everything the engine does, live.
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' })
         res.write(`: engine events — run ${RUN_STAMP}\n\n`)
-        for (const e of eventRing) res.write(`data: ${e}\n\n`)
-        eventClients.add(res)
+        const subscriber = driverId(req)
+        for (const e of eventRing) if (eventVisibleTo(e.owners, subscriber)) res.write(`data: ${e.evt}\n\n`)
+        eventClients.set(res, subscriber)
         req.on('close', () => eventClients.delete(res))
         return
       }
@@ -1421,7 +1509,9 @@ async function main() {
           }
           if (fallback && before) forgetCached(before.url, String(body.instruction))
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
-          const prevTask = [...tasks].reverse().find((t) => t.label !== 'shot')  // a /shot in between must not hide an unreviewed clip
+          // The highest-numbered non-shot task: a /shot in between must not hide an
+          // unreviewed clip, and a task that stamped out of order must not be skipped (#262).
+          const prevTask = tasks.reduce<(typeof tasks)[number] | undefined>((best, t) => t.label !== 'shot' && seesTask(driver, t) && (!best || t.n > best.n) ? t : best, undefined)
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit(page)
           const n = ++reqN
@@ -1429,8 +1519,8 @@ async function main() {
         })
         if (!post) return  // answered inside the lock (refused, invalid, or failed)
         const { page, opened, n, t0, r, effect, warning, nag } = post
-        const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000)
-        const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page).catch(() => null) : null
+        const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000, takenSince(driver, page) ?? 0)
+        const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page, isPersonDriver(driver)).catch(() => null) : null
         const clip = actRange?.path ?? null
         const clipError = clip ? null : (live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session')
         if (clip) mark(`clip: ${clip}`)
@@ -1438,7 +1528,7 @@ async function main() {
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
         if (clipError) { (window as any).clipError = clipError; writeManifest() }
         addStep('act', String(body.instruction))
-        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)
@@ -1531,7 +1621,7 @@ async function main() {
           // the reply (#215), and GET /clip?n waits for them. waitClip:true restores
           // the old in-reply clip.
           const tClip = Date.now()
-          const rangeJob = live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, tClip, page).catch(() => null) : Promise.resolve(null)
+          const rangeJob = live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), Math.max(t0 - 1000, takenSince(driver, page) ?? 0), tClip, page, isPersonDriver(driver)).catch(() => null) : Promise.resolve(null)
           let hearError: string | null = null
           // Skip decoding and hearing when the ears clearly heard nothing this
           // turn: no page audio ever tapped, or no sound since speaking (#201).
@@ -1591,15 +1681,20 @@ async function main() {
           // heard and played audio slowed down: say so rather than hide it.
           const audioClock = earsAfter.audioClock ?? null
           const clockWarning = audioClock != null && audioClock < 0.9 ? `audio in this tab ran at ${audioClock}x real time (CPU throttling): the recording is time-compressed against the video, and the page may have heard and played audio slowed down` : null
-          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {
         // Errors surface — a silent catch here hid the timeline-skew bug for a day.
-        const hearPage = callerTab(driverId(req))
+        const hearDriver = driverId(req)
+        const hearPage = isPersonDriver(hearDriver) ? ownedTab(hearDriver) : callerTab(hearDriver)
+        if (!hearPage) return json(res, { ok: false, code: 'no_own_tab', error: 'you have no tab of your own to hear' }, 409)
         const hearEars = await ensureEars(hearPage)
         if (hearEars.armedNow) return json(res, { heard: '', ears: hearEars, warning: 'the ears were not armed on this tab until this call, so nothing earlier was recorded — have the page play audio again (or /say), then call /hear' })
-        const since = Date.now() - (hearEars.startedAt ?? tCapture) - (body.lastMs ?? 20000)
+        const earsStart = hearEars.startedAt ?? tCapture
+        const hearFrom = takenSince(hearDriver, hearPage)
+        // A person who took control hears only what played since then.
+        const since = Math.max(Date.now() - earsStart - (body.lastMs ?? 20000), hearFrom == null ? 0 : hearFrom - earsStart)
         try { const heard = await hearSince(hearPage, Math.max(0, since)); return json(res, { heard, ears: hearEars, warning: heard ? null : (hearEars.playing === 0 ? 'nothing heard: no audio element on the page is playing' : null) }) }
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
@@ -1608,11 +1703,14 @@ async function main() {
         const driver = driverId(req)
         return await withLock(async () => {
           await focusDriverTab(driver)
+          const owned = guardOwnership(driver)
+          if (owned) return json(res, owned, 409)
+          live?.trackPage?.(active)  // the tab's own frames back a later shot whose screenshot times out
           const n = ++reqN, t0 = Date.now()
           const shot = await reqShot(n, 'shot', active)
-          if (!shot) return json(res, { ok: false, code: 'no_screenshot', error: 'the page could not be captured', driver }, 500)
-          stampTask(n, 'shot', t0, null, shot, undefined, undefined, active)
-          return json(res, { ok: true, ...(body.inline === true || new URL(req.url || '', 'http://x').searchParams.get('inline') === '1' ? { jpegB64: readFileSync(shot).toString('base64') } : {}), task: n, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { shot: true }), driver }, 200, true)
+          stampTask(n, 'shot', t0, null, shot, undefined, undefined, active)  // a failed shot is still a task (#261)
+          if (!shot) return json(res, { ok: false, code: 'no_screenshot', error: 'the page could not be captured', task: n, evidence: evidenceFor(mediaBase, RUN_STAMP, n, {}), driver }, 500)
+          return json(res, { ok: true, ...(body.inline === true || new URL(req.url || '', 'http://x').searchParams.get('inline') === '1' ? { jpegB64: readFileSync(shot).toString('base64') } : {}), task: n, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { shot: true }), driver }, 200, true)
         })
       }
       if (path === '/eval') {
@@ -1644,19 +1742,51 @@ async function main() {
         // own driver id: a body `owner` could claim to be someone else (#193).
         const driver = driverId(req)
         body.owner = driver
-        const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'list']
+        const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'cast', 'uncast', 'list']
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
-        // close with no i closes YOUR tab (the quick-start's last step).
-        if (body.op === 'close' && body.i == null) { const mine = driverActive.get(driver); const idx = mine ? allPages().indexOf(mine) : -1; if (idx > 0) body.i = idx }
         if (body.op === 'open' && body.url) { const bad = badUrl(body.url); if (bad) return json(res, bad.body, bad.status) }
         if (body.op === 'open' && typeof body.viewport === 'string' && !isDeviceKind(body.viewport))
           return json(res, { ok: false, code: 'bad_request', error: `viewport must be ${Object.keys(DEVICE_PRESETS).map((k) => `"${k}"`).join(' | ')} or {"width":…,"height":…}` }, 400)
         const device: DeviceKind | undefined = body.op === 'open' && isDeviceKind(body.viewport) ? body.viewport : undefined
-        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !allPages()[body.i])
+        // close with no i closes YOUR tab; it is resolved inside the lock, below.
+        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback', 'cast'].includes(body.op) && !(body.op === 'close' && body.i == null) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
-        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(callerTab(driver)), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
+        if (body.op === 'list') return json(res, { ok: true, activeTab: tabSeenBy(driver, isPersonDriver(driver) ? ownedTab(driver) : callerTab(driver)), tabs: tabListFor(driver) })
         // Serialized with /act and /say so a tab change never lands mid-action.
+        const noOwnTab = (what: string) => json(res, { ok: false, code: 'no_own_tab', error: `you have no tab of your own to ${what} — open one with /tab {"op":"open","url":…}, or pass "i" (/tab {"op":"list"} shows the tabs)` }, 409)
+        let redirectedTo: string | null = null
+        const who = (o: string | null | undefined) => ownerSeenBy(o, driver)
+        // A person never claims, switches to or takes over another person's tab, even a released one.
+        // THE RULE for an explicit index: a person navigates, closes or releases only a tab they own.
+        const notPersonsOwn = (t: Page): boolean => {
+          if (!isPersonDriver(driver) || personOwns(ownerOf(t), driver)) return false
+          json(res, { ok: false, code: 'not_your_tab', error: `tab ${allPages().indexOf(t)} is not yours — you can act only on a tab you opened or took control of` }, 409)
+          return true
+        }
+        // A takeover goes back to the tab's previous owner (the handback op, and a person's release).
+        const handBackTab = (target: Page, tk: { by: string; prevOwner: string | null }) => {
+          endTakeover(target, tk, 'handed back')
+          driverActive.delete(driver)
+          mark(`tab HANDBACK: ${allPages().indexOf(target)} by ${tk.by}${tk.prevOwner ? ` → ${tk.prevOwner}` : ''}`)
+          notify('handback', { i: allPages().indexOf(target), by: tk.by, owner: tk.prevOwner, url: target.url() })
+        }
+        const othersPerson = (t: Page): boolean => {
+          if (personMayTake(driver, allPages().indexOf(t), ownerOf(t), pageProfile.get(t))) return false
+          if (allPages().indexOf(t) === 0) { json(res, { ok: false, code: 'room_tab', error: 'tab 0 holds the voice room — people cannot take, claim or switch to it' }, 409); return true }
+          json(res, { ok: false, code: 'not_your_tab', error: `tab ${allPages().indexOf(t)} belongs to another person` }, 409)
+          return true
+        }
+        // Close a tab and move every driver off it (#315): the caller lands on its next own
+        // tab when it has one, so /tab list and this reply agree.
+        const closeAt = async (i: number) => {
+          const target = allPages()[i]
+          if (target) { tabOwners.delete(target); takeovers.delete(target) }
+          active = await closeTab(tabs, i)
+          for (const [d, t] of driverActive) if (t === target) driverActive.delete(d)
+          const next = driverTab(driver)
+          if (next) await focusTab(driver, next); else await live?.retarget(active).catch(() => {})
+        }
         return await withLock(async () => {
         // After ANY change of active tab the screencast is retargeted so the
         // live stream + clips show the tab work actually happens on.
@@ -1669,51 +1799,70 @@ async function main() {
             try {
               const host = new URL(body.url).hostname
               const pages = allPages()
-              const cand = pages.find((p, idx) => { try { return idx > 0 && pageProfile.get(p) === profileOf(req) && pageDevice.get(p) === device && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
-              if (cand && !(await gotoChecked(cand, body.url))) { active = cand; reused = true }
+              const cand = pages.find((p, idx) => { try { return idx > 0 && pageProfile.get(p) === profileOf(req) && pageDevice.get(p) === device && new URL(p.url()).hostname === host && (isPersonDriver(driver) ? personOwns(ownerOf(p), driver) : (!ownerOf(p) || ownerOf(p) === body.owner)) } catch { return false } })
+              if (cand) {
+                // Owned BEFORE the load, so its navigation and console events are scoped to the caller.
+                const was = tabOwners.get(cand)
+                tabOwners.set(cand, { owner: String(body.owner), claimedAt: Date.now() })
+                const nav = await gotoChecked(cand, body.url)
+                // The reused tab tried the URL and failed: say so, and which tab now shows the error (#316).
+                if ('status' in nav) { if (was) tabOwners.set(cand, was); else tabOwners.delete(cand); return json(res, { ...nav.body, reusedTab: allPages().indexOf(cand) }, nav.status) }
+                active = cand; reused = true; redirectedTo = nav.redirectedTo
+              }
             } catch { /* fall through to a fresh tab */ }
           }
           if (!reused) {
             const prev = active
-            active = await openTab(await contextFor(profileOf(req), device)); watchPage(active)
-            const nav = body.url ? await gotoChecked(active, body.url) : null
-            if (nav) { await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
+            active = await openTab(await contextFor(profileOf(req), device))
+            tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })  // before its first event
+            watchPage(active)
+            const nav = body.url ? await gotoChecked(active, body.url) : { redirectedTo: null }
+            if ('status' in nav) { tabOwners.delete(active); await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
+            redirectedTo = nav.redirectedTo
           }
           if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
-          if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
           driverActive.set(driver, active)  // this becomes the driver's active tab
           touchTab(active)
           await live?.retarget(active).catch(() => {}); mark(`tab ${reused ? 'reuse' : 'open'}: ${body.url ?? ''}${body.owner ? ` [${body.owner}]` : ''}${device ? ` (${device}: ${DEVICE_PRESETS[device]})` : body.viewport?.width ? ` (${body.viewport.width}x${body.viewport.height})` : ''}`)
         }
         else if (body.op === 'navigate') {
           // Point an EXISTING tab at a new URL (the reuse primitive).
-          // Default: the caller's own tab, never whichever tab another driver fronted last.
-          const target = body.i != null ? allPages()[body.i] : callerTab(driver)
-          if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
+          // Default: the caller's own tab — never the global active tab, which another driver
+          // may have fronted last, even when nobody owns it (#316).
+          const target = body.i != null ? allPages()[body.i] : ownTab(driver)
+          if (!target) return body.i != null ? json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i}` }, 404) : noOwnTab('navigate')
+          if (notPersonsOwn(target)) return
           const o = ownerOf(target)
-          if (o && body.owner !== o) return json(res, { error: `tab is claimed by "${o}"` }, 409)
+          if (o && body.owner !== o) return json(res, { ok: false, code: 'tab_owned', owner: who(o), error: `tab is claimed by "${who(o)}"` }, 409)
           const nav = await gotoChecked(target, body.url)
-          if (nav) return json(res, nav.body, nav.status)
+          if ('status' in nav) return json(res, nav.body, nav.status)
+          redirectedTo = nav.redirectedTo
           active = target; touchTab(active)
           await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
         }
         else if (body.op === 'switch') {
           const so = ownerOf(allPages()[body.i])
-          if (so && so !== body.owner) return json(res, { error: `tab ${body.i} is owned by "${so}" — you are "${body.owner}"` }, 409)
+          if (so && so !== body.owner) return json(res, { error: `tab ${body.i} is owned by "${who(so)}" — you are "${body.owner}"` }, 409)
+          if (othersPerson(allPages()[body.i])) return
           await focusTab(driver, allPages()[body.i]); touchTab(active); mark(`tab switch: ${body.i}`)
         }
         else if (body.op === 'close') {
+          // No i: YOUR tab, resolved here under the lock so another driver's close cannot
+          // shift the index; tab 0 is treated exactly as an explicit {"i":0} would be (#316).
+          if (body.i == null) { const mine = ownTab(driver); if (!mine) return noOwnTab('close'); body.i = allPages().indexOf(mine) }
           const target = allPages()[body.i]
+          if (notPersonsOwn(target)) return
           const o = target ? ownerOf(target) : null
-          if (o && body.owner !== o) return json(res, { error: `tab ${body.i} is claimed by "${o}" — pass matching owner to close` }, 409)
-          if (target) { tabOwners.delete(target); takeovers.delete(target) }
-          active = await closeTab(tabs, body.i); await live?.retarget(active).catch(() => {}); mark(`tab close: ${body.i}`)
+          if (o && body.owner !== o) return json(res, { error: `tab ${body.i} is claimed by "${who(o)}" — pass matching owner to close` }, 409)
+          await closeAt(body.i)
+          mark(`tab close: ${body.i}`)
         }
         else if (body.op === 'claim') {
           const target = allPages()[body.i]
           if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
           const o = ownerOf(target)
-          if (o && o !== body.owner) return json(res, { error: `tab ${body.i} already claimed by "${o}"` }, 409)
+          if (o && o !== body.owner) return json(res, { error: `tab ${body.i} already claimed by "${who(o)}"` }, 409)
+          if (othersPerson(target)) return
           tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() }); mark(`tab claim: ${body.i} by ${body.owner}`)
         }
         else if (body.op === 'release') {
@@ -1722,16 +1871,39 @@ async function main() {
           // takeover/handback for that, which the owner is told about.)
           const target = allPages()[body.i]
           const o = ownerOf(target)
-          if (o && o !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: o, error: `tab ${body.i} is owned by "${o}" — only its owner can release it; use {"op":"takeover"} to borrow it` }, 409)
-          tabOwners.delete(target); takeovers.delete(target); mark(`tab release: ${body.i}`)
+          if (o && o !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: who(o), error: `tab ${body.i} is owned by "${who(o)}" — only its owner can release it; use {"op":"takeover"} to borrow it` }, 409)
+          if (notPersonsOwn(target)) return
+          endCastIf(target, 'released')
+          const tk = takeovers.get(target)
+          // A person releasing a tab they took control of hands it back to its previous owner.
+          if (isPersonDriver(driver) && tk && tk.by === driver) handBackTab(target, tk)
+          // A person's own-profile tab holds their sign-ins: releasing it closes it, never leaves it for others.
+          else if (isPersonDriver(driver) && body.i > 0 && pageProfile.get(target) === driver.toLowerCase()) { await closeAt(body.i); mark(`tab release (closed, own profile): ${body.i}`) }
+          else { tabOwners.delete(target); takeovers.delete(target); mark(`tab release: ${body.i}`) }
+        }
+        else if (body.op === 'cast') {
+          // Share one of YOUR tabs on the public live view and its /stream (a meeting's camera).
+          const target = allPages()[body.i]
+          if (allPages().indexOf(target) === 0) return json(res, { ok: false, code: 'room_tab', error: 'tab 0 holds the voice room and is never cast — open your own tab and cast that' }, 409)
+          if (ownerOf(target) !== body.owner) return json(res, { ok: false, code: 'not_your_tab', owner: who(ownerOf(target)), error: `tab ${body.i} is not yours — you can cast only a tab you opened or took over` }, 409)
+          if (!live) return json(res, { ok: false, code: 'stream_unavailable', error: 'the live stream is not running in this engine' }, 503)
+          live.setCast(target); castBy = String(body.owner); mark(`tab cast: ${body.i} by ${body.owner}`)
+        }
+        else if (body.op === 'uncast') {
+          const shared = live?.castTab()
+          if (shared && castBy !== body.owner && ownerOf(shared) !== body.owner) return json(res, { ok: false, code: 'not_your_tab', error: `the shared tab was cast by "${who(castBy)}" — only they or the tab's owner can stop it` }, 409)
+          live?.setCast(null); castBy = null; mark(`tab uncast by ${body.owner}`)
         }
         else if (body.op === 'takeover') {
           const target = allPages()[body.i]
           const prev = ownerOf(target)
-          if (takeovers.has(target)) return json(res, { ok: false, code: 'already_taken_over', by: takeovers.get(target)!.by, error: `tab ${body.i} is already taken over by "${takeovers.get(target)!.by}"` }, 409)
+          if (takeovers.has(target)) return json(res, { ok: false, code: 'already_taken_over', by: who(takeovers.get(target)!.by), error: `tab ${body.i} is already taken over by "${who(takeovers.get(target)!.by)}"` }, 409)
           if (prev === body.owner) return json(res, { ok: false, code: 'bad_request', error: `tab ${body.i} is already yours` }, 400)
+          if (othersPerson(target)) return
           takeovers.set(target, { by: String(body.owner), prevOwner: prev, since: Date.now() })
           tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() })
+          // A person taking control may sign in: never broadcast it. The owner re-casts after handback.
+          endCastIf(target, 'taken over')
           touchTab(target); await focusTab(driver, target)
           mark(`tab TAKEOVER: ${body.i} by ${body.owner}${prev ? ` (from ${prev})` : ''}`)
           notify('takeover', { i: body.i, by: body.owner, prevOwner: prev })
@@ -1740,12 +1912,8 @@ async function main() {
           const target = allPages()[body.i]
           const tk = takeovers.get(target)
           if (!tk) return json(res, { ok: false, code: 'not_taken_over', error: `tab ${body.i} is not under a takeover` }, 400)
-          if (tk.by !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: tk.by, error: `tab ${body.i} was taken over by "${tk.by}" — only they can hand it back` }, 409)
-          takeovers.delete(target)
-          if (tk.prevOwner) tabOwners.set(target, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(target)
-          driverActive.delete(driver)
-          mark(`tab HANDBACK: ${body.i} by ${body.owner}${tk.prevOwner ? ` → ${tk.prevOwner}` : ''}`)
-          notify('handback', { i: body.i, by: body.owner, owner: tk.prevOwner, url: target.url() })
+          if (tk.by !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: who(tk.by), error: `tab ${body.i} was taken over by "${who(tk.by)}" — only they can hand it back` }, 409)
+          handBackTab(target, tk)
         }
         // Tab ops are journey steps too — a recipe missing "open the mobile
         // tab" is not a recipe (first saved journey had steps:1 for this).
@@ -1754,8 +1922,11 @@ async function main() {
           writeScenario()
         }
         await updateTabHud(); saveTabState()
-        notify('tab', { op: body.op, activeTab: activeTab(), tabCount: allPages().length })
-        return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
+        // About the caller (by), so a person's tab change reaches only them, never a released URL to all.
+        // A person's tab event carries only their own tab (or none), never the fronted one.
+        const ownNow = isPersonDriver(driver) ? ownedTab(driver) : active
+        notify('tab', { op: body.op, by: driver, ...(ownNow ? { activeTab: activeTab(ownNow) } : {}), tabCount: allPages().length })
+        return json(res, { ok: true, activeTab: tabSeenBy(driver, active), ...(redirectedTo ? { redirectedTo } : {}), cast: live?.castTab() ? allPages().indexOf(live.castTab()!) : null, tabs: tabListFor(driver) })
         })
       }
       if (path === '/journey') {
@@ -1788,7 +1959,7 @@ async function main() {
           const depth = depthNow()
           mark(`journey end: ${journey.name} (${steps.length} step(s), ${depth.kind}, ${depth.pages} page(s)${saved ? ', saved' : ''}${depth.thin ? ' — THIN: single navigation, not exploration' : ''})`)
           const done = { ok: true, name: journey.name, steps: steps.length, depth, saved, tasks: [journey.startTaskN + 1, reqN] }
-          notify('journey_end', { name: journey.name, goal: journey.goal ?? null, steps: steps.length, depth, saved: !!saved })
+          notify('journey_end', { name: journey.name, goal: journey.goal ?? null, owner: journey.owner ?? null, steps: steps.length, depth, saved: !!saved })
           saveJourneyState('ended')  // #120: mark ended BEFORE null so a later boot won't resurrect it
           journey = null
           return json(res, done)
@@ -1864,6 +2035,9 @@ async function main() {
         const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
         const working = [...driverActive.keys()].filter((d) => d !== driver && isWorking(d))
         const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
+        // A person never shuts the engine down under other drivers.
+        if (isPersonDriver(driver) && body.shutdown === true && others.length)
+          return json(res, { ok: false, code: 'engine_in_use', otherCount: others.length, error: `${others.length} other driver(s) still use the browser engine, so it was not shut down and nothing was closed — use "Close my tabs" instead` }, 409)
         if ((others.length || body.keep === true) && body.shutdown !== true) {  // keep: close my tabs, never stop the engine
           const done = await withLock(async () => {
             let closed = 0, handedBack = 0
@@ -1871,10 +2045,9 @@ async function main() {
               if (ownerOf(p) !== driver) continue
               const tk = takeovers.get(p)
               if (tk) {  // a tab taken over from someone goes back to them, not into the bin
-                takeovers.delete(p)
-                if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+                endTakeover(p, tk, 'handed back at /end')
                 handedBack++
-              } else if (i === 0) tabOwners.delete(p)  // tab 0 holds the voice room: release, never close
+              } else if (i === 0) { tabOwners.delete(p); endCastIf(p, 'released at /end') }  // tab 0 holds the voice room: release, never close
               else { await p.close().catch(() => {}); closed++ }
             }
             driverActive.delete(driver)
@@ -1884,7 +2057,10 @@ async function main() {
           })
           void saveProfiles()
           mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
-          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running${others.length ? ` for ${others.join(', ')}` : ''} — pass {"shutdown": true} to stop it`, ...done, others })
+          // A person learns only how many others still use the engine, never who.
+          const shownOthers = isPersonDriver(driver) ? null : others.map((o) => ownerSeenBy(o, driver))
+          const forWhom = !others.length ? '' : shownOthers ? ` for ${shownOthers.join(', ')}` : ` for ${others.length} other driver(s)`
+          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running${forWhom} — pass {"shutdown": true} to stop it`, ...done, ...(shownOthers ? { others: shownOthers } : { otherCount: others.length }) })
         }
         json(res, { ok: true, msg: 'shutting down' })
         void gracefulEnd('end requested')
@@ -1893,7 +2069,11 @@ async function main() {
       json(res, { error: 'unknown', paths: ['/evidence?run=RUN&n=N', '/media/RUN/N.jpg|mp4|txt?s=SIG', '/result?id=JOB', '/status', '/tasks', '/clip?n=N', '/clip?n=N&audio=1', '/artifact?n=N', '/audio', '/logs', '/runs', '/events', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
     } catch (e) { json(res, { error: (e as Error).message, brain: brainAlive ? 'ready' : 'dead' }, 500) }
   })
-  server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))
+  server.listen(CONTROL_PORT, () => {
+    console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`)
+    if (TOKEN_MISSING) console.error(`[engine] CONTROL API LOCKED — OSBORN_ENGINE_TOKEN is not set on a public deployment (${PUBLIC_BASE}); every control route answers 503 engine_token_missing until it is set`)
+    else if (!TOKEN) console.warn('[engine] UNPROTECTED — OSBORN_ENGINE_TOKEN is not set; the control API is open to anyone who can reach this port (fine for a local run)')
+  })
 
   // BOOT-TIME AGENT REACHABILITY PROBE (#49). The auto-joined chat only works
   // if the configured agent machine actually answers. A stale/empty
@@ -1982,6 +2162,7 @@ async function main() {
         for (const t of extra.filter((t: any) => keep.has(t))) {
           active = await openTab(await contextFor(t.profile || '', isDeviceKind(t.device) ? t.device : undefined), t.url); watchPage(active)
           if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
+          if (t.cast && t.owner) { live?.setCast(active); castBy = t.cast }  // the cast survives a restart
           if (t === wasActive) restoredActive = active
         }
         if (keep.size) {
