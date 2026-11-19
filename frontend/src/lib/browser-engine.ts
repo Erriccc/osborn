@@ -38,7 +38,7 @@ export function engineTokenConfigured(): boolean {
 // Only these engine endpoints may be reached through the proxy. `eval`, `brain`,
 // and `journey` are intentionally omitted — `eval` runs arbitrary JS in the page,
 // and the others are advanced/destructive beyond the panel's remit.
-export const GET_ALLOW = new Set(['status', 'tasks', 'logs', 'clip', 'artifact', 'audio', 'events'])
+export const GET_ALLOW = new Set(['health', 'status', 'tasks', 'logs', 'clip', 'artifact', 'audio', 'events'])
 export const POST_ALLOW = new Set(['act', 'say', 'hear', 'tab', 'end', 'recover', 'input'])
 
 // Pure: the full control-API URL for an allowlisted action + querystring. The

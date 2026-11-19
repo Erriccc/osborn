@@ -50,6 +50,8 @@ type Status = {
   // why here (else null). The panel surfaces it instead of spinning on "unknown".
   agentUrl?: string | null
   agentUnreachable?: string | null
+  // The tab shared on the engine's public live view (a meeting's camera), or null.
+  cast?: { i: number; by: string | null } | null
 }
 type Task = { n?: number; index?: number; title?: string; name?: string; goal?: string; journey?: string }
 
@@ -96,6 +98,8 @@ export function BrowserPanel() {
   // Set when a drive/output action comes back 401 from the engine (token missing
   // or mismatched server-side) — drives the same banner as engineTokenConfigured.
   const [tokenError, setTokenError] = useState(false)
+  // The engine itself has no token on a public deployment, so it refuses every control call.
+  const [engineLocked, setEngineLocked] = useState(false)
   // #138: the proxy answers 401 "Not authenticated" to a signed-out visitor.
   // That is NOT an engine problem — say "sign in" and stop polling, instead of a
   // state badge and an endless "Waking…" spinner.
@@ -153,11 +157,15 @@ export function BrowserPanel() {
           const t = await r.text().catch(() => '')
           if (/Not authenticated/.test(t)) { setSignedOut(true); setWatching(false) }
           else setTokenError(true)
+        } else {
+          // /health answers without a token and says when the engine's control API is locked.
+          const h = await jget<{ code?: string }>('health')
+          setEngineLocked(h?.code === 'engine_token_missing')
         }
         return
       }
       const s = (await r.json().catch(() => null)) as Status | null
-      setStatus(s); if (s) setTokenError(false)
+      setStatus(s); if (s) { setTokenError(false); setEngineLocked(false) }
       setUnresponsivePolls((n) => (s?.pageState === 'unresponsive' ? n + 1 : 0))
     }
     tick()
@@ -425,6 +433,15 @@ export function BrowserPanel() {
         </div>
       )}
 
+      {engineLocked && (
+        <div className="rounded-lg border border-amber-600/60 bg-amber-950/40 px-3 py-2 text-xs leading-relaxed text-amber-200">
+          <span className="font-semibold">The engine’s controls are locked.</span>{' '}
+          It is publicly reachable but has no{' '}
+          <code className="rounded bg-black/40 px-1 font-mono text-amber-100">OSBORN_ENGINE_TOKEN</code>{' '}
+          set, so it refuses every command — ask an admin to set it as the engine’s Fly secret.
+        </div>
+      )}
+
       {/* Agent-unreachable notice (#81) — the engine is up and drivable, but the
           auto-joined chat agent can't be reached, so the streamed /chat tab would
           sit on "Connecting…". Say so explicitly instead of a silent "unknown". */}
@@ -443,11 +460,15 @@ export function BrowserPanel() {
           {status!.tabs!.map((t) => {
             const owner = status?.tabsByOwner?.find((o) => o.i === t.i)?.owner
             const on = t.i === activeI
+            const shared = status?.cast?.i === t.i
+            // The engine lists other drivers' tabs without their URL.
+            const name = t.url ? shortUrl(t.url) : owner && owner !== me ? 'Private tab' : 'New tab'
             return (
-              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || (!!owner && owner !== me)} title={owner ? `${t.url} (driven by ${label(owner)})` : t.url}
+              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || (!!owner && owner !== me)} title={`${t.url || name}${owner ? ` (driven by ${label(owner)})` : ''}${shared ? ' — shared on the public live view' : ''}`}
                 className={`flex min-w-0 max-w-[14rem] items-center gap-1 rounded-t-lg border px-2 py-1 text-xs ${on ? 'border-amber-500/70 bg-neutral-800 text-neutral-100' : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}>
-                <span className="truncate">{shortUrl(t.url)}</span>
+                <span className="truncate">{name}</span>
                 {owner && <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">{label(owner)}</span>}
+                {shared && <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[10px] text-amber-300">shared</span>}
               </button>
             )
           })}

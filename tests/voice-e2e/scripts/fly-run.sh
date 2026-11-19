@@ -14,8 +14,9 @@ fi
 # OSBORN_ENGINE_TOKEN (fly secrets) — the control port is publicly exposed.
 if [ -n "$OSBORN_ENGINE" ]; then
   echo "[fly-run] session-engine mode (long-running; control :8781, stream :8080)"
-  # FULL-WINDOW CAPTURE: start a virtual display so Chrome runs HEADFUL and
-  # the stream shows the real browser (tab strip, URL bar, navigation).
+  # HEADFUL CHROME: start a virtual display so Chrome runs headful. With
+  # OSBORN_CAPTURE=display, clips record the whole window (tab strip, URL bar);
+  # live viewers always see one tab's page (a cast tab, or their own).
   # Opt out with OSBORN_NO_DISPLAY=1 (falls back to headless CDP capture).
   if [ -z "$OSBORN_NO_DISPLAY" ]; then
     SIZE="${OSBORN_DISPLAY_SIZE:-1280x800}"

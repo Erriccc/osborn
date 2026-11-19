@@ -84,7 +84,8 @@ Every failure reply is `{ok:false, code, error, ...}`.
 | 400 | `bad_json` | the request body is not valid JSON |
 | 400 | `bad_url` | a malformed or non-http(s) URL for `/tab open` or `navigate` (checked before any tab opens or moves) |
 | 400 | `bad_request` | a missing or invalid field |
-| 409 | `no_own_tab` | `/tab close` or `navigate` with no `i`, and you have no tab of your own |
+| 409 | `no_own_tab` | `/tab close` or `navigate` with no `i`, and you own no tab besides tab 0; `/audio` for a /browser panel person with no tab |
+| 403 | `not_your_task` | `/clip` or `/artifact` of another driver's task, asked by a /browser panel person (`x-driver-id: person:…`) |
 | 409 | `tab_owned` | the tab belongs to another driver (`/act`, `/say`, `/eval`, `/shot`, `/recover`, `/tab navigate\|release`) |
 | 409 | `not_your_tab` | `/input`, `/stream?tab=i` or `/tab cast` on a tab you neither opened nor took over; `/tab uncast` of someone else's cast |
 | 409 | `paused_by_supervisor` | your tab is taken over; retry after `retryAfterSec` |
@@ -96,6 +97,8 @@ Every failure reply is `{ok:false, code, error, ...}`.
 | 200 | `noop` (`ok:false`) | `/act` found nothing on the page to do; `drive.sh act` exits 5 |
 
 - A navigation that settles on another page of the same host (http→https, trailing slash, `/login` → `/dashboard`) succeeds with `redirectedTo` set to where the tab landed.
-- `/tab navigate` and `/tab close` with no `i` act on YOUR tab (the one you last used, else the newest you own), never on a tab another driver fronted. Close with no `i` treats tab 0 exactly like `{"i":0}`. After a close, `/tab list` and the close reply report the same `activeTab`.
+- `/tab navigate` and `/tab close` with no `i` act on a tab you OWN (the one you last used, else the newest you own), never tab 0 (the voice room), an unowned tab or a tab another driver fronted. After a close, `/tab list` and the close reply report the same `activeTab`.
 - `/shot` returns `ok:true`, `task` and `evidence`; the base64 image only with `"inline":true` (or `?inline=1`). A screenshot that times out uses the tab's own recorded frame or fails: never another tab's frame.
 - Signed `/media` links answer `GET` and `HEAD`.
+- **Person scoping.** A caller whose `x-driver-id` is `person:<email>` (the /browser panel) sees only their own tabs: `/status` reports their tab as `activeTab`/`pageUrl` (null/empty with none), lists other tabs with `url:""` and no `marks`; `/tasks`, `/logs`, `/audio`, `/clip` and `/artifact` cover only their tabs and tasks (a task on an unowned tab is visible to all). Any other driver id, including no header (`default`), keeps the full view. `/events` is not scoped yet.
+- **Takeover ends a cast** of that tab. The cast is saved with the tab layout and restored after a restart.

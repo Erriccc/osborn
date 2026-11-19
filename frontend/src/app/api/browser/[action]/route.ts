@@ -161,11 +161,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
   const target = buildControlTarget('GET', action, search)
   if (!target) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   warnIfEngineTokenMissing(action)
+  // Every read is the person's own view: the engine scopes status, tasks, logs, clips and audio to their tabs.
+  const readHeaders = engineHeaders({ 'x-driver-id': personDriver(user) })
 
   // SSE event stream — pipe through live.
   if (action === 'events') {
     try {
-      const upstream = await fetch(target, { headers: engineHeaders(), cache: 'no-store' })
+      const upstream = await fetch(target, { headers: readHeaders, cache: 'no-store' })
       if (!upstream.ok || !upstream.body) {
         return NextResponse.json({ error: `events ${upstream.status}` }, { status: 502 })
       }
@@ -185,7 +187,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ acti
   // Buffered JSON / binary (status, tasks, logs, clip, artifact, audio).
   try {
     const upstream = await fetch(target, {
-      headers: engineHeaders(),
+      headers: readHeaders,
       cache: 'no-store',
       // /clip waits for a /say clip that is still encoding (up to 90s on the engine).
       signal: AbortSignal.timeout(action === 'clip' ? 95000 : 30000),

@@ -49,3 +49,13 @@ export async function closeTab(context: BrowserContext, which: number): Promise<
   await next.bringToFront()
   return next
 }
+
+/**
+ * The tab a no-index `/tab close|navigate` acts on: the driver's current tab,
+ * else the newest tab it owns. Never tab 0 (it holds the voice room) and never
+ * a tab the driver does not own, so an unowned fallback tab is not "yours".
+ */
+export function ownDefaultTab<P>(pages: P[], current: P | undefined, ownerOf: (p: P) => string | null | undefined, driver: string): P | null {
+  const mine = (p: P | undefined): p is P => !!p && pages.indexOf(p) > 0 && ownerOf(p) === driver
+  return mine(current) ? current : [...pages].reverse().find(mine) ?? null
+}
