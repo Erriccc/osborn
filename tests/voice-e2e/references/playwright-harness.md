@@ -68,12 +68,11 @@ Stagehand → `enterFreshRoom(page, act, url, { earsOn: true })` → speak/liste
 `POST /leave-room`: an abandoned empty room breeds the alone-timer/watchdog wedge.
 
 ## Site knowledge — the per-site profile
-`knowledge/<hostname>/` holds `actions.json` (compiled UI actions, managed by the
-step cache), `site.md` (findings the agent discovers) and `rules.md` (rules the
-user taught — BINDING: read before operating on a site; append new user guidance
-with `addSiteRule()` in `lib/knowledge.ts` so every later agent inherits it), plus
-`journeys/`. Frame every directed engine test as a journey (`list` → `start` →
-steps → `end`); pass `"save":false` to `end` for a failed or exploratory run.
+The layout of `knowledge/<hostname>/` and journey framing are in `harness-api.md`
+(Journeys). `actions.json` is managed by the step cache and `site.md` holds
+findings the agent discovers; append guidance the user teaches to `rules.md` with
+`addSiteRule()` in `lib/knowledge.ts` so every later agent inherits it. Pass
+`"save":false` to `journey end` for a failed or exploratory run.
 
 ## Portability
 Specs attach over CDP, so any CDP endpoint works (a Browserless container:
