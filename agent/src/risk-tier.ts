@@ -84,8 +84,12 @@ const SENSITIVE_NAMES: RegExp[] = [
   // Files a build, install or test run executes or reads as config.
   /^(?:setup\.py|setup\.cfg|pyproject\.toml|conftest\.py|pipfile|pipfile\.lock|cargo\.toml|build\.rs|gemfile|go\.mod)$/i,
   /^requirements[\w.-]*\.txt$/i, /\.gemspec$/i,
-  /\.config\.(?:js|ts|mjs|cjs|mts|cts)$/i,                      // vite/next/jest/eslint/… configs
+  /\.config\.(?:js|ts|mjs|cjs|mts|cts|json)$/i,                 // vite/next/jest/eslint/… configs
   /^tsconfig[\w.-]*\.json$/i,
+  // Build systems and task runners.
+  /^cmakelists\.txt$/i, /\.gradle|^gradle(?:w|\.properties)$/i, /^pom\.xml$/i, /^(?:tox|pytest)\.ini$/i, /^noxfile\.py$/i,
+  /^(?:turbo|nx)\.json$/i, /^taskfile(?:\.dist)?\.ya?ml$/i, /^flake\.nix$/i, /^meson\.build$/i,
+  /^(?:build|build\.bazel|workspace|workspace\.bazel|module\.bazel)$/i,
 ]
 
 // Paths that change how tools, the agent, builds or the repo behave, or hold

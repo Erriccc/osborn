@@ -5,7 +5,7 @@ import { useState } from 'react'
 export interface PermissionRequest {
   /** The agent's id for this request; the answer names it so a late click never settles another request. */
   requestId?: string
-  /** What "Always" covers, from the agent: "this file", "this exact command", "every Read", "this exact request". */
+  /** What "Always" covers, from the agent: "this file", "reading this file", "this exact command", "this exact search", "this exact request". */
   always?: string
   toolName: string
   description: string
@@ -22,10 +22,6 @@ export interface PermissionRequest {
 // Kept and applied by the agent (agent/src/approval-policy.ts, #364); the
 // browser shows and changes it. DENY always wins.
 export type ApprovalMode = 'ask' | 'auto-review' | 'allow-all'
-
-export function isApprovalMode(v: unknown): v is ApprovalMode {
-  return v === 'ask' || v === 'auto-review' || v === 'allow-all'
-}
 
 // Helper to determine tool risk level
 export function getToolRiskLevel(toolName: string): 'low' | 'medium' | 'high' {

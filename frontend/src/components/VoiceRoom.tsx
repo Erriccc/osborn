@@ -41,7 +41,7 @@ import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBann
 import { InstancesPanel } from './voice/InstancesPanel'
 import { AudioControls } from './voice/AudioControls'
 import { RoomsSidebar, RoomsBar, type Room } from './voice/RoomsRail'
-import { getToolRiskLevel, isApprovalMode, type PermissionRequest, type ApprovalMode } from './voice/PermissionModal'
+import { getToolRiskLevel, type PermissionRequest, type ApprovalMode } from './voice/PermissionModal'
 import { TextInput, type AttachedFile } from './voice/TextInput'
 import { AgentsPopover } from './voice/AgentsPopover'
 import { SkillViewer, rolesData, type NamedAgent, type RolesData } from './AgentStore'
@@ -1926,7 +1926,7 @@ function VoiceRoomInner({
 
       if (data.type === 'agent_ready') {
         agentKeepsWorkingRef.current = data.keepWorking === true
-        if (isApprovalMode(data.approvalMode)) setApprovalModeState(data.approvalMode)
+        if (data.approvalMode) setApprovalModeState(data.approvalMode as ApprovalMode)
         const cts = (window as any).__osbornClickTs
         if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms agent_ready received → setConnected(true)`)
         setAgentConnected(true)
@@ -2257,8 +2257,9 @@ function VoiceRoomInner({
           addMessageRef.current?.('assistant', data.text, undefined, category, undefined, data.messageId != null ? { messageId: data.messageId, chunkIndex: data.chunkIndex } : undefined)
         }
       } else if (data.type === 'approval_mode') {
-        // The agent's saved approval mode (#364), echoed after any change.
-        if (isApprovalMode(data.mode)) setApprovalModeState(data.mode)
+        // The agent's saved approval mode (#364), echoed after any change (or a refused one).
+        if (data.mode) setApprovalModeState(data.mode as ApprovalMode)
+        if (typeof data.error === 'string') addMessageRef.current?.('system', `Approval mode not changed: ${data.error}`, undefined, 'log')
       } else if (data.type === 'permission_auto_approved') {
         // The agent's approval mode already approved this request (#364); we
         // only show what ran. 'auto-review' shows the inline card, marked
@@ -3354,10 +3355,10 @@ function VoiceRoomInner({
     handleSendText(regeneratePrompt(file))
   }, [handleSendText])
 
-  // The picker asks the agent to change its saved mode (#364); the agent echoes
-  // approval_mode, which every connected client follows.
+  // The picker asks the agent to change its saved mode (#364). Nothing changes
+  // here until the agent's approval_mode echo, so the picker never shows a mode
+  // the agent did not apply (a refused request echoes the current one).
   const setApprovalMode = useCallback((mode: ApprovalMode) => {
-    setApprovalModeState(mode)
     sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'set_approval_mode', mode })), { reliable: true })
   }, [sendToAgent])
 

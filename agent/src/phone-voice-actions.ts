@@ -14,8 +14,8 @@ import { approvalModeLabel, type ApprovalMode } from './approval-policy.js'
 export type VoiceAction =
   | { kind: 'answer'; answer: 'allow' | 'deny' }
   | { kind: 'mode'; mode: ApprovalMode }
-  /** A mode command while a request waits: not applied (the caller hears how to answer it). */
-  | { kind: 'mode_blocked'; mode: ApprovalMode }
+  /** A mode change or a session switch while a request waits: not done (the caller hears how to answer it). */
+  | { kind: 'blocked'; what: 'mode' | 'switch' }
   | { kind: 'status' }
   | { kind: 'stop'; agent?: string }
   | { kind: 'sessions' }
@@ -71,8 +71,9 @@ const KEEP_WORKING = /^(?:keep working (?:after i hang up|when i hang up|in the 
  * The voice action a caller's utterance asks for, or null (a normal turn for
  * the model).
  * - `permissionPending` (the request the caller heard read out): a yes/no answers it.
- * - `anyPermissionPending`: a mode command is not applied while any request
- *   waits ('mode_blocked'); "allow all" is never taken as an answer.
+ * - `anyPermissionPending`: while any request waits, a mode command and a
+ *   switch (proposing or confirming one) are not done ('blocked'); "allow all"
+ *   and a switch "yes" are never taken as an answer to it.
  * - `switchProposed`: the turn after "Switch to <title>?", a yes confirms and a
  *   no cancels; anything else is a normal turn (and drops the proposal).
  * - A switch is only proposed when `sessions` holds a session whose title the
@@ -88,12 +89,13 @@ export function matchVoiceAction(
     if (ANSWER_ALLOW.test(s)) return { kind: 'answer', answer: 'allow' }
     if (ANSWER_DENY.test(s)) return { kind: 'answer', answer: 'deny' }
   }
+  const waiting = ctx.permissionPending || !!ctx.anyPermissionPending
   if (ctx.switchProposed) {
-    if (CONFIRM_YES.test(s)) return { kind: 'confirm_switch' }
+    if (CONFIRM_YES.test(s)) return waiting ? { kind: 'blocked', what: 'switch' } : { kind: 'confirm_switch' }
     if (CONFIRM_NO.test(s)) return { kind: 'cancel_switch' }
   }
   for (const [re, mode] of MODE_PATTERNS) {
-    if (re.test(s)) return ctx.permissionPending || ctx.anyPermissionPending ? { kind: 'mode_blocked', mode } : { kind: 'mode', mode }
+    if (re.test(s)) return waiting ? { kind: 'blocked', what: 'mode' } : { kind: 'mode', mode }
   }
   if (STATUS.test(s)) return { kind: 'status' }
   if (STOP_MAIN.test(s)) return { kind: 'stop' }
@@ -106,7 +108,7 @@ export function matchVoiceAction(
   const query = (sw?.[1] || sw?.[2] || '').trim()
   if (query) {
     const target = pickSession(query, ctx.sessions ?? [])
-    if (target) return { kind: 'switch', query, target }
+    if (target) return waiting ? { kind: 'blocked', what: 'switch' } : { kind: 'switch', query, target }
   }
   return null
 }
@@ -187,10 +189,29 @@ export function sayOutputs(artifacts: { fileName?: string }[], max = 5): string 
 }
 
 /** A mode command while a request waits: nothing changed; how to answer the request instead. */
-export function sayModeBlocked(pending: string | null, keypad: boolean): string {
+export function sayBlocked(blocked: 'mode' | 'switch', pending: string | null, keypad: boolean): string {
+  const didnt = blocked === 'mode' ? "didn't change the approval mode" : "didn't switch sessions"
   const what = pending ? `Osborn wants to ${pending}. ` : ''
   const how = keypad ? 'Press 1 to allow or 2 to deny.' : 'Say no to deny it, or approve it in the app.'
-  return `There's a request waiting, so I didn't change the approval mode. ${what}${how}`
+  return `There's a request waiting, so I ${didnt}. ${what}${how}`
+}
+
+/**
+ * What a confirmed switch actually did, from the switch_session replies
+ * (session_switched / session_switch_pending, as the app receives them).
+ */
+export function saySwitchOutcome(replies: { type?: string; success?: boolean; reason?: string }[], name: string): string {
+  if (replies.some((r) => r.type === 'session_switch_cancelled' && r.reason === 'already_live')) return `You're already in ${name}.`
+  if (replies.some((r) => r.type === 'session_switch_pending')) return `I'll switch to ${name} as soon as I finish the current step.`
+  const done = replies.find((r) => r.type === 'session_switched')
+  if (done?.success) return `Switched to ${name}.`
+  switch (done?.reason) {
+    case 'needs_you': return `I can't switch yet: a request is waiting for your answer. Answer it first, then ask again.`
+    case 'meeting_active': return `I can't switch while I'm in a meeting.`
+    case 'not_found': return `I couldn't open ${name}; it may have been moved or deleted.`
+    case 'target_busy_in_background': return `${name} is busy in the background right now. Try again in a moment.`
+  }
+  return done ? `I couldn't switch to ${name}.` : `I asked to switch to ${name}; it hasn't confirmed yet.`
 }
 
 /** The spoken confirmation of a mode change. */

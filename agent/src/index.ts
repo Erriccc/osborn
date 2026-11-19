@@ -76,7 +76,7 @@ import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
-import { matchVoiceAction, phoneMayChangeMode, sayModeBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
+import { matchVoiceAction, phoneMayChangeMode, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -4110,8 +4110,10 @@ async function main() {
   async function requestSessionSwitch(
     target: string,
     cwdHint: string | null | undefined,
-    opts: { force?: boolean; origin: string },
+    opts: { force?: boolean; origin: string; reply?: typeof sendToFrontend },
   ): Promise<'noop' | 'execute' | 'defer' | 'reject'> {
+    // Replies go to the room, or through the caller's `reply` (a call's voice switch reads them back).
+    const sendToFrontend = opts.reply ?? publishToRoom
     if (!currentLLM || !target) return 'reject'
     const cwd = await resolveCwdForSession(target, cwdHint)
     if (!cwd) {
@@ -4181,7 +4183,7 @@ async function main() {
       })
       return 'defer'
     }
-    await performSessionSwitch(target, cwd, plan, opts.origin)
+    await performSessionSwitch(target, cwd, plan, opts.origin, opts.reply)
     return 'execute'
   }
 
@@ -4190,7 +4192,10 @@ async function main() {
     cwd: string,
     plan: { reason: string; stopSlotFirst: boolean },
     origin: string,
+    reply?: typeof sendToFrontend,
   ): Promise<void> {
+    // Replies go to the room, or through the caller's `reply` (a call's voice switch reads them back).
+    const sendToFrontend = reply ?? publishToRoom
     if (!currentLLM) return
     // Single-flight: only the teardown/arm/notify section holds the guard; the
     // spoken acknowledgment runs after it is released (a say() that never
@@ -4780,9 +4785,17 @@ async function main() {
 
       // Phone call (keypad approvals on): read the request out; the keypad
       // answers it through settlePendingPermission, never the model (#363).
+      // The keypad and a spoken yes/no answer it only once the caller has heard
+      // the whole prompt (playout finished); a press before then answers nothing.
       if (inPhoneRoom()) {
-        phonePromptedRequestId = requestId
-        void Promise.resolve((currentSession as any)?.say?.(phoneApprovalPrompt(toolName, input))).catch(() => {})
+        phonePromptedRequestId = null
+        phoneSwitchProposal = null  // a "yes" now must never be read as confirming a switch
+        void Promise.resolve((currentSession as any)?.say?.(phoneApprovalPrompt(toolName, input)))
+          .then((handle: any) => handle?.waitForPlayout?.())
+          .then(() => {
+            if (pendingPermissionHolder()?.getPendingPermission?.()?.requestId === requestId) phonePromptedRequestId = requestId
+          })
+          .catch(() => {})
       }
 
       console.log(`🔍 perm payload: diff=${diffString ? `✅ ${diffString.length} chars` : '❌ NONE'} toolName=${toolName}`)
@@ -6520,6 +6533,10 @@ async function main() {
         if (Object.hasOwn(STORE_REPLY_TYPES, data.type) && participant?.identity) {
           await sendToFrontend({ type: STORE_REPLY_TYPES[data.type], success: false, error: 'Another device controls this session' }, participant.identity)
         }
+        // A refused mode change: that tab's picker shows the mode that is really on.
+        if (data.type === 'set_approval_mode' && participant?.identity) {
+          await sendToFrontend({ type: 'approval_mode', mode: approvalMode, error: 'Another device controls this session' }, participant.identity)
+        }
         return
       }
       await dispatchAction(data, { sender: participant?.identity })
@@ -6837,7 +6854,7 @@ async function main() {
         // session_switch_cancelled.
         const sessionId = data.sessionId as string
         const hint = typeof data.workingDirectory === 'string' ? data.workingDirectory : undefined
-        await requestSessionSwitch(sessionId, hint, { force: !!data.force, origin: 'switch_session' })
+        await requestSessionSwitch(sessionId, hint, { force: !!data.force, origin: 'switch_session', reply: sendToFrontend })
       }
       else if (data.type === 'get_busy') {
         // End asks before hanging up: a busy agent may keep working (keep_working).
@@ -7682,9 +7699,10 @@ async function main() {
         phoneSessions = sessions
         return saySessions(sessions)
       }
-      case 'mode_blocked': {
+      case 'blocked': {
+        if (action.what === 'switch') phoneSwitchProposal = null
         const pending = pendingPermissionHolder()?.getPendingPermission?.()
-        return sayModeBlocked(pending ? speakablePermission(pending.toolName, pending.input) : null, PHONE_KEYPAD_APPROVALS_ENABLED)
+        return sayBlocked(action.what, pending ? speakablePermission(pending.toolName, pending.input) : null, PHONE_KEYPAD_APPROVALS_ENABLED)
       }
       case 'switch': {
         // matchVoiceAction only returns a switch whose name picked a session by
@@ -7704,9 +7722,9 @@ async function main() {
         phoneSwitchProposal = null
         if (!target) return 'There is nothing to switch to.'
         const name = target.title || 'that session'
-        const busy = llmNow?.busyState?.()
-        await runAppAction({ type: 'switch_session', sessionId: target.sessionId, workingDirectory: target.cwd })
-        return busy && !busy.idle ? `I'll switch to ${name} as soon as I finish the current step.` : `Switching to ${name}.`
+        // Speak what the switch really did (done, pending, or why it was refused).
+        const replies = await runAppAction({ type: 'switch_session', sessionId: target.sessionId, workingDirectory: target.cwd })
+        return saySwitchOutcome(replies.filter((r) => r?.sessionId === target.sessionId), name)
       }
       case 'outputs': {
         const sessionId = llmNow?.sessionId

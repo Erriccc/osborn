@@ -133,11 +133,15 @@ check('config, VCS, hooks, settings and secrets are high in the workspace', () =
     'Pipfile', 'Cargo.toml', 'crates/core/build.rs', 'Gemfile', 'mylib.gemspec', 'go.mod',
     'vite.config.ts', 'next.config.mjs', 'jest.config.js', 'eslint.config.cjs', 'tailwind.config.ts', 'tsconfig.json', 'tsconfig.build.json', 'packages/a/tsconfig.base.json',
     '.babelrc', 'node_modules/left-pad/index.js', 'apps/web/node_modules/x/package/lib.js',
+    // build systems and task runners
+    'CMakeLists.txt', 'src/CMakeLists.txt', 'build.gradle', 'app/build.gradle.kts', 'gradle.properties', 'pom.xml', 'tox.ini', 'noxfile.py', 'pytest.ini',
+    'renovate.config.json', 'turbo.json', 'nx.json', 'Taskfile.yml', 'Taskfile.yaml', 'flake.nix', 'justfile', 'Justfile', 'Rakefile', 'meson.build',
+    'BUILD', 'pkg/BUILD.bazel', 'WORKSPACE', 'WORKSPACE.bazel', 'MODULE.bazel',
   ]) {
     assert.equal(isSensitivePath(p), true, p)
     assert.equal(classifyRisk('Edit', { file_path: p }, root), 'high', p)
   }
-  for (const p of ['src/app.ts', `${root}/README.md`, 'docs/guide.md', './src/x.ts', 'src/clock.ts', 'src/block.json', 'src/keyboard.ts', 'docs/package-guide.md']) {
+  for (const p of ['src/app.ts', `${root}/README.md`, 'docs/guide.md', './src/x.ts', 'src/clock.ts', 'src/block.json', 'src/keyboard.ts', 'docs/package-guide.md', 'src/build/index.ts', 'docs/building.md', 'src/workspace.ts', 'data/app.json']) {
     assert.equal(isSensitivePath(p), false, p)
     assert.equal(classifyRisk('Edit', { file_path: p }, root), 'low', p)
   }
