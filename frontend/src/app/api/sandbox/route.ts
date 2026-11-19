@@ -6,7 +6,6 @@ import { createSupabaseServer } from '@/lib/supabase-server'
 import {
   isSpritesConfigured,
   createSandbox,
-  findUserSandbox,
   startSandbox,
   stopSandbox,
   keepAliveSandbox,
@@ -23,12 +22,10 @@ import {
   getLastUpdateResult,
 } from '@/lib/cloud'
 import { checkSandboxClaim, claimSandboxForUser, knownSandboxClaim } from '@/lib/sandbox-claims'
-import { connectUserAgent } from '@/lib/connect-agent'
+import { connectUserAgent, lookupSandbox } from '@/lib/connect-agent'
 
-// findUserSandbox returns null on a confirmed 404 and throws when the lookup failed
-// (auth, network, rate limit): undefined here is "unknown", answered with
-// lookupFailed(), never "no sandbox" (which clears the record or provisions another).
-const lookupSandbox = (userId: string, id?: string) => findUserSandbox(userId, id).catch(() => undefined)
+// lookupSandbox's undefined is "unknown": answered with lookupFailed(), never
+// "no sandbox" (which clears the record or provisions another).
 const lookupFailed = () => NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
 
 /**

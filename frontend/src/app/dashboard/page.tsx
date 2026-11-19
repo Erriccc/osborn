@@ -604,6 +604,11 @@ export default function Dashboard() {
         // auto-provision branch below never runs.
         if (r.status === 409 || r.status === 503) {
           if (!cancelled) setMachineIssue(machineIssueText(r.status))
+          // 503 is a lookup that failed, not an answer: try again (2s, 4s), at most 3
+          // tries in all. A later success clears the banner; auto-provision stays once.
+          if (r.status === 503 && attempt < 2 && !cancelled) {
+            retryTimer = setTimeout(() => discover(attempt + 1), 2000 * 2 ** attempt)
+          }
           return null
         }
         if (!cancelled) setMachineIssue(null)

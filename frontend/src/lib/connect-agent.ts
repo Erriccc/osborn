@@ -16,6 +16,10 @@ export type ConnectAgentResult =
   /** `busy`: a user is in another room with the agent (phone calls only). */
   | { ok: false; reason: 'no-sandbox' | 'wake-failed' | 'busy' | 'unreachable'; agentUrl?: string }
 
+/** The user's sandbox; null is a confirmed 404, undefined a lookup that failed
+ *  (findUserSandbox threw), which is never "no sandbox". */
+export const lookupSandbox = (userId: string, id?: string) => findUserSandbox(userId, id).catch(() => undefined)
+
 export async function connectUserAgent(
   userId: string,
   sandboxId: string | undefined,
@@ -24,8 +28,7 @@ export async function connectUserAgent(
   /** Called once when the agent is not already up (machine asleep or service unhealthy). */
   onWaking?: () => void,
 ): Promise<ConnectAgentResult> {
-  // A failed lookup (findUserSandbox throws; null is a confirmed 404) is not "no sandbox".
-  const sb = await findUserSandbox(userId, sandboxId).catch(() => undefined)
+  const sb = await lookupSandbox(userId, sandboxId)
   if (sb === undefined) return { ok: false, reason: 'unreachable' }
   if (!sb?.previewUrl) return { ok: false, reason: 'no-sandbox' }
 

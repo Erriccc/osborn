@@ -57,6 +57,7 @@ const NAV_GROUPS: { group: string; items: { id: SectionId; label: string }[] }[]
 ]
 
 const START_MACHINE = 'Start your machine to see its skills and agents.'
+const SET_UP_MACHINE = 'Set up your cloud machine to see its skills and agents.'
 
 export default function SettingsPage() {
   useDocumentTitle('Settings')
@@ -121,6 +122,8 @@ export default function SettingsPage() {
   const restarting = operation?.kind === 'restart'
   const updating = operation?.kind === 'update'
   const [sandboxAvailable, setSandboxAvailable] = useState(false)
+  // Whether the one-time /api/sandbox discovery has answered (cloud on or off).
+  const [sandboxKnown, setSandboxKnown] = useState(false)
   const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState(false)
@@ -167,9 +170,11 @@ export default function SettingsPage() {
     if (m) setConnectionMode(m)
   }, [])
 
-  // Cloud mode before the machine's URL arrives (none yet, or no machine): nothing to ask,
-  // so the lists say why instead of loading forever; they load once the URL lands.
-  const awaitingMachine = awaitingCloudUrl(agentUrl, connectionMode)
+  // Cloud mode with no machine URL yet: until discovery answers, wait (lists keep
+  // loading); with cloud on, say why there is nothing to list (no machine, or not
+  // started) until the URL lands; with cloud off (self-hosted), read localhost as before.
+  const awaitingMachine = awaitingCloudUrl(agentUrl, connectionMode) && (!sandboxKnown || sandboxAvailable)
+  const machineMessage = !awaitingMachine || !sandboxKnown ? null : sandboxId ? START_MACHINE : SET_UP_MACHINE
 
   // The built-in list; the latest request wins (the URL can change while one is in flight).
   const agentsLoad = useRef(0)
@@ -179,25 +184,28 @@ export default function SettingsPage() {
       if (run !== agentsLoad.current) return
       setDashAgents(agents); setDashRoles(roles); setAgentsError(error); setAgentsLoading(false)
     }
-    if (awaitingMachine) { done([], null, START_MACHINE); return }
+    if (awaitingMachine) { if (machineMessage) done([], null, machineMessage); return }
     setAgentsLoading(true)
     storeRequest('agents').then(({ ok, status, d }) => {
       if (ok && Array.isArray(d?.agents)) done(d.agents, rolesData(d), null)
       else done([], null, listError(ok, status, d, 'agent list'))
     }).catch(() => done([], null, UNREACHABLE))
-  }, [storeRequest, awaitingMachine])
+  }, [storeRequest, awaitingMachine, machineMessage])
 
   // The machine's skills, the same way; the previous machine's list is cleared while loading.
   const skillsLoad = useRef(0)
   const loadSkills = useCallback(() => {
     const run = ++skillsLoad.current
-    if (awaitingMachine) { skillStore.setSkills([]); setSkillsError(START_MACHINE); setSkillsLoading(false); return }
+    if (awaitingMachine) {
+      if (machineMessage) { skillStore.setSkills([]); setSkillsError(machineMessage); setSkillsLoading(false) }
+      return
+    }
     setSkillsLoading(true); skillStore.setSkills([])
     skillHttp.list().then((r) => {
       if (run !== skillsLoad.current) return
       skillStore.setSkills(r.skills ?? []); setSkillsError(r.error ?? null); setSkillsLoading(false)
     })
-  }, [skillHttp, awaitingMachine]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [skillHttp, awaitingMachine, machineMessage]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch skills + named agents + secrets from the agent's HTTP API on load.
   useEffect(() => {
@@ -205,7 +213,7 @@ export default function SettingsPage() {
     loadSkills()
     loadAgents()
     if (!awaitingMachine) refreshSecrets()
-  }, [agentUrl, awaitingMachine, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentUrl, awaitingMachine, machineMessage, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Machine location (agent /health region).
   useEffect(() => {
@@ -268,9 +276,11 @@ export default function SettingsPage() {
   // One-time sandbox discovery + instance load (sync token + turbo).
   useEffect(() => {
     if (loading || !user) return
-    fetch('/api/sandbox').then(r => r.json())
-      .then(d => {
-        setSandboxAvailable(d.available || false)
+    // Unconfigured cloud answers 200 {available:false}; an error reply means cloud is on.
+    fetch('/api/sandbox').then(async r => ({ ok: r.ok, d: await r.json().catch(() => ({})) }))
+      .then(({ ok, d }) => {
+        setSandboxAvailable(ok ? !!d.available : true)
+        setSandboxKnown(true)
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
           // A cached reply carries the DB's last status, not the machine's: the poll sets it.
@@ -281,7 +291,7 @@ export default function SettingsPage() {
           }
         }
       })
-      .catch(() => setSandboxAvailable(false))
+      .catch(() => { setSandboxAvailable(false); setSandboxKnown(true) })
     fetch('/api/instance')
       .then(r => (r.ok ? r.json() : Promise.reject()))
       .then(d => {
