@@ -5,6 +5,9 @@ appId: com.voicenative.rn
 ---
 - launchApp:
     clearState: true
+# The email field autofocuses, so the keyboard slides the form up after launch. Tapping
+# before that settles hits where the field was, which is now "Continue with Google".
+- waitForAnimationToEnd
 - tapOn:
     id: "login-email-input"
 - inputText: "smoke@example.com"
