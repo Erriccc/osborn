@@ -239,6 +239,15 @@ async function main() {
     eq(JSON.parse(f.init.body), { roomName: ROOM }, 'body')
     eq(f.init.headers.Authorization, 'Bearer tok-123', 'auth')
   })
+  await t('connectUserAgent (phone): passes on the agent asking for the emailed code (#362)', async () => {
+    reset()
+    st.fetchReply = () => ({ status: 200, body: { ok: true, roomName: ROOM, callCode: true } })
+    eq(await connectUserAgent(USER, 'osborn-mine', async () => 'tok-123', ROOM), { ok: true, roomName: ROOM, agentUrl: 'https://agent.example', callCode: true }, 'phone')
+    st.fetchReply = () => ({ status: 200, body: { ok: true, roomName: 'osborn-x-1', callCode: true } })
+    eq(await connectUserAgent(USER, 'osborn-mine', async () => 'tok-123'), { ok: true, roomName: 'osborn-x-1', agentUrl: 'https://agent.example' }, 'browser: ignored')
+    st.fetchReply = () => ({ status: 200, body: { ok: true, roomName: ROOM, callCode: 'yes' } })
+    eq((await connectUserAgent(USER, 'osborn-mine', async () => 'tok-123', ROOM) as any).callCode, undefined, 'only a literal true')
+  })
   await t('connectUserAgent (phone): 409 from the agent is busy, no retry', async () => {
     reset()
     st.fetchReply = () => ({ status: 409, body: { ok: false, error: 'busy' } })
