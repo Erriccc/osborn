@@ -67,7 +67,7 @@ export function redactSecrets(s: string | undefined | null): string {
     // The body never crosses `-----` and is bounded, so a run of BEGIN lines with
     // no END cannot make each one rescan the rest of the text.
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[^-]|-(?!----)){0,8192}-----END [A-Z ]*PRIVATE KEY-----/g, 'PRIVATE KEY ••••')
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\sA-Za-z0-9+/=]|\\n){0,8192}/g, 'PRIVATE KEY ••••')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\w+/=:,]|-(?!----)|\\n){0,8192}/g, 'PRIVATE KEY ••••')
     .replace(/\bAIza[0-9A-Za-z_-]{30,}/g, 'AIza••••')
     .replace(/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'xox••••')
     // Two rules at the agent's floor of 30, not one folded rule: folding them
@@ -80,8 +80,9 @@ export function redactSecrets(s: string | undefined | null): string {
     // whole list, not just the first one.
     .replace(/FlyV1\s+fm[12]_[A-Za-z0-9/+_=-]+(?:\s*,\s*fm[12]_[A-Za-z0-9/+_=-]+)*/g, 'FlyV1 ••••')
     .replace(/([^A-Za-z0-9]|^)(?:fm[12]|fo1)_[A-Za-z0-9/+_=-]{20,}/g, '$1fly_••••')
-    // Two segments, short header: a truncated JWT is still a credential.
-    .replace(/eyJ[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}/g, 'eyJ••••')
+    // Two segments, short header: a truncated JWT is still a credential. The
+    // anchored start keeps a long `eyJeyJ…` run from restarting at every `eyJ`.
+    .replace(/([^A-Za-z0-9_-]|^)eyJ[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}/g, '$1eyJ••••')
     // `<` is excluded from every value class below: `Authorization: Bearer
     // <access_token>` and `TOKEN=<paste-here>` are placeholders, not credentials.
     .replace(/(\b(?:x-goog-|x-)?api-key(?:\\?["'`])?\s*[:=]\s*(?:\\?["'`])?)(?!\$)(?!(?:header|headers|required|optional|missing|invalid|expired|undefined|null|none|string|empty|unset|redacted|hidden)(?![\w+/=-]))(?![A-Za-z]{1,11}\.)[^\s"'`\\,;}<]{8,}/gi, '$1••••')
@@ -92,10 +93,11 @@ export function redactSecrets(s: string | undefined | null): string {
     // The value stops at `,()[]` (a keyword argument) and the lazy match leaves
     // an optional closing quote in place. Spared: a dotted reference
     // (`config.apiKey`, `os.environ[…]`) and a value that repeats the name
-    // (`password=password`). The guard repeats the optional quote because the
+    // (`password=password`) and a comparison (`token===stored`). An opening `(`
+    // or `[` stays outside the mask. The guard repeats the optional quote because the
     // regex may skip the separator's: without it `TOKEN="$VAR"` and an already-
     // masked `TOKEN="••••` would mask (again) from the quote.
-    .replace(/\b([A-Za-z0-9_]*(?:PASSWORD|PASSWD|[_-]PWD|SECRET|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|AUTH))((?:\\?["'`])?=(?:\\?["'`])?)(?!\\?["'`]?(?:\$|<|\{|\[REDACTED|••••|(?:true|false|null|none|nil|undefined|empty|unset|\1)(?![^\s&;|,()[\]"'`\\])|[A-Za-z_]+(?:\.[A-Za-z_]+)+(?![^\s&;|,()[\]"'`\\])|[A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b))[(\[]?[^\s&;|,()[\]]{5,}?(?=["'`]?(?:[\s&;|,()[\]]|$))/gi, '$1$2••••')
+    .replace(/\b([A-Za-z0-9_]*(?:PASSWORD|PASSWD|[_-]PWD|SECRET|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|AUTH))((?:\\?["'`])?=(?!=)(?:\\?["'`])?[(\[]?)(?!\\?["'`]?(?:\$|<|\{|\[?REDACTED|••••|(?:true|false|null|none|nil|undefined|empty|unset|\1)(?![^\s&;|,()[\]"'`\\])|[A-Za-z_]+(?:\.[A-Za-z_]+)+(?![^\s&;|,()[\]"'`\\])|[A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b))[^\s&;|,()[\]]{5,}?(?=["'`]?(?:[\s&;|,()[\]]|$))/gi, '$1$2••••')
     // Then `NAME: value` and spaced `NAME = value`. The value class matches the
     // header rules, so JSX and TS forms — `token={token}`, `token: (row?.sync_token
     // as string)` — are left alone, and the final guard spares a type annotation

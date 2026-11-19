@@ -120,6 +120,7 @@ t('code, diffs and prose are left byte-identical', () => {
     // Keyword arguments and references in code: the tight rule once masked all of
     // these, and ate the `)`, `,` or `"` after several.
     'OpenAI(api_key=os.environ["OPENAI_API_KEY"])', 'login(username=user, password=password)', 'gh.auth(token=token, base_url=url)', 'stripe.api_key=settings.STRIPE_KEY', 'API_KEY=process.env.API_KEY', 'apiKey=config.apiKey', 'cache_key=user:123:profile', 'sort_key=lambda r: r[1]', 'idempotency_key=order-123', 'partition_key=customer_id',
+    'if (token===storedToken) return', 'token==expected', 'apiKey===undefined',
   ]) {
     assert.equal(redactSecrets(s), s)
   }

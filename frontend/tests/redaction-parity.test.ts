@@ -18,6 +18,10 @@ const CORPUS = [
   `sbp_${B.repeat(3)}`,
   `-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7bq9\n-----END RSA PRIVATE KEY-----`,
   `-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0B`,
+  // A truncated legacy encrypted key (`openssl … -traditional`), raw and as an
+  // escaped JSONL string: its Proc-Type / DEK-Info lines once stopped the mask.
+  `-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0A1B2C3D4E5F60718293A4B5C6D7E8F9\n\n${B.repeat(6)}\n${B.repeat(6)}`,
+  `-----BEGIN RSA PRIVATE KEY-----\\nProc-Type: 4,ENCRYPTED\\nDEK-Info: AES-256-CBC,0A1B2C3D4E5F60718293A4B5C6D7E8F9\\n\\n${B.repeat(6)}\\n${B.repeat(6)}`,
   `sk-ant-api03-${B.repeat(4)}`, `sk-or-v1-${B.repeat(4)}`, `sk-proj-${B.repeat(3)}`, `sk-${B.repeat(3)}`,
   `ghp_${B.repeat(4)}`, `github_pat_11ABCDE_${B.repeat(4)}`,
   `AIzaSy${B.repeat(3)}kL3mN`,
@@ -48,6 +52,7 @@ for (const kind of Array.from(kinds)) assert.ok(sampled.has(kind), `no parity sa
 const contexts = (s: string) => [s, `**${s}**`, '`' + s + '`', '```sh\n' + s + '\n```', `- found ${s} in .env`, `{"out": "${s}"}`]
 for (const s of CORPUS) {
   assert.notEqual(agentRedact(s), s, `the agent no longer masks: ${s.slice(0, 24)}`)
+  assert.ok(!agentRedact(s).includes(B), `the agent printed a secret body: ${agentRedact(s).slice(0, 60)}`)
   for (const text of contexts(s)) {
     const out = redactSecrets(text)
     assert.deepEqual(survivors(out), [], `the gate prints what the agent masks: ${out.slice(0, 60)}`)
@@ -56,11 +61,13 @@ for (const s of CORPUS) {
 }
 for (const s of BENIGN) assert.equal(redactSecrets(s), s, `the gate rewrote: ${s}`)
 for (const s of BENIGN) assert.equal(agentRedact(s), s, `the agent rewrote: ${s}`)
-// Both PEM rules are bounded: 20k BEGIN lines with no END once took over 600ms.
-const headers = '-----BEGIN PRIVATE KEY-----\n'.repeat(20000)
-for (const [name, redact] of [['gate', redactSecrets], ['agent', agentRedact]] as const) {
-  const start = Date.now()
-  redact(headers)
-  assert.ok(Date.now() - start < 200, `the ${name}'s PEM rules rescan the text: ${Date.now() - start}ms`)
+// No rule may rescan the text from every position: 20k BEGIN lines with no END
+// once took over 600ms, and 200KB of `eyJeyJ…` about 40s.
+for (const text of ['-----BEGIN PRIVATE KEY-----\n'.repeat(20000), 'eyJ'.repeat(70000)]) {
+  for (const [name, redact] of [['gate', redactSecrets], ['agent', agentRedact]] as const) {
+    const start = Date.now()
+    redact(text)
+    assert.ok(Date.now() - start < 200, `the ${name} rescans ${text.slice(0, 12)}…: ${Date.now() - start}ms`)
+  }
 }
 console.log(`redaction-parity: ${kinds.size} agent rule kinds, ${CORPUS.length} samples, ${BENIGN.length} benign lines`)

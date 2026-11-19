@@ -64,7 +64,9 @@ export const SECRET_RULES: SecretRule[] = [
   // Supabase personal access token (real = 40 hex; floor skips "sbp_/" prose).
   { kind: 'SUPABASE-PAT', re: /sbp_[A-Za-z0-9]{20,}/g, replace: '[REDACTED-SUPABASE-PAT]' },
   // PEM private key blocks (multiline). Terminated block first, then a
-  // truncated/unterminated block (header + base64 body, literal "\n" allowed).
+  // truncated/unterminated block (header + base64 body, literal "\n" allowed;
+  // a legacy encrypted key's Proc-Type/DEK-Info lines too). Both spans are
+  // bounded so a run of BEGIN lines cannot make each one rescan the text.
   {
     kind: 'PEM-PRIVATE-KEY',
     re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[^-]|-(?!----)){0,8192}-----END [A-Z ]*PRIVATE KEY-----/g,
@@ -72,7 +74,7 @@ export const SECRET_RULES: SecretRule[] = [
   },
   {
     kind: 'PEM-PRIVATE-KEY',
-    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\sA-Za-z0-9+/=]|\\n){0,8192}/g,
+    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\w+/=:,]|-(?!----)|\\n){0,8192}/g,
     replace: '[REDACTED-PEM-PRIVATE-KEY]',
   },
   // Anthropic keys: sk-ant-api03-…, sk-ant-oat01-… (MUST run before OPENAI-KEY).
@@ -112,7 +114,7 @@ export const SECRET_RULES: SecretRule[] = [
   // JWTs (header.payload.signature, base64url).
   {
     kind: 'JWT',
-    re: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+    re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
     replace: '[REDACTED-JWT]',
   },
   // API-key headers: x-api-key, x-goog-api-key (Gemini REST), and generic api-key
