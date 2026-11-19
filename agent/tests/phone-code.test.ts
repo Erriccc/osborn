@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { PHONE_EMAIL_CODE_ENABLED } from '../src/data-sender-auth.js'
 import {
   PHONE_CODE_HANGUP_GRACE_MS, PHONE_CODE_LENGTH, PHONE_CODE_TIMEOUT_MS, PHONE_CODE_TTL_MS, addCodeDigit, checkPhoneCode, heldCode,
-  isPhoneLinePlayer, phoneCallerAdmission, phoneCodeAction, readPhoneCodeReply, removePhoneCaller,
+  isPhoneLinePlayer, offerPhoneCode, phoneCallerAdmission, phoneCodeAction, readPhoneCodeReply, removePhoneCaller,
 } from '../src/phone-code.js'
 
 let pass = 0, fail = 0
@@ -25,12 +25,22 @@ await t('the emailed code is off by default', () => {
 })
 
 await t('admission: flag off adopts; flag on asks for the code until this room is verified', () => {
-  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: 'call-1' }), 'adopt', 'default (off)')
-  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: 'call-1' }, false), 'adopt')
-  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: 'call-1' }, true), 'code')
-  assert.equal(phoneCallerAdmission({ verifiedRoom: 'call-1', room: 'call-1' }, true), 'adopt')
-  assert.equal(phoneCallerAdmission({ verifiedRoom: 'call-0', room: 'call-1' }, true), 'code', 'an earlier call\'s code does not carry over')
-  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: null }, true), 'code', 'no room')
+  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: 'call-1', hasSyncToken: true }), 'adopt', 'default (off)')
+  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: 'call-1', hasSyncToken: true }, false), 'adopt')
+  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: 'call-1', hasSyncToken: true }, true), 'code')
+  assert.equal(phoneCallerAdmission({ verifiedRoom: 'call-1', room: 'call-1', hasSyncToken: true }, true), 'adopt')
+  assert.equal(phoneCallerAdmission({ verifiedRoom: 'call-0', room: 'call-1', hasSyncToken: true }, true), 'code', 'an earlier call\'s code does not carry over')
+  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: null, hasSyncToken: true }, true), 'code', 'no room')
+  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: 'call-1', hasSyncToken: false }, true), 'refuse', 'no sync token: no code can be checked')
+  assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: 'call-1', hasSyncToken: false }, false), 'adopt', 'flag off: as before')
+})
+
+await t('/connect-room offers the code only for a phone room, flag on, sync token set', () => {
+  assert.equal(offerPhoneCode('call-1', true, true), true)
+  assert.equal(offerPhoneCode('call-1', false, true), false, 'no sync token')
+  assert.equal(offerPhoneCode('call-1', true, false), false, 'flag off')
+  assert.equal(offerPhoneCode(undefined, true, true), false, 'browser connect')
+  assert.equal(offerPhoneCode('call-1', true), false, 'default flag (off)')
 })
 
 await t('digits add up to six and submit; * starts again; other keys are ignored', () => {
@@ -123,7 +133,7 @@ await t('checkPhoneCode posts room and code with the sync token; no token, no re
 
 // ── index.ts wiring ──
 await t('index.ts: /connect-room asks the frontend for the code only for a phone room with the flag on', () => {
-  assert.match(src, /\.\.\.\(phoneRoom && PHONE_EMAIL_CODE_ENABLED \? \{ callCode: true \} : \{\}\)/)
+  assert.match(src, /\.\.\.\(offerPhoneCode\(phoneRoom, !!process\.env\.OSBORN_SYNC_TOKEN\) \? \{ callCode: true \} : \{\}\)/)
 })
 await t('index.ts: keypad presses go to the code while it is awaited, and never reach approvals', () => {
   const start = src.indexOf('room.on(RoomEvent.DtmfReceived')
@@ -137,9 +147,9 @@ await t('index.ts: keypad presses go to the code while it is awaited, and never 
 await t('index.ts: a caller who must type the code is not adopted (nothing is built before the check)', () => {
   const start = src.indexOf('participantConnectedHandler = async')
   const body = src.slice(start)
-  const gate = body.indexOf("phoneCallerAdmission({ verifiedRoom: phoneCodeVerifiedRoom, room: activeRoomName }) === 'code'")
+  const gate = body.indexOf("phoneCallerAdmission({ verifiedRoom: phoneCodeVerifiedRoom, room: activeRoomName, hasSyncToken: !!process.env.OSBORN_SYNC_TOKEN })")
   assert.ok(gate > 0, 'gate present')
-  const after = body.slice(gate, gate + 800)
+  const after = body.slice(gate, gate + 1400)
   assert.match(after, /phoneCodeCaller = participant[\s\S]*?return\n/, 'stops the handler')
   // The gate runs before any session is built or torn down.
   for (const marker of ['cancelMeetingLeaveGrace()', 'killCurrentLLM(', 'currentUserId = OWNER_USER_ID', 'new voice.AgentSession', 'createDirectSession', 'createRealtimeSession']) {
@@ -156,6 +166,9 @@ await t('index.ts: only an "ok" from the frontend adopts the caller, in the same
   assert.match(body, /const held = heldCode\(phoneCodeBuffer\)[\s\S]*?if \(held\.submit\) submitPhoneCode\(held\.submit\)/)
   const digit = src.indexOf('const onPhoneCodeDigit')
   assert.match(src.slice(digit, digit + 400), /addCodeDigit\(phoneCodeBuffer, digit, phoneCodeChecking\)/, 'digits during a check are held, one try at a time')
+})
+await t('index.ts: a required code with no sync token hangs up instead of waiting in silence', () => {
+  assert.match(src, /if \(admission === 'refuse'\) \{[\s\S]{0,300}endPhoneCodeCall\(participant, 'no-sync-token'\)\s+return/)
 })
 await t('index.ts: the code step opens a timer that ends the call; adoption and leaving clear it', () => {
   assert.match(src, /phoneCodeTimer = setTimeout\(\(\) => endPhoneCodeCall\(participant, 'timeout'\), PHONE_CODE_TIMEOUT_MS\)/)

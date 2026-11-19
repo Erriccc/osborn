@@ -7,7 +7,7 @@ import { checkSandboxClaim, serviceClient } from '@/lib/sandbox-claims'
 import { connectUserAgent } from '@/lib/connect-agent'
 import { sleep } from '@/lib/sleep'
 import {
-  CALL_CODE_TTL_MS, CODE_DAILY_LIMIT_LINE, CODE_EXPIRED_LINE, CODE_LOCKED_LINE, CODE_PROMPT_LINE, CODE_RETRY_LINE, CODE_SEND_FAILED_LINE,
+  CALL_CODE_TTL_MS, CODE_DAILY_LIMIT_LINE, CODE_EXPIRED_LINE, CODE_SORRY_LINE, CODE_LOCKED_LINE, CODE_PROMPT_LINE, CODE_RETRY_LINE, CODE_SEND_FAILED_LINE,
   callCodeNext, readCallCode, startCallCode,
 } from '@/lib/phone-code'
 
@@ -108,13 +108,17 @@ async function codeStep(
   }
   await say(roomName, 'code-prompt', line(CODE_PROMPT_LINE), CODE_LINE_MS)
   const deadline = Date.now() + CALL_CODE_TTL_MS + 10_000
-  let seenMisses = 0
+  const seen = { misses: 0, unchecked: 0 }
   for (let i = 1; ; i++) {
     // The caller hung up: stop following the code.
     if (i % 10 === 0 && !(await roomExists(roomName))) return 'rejected'
-    const row = await readCallCode(admin, roomName).catch(() => null)
+    // A failed read says nothing about the code: wait for the next one.
+    const read = await readCallCode(admin, roomName).then((row) => ({ row }), (e: Error) => {
+      console.warn(`[phone] ${e.message}`)
+      return null
+    })
     const now = Date.now()
-    const next = callCodeNext(seenMisses, row, now)
+    const next = read ? callCodeNext(seen, read.row, now) : 'wait'
     if (next === 'verified') return 'connected'
     if (next === 'locked') {
       await sayThenHangUp(roomName, 'code-locked', line(CODE_LOCKED_LINE), CODE_LINE_MS)
@@ -126,10 +130,13 @@ async function codeStep(
       else await hangUp(roomName)
       return 'rejected'
     }
-    if (next === 'retry') {
-      seenMisses = row!.misses
-      await say(roomName, 'code-retry', line(CODE_RETRY_LINE), CODE_LINE_MS)
+    if (read?.row) {
+      seen.misses = read.row.misses
+      seen.unchecked = read.row.unchecked ?? 0
     }
+    if (next === 'retry') await say(roomName, 'code-retry', line(CODE_RETRY_LINE), CODE_LINE_MS)
+    // A try given back unchecked (Supabase trouble): ask for the code again.
+    if (next === 'sorry') await say(roomName, 'code-sorry', line(CODE_SORRY_LINE), CODE_LINE_MS)
     await sleep(CODE_POLL_MS)
   }
 }

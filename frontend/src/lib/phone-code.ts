@@ -27,7 +27,8 @@ export const CODE_RETRY_LINE = "That code didn't match. Please try again."
 export const CODE_LOCKED_LINE = "That code didn't match, so I'm ending the call to keep your account safe. Goodbye."
 export const CODE_EXPIRED_LINE = 'The code has expired. Please call again. Goodbye.'
 export const CODE_SEND_FAILED_LINE = "I couldn't email you a code just now. Please call again in a minute. Goodbye."
-export const CODE_DAILY_LIMIT_LINE = "There have been too many wrong codes today, so I can't take this call. Please use the app. Goodbye."
+export const CODE_DAILY_LIMIT_LINE = "Too many wrong codes today, so phone calls are paused until tomorrow. You can still use the app. Goodbye."
+export const CODE_SORRY_LINE = 'Sorry, please type the code again.'
 
 export interface CallCodeRow {
   room_name: string
@@ -38,6 +39,8 @@ export interface CallCodeRow {
   attempts: number
   /** Tries whose check has come back wrong. */
   misses: number
+  /** Tries given back unchecked (Supabase or network trouble). */
+  unchecked: number
   verified_at: string | null
 }
 
@@ -94,13 +97,21 @@ export function refusedTry(status: CallCodeStatus): CallCodeResult | null {
 }
 
 /**
- * What the waiting call does next, from the row and the misses it has already
- * answered: 'retry' when a new wrong try came back and tries are left.
+ * What the waiting call does next, from the row and what it has already
+ * answered: 'retry' when a new wrong try came back and tries are left;
+ * 'sorry' when a try was given back unchecked. A try still
+ * in flight (attempts > misses) holds off expiry: its answer may be the match.
  */
-export function callCodeNext(seenMisses: number, row: CallCodeRow | null, now: number): 'wait' | 'retry' | CallCodeStatus {
+export function callCodeNext(
+  seen: { misses: number; unchecked: number },
+  row: CallCodeRow | null,
+  now: number,
+): 'wait' | 'retry' | 'sorry' | CallCodeStatus {
   const status = callCodeStatus(row, now, 'misses')
+  if (status === 'expired' && row && row.attempts > row.misses) return 'wait'
   if (status !== 'open') return status
-  return row!.misses > seenMisses ? 'retry' : 'wait'
+  if (row!.misses > seen.misses) return 'retry'
+  return (row!.unchecked ?? 0) > seen.unchecked ? 'sorry' : 'wait'
 }
 
 /** The account's wrong codes today, or null when they cannot be read. */
@@ -156,11 +167,13 @@ export async function startCallCode(
   return 'sent'
 }
 
+/** The call's code row; null when there is none. Throws when it cannot be read. */
 export async function readCallCode(admin: SupabaseClient, roomName: string): Promise<CallCodeRow | null> {
-  const { data } = await admin.from('phone_call_codes')
-    .select('room_name, user_id, expires_at, attempts, misses, verified_at')
+  const { data, error } = await admin.from('phone_call_codes')
+    .select('room_name, user_id, expires_at, attempts, misses, unchecked, verified_at')
     .eq('room_name', roomName)
     .maybeSingle()
+  if (error) throw new Error(`phone_call_codes read failed: ${error.message}`)
   return (data as CallCodeRow | null) ?? null
 }
 
@@ -176,7 +189,13 @@ export async function checkCallCode(
   code: string,
   now = Date.now(),
 ): Promise<CallCodeResult> {
-  const row = await readCallCode(admin, roomName)
+  let row: CallCodeRow | null
+  try {
+    row = await readCallCode(admin, roomName)
+  } catch (e) {
+    console.warn(`[phone] ${(e as Error).message}`)
+    return 'error'
+  }
   if (row && row.user_id !== userId) return 'expired'
   const refused = refusedTry(callCodeStatus(row, now))
   if (refused) return refused
@@ -188,18 +207,24 @@ export async function checkCallCode(
     return 'locked'
   }
   const attempts = row!.attempts + 1
-  const { data: claimed } = await admin.from('phone_call_codes')
+  const { data: claimed, error: claimError } = await admin.from('phone_call_codes')
     .update({ attempts })
     .eq('room_name', roomName)
     .eq('attempts', row!.attempts)
     .is('verified_at', null)
     .select('room_name')
+  if (claimError) {
+    console.warn(`[phone] could not count a try for ${roomName}: ${claimError.message}`)
+    return 'error'
+  }
   if (!claimed?.length) return 'wrong'
 
   // Gives the claimed try back when the code could not be checked.
   const notChecked = async (why: string): Promise<CallCodeResult> => {
     console.warn(`[phone] code for ${roomName} not checked: ${why}`)
-    await admin.from('phone_call_codes').update({ attempts: row!.attempts }).eq('room_name', roomName).eq('attempts', attempts)
+    await admin.from('phone_call_codes')
+      .update({ attempts: row!.attempts, unchecked: (row!.unchecked ?? 0) + 1 })
+      .eq('room_name', roomName).eq('attempts', attempts)
     return 'error'
   }
   // A malformed code is the caller's doing: it uses a try without reaching Supabase.
@@ -227,8 +252,16 @@ export async function checkCallCode(
     }
   }
   // Tries run one at a time per call (the agent waits for each answer), so this is the latest count.
-  await admin.from('phone_call_codes')
+  // routeCall follows the row: an unrecorded match would end the call later as expired,
+  // so the match counts only once written (one retry).
+  const record = () => admin.from('phone_call_codes')
     .update(matched ? { verified_at: new Date(now).toISOString() } : { misses: attempts })
     .eq('room_name', roomName)
+  let { error: writeError } = await record()
+  if (writeError) ({ error: writeError } = await record())
+  if (writeError) {
+    console.warn(`[phone] could not record the ${matched ? 'match' : 'miss'} for ${roomName}: ${writeError.message}`)
+    if (matched) return 'error'
+  }
   return callCodeOutcome(matched, attempts)
 }

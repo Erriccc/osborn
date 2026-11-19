@@ -34,6 +34,8 @@ const reset = () => {
   st.verifyError = null
   st.verifyThrows = false
   st.noSession = false
+  st.failReads = 0
+  st.failUpdate = null as null | ((patch: any) => boolean)
   st.signOutError = null
 }
 reset()
@@ -45,7 +47,7 @@ function table(name: string) {
     const match = rows.filter((r) => q.filters.every((f: any) => f(r)))
     if (q.op === 'insert') {
       if (rows.some((r) => r.room_name === q.value.room_name)) return { data: null, error: { code: '23505', message: 'duplicate key' } }
-      rows.push({ attempts: 0, misses: 0, verified_at: null, created_at: new Date().toISOString(), ...q.value })
+      rows.push({ attempts: 0, misses: 0, unchecked: 0, verified_at: null, created_at: new Date().toISOString(), ...q.value })
       return { data: null, error: null }
     }
     if (q.op === 'delete') { st.db[name] = rows.filter((r) => !match.includes(r)); return { data: null, error: null } }
@@ -65,8 +67,14 @@ function table(name: string) {
     lt: (k: string, v: any) => { q.filters.push((r: any) => r[k] < v); return b },
     gte: (k: string, v: any) => { q.filters.push((r: any) => r[k] >= v); return b },
     limit: (n: number) => { q.limit = n; return b },
-    maybeSingle: async () => { const r = run(); return { data: r.data?.[0] ?? null, error: r.error } },
-    then: (res: any, rej: any) => Promise.resolve(run()).then(res, rej),
+    maybeSingle: async () => {
+      if (st.failReads > 0) { st.failReads--; return { data: null, error: { message: 'connection reset' } } }
+      const r = run(); return { data: r.data?.[0] ?? null, error: r.error }
+    },
+    then: (res: any, rej: any) => {
+      const fail = q.op === 'update' && st.failUpdate?.(q.patch)
+      return Promise.resolve(fail ? { data: null, error: { message: 'write failed' } } : run()).then(res, rej)
+    },
   }
   return b
 }
@@ -138,7 +146,7 @@ async function main() {
   globalThis.setTimeout = ((fn: any, ms?: number, ...a: any[]) => realSetTimeout(fn, Math.min(ms ?? 0, 2), ...a)) as any
 
   const NOW = Date.parse('2026-11-19T12:00:00Z')
-  const row = (o: any = {}) => ({ room_name: ROOM, user_id: USER, expires_at: new Date(NOW + 60_000).toISOString(), attempts: 0, misses: 0, verified_at: null, ...o })
+  const row = (o: any = {}) => ({ room_name: ROOM, user_id: USER, expires_at: new Date(NOW + 60_000).toISOString(), attempts: 0, misses: 0, unchecked: 0, verified_at: null, ...o })
 
   // ── Pure rules ──
   await t('window: 5 minutes, 3 tries', () => {
@@ -171,13 +179,21 @@ async function main() {
     eq(code.refusedTry('expired'), 'expired', 'expired')
   })
   await t('callCodeNext: waits, says retry once per new miss, then ends', () => {
-    eq(code.callCodeNext(0, row(), NOW), 'wait', 'nothing typed')
-    eq(code.callCodeNext(0, row({ attempts: 1 }), NOW), 'wait', 'a try in flight')
-    eq(code.callCodeNext(0, row({ attempts: 1, misses: 1 }), NOW), 'retry', 'first miss')
-    eq(code.callCodeNext(1, row({ attempts: 1, misses: 1 }), NOW), 'wait', 'already told')
-    eq(code.callCodeNext(2, row({ attempts: 3, misses: 3 }), NOW), 'locked', 'last miss')
-    eq(code.callCodeNext(0, row({ attempts: 1, verified_at: 'x' }), NOW), 'verified', 'match')
-    eq(code.callCodeNext(0, null, NOW), 'expired', 'no row')
+    const at = (misses: number) => ({ misses, unchecked: 0 })
+    eq(code.callCodeNext(at(0), row(), NOW), 'wait', 'nothing typed')
+    eq(code.callCodeNext(at(0), row({ attempts: 1 }), NOW), 'wait', 'a try in flight')
+    eq(code.callCodeNext(at(0), row({ attempts: 1, misses: 1 }), NOW), 'retry', 'first miss')
+    eq(code.callCodeNext(at(1), row({ attempts: 1, misses: 1 }), NOW), 'wait', 'already told')
+    eq(code.callCodeNext(at(2), row({ attempts: 3, misses: 3 }), NOW), 'locked', 'last miss')
+    eq(code.callCodeNext(at(0), row({ attempts: 1, verified_at: 'x' }), NOW), 'verified', 'match')
+    eq(code.callCodeNext(at(0), null, NOW), 'expired', 'no row')
+  })
+  await t('callCodeNext: a try in flight holds off expiry; a try given back says sorry', () => {
+    const past = new Date(NOW - 1).toISOString()
+    eq(code.callCodeNext({ misses: 0, unchecked: 0 }, row({ attempts: 1, expires_at: past }), NOW), 'wait', 'in flight at expiry')
+    eq(code.callCodeNext({ misses: 0, unchecked: 0 }, row({ attempts: 1, misses: 1, expires_at: past }), NOW), 'expired', 'answered, then expired')
+    eq(code.callCodeNext({ misses: 0, unchecked: 0 }, row({ unchecked: 1 }), NOW), 'sorry', 'a try given back')
+    eq(code.callCodeNext({ misses: 1, unchecked: 1 }, row({ attempts: 1, misses: 1, unchecked: 1 }), NOW), 'wait', 'already told')
   })
 
   // ── startCallCode ──
@@ -305,7 +321,7 @@ async function main() {
       setup()
       eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'error', name)
       const r = st.db.phone_call_codes[0]
-      eq([r.attempts, r.misses, r.verified_at], [1, 1, null], `${name}: try given back, no miss`)
+      eq([r.attempts, r.misses, r.unchecked, r.verified_at], [1, 1, 1, null], `${name}: try given back, no miss`)
     }
   })
   await t('checkCallCode: no Supabase client is an error too', async () => {
@@ -337,6 +353,37 @@ async function main() {
     try { eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'ok', 'still a match') } finally { console.warn = orig }
     ok(warns.some((w) => /could not revoke/.test(w) && /session not found/.test(w)), `logged: ${warns}`)
     ok(!warns.some((w) => /jwt-/.test(w)), 'no token in the log')
+  })
+
+  // ── Supabase errors on the row ──
+  await t('readCallCode throws on a read error; checkCallCode answers error, counting nothing', async () => {
+    reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
+    st.failReads = 1
+    let threw = false
+    try { await code.readCallCode(admin, ROOM) } catch { threw = true }
+    ok(threw, 'throws')
+    eq(await code.readCallCode(admin, 'call-none'), null, 'no row is null, not an error')
+    st.failReads = 1
+    eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'error', 'not expired')
+    eq([st.db.phone_call_codes[0].attempts, st.verifies.length], [0, 0], 'nothing counted or checked')
+  })
+  await t('checkCallCode: an error counting the try is an error, not a wrong code', async () => {
+    reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
+    st.failUpdate = (patch: any) => 'attempts' in patch && !('misses' in patch)
+    eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'error', 'error')
+    eq(st.verifies.length, 0, 'not checked')
+  })
+  await t('checkCallCode: the match is recorded with one retry; if it cannot be, the answer is error, not ok', async () => {
+    reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
+    let fails = 1
+    st.failUpdate = (patch: any) => 'verified_at' in patch && fails-- > 0
+    eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'ok', 'retry wrote it')
+    ok(!!st.db.phone_call_codes[0].verified_at, 'recorded')
+    reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
+    st.failUpdate = (patch: any) => 'verified_at' in patch
+    const warn = console.warn; console.warn = () => {}
+    try { eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'error', 'unrecorded match is not ok') } finally { console.warn = warn }
+    eq(st.db.phone_call_codes[0].verified_at, null, 'not recorded')
   })
 
   // ── POST /api/phone/code ──
@@ -436,6 +483,40 @@ async function main() {
     eq(st.sent.length, 0, 'no email')
     eq(lines(), [code.CODE_DAILY_LIMIT_LINE], 'line')
     eq(st.deleted, [ROOM], 'hung up')
+  })
+  await t('routeCall with callCode: a try given back unchecked -> "type it again", then a match connects', async () => {
+    reset(); st.callCode = true
+    const realFrom = admin2.from
+    let step = 0
+    admin2.from = (name: string) => {
+      const r = st.db.phone_call_codes[0]
+      if (name === 'phone_call_codes' && r) {
+        step++
+        if (step === 2) { st.verifyError = { status: 500, message: 'down' }; void code.checkCallCode(admin, USER, ROOM, '482913') }
+        if (step === 6 && r.unchecked === 1) { st.verifyError = null; void code.checkCallCode(admin, USER, ROOM, '482913') }
+      }
+      return realFrom(name)
+    }
+    try { eq(await calls.routeCall(call), 'connected', 'connected') } finally { admin2.from = realFrom }
+    eq(lines(), [code.CODE_PROMPT_LINE, code.CODE_SORRY_LINE], 'sorry line once')
+    eq(st.deleted, [], 'not hung up')
+  })
+  await t('routeCall with callCode: failed reads neither end nor connect the call', async () => {
+    reset(); st.callCode = true
+    const realFrom = admin2.from
+    let n = 0
+    admin2.from = (name: string) => {
+      if (name === 'phone_call_codes' && st.db.phone_call_codes.length) {
+        n++
+        if (n === 2) st.failReads = 3
+        if (n === 6) void code.checkCallCode(admin, USER, ROOM, '482913')
+      }
+      return realFrom(name)
+    }
+    const warn = console.warn; console.warn = () => {}
+    try { eq(await calls.routeCall(call), 'connected', 'connected after the reads recover') } finally { admin2.from = realFrom; console.warn = warn }
+    eq(lines(), [code.CODE_PROMPT_LINE], 'no goodbye')
+    eq(st.deleted, [], 'not hung up')
   })
   await t('routeCall with callCode: the email fails -> a goodbye and hang-up, never connected', async () => {
     reset(); st.callCode = true; st.sendError = { message: 'over_email_send_rate_limit' }

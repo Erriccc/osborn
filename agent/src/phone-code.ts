@@ -33,12 +33,24 @@ export function isPhoneLinePlayer(ingress: boolean, activeRoomName: string | nul
   return ingress && isPhoneCallLive(activeRoomName, phoneRoomName, true)
 }
 
-/** What a phone caller joining gets: the voice session, or the code step first. */
+/**
+ * What a phone caller joining gets: the voice session, the code step first,
+ * or (flag on but no sync token, so no code can be checked) a hang-up.
+ */
 export function phoneCallerAdmission(
-  s: { verifiedRoom: string | null; room: string | null },
+  s: { verifiedRoom: string | null; room: string | null; hasSyncToken: boolean },
   codeEnabled = PHONE_EMAIL_CODE_ENABLED,
-): 'adopt' | 'code' {
-  return codeEnabled && (!s.room || s.verifiedRoom !== s.room) ? 'code' : 'adopt'
+): 'adopt' | 'code' | 'refuse' {
+  if (!codeEnabled || (s.room && s.verifiedRoom === s.room)) return 'adopt'
+  return s.hasSyncToken ? 'code' : 'refuse'
+}
+
+/**
+ * Whether /connect-room asks the frontend to email a code: only for a phone
+ * room, with the flag on, on a machine whose sync token can check the code.
+ */
+export function offerPhoneCode(phoneRoom: string | undefined, hasSyncToken: boolean, codeEnabled = PHONE_EMAIL_CODE_ENABLED): boolean {
+  return !!phoneRoom && codeEnabled && hasSyncToken
 }
 
 /**

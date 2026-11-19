@@ -74,8 +74,8 @@ import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_EMAIL_CODE_ENABLED, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
-import { PHONE_CODE_HANGUP_GRACE_MS, PHONE_CODE_TIMEOUT_MS, addCodeDigit, checkPhoneCode, heldCode, isPhoneLinePlayer as isLinePlayer, phoneCallerAdmission, phoneCodeAction, removePhoneCaller } from './phone-code.js'
+import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { PHONE_CODE_HANGUP_GRACE_MS, PHONE_CODE_TIMEOUT_MS, addCodeDigit, checkPhoneCode, heldCode, isPhoneLinePlayer as isLinePlayer, offerPhoneCode, phoneCallerAdmission, phoneCodeAction, removePhoneCaller } from './phone-code.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
@@ -1045,7 +1045,7 @@ function startApiServer(workingDir: string, port: number): void {
         .then((roomName) => {
           res.writeHead(200, { 'Content-Type': 'application/json' })
           // callCode: the frontend emails the code this caller must type (#362).
-          res.end(JSON.stringify({ ok: true, roomName, status: livekitState.status, ...(phoneRoom && PHONE_EMAIL_CODE_ENABLED ? { callCode: true } : {}) }))
+          res.end(JSON.stringify({ ok: true, roomName, status: livekitState.status, ...(offerPhoneCode(phoneRoom, !!process.env.OSBORN_SYNC_TOKEN) ? { callCode: true } : {}) }))
         })
         .catch((e) => {
           if ((e as { code?: string })?.code === 'busy') {
@@ -5516,7 +5516,17 @@ async function main() {
       return
     }
     // Emailed code (#362): the caller types it before anything is built for them.
-    if (isPhoneCaller && phoneCallerAdmission({ verifiedRoom: phoneCodeVerifiedRoom, room: activeRoomName }) === 'code') {
+    const admission = isPhoneCaller
+      ? phoneCallerAdmission({ verifiedRoom: phoneCodeVerifiedRoom, room: activeRoomName, hasSyncToken: !!process.env.OSBORN_SYNC_TOKEN })
+      : 'adopt'
+    if (admission === 'refuse') {
+      // The code is required but this machine cannot check one (no sync token): end the call.
+      console.warn('📞🔐 Emailed code required but OSBORN_SYNC_TOKEN is unset; hanging up')
+      phoneCodeCaller = participant
+      endPhoneCodeCall(participant, 'no-sync-token')
+      return
+    }
+    if (admission === 'code') {
       phoneCodeCaller = participant
       phoneCodeBuffer = ''
       // Ends the call if no code has matched by the end of the window, even if the frontend is gone.

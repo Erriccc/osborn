@@ -9,6 +9,8 @@
 --   room_name    the call's LiveKit room (one per call, "call-…")
 --   attempts     tries counted, each before its check runs (the try limit)
 --   misses       tries whose check came back wrong (what the caller is told)
+--   unchecked    tries given back unchecked (Supabase or network trouble);
+--                the caller is asked to type the code again
 --   verified_at  set when the code matched; the agent then takes the call
 --
 -- Service role only: RLS on with no policies, and no grants to client roles.
@@ -23,6 +25,7 @@ create table if not exists public.phone_call_codes (
   expires_at timestamptz not null,
   attempts smallint not null default 0 check (attempts >= 0),
   misses smallint not null default 0 check (misses >= 0),
+  unchecked smallint not null default 0 check (unchecked >= 0),
   verified_at timestamptz
 );
 
