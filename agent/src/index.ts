@@ -142,10 +142,10 @@ function buildToolLogEvent(
   return ev
 }
 
-// The reply each chat store request waits for (VoiceRoom askAgent).
 // Spoken through session.say when a session resumes; matched in sendAgentTranscript.
 const RESUME_GREETING = 'Welcome back! Ready to continue our previous conversation.'
 
+// The reply each chat store request waits for (VoiceRoom askAgent).
 const STORE_REPLY_TYPES: Record<string, string> = {
   skill_get: 'skill_content', skill_add: 'skill_add_result', skill_fork: 'skill_fork_result',
   skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
