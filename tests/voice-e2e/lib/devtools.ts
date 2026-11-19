@@ -18,7 +18,7 @@ export type DevtoolsBuffer = {
   network: string[]
   // The lines recorded at or after `ms` (epoch), e.g. since a person took control.
   since: (ms: number) => { console: string[]; network: string[] }
-  summary: () => string
+  summary: (ms?: number) => string
 }
 
 /**
