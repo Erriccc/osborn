@@ -165,6 +165,16 @@ t('#153: a replay that caught up drops the cache copies, even split differently'
   eq(reconcileReplay(replay, current).map(m => m.content), ['NEWEST question', 'Part one.', 'Part two.'], 'no duplicate')
 })
 
+t('#153: a short reply said again elsewhere is not an anchor (no duplicated turn)', () => {
+  const u = (id: string, content: string, extra: Partial<ChatMessage> = {}) => msg({ id, content, ...extra })
+  const a = (id: string, content: string, extra: Partial<ChatMessage> = {}) => msg({ id, role: 'assistant', content, ...extra })
+  const replay = [u('prior-0-s', 'A'), a('prior-1-s', 'a'), u('prior-2-s', 'yes'), a('prior-3-s', 'y'),
+    u('prior-4-s', 'Z'), a('prior-5-s', 'z'), u('prior-6-s', 'yes'), a('prior-7-s', 'y2')]
+  const cache = { fromCache: true }
+  const current = [u('c0', 'A', cache), a('c1', 'a', cache), u('c2', 'yes', cache), a('c3', 'y', cache), u('c4', 'Z', cache), a('c5', 'z', cache)]
+  eq(reconcileReplay(replay, current).map(m => m.content), ['A', 'a', 'yes', 'y', 'Z', 'z', 'yes', 'y2'], 'Z is not shown twice')
+})
+
 t('#153: older cache rows the replay window no longer holds are not resurrected', () => {
   const replay = [msg({ id: 'prior-0-s', content: 'q50', timestamp: at('2026-11-11T23:30:00Z') })]
   const current = [

@@ -183,7 +183,9 @@ export function reconcileReplay(replay: ChatMessage[], current: ChatMessage[]): 
   users.forEach((_, j) => {
     let run = 0
     while (run <= j && run < said.length && users[j - run].text === said[said.length - 1 - run]) run++
-    if (run > best) { best = run; at = j }
+    // One matching turn alone is too weak an anchor ("yes" said again elsewhere),
+    // unless it is the whole replay.
+    if (run > best && (run >= 2 || run === said.length)) { best = run; at = j }
   })
   const start = at < 0 ? -1 : (users[at + 1]?.i ?? -1)
   const ahead = start < 0 ? [] : cached.slice(start)
