@@ -8,13 +8,13 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { LOCK_FILE, acquireLock, findTranscriptBySessionId, releaseLock, resolveProjectDir } from './lens-paths.js'
+import { LOCK_FILE, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, writeSweepStatus } from './lens-paths.js'
 
 export interface LensLaunchPayload {
   sessionId: string
@@ -22,6 +22,14 @@ export interface LensLaunchPayload {
   cwd?: string
   /** Session-end runs: Library + content steps only, not the profile lens (step 1). */
   skipLens?: boolean
+  /** Run the machine-wide catch-up sweep after the steps (session end), skipping these live sessions. */
+  sweep?: SweepRequest
+}
+
+export interface SweepRequest {
+  /** Session ids that are live right now: never swept. */
+  exclude: string[]
+  trigger: string
 }
 
 export type LensLaunchResult =
@@ -61,6 +69,43 @@ export function resolveWorkerCommand(): { args: string[]; worker: string } | nul
 
 let warnedSpawn = false
 
+/**
+ * Spawn the detached worker on `argFile`. Its stderr goes to <logDir>/content-lens.log, so a
+ * crash before the worker's own logging (bad import, OOM) is not lost.
+ */
+function spawnWorker(cmd: { args: string[] }, argFile: string, logDir: string | null, onError: (err: Error) => void): number | undefined {
+  let fd: number | null = null
+  try {
+    if (logDir) fd = openSync(join(logDir, LOG_FILE), 'a', 0o600)
+  } catch {
+    fd = null
+  }
+  try {
+    const child = spawn(process.execPath, [...cmd.args, argFile], {
+      detached: true,
+      stdio: ['ignore', 'ignore', fd ?? 'ignore'],
+      env: { ...process.env },
+    })
+    child.on('error', onError)
+    child.unref()
+    return child.pid
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+function writeArgFile(payload: Record<string, unknown>): string {
+  const argFile = join(tmpdir(), `osborn-lens-${process.pid}-${randomBytes(6).toString('hex')}.json`)
+  writeFileSync(argFile, JSON.stringify(payload), { mode: 0o600, flag: 'wx' })
+  return argFile
+}
+
 /** Fire-and-forget. Returns synchronously; the worker is never awaited. */
 export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResult {
   let projectDir: string | null = null
@@ -90,35 +135,23 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
     }
     lockHeld = true
 
-    const argFile = join(tmpdir(), `osborn-lens-${process.pid}-${randomBytes(6).toString('hex')}.json`)
-    writeFileSync(
-      argFile,
-      JSON.stringify({
-        sessionId: payload.sessionId,
-        transcriptPath: payload.transcriptPath,
-        cwd: payload.cwd,
-        skipLens: !!payload.skipLens,
-        lockDir: lockHeld ? projectDir : null,
-      }),
-      { mode: 0o600, flag: 'wx' },
-    )
-
-    {
-      const child = spawn(process.execPath, [...cmd.args, argFile], {
-        detached: true,
-        stdio: 'ignore',
-        env: { ...process.env },
-      })
-      child.on('error', err => {
-        if (lockHeld && projectDir) releaseLock(projectDir)
-        if (!warnedSpawn) {
-          warnedSpawn = true
-          console.error('⚠️ content-lens: worker spawn failed:', err?.message)
-        }
-      })
-      child.unref()
-      return { status: 'spawned', pid: child.pid, projectDir, worker: cmd.worker }
-    }
+    const argFile = writeArgFile({
+      sessionId: payload.sessionId,
+      transcriptPath: payload.transcriptPath,
+      cwd: payload.cwd,
+      skipLens: !!payload.skipLens,
+      lockDir: lockHeld ? projectDir : null,
+      ...(payload.sweep ? { sweep: payload.sweep } : {}),
+    })
+    const lockDir = projectDir
+    const pid = spawnWorker(cmd, argFile, projectDir, err => {
+      if (lockHeld && lockDir) releaseLock(lockDir)
+      if (!warnedSpawn) {
+        warnedSpawn = true
+        console.error('⚠️ content-lens: worker spawn failed:', err?.message)
+      }
+    })
+    return { status: 'spawned', pid, projectDir, worker: cmd.worker }
   } catch (err) {
     if (lockHeld && projectDir) releaseLock(projectDir)
     const msg = err instanceof Error ? err.message : String(err)
@@ -137,10 +170,66 @@ type LastRun = { at: string; session: string; reason: string; status: LensLaunch
 let lastRun: LastRun | null = null
 export const lastLibraryRun = () => lastRun
 
-export function launchLibraryOnSessionEnd(sessionId: string | null | undefined, cwd: string | undefined, reason: string): LastRun | null {
+/**
+ * `live` = sessions still running on this machine (never swept). The worker writes this
+ * session's page, then runs the catch-up sweep. When another worker holds this project's
+ * lock, a standalone sweep is launched instead (it skips that project while it is busy).
+ */
+export function launchLibraryOnSessionEnd(sessionId: string | null | undefined, cwd: string | undefined, reason: string, live: string[] = []): LastRun | null {
   if (!sessionId) return null
-  const r = launchCompactionLens({ sessionId, cwd, skipLens: true })
+  const exclude = live.filter(id => id && id !== sessionId)
+  const r = launchCompactionLens({ sessionId, cwd, skipLens: true, sweep: { exclude, trigger: `session-end:${reason}` } })
   lastRun = { at: new Date().toISOString(), session: sessionId.slice(0, 8), reason, status: r.status }
   console.log(`📚 library on session end (${reason}): ${lastRun.session} → ${r.status}`)
+  if (r.status === 'locked' || r.status === 'unlockable') launchLibrarySweep(exclude, `session-end:${reason}`)
   return lastRun
+}
+
+/**
+ * Catch-up sweep (lens-library-sweep.ts) in a detached worker: every unwritten period and
+ * past-day digest on this machine, newest first, capped per run. The machine-wide sweep lock
+ * is taken here, so two sweeps never run at once; the worker inherits and releases it.
+ */
+export function launchLibrarySweep(live: string[], trigger: string): LensLaunchResult {
+  const home = libraryHomeDir()
+  let lockHeld = false
+  try {
+    if (!isContentLensEnabled()) return { status: 'disabled' }
+    if (!(process.env.OPENROUTER_API_KEY || '').trim()) return { status: 'no-key' }
+    const cmd = resolveWorkerCommand()
+    if (!cmd) return { status: 'no-worker' }
+    mkdirSync(home, { recursive: true })
+    if (!acquireLock(home)) return { status: 'locked', projectDir: home }
+    lockHeld = true
+    const argFile = writeArgFile({ sweep: { exclude: live.filter(Boolean), trigger }, sweepLockHeld: true })
+    const pid = spawnWorker(cmd, argFile, home, err => {
+      releaseLock(home)
+      writeSweepStatus({ status: 'error', trigger, at: new Date().toISOString(), errors: [{ kind: 'spawn', message: String(err?.message ?? err).slice(0, 160) }] }, home)
+    })
+    console.log(`📚 library sweep (${trigger}) → spawned`)
+    return { status: 'spawned', pid, projectDir: home, worker: cmd.worker }
+  } catch (err) {
+    if (lockHeld) releaseLock(home)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('⚠️ library sweep: launch failed:', msg)
+    return { status: 'error', error: msg }
+  }
+}
+
+/**
+ * The /health view of the sweep status file (survives restarts). Counts, kinds and 8-char
+ * ids or days only: never messages or paths (/health is public).
+ */
+export function librarySweepHealth(): { backlog: unknown; lastSweep: unknown; workerError: unknown } {
+  const s = readSweepStatus()
+  if (!s) return { backlog: null, lastSweep: null, workerError: null }
+  return {
+    backlog: s.backlog ?? null,
+    lastSweep: {
+      status: s.status, trigger: s.trigger, at: s.at, finishedAt: s.finishedAt ?? null,
+      pagesWritten: s.pagesWritten, digestsWritten: s.digestsWritten, modelCalls: s.modelCalls, costUsd: s.costUsd,
+      capHit: !!s.capHit, errors: (s.errors ?? []).map(e => ({ kind: e.kind, ref: e.ref ?? null })),
+    },
+    workerError: s.workerError ? { at: s.workerError.at, kind: s.workerError.kind, ref: s.workerError.ref ?? null } : null,
+  }
 }

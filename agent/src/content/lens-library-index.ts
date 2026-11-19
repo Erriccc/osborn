@@ -2,7 +2,8 @@
  * lens-library-index.ts — rebuild a session library's INDEX.md from the period
  * pages on disk. The pages are the source of truth (renderPeriodMd format), so
  * pages written by the manual backfill are listed alongside auto-written ones,
- * and a rebuild is idempotent: same pages in → same INDEX out.
+ * and a rebuild is idempotent: same pages in → same INDEX out. In the daily-digests dir
+ * (lens-library-digest.ts) the same rebuild lists the digest pages instead.
  */
 
 import { readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
@@ -10,6 +11,22 @@ import { join } from 'node:path'
 
 export const INDEX_FILE = 'INDEX.md'
 export const PAGE_RE = /^(\d{4}-\d{2}-\d{2}|undated)-period-(\d+)\.md$/
+/** One daily digest of short chats (lens-library-digest.ts), named after its local day. */
+export const DIGEST_RE = /^(\d{4}-\d{2}-\d{2})-digest\.md$/
+
+export interface DigestSummary {
+  file: string
+  day: string
+  chats: number
+  titles: string[]
+}
+
+/** Parse one digest page (renderDigestMd output). Pure. */
+export function parseDigest(file: string, md: string): DigestSummary {
+  const n = md.match(/^- Chats: (\d+)/m)
+  const titles = [...md.matchAll(/^### (.+)$/gm)].map(m => m[1].trim())
+  return { file, day: file.match(DIGEST_RE)?.[1] ?? '', chats: n ? Number(n[1]) : titles.length, titles }
+}
 
 export interface PageStory {
   title: string
@@ -64,12 +81,15 @@ const cell = (s: string): string => s.replace(/\|/g, '\\|').replace(/\n+/g, ' ')
 const when = (iso: string): string => (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(iso) ? iso.slice(0, 16).replace('T', ' ') : iso || '?')
 
 /** Render INDEX.md. Pure. */
-export function renderIndex(sessionLabel: string, pages: PageSummary[]): string {
+export function renderIndex(sessionLabel: string, pages: PageSummary[], digests: DigestSummary[] = []): string {
   const ps = [...pages].sort((a, b) => a.index - b.index || a.file.localeCompare(b.file))
+  if (!ps.length && digests.length) return renderDigestIndex(digests)
   const L: string[] = [`# Content library — session ${sessionLabel}`, '']
   L.push(
-    'Period pages from the period map (review mode). New pages are written automatically by the content-lens worker on each ' +
-      'compaction, one per period, keyed on the period\'s opening boundary row. content-profile.md and the HWM are not touched.',
+    'Period pages from the period map (review mode). New pages are written automatically by the content-lens worker when a ' +
+      'session ends or compacts, one per period, keyed on the period\'s opening boundary row; the catch-up sweep writes older ' +
+      'periods that were skipped (at most 10 pages a run, newest first). Chats shorter than a period go to the daily digests ' +
+      '(osb-library/digests). content-profile.md and the HWM are not touched.',
     '',
   )
   L.push('## Periods (chronological)', '', '| # | Date range (UTC) | Rows | Period goal | Top high-leverage item | File |', '|---|---|---|---|---|---|')
@@ -90,14 +110,31 @@ export function renderIndex(sessionLabel: string, pages: PageSummary[]): string 
   return L.join('\n') + '\n'
 }
 
-/** Rebuild <dir>/INDEX.md from every period page in <dir>. `scrub` = final redaction pass. Returns the path. */
+/** INDEX.md of the digests dir: one row per local day. Pure. */
+export function renderDigestIndex(digests: DigestSummary[]): string {
+  const ds = [...digests].sort((a, b) => b.day.localeCompare(a.day))
+  const L: string[] = ['# Content library — daily digests', '']
+  L.push(
+    'One page per local calendar day for chats too short to become a period page (under the period minimum, 1h by default): ' +
+      'each chat\'s title and a one-to-two line summary. Written by the catch-up sweep only for days that are over; a day is ' +
+      'rewritten in place when new short chats turn up for it.',
+    '',
+    '| Day | Chats | Titles | File |',
+    '|---|---|---|---|',
+  )
+  for (const d of ds) L.push(`| ${d.day} | ${d.chats} | ${cell(d.titles.slice(0, 5).join('; ') + (d.titles.length > 5 ? '; …' : ''))} | [${d.file}](${d.file}) |`)
+  L.push('', '## Totals', '', `- Days: ${ds.length}`, `- Chats: ${ds.reduce((n, d) => n + d.chats, 0)}`)
+  return L.join('\n') + '\n'
+}
+
+/** Rebuild <dir>/INDEX.md from every period page (or daily digest) in <dir>. `scrub` = final redaction pass. Returns the path. */
 export function rebuildIndex(dir: string, sessionLabel: string, scrub: (s: string) => string = s => s): string {
-  const pages = readdirSync(dir)
-    .filter(f => PAGE_RE.test(f))
-    .map(f => parsePage(f, readFileSync(join(dir, f), 'utf-8')))
+  const files = readdirSync(dir)
+  const pages = files.filter(f => PAGE_RE.test(f)).map(f => parsePage(f, readFileSync(join(dir, f), 'utf-8')))
+  const digests = files.filter(f => DIGEST_RE.test(f)).map(f => parseDigest(f, readFileSync(join(dir, f), 'utf-8')))
   const path = join(dir, INDEX_FILE)
   const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, scrub(renderIndex(sessionLabel, pages)), 'utf-8')
+  writeFileSync(tmp, scrub(renderIndex(sessionLabel, pages, digests)), 'utf-8')
   renameSync(tmp, path)
   return path
 }

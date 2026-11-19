@@ -1,0 +1,266 @@
+/**
+ * lens-library-sweep.ts — the Library's CATCH-UP SWEEP (runs in the detached worker).
+ *
+ * The per-session step writes at most one page per run (the period that just ended). The sweep
+ * writes the rest of the backlog across every session on this machine except the live ones:
+ *   - every unwritten period that spans >= the min span (libraryBacklog: older closed periods,
+ *     gaps between written pages, tails of ended sessions), one page each via runLibraryStep;
+ *   - one daily digest per past local day for the chats too short to become a period
+ *     (lens-library-digest.ts).
+ * Newest work first, at most SWEEP_MAX_PAGES model-call pages a run (periods and digests
+ * together), so spend stays bounded and the backlog clears over several runs. Each period or
+ * day gets one attempt per run; repeat failures stop being retried (MAX_*_FAILURES).
+ * Idempotent through the manifests: a written period or digested day is never redone.
+ *
+ * Locking: the caller holds the machine-wide sweep lock (<claudeDir>/osb-library). Each period
+ * also takes its project's lock for the length of its write (skipped when another worker has
+ * it). Result + backlog go to library-sweep-status.json there (read by /health), the log to
+ * content-lens.log there. Never throws.
+ */
+
+import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { isContentLensEnabled } from './lens-launch.js'
+import { acquireLock, claudeDir, libraryHomeDir, releaseLock, touchLock, writeSweepStatus, type SweepError, type SweepStatus } from './lens-paths.js'
+import { logLine } from './lens-profile.js'
+import { isTransportError, libraryBacklog, libraryDirFor, libraryMinSpanMs, readManifest, runLibraryStep } from './lens-library.js'
+import type { LibraryPeriod } from './lens-library-select.js'
+import { digestDir, ingestPendingDigests, pendingDigestDays, readDigestManifest, runDigestDay, writeDigestManifest, type ShortChat } from './lens-library-digest.js'
+import { loadClientRedactor } from './lens-redact.js'
+import { redactSecrets } from './transcript-sanitizer.js'
+
+export const SWEEP_MAX_PAGES = 10
+/** No new page is started after this long; the worker's hard timeout sits above it. */
+export const SWEEP_BUDGET_MS = 60 * 60_000
+const SCAN_CACHE_FILE = 'sweep-scan.json'
+
+export interface SweepOptions {
+  /** Live sessions: never swept. */
+  exclude?: string[]
+  trigger?: string
+  maxPages?: number
+  budgetMs?: number
+  /** No model calls (pages/digests marked dry, never counted as written). */
+  dry?: boolean
+  /** A project lock this worker already holds (session-end run). */
+  heldProjectDir?: string | null
+  now?: number
+  home?: string
+  keepAlive?: () => void
+  log?: (m: string) => void
+}
+
+export interface SweepSession {
+  sessionId: string
+  db: string
+  projectDir: string
+}
+
+/** Every session store on this machine: <claudeDir>/projects/<slug>/osb/<sid>/session.db. */
+export function listSessionDbs(): SweepSession[] {
+  const out: SweepSession[] = []
+  const root = join(claudeDir(), 'projects')
+  try {
+    for (const p of readdirSync(root, { withFileTypes: true })) {
+      if (!p.isDirectory()) continue
+      const osb = join(root, p.name, 'osb')
+      let ents: import('node:fs').Dirent[] = []
+      try {
+        ents = readdirSync(osb, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const s of ents) {
+        const db = join(osb, s.name, 'session.db')
+        if (s.isDirectory() && existsSync(db) && statSync(db).size > 0) out.push({ sessionId: s.name, db, projectDir: join(root, p.name) })
+      }
+    }
+  } catch {
+    /* no projects dir */
+  }
+  return out
+}
+
+/** Changes whenever the store does (WAL included). */
+function fingerprint(db: string): string {
+  const f = (p: string) => {
+    try {
+      const s = statSync(p)
+      return `${s.mtimeMs}:${s.size}`
+    } catch {
+      return '-'
+    }
+  }
+  return `${f(db)}|${f(`${db}-wal`)}`
+}
+
+/** A settled session: its store fingerprint, and its short chats (a digest day is always rewritten whole). */
+interface ScanEntry {
+  fp: string
+  short: LibraryPeriod[]
+}
+
+function readScanCache(home: string): Record<string, ScanEntry> {
+  try {
+    const o = JSON.parse(readFileSync(join(home, SCAN_CACHE_FILE), 'utf-8'))
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeScanCache(home: string, c: Record<string, ScanEntry>): void {
+  try {
+    const p = join(home, SCAN_CACHE_FILE)
+    writeFileSync(`${p}.${process.pid}.tmp`, JSON.stringify(c) + '\n', 'utf-8')
+    renameSync(`${p}.${process.pid}.tmp`, p)
+  } catch {
+    /* a missing cache only costs a rescan */
+  }
+}
+
+type Item =
+  | { kind: 'period'; s: SweepSession; p: LibraryPeriod; at: number }
+  | { kind: 'digest'; day: string; chats: ShortChat[]; at: number }
+
+const msg = (e: unknown) => redactSecrets(String(e instanceof Error ? e.message : e).replace(/\s+/g, ' '), { assistant: true }).slice(0, 200)
+
+/** Run one sweep. Never throws; returns the status it wrote. */
+export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus> {
+  const home = o.home ?? libraryHomeDir()
+  const log = o.log ?? ((m: string) => logLine(home, `sweep: ${m}`))
+  const maxPages = o.maxPages ?? SWEEP_MAX_PAGES
+  const deadline = Date.now() + (o.budgetMs ?? SWEEP_BUDGET_MS)
+  const now = o.now ?? Date.now()
+  const st: SweepStatus = {
+    status: 'running', trigger: o.trigger ?? 'manual', at: new Date().toISOString(), finishedAt: undefined, pid: process.pid,
+    pagesWritten: 0, digestsWritten: 0, modelCalls: 0, costUsd: 0, capHit: false, errors: [], backlog: undefined,
+  }
+  const err = (e: SweepError) => {
+    st.errors.push(e)
+    log(`${e.kind}${e.ref ? ` ${e.ref}` : ''}: ${e.message ?? ''}`)
+  }
+  const finish = (status: SweepStatus['status']): SweepStatus => {
+    st.status = status
+    st.finishedAt = new Date().toISOString()
+    st.costUsd = +st.costUsd.toFixed(4)
+    writeSweepStatus(st, home)
+    return st
+  }
+  const alive = () => {
+    touchLock(home)
+    o.keepAlive?.()
+  }
+  try {
+    if (!isContentLensEnabled()) return finish('disabled')
+    if (!o.dry && !(process.env.OPENROUTER_API_KEY || '').trim()) return finish('no-key')
+    writeSweepStatus(st, home)
+    const exclude = new Set((o.exclude ?? []).filter(Boolean))
+    const minSpan = libraryMinSpanMs()
+
+    // 1. Scan: every session's backlog (skipping live ones and those settled since the last scan).
+    const cache = readScanCache(home)
+    const nextCache: Record<string, ScanEntry> = {}
+    const scanned: { s: SweepSession; fp: string; periods: number; short: LibraryPeriod[] }[] = []
+    const items: Item[] = []
+    const shortChats: ShortChat[] = []
+    for (const s of listSessionDbs()) {
+      if (exclude.has(s.sessionId)) continue
+      const fp = `${fingerprint(s.db)}|${minSpan}`
+      const hit = cache[s.sessionId]
+      if (hit?.fp === fp && Array.isArray(hit.short)) {
+        nextCache[s.sessionId] = hit
+        for (const p of hit.short) shortChats.push({ ...s, period: p })
+        continue
+      }
+      try {
+        const b = libraryBacklog(s.db, readManifest(libraryDirFor(s.db, s.sessionId), s.sessionId), minSpan)
+        for (const p of b.periods) items.push({ kind: 'period', s, p, at: Date.parse(p.toTs) || 0 })
+        for (const p of b.short) shortChats.push({ ...s, period: p })
+        scanned.push({ s, fp, periods: b.periods.length, short: b.short })
+      } catch (e) {
+        err({ kind: 'scan', ref: s.sessionId.slice(0, 8), message: msg(e) })
+      }
+      alive()
+    }
+    const dDir = digestDir(home)
+    const dm = readDigestManifest(dDir)
+    const { days, today } = pendingDigestDays(shortChats, dm, now)
+    for (const [day, chats] of days) items.push({ kind: 'digest', day, chats, at: Math.max(...chats.map(c => Date.parse(c.period.toTs) || 0)) })
+    // Settled = nothing pending for it now; skipped by later scans until its store changes.
+    const waiting = new Set([...today, ...[...days.values()].flat()].map(c => c.sessionId))
+    for (const x of scanned) if (!x.periods && !waiting.has(x.s.sessionId)) nextCache[x.s.sessionId] = { fp: x.fp, short: x.short }
+    writeScanCache(home, nextCache)
+    items.sort((a, b) => b.at - a.at)
+    log(`${st.trigger}: ${items.filter(i => i.kind === 'period').length} period(s), ${days.size} digest day(s) pending, ${today.length} chat(s) today; cap ${maxPages}`)
+
+    // 2. Write, newest first, under the cap. One attempt per period/day per run.
+    let periodsDone = 0
+    let infraFails = 0
+    let calls = 0
+    for (const it of items) {
+      if (calls >= maxPages || Date.now() > deadline) {
+        st.capHit = true
+        break
+      }
+      if (infraFails >= 2) {
+        // An outage (bad key, provider down): stop instead of spending the cap on failing calls.
+        err({ kind: it.kind, message: 'stopped: the model call failed twice in a row' })
+        break
+      }
+      alive()
+      if (it.kind === 'period') {
+        const sid8 = it.s.sessionId.slice(0, 8)
+        const pd = it.s.projectDir
+        const own = pd !== o.heldProjectDir
+        if (own && !acquireLock(pd)) {
+          log(`${sid8}: project busy (another worker holds its lock) — next run`)
+          continue
+        }
+        try {
+          const r = await runLibraryStep({
+            sessionId: it.s.sessionId, projectDir: pd, period: it.p, dry: o.dry,
+            keepAlive: () => {
+              alive()
+              touchLock(pd)
+            },
+            log: m => log(`${sid8} ${m}`),
+          })
+          st.costUsd += r.costUsd
+          if (r.status === 'written' || r.status === 'dry' || r.status === 'model-error') calls++
+          if (r.status === 'written') st.pagesWritten++
+          if (r.status === 'written' || r.status === 'already-written') periodsDone++
+          if (r.status === 'model-error' || r.status === 'failed') err({ kind: 'period', ref: sid8, message: msg(r.errors.join('; ')) })
+          infraFails = r.status === 'failed' || isTransportError(r.errors) ? infraFails + 1 : 0
+        } finally {
+          if (own) releaseLock(pd)
+        }
+      } else {
+        const r = await runDigestDay({ day: it.day, chats: it.chats, dir: dDir, dry: o.dry, log })
+        st.costUsd += r.costUsd
+        if (r.status !== 'failed') calls++
+        if (r.status === 'written') st.digestsWritten++
+        if (r.status === 'model-error' || r.status === 'failed') err({ kind: 'digest', ref: it.day, message: msg(r.errors.join('; ')) })
+        infraFails = r.status === 'failed' || isTransportError(r.errors) ? infraFails + 1 : 0
+      }
+      st.modelCalls = calls
+      writeSweepStatus(st, home)
+    }
+    st.modelCalls = calls
+
+    // 3. Digests whose cloud ingest never landed (no model call).
+    if (!o.dry) {
+      const m = readDigestManifest(dDir)
+      const red = loadClientRedactor(null)
+      if (await ingestPendingDigests(dDir, m, { scrub: s => redactSecrets(red.redact(s), { assistant: true }), log })) writeDigestManifest(dDir, m)
+    }
+
+    const pendingPeriods = items.filter(i => i.kind === 'period').length - periodsDone
+    st.backlog = { periods: Math.max(0, pendingPeriods), digestDays: Math.max(0, days.size - st.digestsWritten), todayChats: today.length }
+    log(`done: ${st.pagesWritten} page(s), ${st.digestsWritten} digest(s), ${calls} call(s), $${st.costUsd.toFixed(4)}; left: ${st.backlog.periods} period(s), ${st.backlog.digestDays} digest day(s)${st.capHit ? ' — cap reached' : ''}`)
+    return finish('done')
+  } catch (e) {
+    err({ kind: 'worker', message: msg(e) })
+    return finish('error')
+  }
+}

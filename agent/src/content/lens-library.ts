@@ -13,6 +13,10 @@
  * model call. A failed run publishes nothing (the reply stays in .staging/) and
  * is retried next time. Fail-open: never throws; the caller just logs the result.
  * Opt-out: OSBORN_CONTENT_LENS=0 (same switch as the launcher).
+ *
+ * The step writes one page per run. libraryBacklog lists everything else that is unwritten
+ * (older periods, gaps between pages, short stretches) for the catch-up sweep
+ * (lens-library-sweep.ts), which writes each through runLibraryStep({ period }).
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -23,7 +27,7 @@ import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { runPeriodMap } from './period-run.js'
-import { DEFAULT_MIN_SPAN_MS, pageFileName, period, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type Segmentation } from './lens-library-select.js'
+import { DEFAULT_MIN_SPAN_MS, pageFileName, period, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type RowStamp, type Segmentation } from './lens-library-select.js'
 import { rebuildIndex } from './lens-library-index.js'
 import { contentHashFor, ingestPage, needsIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 
@@ -40,6 +44,8 @@ export interface ManifestEntry {
   costUsd: number
   errors: string[]
   updatedAt: string
+  /** Consecutive model errors on this period; the sweep stops retrying it at MAX_PERIOD_FAILURES. */
+  failures?: number
   /** Cloud ingest outcome (content_ingest RPC). Anything but ok/oversize is retried next run. */
   ingest?: IngestState
 }
@@ -72,6 +78,8 @@ export interface LibraryStepOptions {
   /** Write here instead of the session's library dir (dry runs / review). */
   outDir?: string
   minSpanMs?: number
+  /** Write exactly this period (the catch-up sweep, from libraryBacklog) instead of picking one. */
+  period?: LibraryPeriod
   /** Called every 60s while the step runs (worker refreshes its lock). */
   keepAlive?: () => void
   log?: (m: string) => void
@@ -161,8 +169,7 @@ const envNum = (k: string): number | undefined => {
  * seams plus the end of every written page, so without a compaction the tail moves on past a
  * written page instead of keeping its start row forever.
  */
-export function librarySegments(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs()): Segmentation {
-  const rows = loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
+export function librarySegments(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs(), rows: RowStamp[] = rowStamps(db)): Segmentation {
   // Written pages are frozen: they keep their rows, index and file whatever the period
   // length is now. Only rows after the last written page are segmented, numbered on.
   const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
@@ -175,9 +182,67 @@ export function librarySegments(db: string, manifest: Manifest, minSpanMs = libr
   return { closed: [...frozen, ...rest.closed.map(renumber)], tail: rest.tail ? renumber(rest.tail) : null }
 }
 
-function libraryMinSpanMs(): number {
+const rowStamps = (db: string): RowStamp[] => loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
+
+export function libraryMinSpanMs(): number {
   const envH = envNum('OSBORN_LIBRARY_MIN_PERIOD_H')
   return envH ? envH * 3_600_000 : DEFAULT_MIN_SPAN_MS
+}
+
+/** A period whose reply was unusable this many times in a row is no longer retried by the sweep (manual run only). */
+export const MAX_PERIOD_FAILURES = 3
+
+/** The model call itself failed (HTTP error, timeout, network): an outage, not a bad period. */
+export const isTransportError = (errors: string[]): boolean => errors.some(e => e.startsWith('model call failed'))
+
+export interface LibraryBacklog {
+  /** Every unwritten period that spans >= the min span, oldest first. */
+  periods: LibraryPeriod[]
+  /** Stretches that will never reach a page on their own (span < min span): daily-digest material. */
+  short: LibraryPeriod[]
+}
+
+/**
+ * ALL the work the one-per-run pick leaves behind: closed periods older than the last one, the
+ * gaps between written pages (rows a later page skipped past), and the tail. Same seams and
+ * numbering as librarySegments, so a period found here has the key, index and file the step
+ * would give it. Excludes written periods, periods that keep failing, and periods whose file
+ * name is already another page's.
+ */
+export function libraryBacklog(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs()): LibraryBacklog {
+  const rows = rowStamps(db)
+  const seams = readCompactionBoundaries(db)
+  const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
+  const periods: LibraryPeriod[] = []
+  const short: LibraryPeriod[] = []
+  const place = (p: LibraryPeriod) => (p.spanMs >= minSpanMs ? periods : short).push(p)
+  let prevEnd = 0
+  let prevIndex = 0
+  for (const e of written) {
+    const gap = rows.filter(r => r.id > prevEnd && r.id < e.startRowId)
+    if (gap.length) {
+      const s = segmentPeriods(gap, seams, minSpanMs)
+      const at = (p: LibraryPeriod): LibraryPeriod => ({ ...p, index: p.index + prevIndex })
+      periods.push(...s.closed.map(at))
+      // The gap's last stretch is closed by the next written page.
+      if (s.tail) place({ ...at(s.tail), closedBy: e.startRowId })
+    }
+    prevEnd = Math.max(prevEnd, e.endRowId)
+    prevIndex = Math.max(prevIndex, e.index)
+  }
+  const seg = librarySegments(db, manifest, minSpanMs, rows)
+  periods.push(...seg.closed.filter(p => p.startRowId > prevEnd))
+  if (seg.tail) place(seg.tail)
+  const owner = new Map(written.map(e => [e.file, e.startRowId]))
+  return {
+    periods: periods.filter(p => {
+      const e = manifest.periods[String(p.startRowId)]
+      if (e?.status === 'ok' || (e?.status === 'error' && (e.failures ?? 0) >= MAX_PERIOD_FAILURES)) return false
+      const o = owner.get(pageFileName(p))
+      return o === undefined || o === p.startRowId
+    }),
+    short,
+  }
 }
 
 /** Run the library step once. Never throws. */
@@ -195,22 +260,37 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
     const dir = (res.libraryDir = o.outDir ?? libraryDirFor(db, o.sessionId))
     const manifest = readManifest(dir, o.sessionId)
     const minSpan = o.minSpanMs ?? libraryMinSpanMs()
-    const seg = librarySegments(db, manifest, minSpan)
-    const pick = pickLibraryPeriod(seg, start => manifest.periods[String(start)]?.status === 'ok', minSpan)
-    log(`library: ${seg.closed.length} closed period(s), tail ${seg.tail ? `#${seg.tail.startRowId}–#${seg.tail.endRowId} (${(seg.tail.spanMs / 3_600_000).toFixed(1)}h)` : 'none'} → ${pick.reason}`)
+    const isDone = (start: number) => manifest.periods[String(start)]?.status === 'ok'
+    let target: LibraryPeriod | null
+    let skipped: LibraryStatus = 'already-written'
+    if (o.period) {
+      target = isDone(o.period.startRowId) ? null : o.period
+      log(`library: backlog period ${o.period.index} rows #${o.period.startRowId}–#${o.period.endRowId} → ${target ? 'backlog' : skipped}`)
+    } else {
+      const seg = librarySegments(db, manifest, minSpan)
+      const pick = pickLibraryPeriod(seg, isDone, minSpan)
+      target = pick.period
+      if (pick.reason !== 'tail' && pick.reason !== 'last-closed') skipped = pick.reason
+      log(`library: ${seg.closed.length} closed period(s), tail ${seg.tail ? `#${seg.tail.startRowId}–#${seg.tail.endRowId} (${(seg.tail.spanMs / 3_600_000).toFixed(1)}h)` : 'none'} → ${pick.reason}`)
+    }
     const red = loadClientRedactor(projectDir)
     const scrub = (s: string) => redactSecrets(red.redact(s), { assistant: true })
-    if (pick.reason !== 'tail' && pick.reason !== 'last-closed') {
+    if (!target) {
       // Nothing new to write; still retry pages whose cloud ingest never landed (no model call).
       if (!o.dry && !o.outDir && (await ingestPendingPages(dir, manifest, { scrub, log }))) writeManifest(dir, manifest)
-      return { ...res, status: pick.reason }
+      return { ...res, status: skipped }
     }
-    const p = (res.period = pick.period)
+    const p = (res.period = target)
     const key = String(p.startRowId)
     const file = pageFileName(p)
-    // Never overwrite a page this manifest did not write (e.g. a manual backfill page).
+    // Never overwrite a page this manifest did not write (e.g. a manual backfill page),
+    // nor another period's written page that happens to share the file name.
     if (!o.outDir && existsSync(join(dir, file)) && !Object.values(manifest.periods).some(e => e.file === file)) {
       log(`library: ${file} exists and is not ours — not overwritten`)
+      return { ...res, status: 'already-written' }
+    }
+    if (!o.outDir && Object.values(manifest.periods).some(e => e.file === file && e.status === 'ok' && e.startRowId !== p.startRowId)) {
+      log(`library: ${file} belongs to another written period — not overwritten`)
       return { ...res, status: 'already-written' }
     }
 
@@ -224,6 +304,8 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
     const entry: ManifestEntry = {
       startRowId: p.startRowId, endRowId: p.endRowId, closedBy: p.closedBy ?? 'compaction', index: p.index, file,
       status: o.dry ? 'dry' : r.map ? 'ok' : 'error', costUsd: r.costUsd, errors: r.errors, updatedAt: new Date().toISOString(),
+      // Only a reply the step could not use counts toward giving up; an outage (HTTP / network) does not.
+      ...(!o.dry && !r.map ? { failures: (manifest.periods[key]?.failures ?? 0) + (isTransportError(r.errors) ? 0 : 1) } : {}),
     }
     if (ok) {
       const marker = `<!-- osborn-library: key=${key} rows=${p.startRowId}-${p.endRowId} closed-by=${entry.closedBy} period=${p.index}${o.dry ? ' dry' : ''} -->\n`

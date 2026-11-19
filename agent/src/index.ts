@@ -58,7 +58,7 @@ import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationIt
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
-import { launchLibraryOnSessionEnd, lastLibraryRun, isContentLensEnabled } from './content/lens-launch.js'
+import { launchLibraryOnSessionEnd, launchLibrarySweep, lastLibraryRun, librarySweepHealth, isContentLensEnabled } from './content/lens-launch.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
@@ -933,6 +933,8 @@ function startApiServer(workingDir: string, port: number): void {
           modelKey: !!(process.env.OPENROUTER_API_KEY || '').trim(),
           ingest: (() => { const c = resolveIngestConfig(); return 'reason' in c ? (c.reason === 'no-key' ? 'no-anon-key' : c.reason) : 'on' })(),
           lastRun: lastLibraryRun(),
+          // Catch-up sweep: backlog left after the last sweep, that sweep's result, the last worker failure.
+          ...librarySweepHealth(),
         },
         // WHERE this machine physically runs — Fly sets FLY_REGION (e.g. 'ord').
         // The dashboard maps it to a city ("Chicago") so the user always knows
@@ -2585,6 +2587,15 @@ async function main() {
   let warmWatchdog: ReturnType<typeof setTimeout> | null = null
   const warmStats = { starts: 0, reattachHits: 0, wastedTimeouts: 0, watchdogKills: 0, mismatchKills: 0 }
 
+  // Library catch-up sweep: never touches a session that is still running (focused, parked or background).
+  const liveSessionIds = (): string[] =>
+    [(currentLLM as any)?.sessionId, warmSessionId, ...[...slots.values()].map(s => (s.llm as any)?.sessionId)].filter((id): id is string => !!id)
+  setTimeout(() => {
+    try {
+      launchLibrarySweep(liveSessionIds(), 'startup')
+    } catch { /* fail-open */ }
+  }, 120_000).unref()
+
   // The outbound events createDirectSession() OWNS the wiring for. Stripped on
   // every (re-)wire so a re-attached subprocess ends up with exactly one
   // listener per event — no double TTS, no stacked handlers. Only OUR event
@@ -2666,7 +2677,7 @@ async function main() {
       } catch (err) {
         console.error(`❌ killWarm(${reason}) abort failed:`, err instanceof Error ? err.message : err)
       } finally {
-        launchLibraryOnSessionEnd(warmSessionId, (warmLLM as any)?.workingDirectory || workingDir, `warm_${reason}`)
+        launchLibraryOnSessionEnd(warmSessionId, (warmLLM as any)?.workingDirectory || workingDir, `warm_${reason}`, liveSessionIds())
       }
     }
     if (warmLLM) console.log(`🧊 [KEEP-WARM] freed warm slot (${reason})`)
@@ -2864,7 +2875,7 @@ async function main() {
     } catch (err) {
       console.error(`❌ killCurrentLLM(${reason}) failed:`, err instanceof Error ? err.message : err)
     } finally {
-      launchLibraryOnSessionEnd((currentLLM as any)?.sessionId, (currentLLM as any)?.workingDirectory || workingDir, reason)
+      launchLibraryOnSessionEnd((currentLLM as any)?.sessionId, (currentLLM as any)?.workingDirectory || workingDir, reason, liveSessionIds())
     }
   }
 
@@ -4168,7 +4179,7 @@ async function main() {
       }
 
       // 4. Close the old query (idle, or forced) and clear its resume state.
-      launchLibraryOnSessionEnd(llmAny.sessionId, llmAny.workingDirectory || workingDir, 'session_switch')
+      launchLibraryOnSessionEnd(llmAny.sessionId, llmAny.workingDirectory || workingDir, 'session_switch', [...liveSessionIds(), target])
       currentLLM.resetForSessionSwitch()
 
       // 5. Cross-project: the SDK cwd, fast brain and session tail move together.

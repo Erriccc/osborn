@@ -6,6 +6,7 @@
 import {
   closeSync,
   existsSync,
+  mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -179,4 +180,79 @@ export function writeHwm(projectDir: string, sessionId: string, lastRowId: numbe
   const tmp = `${p}.${process.pid}.tmp`
   writeFileSync(tmp, JSON.stringify(all, null, 2), { mode: 0o600 })
   renameSync(tmp, p)
+}
+
+// ── Machine-wide Library sweep: lock, log and status (one dir per machine) ──
+
+export const SWEEP_STATUS_FILE = 'library-sweep-status.json'
+
+/** <claudeDir>/osb-library: the sweep's lock (LOCK_FILE), log (LOG_FILE), status file and the daily digests. */
+export function libraryHomeDir(): string {
+  return join(claudeDir(), 'osb-library')
+}
+
+export interface SweepError {
+  /** 'period' | 'digest' | 'scan' | 'worker' | 'timeout' | 'spawn' */
+  kind: string
+  /** 8-char session id or a YYYY-MM-DD day. Never a path. */
+  ref?: string
+  /** Redacted, one line. Kept in the file only; /health shows kind + ref. */
+  message?: string
+}
+
+export interface SweepStatus {
+  status: 'running' | 'done' | 'disabled' | 'no-key' | 'error' | 'timeout' | 'died'
+  trigger: string
+  at: string
+  finishedAt?: string
+  pid?: number
+  pagesWritten: number
+  digestsWritten: number
+  modelCalls: number
+  costUsd: number
+  /** True when the per-run cap or time budget stopped the run with work left. */
+  capHit?: boolean
+  errors: SweepError[]
+  /** Unwritten work left after this run: eligible periods, past days with undigested short chats, and today's short chats (digested tomorrow). */
+  backlog?: { periods: number; digestDays: number; todayChats: number }
+  /** Last failure of ANY Library worker (crash, or a session-end page that failed). */
+  workerError?: { at: string; kind: string; ref?: string; message?: string }
+}
+
+export function readSweepStatus(home = libraryHomeDir()): SweepStatus | null {
+  try {
+    const s = JSON.parse(readFileSync(join(home, SWEEP_STATUS_FILE), 'utf-8')) as SweepStatus
+    if (!s || typeof s !== 'object') return null
+    // "running" with no live process: the worker crashed or was killed before writing its result.
+    if (s.status === 'running' && s.pid) {
+      try {
+        process.kill(s.pid, 0)
+      } catch (e: any) {
+        if (e?.code === 'ESRCH') return { ...s, status: 'died' }
+      }
+    }
+    return s
+  } catch {
+    return null
+  }
+}
+
+/** Merge `patch` into the status file (atomic). Never throws. */
+export function writeSweepStatus(patch: Partial<SweepStatus>, home = libraryHomeDir()): void {
+  try {
+    mkdirSync(home, { recursive: true })
+    let prev: Partial<SweepStatus> = {}
+    try {
+      prev = JSON.parse(readFileSync(join(home, SWEEP_STATUS_FILE), 'utf-8'))
+    } catch {
+      /* first write */
+    }
+    const next = { ...prev, ...patch, errors: (patch.errors ?? prev.errors ?? []).slice(0, 20) }
+    const p = join(home, SWEEP_STATUS_FILE)
+    const tmp = `${p}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
+    renameSync(tmp, p)
+  } catch {
+    /* status is best-effort */
+  }
 }
