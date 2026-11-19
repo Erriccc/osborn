@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { redactDiagnostics } from './devtools'
+import { EventEmitter } from 'node:events'
+import { attachDevtools, redactDiagnostics } from './devtools'
 
 // Fake values only. Every credential shape the stack prints is hidden (#322, #325).
 const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.c2lnbmF0dXJlLXBhcnQ'
@@ -36,4 +37,16 @@ const app = new URL('../../../frontend/src/lib/redactSecrets.ts', import.meta.ur
 const copy = new URL('./redactSecrets.ts', import.meta.url)
 try { assert.equal(readFileSync(copy, 'utf8'), readFileSync(app, 'utf8'), 'lib/redactSecrets.ts is stale: run node frontend/scripts/build-harness-bundle.mjs') }
 catch (e: any) { if (e.code !== 'ENOENT') throw e }  // an installed harness has no frontend/
+// since(ms): only lines recorded at or after a moment (a person's takeover), also after the cap drops old ones.
+const fakePage = new EventEmitter() as any
+const buf = attachDevtools(fakePage, 3)
+fakePage.emit('console', { type: () => 'log', text: () => 'before takeover' })
+const cut = Date.now() + 1
+while (Date.now() < cut) { /* next millisecond */ }
+for (const t of ['after 1', 'after 2', 'after 3']) fakePage.emit('console', { type: () => 'log', text: () => t })
+assert.equal(buf.console.length, 3, 'capped')
+assert.deepEqual(buf.since(cut).console.map((l) => l.slice(9)), ['[log] after 1', '[log] after 2', '[log] after 3'])
+fakePage.emit('console', { type: () => 'log', text: () => 'after 4' })
+assert.deepEqual(buf.since(cut).console.map((l) => l.slice(9)), ['[log] after 2', '[log] after 3', '[log] after 4'], 'times stay aligned when the cap shifts')
+assert.deepEqual(buf.since(Date.now() + 60000).console, [], 'nothing from the future')
 console.log('devtools redaction: all assertions passed')

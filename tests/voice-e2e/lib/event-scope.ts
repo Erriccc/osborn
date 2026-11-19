@@ -17,12 +17,13 @@ export const ownerSeenBy = (owner: string | null | undefined, viewer: string): s
 
 /**
  * Whether a person may claim, switch to or take over a tab: their own, or an
- * agent's tab (take control). Never an unowned tab (tab 0 included), never one
+ * agent's tab (take control). Never tab 0 (the voice room), even after an agent
+ * claimed it; never an unowned tab, never one
  * another person owns, and never one in another person's browser profile (their
  * sign-ins). Agents are not limited here.
  */
-export const personMayTake = (viewer: string, owner: string | null | undefined, profile: string | null | undefined) =>
-  !isPersonDriver(viewer) || ((personOwns(owner, viewer) || (!!owner && !isPersonDriver(owner))) && (!profile || !isPersonDriver(profile) || profile === viewer.toLowerCase()))
+export const personMayTake = (viewer: string, index: number, owner: string | null | undefined, profile: string | null | undefined) =>
+  !isPersonDriver(viewer) || (index > 0 && (personOwns(owner, viewer) || (!!owner && !isPersonDriver(owner))) && (!profile || !isPersonDriver(profile) || profile === viewer.toLowerCase()))
 
 /**
  * The engine's tab list as `viewer` may see it: a person sees other drivers'

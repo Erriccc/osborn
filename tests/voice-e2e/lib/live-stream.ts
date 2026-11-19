@@ -47,7 +47,8 @@ export type LiveStream = {
   // REAL TIME (each frame is held for as long as it was actually on screen),
   // and the returned startMs/endMs are the wall-clock span it covers — what an
   // audio track must be aligned against.
-  clipRange: (outPath: string, fromMs: number, toMs?: number, page?: Page) => Promise<{ path: string; startMs: number; endMs: number } | null>
+  // ownOnly: never fall back to the shared screencast (it may show another tab) — no clip instead.
+  clipRange: (outPath: string, fromMs: number, toMs?: number, page?: Page, ownOnly?: boolean) => Promise<{ path: string; startMs: number; endMs: number } | null>
   // Record a tab on its own; clipRange(..., page) cuts from that recording.
   trackPage: (page: Page) => void
   // Why the last clipRange returned null, and how long its encode took.
@@ -356,11 +357,11 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   }
 
   let clipFail: string | null = null, encodeMs: number | null = null
-  const clipRange = async (outPath: string, fromMs: number, toMs = Date.now(), page?: Page): Promise<{ path: string; startMs: number; endMs: number } | null> => {
+  const clipRange = async (outPath: string, fromMs: number, toMs = Date.now(), page?: Page, ownOnly = false): Promise<{ path: string; startMs: number; endMs: number } | null> => {
     const inRange = (r: Array<{ t: number; buf: Buffer }>) => r.filter((f) => f.t >= fromMs && f.t <= toMs)
     const own = page ? inRange(tabRecs.get(page)?.ring ?? []) : []
-    // A recorder that only just started has too few frames: use the main ring.
-    const frames = own.length >= 2 ? own : inRange(ring)
+    // A recorder that only just started has too few frames: use the main ring (unless ownOnly).
+    const frames = own.length >= 2 || ownOnly ? own : inRange(ring)
     clipFail = null; encodeMs = null
     if (frames.length < 2) { clipFail = `clip failed — only ${frames.length} frame(s) recorded`; console.log(`[live-stream] clip skipped — ${frames.length} frame(s)`); return null }
     const dir = mkdtempSync(join(tmpdir(), 'osbclip-'))

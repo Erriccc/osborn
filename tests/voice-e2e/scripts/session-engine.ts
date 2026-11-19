@@ -814,6 +814,8 @@ async function main() {
   // a 409 that says "paused, retry" (not "open your own tab"), and handback
   // restores its ownership so it resumes exactly where the supervisor left it.
   const takeovers = new Map<Page, { by: string; prevOwner: string | null; since: number; seen?: number }>()
+  // When `driver` (a person) took control of `p`: their logs and audio start there.
+  const takenSince = (driver: string, p: Page): number | null => { const tk = takeovers.get(p); return isPersonDriver(driver) && tk?.by === driver ? tk.since : null }
   // A takeover ends (handback, idle, /end, a person's release): the tab goes back to its
   // previous owner, or to nobody, and any cast of it ends.
   const endTakeover = (p: Page, tk: { prevOwner: string | null }, why: string) => {
@@ -1154,6 +1156,7 @@ async function main() {
           }
         } catch { /* page dead */ }
         // A person's stream is their own tab's recording, so its age is that tab's.
+        const journeySeen = !!journey && (!isPersonDriver(viewer) || personOwns(journey.owner, viewer))
         const lastFrame = isPersonDriver(viewer) ? (shown ? live?.tabFrameAt(shown) ?? null : null) : live?.lastFrameAt() ?? null
         return json(res, {
           build: ENGINE_BUILD, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
@@ -1163,7 +1166,8 @@ async function main() {
           agentUrl: AGENT_URL || null, agentUnreachable,
           freeMemoryMb: freeMemoryMb(), brain: brainAlive ? 'ready' : reviving ? 'reviving' : 'dead', brainModel: brainAlive ? brainModel : null, brainError: brainAlive ? null : brainError, stt: sttHealth, useAuth, live: live?.url,
           lastFrameAgeMs: lastFrame ? Date.now() - lastFrame : null,
-          taskCount: tasks.length, journey: journey?.name ?? null,
+          // A person sees only their own journey and the tasks they may see.
+          taskCount: tasks.filter((t) => seesTask(viewer, t)).length, journey: journeySeen ? journey!.name : null,
           // #120: previousRun is set when THIS process adopted a journey from a
           // process that died mid-journey; restartRecovered lets a caller tell
           // "engine restarted (journey carried over)" apart from an app failure,
@@ -1173,7 +1177,7 @@ async function main() {
           // A person sees other people only as "person" (ownerSeenBy); agent ids stay.
           takeovers: [...takeovers.entries()].map(([p, t]) => ({ i: allPages().indexOf(p), by: ownerSeenBy(t.by, viewer), prevOwner: ownerSeenBy(t.prevOwner, viewer), since: t.since })),
           drivers: [...driverActive.keys()].filter((d) => ownerSeenBy(d, viewer) === d), tabsByOwner: allPages().map((p,i)=>({i, owner: ownerSeenBy(ownerOf(p), viewer)})),
-          mission: journey ? { name: journey.name, owner: ownerSeenBy(journey.owner, viewer), startedAt: journey.startedAt } : null,
+          mission: journeySeen ? { name: journey!.name, owner: ownerSeenBy(journey!.owner, viewer), startedAt: journey!.startedAt } : null,
           activeTab: shown ? { i: allPages().indexOf(shown), url: shown.url() } : null,
           cast: live?.castTab() ? { i: allPages().indexOf(live.castTab()!), by: ownerSeenBy(castBy, viewer) } : null,
           // Another driver's tab is listed (so it can be taken over) without its URL.
@@ -1190,10 +1194,11 @@ async function main() {
         if (q != null) {
           const tab = allPages()[Number(q)]
           if (!tab) return json(res, { ok: false, code: 'no_tab', error: `no tab ${q} — ${allPages().length} tab(s) open (0-based)` }, 404)
-          if (ownerOf(tab) !== driver) return json(res, { ok: false, code: 'not_your_tab', owner: ownerSeenBy(ownerOf(tab), driver), error: `tab ${q} is not yours ("${driver}") — you can watch only tabs you opened or took over` }, 409)
-          return live.serveFrames(() => (!tab.isClosed() && ownerOf(tab) === driver ? tab : null), req, res)
+          if (!seesTab(driver, tab)) return json(res, { ok: false, code: 'not_your_tab', owner: ownerSeenBy(ownerOf(tab), driver), error: `tab ${q} is not yours ("${driver}") — you can watch only tabs you opened or took over` }, 409)
+          return live.serveFrames(() => (!tab.isClosed() && seesTab(driver, tab) ? tab : null), req, res)
         }
-        return live.serveFrames(() => ownedTab(driver), req, res)
+        // A person: their own tab only. Agents and the default driver: their current tab (tab 0 included).
+        return live.serveFrames(() => (isPersonDriver(driver) ? ownedTab(driver) : callerTab(driver)), req, res)
       }
       if (req.method === 'GET' && path === '/runs') {
         // All runs on this volume, newest last — pair with /clip?run=.
@@ -1251,7 +1256,10 @@ async function main() {
           pages: allPages().flatMap((p, i) => {
             if (!seesTab(driverId(req), p)) return []
             const b = devtoolsBufs.get(p)
-            return [{ i, url: p.url(), console: b?.console.slice(-80) ?? [], network: b?.network.slice(-80) ?? [] }]
+            // A person who took control sees only what happened since then.
+            const from = takenSince(driverId(req), p)
+            const lines = from == null ? b : b?.since(from)
+            return [{ i, url: p.url(), console: lines?.console.slice(-80) ?? [], network: lines?.network.slice(-80) ?? [] }]
           }),
         })
       }
@@ -1269,7 +1277,10 @@ async function main() {
           return json(res, { error: ears.armed ? 'no audio captured on this tab yet' : 'the ears are not armed on this tab — /act, /say or /hear arms them; then have the page play audio and call /audio again', ears }, 404)
         }
         const mp3 = join(RUN_DIR, `_run-audio-${++peekSeq}.mp3`)
-        try { await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', a.wav, '-c:a', 'libmp3lame', '-q:a', '4', mp3]) }
+        // A person who took control hears only what played since then.
+        const audioFrom = takenSince(audioDriver, audioPage)
+        const skipSec = audioFrom == null ? 0 : Math.max(0, recordingMsAt(a.clock, audioFrom) / 1000)
+        try { await execFileP('ffmpeg', ['-y', '-loglevel', 'error', ...(skipSec ? ['-ss', skipSec.toFixed(3)] : []), '-i', a.wav, '-c:a', 'libmp3lame', '-q:a', '4', mp3]) }
         catch (e) { return json(res, { error: 'transcode failed: ' + (e as Error).message }, 500) }
         finally { try { rmSync(a.wav, { force: true }) } catch { /* ignore */ } }
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': statSync(mp3).size })
@@ -1509,7 +1520,7 @@ async function main() {
         if (!post) return  // answered inside the lock (refused, invalid, or failed)
         const { page, opened, n, t0, r, effect, warning, nag } = post
         const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000)
-        const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page).catch(() => null) : null
+        const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page, isPersonDriver(driver)).catch(() => null) : null
         const clip = actRange?.path ?? null
         const clipError = clip ? null : (live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session')
         if (clip) mark(`clip: ${clip}`)
@@ -1610,7 +1621,7 @@ async function main() {
           // the reply (#215), and GET /clip?n waits for them. waitClip:true restores
           // the old in-reply clip.
           const tClip = Date.now()
-          const rangeJob = live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, tClip, page).catch(() => null) : Promise.resolve(null)
+          const rangeJob = live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, tClip, page, isPersonDriver(driver)).catch(() => null) : Promise.resolve(null)
           let hearError: string | null = null
           // Skip decoding and hearing when the ears clearly heard nothing this
           // turn: no page audio ever tapped, or no sound since speaking (#201).
@@ -1680,7 +1691,10 @@ async function main() {
         if (!hearPage) return json(res, { ok: false, code: 'no_own_tab', error: 'you have no tab of your own to hear' }, 409)
         const hearEars = await ensureEars(hearPage)
         if (hearEars.armedNow) return json(res, { heard: '', ears: hearEars, warning: 'the ears were not armed on this tab until this call, so nothing earlier was recorded — have the page play audio again (or /say), then call /hear' })
-        const since = Date.now() - (hearEars.startedAt ?? tCapture) - (body.lastMs ?? 20000)
+        const earsStart = hearEars.startedAt ?? tCapture
+        const hearFrom = takenSince(hearDriver, hearPage)
+        // A person who took control hears only what played since then.
+        const since = Math.max(Date.now() - earsStart - (body.lastMs ?? 20000), hearFrom == null ? 0 : hearFrom - earsStart)
         try { const heard = await hearSince(hearPage, Math.max(0, since)); return json(res, { heard, ears: hearEars, warning: heard ? null : (hearEars.playing === 0 ? 'nothing heard: no audio element on the page is playing' : null) }) }
         catch (e) { mark(`hear failed: ${(e as Error).message}`); return json(res, { heard: '', error: (e as Error).message }) }
       }
@@ -1758,7 +1772,8 @@ async function main() {
           notify('handback', { i: allPages().indexOf(target), by: tk.by, owner: tk.prevOwner, url: target.url() })
         }
         const othersPerson = (t: Page): boolean => {
-          if (personMayTake(driver, ownerOf(t), pageProfile.get(t))) return false
+          if (personMayTake(driver, allPages().indexOf(t), ownerOf(t), pageProfile.get(t))) return false
+          if (allPages().indexOf(t) === 0) { json(res, { ok: false, code: 'room_tab', error: 'tab 0 holds the voice room — people cannot take, claim or switch to it' }, 409); return true }
           json(res, { ok: false, code: 'not_your_tab', error: `tab ${allPages().indexOf(t)} belongs to another person` }, 409)
           return true
         }
@@ -2020,6 +2035,9 @@ async function main() {
         const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
         const working = [...driverActive.keys()].filter((d) => d !== driver && isWorking(d))
         const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
+        // A person never shuts the engine down under other drivers.
+        if (isPersonDriver(driver) && body.shutdown === true && others.length)
+          return json(res, { ok: false, code: 'engine_in_use', otherCount: others.length, error: `${others.length} other driver(s) still use the browser engine, so it was not shut down and nothing was closed — use "Close my tabs" instead` }, 409)
         if ((others.length || body.keep === true) && body.shutdown !== true) {  // keep: close my tabs, never stop the engine
           const done = await withLock(async () => {
             let closed = 0, handedBack = 0

@@ -40,13 +40,16 @@ const tabRows: Array<{ i: number; sees: boolean; take: boolean; profile?: string
 ]
 for (const t of tabRows) {
   assert.equal(seesTabOf(at(t.i), A), t.sees, `sees tab ${t.i}`)
-  assert.equal(personMayTake(A, at(t.i), t.profile), t.take, `takes tab ${t.i}`)
+  assert.equal(personMayTake(A, t.i, at(t.i), t.profile), t.take, `takes tab ${t.i}`)
   assert.equal(seesTabOf(at(t.i), AGENT), true, `agent sees tab ${t.i}`)
-  assert.equal(personMayTake(AGENT, at(t.i), t.profile), true, `agent not limited, tab ${t.i}`)
+  assert.equal(personMayTake(AGENT, t.i, at(t.i), t.profile), true, `agent not limited, tab ${t.i}`)
 }
 assert.equal(personOwns(null, A), false, 'nobody owns an unowned tab')
-assert.equal(personMayTake(B, null, 'person:a@x.com'), false, "a released tab in another person's profile")
-assert.equal(personMayTake('person:A@X.com', 'person:A@X.com', 'person:a@x.com'), true, 'your profile, any email case')
+assert.equal(personMayTake(B, 3, null, 'person:a@x.com'), false, "a released tab in another person's profile")
+assert.equal(personMayTake('person:A@X.com', 1, 'person:A@X.com', 'person:a@x.com'), true, 'your profile, any email case')
+assert.equal(personMayTake(A, 0, AGENT, ''), false, 'tab 0 even after an agent claimed it')
+assert.equal(personMayTake(A, 0, A, ''), false, 'tab 0 even if a person somehow owns it')
+assert.equal(personMayTake(AGENT, 0, null, ''), true, 'agents may still take tab 0')
 
 // Tab lists: a person sees only their own URL, and other people as "person".
 const urls = ['https://room', 'https://a-private', 'https://agent', 'https://free', 'https://b-private']

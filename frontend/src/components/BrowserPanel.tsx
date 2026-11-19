@@ -413,7 +413,7 @@ export function BrowserPanel() {
             </button>
           )}
           {watching && (
-            <button onClick={stopEngine} disabled={!!busy} title="Ends every run on the engine, for everyone, and puts it to sleep" className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">
+            <button onClick={stopEngine} disabled={!!busy} title="Puts the engine to sleep. Refused while other people or agents still use it (use Close my tabs then)" className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">
               Shut down engine
             </button>
           )}

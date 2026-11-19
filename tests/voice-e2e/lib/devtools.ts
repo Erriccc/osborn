@@ -16,6 +16,8 @@ import { redactSecrets } from './redactSecrets'
 export type DevtoolsBuffer = {
   console: string[]
   network: string[]
+  // The lines recorded at or after `ms` (epoch), e.g. since a person took control.
+  since: (ms: number) => { console: string[]; network: string[] }
   summary: () => string
 }
 
@@ -35,10 +37,13 @@ export const redactDiagnostics = (line: string): string =>
 export function attachDevtools(page: Page, cap = 250): DevtoolsBuffer {
   const consoleBuf: string[] = []
   const networkBuf: string[] = []
+  const times = new Map<string[], number[]>([[consoleBuf, []], [networkBuf, []]])
   const push = (buf: string[], line: string) => {
     buf.push(`${new Date().toISOString().slice(11, 19)} ${redactDiagnostics(line.slice(0, 4000)).slice(0, 300)}`)
-    if (buf.length > cap) buf.shift()
+    times.get(buf)!.push(Date.now())
+    if (buf.length > cap) { buf.shift(); times.get(buf)!.shift() }
   }
+  const after = (buf: string[], ms: number) => buf.filter((_, k) => times.get(buf)![k] >= ms)
   page.on('console', (m) => push(consoleBuf, `[${m.type()}] ${m.text()}`))
   page.on('pageerror', (e) => push(consoleBuf, `[pageerror] ${e.message}`))
   page.on('requestfailed', (r) => push(networkBuf, `[FAILED] ${r.method()} ${r.url()} — ${r.failure()?.errorText}`))
@@ -51,6 +56,7 @@ export function attachDevtools(page: Page, cap = 250): DevtoolsBuffer {
   return {
     console: consoleBuf,
     network: networkBuf,
+    since: (ms: number) => ({ console: after(consoleBuf, ms), network: after(networkBuf, ms) }),
     // What the brain reads when deciding "is something broken": recent
     // errors/warnings + network failures, compact.
     summary() {
