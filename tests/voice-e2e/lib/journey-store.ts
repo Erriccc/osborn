@@ -16,12 +16,14 @@
  * should be ADOPTED by the new process — turning a silent, destructive restart
  * into a visible, recoverable one that keeps run-id continuity (previousRun).
  *
- * DESIGN: this file has ZERO imports on purpose. All logic here is pure and
+ * DESIGN: this file imports only the pure driver rules. All logic here is pure and
  * synchronously testable (no fs, no browser, no volume) — the thin file I/O
  * wrappers live in session-engine.ts, which already imports `fs`. Keeping the
  * decision logic pure is what lets the unit tests cover run-id continuity and
  * the transient-502 retry discriminator without standing up an engine.
  */
+
+import { canonicalDriverId, isPersonDriver, personOwns } from './event-scope'
 
 /** The in-memory journey shape the engine owns, trimmed to what survives a restart. */
 export interface PersistedJourney {
@@ -116,16 +118,22 @@ export function decideRecovery(
 }
 
 /**
- * A recovered journey has no owner, so nothing stops a `/journey start` from
- * replacing it, and with it the steps done before the restart (#171). A start
- * with the recovered journey's own name is the caller re-attaching: it
- * continues that journey (keeping its steps) instead of starting a fresh one.
+ * A recovered journey has no owner (the mission lock is dropped), so nothing
+ * stops a `/journey start` from replacing it and its steps (#171). A start by
+ * the driver who owned it before the restart, with the journey's own name, is
+ * that driver re-attaching: it continues the journey, steps and all. Anyone
+ * else, or a start with no name, gets a fresh journey as before. A person
+ * continues only a journey they owned (personOwns), never an ownerless one.
  */
 export function continuesRecovered(
-  current: { name: string; owner?: string; recovered?: boolean } | null | undefined,
-  startName: string,
+  current: { name: string; owner?: string; recovered?: boolean; recoveredOwner?: string } | null | undefined,
+  startName: unknown,
+  startOwner: string,
 ): boolean {
-  return !!current?.recovered && !current.owner && current.name === startName
+  if (!current?.recovered || current.owner || typeof startName !== 'string' || !startName || current.name !== startName) return false
+  const was = current.recoveredOwner ? canonicalDriverId(current.recoveredOwner) : undefined
+  const me = canonicalDriverId(startOwner)
+  return isPersonDriver(me) ? personOwns(was, me) : !was || was === me
 }
 
 /**

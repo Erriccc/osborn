@@ -1000,7 +1000,7 @@ async function main() {
   // each track): /status carries `mission` so any other driver/deployer sees
   // the engine is claimed, and idle-stop HOLDS while a mission is active
   // (capped at 2h so a forgotten journey can't hold the machine forever).
-  let journey: { name: string; goal?: string; owner?: string; startStep: number; startTaskN: number; startUrl: string; startedAt: number; recovered?: boolean } | null = null
+  let journey: { name: string; goal?: string; owner?: string; startStep: number; startTaskN: number; startUrl: string; startedAt: number; recovered?: boolean; recoveredOwner?: string } | null = null
 
   // ── #120: JOURNEY SURVIVES AN ENGINE RESTART ───────────────────────────────
   // `journey` and `RUN_STAMP` are process-memory only. A mid-journey restart
@@ -1016,7 +1016,7 @@ async function main() {
   const saveJourneyState = (status: 'active' | 'ended') => {
     try {
       if (!journey) return
-      const pj: PersistedJourney = { name: journey.name, goal: journey.goal, owner: journey.owner, startUrl: journey.startUrl, startedAt: journey.startedAt, steps: scenarioSteps.slice(journey.startStep) }
+      const pj: PersistedJourney = { name: journey.name, goal: journey.goal, owner: journey.owner ?? journey.recoveredOwner, startUrl: journey.startUrl, startedAt: journey.startedAt, steps: scenarioSteps.slice(journey.startStep) }
       writeFileSync(JOURNEY_STATE, JSON.stringify(buildJourneyState(RUN_STAMP, status, pj, reqN, tasks.length, Date.now()), null, 2))
     } catch { /* never block the journey on a persistence miss */ }
   }
@@ -1031,10 +1031,11 @@ async function main() {
         // so a SECOND restart chains from here, not from the stale run.
         // Steps done before the restart are carried over so /journey end can
         // still save them. The mission lock (owner) is NOT restored: a crash or
-        // redeploy must not lock other drivers out for up to 2h.
+        // redeploy must not lock other drivers out for up to 2h. The old owner is
+        // kept aside: only they may continue the journey (#171).
         const startStep = scenarioSteps.length
         scenarioSteps.push(...(decision.journey.steps ?? []))
-        journey = { name: decision.journey.name, goal: decision.journey.goal, owner: undefined, startStep, startTaskN: reqN, startUrl: decision.journey.startUrl, startedAt: decision.journey.startedAt, recovered: true }
+        journey = { name: decision.journey.name, goal: decision.journey.goal, owner: undefined, startStep, startTaskN: reqN, startUrl: decision.journey.startUrl, startedAt: decision.journey.startedAt, recovered: true, recoveredOwner: decision.journey.owner }
         restoredFromRun = decision.previousRun ?? null
         manifest.previousRun = restoredFromRun
         saveJourneyState('active')
@@ -1963,9 +1964,9 @@ async function main() {
         body.owner = driverId(req)  // the mission owner is the caller, like a tab's (#193)
         const host = (() => { try { return new URL(active.url()).hostname } catch { return 'unknown' } })()
         if (body.op === 'start') {
-          if (continuesRecovered(journey, String(body.name || 'unnamed'))) {
+          if (continuesRecovered(journey, body.name, body.owner)) {
             // Re-attaching after a restart: the caller takes the recovered journey back, steps and all (#171).
-            journey!.owner = body.owner; journey!.recovered = false
+            journey!.owner = body.owner; journey!.recovered = false; delete journey!.recoveredOwner
             if (body.goal) journey!.goal = body.goal
             saveJourneyState('active')
             const steps = scenarioSteps.length - journey!.startStep

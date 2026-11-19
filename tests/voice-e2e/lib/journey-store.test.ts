@@ -112,22 +112,31 @@ test('retryDelayMs: bounded exponential backoff', () => {
   assert.ok(retryDelayMs(2) >= retryDelayMs(1))
 })
 
-test('#171: steps persisted before a restart survive the file round trip and the recovered slice', () => {
-  const steps = [{ kind: 'tab', value: 'open https://example.com' }, { kind: 'eval', value: '1+1' }, { kind: 'say', value: 'hello' }]
-  const onDisk = JSON.parse(JSON.stringify(buildJourneyState('runA', 'active', { ...j, steps }, 2, 2, 9_000))) as JourneyStateFile
-  const d = decideRecovery(onDisk, { now: 10_000, currentRun: 'runB' })
-  // The engine's adoption: startStep is the length BEFORE the carried steps are pushed.
-  const scenarioSteps: Array<{ kind: string; value: string }> = [{ kind: 'eval', value: 'boot-time step' }]
-  const startStep = scenarioSteps.length
-  scenarioSteps.push(...(d.journey!.steps ?? []))
-  assert.deepEqual(scenarioSteps.slice(startStep), steps)
+test('#171: only the owner from before the restart continues the recovered journey, by name', () => {
+  const recovered = { name: 'pr156-retest', recovered: true, recoveredOwner: 'agent-a' }
+  assert.equal(continuesRecovered(recovered, 'pr156-retest', 'agent-a'), true)
+  assert.equal(continuesRecovered(recovered, 'pr156-retest', ' agent-a '), true)  // canonical spelling
+  assert.equal(continuesRecovered(recovered, 'pr156-retest', 'agent-b'), false)   // same name, another driver
+  assert.equal(continuesRecovered(recovered, 'pr156-retest', 'person:a@x.com'), false)
+  assert.equal(continuesRecovered(recovered, 'another', 'agent-a'), false)
+  assert.equal(continuesRecovered({ ...recovered, owner: 'agent-a' }, 'pr156-retest', 'agent-a'), false)  // already re-claimed
+  assert.equal(continuesRecovered({ name: 'pr156-retest', owner: 'agent-a' }, 'pr156-retest', 'agent-a'), false)  // a live journey
+  assert.equal(continuesRecovered(null, 'pr156-retest', 'agent-a'), false)
 })
 
-test('#171: a start naming the recovered journey continues it; anything else does not', () => {
-  const recovered = { name: 'pr156-retest', recovered: true }
-  assert.equal(continuesRecovered(recovered, 'pr156-retest'), true)
-  assert.equal(continuesRecovered(recovered, 'another'), false)
-  assert.equal(continuesRecovered({ ...recovered, owner: 'alice' }, 'pr156-retest'), false)  // already re-claimed
-  assert.equal(continuesRecovered({ name: 'pr156-retest', owner: 'alice' }, 'pr156-retest'), false)  // a live journey
-  assert.equal(continuesRecovered(null, 'pr156-retest'), false)
+test('#171: a person continues only their own recovered journey, compared canonically', () => {
+  const mine = { name: 'j', recovered: true, recoveredOwner: 'person:a@x.com' }
+  assert.equal(continuesRecovered(mine, 'j', 'person:A@X.com'), true)
+  assert.equal(continuesRecovered(mine, 'j', 'person:b@x.com'), false)
+  // An ownerless recovered journey (an older record): agents may continue it, a person never.
+  const ownerless = { name: 'j', recovered: true }
+  assert.equal(continuesRecovered(ownerless, 'j', 'agent-a'), true)
+  assert.equal(continuesRecovered(ownerless, 'j', 'person:a@x.com'), false)
+})
+
+test('#171: a start with no name never continues a recovered journey', () => {
+  const unnamed = { name: 'unnamed', recovered: true, recoveredOwner: 'agent-a' }
+  assert.equal(continuesRecovered(unnamed, undefined, 'agent-a'), false)
+  assert.equal(continuesRecovered(unnamed, '', 'agent-a'), false)
+  assert.equal(continuesRecovered(unnamed, 'unnamed', 'agent-a'), true)  // only when named explicitly
 })
