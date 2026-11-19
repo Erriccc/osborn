@@ -506,7 +506,7 @@ async function main() {
     const bad = badUrl(raw); if (bad) return bad
     const u = new URL(String(raw))
     const noHash = (h: string) => h.split('#')[0]
-    const hostOf = (h: string) => { try { const x = new URL(h); return /^https?:$/.test(x.protocol) ? x.hostname : null } catch { return null } }
+    const hostOf = (h: string) => (badUrl(h) ? null : new URL(h).hostname)
     const landed = () => { const now = page.url(); return { redirectedTo: noHash(now) === noHash(u.href) ? null : now } }
     const before = noHash(page.url())
     try { await page.goto(u.href, { timeout: 45000 }); return landed() } catch (e) {
