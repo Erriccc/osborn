@@ -531,7 +531,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
             </div>
             <p className="text-[var(--text-secondary)] text-sm max-w-xs">
               {items.length === 0
-                ? 'No library pages yet. They’re written automatically when a session ends.'
+                ? 'No library pages yet. Osborn writes a page for each stretch of a conversation that spans an hour or more, when the session ends or compacts. Short chats stay in your session list.'
                 : 'Nothing matches that filter.'}
             </p>
           </div>
