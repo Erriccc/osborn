@@ -14,10 +14,14 @@ export interface PermissionRequest {
   autoApproved?: boolean
 }
 
-// Session approval modes, surfaced as the visible picker in the Activity log row (ApprovalPicker).
-// Only 'allow-all' auto-approves; 'ask' and 'auto-review' always require an
-// explicit human decision on the inline card (DENY always wins).
+// Approval modes, surfaced as the visible picker in the Activity log row (ApprovalPicker).
+// Kept and applied by the agent (agent/src/approval-policy.ts, #364); the
+// browser shows and changes it. DENY always wins.
 export type ApprovalMode = 'ask' | 'auto-review' | 'allow-all'
+
+export function isApprovalMode(v: unknown): v is ApprovalMode {
+  return v === 'ask' || v === 'auto-review' || v === 'allow-all'
+}
 
 // Helper to determine tool risk level
 export function getToolRiskLevel(toolName: string): 'low' | 'medium' | 'high' {

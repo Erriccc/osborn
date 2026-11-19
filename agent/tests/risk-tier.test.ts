@@ -1,8 +1,10 @@
 // Unit tests for the Auto-review risk classifier.
-// Run:  cd frontend && npx tsx tests/risk-tier.test.ts
+// Run:  npx tsx agent/tests/risk-tier.test.ts
 
 import assert from 'node:assert/strict'
-import { classifyRisk, canAutoApprove, isInWorkspace } from '../src/lib/riskTier'
+import { classifyRisk, isInWorkspace } from '../src/risk-tier.js'
+import { autoApproval } from '../src/approval-policy.js'
+const canAutoApprove = (t: string, i: Record<string, unknown>) => autoApproval('auto-review', t, i).approve
 
 let passed = 0
 function check(name: string, fn: () => void) {
@@ -81,6 +83,21 @@ check('canAutoApprove is true only for low', () => {
   assert.equal(canAutoApprove('Read', {}), true)
   assert.equal(canAutoApprove('Bash', { command: 'ls' }), false)
   assert.equal(canAutoApprove('Write', { file_path: '/etc/x' }), false)
+})
+
+// --- The session's working directory as the root (#364) ---------------------
+check('a given workspace root replaces /workspace', () => {
+  const root = '/home/sprite/workspace'
+  assert.equal(classifyRisk('Write', { file_path: '/home/sprite/workspace/a.ts' }, root), 'low')
+  assert.equal(classifyRisk('Edit', { file_path: '/home/sprite/workspace/src/x.ts' }, root + '/'), 'low', 'trailing slash on the root')
+  assert.equal(classifyRisk('Write', { file_path: '/workspace/a.ts' }, root), 'high')
+  assert.equal(classifyRisk('Write', { file_path: '/home/sprite/workspace-evil/a' }, root), 'high')
+  assert.equal(classifyRisk('Write', { file_path: '/home/sprite/.bashrc' }, root), 'high')
+})
+check('a root of / or a relative root never makes everything in-workspace', () => {
+  assert.equal(isInWorkspace('/etc/passwd', '/'), false)
+  assert.equal(isInWorkspace('/etc/passwd', ''), false)
+  assert.equal(isInWorkspace('/etc/passwd', 'etc'), false)
 })
 
 console.log(`\n${passed} test blocks passed`)

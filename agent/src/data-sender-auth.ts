@@ -20,7 +20,7 @@
  *     gate_send_anyway, stop_dispatch, join_meeting, leave_meeting,
  *     mute_participant, start_ide, stop_ide, spawn_background_session,
  *     dispatch_background, stop_background_session, list_slots, list_processes,
- *     favorite_changed
+ *     favorite_changed, set_approval_mode
  *   Open (read-only, listed in READ_ONLY_MESSAGE_TYPES):
  *     get_current_session, get_session_artifacts, get_plan_file,
  *     get_research_artifact, get_mcp_status, get_skills, skill_get, get_busy
@@ -76,6 +76,8 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'list_processes',
   // Feeds hidden context into the next turn (UI#21), so controller-only.
   'favorite_changed',
+  // Changes which tool requests are approved without asking (#364).
+  'set_approval_mode',
 ])
 
 /** Read-only queries any participant may send. Everything else is gated. */

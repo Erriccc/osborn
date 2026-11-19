@@ -3,12 +3,62 @@
  * answers it (browser card, watch, phone keypad).
  *
  * Pure (no LiveKit, no SDK), so the rules are testable on their own:
+ * - the approval mode (Ask me / Auto-review / Allow all), saved on the agent
+ *   and applied here for the browser and phone calls alike (#364),
  * - the plain-words description of a request (browser card and phone prompt),
  * - the session's always-allow list ("Always" in the browser, keypad 3).
  */
+import { classifyRisk, type RiskTier } from './risk-tier.js'
 
 /** An answer to a pending permission, from any surface. */
 export type PermissionAnswer = 'allow' | 'deny' | 'always_allow'
+
+/**
+ * 'ask'         → every request asks (browser card, or the keypad on a call).
+ * 'auto-review' → low-risk requests (classifyRisk) are approved; the rest ask.
+ * 'allow-all'   → every request is approved.
+ * It only answers requests the agent raises: the PreToolUse / canUseTool gate
+ * still denies what it denies, and on a phone call the phone policy runs first.
+ */
+export type ApprovalMode = 'ask' | 'auto-review' | 'allow-all'
+
+export const DEFAULT_APPROVAL_MODE: ApprovalMode = 'ask'
+
+export function isApprovalMode(v: unknown): v is ApprovalMode {
+  return v === 'ask' || v === 'auto-review' || v === 'allow-all'
+}
+
+const MODE_LABELS: Record<ApprovalMode, string> = { 'ask': 'Ask me', 'auto-review': 'Auto-review', 'allow-all': 'Allow all' }
+
+/** The mode's name as the app shows it. */
+export function approvalModeLabel(mode: ApprovalMode): string {
+  return MODE_LABELS[mode]
+}
+
+/**
+ * Whether the mode approves this request without asking, and its risk tier.
+ * `workspaceRoot` is the session's working directory (in-workspace edits are low risk).
+ */
+export function autoApproval(
+  mode: ApprovalMode,
+  toolName: string,
+  input: ToolInput,
+  workspaceRoot?: string,
+): { approve: boolean; tier: RiskTier } {
+  const tier = classifyRisk(toolName, input, workspaceRoot)
+  return { approve: mode === 'allow-all' || (mode === 'auto-review' && tier === 'low'), tier }
+}
+
+/** What a phone caller hears at the start of the call about approvals (#364). */
+export function approvalModeAnnouncement(mode: ApprovalMode, phoneToolsOn: boolean): string {
+  const how = mode === 'allow-all'
+    ? 'I will run actions without asking.'
+    : mode === 'auto-review'
+      ? 'I will run low-risk actions and ask you about anything risky.'
+      : 'I will ask you before each action.'
+  const toolsOff = phoneToolsOn ? '' : ' Tools are off on phone calls for now, so on this call I can only talk.'
+  return `${approvalModeLabel(mode)} is on. ${how}${toolsOff}`
+}
 
 type ToolInput = Record<string, unknown> | null | undefined
 

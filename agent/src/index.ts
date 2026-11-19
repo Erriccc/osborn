@@ -57,7 +57,7 @@ import { statusManager } from './status-manager.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED } from './prompts.js'
-import { MCP_CATALOG } from './config.js'
+import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, lastLibraryRun, isContentLensEnabled } from './content/lens-launch.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
@@ -74,8 +74,8 @@ import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phonePermissionPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
-import { describePermission, isAlwaysAllowed, newSessionAllows, phoneApprovalPrompt, recordAlwaysAllow, type PermissionAnswer } from './approval-policy.js'
+import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phonePermissionPolicy, phoneToolPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { approvalModeAnnouncement, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, recordAlwaysAllow, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -3054,6 +3054,9 @@ async function main() {
   let agentState = 'initializing'
   // Session-level always-allow list ("Always" in the browser, keypad 3 on a call): approved without prompting
   let sessionAllows = newSessionAllows()
+  // Tool approval mode (#364): saved in config.yaml, set from the app, applied
+  // to every permission request (browser and phone calls).
+  let approvalMode: ApprovalMode = readApprovalMode()
   let userState = 'listening'  // Track user speech state for queue safety
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
   // Authenticated Supabase userId from participant metadata. Used to scope
@@ -4680,12 +4683,6 @@ async function main() {
 
       const description = describePermission(toolName, input)
 
-      // Phone call (keypad approvals on): read the request out; the keypad
-      // answers it through settlePendingPermission, never the model (#363).
-      if (inPhoneRoom()) {
-        void Promise.resolve((currentSession as any)?.say?.(phoneApprovalPrompt(toolName, input))).catch(() => {})
-      }
-
       // Generate diff for Write/Edit/MultiEdit tools
       let diffString: string | undefined
       if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
@@ -4739,6 +4736,22 @@ async function main() {
           // diff generation failed — proceed without diff
           diffString = undefined
         }
+      }
+
+      // The saved approval mode (#364) answers here, for the browser and phone
+      // calls alike; the browser only shows what was approved.
+      const auto = autoApproval(approvalMode, toolName, input, workingDir)
+      if (auto.approve) {
+        console.log(`⚡ Auto-approved (${approvalMode}, ${auto.tier}): ${toolName}`)
+        directLLM.respondToPermission(true)
+        sendToFrontend({ type: 'permission_auto_approved', toolName, input: data.input, description, diff: diffString, mode: approvalMode, tier: auto.tier })
+        return
+      }
+
+      // Phone call (keypad approvals on): read the request out; the keypad
+      // answers it through settlePendingPermission, never the model (#363).
+      if (inPhoneRoom()) {
+        void Promise.resolve((currentSession as any)?.say?.(phoneApprovalPrompt(toolName, input))).catch(() => {})
       }
 
       console.log(`🔍 perm payload: diff=${diffString ? `✅ ${diffString.length} chars` : '❌ NONE'} toolName=${toolName}`)
@@ -6196,6 +6209,7 @@ async function main() {
           namedAgents: describeAgents(NAMED_AGENTS, userNamedAgents, userAgentRoles, false, userAgentOrigins),
           ...describeRoles(),
           keepWorking: true,
+          approvalMode,
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -6332,6 +6346,8 @@ async function main() {
           console.log('⚠️ Greeting failed:', err)
         }
       }
+      // A call has no approvals picker on screen: say which mode is on (#364).
+      if (isPhoneCaller) await greetViaVoice(approvalModeAnnouncement(approvalMode, phoneToolPolicy(true) === 'allow'))
     } catch (err) {
       console.error('❌ Failed to start session:', err)
     }
@@ -6514,6 +6530,15 @@ async function main() {
         if ((answer === 'allow' || answer === 'deny' || answer === 'always_allow') && settlePendingPermission(answer)) {
           console.log(`✅ Permission: ${answer}`)
         }
+      } else if (data.type === 'set_approval_mode') {
+        // The app's approvals picker (#364). Saved on the agent, so phone calls and
+        // the next browser session use it too. Echoed so every client shows it.
+        if (isApprovalMode(data.mode)) {
+          approvalMode = data.mode
+          const saved = writeApprovalMode(data.mode)
+          console.log(`🛡️ Approval mode: ${data.mode}${saved ? '' : ' (not saved: config.yaml unreadable)'}`)
+        }
+        sendToFrontend({ type: 'approval_mode', mode: approvalMode })
       } else if (data.type === 'favorite_changed') {
         // L2b (UI#21): a favorite is a UI action, not something the user said.
         // Queue it as hidden context for the next real user turn; no reply, no

@@ -41,8 +41,7 @@ import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBann
 import { InstancesPanel } from './voice/InstancesPanel'
 import { AudioControls } from './voice/AudioControls'
 import { RoomsSidebar, RoomsBar, type Room } from './voice/RoomsRail'
-import { getToolRiskLevel, type PermissionRequest, type ApprovalMode } from './voice/PermissionModal'
-import { classifyRisk } from '@/lib/riskTier'
+import { getToolRiskLevel, isApprovalMode, type PermissionRequest, type ApprovalMode } from './voice/PermissionModal'
 import { TextInput, type AttachedFile } from './voice/TextInput'
 import { AgentsPopover } from './voice/AgentsPopover'
 import { SkillViewer, rolesData, type NamedAgent, type RolesData } from './AgentStore'
@@ -336,33 +335,24 @@ function VoiceRoomInner({
     setMicDenied(micStore(), denied)
     try { window.dispatchEvent(new Event(MIC_DENIED_EVENT)) } catch { /* SSR */ }
   }, [])
-  // Session-scoped tool-approval mode — the single visible control (rendered in
-  // the Activity log row) that replaces the three old auto-approve toggles. It is
-  // deliberately NOT persisted to localStorage: it resets to 'ask' on every
-  // reload/new session, which is the fix for the old 'osborn-auto-approve-
-  // permissions' toggle — an unbounded, invisible "Allow all" that survived
-  // every reload.
+  // Tool-approval mode — the single visible control (rendered in the Activity
+  // log row). It lives on the AGENT (#364): saved in its config.yaml, applied
+  // there to every permission request, browser and phone calls alike, and
+  // reported here in agent_ready / approval_mode. The picker only asks the
+  // agent to change it (set_approval_mode). Null until the agent reports one
+  // (an older agent never does): the picker stays hidden and every request asks.
   //
   //   'ask'         → default; every request surfaces the inline approval card.
-  //   'auto-review' → auto-approves ONLY low-risk requests (read-only tools and
-  //                   in-workspace file writes, per classifyRisk) — still shows
-  //                   the card, marked auto-approved, with a one-time notice.
-  //                   Anything risky (shell, network/exfil, out-of-workspace,
-  //                   deletes, sub-agents, unknown tools) still waits for a
-  //                   manual Deny/Allow, with the diff/details expanded up front.
-  //   'allow-all'   → auto-approves every request this session (warns once).
+  //   'auto-review' → the agent approves ONLY low-risk requests (read-only tools
+  //                   and in-workspace file writes, per its classifyRisk); they
+  //                   arrive as permission_auto_approved and show the card,
+  //                   marked auto-approved. Anything risky still asks.
+  //   'allow-all'   → the agent approves every request (warns once here).
   //
-  // SECURITY: this only auto-answers the *frontend* permission_request. It NEVER
+  // SECURITY: the mode only answers requests the agent raises. It NEVER
   // disables the agent-side PreToolUse hook / canUseTool gate. A tool the agent
-  // denies stays denied in every mode — DENY always wins. 'auto-review' NEVER
-  // auto-approves a high-risk request; the risk tier is derived conservatively
-  // (when in doubt → high) in @/lib/riskTier.
-  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
-  // Mirror the mode into a ref so the data-channel handler reads the latest
-  // value without listing approvalMode in its dependency array (which would
-  // re-subscribe the room on every change and momentarily drop messages).
-  const approvalModeRef = useRef(approvalMode)
-  useEffect(() => { approvalModeRef.current = approvalMode }, [approvalMode])
+  // denies stays denied in every mode — DENY always wins.
+  const [approvalMode, setApprovalModeState] = useState<ApprovalMode | null>(null)
   // One-time warning the first time "Allow all" auto-approves this session.
   const allowAllWarnedRef = useRef(false)
   // One-time notice the first time "Auto-review" auto-approves a low-risk request.
@@ -1936,6 +1926,7 @@ function VoiceRoomInner({
 
       if (data.type === 'agent_ready') {
         agentKeepsWorkingRef.current = data.keepWorking === true
+        if (isApprovalMode(data.approvalMode)) setApprovalModeState(data.approvalMode)
         const cts = (window as any).__osbornClickTs
         if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms agent_ready received → setConnected(true)`)
         setAgentConnected(true)
@@ -2265,59 +2256,42 @@ function VoiceRoomInner({
           }
           addMessageRef.current?.('assistant', data.text, undefined, category, undefined, data.messageId != null ? { messageId: data.messageId, chunkIndex: data.chunkIndex } : undefined)
         }
-      } else if (data.type === 'permission_request') {
-        // Which session modes auto-approve THIS request?
-        //   'allow-all'   → every request (the whole-session blanket).
-        //   'auto-review' → ONLY low-risk requests; the tier is derived here,
-        //                   conservatively, from the tool name + its target
-        //                   (when in doubt → high). Anything risky still waits.
-        //   'ask'         → nothing; always the card.
-        // The agent still SENDS every request — we don't teach it to stop asking;
-        // server-side safety lives in its PreToolUse hook / canUseTool gate. We
-        // only answer here. DENY always wins server-side, and 'auto-review'
-        // NEVER auto-approves a high-risk request.
-        const mode = approvalModeRef.current
-        const tier = classifyRisk(data.toolName, data.input)
-        const autoApprove = mode === 'allow-all' || (mode === 'auto-review' && tier === 'low')
-
-        if (autoApprove) {
-          if (mode === 'allow-all' && !allowAllWarnedRef.current) {
-            allowAllWarnedRef.current = true
-            addMessageRef.current?.('system', '⚡ Allow all is on for this session — every tool request is approved automatically until you switch back. This resets when you reload.', undefined, 'log')
-          } else if (mode === 'auto-review' && !autoReviewNoticedRef.current) {
-            autoReviewNoticedRef.current = true
-            addMessageRef.current?.('system', '⚡ Auto-review is on — low-risk actions (reading files, in-workspace edits) are approved automatically for this session. Anything risky still asks you first. Resets on reload.', undefined, 'log')
-          }
-          const filePath = data.input?.file_path
-          const payload = new TextEncoder().encode(JSON.stringify({
-            type: 'permission_response',
-            response: 'allow',
-            ...(filePath ? { filePath: String(filePath) } : {}),
-          }))
-          sendToAgent(payload, { reliable: true })
-          console.log(`⚡ [perm] auto-approved (${mode}, ${tier}): ${data.toolName}`)
-          addMessageRef.current?.('system', `Auto-approved (${mode === 'allow-all' ? 'allow all' : 'low risk'}): ${data.toolName}`, undefined, 'log')
-          // 'auto-review' still SHOWS the inline card, marked auto-approved, so
-          // the user sees what ran (with the diff). It is transient: a monotonic
-          // token lets it auto-dismiss without ever clearing a newer card.
-          if (mode === 'auto-review') {
-            const token = ++autoApprovedTokenRef.current
-            setPendingPermission({
-              toolName: data.toolName,
-              description: data.description,
-              input: data.input,
-              riskLevel: 'low',
-              diff: data.diff,
-              autoApproved: true,
-            })
-            setTimeout(() => {
-              setPendingPermission((prev) =>
-                prev?.autoApproved && autoApprovedTokenRef.current === token ? null : prev
-              )
-            }, 6000)
-          }
-          return
+      } else if (data.type === 'approval_mode') {
+        // The agent's saved approval mode (#364), echoed after any change.
+        if (isApprovalMode(data.mode)) setApprovalModeState(data.mode)
+      } else if (data.type === 'permission_auto_approved') {
+        // The agent's approval mode already approved this request (#364); we
+        // only show what ran. 'auto-review' shows the inline card, marked
+        // auto-approved, with the diff; it is transient (a monotonic token lets it
+        // auto-dismiss without ever clearing a newer card).
+        const mode: ApprovalMode = data.mode === 'allow-all' ? 'allow-all' : 'auto-review'
+        if (mode === 'allow-all' && !allowAllWarnedRef.current) {
+          allowAllWarnedRef.current = true
+          addMessageRef.current?.('system', '⚡ Allow all is on — every tool request is approved automatically, in the app and on phone calls, until you switch back.', undefined, 'log')
+        } else if (mode === 'auto-review' && !autoReviewNoticedRef.current) {
+          autoReviewNoticedRef.current = true
+          addMessageRef.current?.('system', '⚡ Auto-review is on — low-risk actions (reading files, in-workspace edits) are approved automatically. Anything risky still asks you first.', undefined, 'log')
         }
+        console.log(`⚡ [perm] auto-approved by the agent (${mode}, ${data.tier}): ${data.toolName}`)
+        addMessageRef.current?.('system', `Auto-approved (${mode === 'allow-all' ? 'allow all' : 'low risk'}): ${data.toolName}`, undefined, 'log')
+        if (mode === 'auto-review') {
+          const token = ++autoApprovedTokenRef.current
+          setPendingPermission({
+            toolName: data.toolName,
+            description: data.description,
+            input: data.input,
+            riskLevel: 'low',
+            diff: data.diff,
+            autoApproved: true,
+          })
+          setTimeout(() => {
+            setPendingPermission((prev) =>
+              prev?.autoApproved && autoApprovedTokenRef.current === token ? null : prev
+            )
+          }, 6000)
+        }
+      } else if (data.type === 'permission_request') {
+        // The agent's approval mode has already let this one through to a human.
         setPendingPermission({
           toolName: data.toolName,
           description: data.description,
@@ -2325,7 +2299,7 @@ function VoiceRoomInner({
           riskLevel: getToolRiskLevel(data.toolName),
           diff: data.diff,
         })
-        console.log(`🔍 [perm] received permission_request: diff=${data.diff ? `✅ ${data.diff.length} chars` : '❌ NONE'} toolName=${data.toolName} tier=${tier}`)
+        console.log(`🔍 [perm] received permission_request: diff=${data.diff ? `✅ ${data.diff.length} chars` : '❌ NONE'} toolName=${data.toolName}`)
       } else if (data.type === 'permission_response') {
         setPendingPermission(null)
       } else if (data.type === 'status_update') {
@@ -3378,6 +3352,13 @@ function VoiceRoomInner({
     handleSendText(regeneratePrompt(file))
   }, [handleSendText])
 
+  // The picker asks the agent to change its saved mode (#364); the agent echoes
+  // approval_mode, which every connected client follows.
+  const setApprovalMode = useCallback((mode: ApprovalMode) => {
+    setApprovalModeState(mode)
+    sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'set_approval_mode', mode })), { reliable: true })
+  }, [sendToAgent])
+
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
     const toolName = pendingPermission?.toolName || 'tool'
     const filePath = pendingPermission?.input?.file_path
@@ -3830,7 +3811,7 @@ function VoiceRoomInner({
   const machineProcCount = machineData?.totalCount ?? machineData?.processes.length
   // The More button's dot: an active setting inside, or running background agents
   // while their row is in the menu (a column below pane-sm).
-  const moreSettingOn = approvalMode !== 'ask' || noiseCancelOn || (!outputsVisible && unreadOutputs.size > 0)
+  const moreSettingOn = (approvalMode !== null && approvalMode !== 'ask') || noiseCancelOn || (!outputsVisible && unreadOutputs.size > 0)
 
   return (
     <PanelDataProvider value={panelData}>
@@ -4657,7 +4638,7 @@ function VoiceRoomInner({
             // come back — the user must always be able to dismiss a stuck row.
             setBackgroundFlows(prev => prev.filter(f => f.agentId !== agentId))
           }}
-          approvals={<ApprovalPicker mode={approvalMode} onChange={setApprovalMode} />}
+          approvals={approvalMode ? <ApprovalPicker mode={approvalMode} onChange={setApprovalMode} /> : undefined}
           machineData={machineData}
           agentMemory={agentMemory}
           onMachineTabActive={setMachineTabActive}

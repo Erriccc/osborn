@@ -1,10 +1,10 @@
-// Risk classifier for the session-scoped "Auto-review" approval mode.
+// Risk classifier for the "Auto-review" approval mode (#364).
 //
-// The agent's `permission_request` payload carries NO severity/risk signal — only
-// `toolName`, `input`, `description` and (for file edits) a `diff` (see
-// agent/src/index.ts `directLLM.events.on('permission_request', …)`). So the tier
-// is derived HERE, on the frontend, from the tool name + its target, and kept
-// deliberately conservative: when in doubt, it is HIGH (never auto-approved).
+// The one copy: the agent applies the approval mode itself (approval-policy.ts,
+// index.ts `permission_request`), for the browser and phone calls alike, so the
+// browser no longer classifies. The tier is derived from the tool name + its
+// target, and kept deliberately conservative: when in doubt, it is HIGH (never
+// auto-approved).
 //
 //   LOW  → read-only tools, or file writes/edits whose target stays inside the
 //          workspace. These auto-approve in 'auto-review' mode.
@@ -13,14 +13,13 @@
 //          it" shape), out-of-workspace writes, sub-agent spawns, MCP calls, and
 //          any unknown tool. NEVER auto-approved — always waits for a human.
 //
-// This classifier ONLY gates the frontend auto-answer. It never relaxes the
-// agent-side canUseTool / PreToolUse gate: a tool the agent denies stays denied,
+// This classifier ONLY decides the auto-answer to a permission request. It never
+// relaxes the canUseTool / PreToolUse gate: a tool the agent denies stays denied,
 // and DENY always wins.
 
 export type RiskTier = 'low' | 'high'
 
-// The agent's working directory is the workspace root; it enforces a `/workspace`
-// prefix with no traversal for every user-supplied path (see agent/src/index.ts).
+// Default workspace root; the agent passes the session's working directory.
 const WORKSPACE_ROOT = '/workspace'
 
 // Tools that only read — they never mutate the filesystem, run a shell, or touch
@@ -49,9 +48,10 @@ function targetPath(input?: Record<string, unknown> | null): unknown {
 
 // True only when the path is unambiguously inside the workspace. Relative paths
 // resolve against the agent's cwd (the workspace) and count as in-workspace;
-// absolute paths must live under `/workspace`. Anything with a `..` segment, a
+// absolute paths must live under `root`. Anything with a `..` segment, a
 // URL scheme, or a home-relative `~` is rejected so it can never escape.
-export function isInWorkspace(rawPath: unknown): boolean {
+export function isInWorkspace(rawPath: unknown, root: string = WORKSPACE_ROOT): boolean {
+  const base = root.length > 1 ? root.replace(/\/+$/, '') : root
   if (typeof rawPath !== 'string') return false
   const p = rawPath.trim()
   if (p.length === 0) return false
@@ -62,7 +62,9 @@ export function isInWorkspace(rawPath: unknown): boolean {
   // Relative path → resolves against cwd (the workspace).
   if (!p.startsWith('/')) return true
   // Absolute path → must be the workspace root or a descendant of it.
-  return p === WORKSPACE_ROOT || p.startsWith(WORKSPACE_ROOT + '/')
+  // A root of "/" (or none) would make every path in-workspace: never.
+  if (!base.startsWith('/') || base === '/') return false
+  return p === base || p.startsWith(base + '/')
 }
 
 /**
@@ -73,25 +75,15 @@ export function isInWorkspace(rawPath: unknown): boolean {
 export function classifyRisk(
   toolName: string,
   input?: Record<string, unknown> | null,
+  workspaceRoot?: string,
 ): RiskTier {
   if (!toolName || typeof toolName !== 'string') return 'high'
   if (READ_ONLY_TOOLS.has(toolName)) return 'low'
   if (WORKSPACE_WRITE_TOOLS.has(toolName)) {
-    return isInWorkspace(targetPath(input)) ? 'low' : 'high'
+    return isInWorkspace(targetPath(input), workspaceRoot) ? 'low' : 'high'
   }
   // Bash/KillShell (shell side effects), WebFetch/WebSearch (network/exfil),
   // Task (spawns an agent that can do anything), MCP tools (mcp__*), and every
   // unknown tool fall through to HIGH — never auto-approved.
   return 'high'
-}
-
-/**
- * The single question the 'auto-review' mode asks per request: may this be
- * auto-approved? True ONLY for LOW-risk requests.
- */
-export function canAutoApprove(
-  toolName: string,
-  input?: Record<string, unknown> | null,
-): boolean {
-  return classifyRisk(toolName, input) === 'low'
 }

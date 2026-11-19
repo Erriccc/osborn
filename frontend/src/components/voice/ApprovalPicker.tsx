@@ -3,13 +3,14 @@
 import type { ApprovalMode } from './PermissionModal'
 import { HEADER_TAP_TARGET } from '../LogsDrawer'
 
-// The session's approval mode: the one visible control that replaced the hidden
-// auto-approve toggles. NOT persisted: it resets to "Ask me" on every reload.
+// The approval mode: the one visible control that replaced the hidden
+// auto-approve toggles. Saved on the agent (#364), so it holds across reloads
+// and applies to phone calls too; a call says which mode is on when it starts.
 // Lives in the Activity log row; a chip over a native picker on phones, a segmented control above.
 const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
   { value: 'ask', label: 'Ask me', hint: 'Pause and ask before each tool action (default)' },
-  { value: 'auto-review', label: 'Auto-review', hint: 'Auto-approve low-risk actions (reading files, in-workspace edits); still ask before anything risky' },
-  { value: 'allow-all', label: 'Allow all', hint: 'Approve every tool action for this session (resets on reload)' },
+  { value: 'auto-review', label: 'Auto-review', hint: 'Auto-approve low-risk actions (reading files, in-workspace edits); still ask before anything risky. Applies to phone calls too' },
+  { value: 'allow-all', label: 'Allow all', hint: 'Approve every tool action, in the app and on phone calls, until you switch back' },
 ]
 
 export function ApprovalPicker({ mode, onChange }: { mode: ApprovalMode; onChange: (m: ApprovalMode) => void }) {

@@ -1,9 +1,10 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { parse, stringify } from 'yaml'
 import type { McpServerConfig } from './claude-handler.js'
 import { cleanTurnText } from './content/transcript-sanitizer.js'
+import { DEFAULT_APPROVAL_MODE, isApprovalMode, type ApprovalMode } from './approval-policy.js'
 
 // Config file paths
 const CONFIG_DIR = join(homedir(), '.osborn')
@@ -57,6 +58,44 @@ export interface OsbornConfig {
 
   // Inference model config — admin-owned, not written to config.yaml
   inference?: InferenceConfig
+
+  // Tool approval mode (#364), set from the app; applies to browser and phone calls.
+  approvalMode?: ApprovalMode
+}
+
+/** The saved approval mode (config.yaml `approvalMode`); 'ask' when unset or unreadable. */
+export function readApprovalMode(file = CONFIG_FILE): ApprovalMode {
+  try {
+    const mode = (parse(readFileSync(file, 'utf-8')) as OsbornConfig | null)?.approvalMode
+    return isApprovalMode(mode) ? mode : DEFAULT_APPROVAL_MODE
+  } catch {
+    return DEFAULT_APPROVAL_MODE
+  }
+}
+
+/**
+ * Saves the approval mode into config.yaml, keeping every other key. Written
+ * to a temp file and renamed, so a crash never leaves a half-written config.
+ * Refuses (false) when the existing file cannot be parsed, rather than overwrite it.
+ */
+export function writeApprovalMode(mode: ApprovalMode, file = CONFIG_FILE): boolean {
+  try {
+    let current: Record<string, unknown> = {}
+    if (existsSync(file)) {
+      const parsed = parse(readFileSync(file, 'utf-8'))
+      if (parsed !== null && (typeof parsed !== 'object' || Array.isArray(parsed))) return false
+      current = (parsed as Record<string, unknown>) ?? {}
+    } else {
+      mkdirSync(dirname(file), { recursive: true })
+    }
+    const tmp = `${file}.tmp-${process.pid}`
+    writeFileSync(tmp, stringify({ ...current, approvalMode: mode }), 'utf-8')
+    renameSync(tmp, file)
+    return true
+  } catch (err) {
+    console.error(`❌ Failed to save approval mode: ${(err as Error).message}`)
+    return false
+  }
 }
 
 interface McpServerConfigYaml {
