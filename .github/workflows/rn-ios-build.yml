@@ -150,7 +150,13 @@ jobs:
 
       - name: Install app on simulator
         working-directory: mobile/ios
-        run: xcrun simctl install "${{ steps.sim.outputs.udid }}" artifact/VoiceNativeRN-sim.app
+        # CoreSimulator sometimes fails a fresh install ("Failed to create promise"); retry before failing.
+        run: |
+          for i in 1 2 3; do
+            xcrun simctl install "${{ steps.sim.outputs.udid }}" artifact/VoiceNativeRN-sim.app && exit 0
+            echo "install attempt $i failed; retrying"; sleep 10
+          done
+          exit 1
 
       - name: Run Maestro smoke flows
         working-directory: mobile
