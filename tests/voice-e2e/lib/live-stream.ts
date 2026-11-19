@@ -112,12 +112,10 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
   const CAPTURE_FPS = DISPLAY ? 5 : 12
   // Small clips: a quarter of the pixels to encode on a throttled CPU, still readable.
   const CLIP_W = Number(process.env.OSBORN_CLIP_WIDTH ?? 640), CLIP_H = Math.round(CLIP_W * 0.625 / 2) * 2
-  // Full size only while someone watches the live stream; otherwise frames only feed
-  // clips (CLIP_W wide), so a smaller screencast keeps the shared CPU unthrottled.
-  const IDLE_W = Math.min(1280, Math.max(960, CLIP_W))
-  // Viewers watch the per-tab recorders, so the shared screencast (clips, /status) stays small.
-  const screencast = (idle = true) => ({ format: 'jpeg' as const, quality: 55, everyNthFrame: 1,
-    ...(idle ? { maxWidth: IDLE_W, maxHeight: Math.round(IDLE_W * 9 / 16) } : { maxWidth: 1280, maxHeight: 720 }) })
+  // One small size for every screencast (shared and per-tab, which viewers watch),
+  // so capture keeps the shared CPU unthrottled.
+  const CAST_W = Math.min(1280, Math.max(960, CLIP_W))
+  const SCREENCAST = { format: 'jpeg' as const, quality: 55, everyNthFrame: 1, maxWidth: CAST_W, maxHeight: Math.round(CAST_W * 9 / 16) }
   let cdp: CDPSession | null = null
   let target: Page | null = null  // the tab the screencast is attached to
   const pushFrame = (buf: Buffer) => {
@@ -135,13 +133,12 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     } catch { clients.delete(res) }
   }
   const attach = async (p: Page, push: (b: Buffer) => void = pushFrame): Promise<CDPSession> => {
-    const idle = push !== pushFrame  // per-tab recorders feed clips only, never the live stream
     const s = await p.context().newCDPSession(p)
     s.on('Page.screencastFrame', async (f: any) => {
       try { await s.send('Page.screencastFrameAck', { sessionId: f.sessionId }) } catch { /* page gone */ }
       push(Buffer.from(f.data, 'base64'))
     })
-    await s.send('Page.startScreencast', screencast(idle || undefined))
+    await s.send('Page.startScreencast', SCREENCAST)
     return s
   }
 

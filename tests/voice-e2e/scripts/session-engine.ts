@@ -1122,7 +1122,7 @@ async function main() {
         } catch { /* page dead */ }
         const lastFrame = live?.lastFrameAt() ?? null
         return json(res, {
-          build: ENGINE_BUILD, tokenRequired: !!TOKEN, tokenConfigured: !!TOKEN, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
+          build: ENGINE_BUILD, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
           // #49: the in-app Browser panel (PR #51 proxy) and any watcher can see
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
