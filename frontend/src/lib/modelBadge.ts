@@ -85,8 +85,8 @@ export interface ModelBadgeInput {
 export function resolveModelBadge(input: ModelBadgeInput): ModelBadgeView {
   const label = providerLabel(input.mainProvider)
   const version = normalizeVersion(input.version)
+  const vSuffix = version ? ` · Osborn ${version}` : ''
   if (label) {
-    const vSuffix = version ? ` · Osborn ${version}` : ''
     return {
       label,
       version,
@@ -102,7 +102,7 @@ export function resolveModelBadge(input: ModelBadgeInput): ModelBadgeView {
     version,
     known: false,
     title: input.connected
-      ? `The answering model has not reported its provider yet.${version ? ` Osborn v${version}.` : ''}`
+      ? `The answering model has not reported its provider yet${vSuffix}.`
       : 'Connecting to the agent…',
   }
 }

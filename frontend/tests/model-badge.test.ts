@@ -80,6 +80,7 @@ check('resolveModelBadge: version shows in neutral state too', () => {
   const b = resolveModelBadge({ version: 'v0.9.275', connected: true })
   assert.equal(b.known, false)
   assert.equal(b.version, '0.9.275')
+  assert.match(b.title, /has not reported its provider yet · Osborn 0\.9\.275\./)
 })
 
 // --- fastBrainLabel ----------------------------------------------------------

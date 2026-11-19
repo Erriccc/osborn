@@ -4179,8 +4179,7 @@ function VoiceRoomInner({
                 at a glance and every screenshot carries a timestamp. */}
             <LiveClock showDate dateClassName="hidden pane-xl:inline" />
 
-            {/* Compaction status pill — header-level summary (always visible during compact) */}
-            {/* Wide columns only: the slim compaction banner under the header says the same thing at every width. */}
+            {/* Compaction status pill — wide columns only (pane-2xl); the slim banner under the header carries it at every width. */}
             {compactionStatus !== 'idle' && (
               <div className={`hidden pane-2xl:flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
                 compactionStatus === 'compacting'
@@ -4516,9 +4515,9 @@ function VoiceRoomInner({
             Visible for the full duration (typically 1–3 min), rolling stages keep the user
             informed something is happening. Replaces the older 3-second flash pill which
             users routinely missed. */}
-        {/* Compaction indicator — SLIM single line. The header already carries a
-            "Teaching Osborn…" pill; this is just a quiet one-liner so a frequent
-            compaction doesn't dominate the screen. No subtitle, no stage list. */}
+        {/* Compaction indicator — SLIM single line, at every width (the header's
+            "Teaching Osborn…" pill only shows from pane-2xl); a quiet one-liner so a
+            frequent compaction doesn't dominate the screen. No subtitle, no stage list. */}
         {compactionStatus !== 'idle' && (
           <div className={`flex items-center gap-2 px-3 py-1 border-b text-[11px] transition-all ${
             compactionStatus === 'compacting'
