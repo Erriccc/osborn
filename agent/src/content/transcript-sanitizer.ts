@@ -99,8 +99,7 @@ export type TranscriptAdapter = () => RawRecord[]
 
 // Secret redaction lives in ./secret-rules.ts (no node imports, so the frontend's
 // parity test can load it); re-exported here for existing callers.
-export { SECRET_RULES, HIGH_ENTROPY_RULE, redactSecrets, detectSecrets } from './secret-rules.js'
-export type { SecretScanOptions } from './secret-rules.js'
+export { redactSecrets, detectSecrets } from './secret-rules.js'
 
 // ============================================================================
 // VERIFIED STRIP / UNWRAP RULESET (source-independent, pure)
