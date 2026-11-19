@@ -7,7 +7,7 @@
 // the mirror is a best-effort downstream step that never blocks the report.
 import { NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
-import { buildBugReportRow, type BugReportInput } from '@/lib/bug-report'
+import { buildBugReportRow, reportRowId, type BugReportInput } from '@/lib/bug-report'
 import { mirrorReportToGitHub } from '@/lib/github-issue-mirror'
 import { knownSandboxClaim } from '@/lib/sandbox-claims'
 import { execInSprite } from '@/lib/machines'
@@ -55,7 +55,7 @@ export async function POST(request: Request) {
     // tail of the reporter's own machine (best-effort; the report files without it).
     // The exec target is always the caller's recorded, undisputed sandbox, never an
     // id from the body, which would let a caller exec into any machine.
-    const id = randomUUID()
+    const { id, idempotent } = reportRowId(body.metadata, randomUUID)
     let logUrl: string | null = null
     try {
       const known = body.sandbox_id ? await knownSandboxClaim(supabase, user.id) : null
@@ -79,6 +79,8 @@ export async function POST(request: Request) {
       .insert({ id, ...built.row, log_url: logUrl })
       .select('id')
       .single()
+    // 23505 on our own id: this report was already filed (a redelivery), so it is not filed or mirrored again.
+    if (error?.code === '23505' && idempotent) return NextResponse.json({ ok: true, id, duplicate: true })
     if (error) {
       console.error('[report] insert failed', error)
       // Surface the REAL Postgres/PostgREST error (code + message [+ hint]) so the

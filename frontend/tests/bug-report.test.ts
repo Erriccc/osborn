@@ -2,7 +2,7 @@
 // Spec: buildBugReportRow mirrors the agent /report-bug validation (title >= 3,
 // description required, severity enum) + the bug_reports column limits, and always
 // stamps the reporter + a non-null osborn_version so the RLS insert never fails.
-import { buildBugReportRow, type BugReportInput } from '../src/lib/bug-report'
+import { buildBugReportRow, reportRowId, type BugReportInput } from '../src/lib/bug-report'
 
 const results: [string, boolean, string?][] = []
 function t(name: string, fn: () => void) {
@@ -69,6 +69,18 @@ t('tags are filtered to strings and capped at 20', () => {
 t('null email is tolerated', () => {
   const r = buildBugReportRow(base, { id: 'u-9', email: null })
   if (r.ok) eq(r.row.reporter_email, null, 'null email')
+})
+
+t('the agent reportId is the row id, so a redelivery cannot file twice (#297)', () => {
+  const rid = '3F2504E0-4F89-41D3-9A0C-0305E82C3301'
+  const mint = () => 'minted'
+  const a = reportRowId({ source: 'agent', reportId: rid }, mint)
+  eq(a.id, rid.toLowerCase(), 'reportId used'); eq(a.idempotent, true, 'idempotent')
+  eq(reportRowId({ source: 'agent', reportId: rid }, mint).id, a.id, 'same id on redelivery')
+  for (const m of [undefined, null, {}, { reportId: 'abc' }, { reportId: 42 }]) {
+    const r = reportRowId(m, mint)
+    eq(r.id, 'minted', `fresh id for ${JSON.stringify(m)}`); eq(r.idempotent, false, 'not idempotent')
+  }
 })
 
 let fail = 0
