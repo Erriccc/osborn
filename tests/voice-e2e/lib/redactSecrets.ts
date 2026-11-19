@@ -32,11 +32,12 @@
 //    string, and `MY_TOKEN: "abc…` must still mask.
 //  - Narrow by SHAPE instead. Values never mask after `$` (a `$VAR` reference),
 //    `<` (a placeholder) or `{` (JSX). The rest depends on the separator:
-//     * `NAME=value` with no space around `=` is a .env line, a shell export or
-//       a URL parameter, never a type annotation: any value of 5+ characters
-//       masks, a symbol-start or quote/paren-split value included, up to the
-//       next whitespace, `&`, `;` or `|`. Only `true`, `false`, `null` and the
-//       like are spared.
+//     * `NAME=value` with no space around `=` and a secret NAME (password,
+//       secret, token, api/access/private key, auth) is a .env line, a shell
+//       export, a URL parameter or a keyword argument, never a type annotation:
+//       any value of 5+ characters masks, a symbol-start or quote-split value
+//       included, up to whitespace or `&;|,()[]`. Spared: `true`, `false`,
+//       `null` and the like, a dotted reference and the name itself.
 //     * `NAME: value` and spaced `NAME = value` are also code: the guard
 //       `(?![A-Za-z]{1,11}(?![\w+/=-]))` spares one short word — `string`,
 //       `expired`, `process` in `process.env.X` — as a type annotation, a diff
@@ -63,8 +64,10 @@ export function redactSecrets(s: string | undefined | null): string {
     .replace(/([^A-Za-z0-9_]|^)fw_[A-Za-z0-9]{20,}/g, '$1fw_••••')
     .replace(/([^A-Za-z0-9_]|^)snx_(?:proj_[A-Za-z0-9_-]{20,}|(?!proj_)[A-Za-z0-9]{16,})/g, '$1snx_••••')
     // A private key, terminated or cut off mid-body (a literal `\n` included).
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, 'PRIVATE KEY ••••')
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\sA-Za-z0-9+/=]|\\n)*/g, 'PRIVATE KEY ••••')
+    // The body never crosses `-----` and is bounded, so a run of BEGIN lines with
+    // no END cannot make each one rescan the rest of the text.
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[^-]|-(?!----)){0,8192}-----END [A-Z ]*PRIVATE KEY-----/g, 'PRIVATE KEY ••••')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\sA-Za-z0-9+/=]|\\n){0,8192}/g, 'PRIVATE KEY ••••')
     .replace(/\bAIza[0-9A-Za-z_-]{30,}/g, 'AIza••••')
     .replace(/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 'xox••••')
     // Two rules at the agent's floor of 30, not one folded rule: folding them
@@ -84,17 +87,22 @@ export function redactSecrets(s: string | undefined | null): string {
     .replace(/(\b(?:x-goog-|x-)?api-key(?:\\?["'`])?\s*[:=]\s*(?:\\?["'`])?)(?!\$)(?!(?:header|headers|required|optional|missing|invalid|expired|undefined|null|none|string|empty|unset|redacted|hidden)(?![\w+/=-]))(?![A-Za-z]{1,11}\.)[^\s"'`\\,;}<]{8,}/gi, '$1••••')
     .replace(/(Authorization(?:\\?["'`])?\s*:\s*(?:\\?["'`])?(?:(?:Bearer|Basic|Token)\s+)?)(?!\$)(?!(?:header|headers|required|optional|missing|invalid|expired|undefined|null|none|string|empty|unset|redacted|hidden)(?![\w+/=-]))(?![A-Za-z]{1,11}\.)[^\s"'`\\,;}<]{8,}/gi, '$1••••')
     .replace(/(Bearer\s+)[A-Za-z0-9._\-+/=]{20,}/gi, '$1••••')
-    // `[_-]KEY` and `[_-]PASS` cover this product's own names
-    // (SUPABASE_SERVICE_ROLE_KEY, PUSHOVER_USER_KEY, OSBORN_DEMO_PASS) while the
-    // separator keeps `MONKEY=` out. First the tight `NAME=value` form (see the
-    // editors' rules above): the lazy value stops before an optional closing
-    // quote, so `NAME="…"` keeps its quote. The guard repeats the optional quote
-    // because the regex may skip the separator's: without it `TOKEN="$VAR"` and
-    // an already-masked `TOKEN="••••` would mask (again) from the quote.
-    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|[_-]KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|[_-]PASS|PRIVATE[_-]?KEY|TOKEN))((?:\\?["'`])?=(?:\\?["'`])?)(?!\\?["'`]?(?:\$|<|\{|\[REDACTED|••••|(?:true|false|null|none|nil|undefined|empty|unset)(?![^\s&;|"'`\\])|[A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b))[^\s&;|]{5,}?(?=["'`]?(?:[\s&;|]|$))/gi, '$1$2••••')
+    // First the tight `NAME=value` form (see the editors' rules above), for a
+    // secret NAME only: `cache_key=`, `sort_key=` and `partition_key=` are code.
+    // The value stops at `,()[]` (a keyword argument) and the lazy match leaves
+    // an optional closing quote in place. Spared: a dotted reference
+    // (`config.apiKey`, `os.environ[…]`) and a value that repeats the name
+    // (`password=password`). The guard repeats the optional quote because the
+    // regex may skip the separator's: without it `TOKEN="$VAR"` and an already-
+    // masked `TOKEN="••••` would mask (again) from the quote.
+    .replace(/\b([A-Za-z0-9_]*(?:PASSWORD|PASSWD|[_-]PWD|SECRET|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|AUTH))((?:\\?["'`])?=(?:\\?["'`])?)(?!\\?["'`]?(?:\$|<|\{|\[REDACTED|••••|(?:true|false|null|none|nil|undefined|empty|unset|\1)(?![^\s&;|,()[\]"'`\\])|[A-Za-z_]+(?:\.[A-Za-z_]+)+(?![^\s&;|,()[\]"'`\\])|[A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b))[(\[]?[^\s&;|,()[\]]{5,}?(?=["'`]?(?:[\s&;|,()[\]]|$))/gi, '$1$2••••')
     // Then `NAME: value` and spaced `NAME = value`. The value class matches the
     // header rules, so JSX and TS forms — `token={token}`, `token: (row?.sync_token
     // as string)` — are left alone, and the final guard spares a type annotation
     // (`token: AccessTokenPayload = decode(raw)`) that only this rule can reach.
-    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|[_-]KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|[_-]PASS|PRIVATE[_-]?KEY|TOKEN))((?:\\?["'`])?\s*[=:]\s*(?:\\?["'`])?)(?=[A-Za-z0-9])(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])(?![A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b)[^\s"'`\\(){}<]{6,}/gi, '$1$2••••')
+    .replace(/\b([A-Za-z0-9_]*(?:API[_-]?KEY|SECRET|ACCESS[_-]?KEY|PASSWORD|PASSWD|PRIVATE[_-]?KEY|TOKEN))((?:\\?["'`])?\s*[=:]\s*(?:\\?["'`])?)(?=[A-Za-z0-9])(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])(?![A-Z][A-Za-z]*(?:Error|Exception)\b|Unauthorized\b|Forbidden\b)[^\s"'`\\(){}<]{6,}/gi, '$1$2••••')
+    // This product's own env names end in `_KEY` or `_PASS` (SUPABASE_SERVICE_
+    // ROLE_KEY, PUSHOVER_USER_KEY, OSBORN_DEMO_PASS). Only in capitals, which
+    // keeps `cache_key=` and `idempotency_key=` out; `[_-]` keeps `MONKEY=` out.
+    .replace(/\b([A-Z0-9_]*[_-](?:KEY|PASS))((?:\\?["'`])?\s*[=:]\s*(?:\\?["'`])?)(?=[A-Za-z0-9])(?![A-Za-z]{1,11}(?![\w+/=-]))(?![A-Za-z]+\s*[=<])[^\s"'`\\(){}<]{6,}/g, '$1$2••••')
 }

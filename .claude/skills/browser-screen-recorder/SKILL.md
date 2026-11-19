@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 56
+Version: 58
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v58
+- The evidence-log redactor now also masks npm, AWS, PEM private-key, Fireworks and Soniox keys, and secret assignment values (`PASSWORD=…`, `token=…` keyword arguments, symbol-start or quote-split values).
 
 ## What's new in v56
 - **A deploy no longer drops your request silently.** A command in flight when the engine stops (a deploy or restart) gets `503 engine_restarting` with `retryable:true` and `retryAfterSec`, not an empty 502: wait, check `/status` (`restartRecovered`, `previousRun`) and send it again — the active journey carries over. `drive.sh say` re-attaches on it.

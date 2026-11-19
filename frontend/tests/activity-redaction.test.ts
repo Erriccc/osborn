@@ -117,6 +117,9 @@ t('code, diffs and prose are left byte-identical', () => {
     'color=red', 'mode=dark', 'token count = 5', 'max_tokens=4096', 'TOKEN=true', 'PASSWORD=false',
     'API_KEY=null', 'TOKEN="$MY_VAR"', 'TOKEN=${MY_VAR}', 'SECRET=<redacted>', 'password = hashed',
     'x-api-key: required', 'Authorization: missing', 'TOKEN=Unauthorized',
+    // Keyword arguments and references in code: the tight rule once masked all of
+    // these, and ate the `)`, `,` or `"` after several.
+    'OpenAI(api_key=os.environ["OPENAI_API_KEY"])', 'login(username=user, password=password)', 'gh.auth(token=token, base_url=url)', 'stripe.api_key=settings.STRIPE_KEY', 'API_KEY=process.env.API_KEY', 'apiKey=config.apiKey', 'cache_key=user:123:profile', 'sort_key=lambda r: r[1]', 'idempotency_key=order-123', 'partition_key=customer_id',
   ]) {
     assert.equal(redactSecrets(s), s)
   }

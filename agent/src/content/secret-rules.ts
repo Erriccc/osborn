@@ -67,12 +67,12 @@ export const SECRET_RULES: SecretRule[] = [
   // truncated/unterminated block (header + base64 body, literal "\n" allowed).
   {
     kind: 'PEM-PRIVATE-KEY',
-    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[^-]|-(?!----)){0,8192}-----END [A-Z ]*PRIVATE KEY-----/g,
     replace: '[REDACTED-PEM-PRIVATE-KEY]',
   },
   {
     kind: 'PEM-PRIVATE-KEY',
-    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\sA-Za-z0-9+/=]|\\n)*/g,
+    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\sA-Za-z0-9+/=]|\\n){0,8192}/g,
     replace: '[REDACTED-PEM-PRIVATE-KEY]',
   },
   // Anthropic keys: sk-ant-api03-…, sk-ant-oat01-… (MUST run before OPENAI-KEY).
