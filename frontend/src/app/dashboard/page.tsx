@@ -23,7 +23,7 @@ import { isSupabaseConfigured } from '@/lib/supabase'
 import { shareSession, listSharedWithMe, importSharedSession, type SharedSession } from '@/lib/session-sharing'
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle, formatTime } from '@/lib/sessions'
 import { prepareSessions } from '@/lib/session-list'
-import { agentReadUrl, awaitingCloudUrl } from '@/lib/agent-read'
+import { agentReadUrl, awaitingCloudUrl, isLocalAgentUrl } from '@/lib/agent-read'
 import { pollSandbox } from '@/lib/sandbox-poll'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useIsAdmin } from '@/lib/use-is-admin'
@@ -430,7 +430,7 @@ export default function Dashboard() {
     // agentUrl is transiently 'localhost' before the sandbox URL lands — don't
     // wipe the last-known city then (that flashed "Cloud" on mobile).
     if (connectionMode === 'local') { setMachineRegion(null); return }
-    if (!agentUrl || agentUrl.startsWith('http://localhost')) return
+    if (isLocalAgentUrl(agentUrl)) return
     fetch(`${agentUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(8000) })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {

@@ -13,7 +13,7 @@ import { AgentStore, ListState, SkillStore, SkillViewer, pill, rolesData, type N
 import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
 import { useSkillStore, httpSkills } from '@/lib/skill-store'
-import { agentRequest, agentError, awaitingCloudUrl, listError, UNREACHABLE } from '@/lib/agent-read'
+import { agentRequest, agentError, awaitingCloudUrl, isLocalAgentUrl, listError, UNREACHABLE } from '@/lib/agent-read'
 import { pollSandbox } from '@/lib/sandbox-poll'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
@@ -202,7 +202,7 @@ export default function SettingsPage() {
   // Machine location (agent /health region).
   useEffect(() => {
     if (connectionMode === 'local') { setMachineRegion(null); return }
-    if (!agentUrl || agentUrl.startsWith('http://localhost')) return
+    if (isLocalAgentUrl(agentUrl)) return
     fetch(`${agentUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(8000) })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {

@@ -332,13 +332,15 @@ export async function waitForHealth(previewUrl: string, maxAttempts = 30): Promi
 }
 
 /**
- * Get the first machine in a Fly app. Returns null if no machines.
+ * Get the first machine in a Fly app. Returns null if no machines, and on a
+ * failed list unless `throwOnError` (a caller that reads null as 'stopped').
  */
-async function getFirstMachine(appName: string): Promise<FlyMachine | null> {
+async function getFirstMachine(appName: string, throwOnError = false): Promise<FlyMachine | null> {
   try {
     const machines = await api<FlyMachine[]>('GET', `/v1/apps/${appName}/machines`)
     return machines?.[0] ?? null
-  } catch {
+  } catch (err) {
+    if (throwOnError) throw err
     return null
   }
 }
@@ -619,10 +621,9 @@ export async function findUserSandbox(userId: string, knownSandboxId?: string): 
   try {
     // Ensure the app exists before checking machines
     await api<FlyApp>('GET', `/v1/apps/${appName}`)
-    // Not getFirstMachine: it turns a failed list into null, and null reads as
-    // 'stopped' below, so one Fly API blip showed a running machine as asleep.
-    const machines = await api<FlyMachine[]>('GET', `/v1/apps/${appName}/machines`)
-    const machine = machines?.[0] ?? null
+    // A failed list throws: null reads as 'stopped' below, so one Fly API blip
+    // showed a running machine as asleep.
+    const machine = await getFirstMachine(appName, true)
     return {
       id: appName,
       status: machine ? mapMachineState(machine.state) : 'stopped',

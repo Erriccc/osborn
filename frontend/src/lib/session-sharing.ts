@@ -12,7 +12,7 @@
 // sides act only against THEIR OWN machine; Supabase Storage bridges the gap.
 
 import { createSupabaseBrowser } from './supabase-browser'
-import { agentReadUrl } from './agent-read'
+import { agentReadUrl, isLocalAgentUrl } from './agent-read'
 
 const BUCKET = 'session-shares'
 const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 30 // 30 days
@@ -43,7 +43,7 @@ export async function shareSession(opts: {
   const supabase = createSupabaseBrowser()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.email) return { ok: false, error: 'You must be signed in to share.' }
-  if (!opts.agentUrl || opts.agentUrl.startsWith('http://localhost')) {
+  if (isLocalAgentUrl(opts.agentUrl)) {
     return { ok: false, error: 'No cloud machine detected — sharing needs your session on a cloud machine.' }
   }
 
@@ -114,7 +114,7 @@ export async function importSharedSession(opts: {
   agentUrl: string        // B's own machine URL
 }): Promise<Result> {
   const supabase = createSupabaseBrowser()
-  if (!opts.agentUrl || opts.agentUrl.startsWith('http://localhost')) {
+  if (isLocalAgentUrl(opts.agentUrl)) {
     return { ok: false, error: 'No cloud machine detected — connect one first, then add the shared session.' }
   }
   // 1. Download the snapshot (owner-pre-signed URL).
