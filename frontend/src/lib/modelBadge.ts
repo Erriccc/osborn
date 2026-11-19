@@ -102,7 +102,7 @@ export function resolveModelBadge(input: ModelBadgeInput): ModelBadgeView {
     version,
     known: false,
     title: input.connected
-      ? 'The answering model has not reported its provider yet.'
+      ? `The answering model has not reported its provider yet.${version ? ` Osborn v${version}.` : ''}`
       : 'Connecting to the agent…',
   }
 }

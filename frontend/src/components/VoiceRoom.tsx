@@ -93,7 +93,7 @@ function AudioPopover({ disabled }: { disabled?: boolean }) {
   return (
     <div className="relative">
       <button onClick={() => setOpen((v) => !v)} disabled={disabled}
-        aria-label="Audio settings" title="Audio (mic & speaker)"
+        aria-label="Audio settings" title="Audio (mic & speaker)" aria-haspopup="dialog" aria-expanded={open}
         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
           disabled ? 'text-gray-600 cursor-not-allowed'
             : open ? 'bg-amber-500/20 text-amber-300' : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
@@ -4180,8 +4180,9 @@ function VoiceRoomInner({
             <LiveClock showDate dateClassName="hidden pane-xl:inline" />
 
             {/* Compaction status pill — header-level summary (always visible during compact) */}
+            {/* Wide columns only: the slim compaction banner under the header says the same thing at every width. */}
             {compactionStatus !== 'idle' && (
-              <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
+              <div className={`hidden pane-2xl:flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
                 compactionStatus === 'compacting'
                   ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
                   : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
