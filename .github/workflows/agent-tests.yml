@@ -24,7 +24,7 @@ jobs:
       - name: Install
         working-directory: agent
         run: npm ci --no-audit --no-fund
-      # The frontend's runner; the two skipped files read fixtures that exist only on one dev machine (/workspace/...).
+      # The frontend's runner. skill-secrets runs in frontend-lint, which also covers the root .claude/skills.
       - name: Run tests
         working-directory: agent
-        run: node ../frontend/scripts/run-tests.mjs . sanitizer-widened switch-blind-smoke
+        run: node ../frontend/scripts/run-tests.mjs . skill-secrets

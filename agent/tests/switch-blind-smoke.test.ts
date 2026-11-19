@@ -1,7 +1,7 @@
 // Run: npx tsx agent/tests/switch-blind-smoke.test.ts   (REAL SDK, OpenRouter fallback tier; costs a few tokens)
 // A: new session, one message. Arm resume to B (copied into an isolated config dir). chat() again.
 // Expect: init reports B, no session_resume_failed.
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { llm, initializeLogger } from '@livekit/agents'
@@ -12,6 +12,8 @@ const B = process.env.SMOKE_B || 'bb215298-4e22-4f84-acd4-7feaddf8d08b'
 const srcB = join(realHome, '.claude/projects/-workspace', B + '.jsonl')
 // load ONLY the OpenRouter key, never print it
 const KEYNAME = process.env.SMOKE_KEY || 'OPENROUTER_API_KEY'
+// Needs one dev machine's .env and transcript; skip anywhere else (CI).
+if (!existsSync('/workspace/osborn/.env') || !existsSync(srcB)) { console.log('SKIP fixture absent'); process.exit(0) }
 const m = readFileSync('/workspace/osborn/.env', 'utf8').match(new RegExp('^' + KEYNAME + '=(.*)$', 'm'))
 if (!m) { console.log('SKIP no ' + KEYNAME); process.exit(2) }
 const home = mkdtempSync(join(tmpdir(), 'osb-smoke-'))
