@@ -20,11 +20,6 @@ export function phoneCallerAdmission(
   return codeEnabled && (!s.room || s.verifiedRoom !== s.room) ? 'code' : 'adopt'
 }
 
-/** Where a keypad press goes: the code while the code step is open, else approvals. */
-export function phoneKeypadTarget(codeStepOpen: boolean): 'code' | 'approvals' {
-  return codeStepOpen ? 'code' : 'approvals'
-}
-
 /**
  * One keypad press during the code step. Digits add up to PHONE_CODE_LENGTH and
  * then submit; `*` starts again; anything else (`#`, letters) is ignored.

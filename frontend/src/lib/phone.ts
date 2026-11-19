@@ -22,7 +22,7 @@ interface JoinEventLike {
 // ParticipantInfo_Kind.SIP in @livekit/protocol (WebhookReceiver.receive parses the JSON name to it).
 const SIP_KIND = 3
 // Room prefix of the shared number's `individual` dispatch rule.
-const PHONE_ROOM_PREFIX = 'call-'
+export const PHONE_ROOM_PREFIX = 'call-'
 // Warn once about an unreadable shared number, not on every call.
 let warnedBadSharedNumber = false
 

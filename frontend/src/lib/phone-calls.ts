@@ -21,11 +21,15 @@ const FAILED_HANGUP_MS = 7_000
 // The server SDK clients take the wss:// URL as is (TwirpRpc maps ws→http).
 const livekitHost = () => process.env.LIVEKIT_URL || process.env.NEXT_PUBLIC_LIVEKIT_URL
 
+const roomService = (host: string) => new RoomServiceClient(host, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET)
+// A line spoken by the agent's own /tts.
+const agentLine = (agentUrl: string, text: string) => `${agentUrl}/tts?text=${encodeURIComponent(text)}`
+
 async function hangUp(roomName: string): Promise<void> {
   const host = livekitHost()
   if (!host) return
   try {
-    await new RoomServiceClient(host, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET).deleteRoom(roomName)
+    await roomService(host).deleteRoom(roomName)
   } catch (e) {
     console.warn(`[phone] hang-up failed for ${roomName}: ${(e as Error).message}`)
   }
@@ -57,26 +61,21 @@ async function playInto(roomName: string, name: string, url: string | undefined)
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-/** Plays a line into the caller's room and lets it finish. */
-async function say(roomName: string, name: string, url: string | undefined, ms: number): Promise<void> {
+/** Plays a line into the caller's room and lets it finish; `end` then hangs up. */
+async function say(roomName: string, name: string, url: string | undefined, ms: number, end = false): Promise<void> {
   const stop = await playInto(roomName, name, url)
   if (stop) await sleep(ms)
+  if (end) await hangUp(roomName)
   await stop?.()
 }
 
-/** Plays a line into the caller's room, lets it finish, then hangs up. */
-async function sayThenHangUp(roomName: string, name: string, url: string | undefined, ms: number): Promise<void> {
-  const stop = await playInto(roomName, name, url)
-  if (stop) await sleep(ms)
-  await hangUp(roomName)
-  await stop?.()
-}
+const sayThenHangUp = (roomName: string, name: string, url: string | undefined, ms: number) => say(roomName, name, url, ms, true)
 
 async function roomExists(roomName: string): Promise<boolean> {
   const host = livekitHost()
   if (!host) return false
   try {
-    const rooms = await new RoomServiceClient(host, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET).listRooms([roomName])
+    const rooms = await roomService(host).listRooms([roomName])
     return rooms.length > 0
   } catch {
     return true
@@ -99,7 +98,7 @@ async function codeStep(
   roomName: string,
   agentUrl: string,
 ): Promise<'connected' | 'rejected'> {
-  const line = (text: string) => `${agentUrl}/tts?text=${encodeURIComponent(text)}`
+  const line = (text: string) => agentLine(agentUrl, text)
   const sent = await startCallCode(admin, userId, roomName)
   if (sent === 'already-open') return 'connected'
   if (sent !== 'sent') {
@@ -180,7 +179,7 @@ export async function routeCall(
     }
     if (r.ok) return r.callCode ? await codeStep(admin, userId, call.roomName, r.agentUrl) : 'connected'
     if (r.reason === 'busy') {
-      await sayThenHangUp(call.roomName, 'busy', r.agentUrl && `${r.agentUrl}/tts?text=${encodeURIComponent(BUSY_LINE)}`, BUSY_HANGUP_MS)
+      await sayThenHangUp(call.roomName, 'busy', r.agentUrl && agentLine(r.agentUrl, BUSY_LINE), BUSY_HANGUP_MS)
       return 'busy'
     }
     console.warn(`[phone] could not bring the agent into ${call.roomName}: ${r.reason}`)

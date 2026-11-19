@@ -9,7 +9,8 @@
  * keypad digits and asks POST /api/phone/code; routeCall (phone-calls.ts)
  * watches the row to speak the retry and goodbye lines.
  */
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { createSupabaseAnon } from '@/lib/supabase-anon'
 
 export const CALL_CODE_TTL_MS = 5 * 60_000
 export const CALL_CODE_MAX_TRIES = 3
@@ -77,14 +78,6 @@ export function callCodeNext(seenMisses: number, row: CallCodeRow | null, now: n
   return row!.misses > seenMisses ? 'retry' : 'wait'
 }
 
-/** A fresh anon client per use: verifyOtp signs in, and that session must not stick to a shared client. */
-function anonClient(): SupabaseClient | null {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  if (!url || !key) return null
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } })
-}
-
 async function accountEmail(admin: SupabaseClient, userId: string): Promise<string | null> {
   const { data, error } = await admin.auth.admin.getUserById(userId)
   const email = data?.user?.email
@@ -100,7 +93,7 @@ export async function startCallCode(
 ): Promise<'sent' | 'already-open' | 'no-email' | 'send-failed'> {
   const email = await accountEmail(admin, userId)
   if (!email) return 'no-email'
-  const anon = anonClient()
+  const anon = createSupabaseAnon()
   if (!anon) return 'send-failed'
   // Old windows are of no further use.
   await admin.from('phone_call_codes').delete().lt('expires_at', new Date(now - 24 * 3600_000).toISOString())
@@ -159,7 +152,8 @@ export async function checkCallCode(
   let matched = false
   if (CODE_FORMAT.test(code)) {
     const email = await accountEmail(admin, userId)
-    const anon = anonClient()
+    // A fresh anon client: verifyOtp signs in, and that session must not stick to a shared client.
+    const anon = createSupabaseAnon()
     if (email && anon) {
       const { data, error } = await anon.auth.verifyOtp({ email, token: code, type: 'email' })
       matched = !error && !!data?.session

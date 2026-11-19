@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PHONE_EMAIL_CODE_ENABLED } from '../src/data-sender-auth.js'
 import {
-  PHONE_CODE_LENGTH, addCodeDigit, checkPhoneCode, phoneCallerAdmission, phoneKeypadTarget, readPhoneCodeReply,
+  PHONE_CODE_LENGTH, addCodeDigit, checkPhoneCode, phoneCallerAdmission, readPhoneCodeReply,
 } from '../src/phone-code.js'
 
 let pass = 0, fail = 0
@@ -30,11 +30,6 @@ await t('admission: flag off adopts; flag on asks for the code until this room i
   assert.equal(phoneCallerAdmission({ verifiedRoom: 'call-1', room: 'call-1' }, true), 'adopt')
   assert.equal(phoneCallerAdmission({ verifiedRoom: 'call-0', room: 'call-1' }, true), 'code', 'an earlier call\'s code does not carry over')
   assert.equal(phoneCallerAdmission({ verifiedRoom: null, room: null }, true), 'code', 'no room')
-})
-
-await t('keypad routing: the code step takes every press', () => {
-  assert.equal(phoneKeypadTarget(true), 'code')
-  assert.equal(phoneKeypadTarget(false), 'approvals')
 })
 
 await t('digits add up to six and submit; * starts again; other keys are ignored', () => {
@@ -86,7 +81,7 @@ await t('index.ts: /connect-room asks the frontend for the code only for a phone
 await t('index.ts: keypad presses go to the code while it is awaited, and never reach approvals', () => {
   const start = src.indexOf('room.on(RoomEvent.DtmfReceived')
   const body = src.slice(start, start + 700)
-  const code = body.indexOf("phoneKeypadTarget(!!phoneCodeCaller) === 'code'")
+  const code = body.indexOf('if (phoneCodeCaller) {')
   const approvals = body.indexOf('handlePhoneKeypad(')
   assert.ok(code > 0 && approvals > code, 'the code check comes first')
   assert.match(body.slice(code, approvals), /onPhoneCodeDigit\(digit\)\s+return\s+\}/, 'and returns before approvals')

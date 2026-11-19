@@ -75,7 +75,7 @@ import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_EMAIL_CODE_ENABLED, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
-import { addCodeDigit, checkPhoneCode, phoneCallerAdmission, phoneKeypadTarget } from './phone-code.js'
+import { addCodeDigit, checkPhoneCode, phoneCallerAdmission } from './phone-code.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
@@ -2385,7 +2385,7 @@ async function main() {
   const clearPhoneCode = () => { phoneCodeCaller = null; phoneCodeBuffer = ''; phoneCodeVerifiedRoom = null }
   // The frontend's spoken lines (hold, code prompt, retry) join a call's room as
   // URL ingress participants: never a user, and their leaving ends nothing.
-  const isPhoneLinePlayer = (p: RemoteParticipant) => p.kind === ParticipantKind.INGRESS && !!phoneRoomName && phoneRoomName === activeRoomName
+  const isPhoneLinePlayer = (p: RemoteParticipant) => p.kind === ParticipantKind.INGRESS && isPhoneCallLive(activeRoomName, phoneRoomName, true)
   // A participant leaving a phone room that was never adopted (a line player, or
   // anyone during the code step) ends nothing. True when the leave is handled here.
   const phoneCodeLeave = (p: RemoteParticipant): boolean => {
@@ -5431,7 +5431,7 @@ async function main() {
     // PHONE_KEYPAD_APPROVALS_ENABLED is on. Only from the caller in an authorised phone room.
     // While the emailed code is awaited (#362), every press goes to the code, never to approvals.
     room.on(RoomEvent.DtmfReceived, (_code: number, digit: string, participant: RemoteParticipant) => {
-      if (phoneKeypadTarget(!!phoneCodeCaller) === 'code') {
+      if (phoneCodeCaller) {
         if (participant?.kind === ParticipantKind.SIP && inPhoneRoom() && participant.identity === phoneCodeCaller?.identity) onPhoneCodeDigit(digit)
         return
       }

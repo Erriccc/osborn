@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { serviceClient } from '@/lib/sandbox-claims'
 import { checkCallCode } from '@/lib/phone-code'
+import { PHONE_ROOM_PREFIX } from '@/lib/phone'
 
 /**
  * POST /api/phone/code — one try at the emailed code of a phone call (#362).
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
   let body: { roomName?: unknown; code?: unknown } = {}
   try { body = JSON.parse(raw) } catch {}
   const { roomName, code } = body
-  if (typeof roomName !== 'string' || !roomName.startsWith('call-') || roomName.length > 128 || typeof code !== 'string' || code.length > 16) {
+  if (typeof roomName !== 'string' || !roomName.startsWith(PHONE_ROOM_PREFIX) || roomName.length > 128 || typeof code !== 'string' || code.length > 16) {
     return NextResponse.json({ error: 'invalid request' }, { status: 400 })
   }
   const admin = serviceClient()

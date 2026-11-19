@@ -10,7 +10,8 @@ import { createClient } from '@supabase/supabase-js'
  *
  * SECURITY: only ever use this to read the `public_content` VIEW, which
  * exposes a safe, published-only column list (migration 007). Never read
- * `content_items` through this client.
+ * `content_items` through this client. A fresh client per call, so it also
+ * serves Supabase Auth calls whose session must not stick (phone-code.ts).
  */
 export function createSupabaseAnon() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
