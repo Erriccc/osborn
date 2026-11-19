@@ -2384,7 +2384,7 @@ async function main() {
   let phoneCodeVerifiedRoom: string | null = null
   let phoneCodeTimer: ReturnType<typeof setTimeout> | null = null
   const clearPhoneCode = () => {
-    phoneCodeCaller = null; phoneCodeBuffer = ''; phoneCodeVerifiedRoom = null
+    phoneCodeCaller = null; phoneCodeBuffer = ''; phoneCodeVerifiedRoom = null; phoneCodeChecking = false
     if (phoneCodeTimer) { clearTimeout(phoneCodeTimer); phoneCodeTimer = null }
   }
   // Line players (phone-code.ts isPhoneLinePlayer; also the #365 hold line, flag on or off).
@@ -2421,9 +2421,10 @@ async function main() {
     if (!caller || !room) return
     phoneCodeChecking = true
     checkPhoneCode(osbornFrontendUrl(), process.env.OSBORN_SYNC_TOKEN, room, code).then((result) => {
-      phoneCodeChecking = false
       console.log(`📞🔐 Phone code for ${room}: ${result}`)
+      // A check that outlived its call must not touch the next call's state (#397).
       if (phoneCodeCaller !== caller || activeRoomName !== room) return
+      phoneCodeChecking = false
       const action = phoneCodeAction(result)
       if (action === 'adopt') {
         if (phoneCodeTimer) { clearTimeout(phoneCodeTimer); phoneCodeTimer = null }
