@@ -2,9 +2,9 @@
 // Run:  npx tsx agent/tests/risk-tier.test.ts
 
 import assert from 'node:assert/strict'
-import { classifyRisk, isInWorkspace } from '../src/risk-tier.js'
+import { classifyRisk, isInWorkspace, isSensitivePath } from '../src/risk-tier.js'
 import { autoApproval } from '../src/approval-policy.js'
-const canAutoApprove = (t: string, i: Record<string, unknown>) => autoApproval('auto-review', t, i).approve
+const canAutoApprove = (t: string, i: Record<string, unknown>) => autoApproval('auto-review', t, i, '/workspace').approve
 
 let passed = 0
 function check(name: string, fn: () => void) {
@@ -13,15 +13,20 @@ function check(name: string, fn: () => void) {
   console.log(`  ok  ${name}`)
 }
 
-// --- LOW: read-only tools auto-approve regardless of input -------------------
-check('Read is low', () => {
-  assert.equal(classifyRisk('Read', { file_path: '/etc/passwd' }), 'low')
-  assert.equal(canAutoApprove('Read', { file_path: '/anywhere' }), true)
+// --- Read-only tools: low only inside the workspace -------------------------
+check('Read is low inside the workspace, high outside it', () => {
+  assert.equal(classifyRisk('Read', { file_path: '/workspace/src/a.ts' }), 'low')
+  assert.equal(classifyRisk('Read', { file_path: 'src/a.ts' }), 'low')
+  assert.equal(classifyRisk('Read', { file_path: '/etc/passwd' }), 'high')
+  assert.equal(canAutoApprove('Read', { file_path: '/anywhere' }), false)
 })
-check('Grep/Glob/LS/NotebookRead are low', () => {
-  for (const t of ['Grep', 'Glob', 'LS', 'NotebookRead']) {
-    assert.equal(classifyRisk(t, {}), 'low', `${t} should be low`)
-  }
+check('Grep/Glob with no path search the cwd (low); LS/NotebookRead need an in-workspace path', () => {
+  assert.equal(classifyRisk('Grep', {}), 'low')
+  assert.equal(classifyRisk('Glob', {}), 'low')
+  assert.equal(classifyRisk('Grep', { path: '/etc' }), 'high')
+  assert.equal(classifyRisk('LS', {}), 'high')
+  assert.equal(classifyRisk('LS', { path: '/workspace/src' }), 'low')
+  assert.equal(classifyRisk('NotebookRead', { notebook_path: '/workspace/n.ipynb' }), 'low')
 })
 
 // --- LOW: in-workspace writes -----------------------------------------------
@@ -80,7 +85,7 @@ check('MCP + unknown tools are high', () => {
   assert.equal(classifyRisk('', {}), 'high')
 })
 check('canAutoApprove is true only for low', () => {
-  assert.equal(canAutoApprove('Read', {}), true)
+  assert.equal(canAutoApprove('Read', { file_path: 'src/a.ts' }), true)
   assert.equal(canAutoApprove('Bash', { command: 'ls' }), false)
   assert.equal(canAutoApprove('Write', { file_path: '/etc/x' }), false)
 })
@@ -98,6 +103,35 @@ check('a root of / or a relative root never makes everything in-workspace', () =
   assert.equal(isInWorkspace('/etc/passwd', '/'), false)
   assert.equal(isInWorkspace('/etc/passwd', ''), false)
   assert.equal(isInWorkspace('/etc/passwd', 'etc'), false)
+})
+
+// --- Sensitive paths are never low, even inside the workspace ---------------
+check('config, VCS, hooks, settings and secrets are high in the workspace', () => {
+  const root = '/home/sprite/workspace'
+  for (const p of [
+    `${root}/.claude/settings.json`, '.claude/settings.local.json', `${root}/.git/hooks/pre-commit`, '.git/config',
+    `${root}/.env`, '.env.local', 'apps/web/.env.production', '.husky/pre-push', '.github/workflows/ci.yml',
+    'node_modules/.bin/tsc', '.githooks/commit-msg', 'scripts/hooks/install.sh', 'config/settings.yaml',
+    'src/settings.ts', 'tools/pre-commit-hook.sh', '.npmrc', `${root}/.bashrc`,
+  ]) {
+    assert.equal(isSensitivePath(p), true, p)
+    for (const tool of ['Write', 'Edit', 'MultiEdit', 'Read']) assert.equal(classifyRisk(tool, { file_path: p }, root), 'high', `${tool} ${p}`)
+    assert.equal(autoApproval('auto-review', 'Edit', { file_path: p }, root).approve, false, `auto-review ${p}`)
+  }
+  for (const p of ['src/app.ts', `${root}/README.md`, 'docs/guide.md', './src/x.ts']) {
+    assert.equal(isSensitivePath(p), false, p)
+    assert.equal(classifyRisk('Edit', { file_path: p }, root), 'low', p)
+  }
+})
+check('auto-review never approves anything outside the cwd, or anything when the cwd is unknown', () => {
+  const root = '/home/sprite/workspace'
+  for (const p of ['/home/sprite/other/a.ts', '/home/sprite/workspace-evil/a.ts', '/etc/hosts', `${root}/../x`, '~/a', 'file:///etc/x']) {
+    for (const tool of ['Read', 'Write', 'Edit', 'Grep']) {
+      assert.equal(autoApproval('auto-review', tool, { file_path: p, path: p }, root).approve, false, `${tool} ${p}`)
+    }
+  }
+  assert.equal(autoApproval('auto-review', 'Edit', { file_path: 'src/a.ts' }, undefined).approve, false, 'no cwd → no auto-approve')
+  assert.equal(autoApproval('auto-review', 'Grep', {}, undefined).approve, false)
 })
 
 console.log(`\n${passed} test blocks passed`)

@@ -124,14 +124,27 @@ t('index.ts: handleDataReceived checks the sender, then runs the one dispatch', 
   assert.doesNotMatch(body, /data\.type === 'permission_response'/, 'no handlers left outside dispatchAction')
 })
 
-t('index.ts: voice actions and POST /action go through runAppAction and its allow-list', () => {
+t('the agent cannot loosen its mode or answer an approval over HTTP: there is no /action route', () => {
+  assert.doesNotMatch(src, /pathname === '\/action'/, 'no POST /action')
+  assert.doesNotMatch(src, /actionHook/, 'nothing outside main() can reach runAppAction')
+  assert.doesNotMatch(src, /'\/action'/, 'not an agent route prefix')
+  // runAppAction is called only by the phone voice-action runner.
+  const calls = [...src.matchAll(/runAppAction\(/g)].map((m) => m.index!)
+  const runner = src.indexOf('async function runPhoneVoiceAction')
+  const end = src.indexOf('\n  }\n', runner)
+  const outside = calls.filter((i) => i < runner || i > end).filter((i) => !src.slice(i - 40, i).includes('const '))
+  assert.deepEqual(outside, [], 'runAppAction is used only by runPhoneVoiceAction')
+  // set_approval_mode and permission_response reach dispatchAction only from the owner's data channel or the caller's voice.
+  assert.match(src, /function takePhoneVoiceAction\(text: string\): boolean \{\s+if \(!inPhoneRoom\(\)\) return false/)
+})
+t('index.ts: a spoken yes/no and the keypad answer only the request the caller heard', () => {
+  assert.match(src, /const heard = !!phonePromptedRequestId && pendingPermissionHolder\(\)\?\.getPendingPermission\?\.\(\)\?\.requestId === phonePromptedRequestId\s+const action = matchVoiceAction\(text, \{ permissionPending: heard \}\)/)
+  assert.match(src, /if \(inPhoneRoom\(\)\) \{\s+phonePromptedRequestId = requestId/)
+})
+t('index.ts: voice actions go through runAppAction and its allow-list', () => {
   assert.match(src, /const runAppAction = async[\s\S]{0,200}if \(!PHONE_ACTION_TYPES\.has\(String\(data\?\.type\)\)\) throw/)
-  const route = src.slice(src.indexOf("url.pathname === '/action'"), src.indexOf("url.pathname === '/action'") + 900)
-  assert.match(route, /if \(unauthorized\(\) \|\| storeRefused\(\)\) return/)
-  assert.match(route, /PHONE_ACTION_TYPES\.has/)
-  assert.match(route, /actionHook\(data\)/)
   const voice = src.slice(src.indexOf('async function runPhoneVoiceAction'), src.indexOf('async function runPhoneVoiceAction') + 6000)
-  assert.match(voice, /phoneAnswerAllowed\(action\.answer\)[\s\S]{0,200}runAppAction\(\{ type: 'permission_response'/)
+  assert.match(voice, /phoneAnswerAllowed\(action\.answer\)[\s\S]{0,400}runAppAction\(\{ type: 'permission_response', response: action\.answer, requestId \}\)/)
   assert.match(voice, /phoneMayChangeMode\(approvalMode, action\.mode, PHONE_KEYPAD_APPROVALS_ENABLED\)/)
   assert.match(voice, /runAppAction\(\{ type: 'switch_session'/)
   assert.match(voice, /runAppAction\(\{ type: 'stop_dispatch'/)

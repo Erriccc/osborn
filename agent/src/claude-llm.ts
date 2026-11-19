@@ -1233,6 +1233,8 @@ export class ClaudeLLM extends llm.LLM {
   #pendingPermission: {
     toolName: string
     input: Record<string, unknown>
+    /** Unique per request: an answer names the request it was for. */
+    requestId: string
     resolve: (decision: { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }) => void
   } | null = null
 
@@ -1374,7 +1376,9 @@ export class ClaudeLLM extends llm.LLM {
    * Respond to a pending permission request
    * Call this after receiving 'permission_request' event
    */
-  respondToPermission(allow: boolean, message?: string) {
+  respondToPermission(allow: boolean, message?: string, requestId?: string): boolean {
+    // An answer meant for another request (a late click, a parked brain) never settles this one.
+    if (requestId !== undefined && this.#pendingPermission?.requestId !== requestId) return false
     if (this.#pendingPermission) {
       const input = this.#pendingPermission.input
       if (allow) {
@@ -1389,7 +1393,9 @@ export class ClaudeLLM extends llm.LLM {
         })
       }
       this.#pendingPermission = null
+      return true
     }
+    return false
   }
 
   /**
@@ -1402,9 +1408,10 @@ export class ClaudeLLM extends llm.LLM {
   /**
    * Get pending permission details
    */
-  getPendingPermission(): { toolName: string; input: any } | null {
+  getPendingPermission(): { toolName: string; input: any; requestId: string } | null {
     if (this.#pendingPermission) {
-      return { toolName: this.#pendingPermission.toolName, input: this.#pendingPermission.input }
+      const { toolName, input, requestId } = this.#pendingPermission
+      return { toolName, input, requestId }
     }
     return null
   }
@@ -2435,9 +2442,10 @@ export class ClaudeLLM extends llm.LLM {
       onPermissionRequest: (toolName: string, input: Record<string, unknown>) => {
         type PermResult = { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }
         return new Promise<PermResult>((resolve) => {
-          this.#pendingPermission = { toolName, input, resolve }
-          console.log(`⚠️ Permission request: ${toolName}`)
-          this.#eventEmitter.emit('permission_request', { toolName, input })
+          const requestId = crypto.randomUUID()
+          this.#pendingPermission = { toolName, input, requestId, resolve }
+          console.log(`⚠️ Permission request: ${toolName} (${requestId.slice(0, 8)})`)
+          this.#eventEmitter.emit('permission_request', { toolName, input, requestId })
         })
       },
     })

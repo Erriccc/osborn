@@ -276,14 +276,14 @@ t('index.ts: /connect-room roomName is behind the sync-token check and validated
 t('index.ts: keypad goes through handlePhoneKeypad with the shared settle function', () => {
   const start = src.indexOf('RoomEvent.DtmfReceived')
   const body = src.slice(start, start + 600)
-  assert.match(body, /handlePhoneKeypad\(\{ sip: participant\?\.kind === ParticipantKind\.SIP, inPhoneRoom: inPhoneRoom\(\), digit \}, settlePendingPermission\)/)
+  assert.match(body, /handlePhoneKeypad\(\{ sip: participant\?\.kind === ParticipantKind\.SIP, inPhoneRoom: inPhoneRoom\(\), digit \}, \(answer\) => settlePendingPermission\(answer, phonePromptedRequestId\)\)/, 'the keypad answers only the request the caller heard')
   assert.doesNotMatch(body, /settlePendingPermission\('allow'\)/)
-  assert.equal((src.match(/target\.respondToPermission\(answer !== 'deny'\)/g) || []).length, 1, 'one settle implementation')
+  assert.match(src, /function settlePendingPermission\(answer: PermissionAnswer, requestId: unknown\): boolean \{\s+return answerPending\(pendingPermissionHolder\(\), answer, requestId, sessionAllows\)/, 'one settle implementation')
 })
 t('index.ts: browser permission_response settles through the same function (#363)', () => {
   const start = src.indexOf("data.type === 'permission_response'")
   const body = src.slice(start, start + 600)
-  assert.match(body, /settlePendingPermission\(answer\)/)
+  assert.match(body, /settlePendingPermission\(answer, data\.requestId\)/)
   assert.doesNotMatch(body, /currentLLM\.respondToPermission/)
   // always_allow's target comes from the pending request, not a client-sent filePath.
   assert.doesNotMatch(body, /data\.filePath/)

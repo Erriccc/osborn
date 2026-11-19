@@ -2293,6 +2293,8 @@ function VoiceRoomInner({
       } else if (data.type === 'permission_request') {
         // The agent's approval mode has already let this one through to a human.
         setPendingPermission({
+          requestId: typeof data.requestId === 'string' ? data.requestId : undefined,
+          always: typeof data.always === 'string' ? data.always : undefined,
           toolName: data.toolName,
           description: data.description,
           input: data.input,
@@ -3361,15 +3363,15 @@ function VoiceRoomInner({
 
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
     const toolName = pendingPermission?.toolName || 'tool'
-    const filePath = pendingPermission?.input?.file_path
     setPendingPermission(null)
     addMessageRef.current?.('system', `Permission ${response}: ${toolName}`)
 
+    // The agent settles only the request this card showed (requestId), never a newer one.
     const encoder = new TextEncoder()
     const payload = encoder.encode(JSON.stringify({
       type: 'permission_response',
       response,
-      ...(filePath ? { filePath: String(filePath) } : {}),
+      requestId: pendingPermission?.requestId,
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, pendingPermission])

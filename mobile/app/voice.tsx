@@ -64,7 +64,7 @@ function RoomView() {
   const [lines, setLines] = useState<Line[]>([])
   const [agentState, setAgentState] = useState('connecting')
   const [micOn, setMicOn] = useState(true)
-  const [perm, setPerm] = useState<{ toolName: string; description: string } | null>(null)
+  const [perm, setPerm] = useState<{ toolName: string; description: string; requestId?: string } | null>(null)
   const scroll = useRef<ScrollView>(null)
 
   // Parse the agent's data-channel messages (same protocol the web uses).
@@ -79,14 +79,15 @@ function RoomView() {
       } else if (d.type === 'agent_state' || d.type === 'state') {
         setAgentState(String(d.state ?? d.agent ?? 'idle'))
       } else if (d.type === 'permission_request') {
-        setPerm({ toolName: String(d.toolName ?? 'tool'), description: String(d.description ?? `Use ${d.toolName}?`) })
+        setPerm({ toolName: String(d.toolName ?? 'tool'), description: String(d.description ?? `Use ${d.toolName}?`), requestId: typeof d.requestId === 'string' ? d.requestId : undefined })
       }
     } catch { /* non-JSON data */ }
   }, [message])
 
   function respondPerm(response: 'allow' | 'deny' | 'always_allow') {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-    const payload = JSON.stringify({ type: 'permission_response', response })
+    // The agent settles only the request this sheet showed (requestId), never a newer one.
+    const payload = JSON.stringify({ type: 'permission_response', response, requestId: perm?.requestId })
     localParticipant?.publishData(new TextEncoder().encode(payload), { reliable: true })
     setPerm(null)
   }

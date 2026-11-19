@@ -1,7 +1,7 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, chmodSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, join } from 'path'
-import { parse, stringify } from 'yaml'
+import { Document, isMap, parse, parseDocument, stringify } from 'yaml'
 import type { McpServerConfig } from './claude-handler.js'
 import { cleanTurnText } from './content/transcript-sanitizer.js'
 import { DEFAULT_APPROVAL_MODE, isApprovalMode, type ApprovalMode } from './approval-policy.js'
@@ -74,22 +74,29 @@ export function readApprovalMode(file = CONFIG_FILE): ApprovalMode {
 }
 
 /**
- * Saves the approval mode into config.yaml, keeping every other key. Written
- * to a temp file and renamed, so a crash never leaves a half-written config.
- * Refuses (false) when the existing file cannot be parsed, rather than overwrite it.
+ * Saves the approval mode into config.yaml. The YAML document is edited in
+ * place, so every other key and its comments survive, and the file keeps its
+ * permissions. Written to a temp file and renamed, so a crash never leaves a
+ * half-written config. Refuses (false) when the existing file cannot be
+ * parsed or is not a mapping, rather than overwrite it.
  */
 export function writeApprovalMode(mode: ApprovalMode, file = CONFIG_FILE): boolean {
   try {
-    let current: Record<string, unknown> = {}
+    let doc = new Document({})
+    let fileMode = 0o600
     if (existsSync(file)) {
-      const parsed = parse(readFileSync(file, 'utf-8'))
-      if (parsed !== null && (typeof parsed !== 'object' || Array.isArray(parsed))) return false
-      current = (parsed as Record<string, unknown>) ?? {}
+      doc = parseDocument(readFileSync(file, 'utf-8'))
+      if (doc.errors.length) return false
+      if (doc.contents !== null && !isMap(doc.contents)) return false
+      if (doc.contents === null) doc.contents = doc.createNode({}) as typeof doc.contents
+      fileMode = statSync(file).mode & 0o777
     } else {
       mkdirSync(dirname(file), { recursive: true })
     }
+    doc.set('approvalMode', mode)
     const tmp = `${file}.tmp-${process.pid}`
-    writeFileSync(tmp, stringify({ ...current, approvalMode: mode }), 'utf-8')
+    writeFileSync(tmp, String(doc), { encoding: 'utf-8', mode: fileMode })
+    chmodSync(tmp, fileMode)
     renameSync(tmp, file)
     return true
   } catch (err) {

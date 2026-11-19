@@ -6,9 +6,9 @@
  * - the approval mode (Ask me / Auto-review / Allow all), saved on the agent
  *   and applied here for the browser and phone calls alike (#364),
  * - the plain-words description of a request (browser card and phone prompt),
- * - the session's always-allow list ("Always" in the browser, keypad 3).
+ * - the session's always-allow list ("Always" in the browser, keypad 3) and what it covers.
  */
-import { classifyRisk, type RiskTier } from './risk-tier.js'
+import { classifyRisk, isReadOnlyTool, type RiskTier } from './risk-tier.js'
 
 /** An answer to a pending permission, from any surface. */
 export type PermissionAnswer = 'allow' | 'deny' | 'always_allow'
@@ -43,9 +43,10 @@ export function autoApproval(
   mode: ApprovalMode,
   toolName: string,
   input: ToolInput,
-  workspaceRoot?: string,
+  workspaceRoot: string | undefined,
 ): { approve: boolean; tier: RiskTier } {
-  const tier = classifyRisk(toolName, input, workspaceRoot)
+  // No known cwd → nothing is provably inside it → nothing is low risk.
+  const tier: RiskTier = workspaceRoot ? classifyRisk(toolName, input, workspaceRoot) : 'high'
   return { approve: mode === 'allow-all' || (mode === 'auto-review' && tier === 'low'), tier }
 }
 
@@ -115,40 +116,85 @@ export function speakablePermission(toolName: string, input: ToolInput): string 
 
 /** What a phone caller hears for a pending request (keypad approvals, #363). */
 export function phoneApprovalPrompt(toolName: string, input: ToolInput): string {
-  return `Osborn wants to ${speakablePermission(toolName, input)}. Press 1 to allow, 2 to deny, or 3 to always allow.`
+  return `Osborn wants to ${speakablePermission(toolName, input)}. Press 1 to allow, 2 to deny, or 3 to always allow ${alwaysScope(toolName, input).label} for this call.`
+}
+
+/** JSON with sorted keys, so the same input always gives the same key. */
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v as object).sort().map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v) ?? 'null'
 }
 
 /**
- * The session's always-allow list. "Always" covers one file for the file
- * tools (Write, Edit, MultiEdit) and the whole tool for every other tool.
- * Cleared with each new voice session.
+ * What "always allow" covers for this request, and its plain-words label
+ * (shown on the browser's Always button and read out on a call):
+ * - Write/Edit/MultiEdit: this file;
+ * - Bash: this exact command;
+ * - a read-only tool (risk-tier isReadOnlyTool): the whole tool;
+ * - anything else: this exact request (same tool, same input).
+ * `key` is null when nothing can be recorded (a file tool with no file).
  */
-export interface SessionAllows {
-  paths: Set<string>
-  tools: Set<string>
+export function alwaysScope(toolName: string, input: ToolInput): { key: string | null; label: string } {
+  if (PATH_SCOPED_TOOLS.has(toolName)) {
+    const file = str(input?.file_path)
+    return { key: file ? `path:${file}` : null, label: 'this file' }
+  }
+  if (toolName === 'Bash') {
+    const cmd = str(input?.command)
+    return { key: cmd ? `bash:${cmd}` : null, label: 'this exact command' }
+  }
+  if (isReadOnlyTool(toolName)) return { key: `tool:${toolName}`, label: `every ${toolName}` }
+  return { key: `exact:${toolName}:${stableJson(input ?? {})}`, label: 'this exact request' }
 }
 
+/** What answerPending needs from an LLM holding a permission request (ClaudeLLM / PipelineDirectLLM). */
+export interface PermissionHolder {
+  getPendingPermission?(): { toolName: string; input: any; requestId: string } | null
+  respondToPermission(allow: boolean, message?: string, requestId?: string): boolean | void
+}
+
+/**
+ * Answers ONE request: the one `requestId` names, if `holder` still has it
+ * pending. A late answer (its request already settled, or a different one
+ * pending now, a parked brain's included) settles nothing. 'always_allow'
+ * records that request's alwaysScope. True when it was settled.
+ */
+export function answerPending(
+  holder: PermissionHolder | null | undefined,
+  answer: PermissionAnswer,
+  requestId: unknown,
+  allows: SessionAllows,
+): boolean {
+  if (typeof requestId !== 'string' || !requestId || !holder) return false
+  const pending = holder.getPendingPermission?.()
+  if (!pending || pending.requestId !== requestId) return false
+  if (answer === 'always_allow') {
+    const added = recordAlwaysAllow(allows, pending.toolName, pending.input)
+    if (added) console.log(`🔒 Always-allow added for session: ${added}`)
+  }
+  return holder.respondToPermission(answer !== 'deny', undefined, requestId) !== false
+}
+
+/** The session's always-allow list (keys from alwaysScope). Cleared with each new voice session. */
+export type SessionAllows = Set<string>
+
 export function newSessionAllows(): SessionAllows {
-  return { paths: new Set(), tools: new Set() }
+  return new Set()
 }
 
 export function isAlwaysAllowed(allows: SessionAllows, toolName: string, input: ToolInput): boolean {
-  if (PATH_SCOPED_TOOLS.has(toolName)) {
-    const file = str(input?.file_path)
-    return !!file && allows.paths.has(file)
-  }
-  return allows.tools.has(toolName)
+  const { key } = alwaysScope(toolName, input)
+  return !!key && allows.has(key)
 }
 
 /** Records an "always allow" for this request. Returns what was added, for the log. */
 export function recordAlwaysAllow(allows: SessionAllows, toolName: string, input: ToolInput): string | null {
-  if (PATH_SCOPED_TOOLS.has(toolName)) {
-    const file = str(input?.file_path)
-    if (!file) return null
-    allows.paths.add(file)
-    return file
-  }
-  if (!toolName) return null
-  allows.tools.add(toolName)
-  return toolName
+  const { key } = alwaysScope(toolName, input)
+  if (!key) return null
+  allows.add(key)
+  return key
 }
+

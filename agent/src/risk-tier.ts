@@ -23,7 +23,7 @@ export type RiskTier = 'low' | 'high'
 const WORKSPACE_ROOT = '/workspace'
 
 // Tools that only read — they never mutate the filesystem, run a shell, or touch
-// the network, so they are always safe to auto-approve.
+// the network. LOW only for an in-workspace, non-sensitive target.
 const READ_ONLY_TOOLS = new Set<string>([
   'Read',
   'Grep',
@@ -67,6 +67,25 @@ export function isInWorkspace(rawPath: unknown, root: string = WORKSPACE_ROOT): 
   return p === base || p.startsWith(base + '/')
 }
 
+// Paths that change how tools, the agent or the repo behave, or hold secrets:
+// any dot segment (.git, .claude, .husky, .github, .env*, node_modules/.bin,
+// .githooks, .npmrc …), a hooks folder, and any settings or hook file. Never
+// LOW, even inside the workspace.
+export function isSensitivePath(rawPath: unknown): boolean {
+  if (typeof rawPath !== 'string') return true
+  const segs = rawPath.trim().split(/[\\/]+/).filter((s) => s && s !== '.')
+  if (segs.some((s) => s.startsWith('.') || /^hooks?$/i.test(s))) return true
+  return /settings|hook/i.test(segs[segs.length - 1] || '')
+}
+
+// Grep/Glob search the workspace (cwd) when they are given no path.
+const DEFAULTS_TO_CWD = new Set<string>(['Grep', 'Glob'])
+
+/** True for tools that only read (the whole-tool "always allow" covers only these). */
+export function isReadOnlyTool(toolName: string): boolean {
+  return READ_ONLY_TOOLS.has(toolName)
+}
+
 /**
  * Derive the risk tier for a tool request from the data in the permission_request
  * payload. Pure — no React, no I/O. Conservative by construction: anything not
@@ -78,9 +97,11 @@ export function classifyRisk(
   workspaceRoot?: string,
 ): RiskTier {
   if (!toolName || typeof toolName !== 'string') return 'high'
-  if (READ_ONLY_TOOLS.has(toolName)) return 'low'
-  if (WORKSPACE_WRITE_TOOLS.has(toolName)) {
-    return isInWorkspace(targetPath(input), workspaceRoot) ? 'low' : 'high'
+  // LOW needs an in-workspace (session cwd), non-sensitive target.
+  if (READ_ONLY_TOOLS.has(toolName) || WORKSPACE_WRITE_TOOLS.has(toolName)) {
+    const target = targetPath(input)
+    if (target === undefined && DEFAULTS_TO_CWD.has(toolName)) return 'low'
+    return isInWorkspace(target, workspaceRoot) && !isSensitivePath(target) ? 'low' : 'high'
   }
   // Bash/KillShell (shell side effects), WebFetch/WebSearch (network/exfil),
   // Task (spawns an agent that can do anything), MCP tools (mcp__*), and every

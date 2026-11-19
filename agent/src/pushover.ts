@@ -57,6 +57,8 @@ interface PendingPush {
   receipt: string
   toolName: string
   description: string
+  /** The permission request this push asks about; its answer settles only that one. */
+  requestId?: string
   expiresAt: number
   settled: boolean
   expiryTimer?: NodeJS.Timeout
@@ -68,10 +70,10 @@ const pending = new Map<string, PendingPush>()
 /** An approval push went out and is still waiting for its answer. */
 export const phonePushPending = (): boolean => [...pending.values()].some(p => !p.settled)
 
-/** Registered by index.ts: resolves the currently-pending permission. */
-let resultHandler: ((allow: boolean, toolName: string) => void) | null = null
+/** Registered by index.ts: resolves the permission request the push was armed for. */
+let resultHandler: ((allow: boolean, toolName: string, requestId?: string) => void) | null = null
 
-export function setWatchResultHandler(fn: (allow: boolean, toolName: string) => void): void {
+export function setWatchResultHandler(fn: (allow: boolean, toolName: string, requestId?: string) => void): void {
   resultHandler = fn
 }
 
@@ -187,7 +189,7 @@ export async function notifyPhone(message: string): Promise<boolean> {
  * failure (network, Pushover 4xx, missing env) just logs — the web UI remains
  * the source of truth and the request still waits for it.
  */
-export async function armPermissionPush(opts: { toolName: string; description: string }): Promise<void> {
+export async function armPermissionPush(opts: { toolName: string; description: string; requestId?: string }): Promise<void> {
   const cfg = pushoverConfig()
   const ntfy = ntfyConfig()
   if (!cfg && !ntfy) return
@@ -218,6 +220,7 @@ export async function armPermissionPush(opts: { toolName: string; description: s
     receipt: '',
     toolName: opts.toolName,
     description: opts.description,
+    requestId: opts.requestId,
     expiresAt: now + EXPIRE_S * 1000,
     settled: false,
   }
@@ -289,7 +292,7 @@ export function handleWatchAck(qid: string, receipt?: string, allow = true): boo
   if (record.expiryTimer) clearTimeout(record.expiryTimer)
   pending.delete(qid)
   console.log(`⌚️ Watch bridge: ACKED → ${allow ? 'approve' : 'deny'} ${record.toolName}`)
-  resultHandler?.(allow, record.toolName)
+  resultHandler?.(allow, record.toolName, record.requestId)
   return true
 }
 
@@ -308,7 +311,7 @@ async function settleExpired(record: PendingPush): Promise<void> {
     record.settled = true
     pending.delete(record.qid)
     console.log(`⌚️ Watch bridge: unacknowledged at expiry → deny ${record.toolName}`)
-    resultHandler?.(false, record.toolName)
+    resultHandler?.(false, record.toolName, record.requestId)
     return
   }
 
@@ -321,10 +324,10 @@ async function settleExpired(record: PendingPush): Promise<void> {
     if (body.acknowledged === 1) {
       // Acked but the callback never reached us — recover as approve.
       console.log(`⌚️ Watch bridge: expiry poll found late ack → approve ${record.toolName}`)
-      resultHandler?.(true, record.toolName)
+      resultHandler?.(true, record.toolName, record.requestId)
     } else {
       console.log(`⌚️ Watch bridge: unacknowledged at expiry → deny ${record.toolName}`)
-      resultHandler?.(false, record.toolName)
+      resultHandler?.(false, record.toolName, record.requestId)
       // Cancel remaining emergency retries so the wrist stops buzzing.
       void fetch(`${PUSH_API}/receipts/${record.receipt}/cancel.json`, {
         method: 'POST',
@@ -336,6 +339,6 @@ async function settleExpired(record: PendingPush): Promise<void> {
     console.log('⌚️ Watch bridge: receipts poll failed:', e instanceof Error ? e.message : e)
     record.settled = true
     pending.delete(record.qid)
-    resultHandler?.(false, record.toolName)
+    resultHandler?.(false, record.toolName, record.requestId)
   }
 }

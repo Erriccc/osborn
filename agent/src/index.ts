@@ -75,7 +75,7 @@ import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phonePermissionPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
-import { approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, recordAlwaysAllow, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
+import { alwaysScope, answerPending, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, pickSession, sayModeChanged, sayOutputs, saySessions, sayStatus, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
@@ -329,10 +329,7 @@ let intentionalLeave = false
 let currentDuck: ReturnType<typeof installDuck> | null = null
 let duckRestoreTimer: ReturnType<typeof setTimeout> | null = null
 // phoneRoom: join this caller's room (a phone call) instead of a fresh one.
-let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
-// POST /action → main()'s runAppAction (a PHONE_ACTION_TYPES command; returns its replies).
-let actionHook: ((data: Record<string, unknown>) => Promise<object[]>) | null = null
-// Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
+let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null// Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
 // the browser voice experience (2026-08-01 quality architecture; replaces the
 // synth-file chain when connected). Set from main() where the room name lives.
@@ -431,7 +428,7 @@ function parseDevSubdomainPort(req: { headers: { host?: string; 'fly-replay-src'
 const AGENT_ROUTE_PREFIXES = [
   '/health', '/sessions', '/skills', '/agents', '/store', '/canvas', '/canvas-token',
   '/canvas-stream', '/events', '/room-code', '/connect-room', '/leave-room',
-  '/report-bug', '/restart', '/tts', '/noise-cancel', '/action', '/webhook', '/sessions/export',
+  '/report-bug', '/restart', '/tts', '/noise-cancel', '/webhook', '/sessions/export',
   '/sessions/import', '/sessions/manifest',
   '/secrets',
   '/editor',
@@ -798,23 +795,6 @@ function startApiServer(workingDir: string, port: number): void {
       return !!refusal
     }
 
-    // POST /action { type, ... } — one app command from this machine (#367): the
-    // same dispatchAction the app's buttons and a call's voice actions use,
-    // limited to PHONE_ACTION_TYPES. Same who-may-ask rules as the store
-    // (sync token, or a JSON request from this machine). Replies { ok, replies }.
-    if (req.method === 'POST' && url.pathname === '/action') {
-      if (unauthorized() || storeRefused()) return
-      const raw = await readBodyCapped(req.iterator({ destroyOnReturn: false }), CONNECT_ROOM_MAX_BODY)
-      let data: Record<string, unknown> | null = null
-      try { data = raw ? JSON.parse(raw) : null } catch {}
-      if (!data || typeof data !== 'object' || !PHONE_ACTION_TYPES.has(String(data.type))) {
-        reply(400, { ok: false, error: `type must be one of: ${[...PHONE_ACTION_TYPES].join(', ')}` })
-        return
-      }
-      if (!actionHook) { reply(503, { ok: false, error: 'agent not ready' }); return }
-      try { reply(200, { ok: true, replies: await actionHook(data) }) } catch (e) { reply(500, { ok: false, error: e instanceof Error ? e.message : String(e) }) }
-      return
-    }
 
     if (req.method === 'GET' && url.pathname === '/skills') {
       if (unauthorized() || storeRefused(true)) return
@@ -3075,6 +3055,8 @@ async function main() {
   let agentState = 'initializing'
   // Session-level always-allow list ("Always" in the browser, keypad 3 on a call): approved without prompting
   let sessionAllows = newSessionAllows()
+  // The request a phone caller last heard read out: the keypad and a spoken yes/no answer only that one.
+  let phonePromptedRequestId: string | null = null
   // Tool approval mode (#364): saved in config.yaml, set from the app, applied
   // to every permission request (browser and phone calls).
   let approvalMode: ApprovalMode = readApprovalMode()
@@ -4540,11 +4522,11 @@ async function main() {
     directLLM?.setPhoneCall?.(inPhoneRoom())
     currentLLM = directLLM
 
-    // Watch bridge (mobile Track 1): a wrist ack/expiry settles whatever
-    // permission is currently pending. Re-registered per session — harmless,
-    // the latest closure wins and they all resolve through currentLLM.
-    setWatchResultHandler((allow, toolName) => {
-      if (settlePendingPermission(allow ? 'allow' : 'deny')) {
+    // Watch bridge (mobile Track 1): a wrist ack/expiry settles the request
+    // its push was armed for (requestId), never a newer one. Re-registered per
+    // session — harmless, the latest closure wins.
+    setWatchResultHandler((allow, toolName, requestId) => {
+      if (settlePendingPermission(allow ? 'allow' : 'deny', requestId)) {
         console.log(`⌚️ Watch bridge settled ${toolName}: ${allow ? 'approve' : 'deny'}`)
       } else {
         // Already answered via the web UI — a late ack/expiry is a no-op.
@@ -4687,22 +4669,26 @@ async function main() {
       console.log(`⚠️ Permission needed: ${data.toolName}`)
       const toolName = data.toolName
       const input = data.input || {}
+      // Every answer names this id (settlePendingPermission); a late one never settles a newer request.
+      const requestId: string = data.requestId
 
       // A phone caller cannot approve tools until PHONE_KEYPAD_APPROVALS_ENABLED is on: deny straight away.
       if (phonePermissionPolicy(inPhoneRoom()) === 'deny') {
         console.log(`📞 Phone call: denied ${toolName} (keypad approvals are off)`)
-        directLLM.respondToPermission(false, PHONE_PERMISSION_DENIED)
+        directLLM.respondToPermission(false, PHONE_PERMISSION_DENIED, requestId)
         return
       }
 
       // Check session always-allow list before showing dialog
       if (isAlwaysAllowed(sessionAllows, toolName, input)) {
         console.log(`✅ Session always-allow: ${toolName} ${input?.file_path || ''}`)
-        directLLM.respondToPermission(true)
+        directLLM.respondToPermission(true, undefined, requestId)
         return
       }
 
       const description = describePermission(toolName, input)
+      // What "Always" covers for this request (the button and the phone prompt say it).
+      const always = alwaysScope(toolName, input).label
 
       // Generate diff for Write/Edit/MultiEdit tools
       let diffString: string | undefined
@@ -4764,30 +4750,33 @@ async function main() {
       const auto = autoApproval(approvalMode, toolName, input, workingDir)
       if (auto.approve) {
         console.log(`⚡ Auto-approved (${approvalMode}, ${auto.tier}): ${toolName}`)
-        directLLM.respondToPermission(true)
-        sendToFrontend({ type: 'permission_auto_approved', toolName, input: data.input, description, diff: diffString, mode: approvalMode, tier: auto.tier })
+        directLLM.respondToPermission(true, undefined, requestId)
+        sendToFrontend({ type: 'permission_auto_approved', requestId, toolName, input: data.input, description, diff: diffString, mode: approvalMode, tier: auto.tier })
         return
       }
 
       // Phone call (keypad approvals on): read the request out; the keypad
       // answers it through settlePendingPermission, never the model (#363).
       if (inPhoneRoom()) {
+        phonePromptedRequestId = requestId
         void Promise.resolve((currentSession as any)?.say?.(phoneApprovalPrompt(toolName, input))).catch(() => {})
       }
 
       console.log(`🔍 perm payload: diff=${diffString ? `✅ ${diffString.length} chars` : '❌ NONE'} toolName=${toolName}`)
       sendToFrontend({
         type: 'permission_request',
+        requestId,
         toolName: data.toolName,
         input: data.input,
         description,
+        always,
         agentRole: 'direct',
         diff: diffString,
       })
       // Watch bridge (mobile Track 1): mirror this blocking question to the
       // wrist via Pushover. Fire-and-forget — dormant unless PUSHOVER_* env is
       // configured; web-UI answers always win (late wrist acks are no-ops).
-      void armPermissionPush({ toolName, description }).catch(() => {})
+      void armPermissionPush({ toolName, description, requestId }).catch(() => {})
       // Speak the descriptive request so user knows to respond
       //do not delete!! Leave this section commented out
       // say permission, request permission, ask for permission with session.say
@@ -5289,20 +5278,14 @@ async function main() {
     return currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
   }
 
-  // Settles whatever permission is pending (pendingPermissionHolder). The one
-  // answer path for the browser card, the watch bridge and the phone keypad.
-  // 'always_allow' also adds the request to the session's always-allow list.
-  // False when nothing is pending (already answered elsewhere).
-  function settlePendingPermission(answer: PermissionAnswer): boolean {
-    const target = pendingPermissionHolder()
-    if (!target) return false
-    const pending = target.getPendingPermission?.()
-    if (answer === 'always_allow' && pending) {
-      const added = recordAlwaysAllow(sessionAllows, pending.toolName, pending.input)
-      if (added) console.log(`🔒 Always-allow added for session: ${added}`)
-    }
-    target.respondToPermission(answer !== 'deny')
-    return true
+  // Settles the ONE request the answer was for (its requestId), on the live
+  // session or a parked warm brain. The one answer path for the browser card,
+  // the watch bridge, the phone keypad and a spoken yes/no. A late answer whose
+  // request is gone settles nothing, never a newer request. 'always_allow' also
+  // adds that request's scope (alwaysScope) to the session's always-allow list.
+  // False when that request is not pending (already answered elsewhere).
+  function settlePendingPermission(answer: PermissionAnswer, requestId: unknown): boolean {
+    return answerPending(pendingPermissionHolder(), answer, requestId, sessionAllows)
   }
 
   // wireRoomHandlers(room): register EVERY room.on(...) listener onto a fresh
@@ -5364,7 +5347,7 @@ async function main() {
     // Phone calls: keypad 2 denies the pending approval; 1 allows only once
     // PHONE_KEYPAD_APPROVALS_ENABLED is on. Only from the caller in an authorised phone room.
     room.on(RoomEvent.DtmfReceived, (_code: number, digit: string, participant: RemoteParticipant) => {
-      const outcome = handlePhoneKeypad({ sip: participant?.kind === ParticipantKind.SIP, inPhoneRoom: inPhoneRoom(), digit }, settlePendingPermission)
+      const outcome = handlePhoneKeypad({ sip: participant?.kind === ParticipantKind.SIP, inPhoneRoom: inPhoneRoom(), digit }, (answer) => settlePendingPermission(answer, phonePromptedRequestId))
       if (outcome !== 'ignored') console.log(`📞 Keypad ${digit}: ${outcome}`)
     })
   }
@@ -6517,7 +6500,7 @@ async function main() {
 
   /**
    * Runs one app command (a data-channel message whose sender already passed
-   * checkControlSender). The phone's voice actions (#367) and POST /action run
+   * checkControlSender). A phone call's voice actions (#367) run
    * the same code through here, restricted to PHONE_ACTION_TYPES. `reply`
    * receives what would go to the frontend (default: the room), so a call can
    * speak the result.
@@ -6569,10 +6552,13 @@ async function main() {
           }
         }
       } else if (data.type === 'permission_response') {
-        // The always-allow target comes from the pending request itself, not the sent filePath.
+        // Settles only the request the click was for (requestId); the always-allow
+        // scope comes from that pending request, not from anything the client sent.
         const answer = data.response
-        if ((answer === 'allow' || answer === 'deny' || answer === 'always_allow') && settlePendingPermission(answer)) {
+        if ((answer === 'allow' || answer === 'deny' || answer === 'always_allow') && settlePendingPermission(answer, data.requestId)) {
           console.log(`✅ Permission: ${answer}`)
+        } else {
+          console.log(`🚫 Permission ${answer} ignored: request ${String(data.requestId ?? 'unnamed')} is not pending`)
         }
       } else if (data.type === 'set_approval_mode') {
         // The app's approvals picker (#364). Saved on the agent, so phone calls and
@@ -7579,9 +7565,10 @@ async function main() {
   }
 
   /**
-   * Runs one PHONE_ACTION_TYPES command (a call's voice action, POST /action)
-   * and returns what it sent to the frontend; it still reaches the room, so an
-   * open app stays in step.
+   * Runs one PHONE_ACTION_TYPES command for a call's voice action and returns
+   * what it sent to the frontend; it still reaches the room, so an open app
+   * stays in step. Only the SIP caller's speech reaches it (takePhoneVoiceAction):
+   * there is no HTTP route, so the agent's own tools cannot change approvals.
    */
   const runAppAction = async (data: Record<string, unknown>): Promise<any[]> => {
     if (!PHONE_ACTION_TYPES.has(String(data?.type))) throw new Error(`not an allowed action: ${String(data?.type)}`)
@@ -7589,7 +7576,6 @@ async function main() {
     await dispatchAction(data, { reply: async (d, to) => { replies.push(d); return publishToRoom(d, to) } })
     return replies
   }
-  actionHook = runAppAction
 
   // Phone voice actions (#367): on a call, a short command ("stop that", "what
   // are you doing?", "switch to my billing project", a yes/no to a pending
@@ -7597,7 +7583,9 @@ async function main() {
   // is spoken. The model never answers an approval.
   function takePhoneVoiceAction(text: string): boolean {
     if (!inPhoneRoom()) return false
-    const action = matchVoiceAction(text, { permissionPending: !!pendingPermissionHolder() })
+    // A yes/no counts only for the request the caller heard read out.
+    const heard = !!phonePromptedRequestId && pendingPermissionHolder()?.getPendingPermission?.()?.requestId === phonePromptedRequestId
+    const action = matchVoiceAction(text, { permissionPending: heard })
     if (!action) return false
     console.log(`📞 Voice action: ${JSON.stringify(action)}`)
     void runPhoneVoiceAction(action)
@@ -7611,7 +7599,9 @@ async function main() {
     switch (action.kind) {
       case 'answer': {
         if (!phoneAnswerAllowed(action.answer)) return "I can't approve actions on a call yet. Approve it in the app, or say no to deny it."
-        await runAppAction({ type: 'permission_response', response: action.answer })
+        const requestId = phonePromptedRequestId
+        if (!requestId || pendingPermissionHolder()?.getPendingPermission?.()?.requestId !== requestId) return 'That request is no longer waiting.'
+        await runAppAction({ type: 'permission_response', response: action.answer, requestId })
         return action.answer === 'allow' ? 'Allowed.' : 'Denied.'
       }
       case 'mode': {

@@ -2,12 +2,14 @@
 // session always-allow list.
 // Run: npx tsx agent/tests/approval-policy.test.ts
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readApprovalMode, writeApprovalMode } from '../src/config.js'
 import {
+  alwaysScope,
+  answerPending,
   approvalModeAnnouncement,
   autoApproval,
   isApprovalMode,
@@ -35,7 +37,9 @@ t('describePermission keeps the browser card wording', () => {
 })
 
 t('phone prompt names the action in plain words and the three keys (#363)', () => {
-  assert.equal(phoneApprovalPrompt('Bash', { command: 'npm test' }), 'Osborn wants to run the command npm test. Press 1 to allow, 2 to deny, or 3 to always allow.')
+  assert.equal(phoneApprovalPrompt('Bash', { command: 'npm test' }), 'Osborn wants to run the command npm test. Press 1 to allow, 2 to deny, or 3 to always allow this exact command for this call.')
+  assert.match(phoneApprovalPrompt('Edit', { file_path: '/w/a.ts' }), /3 to always allow this file for this call\.$/)
+  assert.match(phoneApprovalPrompt('WebFetch', { url: 'https://x.dev' }), /3 to always allow this exact request for this call\.$/)
   assert.equal(speakablePermission('Edit', { file_path: '/home/sprite/workspace/src/index.ts' }), 'edit the file index.ts')
   assert.equal(speakablePermission('WebFetch', { url: 'https://docs.example.com/a?b=1' }), 'fetch a page from docs.example.com')
   assert.equal(speakablePermission('WebFetch', { url: 'not a url' }), 'fetch a web page')
@@ -45,18 +49,75 @@ t('phone prompt names the action in plain words and the three keys (#363)', () =
   assert.equal(speakablePermission('SomeTool', {}), 'use the SomeTool tool')
 })
 
-t('always allow: one file for the file tools, the whole tool otherwise', () => {
+t('always allow: this file, this exact command, the whole tool only for read-only tools, else this exact request', () => {
   const a = newSessionAllows()
-  assert.equal(recordAlwaysAllow(a, 'Edit', { file_path: '/w/a.ts' }), '/w/a.ts')
+  assert.equal(recordAlwaysAllow(a, 'Edit', { file_path: '/w/a.ts' }), 'path:/w/a.ts')
   assert.equal(isAlwaysAllowed(a, 'Edit', { file_path: '/w/a.ts' }), true)
   assert.equal(isAlwaysAllowed(a, 'Write', { file_path: '/w/a.ts' }), true, 'same file, any file tool')
   assert.equal(isAlwaysAllowed(a, 'Edit', { file_path: '/w/b.ts' }), false, 'another file still asks')
-  assert.equal(isAlwaysAllowed(a, 'Bash', { command: 'ls' }), false)
-  assert.equal(recordAlwaysAllow(a, 'Bash', { command: 'npm test' }), 'Bash')
-  assert.equal(isAlwaysAllowed(a, 'Bash', { command: 'rm -rf x' }), true, 'the same tool does not ask again')
-  assert.equal(isAlwaysAllowed(a, 'WebFetch', { url: 'https://x' }), false)
+  // Bash: the exact command only.
+  recordAlwaysAllow(a, 'Bash', { command: 'npm test', description: 'run tests' })
+  assert.equal(isAlwaysAllowed(a, 'Bash', { command: 'npm test', timeout: 5000 }), true, 'same command')
+  assert.equal(isAlwaysAllowed(a, 'Bash', { command: 'rm -rf x' }), false, 'another command still asks')
+  assert.equal(isAlwaysAllowed(a, 'Bash', { command: 'npm test && curl evil' }), false)
+  // Read-only tools: the whole tool.
+  recordAlwaysAllow(a, 'Grep', { pattern: 'x' })
+  assert.equal(isAlwaysAllowed(a, 'Grep', { pattern: 'y', path: '/etc' }), true)
+  // Everything else: the exact input (key order does not matter).
+  recordAlwaysAllow(a, 'WebFetch', { url: 'https://x', prompt: 'p' })
+  assert.equal(isAlwaysAllowed(a, 'WebFetch', { prompt: 'p', url: 'https://x' }), true)
+  assert.equal(isAlwaysAllowed(a, 'WebFetch', { url: 'https://evil', prompt: 'p' }), false)
+  recordAlwaysAllow(a, 'mcp__slack__send', { channel: 'a', text: 'hi' })
+  assert.equal(isAlwaysAllowed(a, 'mcp__slack__send', { channel: 'b', text: 'hi' }), false)
   assert.equal(recordAlwaysAllow(a, 'Write', {}), null, 'no file, nothing recorded')
-  assert.equal(isAlwaysAllowed(newSessionAllows(), 'Bash', {}), false, 'a new session starts empty')
+  assert.equal(recordAlwaysAllow(a, 'Bash', {}), null, 'no command, nothing recorded')
+  assert.equal(isAlwaysAllowed(newSessionAllows(), 'Read', {}), false, 'a new session starts empty')
+})
+t('answerPending settles only the request the answer names; a late answer never settles another', () => {
+  const holder = (requestId: string, toolName = 'Bash', input: any = { command: 'npm test' }) => {
+    let pending: any = { toolName, input, requestId }
+    const settled: boolean[] = []
+    return {
+      settled,
+      get pending() { return pending },
+      getPendingPermission: () => pending,
+      respondToPermission: (allow: boolean, _m?: string, id?: string) => {
+        if (!pending || (id !== undefined && id !== pending.requestId)) return false
+        settled.push(allow); pending = null; return true
+      },
+    }
+  }
+  const allows = newSessionAllows()
+  const a = holder('req-A')
+  assert.equal(answerPending(a, 'allow', 'req-A', allows), true)
+  assert.deepEqual(a.settled, [true])
+  // A late click for A, while B (a newer request, or a parked brain's) is pending: B is untouched.
+  const b = holder('req-B')
+  assert.equal(answerPending(b, 'allow', 'req-A', allows), false)
+  assert.equal(answerPending(b, 'always_allow', 'req-A', allows), false)
+  assert.deepEqual(b.settled, [])
+  assert.equal(b.pending?.requestId, 'req-B')
+  assert.equal(isAlwaysAllowed(allows, 'Bash', { command: 'npm test' }), false, 'a late Always records nothing')
+  // No id, or an empty one, settles nothing.
+  assert.equal(answerPending(b, 'deny', undefined, allows), false)
+  assert.equal(answerPending(b, 'deny', '', allows), false)
+  assert.equal(answerPending(null, 'deny', 'req-B', allows), false)
+  // The right id: Always records that request's scope.
+  assert.equal(answerPending(b, 'always_allow', 'req-B', allows), true)
+  assert.equal(isAlwaysAllowed(allows, 'Bash', { command: 'npm test' }), true)
+  assert.equal(isAlwaysAllowed(allows, 'Bash', { command: 'npm run build' }), false)
+})
+t('ClaudeLLM.respondToPermission refuses an answer for another request id', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src/claude-llm.ts'), 'utf-8')
+  assert.match(src, /respondToPermission\(allow: boolean, message\?: string, requestId\?: string\): boolean \{\s+[^\n]*\n\s+if \(requestId !== undefined && this\.#pendingPermission\?\.requestId !== requestId\) return false/)
+  assert.match(src, /const requestId = crypto\.randomUUID\(\)\s+this\.#pendingPermission = \{ toolName, input, requestId, resolve \}/)
+  assert.match(src, /emit\('permission_request', \{ toolName, input, requestId \}\)/)
+})
+t('alwaysScope labels what the Always button and keypad 3 cover', () => {
+  assert.equal(alwaysScope('Write', { file_path: '/w/a' }).label, 'this file')
+  assert.equal(alwaysScope('Bash', { command: 'ls' }).label, 'this exact command')
+  assert.equal(alwaysScope('Read', { file_path: '/w/a' }).label, 'every Read')
+  assert.equal(alwaysScope('Task', { prompt: 'x' }).label, 'this exact request')
 })
 
 // ── Approval mode on the agent (#364) ──
@@ -72,9 +133,10 @@ t('autoApproval: ask approves nothing, auto-review only low risk, allow-all ever
   ]
   const run = (mode: any) => cases.map(([tool, input]) => autoApproval(mode, tool, input, root).approve)
   assert.deepEqual(run('ask'), [false, false, false, false, false, false])
-  assert.deepEqual(run('auto-review'), [true, true, false, false, false, false])
+  assert.deepEqual(run('auto-review'), [false, true, false, false, false, false], 'a read outside the cwd is not low risk')
   assert.deepEqual(run('allow-all'), [true, true, true, true, true, true])
-  assert.equal(autoApproval('auto-review', 'Bash', { command: 'ls' }).tier, 'high')
+  assert.equal(autoApproval('auto-review', 'Bash', { command: 'ls' }, root).tier, 'high')
+  assert.equal(autoApproval('auto-review', 'Edit', { file_path: `${root}/.claude/settings.json` }, root).approve, false, 'agent settings are never auto-approved')
 })
 t('isApprovalMode accepts only the three modes', () => {
   for (const m of ['ask', 'auto-review', 'allow-all']) assert.equal(isApprovalMode(m), true, m)
@@ -114,6 +176,23 @@ t('the mode is saved in config.yaml, keeping the other keys; unreadable config i
     assert.match(saved, /workingDirectory: \/w/)
     assert.match(saved, /github:/)
     assert.equal(readApprovalMode(file), 'auto-review')
+    // Comments, key order and the file's permissions survive.
+    writeFileSync(file, '# my osborn config\nworkingDirectory: /w # where I work\napprovalMode: ask\n# trailing note\n')
+    chmodSync(file, 0o600)
+    assert.equal(writeApprovalMode('allow-all', file), true)
+    const kept = readFileSync(file, 'utf-8')
+    assert.match(kept, /^# my osborn config\nworkingDirectory: \/w # where I work\napprovalMode: allow-all\n/)
+    assert.match(kept, /# trailing note\n$/)
+    assert.equal(statSync(file).mode & 0o777, 0o600, 'keeps 0600')
+    chmodSync(file, 0o640)
+    assert.equal(writeApprovalMode('ask', file), true)
+    assert.equal(statSync(file).mode & 0o777, 0o640, 'keeps 0640')
+    writeFileSync(file, '')
+    assert.equal(writeApprovalMode('ask', file), true, 'an empty file becomes a map')
+    assert.equal(readApprovalMode(file), 'ask')
+    writeFileSync(file, 'a: [unclosed\n')
+    assert.equal(writeApprovalMode('allow-all', file), false, 'refuses YAML with errors')
+    assert.equal(readFileSync(file, 'utf-8'), 'a: [unclosed\n')
     writeFileSync(file, 'approvalMode: everything\n')
     assert.equal(readApprovalMode(file), 'ask', 'an unknown value reads as ask')
     writeFileSync(file, '- not\n- a map\n')

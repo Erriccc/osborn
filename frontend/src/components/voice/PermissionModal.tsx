@@ -3,6 +3,10 @@
 import { useState } from 'react'
 
 export interface PermissionRequest {
+  /** The agent's id for this request; the answer names it so a late click never settles another request. */
+  requestId?: string
+  /** What "Always" covers, from the agent: "this file", "this exact command", "every Read", "this exact request". */
+  always?: string
   toolName: string
   description: string
   input?: Record<string, unknown>
@@ -220,8 +224,10 @@ export function ApprovalCard({
                 Allow
               </button>
               <button onClick={() => onRespond('always_allow')}
+                title={permission.always ? `Always allow ${permission.always} for this session` : 'Always allow for this session'}
                 className="flex-1 min-h-11 px-3 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 rounded-xl transition-all text-white text-sm font-medium shadow-lg shadow-amber-500/20">
                 Always
+                {permission.always && <span className="block text-[10px] font-normal opacity-90 leading-tight">{permission.always}</span>}
               </button>
             </div>
           </div>

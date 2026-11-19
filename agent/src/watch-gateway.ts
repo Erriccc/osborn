@@ -127,6 +127,8 @@ export function startWatchGateway(opts: WatchGatewayOptions): { wss: WebSocketSe
           response: msg.allow ? 'allow' : 'deny',
           source: 'watch',
           qid: msg.qid,
+          // The question's qid is the agent's requestId: the answer settles only that request.
+          requestId: msg.qid,
         })
         void session.room.localParticipant
           ?.publishData(new TextEncoder().encode(payload), { reliable: true })
@@ -186,7 +188,7 @@ export function startWatchGateway(opts: WatchGatewayOptions): { wss: WebSocketSe
               // The watch shows a yes/no sheet for blocking questions.
               wsSendJson(ws, {
                 type: 'question',
-                qid: parsed.toolUseId ?? parsed.toolName ?? 'perm',
+                qid: parsed.requestId ?? parsed.toolUseId ?? parsed.toolName ?? 'perm',
                 text: parsed.description ?? `Use ${parsed.toolName}?`,
               })
             } else if (parsed?.type === 'agent_state' || parsed?.type === 'state') {

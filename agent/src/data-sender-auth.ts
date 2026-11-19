@@ -94,9 +94,10 @@ export const READ_ONLY_MESSAGE_TYPES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * App commands a phone caller's voice actions (#367) and POST /action may run
- * through dispatchAction (index.ts): the same code the app's buttons use.
- * Anything else is refused there.
+ * App commands a phone caller's voice actions (#367) may run through
+ * dispatchAction (index.ts): the same code the app's buttons use. Anything
+ * else is refused there. There is deliberately no HTTP route to these: the
+ * agent's own tools must never be able to loosen or answer its approvals.
  */
 export const PHONE_ACTION_TYPES: ReadonlySet<string> = new Set([
   'permission_response',

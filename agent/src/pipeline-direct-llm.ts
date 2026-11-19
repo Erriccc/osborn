@@ -276,7 +276,7 @@ export class PipelineDirectLLM extends llm.LLM {
   get workingDirectory(): string | undefined { return this.#opts.workingDirectory }
   get spawnedResumeId(): string | null { return this.#claudeLLM.spawnedResumeId }
   busyState() { return this.#claudeLLM.busyState() }
-  respondToPermission(allow: boolean, msg?: string) { this.#claudeLLM.respondToPermission(allow, msg) }
+  respondToPermission(allow: boolean, msg?: string, requestId?: string): boolean { return this.#claudeLLM.respondToPermission(allow, msg, requestId) }
   hasPendingPermission() { return this.#claudeLLM.hasPendingPermission() }
   getPendingPermission() { return this.#claudeLLM.getPendingPermission() }
   getMcpServers() { return this.#claudeLLM.getMcpServers() }
