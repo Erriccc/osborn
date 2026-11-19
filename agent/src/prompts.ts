@@ -1910,3 +1910,9 @@ export function buildGeminiContextPrompt(
 ): string {
   return FAST_BRAIN_SYSTEM_PROMPT
 }
+
+/** Deny reason the model reads when a tool needs approval during a phone call (keypad approvals off). */
+export const PHONE_PERMISSION_DENIED = 'Tools that need approval cannot be approved on a phone call. Tell the caller to approve it from the app.'
+
+/** Deny reason the model reads for any tool during a phone call (phone tools off): a call is talk-only. */
+export const PHONE_TOOLS_DENIED = 'Tools are off on a phone call: no reading files, running commands, searching the web or starting agents. Answer from what you already know, and tell the caller you cannot do that on a call and to use the app for it.'
