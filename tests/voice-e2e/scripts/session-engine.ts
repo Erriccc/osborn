@@ -74,7 +74,7 @@ import { attachDevtools, redactDiagnostics, type DevtoolsBuffer } from '../lib/d
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
-import { eventOwners, eventVisibleTo, isPersonDriver, ownerSeenBy, personMayTake, personOwns, seesTabOf, tabsFor } from '../lib/event-scope'
+import { canonicalDriverId, eventOwners, eventVisibleTo, isPersonDriver, ownerSeenBy, personMayTake, personOwns, seesTabOf, tabsFor } from '../lib/event-scope'
 import { buildJourneyState, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -265,7 +265,14 @@ async function main() {
     // A device context copies the profile's live sign-ins, or its saved file when no desktop tab has opened it.
     const signedIn = device ? contexts.get(key) : undefined
     const state = signedIn ? await signedIn.storageState().catch(() => undefined) : existsSync(file) ? file : undefined
-    const c = await browser.newContext({ ...(device ? devices[DEVICE_PRESETS[device]] : {}), permissions: ['microphone'], ...(state ? { storageState: state } : {}) })
+    const open = (s?: typeof state) => browser.newContext({ ...(device ? devices[DEVICE_PRESETS[device]] : {}), permissions: ['microphone'], ...(s ? { storageState: s } : {}) })
+    // An unreadable saved profile is moved aside and opens fresh, like the shared one at boot.
+    const c = await open(state).catch(async (e) => {
+      if (state !== file) throw e
+      try { renameSync(file, `${file}.bad`) } catch { /* ignore */ }
+      mark(`saved profile unreadable (${(e as Error).message.slice(0, 80)}) — moved aside, opening it fresh`)
+      return open()
+    })
     if (device) c.on('page', (p) => {
       pageDevice.set(p, device)
       p.once('close', () => {
@@ -736,7 +743,7 @@ async function main() {
   // + capture so two drivers can't interleave in the single Chromium. Each
   // driver acts on ITS OWN tab, never a shared global one — so a foreign
   // /dashboard tab can never bleed into your run again.
-  const driverId = (req: import('http').IncomingMessage): string => String(req.headers['x-driver-id'] || 'default')
+  const driverId = (req: import('http').IncomingMessage): string => canonicalDriverId(req.headers['x-driver-id'])
   // Which profile a request's new tabs open in: an explicit x-profile, else the panel's
   // signed-in person (driver id person:<email>), else the shared profile.
   const profileOf = (req: import('http').IncomingMessage): string => {
@@ -744,7 +751,7 @@ async function main() {
     // The engine token is the trust boundary: whoever holds it can drive any tab anyway.
     const named = String(req.headers['x-profile'] || '').trim().toLowerCase().replace(/\s+/g, ' ')
     if (named) return `agent:${named}`
-    const d = driverId(req).trim().toLowerCase()
+    const d = driverId(req)
     return d.startsWith('person:') && d.length > 7 ? d : ''
   }
   const driverActive = new Map<string, Page>()  // driver → its current tab
@@ -1091,6 +1098,22 @@ async function main() {
     console.log(`[engine] done — run artifacts in ${RUN_DIR}`)
     process.exit(0)
   }
+  // A deploy or restart stops the process mid-command (#324). Every open command is answered with
+  // a retryable 503 engine_restarting first, so the caller never gets the proxy's empty 502.
+  const openCommands = new Set<import('http').ServerResponse>()
+  const onStopSignal = (sig: NodeJS.Signals) => {
+    mark(`${sig} received — answering ${openCommands.size} open command(s) with engine_restarting`)
+    for (const r of openCommands) {
+      if (r.headersSent) continue
+      json(r, { ok: false, code: 'engine_restarting', retryable: true, retryAfterSec: 30, run: RUN_STAMP, ...(journey ? { journey: journey.name } : {}),
+        error: `the engine is restarting (${sig}) and this request did not finish — retry it in about 30s; an active journey is carried across the restart (/status shows previousRun and restartRecovered)` }, 503)
+    }
+    if (ending) return  // a graceful end is already on its way out
+    writeManifest()
+    setTimeout(() => process.exit(sig === 'SIGTERM' ? 143 : 130), 500)  // let the replies flush through the proxy
+  }
+  process.once('SIGTERM', onStopSignal)
+  process.once('SIGINT', onStopSignal)
   const server = createServer(async (req, res) => {
     try {
       const path = (req.url || '').split('?')[0]
@@ -1133,7 +1156,7 @@ async function main() {
       // /status is excluded (pollers/health checks must not keep it awake).
       if (path !== '/status') lastActivity = Date.now()
       // A command resumes paused capture and holds it until its response is done.
-      if (req.method === 'POST') { live?.resume(); inflight++; res.once('close', () => { inflight-- }); if (req.headers['x-driver-id']) driverSeen.set(driverId(req), Date.now()) }
+      if (req.method === 'POST') { live?.resume(); inflight++; openCommands.add(res); res.once('close', () => { inflight--; openCommands.delete(res) }); if (req.headers['x-driver-id']) driverSeen.set(driverId(req), Date.now()) }
       if (req.method === 'GET' && path === '/status') {
         // GROUND TRUTH, not cached flags — the old `inRoom: true` reported a
         // healthy room while the page sat on the "Session paused" idle screen.
@@ -1837,8 +1860,8 @@ async function main() {
           const nav = await gotoChecked(target, body.url)
           if ('status' in nav) return json(res, nav.body, nav.status)
           redirectedTo = nav.redirectedTo
-          active = target; touchTab(active)
-          await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
+          // The tab you navigate is the tab you work in: your next command and your working protection follow it.
+          await focusTab(driver, target); touchTab(target); mark(`tab navigate: ${body.url}`)
         }
         else if (body.op === 'switch') {
           const so = ownerOf(allPages()[body.i])
@@ -1863,7 +1886,7 @@ async function main() {
           const o = ownerOf(target)
           if (o && o !== body.owner) return json(res, { error: `tab ${body.i} already claimed by "${who(o)}"` }, 409)
           if (othersPerson(target)) return
-          tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() }); mark(`tab claim: ${body.i} by ${body.owner}`)
+          tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() }); touchTab(target); mark(`tab claim: ${body.i} by ${body.owner}`)
         }
         else if (body.op === 'release') {
           // Only the owner may release. (It used to be open to anyone, which
@@ -1941,16 +1964,27 @@ async function main() {
         }
         if (body.op === 'end') {
           if (!journey) return json(res, { error: 'no journey in progress' }, 400)
+          // Only its owner ends a journey while they are still sending commands; a journey whose
+          // owner went quiet for 10 minutes can be ended by anyone, so it never blocks the engine.
+          const ownerLive = (j: NonNullable<typeof journey>) => !!j.owner && j.owner !== body.owner && Date.now() - (driverSeen.get(j.owner) ?? 0) < 600000
+          return await withLock(async () => {
+          if (!journey) return json(res, { error: 'no journey in progress' }, 400)
+          if (ownerLive(journey)) return json(res, { ok: false, code: 'journey_owned', owner: ownerSeenBy(journey.owner, body.owner), error: `journey "${journey.name}" belongs to "${ownerSeenBy(journey.owner, body.owner)}", who is still working — only they can end it` }, 409)
           const steps = scenarioSteps.slice(journey.startStep)
           let saved: string | null = null
           if (body.save !== false && steps.length) {
             try { saved = saveJourney(host, journey.name, { goal: journey.goal ?? null, startUrl: journey.startUrl, auth: useAuth ? String(manifest.profile) : 'guest', savedAt: new Date().toISOString(), steps }) } catch { /* volume issue */ }
           }
           if (body.cleanup !== false) {
-            // This driver's tabs and unclaimed leftovers (popups), never another driver's work.
-            const me = driverId(req)
-            const busy = new Set([...driverActive.entries()].filter(([d]) => d !== me && isWorking(d)).map(([, t]) => t))
-            for (const p of allPages().slice(1)) if (ownerOf(p) === me || (!ownerOf(p) && !busy.has(p))) await p.close().catch(() => {})
+            // The journey owner's tabs and unclaimed leftovers (popups), never another driver's work.
+            // A tab the owner borrowed goes back to its previous owner; one borrowed from them stays.
+            const me = journey.owner ?? body.owner
+            const busy = (p: Page) => [...driverActive.entries()].some(([d, t]) => t === p && d !== me && isWorking(d))
+            for (const p of allPages().slice(1)) {
+              const tk = takeovers.get(p)
+              if (tk && ownerOf(p) === me) { endTakeover(p, tk, 'handed back at journey end'); continue }
+              if (ownerOf(p) === me || (!ownerOf(p) && !busy(p))) await p.close().catch(() => {})
+            }
             active = allPages()[0]
             await live?.retarget(active).catch(() => {})
             try { await active.setViewportSize({ width: 1280, height: 720 }) } catch { /* ignore */ }
@@ -1963,6 +1997,7 @@ async function main() {
           saveJourneyState('ended')  // #120: mark ended BEFORE null so a later boot won't resurrect it
           journey = null
           return json(res, done)
+          })
         }
         if (body.op === 'list') return json(res, { site: host, journeys: listJourneys(host) })
         return json(res, { error: 'op must be start | end | list' }, 400)
@@ -2031,36 +2066,42 @@ async function main() {
       if (path === '/end') {
         // The engine is shared: /end closes the caller's tabs, and shuts the engine down
         // only when no other driver still has a tab open (or with {"shutdown": true}).
+        // Who else is here is decided under the action lock, so it cannot change underneath.
         const driver = driverId(req)
         const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
-        const working = [...driverActive.keys()].filter((d) => d !== driver && isWorking(d))
-        const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
-        // A person never shuts the engine down under other drivers.
-        if (isPersonDriver(driver) && body.shutdown === true && others.length)
+        const done = await withLock(async () => {
+          const working = [...driverActive.keys()].filter((d) => d !== driver && isWorking(d))
+          const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
+          // A person never shuts the engine down under other drivers.
+          if (isPersonDriver(driver) && body.shutdown === true && others.length) return { refused: true as const, others }
+          if (!((others.length || body.keep === true) && body.shutdown !== true)) return { shutdown: true as const, others }  // keep: close my tabs, never stop the engine
+          let closed = 0, handedBack = 0
+          for (const [i, p] of allPages().entries()) {
+            const tk = takeovers.get(p)
+            // A tab of yours that someone borrowed is no longer handed back to you: you left.
+            if (tk?.prevOwner === driver) { tk.prevOwner = null; continue }
+            if (ownerOf(p) !== driver) continue
+            if (tk) {  // a tab taken over from someone goes back to them, not into the bin
+              endTakeover(p, tk, 'handed back at /end')
+              handedBack++
+            } else if (i === 0) { tabOwners.delete(p); endCastIf(p, 'released at /end') }  // tab 0 holds the voice room: release, never close
+            else { await p.close().catch(() => {}); closed++ }
+          }
+          driverActive.delete(driver)
+          if (active.isClosed()) active = allPages()[0]
+          await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState()
+          return { others, closed, handedBack }
+        })
+        const { others } = done
+        if ('refused' in done)
           return json(res, { ok: false, code: 'engine_in_use', otherCount: others.length, error: `${others.length} other driver(s) still use the browser engine, so it was not shut down and nothing was closed — use "Close my tabs" instead` }, 409)
-        if ((others.length || body.keep === true) && body.shutdown !== true) {  // keep: close my tabs, never stop the engine
-          const done = await withLock(async () => {
-            let closed = 0, handedBack = 0
-            for (const [i, p] of allPages().entries()) {
-              if (ownerOf(p) !== driver) continue
-              const tk = takeovers.get(p)
-              if (tk) {  // a tab taken over from someone goes back to them, not into the bin
-                endTakeover(p, tk, 'handed back at /end')
-                handedBack++
-              } else if (i === 0) { tabOwners.delete(p); endCastIf(p, 'released at /end') }  // tab 0 holds the voice room: release, never close
-              else { await p.close().catch(() => {}); closed++ }
-            }
-            driverActive.delete(driver)
-            if (active.isClosed()) active = allPages()[0]
-            await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState()
-            return { closed, handedBack }
-          })
+        if (!('shutdown' in done)) {
           void saveProfiles()
           mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
           // A person learns only how many others still use the engine, never who.
           const shownOthers = isPersonDriver(driver) ? null : others.map((o) => ownerSeenBy(o, driver))
           const forWhom = !others.length ? '' : shownOthers ? ` for ${shownOthers.join(', ')}` : ` for ${others.length} other driver(s)`
-          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running${forWhom} — pass {"shutdown": true} to stop it`, ...done, ...(shownOthers ? { others: shownOthers } : { otherCount: others.length }) })
+          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running${forWhom} — pass {"shutdown": true} to stop it`, closed: done.closed, handedBack: done.handedBack, ...(shownOthers ? { others: shownOthers } : { otherCount: others.length }) })
         }
         json(res, { ok: true, msg: 'shutting down' })
         void gracefulEnd('end requested')
