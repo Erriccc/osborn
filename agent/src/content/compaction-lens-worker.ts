@@ -13,6 +13,11 @@
  *       copy to <path> instead of content-profile.md and leaves the HWM alone.
  *   node compaction-lens-worker.js --library <sessionId> [--cwd <dir>] [--dry] [--out-dir <dir>]
  *       LIBRARY step only (manual / dry run). Takes the per-project lock itself.
+ *   node compaction-lens-worker.js --sweep [--exclude <id,id>] [--dry] [--max N]
+ *       CATCH-UP SWEEP only (lens-library-sweep.ts): the Library backlog of every session on the
+ *       machine plus the daily digests, newest first, capped. Takes the machine-wide sweep lock.
+ *       The agent also launches it shortly after start (argfile { sweep }) and after each
+ *       session-end run (the session-end argfile carries { sweep }; it runs after the steps).
  *   node compaction-lens-worker.js --content <sessionId> [--cwd <dir>] [--dry] [--research-refresh]
  *       CONTENT step (Stage A) only: manual / the per-project "Refresh research"
  *       backend. --dry = no ingest (still spends, capped). Takes the per-project lock.
@@ -26,14 +31,16 @@
  * refreshes + releases the per-project lock, always exits.
  */
 
-import { readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { runCompactionLens, type LensRunOptions } from './compaction-lens.js'
 import { resolveSessionDb } from './lens-db.js'
-import { acquireLock, refuseOutPath, releaseLock, resolveProjectDir, touchLock } from './lens-paths.js'
+import { acquireLock, libraryHomeDir, readSweepStatus, refuseOutPath, releaseLock, resolveProjectDir, touchLock, writeSweepStatus } from './lens-paths.js'
 import { logLine } from './lens-profile.js'
 import { runLibraryStep, type LibraryStepOptions } from './lens-library.js'
+import { errorLine, runLibrarySweep } from './lens-library-sweep.js'
 import { runContentStep } from './content-run.js'
+import type { SweepRequest } from './lens-launch.js'
 
 // ≤2 big windows + reduce at ≤6 min/call, then the library step (1 call ≤6 min + model meta),
 // then the content step (Stage A: ~10-18 small calls, ≤4 min each, capped in $).
@@ -41,11 +48,17 @@ const INCREMENTAL_TIMEOUT_MS = 45 * 60_000
 const BACKFILL_TIMEOUT_MS = 3 * 60 * 60_000
 const LIBRARY_TIMEOUT_MS = 15 * 60_000
 const CONTENT_TIMEOUT_MS = 20 * 60_000
+// The sweep stops starting pages after SWEEP_BUDGET_MS (60 min); one page call is ≤6 min.
+const SWEEP_TIMEOUT_MS = 80 * 60_000
 
 interface Job {
   opts: LensRunOptions
-  /** 'library' = the --library CLI entry: library step only. 'content' = the --content entry: content step only. */
-  kind?: 'lens' | 'library' | 'content'
+  /** 'library' = the --library CLI entry: library step only. 'content' = the --content entry: content step only. 'sweep' = sweep only. */
+  kind?: 'lens' | 'library' | 'content' | 'sweep'
+  /** Run the catch-up sweep (after the steps, if any). */
+  sweep?: SweepRequest & { dry?: boolean; max?: number; print?: boolean }
+  /** The launcher already took the machine-wide sweep lock for this worker. */
+  sweepLockHeld?: boolean
   /** Session-end launch: skip step 1 (the profile lens). */
   skipLens?: boolean
   library?: Pick<LibraryStepOptions, 'dry' | 'outDir'>
@@ -61,6 +74,18 @@ function argVal(argv: string[], flag: string): string | undefined {
 }
 
 function parseJob(argv: string[]): Job {
+  if (argv[0] === '--sweep') {
+    const max = Number(argVal(argv, '--max'))
+    const exclude = (argVal(argv, '--exclude') ?? '').split(',').map(s => s.trim()).filter(Boolean)
+    return {
+      opts: { sessionId: '', mode: 'incremental' },
+      kind: 'sweep',
+      sweep: { exclude, trigger: 'manual', dry: argv.includes('--dry'), max: Number.isFinite(max) && max > 0 ? max : undefined, print: true },
+      lockDir: null,
+      logDir: libraryHomeDir(),
+      timeoutMs: SWEEP_TIMEOUT_MS,
+    }
+  }
   if (argv[0] === '--content') {
     const sessionId = argv[1]
     if (!sessionId || sessionId.startsWith('--')) throw new Error('usage: --content <sessionId> [--cwd <dir>] [--dry] [--research-refresh]')
@@ -121,7 +146,7 @@ function parseJob(argv: string[]): Job {
     }
   }
   const argFile = argv[0]
-  let payload: { sessionId?: string; transcriptPath?: string; cwd?: string; lockDir?: string | null; skipLens?: boolean } = {}
+  let payload: { sessionId?: string; transcriptPath?: string; cwd?: string; lockDir?: string | null; skipLens?: boolean; sweep?: SweepRequest; sweepLockHeld?: boolean } = {}
   try {
     payload = JSON.parse(readFileSync(argFile, 'utf-8'))
   } finally {
@@ -131,17 +156,26 @@ function parseJob(argv: string[]): Job {
       /* ignore */
     }
   }
+  const sweep = payload.sweep && Array.isArray(payload.sweep.exclude) ? { exclude: payload.sweep.exclude.map(String), trigger: String(payload.sweep.trigger ?? 'launch') } : undefined
+  if (sweep && !payload.sessionId) {
+    // Standalone sweep (agent start, or a session end whose project was busy).
+    return { opts: { sessionId: '', mode: 'incremental' }, kind: 'sweep', sweep, sweepLockHeld: payload.sweepLockHeld === true, lockDir: null, logDir: libraryHomeDir(), timeoutMs: SWEEP_TIMEOUT_MS }
+  }
   const lockDir = payload.lockDir || null
   const logDir = lockDir || resolveProjectDir(payload.transcriptPath, payload.cwd)
   if (!payload.sessionId) throw Object.assign(new Error('payload missing sessionId'), { lockDir, logDir })
   return {
     opts: { sessionId: payload.sessionId, transcriptPath: payload.transcriptPath, cwd: payload.cwd, mode: 'incremental' },
     skipLens: payload.skipLens === true,
+    sweep,
     lockDir,
     logDir,
-    timeoutMs: INCREMENTAL_TIMEOUT_MS,
+    timeoutMs: INCREMENTAL_TIMEOUT_MS + (sweep ? SWEEP_TIMEOUT_MS : 0),
   }
 }
+
+/** Set while this worker holds the machine-wide sweep lock. */
+let sweepHome: string | null = null
 
 async function main(): Promise<number> {
   let job: Job | null = null
@@ -157,11 +191,16 @@ async function main(): Promise<number> {
     }
     lockDir = job.lockDir
     logDir = job.logDir
-    const sid = job.opts.sessionId.substring(0, 8)
+    const sid = job.opts.sessionId.substring(0, 8) || 'sweep'
+    const steps = job.kind !== 'sweep'
 
     const killer = setTimeout(() => {
       logLine(logDir, `session ${sid}: hard timeout — exiting`)
       if (lockDir) releaseLock(lockDir)
+      if (sweepHome) {
+        writeSweepStatus({ status: 'timeout', finishedAt: new Date().toISOString(), errors: [...(readSweepStatus(sweepHome)?.errors ?? []), { kind: 'timeout' }] }, sweepHome)
+        releaseLock(sweepHome)
+      }
       process.exit(2)
     }, job.timeoutMs)
     killer.unref()
@@ -169,7 +208,7 @@ async function main(): Promise<number> {
     const t0 = Date.now()
     let lensErr: unknown = null
     // Step 1 — content lens (skipped by the --library entry).
-    if (job.kind !== 'library' && job.kind !== 'content' && !job.skipLens) {
+    if (steps && job.kind !== 'library' && job.kind !== 'content' && !job.skipLens) {
       try {
         const r = await runCompactionLens({
           ...job.opts,
@@ -192,7 +231,7 @@ async function main(): Promise<number> {
     // Step 2 — library page for the period that just ended (per-compaction + --library only; never backfill).
     // runLibraryStep never throws; any failure is logged and the worker still exits cleanly.
     let libPeriod: Awaited<ReturnType<typeof runLibraryStep>>['period'] = null
-    if (job.opts.mode === 'incremental' && job.kind !== 'content') {
+    if (steps && job.opts.mode === 'incremental' && job.kind !== 'content') {
       if (lockDir) touchLock(lockDir)
       const lib = await runLibraryStep({
         sessionId: job.opts.sessionId,
@@ -205,10 +244,17 @@ async function main(): Promise<number> {
       logLine(logDir, `session ${sid}: library status=${lib.status} cost=$${lib.costUsd.toFixed(4)}${lib.page ? ` page=${lib.page}` : ''}`)
       if (job.kind === 'library') process.stdout.write(`${JSON.stringify({ status: lib.status, page: lib.page, index: lib.index, period: lib.period, cost: lib.costUsd, errors: lib.errors })}\n`)
       if (lib.status === 'written') libPeriod = lib.period
+      // The step's real outcome, on /health (the worker's own output goes nowhere).
+      if (job.kind !== 'library') {
+        writeSweepStatus({ lastStep: { at: new Date().toISOString(), session: sid, status: lib.status, ...(lib.period ? { period: lib.period.index } : {}), costUsd: lib.costUsd } })
+      }
+      if (lib.status === 'failed' || lib.status === 'model-error') {
+        writeSweepStatus({ workerError: { at: new Date().toISOString(), kind: `library-${lib.status}`, ref: sid, message: errorLine(lib.errors.join('; ')) } })
+      }
     }
     // Step 3 — content plan (Stage A) for the period (per-compaction + --content; never backfill / --library).
     // runContentStep never throws; the try is belt and braces so nothing here can fail the worker.
-    if (job.opts.mode === 'incremental' && job.kind !== 'library') {
+    if (steps && job.opts.mode === 'incremental' && job.kind !== 'library') {
       try {
         if (lockDir) touchLock(lockDir)
         const c = await runContentStep({
@@ -227,13 +273,39 @@ async function main(): Promise<number> {
         logLine(logDir, `content step error (ignored): ${err instanceof Error ? err.message : String(err)}`)
       }
     }
+    // Step 4 — catch-up sweep (agent start, after a session end, or --sweep). Never two at once:
+    // the machine-wide sweep lock is either handed over by the launcher or taken here.
+    if (job.sweep) {
+      const home = libraryHomeDir()
+      mkdirSync(home, { recursive: true })
+      // This session's steps are done: free its project for the next compaction run; the sweep
+      // takes each project's lock only while it writes a page there.
+      if (lockDir) releaseLock(lockDir)
+      lockDir = null
+      if (job.sweepLockHeld || acquireLock(home)) {
+        sweepHome = home
+        // A manual --sweep (print) is never held back by the cooldown.
+        const s = await runLibrarySweep({ exclude: job.sweep.exclude, trigger: job.sweep.trigger, dry: job.sweep.dry, maxPages: job.sweep.max, ...(job.sweep.print ? { cooldownMs: 0 } : {}) })
+        logLine(logDir, `session ${sid}: sweep status=${s.status} pages=${s.pagesWritten} digests=${s.digestsWritten} calls=${s.modelCalls} cost=$${s.costUsd.toFixed(4)} errors=${s.errors.length}`)
+        if (job.sweep.print) process.stdout.write(`${JSON.stringify(s)}\n`)
+      } else {
+        logLine(logDir, `session ${sid}: sweep skipped (another sweep is running)`)
+        if (job.sweep.print) process.stderr.write('sweep: another sweep is running\n')
+      }
+    }
     return lensErr ? 1 : 0
   } catch (err) {
     logLine(logDir, `worker error: ${err instanceof Error ? err.stack || err.message : String(err)}`)
     if (err instanceof Error && /^(backfill|library|content):/.test(err.message)) process.stderr.write(`${err.message}\n`)
+    // Visible on /health: a crashed worker no longer disappears into stdio 'ignore'.
+    writeSweepStatus({
+      ...(sweepHome ? { status: 'error' as const, finishedAt: new Date().toISOString() } : {}),
+      workerError: { at: new Date().toISOString(), kind: job?.kind ?? 'worker', message: errorLine(err) },
+    })
     return 1
   } finally {
     if (lockDir) releaseLock(lockDir)
+    if (sweepHome) releaseLock(sweepHome)
   }
 }
 

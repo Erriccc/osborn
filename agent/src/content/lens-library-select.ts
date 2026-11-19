@@ -90,7 +90,7 @@ export type PickResult =
 /**
  * The newest period not yet written, among (1) the tail when it is long enough
  * and (2) the last seam-closed group. At most one per run; older gaps are left to
- * a manual backfill so a compaction never triggers surprise spend.
+ * the capped catch-up sweep (lens-library-sweep.ts) so a compaction never triggers surprise spend.
  */
 export function pickLibraryPeriod(seg: Segmentation, isDone: (startRowId: number) => boolean, minSpanMs = DEFAULT_MIN_SPAN_MS): PickResult {
   if (!seg.tail && !seg.closed.length) return { period: null, reason: 'no-rows' }

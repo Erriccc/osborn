@@ -17,7 +17,7 @@ import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
 import { appendCompactionRecord, countTranscriptRows } from './compaction-log.js'
 import { getEmbedder } from './embedder.js'
-import { launchCompactionLens } from './content/lens-launch.js'
+import { launchCompactionLensWithRetry } from './content/lens-launch.js'
 import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve, basename } from 'node:path'
@@ -3183,7 +3183,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // ON by default; OSBORN_CONTENT_LENS=0|off|false|no disables. Spawn is sync + unref'd: never awaited.
                 try {
                   if (!['0', 'off', 'false', 'no'].includes((process.env.OSBORN_CONTENT_LENS || '').trim().toLowerCase())) {
-                    const cl = launchCompactionLens({ sessionId: input?.session_id || sessionId, transcriptPath: input?.transcript_path, cwd: this.#opts.workingDirectory })
+                    const cl = launchCompactionLensWithRetry({ sessionId: input?.session_id || sessionId, transcriptPath: input?.transcript_path, cwd: this.#opts.workingDirectory })
                     progress('Content lens', cl.status === 'spawned' ? 'background worker started' : cl.status)
                   }
                 } catch (clErr) {

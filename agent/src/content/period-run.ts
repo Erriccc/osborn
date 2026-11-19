@@ -16,7 +16,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { loadConversationRows, resolveSessionDb } from './lens-db.js'
-import { Budget, chat, getModelInfo, windowTokensFor } from './lens-model.js'
+import { Budget, chat, getModelInfo, modelCallFailed, windowTokensFor } from './lens-model.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { readCompactionBoundaries } from './lens-period-boundaries.js'
@@ -103,7 +103,7 @@ export async function runPeriodMap(o: PeriodOptions): Promise<PeriodRunReport> {
       }
     }
   } catch (e: any) {
-    r.errors.push(`model call failed: ${e?.message ?? e}`)
+    r.errors.push(modelCallFailed(e))
   }
   r.calls = budget.calls
   r.costUsd = +budget.spentUsd.toFixed(4)
