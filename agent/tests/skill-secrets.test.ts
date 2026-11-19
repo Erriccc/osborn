@@ -208,6 +208,15 @@ await t('browser-apply routes work history and education through CANDIDATE_* key
   assert.ok(/CANDIDATE_JOB_N_TITLE/.test(src) && /CANDIDATE_EDUCATION_N_/.test(src), 'work history is not routed through CANDIDATE_* keys')
 })
 
+// A detail said in conversation is not a checked record; once in the file it is
+// submitted to employers. The skill must keep the file the user's alone to write.
+await t('browser-apply never creates the secret file from conversation', () => {
+  const src = readFileSync(join(ROOT, 'agent/.claude/skills/browser-apply/SKILL.md'), 'utf8')
+  assert.ok(/never create, copy, write or edit it/.test(src), 'setup step does not forbid the model writing candidate.env')
+  assert.ok(/even when the user tells you their jobs, schools or dates in conversation/.test(src), 'conversation details are not excluded')
+  assert.ok(!/create it (?:from|with) (?:the )?details/i.test(src), 'skill tells the model to create the file from details')
+})
+
 // ---- helper: fixed secret file, no env overrides, loopback CDP, confirmed host, field types -----
 await t('browser-apply helper exists', () => {
   assert.ok(existsSync(HELPER), 'agent/.claude/skills/browser-apply/fill.mjs missing')
@@ -304,6 +313,32 @@ if (existsSync(HELPER)) {
       const up = async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/abc' }) })
       assert.match((await helper.checkReport('/x', fileEnv, up)).join('\n'), /cdp: reachable/)
       await assert.rejects(helper.checkReport('/x', { ...fileEnv, CANDIDATE_CDP_URL: 'http://203.0.113.5:9222' }, up), /loopback/)
+    })
+
+    // A file copied from the template and not filled in must fill nothing: otherwise
+    // "YOUR_EMPLOYER" is typed into a real application as the user's record.
+    await t('every template value is a placeholder: check lists it, never as set or extra', async () => {
+      const tpl = helper.parseEnv(readFileSync(join(ROOT, 'agent/.claude/skills/browser-apply/candidate.example.env'), 'utf8'))
+      const keys = Object.keys(tpl).filter(k => !helper.CONFIG_KEYS.includes(k))
+      assert.ok(keys.includes('CANDIDATE_JOB_1_COMPANY') && keys.includes('CANDIDATE_EMAIL'))
+      for (const k of keys) assert.ok(helper.isTemplatePlaceholder(tpl[k]), `${k}: template value is not recognised as a placeholder`)
+      assert.equal(helper.isTemplatePlaceholder(SYN.email), false)
+      const down = async () => { throw new Error('ECONNREFUSED') }
+      const out: string = (await helper.checkReport('/x', { ...tpl, CANDIDATE_PHONE: SYN.phone }, down)).join('\n')
+      noLeak(out)
+      assert.match(out, /set: CANDIDATE_PHONE\n/)
+      assert.match(out, /extra: \(none/)
+      assert.match(out, /placeholder: [^\n]*CANDIDATE_EMAIL[^\n]*CANDIDATE_JOB_1_COMPANY/)
+    })
+
+    await t('runFill refuses a template placeholder before connecting', async () => {
+      const calls = { fetch: 0 }
+      const deps = { log: () => {}, fetchImpl: async () => { calls.fetch++; throw new Error('should not fetch') } }
+      await assert.rejects(
+        helper.runFill(['--confirm-host', HOST, 'CANDIDATE_JOB_1_COMPANY', 'input'], { ...fileEnv, CANDIDATE_JOB_1_COMPANY: 'YOUR_EMPLOYER' }, deps),
+        /template placeholder/,
+      )
+      assert.equal(calls.fetch, 0)
     })
 
     await t('--confirm-host is required, must be a bare hostname, and other options are refused', () => {

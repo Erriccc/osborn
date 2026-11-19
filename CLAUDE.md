@@ -32,9 +32,9 @@ Frontend deploys to Railway (nixpacks, Node 22). Build: `cd frontend && npm inst
 
 ### Required Environment
 
-Agent needs: `agent/.env` with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, and at least one of `OPENAI_API_KEY` / `GOOGLE_API_KEY`. Optional: `SMITHERY_API_KEY` for cloud-hosted MCP servers (YouTube, GitHub via Smithery). Optional: `RECALL_API_KEY` for Zoom/Google Meet bot integration via Recall.ai.
+Agent needs: `agent/.env` with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, `SONIOX_API_KEY` (default STT and TTS, `config.ts` `DEFAULT_CONFIG`), and at least one of `OPENAI_API_KEY` / `GOOGLE_API_KEY`. Optional: `DEEPGRAM_API_KEY` only when `OSBORN_STT_PROVIDER`/`OSBORN_TTS_PROVIDER` selects Deepgram. Optional: `SMITHERY_API_KEY` for cloud-hosted MCP servers (YouTube, GitHub via Smithery). Optional: `RECALL_API_KEY` for Zoom/Google Meet bot integration via Recall.ai.
 
-Frontend needs: `frontend/.env.local` with `NEXT_PUBLIC_LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`. For cloud sandbox provisioning (optional): `DAYTONA_API_KEY`, `DAYTONA_API_URL`, `DAYTONA_PROXY_DOMAIN`, `DAYTONA_REGION`, plus the platform infra keys forwarded into sandboxes (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `DEEPGRAM_API_KEY`, `RECALL_API_KEY`, `SMITHERY_API_KEY`).
+Frontend needs: `frontend/.env.local` with `NEXT_PUBLIC_LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`. For cloud sandbox provisioning (optional): `DAYTONA_API_KEY`, `DAYTONA_API_URL`, `DAYTONA_PROXY_DOMAIN`, `DAYTONA_REGION`, plus the platform infra keys forwarded into sandboxes (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `SONIOX_API_KEY`, `DEEPGRAM_API_KEY`, `RECALL_API_KEY`, `SMITHERY_API_KEY`).
 
 ## Architecture
 

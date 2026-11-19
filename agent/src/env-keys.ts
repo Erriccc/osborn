@@ -28,8 +28,8 @@ export const AGENT_ENV_KEYS: AgentEnvKey[] = [
   { key: 'LIVEKIT_API_KEY', required: true, explicit: true, description: 'LiveKit API key.' },
   { key: 'LIVEKIT_API_SECRET', required: true, explicit: true, description: 'LiveKit API secret.' },
   // STT / inference (plugin-consumed unless noted)
-  { key: 'DEEPGRAM_API_KEY', required: true, explicit: false, description: 'Deepgram STT (LiveKit plugin).' },
-  { key: 'SONIOX_API_KEY', required: false, explicit: false, description: 'Soniox STT (LiveKit plugin).' },
+  { key: 'SONIOX_API_KEY', required: true, explicit: false, description: 'Soniox STT and TTS, the default voice pipeline (config.ts DEFAULT_CONFIG; LiveKit plugin) and meeting TTS.' },
+  { key: 'DEEPGRAM_API_KEY', required: false, explicit: false, description: 'Deepgram STT/TTS (LiveKit plugin); needed only when OSBORN_STT_PROVIDER or OSBORN_TTS_PROVIDER selects deepgram.' },
   { key: 'GROQ_API_KEY', required: false, explicit: true, description: 'Groq fast-brain inference.' },
   { key: 'FIREWORKS_API_KEY', required: false, explicit: true, description: 'Fireworks AI — fast-brain inference + embeddings (preferred over OpenRouter when set).' },
   { key: 'OPENAI_API_KEY', required: true, explicit: true, description: 'OpenAI realtime + pipeline.' },
@@ -66,9 +66,32 @@ export const REQUIRED_AGENT_ENV_KEYS: string[] = AGENT_ENV_KEYS
   .filter((k) => k.required)
   .map((k) => k.key)
 
-/** Return the required keys that are missing from the given env (default process.env). */
-export function missingRequiredEnv(env: NodeJS.ProcessEnv = process.env): string[] {
-  return REQUIRED_AGENT_ENV_KEYS.filter((k) => !env[k])
+/** The key each voice provider (voice-io.ts) reads, for providers this manifest lists. */
+export const VOICE_PROVIDER_KEYS: Record<string, string> = {
+  'soniox': 'SONIOX_API_KEY',
+  'deepgram': 'DEEPGRAM_API_KEY',
+  'deepgram-flux': 'DEEPGRAM_API_KEY',
+  'groq-whisper': 'GROQ_API_KEY',
+  'groq-orpheus': 'GROQ_API_KEY',
+  'openai': 'OPENAI_API_KEY',
+  'openai-whisper': 'OPENAI_API_KEY',
+}
+
+/**
+ * Return the required keys that are missing from the given env (default process.env).
+ * With `voice` (the resolved getDirectConfig providers), the STT/TTS key follows the providers in
+ * use instead of the Soniox default, so an OSBORN_STT_PROVIDER=deepgram machine asks for Deepgram.
+ */
+export function missingRequiredEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  voice?: { stt: string; tts: string },
+): string[] {
+  const keys = new Set(REQUIRED_AGENT_ENV_KEYS)
+  if (voice) {
+    keys.delete('SONIOX_API_KEY')
+    for (const p of [voice.stt, voice.tts]) if (VOICE_PROVIDER_KEYS[p]) keys.add(VOICE_PROVIDER_KEYS[p])
+  }
+  return [...keys].filter((k) => !env[k])
 }
 
 /**

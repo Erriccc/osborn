@@ -361,6 +361,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
   if (step === 3) {
     const validateStep3 = () => {
       const errs: Record<string, string> = {}
+      if (!config.sonioxApiKey) errs.sonioxApiKey = 'Required for speech-to-text and voice'
       if (config.voiceProvider === 'openai' && !config.openaiApiKey) {
         errs.openaiApiKey = 'Required for OpenAI voice'
       }
@@ -376,7 +377,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
         <ProgressBar currentStep={3} />
         <StepCard
           title="Voice Provider"
-          description="Choose OpenAI or Gemini for real-time voice. You need at least one."
+          description="Soniox turns speech into text and back. Then choose OpenAI or Gemini; you need at least one."
           onNext={validateStep3}
           onBack={back}
           onSkip={onSkip}
@@ -429,6 +430,16 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
               error={errors.googleApiKey}
             />
           )}
+
+          <ApiKeyInput
+            label="Soniox API Key"
+            value={config.sonioxApiKey}
+            onChange={(v) => updateConfig('sonioxApiKey', v)}
+            placeholder="Soniox key"
+            helpUrl="https://console.soniox.com"
+            helpLabel="Get from console.soniox.com"
+            error={errors.sonioxApiKey}
+          />
 
           <div className="pt-2 border-t border-gray-700/50">
             <ApiKeyInput

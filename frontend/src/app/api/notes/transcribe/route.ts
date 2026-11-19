@@ -10,8 +10,8 @@ import { createSupabaseServer } from '@/lib/supabase-server'
  * Safari/iOS) with the Content-Type header set by the browser.
  *
  * Provider: Deepgram /v1/listen (synchronous REST, `nova-2` + smart_format).
- * DEEPGRAM_API_KEY is a required platform key (env-keys.ts), already on
- * Railway. Soniox (the live-session STT) is async-job-shaped and a poor fit
+ * Needs DEEPGRAM_API_KEY on the frontend host (already on Railway); live
+ * sessions do not. Soniox (the live-session STT) is async-job-shaped and a poor fit
  * for a one-shot recording; Deepgram is the pre-existing key this path rides.
  *
  * Auth: signed-in only (key is paid). Caps: 15 MB body, 30s timeout.

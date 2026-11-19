@@ -169,7 +169,6 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     token,
-    url: process.env.LIVEKIT_URL,
     roomName,
     roomCode, // Return for display to user
     provider,

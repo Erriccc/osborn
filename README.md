@@ -180,9 +180,10 @@ LIVEKIT_API_SECRET=your-api-secret
 ANTHROPIC_API_KEY=your-anthropic-key      # Or rely on the Claude OAuth flow
 GOOGLE_API_KEY=your-google-key            # Recommended — Gemini Flash is fast brain primary
 OPENAI_API_KEY=your-openai-key            # At least one of OpenAI or Google required
-DEEPGRAM_API_KEY=your-deepgram-key        # STT for direct/pipeline modes
+SONIOX_API_KEY=your-soniox-key            # Default STT and TTS (pipeline voice)
 
 # Optional:
+DEEPGRAM_API_KEY=your-deepgram-key        # Only with OSBORN_STT_PROVIDER/OSBORN_TTS_PROVIDER=deepgram
 RECALL_API_KEY=your-recall-key            # Zoom / Google Meet bot integration
 SMITHERY_API_KEY=your-smithery-key        # Cloud MCP servers
 LIVEKIT_REMOTE_EOT_URL=...                # LiveKit Cloud remote turn detection
