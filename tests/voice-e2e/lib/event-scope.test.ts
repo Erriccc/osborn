@@ -60,8 +60,8 @@ assert.deepEqual(list(B).map((t) => t.owner), [null, 'person', AGENT, null, B], 
 assert.deepEqual(list(AGENT).map((t) => t.owner), owners, 'agents see every id')
 assert.equal(ownerSeenBy(null, B), null)
 // One spelling per driver (#243, #235): a person's id in any case or padding is one driver.
-assert.equal(canonicalDriverId(' Person:A@X.com '), A, 'person id: trimmed and lowercased')
-assert.equal(canonicalDriverId('PERSON:a@x.com'), A, 'person prefix in any case is a person')
+assert.equal(canonicalDriverId(' person:A@X.com '), A, 'person id: trimmed, email lowercased')
+assert.equal(canonicalDriverId('Person:Bot'), 'Person:Bot', 'the person: prefix is case-sensitive: other spellings are agent ids, unchanged')
 assert.equal(canonicalDriverId(' Muse-Parity '), 'Muse-Parity', 'agent ids keep their case')
 assert.equal(canonicalDriverId(undefined), 'default', 'no header')
 assert.equal(canonicalDriverId('   '), 'default', 'blank header')

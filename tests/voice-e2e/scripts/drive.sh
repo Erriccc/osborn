@@ -23,12 +23,12 @@ set -euo pipefail
 
 TOKEN="${BSR_TOKEN:-$(cat ~/osborn-backups/voice-e2e-engine-token.txt 2>/dev/null || true)}"
 # Parse the engine URL once with a real parser: scheme and host lowercased, query, fragment and
-# every trailing slash dropped, IPv6 brackets understood. A URL with user:pass@ or no http(s)
-# scheme is refused rather than guessed. PIN=1 only for a DNS name that is not loopback.
+# every trailing slash dropped, IPv6 brackets understood; no scheme means http://. A URL with
+# user:pass@ or a scheme other than http(s) is refused. PIN=1 only for a DNS name that is not loopback.
 PARSED=$(python3 - "${BSR_ENGINE:-https://osborn-voice-e2e-n.fly.dev/control}" <<'PY'
-import ipaddress, re, socket, sys, urllib.parse
+import ipaddress, sys, urllib.parse
 raw = sys.argv[1].strip()
-u = urllib.parse.urlsplit(raw)
+u = urllib.parse.urlsplit(raw if '://' in raw else 'http://' + raw)
 scheme = u.scheme.lower()
 if scheme not in ('http', 'https') or not u.hostname:
     sys.exit(f'drive.sh: BSR_ENGINE must be an http(s) URL with a host, got {raw!r}')
@@ -39,18 +39,11 @@ try:
 except ValueError:
     sys.exit(f'drive.sh: BSR_ENGINE has a bad port: {raw!r}')
 host = u.hostname
-def ip_of(h):
-    try:
-        return ipaddress.ip_address(h)
-    except ValueError:
-        pass
-    if re.fullmatch(r'[0-9.]+', h):  # short IPv4 forms such as 127.1
-        try:
-            return ipaddress.ip_address(socket.inet_aton(h))
-        except OSError:
-            return None
-    return None
-named = ip_of(host) is None and host != 'localhost' and not host.endswith('.localhost')
+try:
+    ipaddress.ip_address(host)
+    named = False
+except ValueError:
+    named = host != 'localhost' and not host.endswith('.localhost')
 shown = f'[{host}]' if ':' in host else host
 base = f"{scheme}://{shown}{f':{port}' if port else ''}{u.path.rstrip('/')}"
 print(base, host, port or (80 if scheme == 'http' else 443), 1 if named else 0)

@@ -3,13 +3,15 @@ export const isPersonDriver = (driver: string) => driver.startsWith('person:')
 
 /**
  * One spelling per driver, used for every ownership, working and profile check:
- * trimmed, and a person's id (an email) lowercased, so `Person:A@x.com` and
- * `person:a@x.com` are the same driver. No id is the default driver.
+ * trimmed, and a person's email lowercased, so `person:A@x.com` and
+ * `person:a@x.com` are the same driver. The `person:` prefix itself is matched
+ * as written (as isPersonDriver does), so agent ids are never changed. No id is
+ * the default driver.
  */
 export const canonicalDriverId = (raw: unknown): string => {
   const d = String(raw ?? '').trim().slice(0, 200)
   if (!d) return 'default'
-  return /^person:/i.test(d) ? d.toLowerCase() : d
+  return isPersonDriver(d) ? d.toLowerCase() : d
 }
 
 /**

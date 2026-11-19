@@ -496,7 +496,8 @@ async function main() {
 
   // Every reply, event and webhook is redacted like the public logs (#328); stored records stay raw for replay.
   const redactJson = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === 'string' ? redactDiagnostics(x) : x))
-  const json = (res: any, body: any, code = 200, raw = false) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(raw ? JSON.stringify(body) : redactJson(body)) }
+  // A reply already sent (an open command answered on SIGTERM, #324) is never written twice.
+  const json = (res: any, body: any, code = 200, raw = false) => { if (res.headersSent) return; res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(raw ? JSON.stringify(body) : redactJson(body)) }
   // goto with a clean error: 400 for a bad URL, 502 for a failed load (no ANSI codes),
   // and no error when the tab reached the page anyway (an interrupted-but-landed load).
   // Success carries redirectedTo when the tab settled on another URL of the same host
@@ -1102,7 +1103,6 @@ async function main() {
   const onStopSignal = (sig: NodeJS.Signals) => {
     mark(`${sig} received — answering ${openCommands.size} open command(s) with engine_restarting`)
     for (const r of openCommands) {
-      if (r.headersSent) continue
       json(r, { ok: false, code: 'engine_restarting', retryable: true, retryAfterSec: 30, run: RUN_STAMP, ...(journey ? { journey: journey.name } : {}),
         error: `the engine is restarting (${sig}) and this request did not finish — retry it in about 30s; an active journey is carried across the restart (/status shows previousRun and restartRecovered)` }, 503)
     }
@@ -2062,42 +2062,38 @@ async function main() {
       if (path === '/end') {
         // The engine is shared: /end closes the caller's tabs, and shuts the engine down
         // only when no other driver still has a tab open (or with {"shutdown": true}).
-        // Who else is here is decided under the action lock, so it cannot change underneath.
         const driver = driverId(req)
         const holders = (p: Page) => [ownerOf(p), takeovers.get(p)?.prevOwner].filter(Boolean) as string[]
-        const done = await withLock(async () => {
-          const working = [...driverActive.keys()].filter((d) => d !== driver && isWorking(d))
-          const others = [...new Set([...allPages().flatMap(holders), ...working].filter((o) => o !== driver))]
-          // A person never shuts the engine down under other drivers.
-          if (isPersonDriver(driver) && body.shutdown === true && others.length) return { refused: true as const, others }
-          if (!((others.length || body.keep === true) && body.shutdown !== true)) return { shutdown: true as const, others }  // keep: close my tabs, never stop the engine
-          let closed = 0, handedBack = 0
-          for (const [i, p] of allPages().entries()) {
-            const tk = takeovers.get(p)
-            // A tab of yours that someone borrowed is no longer handed back to you: you left.
-            if (tk?.prevOwner === driver) { tk.prevOwner = null; continue }
-            if (ownerOf(p) !== driver) continue
-            if (tk) {  // a tab taken over from someone goes back to them, not into the bin
-              endTakeover(p, tk, 'handed back at /end')
-              handedBack++
-            } else if (i === 0) { tabOwners.delete(p); endCastIf(p, 'released at /end') }  // tab 0 holds the voice room: release, never close
-            else { await p.close().catch(() => {}); closed++ }
-          }
-          driverActive.delete(driver)
-          if (active.isClosed()) active = allPages()[0]
-          await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState()
-          return { others, closed, handedBack }
-        })
-        const { others } = done
-        if ('refused' in done)
+        const othersNow = () => [...new Set([...allPages().flatMap(holders), ...[...driverActive.keys()].filter(isWorking)].filter((o) => o !== driver))]
+        const others = othersNow()
+        // A person never shuts the engine down under other drivers.
+        if (isPersonDriver(driver) && body.shutdown === true && others.length)
           return json(res, { ok: false, code: 'engine_in_use', otherCount: others.length, error: `${others.length} other driver(s) still use the browser engine, so it was not shut down and nothing was closed — use "Close my tabs" instead` }, 409)
-        if (!('shutdown' in done)) {
+        if ((others.length || body.keep === true) && body.shutdown !== true) {  // keep: close my tabs, never stop the engine
+          const done = await withLock(async () => {
+            let closed = 0, handedBack = 0
+            for (const [i, p] of allPages().entries()) {
+              const tk = takeovers.get(p)
+              // A tab of yours that someone borrowed is no longer handed back to you: you left.
+              if (tk?.prevOwner === driver) { tk.prevOwner = null; continue }
+              if (ownerOf(p) !== driver) continue
+              if (tk) {  // a tab taken over from someone goes back to them, not into the bin
+                endTakeover(p, tk, 'handed back at /end')
+                handedBack++
+              } else if (i === 0) { tabOwners.delete(p); endCastIf(p, 'released at /end') }  // tab 0 holds the voice room: release, never close
+              else { await p.close().catch(() => {}); closed++ }
+            }
+            driverActive.delete(driver)
+            if (active.isClosed()) active = allPages()[0]
+            await live?.retarget(active).catch(() => {}); await updateTabHud(); saveTabState()
+            return { others: othersNow(), closed, handedBack }  // who is still here, re-checked under the lock
+          })
           void saveProfiles()
-          mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${others.join(', ')}`)
+          mark(`end[${driver}]: closed ${done.closed}, handed back ${done.handedBack}; kept running for ${done.others.join(', ')}`)
           // A person learns only how many others still use the engine, never who.
-          const shownOthers = isPersonDriver(driver) ? null : others.map((o) => ownerSeenBy(o, driver))
-          const forWhom = !others.length ? '' : shownOthers ? ` for ${shownOthers.join(', ')}` : ` for ${others.length} other driver(s)`
-          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running${forWhom} — pass {"shutdown": true} to stop it`, closed: done.closed, handedBack: done.handedBack, ...(shownOthers ? { others: shownOthers } : { otherCount: others.length }) })
+          const shownOthers = isPersonDriver(driver) ? null : done.others.map((o) => ownerSeenBy(o, driver))
+          const forWhom = !done.others.length ? '' : shownOthers ? ` for ${shownOthers.join(', ')}` : ` for ${done.others.length} other driver(s)`
+          return json(res, { ok: true, msg: `closed your ${done.closed} tab(s)${done.handedBack ? `, handed back ${done.handedBack}` : ''}; the engine keeps running${forWhom} — pass {"shutdown": true} to stop it`, closed: done.closed, handedBack: done.handedBack, ...(shownOthers ? { others: shownOthers } : { otherCount: done.others.length }) })
         }
         json(res, { ok: true, msg: 'shutting down' })
         void gracefulEnd('end requested')

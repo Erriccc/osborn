@@ -357,7 +357,7 @@ export function BrowserPanel() {
   const inControl = !!me && (shownTakeover ? shownTakeover.by === me : shownOwner === me)
   const label = (d: string | null | undefined) => (d && d === me ? 'you' : d?.replace(/^person:/, '') ?? '')
   // The engine keeps a browser profile per signed-in person (lowercased driver id), else the shared one.
-  const profile = me?.startsWith('person:') ? me.slice(7).toLowerCase() : 'shared'
+  const profile = me?.startsWith('person:') ? me.slice(7) : 'shared'
   // No tab of your own (activeTab null, pageState 'none') shows the starters, like a blank tab.
   const blank = watching && !!status && (status.activeTab == null || blankPage(status.pageUrl))
 

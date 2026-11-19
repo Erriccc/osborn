@@ -199,14 +199,15 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 ## References (in the harness dir — read the one your workflow needs)
 - `references/harness-api.md` — every endpoint, journeys, env, self-hosting Fly
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
-- `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
+- `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
+- `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v56
 - **A deploy no longer drops your request silently.** A command in flight when the engine stops (a deploy or restart) gets `503 engine_restarting` with `retryable:true` and `retryAfterSec`, not an empty 502: wait, check `/status` (`restartRecovered`, `previousRun`) and send it again — the active journey carries over. `drive.sh say` re-attaches on it.
 - `/journey end` of another driver's journey is `409 journey_owned` while that driver is still sending commands (a journey whose owner went quiet for 10 minutes can still be ended). Cleanup closes the journey owner's tabs and hands back a tab they had taken over instead of closing it.
 - `/tab navigate` makes that tab your current tab: your next `/act` runs there. `x-driver-id` is trimmed and a `person:` id lowercased, so one driver is one driver whatever the spelling.
-- `drive.sh` parses `BSR_ENGINE` with a real URL parser: query, fragment and trailing slashes are dropped, scheme and host lowercased, IPv6 understood; a URL with `user:pass@` or without `http(s)://` is refused, and `BSR_IP` is ignored (with a warning) for an IP or loopback host.
+- `drive.sh` parses `BSR_ENGINE` with a real URL parser: query, fragment and trailing slashes are dropped, scheme and host lowercased, IPv6 understood, no scheme means `http://`; a URL with `user:pass@` or another scheme is refused, and `BSR_IP` is ignored (with a warning) for an IP or loopback host.
 
 ## What's new in v55
 - **The live view is private.** The public viewer (`https://<app>.fly.dev/`) and its `/stream` no longer follow whichever tab is fronted: they show only a tab a driver cast, else a "Nothing is being shared" frame. `/tab {"op":"cast","i":n}` shares one of YOUR tabs there (`409 not_your_tab` for anyone else's); `/tab {"op":"uncast"}` stops it (the caster or the tab's owner). Closing or releasing the tab stops it too. `/status.cast` and every `/tab` reply say which tab is cast. **Casting into a meeting: cast your tab first**, then point the canvas at the engine as before.
