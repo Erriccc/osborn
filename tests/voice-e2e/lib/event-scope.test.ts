@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { eventOwners, eventVisibleTo, tabsFor } from './event-scope'
+import { eventOwners, eventVisibleTo, ownerSeenBy, personMayTake, tabsFor } from './event-scope'
 
 const owners = [null, 'person:a@x.com', 'agent-1']
 const at = (i: number) => owners[i]
@@ -27,5 +27,17 @@ const list = (viewer: string) => tabsFor([0, 1, 2], at, (i) => urls[i], viewer)
 assert.deepEqual(list(A).map((t) => t.url), ['', 'https://a-private', ''], 'person: own URL only')
 assert.deepEqual(list(B).map((t) => t.url), ['', '', ''], 'another person: no URLs')
 assert.deepEqual(list('agent-1').map((t) => t.url), urls, 'agents keep URLs')
-assert.deepEqual(list(B).map((t) => t.owner), [null, A, 'agent-1'], 'owners stay listed, for takeover')
+assert.deepEqual(list(B).map((t) => t.owner), [null, 'person', 'agent-1'], 'another person is just "person"; agent ids stay')
+assert.deepEqual(list(A).map((t) => t.owner), [null, A, 'agent-1'], 'you see your own id')
+assert.deepEqual(list('agent-1').map((t) => t.owner), [null, A, 'agent-1'], 'agents see every id')
+assert.equal(ownerSeenBy(null, B), null)
+
+// A person may not take another person's tab, nor a tab in their profile, even released.
+assert.equal(personMayTake(B, A, 'person:a@x.com'), false, "another person's tab")
+assert.equal(personMayTake(B, null, 'person:a@x.com'), false, "a released tab in another person's profile")
+assert.equal(personMayTake(B, 'agent-1', ''), true, "an agent's tab (takeover)")
+assert.equal(personMayTake(B, null, ''), true, 'an unowned shared-profile tab')
+assert.equal(personMayTake(B, B, 'person:b@x.com'), true, 'your own tab')
+assert.equal(personMayTake('person:B@X.com', null, 'person:b@x.com'), true, 'your profile, any email case')
+assert.equal(personMayTake('agent-1', A, 'person:a@x.com'), true, 'agents are not limited here')
 console.log('event-scope: all assertions passed')

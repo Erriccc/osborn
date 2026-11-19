@@ -260,7 +260,7 @@ export function BrowserPanel() {
   // Control changes wait for queued input, so a hand-back can't overtake keystrokes sent just before it.
   const afterInput = <T,>(fn: () => Promise<T>) => { flushPending(); const run = inputChain.current.then(fn, fn); inputChain.current = run.catch(() => {}); return run }
   const takeControl = () => activeI != null && afterInput(() => post('tab', { op: 'takeover', i: activeI }, 'take control'))
-  // A takeover is handed back to the agent; a tab you opened is released.
+  // A takeover is handed back to the agent; a tab you opened (your sign-ins) is closed by the engine.
   const handBack = () => activeI != null && afterInput(() => post('tab', { op: shownTakeover ? 'handback' : 'release', i: activeI }, 'hand back'))
   // One request at a time, in order: a click then fast typing must not race.
   const sendNow = (body: Record<string, unknown>) => {
@@ -496,7 +496,7 @@ export function BrowserPanel() {
         inControl ? (
           <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
             <span><span className="font-semibold">You have control.</span> Click, type and scroll in the picture; Escape leaves it.{shownTakeover?.prevOwner ? ` ${label(shownTakeover.prevOwner)} is paused until you hand back.` : ''}</span>
-            <button onClick={handBack} disabled={!!busy} className="rounded-lg bg-emerald-500 px-3 py-1 font-medium text-black hover:bg-emerald-400 disabled:opacity-50">{shownTakeover ? 'I’m done, hand back' : 'Let agents use this tab'}</button>
+            <button onClick={handBack} disabled={!!busy} className="rounded-lg bg-emerald-500 px-3 py-1 font-medium text-black hover:bg-emerald-400 disabled:opacity-50">{shownTakeover ? 'I’m done, hand back' : 'I’m done, close this tab'}</button>
           </div>
         ) : shownTakeover ? (
           <div className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">{label(shownTakeover.by)} has control of this tab.</div>
