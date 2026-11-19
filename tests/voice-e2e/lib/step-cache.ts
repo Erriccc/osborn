@@ -89,11 +89,13 @@ async function brainPageFor(stagehand: BrainLike, page: Page): Promise<{ targetI
  * Cached natural-language action. Drop-in for `stagehand.act(instruction)`.
  * `stagehand` needs `.observe(instruction)` and `.act(actionOrInstruction)`.
  * It acts on `page`; if Stagehand cannot find that page it acts on its own active page.
+ * Once `signal` is aborted (the caller timed out) it never starts an action (#174).
  */
 export async function actWithCache(
   stagehand: BrainLike,
   page: Page,
   instruction: string,
+  signal?: AbortSignal,
 ): Promise<{ cached: boolean; healed: boolean; noop?: boolean; did?: string | null }> {
   const brainPage = await brainPageFor(stagehand, page)
   const on = brainPage ? { page: brainPage } : undefined
@@ -124,6 +126,7 @@ export async function actWithCache(
       else if (hit.target && now !== hit.target) { valid = false; console.log(`[step-cache] cached target CHANGED ("${hit.target}" → "${now}") — re-resolving`) }
     }
     if (valid) {
+      signal?.throwIfAborted()
       try {
         await stagehand.act(hit.action, on)
         hit.hits += 1
@@ -137,6 +140,7 @@ export async function actWithCache(
     }
   }
 
+  signal?.throwIfAborted()
   const observed = await stagehand.observe(instruction, on)
   const action = Array.isArray(observed) ? observed[0] : observed
   if (!action) {
@@ -146,6 +150,7 @@ export async function actWithCache(
     console.log(`[step-cache] NO-OP (${url.hostname}) — nothing to do for: "${instruction.slice(0, 60)}"`)
     return { cached: false, healed: false, noop: true, did: null }
   }
+  signal?.throwIfAborted()
   await stagehand.act(action, on)
   const newSel = (action as { selector?: string })?.selector
   store[key] = {

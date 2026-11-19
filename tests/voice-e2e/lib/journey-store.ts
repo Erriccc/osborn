@@ -116,6 +116,19 @@ export function decideRecovery(
 }
 
 /**
+ * A recovered journey has no owner, so nothing stops a `/journey start` from
+ * replacing it, and with it the steps done before the restart (#171). A start
+ * with the recovered journey's own name is the caller re-attaching: it
+ * continues that journey (keeping its steps) instead of starting a fresh one.
+ */
+export function continuesRecovered(
+  current: { name: string; owner?: string; recovered?: boolean } | null | undefined,
+  startName: string,
+): boolean {
+  return !!current?.recovered && !current.owner && current.name === startName
+}
+
+/**
  * RETRY DISCRIMINATOR for the Say step (#120). Distinguish a TRANSIENT gateway
  * failure (the engine process dropped the connection mid-request — Fly returns
  * an empty-body 502/503/504, or the socket resets with no HTTP status) from an

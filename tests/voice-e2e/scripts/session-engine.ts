@@ -75,7 +75,7 @@ import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
 import { canonicalDriverId, eventOwners, eventVisibleTo, isPersonDriver, ownerSeenBy, personMayTake, personOwns, seesTabOf, tabsFor } from '../lib/event-scope'
-import { buildJourneyState, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
+import { buildJourneyState, continuesRecovered, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const execFileP = promisify(execFile)
@@ -463,12 +463,25 @@ async function main() {
   const brain = async (i: string, p: Page = active) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
-    const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) > 0 ? Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) : 120000
+    // A value below 10s (say "120", meant as seconds) would time every act out at once.
+    const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) >= 10000 ? Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) : 120000
     let timer: ReturnType<typeof setTimeout> | undefined
+    // A timed-out call is fenced (#174): the abort stops it starting any action once the lock
+    // is free, only ITS brain is closed (never a replacement), and a late finish is logged.
+    const sh = stagehand
+    const fence = new AbortController()
+    const call = actWithCache(sh, p, i, fence.signal)
     try {
       return await Promise.race([
-        actWithCache(stagehand, p, i),
-        new Promise<never>((_, rej) => { timer = setTimeout(() => { brainAlive = false; brainError = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`; void stagehand?.close().catch(() => {}); rej(new Error(brainError)) }, BRAIN_TIMEOUT_MS) }),
+        call,
+        new Promise<never>((_, rej) => { timer = setTimeout(() => {
+          const why = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`
+          fence.abort(new Error(why))
+          call.then((r) => { if (!r.noop) mark(`brain: a timed-out act finished late and acted (${r.did ?? 'unknown action'}): "${i.slice(0, 60)}"`) }, () => {})
+          if (stagehand === sh) { brainAlive = false; brainError = why }
+          void sh.close().catch(() => {})
+          rej(new Error(why))
+        }, BRAIN_TIMEOUT_MS) }),
       ])
     }
     catch (e) {
@@ -991,7 +1004,7 @@ async function main() {
   // each track): /status carries `mission` so any other driver/deployer sees
   // the engine is claimed, and idle-stop HOLDS while a mission is active
   // (capped at 2h so a forgotten journey can't hold the machine forever).
-  let journey: { name: string; goal?: string; owner?: string; startStep: number; startTaskN: number; startUrl: string; startedAt: number } | null = null
+  let journey: { name: string; goal?: string; owner?: string; startStep: number; startTaskN: number; startUrl: string; startedAt: number; recovered?: boolean } | null = null
 
   // ── #120: JOURNEY SURVIVES AN ENGINE RESTART ───────────────────────────────
   // `journey` and `RUN_STAMP` are process-memory only. A mid-journey restart
@@ -1025,7 +1038,7 @@ async function main() {
         // redeploy must not lock other drivers out for up to 2h.
         const startStep = scenarioSteps.length
         scenarioSteps.push(...(decision.journey.steps ?? []))
-        journey = { name: decision.journey.name, goal: decision.journey.goal, owner: undefined, startStep, startTaskN: reqN, startUrl: decision.journey.startUrl, startedAt: decision.journey.startedAt }
+        journey = { name: decision.journey.name, goal: decision.journey.goal, owner: undefined, startStep, startTaskN: reqN, startUrl: decision.journey.startUrl, startedAt: decision.journey.startedAt, recovered: true }
         restoredFromRun = decision.previousRun ?? null
         manifest.previousRun = restoredFromRun
         saveJourneyState('active')
@@ -1954,6 +1967,15 @@ async function main() {
         body.owner = driverId(req)  // the mission owner is the caller, like a tab's (#193)
         const host = (() => { try { return new URL(active.url()).hostname } catch { return 'unknown' } })()
         if (body.op === 'start') {
+          if (continuesRecovered(journey, String(body.name || 'unnamed'))) {
+            // Re-attaching after a restart: the caller takes the recovered journey back, steps and all (#171).
+            journey!.owner = body.owner; journey!.recovered = false
+            if (body.goal) journey!.goal = body.goal
+            saveJourneyState('active')
+            const steps = scenarioSteps.length - journey!.startStep
+            mark(`journey continued after restart: ${journey!.name} [${journey!.owner}] — ${steps} step(s) kept`)
+            return json(res, { ok: true, continued: true, steps, journey, knownJourneys: listJourneys(host) })
+          }
           if (journey && journey.owner && body.owner !== journey.owner) return json(res, { error: `mission "${journey.name}" is active (owner: ${journey.owner}) — coordinate or wait for journey end`, mission: { name: journey.name, owner: journey.owner, startedAt: journey.startedAt } }, 409)
           journey = { name: String(body.name || 'unnamed'), goal: body.goal, owner: body.owner ? String(body.owner) : undefined, startStep: scenarioSteps.length, startTaskN: reqN, startUrl: active.url(), startedAt: Date.now() }
           saveJourneyState('active')  // #120: durable from the first moment

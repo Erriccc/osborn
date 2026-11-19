@@ -12,6 +12,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildJourneyState,
+  continuesRecovered,
   decideRecovery,
   isTransientSayFailure,
   retryDelayMs,
@@ -109,4 +110,24 @@ test('retryDelayMs: bounded exponential backoff', () => {
   assert.equal(retryDelayMs(3), 4000)
   assert.equal(retryDelayMs(10), 8000)   // capped
   assert.ok(retryDelayMs(2) >= retryDelayMs(1))
+})
+
+test('#171: steps persisted before a restart survive the file round trip and the recovered slice', () => {
+  const steps = [{ kind: 'tab', value: 'open https://example.com' }, { kind: 'eval', value: '1+1' }, { kind: 'say', value: 'hello' }]
+  const onDisk = JSON.parse(JSON.stringify(buildJourneyState('runA', 'active', { ...j, steps }, 2, 2, 9_000))) as JourneyStateFile
+  const d = decideRecovery(onDisk, { now: 10_000, currentRun: 'runB' })
+  // The engine's adoption: startStep is the length BEFORE the carried steps are pushed.
+  const scenarioSteps: Array<{ kind: string; value: string }> = [{ kind: 'eval', value: 'boot-time step' }]
+  const startStep = scenarioSteps.length
+  scenarioSteps.push(...(d.journey!.steps ?? []))
+  assert.deepEqual(scenarioSteps.slice(startStep), steps)
+})
+
+test('#171: a start naming the recovered journey continues it; anything else does not', () => {
+  const recovered = { name: 'pr156-retest', recovered: true }
+  assert.equal(continuesRecovered(recovered, 'pr156-retest'), true)
+  assert.equal(continuesRecovered(recovered, 'another'), false)
+  assert.equal(continuesRecovered({ ...recovered, owner: 'alice' }, 'pr156-retest'), false)  // already re-claimed
+  assert.equal(continuesRecovered({ name: 'pr156-retest', owner: 'alice' }, 'pr156-retest'), false)  // a live journey
+  assert.equal(continuesRecovered(null, 'pr156-retest'), false)
 })
