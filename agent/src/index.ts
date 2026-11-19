@@ -2277,12 +2277,7 @@ async function main() {
   const directConfig = getDirectConfig(config)
   console.log(`🎯 PIPELINE MODE: ${directConfig.stt.provider} STT → Claude Agent SDK + fast brain → ${directConfig.tts.provider} TTS`)
 
-  // Non-fatal diagnostic: surface any OTHER expected-required keys that are
-  // missing (per the shared env-keys.ts manifest — mirror of the frontend's
-  // platform-env.ts injection spec), with the STT/TTS key following the
-  // providers actually in use. The LiveKit trio above is the only hard-fail;
-  // the rest degrade gracefully, so we log rather than exit — but a missing
-  // STT key is the usual root cause of "voice works but nothing is heard".
+  // Non-fatal: the LiveKit trio above is the only hard-fail; the STT/TTS key follows the providers in use.
   const missingEnv = missingRequiredEnv(process.env, { stt: directConfig.stt.provider, tts: directConfig.tts.provider }).filter(
     (k) => !['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'].includes(k),
   )
