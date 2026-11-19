@@ -11,7 +11,8 @@
 import { findUserSandbox, startSandbox, checkOsbornHealth, restartService, waitForHealth } from '@/lib/cloud'
 
 export type ConnectAgentResult =
-  | { ok: true; roomName: string | null; agentUrl: string }
+  /** `callCode`: the agent waits for the emailed code before it takes the call (#362). */
+  | { ok: true; roomName: string | null; agentUrl: string; callCode?: boolean }
   /** `busy`: a user is in another room with the agent (phone calls only). */
   | { ok: false; reason: 'no-sandbox' | 'wake-failed' | 'busy' | 'unreachable'; agentUrl?: string }
 
@@ -72,8 +73,8 @@ export async function connectUserAgent(
       if (r.ok) {
         // The roomName the agent returns (0.9.83+ temporary rooms), so the
         // client mints its token for the room the agent actually joined.
-        const d = await r.json().catch(() => ({}))
-        return { ok: true, roomName: (d as { roomName?: string })?.roomName ?? null, agentUrl }
+        const d = (await r.json().catch(() => ({}))) as { roomName?: string; callCode?: unknown }
+        return { ok: true, roomName: d?.roomName ?? null, agentUrl, ...(roomName && d?.callCode === true ? { callCode: true } : {}) }
       }
       if (roomName && r.status === 409) return { ok: false, reason: 'busy', agentUrl }
       // A refusal (bad token, bad room) will not change on a retry; 408/429 are transient.

@@ -200,6 +200,14 @@ export const PHONE_KEYPAD_APPROVALS_ENABLED = false
  */
 export const PHONE_TOOLS_ENABLED = false
 
+/**
+ * Emailed code on a phone call (#362). On: a caller is not adopted (no voice
+ * session, no voice actions, no tools) until they type the 6-digit code the
+ * frontend emails to the account (phone-code.ts). Off: caller ID alone admits
+ * the call, as before. /connect-room tells the frontend to send the code.
+ */
+export const PHONE_EMAIL_CODE_ENABLED = false
+
 /** What happens to a permission raised during a phone call: denied unless keypad approvals are on. */
 export function phonePermissionPolicy(inPhoneCall: boolean, approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED): 'deny' | 'ask' {
   return inPhoneCall && !approvalsEnabled ? 'deny' : 'ask'
