@@ -66,6 +66,8 @@ export type LiveStream = {
   // The tab the public viewer and public /stream show (null: nothing is shared).
   setCast: (page: Page | null) => void
   castTab: () => Page | null
+  // Epoch ms of the newest frame recorded for one tab (null before its first).
+  tabFrameAt: (page: Page) => number | null
   // Stop/restart screen capture while the engine is idle (a viewer holds it on).
   pause: () => void
   resume: () => void
@@ -415,6 +417,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     serveFrames,
     setCast: (p: Page | null) => { cast = p; if (p) trackPage(p); reresolve() },
     castTab: castAlive,
+    tabFrameAt: (p: Page) => tabRecs.get(p)?.last || null,
     // With a page: that tab's own newest frame, else the live stream's frame only while
     // the screencast is attached to that very tab — never another tab's frame (#256).
     latestFrame: (p?: Page) => {

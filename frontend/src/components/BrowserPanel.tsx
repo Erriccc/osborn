@@ -42,7 +42,7 @@ type Status = {
   takeovers?: Array<{ i: number; by: string; prevOwner: string | null; since: number }>
   // The engine reports the active tab as { i, url }; older shapes used a bare
   // number/string. Handle both so the readout never renders "[object Object]".
-  activeTab?: number | string | { i?: number; url?: string }
+  activeTab?: number | string | { i?: number; url?: string } | null
   tabs?: Array<{ i: number; url: string }>
   lastFrameAgeMs?: number
   journey?: { name?: string; goal?: string } | string | null
@@ -349,7 +349,8 @@ export function BrowserPanel() {
   const label = (d: string | null | undefined) => (d && d === me ? 'you' : d?.replace(/^person:/, '') ?? '')
   // The engine keeps a browser profile per signed-in person (lowercased driver id), else the shared one.
   const profile = me?.startsWith('person:') ? me.slice(7).toLowerCase() : 'shared'
-  const blank = watching && !!status && blankPage(status.pageUrl)
+  // No tab of your own (activeTab null, pageState 'none') shows the starters, like a blank tab.
+  const blank = watching && !!status && (status.activeTab == null || blankPage(status.pageUrl))
 
   // Closing the page while in control hands the tab back instead of leaving the
   // agent paused (the engine also hands back after 10 idle minutes).
@@ -592,10 +593,10 @@ export function BrowserPanel() {
           Status, Page, Tab, Brain and Stream are unavailable — engine token not configured.
         </div>
       )}
-      {watching && !tokenMisconfigured && (!status || (status.pageState && status.pageState !== 'complete') || brainReady === false || (status.lastFrameAgeMs ?? 0) > 5000 || status.journey) && (
+      {watching && !tokenMisconfigured && (!status || (status.pageState && status.pageState !== 'complete' && status.pageState !== 'none') || brainReady === false || (status.lastFrameAgeMs ?? 0) > 5000 || status.journey) && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400 sm:grid-cols-4">
           {!status && <Field label="Engine" value="connecting…" />}
-          {status?.pageState && status.pageState !== 'complete' && <Field label="Page" value={status.pageState === 'interactive' ? 'loading' : status.pageState} tone={status.pageState === 'unresponsive' ? 'warn' : undefined} />}
+          {status?.pageState && status.pageState !== 'complete' && status.pageState !== 'none' && <Field label="Page" value={status.pageState === 'interactive' ? 'loading' : status.pageState} tone={status.pageState === 'unresponsive' ? 'warn' : undefined} />}
           {brainReady === false && <Field label="Agent clicks" value="unavailable (brain down)" tone="warn" />}
           {(status?.lastFrameAgeMs ?? 0) > 5000 && <Field label="Last frame" value={`${Math.round(status!.lastFrameAgeMs! / 1000)}s ago`} tone="warn" />}
           {status?.journey && <div className="col-span-2 sm:col-span-4"><span className="text-neutral-500">Journey </span><span className="text-neutral-300">{typeof status.journey === 'string' ? status.journey : status.journey?.name || status.journey?.goal || '—'}</span></div>}

@@ -69,12 +69,12 @@ import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, rec
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
-import { openTab, switchTab, closeTab, listTabs, ownDefaultTab } from '../lib/tabs'
+import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
 import { attachDevtools, redactDiagnostics, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
-import { eventOwners, eventVisibleTo } from '../lib/event-scope'
+import { eventOwners, eventVisibleTo, isPersonDriver, tabsFor } from '../lib/event-scope'
 import { buildJourneyState, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -749,6 +749,9 @@ async function main() {
   }
   const driverActive = new Map<string, Page>()  // driver → its current tab
   let castBy: string | null = null  // who cast the tab the public live view shows
+  // Any ownership change (release, takeover, handback, /end) ends a cast of that tab, so
+  // a person who takes control is never broadcast; the new owner can cast it again.
+  const endCastIf = (p: Page, why: string) => { if (live?.castTab() === p) { live.setCast(null); castBy = null; mark(`cast ended: ${why}`) } }
   // The driver's own tab: its current one, else the newest tab it owns.
   const driverTab = (driver: string): Page | undefined => {
     const t = driverActive.get(driver)
@@ -760,11 +763,14 @@ async function main() {
   // People in the /browser panel (driver person:<email>) see only their own tabs, tasks,
   // logs and audio. Token-holding agents keep the full view: a tester's supervisor reviews
   // the tester's clips and tabs.
-  const isPerson = (driver: string) => driver.startsWith('person:')
+  const isPerson = isPersonDriver
   const seesTab = (driver: string, p: Page) => !isPerson(driver) || ownerOf(p) === driver
   const seesTask = (driver: string, t: any) => !isPerson(driver) || !t?.tab?.owner || t.tab.owner === driver
   // The driver's current tab only while it is theirs: what their /status, /stream and /audio show.
   const ownedTab = (driver: string): Page | null => { const t = driverTab(driver); return t && ownerOf(t) === driver ? t : null }
+  // The tab list and one tab as `viewer` may see them (/status and every /tab reply).
+  const tabListFor = (viewer: string) => tabsFor(allPages(), ownerOf, (p) => p.url(), viewer).map((t) => ({ ...t, ...deviceOf(allPages()[t.i]) }))
+  const tabSeenBy = (viewer: string, p: Page | null) => (!p ? null : seesTab(viewer, p) ? activeTab(p) : { ...activeTab(p), url: '' })
   // When each driver last sent a command: a driver counts as still working for 10 minutes.
   const driverSeen = new Map<string, number>()
   const isWorking = (d: string) => Date.now() - (driverSeen.get(d) ?? 0) < 600000 && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
@@ -817,6 +823,7 @@ async function main() {
       if (Date.now() - (tk.seen ?? tk.since) < TAKEOVER_IDLE_MS) continue
       takeovers.delete(p)
       if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+      endCastIf(p, 'idle handback')
       mark(`tab HANDBACK (idle takeover by ${tk.by}): ${allPages().indexOf(p)}`); saveTabState()
       notify('handback', { i: allPages().indexOf(p), by: tk.by, owner: tk.prevOwner, url: p.url(), reason: 'idle' })
     }
@@ -1129,7 +1136,8 @@ async function main() {
         let pageState = 'unresponsive'
         let idlePaused = false
         try {
-          if (!shown) throw new Error('no tab of yours')
+          if (!shown) pageState = 'none'  // a person with no tab of their own: nothing to show, not frozen
+          else {
           pageUrl = shown.url()
           pageState = (await Promise.race([
             shown.evaluate(() => document.readyState),
@@ -1137,8 +1145,10 @@ async function main() {
           ])) as string
           if (pageState !== 'unresponsive')
             idlePaused = await shown.evaluate(() => /session paused/i.test(document.body?.innerText || '')).catch(() => false)
-        } catch { /* page dead, or none of yours */ }
-        const lastFrame = live?.lastFrameAt() ?? null
+          }
+        } catch { /* page dead */ }
+        // A person's stream is their own tab's recording, so its age is that tab's.
+        const lastFrame = isPerson(viewer) ? (shown ? live?.tabFrameAt(shown) ?? null : null) : live?.lastFrameAt() ?? null
         return json(res, {
           build: ENGINE_BUILD, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
           // #49: the in-app Browser panel (PR #51 proxy) and any watcher can see
@@ -1160,7 +1170,7 @@ async function main() {
           activeTab: shown ? { i: allPages().indexOf(shown), url: shown.url() } : null,
           cast: live?.castTab() ? { i: allPages().indexOf(live.castTab()!), by: castBy } : null,
           // Another driver's tab is listed (so it can be taken over) without its URL.
-          tabs: listTabs(tabs).map((t) => ({ i: t.index, url: seesTab(viewer, allPages()[t.index]) ? t.url : '', ...deviceOf(allPages()[t.index]) })), marks: isPerson(viewer) ? [] : marks.slice(-12),
+          tabs: tabListFor(viewer), marks: isPerson(viewer) ? [] : marks.slice(-12),
         })
       }
       if (req.method === 'GET' && path === '/stream') {
@@ -1719,7 +1729,7 @@ async function main() {
         if (['switch', 'close', 'claim', 'release', 'takeover', 'handback', 'cast'].includes(body.op) && !(body.op === 'close' && body.i == null) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
-        if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(callerTab(driver)), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
+        if (body.op === 'list') return json(res, { ok: true, activeTab: tabSeenBy(driver, isPerson(driver) ? ownedTab(driver) : callerTab(driver)), tabs: tabListFor(driver) })
         // Serialized with /act and /say so a tab change never lands mid-action.
         const noOwnTab = (what: string) => json(res, { ok: false, code: 'no_own_tab', error: `you have no tab of your own to ${what} — open one with /tab {"op":"open","url":…}, or pass "i" (/tab {"op":"list"} shows the tabs)` }, 409)
         let redirectedTo: string | null = null
@@ -1737,18 +1747,23 @@ async function main() {
               const pages = allPages()
               const cand = pages.find((p, idx) => { try { return idx > 0 && pageProfile.get(p) === profileOf(req) && pageDevice.get(p) === device && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
               if (cand) {
+                // Owned BEFORE the load, so its navigation and console events are scoped to the caller.
+                const was = tabOwners.get(cand)
+                tabOwners.set(cand, { owner: String(body.owner), claimedAt: Date.now() })
                 const nav = await gotoChecked(cand, body.url)
                 // The reused tab tried the URL and failed: say so, and which tab now shows the error (#316).
-                if ('status' in nav) return json(res, { ...nav.body, reusedTab: allPages().indexOf(cand) }, nav.status)
+                if ('status' in nav) { if (was) tabOwners.set(cand, was); else tabOwners.delete(cand); return json(res, { ...nav.body, reusedTab: allPages().indexOf(cand) }, nav.status) }
                 active = cand; reused = true; redirectedTo = nav.redirectedTo
               }
             } catch { /* fall through to a fresh tab */ }
           }
           if (!reused) {
             const prev = active
-            active = await openTab(await contextFor(profileOf(req), device)); watchPage(active)
+            active = await openTab(await contextFor(profileOf(req), device))
+            tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })  // before its first event
+            watchPage(active)
             const nav = body.url ? await gotoChecked(active, body.url) : { redirectedTo: null }
-            if ('status' in nav) { await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
+            if ('status' in nav) { tabOwners.delete(active); await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
             redirectedTo = nav.redirectedTo
           }
           if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
@@ -1807,11 +1822,12 @@ async function main() {
           const o = ownerOf(target)
           if (o && o !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: o, error: `tab ${body.i} is owned by "${o}" — only its owner can release it; use {"op":"takeover"} to borrow it` }, 409)
           tabOwners.delete(target); takeovers.delete(target); mark(`tab release: ${body.i}`)
-          if (live?.castTab() === target) { live.setCast(null); castBy = null }  // a released tab is no longer shared
+          endCastIf(target, 'released')
         }
         else if (body.op === 'cast') {
           // Share one of YOUR tabs on the public live view and its /stream (a meeting's camera).
           const target = allPages()[body.i]
+          if (allPages().indexOf(target) === 0) return json(res, { ok: false, code: 'room_tab', error: 'tab 0 holds the voice room and is never cast — open your own tab and cast that' }, 409)
           if (ownerOf(target) !== body.owner) return json(res, { ok: false, code: 'not_your_tab', owner: ownerOf(target), error: `tab ${body.i} is not yours — you can cast only a tab you opened or took over` }, 409)
           if (!live) return json(res, { ok: false, code: 'stream_unavailable', error: 'the live stream is not running in this engine' }, 503)
           live.setCast(target); castBy = String(body.owner); mark(`tab cast: ${body.i} by ${body.owner}`)
@@ -1829,7 +1845,7 @@ async function main() {
           takeovers.set(target, { by: String(body.owner), prevOwner: prev, since: Date.now() })
           tabOwners.set(target, { owner: String(body.owner), claimedAt: Date.now() })
           // A person taking control may sign in: never broadcast it. The owner re-casts after handback.
-          if (live?.castTab() === target) { live.setCast(null); castBy = null; mark(`tab uncast: ${body.i} (taken over)`) }
+          endCastIf(target, 'taken over')
           touchTab(target); await focusTab(driver, target)
           mark(`tab TAKEOVER: ${body.i} by ${body.owner}${prev ? ` (from ${prev})` : ''}`)
           notify('takeover', { i: body.i, by: body.owner, prevOwner: prev })
@@ -1841,6 +1857,7 @@ async function main() {
           if (tk.by !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: tk.by, error: `tab ${body.i} was taken over by "${tk.by}" — only they can hand it back` }, 409)
           takeovers.delete(target)
           if (tk.prevOwner) tabOwners.set(target, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(target)
+          endCastIf(target, 'handed back')
           driverActive.delete(driver)
           mark(`tab HANDBACK: ${body.i} by ${body.owner}${tk.prevOwner ? ` → ${tk.prevOwner}` : ''}`)
           notify('handback', { i: body.i, by: body.owner, owner: tk.prevOwner, url: target.url() })
@@ -1853,7 +1870,7 @@ async function main() {
         }
         await updateTabHud(); saveTabState()
         notify('tab', { op: body.op, activeTab: activeTab(), tabCount: allPages().length })
-        return json(res, { ok: true, activeTab: activeTab(), ...(redirectedTo ? { redirectedTo } : {}), cast: live?.castTab() ? allPages().indexOf(live.castTab()!) : null, tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
+        return json(res, { ok: true, activeTab: tabSeenBy(driver, active), ...(redirectedTo ? { redirectedTo } : {}), cast: live?.castTab() ? allPages().indexOf(live.castTab()!) : null, tabs: tabListFor(driver) })
         })
       }
       if (path === '/journey') {
@@ -1943,6 +1960,8 @@ async function main() {
         // global active tab — i.e. whatever another driver fronted last, even
         // mid-/act — so one driver's recover could wipe another's page.
         const driver = driverId(req)
+        // A person with no tab of their own must never reload tab 0 (the voice room) by fallback.
+        if (isPerson(driver) && !ownedTab(driver)) return json(res, { ok: false, code: 'no_own_tab', error: 'you have no tab of your own to reload' }, 409)
         return await withLock(async () => {
           await focusDriverTab(driver)
           const owned = guardOwnership(driver)
@@ -1971,8 +1990,9 @@ async function main() {
               if (tk) {  // a tab taken over from someone goes back to them, not into the bin
                 takeovers.delete(p)
                 if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+                endCastIf(p, 'handed back at /end')
                 handedBack++
-              } else if (i === 0) tabOwners.delete(p)  // tab 0 holds the voice room: release, never close
+              } else if (i === 0) { tabOwners.delete(p); endCastIf(p, 'released at /end') }  // tab 0 holds the voice room: release, never close
               else { await p.close().catch(() => {}); closed++ }
             }
             driverActive.delete(driver)

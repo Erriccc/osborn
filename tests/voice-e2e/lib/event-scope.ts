@@ -1,3 +1,14 @@
+/** A person in the /browser panel: the engine scopes what they can read to their own tabs. */
+export const isPersonDriver = (driver: string) => driver.startsWith('person:')
+
+/**
+ * The engine's tab list as `viewer` may see it: a person sees other drivers'
+ * tabs (so they can be taken over) without their URL; everyone else sees all.
+ */
+export function tabsFor<P>(pages: P[], ownerOf: (p: P) => string | null | undefined, urlOf: (p: P) => string, viewer: string) {
+  return pages.map((p, i) => ({ i, url: !isPersonDriver(viewer) || ownerOf(p) === viewer ? urlOf(p) : '', owner: ownerOf(p) ?? null }))
+}
+
 /**
  * Who an engine event is about, so /events can scope it per caller.
  *
@@ -19,5 +30,5 @@ export function eventOwners(payload: Record<string, any>, ownerAtIndex: (i: numb
  * events about their own tabs; every other driver gets everything, as before.
  */
 export function eventVisibleTo(owners: string[], driver: string): boolean {
-  return !driver.startsWith('person:') || owners.length === 0 || owners.includes(driver)
+  return !isPersonDriver(driver) || owners.length === 0 || owners.includes(driver)
 }

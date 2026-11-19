@@ -85,6 +85,7 @@ Every failure reply is `{ok:false, code, error, ...}`.
 | 400 | `bad_url` | a malformed or non-http(s) URL for `/tab open` or `navigate` (checked before any tab opens or moves) |
 | 400 | `bad_request` | a missing or invalid field |
 | 409 | `no_own_tab` | `/tab close` or `navigate` with no `i`, and you own no tab besides tab 0; `/audio` for a /browser panel person with no tab |
+| 409 | `room_tab` | `/tab cast` of tab 0 (the voice room) |
 | 403 | `not_your_task` | `/clip` or `/artifact` of another driver's task, asked by a /browser panel person (`x-driver-id: person:…`) |
 | 409 | `tab_owned` | the tab belongs to another driver (`/act`, `/say`, `/eval`, `/shot`, `/recover`, `/tab navigate\|release`) |
 | 409 | `not_your_tab` | `/input`, `/stream?tab=i` or `/tab cast` on a tab you neither opened nor took over; `/tab uncast` of someone else's cast |
@@ -101,4 +102,4 @@ Every failure reply is `{ok:false, code, error, ...}`.
 - `/shot` returns `ok:true`, `task` and `evidence`; the base64 image only with `"inline":true` (or `?inline=1`). A screenshot that times out uses the tab's own recorded frame or fails: never another tab's frame.
 - Signed `/media` links answer `GET` and `HEAD`.
 - **Person scoping.** A caller whose `x-driver-id` is `person:<email>` (the /browser panel) sees only their own tabs: `/status` reports their tab as `activeTab`/`pageUrl` (null/empty with none), lists other tabs with `url:""` and no `marks`; `/tasks`, `/logs`, `/audio`, `/clip` and `/artifact` cover only their tabs and tasks (a task on an unowned tab is visible to all). `/events` sends them engine-wide events (status, room, brain), events on unowned tabs and events about their own tabs, never another driver's navigations, tasks or takeovers. Any other driver id, including no header (`default`), keeps the full view.
-- **Takeover ends a cast** of that tab. The cast is saved with the tab layout and restored after a restart.
+- **Any ownership change ends a cast** of that tab (takeover, handback, idle handback, release, `/end`). For a person, every `/tab` reply blanks other drivers' tab URLs like `/status`; with no own tab `/status` reports `activeTab:null`, `pageState:"none"` and `lastFrameAgeMs:null` (for a person it is their own tab's newest frame), and `/recover` is `409 no_own_tab`. `/tab open` owns the tab before it loads, so its load events never reach other people. The cast is saved with the tab layout and restored after a restart.

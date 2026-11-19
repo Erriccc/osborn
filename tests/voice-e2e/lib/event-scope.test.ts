@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { eventOwners, eventVisibleTo } from './event-scope'
+import { eventOwners, eventVisibleTo, tabsFor } from './event-scope'
 
 const owners = [null, 'person:a@x.com', 'agent-1']
 const at = (i: number) => owners[i]
@@ -21,4 +21,11 @@ assert.equal(eventVisibleTo(['agent-1'], B), false, "an agent's tab")
 assert.equal(eventVisibleTo([B, A], A), true, 'a takeover of your tab')
 assert.equal(eventVisibleTo([A], 'agent-1'), true, 'agents keep the full feed')
 assert.equal(eventVisibleTo([A], 'default'), true, 'no x-driver-id keeps the full feed')
+// Tab lists: a person sees other drivers' tabs without their URL; agents see all.
+const urls = ['https://room', 'https://a-private', 'https://agent']
+const list = (viewer: string) => tabsFor([0, 1, 2], at, (i) => urls[i], viewer)
+assert.deepEqual(list(A).map((t) => t.url), ['', 'https://a-private', ''], 'person: own URL only')
+assert.deepEqual(list(B).map((t) => t.url), ['', '', ''], 'another person: no URLs')
+assert.deepEqual(list('agent-1').map((t) => t.url), urls, 'agents keep URLs')
+assert.deepEqual(list(B).map((t) => t.owner), [null, A, 'agent-1'], 'owners stay listed, for takeover')
 console.log('event-scope: all assertions passed')
