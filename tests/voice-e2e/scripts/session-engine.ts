@@ -814,15 +814,20 @@ async function main() {
   // a 409 that says "paused, retry" (not "open your own tab"), and handback
   // restores its ownership so it resumes exactly where the supervisor left it.
   const takeovers = new Map<Page, { by: string; prevOwner: string | null; since: number; seen?: number }>()
+  // A takeover ends (handback, idle, /end, a person's release): the tab goes back to its
+  // previous owner, or to nobody, and any cast of it ends.
+  const endTakeover = (p: Page, tk: { prevOwner: string | null }, why: string) => {
+    takeovers.delete(p)
+    if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
+    endCastIf(p, why)
+  }
   // A person who closes the panel while in control must not pause the agent
   // forever: a takeover with no input for 10 minutes is handed back.
   const TAKEOVER_IDLE_MS = 10 * 60 * 1000
   setInterval(() => {
     for (const [p, tk] of takeovers) {
       if (Date.now() - (tk.seen ?? tk.since) < TAKEOVER_IDLE_MS) continue
-      takeovers.delete(p)
-      if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
-      endCastIf(p, 'idle handback')
+      endTakeover(p, tk, 'idle handback')
       mark(`tab HANDBACK (idle takeover by ${tk.by}): ${allPages().indexOf(p)}`); saveTabState()
       notify('handback', { i: allPages().indexOf(p), by: tk.by, owner: tk.prevOwner, url: p.url(), reason: 'idle' })
     }
@@ -1747,9 +1752,7 @@ async function main() {
         }
         // A takeover goes back to the tab's previous owner (the handback op, and a person's release).
         const handBackTab = (target: Page, tk: { by: string; prevOwner: string | null }) => {
-          takeovers.delete(target)
-          if (tk.prevOwner) tabOwners.set(target, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(target)
-          endCastIf(target, 'handed back')
+          endTakeover(target, tk, 'handed back')
           driverActive.delete(driver)
           mark(`tab HANDBACK: ${allPages().indexOf(target)} by ${tk.by}${tk.prevOwner ? ` → ${tk.prevOwner}` : ''}`)
           notify('handback', { i: allPages().indexOf(target), by: tk.by, owner: tk.prevOwner, url: target.url() })
@@ -2024,9 +2027,7 @@ async function main() {
               if (ownerOf(p) !== driver) continue
               const tk = takeovers.get(p)
               if (tk) {  // a tab taken over from someone goes back to them, not into the bin
-                takeovers.delete(p)
-                if (tk.prevOwner) tabOwners.set(p, { owner: tk.prevOwner, claimedAt: Date.now() }); else tabOwners.delete(p)
-                endCastIf(p, 'handed back at /end')
+                endTakeover(p, tk, 'handed back at /end')
                 handedBack++
               } else if (i === 0) { tabOwners.delete(p); endCastIf(p, 'released at /end') }  // tab 0 holds the voice room: release, never close
               else { await p.close().catch(() => {}); closed++ }

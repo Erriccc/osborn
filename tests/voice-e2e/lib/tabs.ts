@@ -18,10 +18,6 @@ export async function openTab(context: BrowserContext, url?: string): Promise<Pa
   return page
 }
 
-export function listTabs(context: BrowserContext): { index: number; url: string; title: Promise<string> }[] {
-  return context.pages().map((p, index) => ({ index, url: p.url(), title: p.title().catch(() => '') }))
-}
-
 /** Switch focus (and the live-stream view) to a tab by index or predicate. */
 export async function switchTab(
   context: BrowserContext,
