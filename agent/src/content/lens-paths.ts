@@ -6,6 +6,9 @@
 import {
   closeSync,
   existsSync,
+  fstatSync,
+  linkSync,
+  mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -13,12 +16,14 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
   writeSync,
 } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 
 export const PROFILE_FILE = 'content-profile.md'
 export const LOCK_FILE = '.content-lens.lock'
@@ -170,13 +175,276 @@ export function refuseOutPath(outPath: string | undefined, projectDir?: string |
   return null
 }
 
+/** Owner-only file written via tmp + rename. */
+function writePrivateAtomic(p: string, text: string): void {
+  const tmp = `${p}.${process.pid}.tmp`
+  writeFileSync(tmp, text, { mode: 0o600 })
+  renameSync(tmp, p)
+}
+
 /** Monotonic: never moves the mark backwards. Atomic write via rename. */
 export function writeHwm(projectDir: string, sessionId: string, lastRowId: number, lastTs?: string): void {
   const all = readHwmFile(projectDir)
   if ((all[sessionId]?.lastRowId ?? 0) >= lastRowId) return
   all[sessionId] = { lastRowId, lastTs, updatedAt: new Date().toISOString() }
-  const p = join(projectDir, HWM_FILE)
-  const tmp = `${p}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(all, null, 2), { mode: 0o600 })
-  renameSync(tmp, p)
+  writePrivateAtomic(join(projectDir, HWM_FILE), JSON.stringify(all, null, 2))
+}
+
+// ── Short read-modify-write lock on a shared file (the spend ledger, the sweep status) ──
+
+const FILE_LOCK_STALE_MS = 30_000
+const FILE_LOCK_WAIT_MS = 50
+const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+const lockToken = () => `${process.pid}.${randomBytes(8).toString('hex')}`
+
+/**
+ * Remove `path` if it is stale: rename it to a unique name (only ONE caller's
+ * rename can succeed), check the renamed file is the same stale file we judged
+ * (inode, mtime, content), and put it back with link() if a fresh one was
+ * swapped in (link fails rather than clobbers). True only to the caller that
+ * removed a stale file; any error = keep waiting.
+ */
+function removeIfStale(path: string): boolean {
+  let seen: { ino: number; mtimeMs: number; body: string }
+  try {
+    const fd = openSync(path, 'r')
+    try {
+      const st = fstatSync(fd)
+      if (Date.now() - st.mtimeMs <= FILE_LOCK_STALE_MS) return false
+      seen = { ino: st.ino, mtimeMs: st.mtimeMs, body: readFileSync(fd, 'utf-8') }
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return false // vanished between calls
+  }
+  const claimed = `${path}.stale.${process.pid}.${randomBytes(6).toString('hex')}`
+  try {
+    renameSync(path, claimed)
+  } catch {
+    return false // another caller claimed it first
+  }
+  let same = false
+  try {
+    const st = statSync(claimed)
+    same = st.ino === seen.ino && st.mtimeMs === seen.mtimeMs && readFileSync(claimed, 'utf-8') === seen.body
+  } catch {
+    /* treat as not ours */
+  }
+  if (!same) {
+    try {
+      linkSync(claimed, path) // a live file was swapped in: restore it
+    } catch {
+      /* a newer one already exists */
+    }
+  }
+  try {
+    unlinkSync(claimed)
+  } catch {
+    /* already gone */
+  }
+  return same
+}
+
+/**
+ * Claim a stale ledger lock. The judge-then-rename step runs under a short
+ * `<lock>.reap` guard so two waiters can never both act on one stale lock (or
+ * rename away the fresh lock the other just created). A guard left by a crash
+ * goes stale too and is removed the same way.
+ */
+function claimStaleLock(lock: string): boolean {
+  const guard = `${lock}.reap`
+  let g: number
+  try {
+    g = openSync(guard, 'wx')
+  } catch {
+    removeIfStale(guard)
+    return false
+  }
+  const token = lockToken()
+  try {
+    writeSync(g, token)
+    return removeIfStale(lock)
+  } catch {
+    return false
+  } finally {
+    closeSync(g)
+    releaseOwnedLock(guard, token)
+  }
+}
+
+/** Release only a lock this holder owns (its token is still in the file). */
+function releaseOwnedLock(lock: string, token: string): void {
+  try {
+    if (readFileSync(lock, 'utf-8') === token) unlinkSync(lock)
+  } catch {
+    /* already gone */
+  }
+}
+
+/**
+ * Run `fn` under a short `wx` lock file holding a unique token (stale after 30s, claimed via
+ * rename so only one waiter can remove it). Returns false, without running `fn`, when the lock
+ * could not be taken in `tries` attempts; an fs error other than EEXIST throws.
+ */
+export function withFileLock(lock: string, fn: () => void, tries: number): boolean {
+  for (let i = 0; i < tries; i++) {
+    let fd: number
+    try {
+      fd = openSync(lock, 'wx')
+    } catch (e: any) {
+      if (e?.code !== 'EEXIST') throw e
+      if (claimStaleLock(lock)) continue // we removed the stale lock: retry the wx create now
+      sleepSync(FILE_LOCK_WAIT_MS)
+      continue
+    }
+    const token = lockToken()
+    try {
+      writeSync(fd, token)
+      fn()
+      return true
+    } finally {
+      closeSync(fd)
+      releaseOwnedLock(lock, token)
+    }
+  }
+  return false
+}
+
+// ── Machine-wide Library sweep: lock, log and status (one dir per machine) ──
+
+export const SWEEP_STATUS_FILE = 'library-sweep-status.json'
+
+/** <claudeDir>/osb-library: the sweep's lock (LOCK_FILE), log (LOG_FILE), status file and the daily digests. */
+export function libraryHomeDir(): string {
+  return join(claudeDir(), 'osb-library')
+}
+
+export interface SweepError {
+  /** 'period' | 'digest' | 'scan' | 'worker' | 'timeout' | 'spawn' */
+  kind: string
+  /** 8-char session id or a YYYY-MM-DD day. Never a path. */
+  ref?: string
+  /** Redacted, one line. Kept in the file only; /health shows kind + ref. */
+  message?: string
+}
+
+export interface SweepStatus {
+  status: 'running' | 'done' | 'disabled' | 'no-key' | 'cooldown' | 'error' | 'timeout' | 'died'
+  trigger: string
+  at: string
+  /** null while a sweep runs (the previous run's end is cleared, its backlog kept). */
+  finishedAt?: string | null
+  pid?: number
+  pagesWritten: number
+  digestsWritten: number
+  modelCalls: number
+  costUsd: number
+  /** True when the per-run cap or time budget stopped the run with work left. */
+  capHit?: boolean
+  errors: SweepError[]
+  /** Unwritten work left after this run: eligible periods, past days with undigested short chats, and today's short chats (digested tomorrow). */
+  backlog?: { periods: number; digestDays: number; todayChats: number }
+  /** Outcome of the last per-session Library step (session end / compaction), from the worker itself. */
+  lastStep?: { at: string; session: string; status: string; period?: number; costUsd: number }
+  /** Last failure of ANY Library worker (crash, or a session-end page that failed). */
+  workerError?: { at: string; kind: string; ref?: string; message?: string }
+}
+
+export function readSweepStatus(home = libraryHomeDir()): SweepStatus | null {
+  try {
+    const s = JSON.parse(readFileSync(join(home, SWEEP_STATUS_FILE), 'utf-8')) as SweepStatus
+    if (!s || typeof s !== 'object') return null
+    // "running" with no live process: the worker crashed or was killed before writing its result.
+    if (s.status === 'running' && s.pid) {
+      try {
+        process.kill(s.pid, 0)
+      } catch (e: any) {
+        if (e?.code === 'ESRCH') return { ...s, status: 'died' }
+      }
+    }
+    return s
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Merge `patch` into the status file (atomic). Only the patch's own fields change: the sweep and a
+ * session-end worker write different fields of the same file, so the read-merge-write runs under a
+ * short exclusive lock (withFileLock) and never loses the other's
+ * fields. Never throws.
+ */
+export function writeSweepStatus(patch: Partial<SweepStatus>, home = libraryHomeDir()): void {
+  const path = join(home, SWEEP_STATUS_FILE)
+  const merge = () => {
+    let prev: Partial<SweepStatus> = {}
+    try {
+      prev = JSON.parse(readFileSync(path, 'utf-8'))
+    } catch {
+      /* first write */
+    }
+    // Only the fields the patch sets: an undefined one never wipes the previous value (e.g. the backlog while a sweep runs).
+    const set = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
+    const next = { ...prev, ...set, errors: (patch.errors ?? prev.errors ?? []).slice(0, 20) }
+    writePrivateAtomic(path, JSON.stringify(next, null, 2) + '\n')
+  }
+  try {
+    mkdirSync(home, { recursive: true })
+    if (!withFileLock(`${path}.lock`, merge, 10)) merge() // lock still held: write anyway, the status is best-effort
+  } catch {
+    /* status is best-effort */
+  }
+}
+
+/** A sweep does not start within this long of the last one finishing (agent start and every session end launch one). */
+export const SWEEP_COOLDOWN_MS = 30 * 60_000
+
+/**
+ * True while the last sweep ended (done, timeout, error or died) less than `cooldownMs` ago,
+ * measured from its finishedAt, else its start (a sweep that died never wrote finishedAt).
+ */
+export function sweepCoolingDown(cooldownMs = SWEEP_COOLDOWN_MS, home = libraryHomeDir()): boolean {
+  const s = readSweepStatus(home)
+  if (!s || !['done', 'timeout', 'error', 'died'].includes(s.status)) return false
+  const at = Date.parse(s.finishedAt ?? s.at)
+  return Number.isFinite(at) && Date.now() - at < cooldownMs
+}
+
+// ── Live sessions, as the agent sees them now (read by a running sweep before each page) ──
+
+const LIVE_FILE = 'live-sessions.json'
+let lastLive = ''
+
+/** Record the live session ids for running sweeps. Rewritten only when the list changes (or to refresh its age). Never throws. */
+export function writeLiveSessions(ids: string[], home = libraryHomeDir()): void {
+  const list = [...new Set(ids.filter(Boolean))].sort()
+  const key = list.join(',')
+  const path = join(home, LIVE_FILE)
+  try {
+    const fresh = Date.now() - statSync(path).mtimeMs < 60_000
+    if (key === lastLive && fresh) return
+  } catch {
+    /* not written yet */
+  }
+  try {
+    mkdirSync(home, { recursive: true })
+    writePrivateAtomic(path, JSON.stringify({ at: new Date().toISOString(), ids: list }) + '\n')
+    lastLive = key
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Live session ids the agent wrote within `maxAgeMs`, else null (no agent, or a stale file). */
+export function readLiveSessions(maxAgeMs = 3 * 60_000, home = libraryHomeDir()): string[] | null {
+  try {
+    const path = join(home, LIVE_FILE)
+    if (Date.now() - statSync(path).mtimeMs > maxAgeMs) return null
+    const o = JSON.parse(readFileSync(path, 'utf-8'))
+    return Array.isArray(o?.ids) ? o.ids.map(String) : null
+  } catch {
+    return null
+  }
 }

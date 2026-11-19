@@ -1,0 +1,33 @@
+# Runs every agent test script (standalone node:assert files) on PRs that touch the agent.
+name: agent-tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['agent/**', 'frontend/supabase/migrations/**', 'frontend/scripts/run-tests.mjs', '.github/workflows/agent-tests.yml']
+  pull_request:
+    paths: ['agent/**', 'frontend/supabase/migrations/**', 'frontend/scripts/run-tests.mjs', '.github/workflows/agent-tests.yml']
+
+concurrency:
+  group: agent-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - name: Install
+        working-directory: agent
+        run: npm ci --no-audit --no-fund
+      # The frontend's runner. skill-secrets runs in frontend-lint, which also covers the root .claude/skills.
+      - name: Run tests
+        working-directory: agent
+        run: node ../frontend/scripts/run-tests.mjs . skill-secrets

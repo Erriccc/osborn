@@ -1,5 +1,8 @@
 import { sessionJsonlAdapter, sanitizeTranscript, detectSecrets, redactSecrets } from '../src/content/transcript-sanitizer.js'
+import { existsSync } from 'node:fs'
 const f = '/workspace/.claude/projects/-workspace/c97588f4-5760-4b5b-b789-ab5f65aaed29.jsonl'
+// Reads a transcript that exists on one dev machine only; skip anywhere else (CI).
+if (!existsSync(f)) { console.log('SKIP fixture absent'); process.exit(0) }
 const u = sanitizeTranscript(sessionJsonlAdapter(f, { includeAssistant: false }))
 const w = sanitizeTranscript(sessionJsonlAdapter(f))
 const a = w.filter(r => r.speaker === 'assistant')

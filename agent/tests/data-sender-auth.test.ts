@@ -397,7 +397,7 @@ t('index.ts: inPhoneRoom needs a SIP participant; phoneRoomName clears on caller
   const leaveBody = src.slice(leave, leave + 6000)
   assert.match(leaveBody, /const phoneCallerLeft = participant\.kind === ParticipantKind\.SIP\s+if \(phoneCallerLeft\) phoneRoomName = null/)
   // A caller's brain is parked only for "keep working" once phone tools are on (#367); off today.
-  assert.match(leaveBody, /KEEP_WARM && currentLLM && \(currentLLM as any\)\.sessionId && \(!phoneCallerLeft \|\| \(keepWorkingRequested && PHONE_TOOLS_ENABLED\)\)/, 'a caller\'s brain is never parked while phone tools are off')
+  assert.match(leaveBody, /KEEP_WARM && currentLLM && warmParkKey\(currentLLM as any\) && \(!phoneCallerLeft \|\| \(keepWorkingRequested && PHONE_TOOLS_ENABLED\)\)/, 'a caller\'s brain is never parked while phone tools are off')
   assert.equal(PHONE_TOOLS_ENABLED, false)
   const destroy = src.indexOf('const destroyRoomSession = async')
   assert.match(src.slice(destroy, destroy + 1500), /activeRoomName = null\s+phoneRoomName = null/)

@@ -64,18 +64,24 @@ const MAX_RECORD_VIEW_CHARS = 20_000
  * the cwd slug, then a scan of every project's osb dir (same layout as
  * session-store.ts getStorePath / recall-cli listStores).
  */
+/** <projectDir>/osb/<sessionId>/session.db when it exists and is not empty. */
+function storeIn(projectDir: string, sessionId: string): string | null {
+  const p = join(projectDir, 'osb', sessionId, 'session.db')
+  return existsSync(p) && statSync(p).size > 0 ? p : null
+}
+
 export function resolveSessionDb(sessionId: string, projectDir?: string | null, cwd?: string): string | null {
   if (!sessionId || !SID_RE.test(sessionId)) return null
-  const candidates: string[] = []
-  if (projectDir) candidates.push(join(projectDir, 'osb', sessionId, 'session.db'))
-  if (cwd) candidates.push(join(slugDir(cwd), 'osb', sessionId, 'session.db'))
-  for (const p of candidates) if (existsSync(p) && statSync(p).size > 0) return p
+  for (const pd of [projectDir, cwd ? slugDir(cwd) : null]) {
+    const p = pd ? storeIn(pd, sessionId) : null
+    if (p) return p
+  }
   const root = join(claudeDir(), 'projects')
   try {
     for (const ent of readdirSync(root, { withFileTypes: true })) {
       if (!ent.isDirectory()) continue
-      const p = join(root, ent.name, 'osb', sessionId, 'session.db')
-      if (existsSync(p) && statSync(p).size > 0) return p
+      const p = storeIn(join(root, ent.name), sessionId)
+      if (p) return p
     }
   } catch {
     /* no projects dir */
@@ -83,8 +89,58 @@ export function resolveSessionDb(sessionId: string, projectDir?: string | null, 
   return null
 }
 
+export interface SessionStore {
+  sessionId: string
+  db: string
+  projectDir: string
+}
+
+/** Every session store on this machine (the Library catch-up sweep). */
+export function listSessionDbs(): SessionStore[] {
+  const out: SessionStore[] = []
+  const root = join(claudeDir(), 'projects')
+  try {
+    for (const p of readdirSync(root, { withFileTypes: true })) {
+      if (!p.isDirectory()) continue
+      const projectDir = join(root, p.name)
+      let ents: import('node:fs').Dirent[] = []
+      try {
+        ents = readdirSync(join(projectDir, 'osb'), { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const s of ents) {
+        const db = s.isDirectory() ? storeIn(projectDir, s.name) : null
+        if (db) out.push({ sessionId: s.name, db, projectDir })
+      }
+    }
+  } catch {
+    /* no projects dir */
+  }
+  return out
+}
+
 export function includeSubagents(): boolean {
   return ['1', 'true', 'yes', 'on'].includes((process.env.OSBORN_LENS_INCLUDE_SUBAGENTS ?? '').trim().toLowerCase())
+}
+
+/** The conversation-row filter both readers share: user/assistant rows, main thread unless subagents are included. */
+const conversationRows = (): string => `msg_type IN ('user', 'assistant')${includeSubagents() ? '' : ` AND source = 'main'`}`
+
+/**
+ * Ids and timestamps of the same conversation rows loadConversationRows reads (same source and
+ * msg_type filter), with no blob read, decompression or sanitising: what segmentation needs.
+ * Rows the sanitizer would drop are kept, so a stamp may have no text behind it.
+ */
+export function loadRowStamps(dbPath: string): { id: number; timestamp: string }[] {
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true })
+  try {
+    db.pragma('busy_timeout = 5000')
+    const rows = db.prepare(`SELECT id, ts FROM content WHERE ${conversationRows()} ORDER BY id`).all() as { id: number; ts: string | null }[]
+    return rows.map(r => ({ id: r.id, timestamp: r.ts ?? '' }))
+  } finally {
+    db.close()
+  }
 }
 
 /**
@@ -95,11 +151,10 @@ export function loadConversationRows(dbPath: string, afterRowId = 0, clientRedac
   const db = new Database(dbPath, { readonly: true, fileMustExist: true })
   try {
     db.pragma('busy_timeout = 5000')
-    const where = includeSubagents() ? '' : `AND source = 'main'`
     const upper = Number.isFinite(throughRowId) ? `AND id <= ${Math.floor(throughRowId!)}` : ''
     const stmt = db.prepare(
       `SELECT id, ts, msg_type, blob FROM content
-       WHERE id > ? ${upper} AND msg_type IN ('user', 'assistant') ${where}
+       WHERE id > ? ${upper} AND ${conversationRows()}
        ORDER BY id`,
     )
     const out: DbLoad = { dbPath, records: [], maxRowId: afterRowId, stats: { rowsRead: 0, dropped: 0, unwrapped: 0, chars: 0, stripped: {} } }

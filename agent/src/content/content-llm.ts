@@ -9,18 +9,22 @@
  *   OSBORN_CONTENT_DAILY_USD   default 2.00 (UTC day, per MACHINE: $OSBORN_HOME or ~/.osborn/content-spend-ledger.json,
  *                              locked read-modify-write so concurrent workers across projects share one cap)
  *   OSBORN_CONTENT_MAX_PIECES  default 4 (1 highlight + up to 3 how-tos)
+ *   OSBORN_LIBRARY_DAILY_USD   default 1.00 (UTC day, per MACHINE): the Library catch-up sweep's own cap
+ *                              (period pages + daily digests), kept in the same ledger file under its
+ *                              own key ("<day>:library"), so the sweep never uses the content step's cap
  * Every call reserves its WORST case (prompt + max output) against both caps up
  * front and writes it to the ledger before the fetch; it is reconciled to the
  * actual cost after. A failed call is charged the worst case, and a hard exit
- * mid-call leaves the worst case in the ledger, so the caps stay hard.
+ * mid-call leaves the worst case in the ledger, so the caps stay hard; such an
+ * unsettled reservation expires with its UTC day (the ledger is keyed by day).
  * All outbound prompt text goes through the caller's scrub() first.
  */
 
-import { closeSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { isContentLensEnabled } from './lens-launch.js'
+import { withFileLock } from './lens-paths.js'
 
 const OPENROUTER = 'https://openrouter.ai/api/v1'
 const OFF = ['0', 'off', 'false', 'no']
@@ -103,141 +107,38 @@ export function readLedger(): Ledger {
   return readLedgerAt(ledgerPath())
 }
 /** Spend recorded (incl. open reservations) on this machine today, across every project. */
-export function daySpent(now = Date.now()): number {
-  return Number(readLedger().days[today(now)]) || 0
+export function daySpent(now = Date.now(), scope?: string): number {
+  return Number(readLedger().days[ledgerKey(today(now), scope)]) || 0
 }
 
-const LOCK_STALE_MS = 30_000
+/** The ledger key of a day: the content step's is the bare day; another spender's is "<day>:<scope>" (pruned with its day). */
+const ledgerKey = (day: string, scope?: string): string => (scope ? `${day}:${scope}` : day)
+
+/** The Library sweep's own daily cap (OSBORN_LIBRARY_DAILY_USD, default $1), on ledger scope LIBRARY_LEDGER_SCOPE. */
+export const LIBRARY_LEDGER_SCOPE = 'library'
+export const libraryDailyUsd = (): number => envNum('OSBORN_LIBRARY_DAILY_USD', 1.0)
+
 const LOCK_TRIES = 40
-const LOCK_WAIT_MS = 50
-const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-
-const lockToken = () => `${process.pid}.${randomBytes(8).toString('hex')}`
 
 /**
- * Remove `path` if it is stale: rename it to a unique name (only ONE caller's
- * rename can succeed), check the renamed file is the same stale file we judged
- * (inode, mtime, content), and put it back with link() if a fresh one was
- * swapped in (link fails rather than clobbers). True only to the caller that
- * removed a stale file; any error = keep waiting.
- */
-function removeIfStale(path: string): boolean {
-  let seen: { ino: number; mtimeMs: number; body: string }
-  try {
-    const fd = openSync(path, 'r')
-    try {
-      const st = fstatSync(fd)
-      if (Date.now() - st.mtimeMs <= LOCK_STALE_MS) return false
-      seen = { ino: st.ino, mtimeMs: st.mtimeMs, body: readFileSync(fd, 'utf-8') }
-    } finally {
-      closeSync(fd)
-    }
-  } catch {
-    return false // vanished between calls
-  }
-  const claimed = `${path}.stale.${process.pid}.${randomBytes(6).toString('hex')}`
-  try {
-    renameSync(path, claimed)
-  } catch {
-    return false // another caller claimed it first
-  }
-  let same = false
-  try {
-    const st = statSync(claimed)
-    same = st.ino === seen.ino && st.mtimeMs === seen.mtimeMs && readFileSync(claimed, 'utf-8') === seen.body
-  } catch {
-    /* treat as not ours */
-  }
-  if (!same) {
-    try {
-      linkSync(claimed, path) // a live file was swapped in: restore it
-    } catch {
-      /* a newer one already exists */
-    }
-  }
-  try {
-    unlinkSync(claimed)
-  } catch {
-    /* already gone */
-  }
-  return same
-}
-
-/**
- * Claim a stale ledger lock. The judge-then-rename step runs under a short
- * `<lock>.reap` guard so two waiters can never both act on one stale lock (or
- * rename away the fresh lock the other just created). A guard left by a crash
- * goes stale too and is removed the same way.
- */
-function claimStaleLock(lock: string): boolean {
-  const guard = `${lock}.reap`
-  let g: number
-  try {
-    g = openSync(guard, 'wx')
-  } catch {
-    removeIfStale(guard)
-    return false
-  }
-  const token = lockToken()
-  try {
-    writeSync(g, token)
-    return removeIfStale(lock)
-  } catch {
-    return false
-  } finally {
-    closeSync(g)
-    releaseLock(guard, token)
-  }
-}
-
-/** Release only a lock this holder owns (its token is still in the file). */
-function releaseLock(lock: string, token: string): void {
-  try {
-    if (readFileSync(lock, 'utf-8') === token) unlinkSync(lock)
-  } catch {
-    /* already gone */
-  }
-}
-
-/**
- * Atomic read-modify-write of the machine ledger under a short `wx` lock file
- * holding a unique token (stale after 30s, claimed via rename so only one waiter
- * can remove it). `fn` returns the new ledger, or null to leave it unchanged.
+ * Atomic read-modify-write of the machine ledger under its lock file (withFileLock in
+ * lens-paths.ts). `fn` returns the new ledger, or null to leave it unchanged.
  * Returns false when the lock could not be taken (callers decide fail-closed vs best-effort).
  */
 function withLedger(fn: (l: Ledger) => Ledger | null, tries = LOCK_TRIES): boolean {
   const dir = ledgerDir()
   mkdirSync(dir, { recursive: true })
   const path = join(dir, LEDGER_FILE)
-  const lock = `${path}.lock`
-  for (let i = 0; i < tries; i++) {
-    let fd: number
-    try {
-      fd = openSync(lock, 'wx')
-    } catch (e: any) {
-      if (e?.code !== 'EEXIST') throw e
-      if (claimStaleLock(lock)) continue // we removed the stale lock: retry the wx create now
-      sleepSync(LOCK_WAIT_MS)
-      continue
+  return withFileLock(`${path}.lock`, () => {
+    const next = fn(readLedgerAt(path))
+    if (next) {
+      const cutoff = today(Date.now() - 14 * 86_400_000)
+      for (const k of Object.keys(next.days)) if (k < cutoff) delete next.days[k]
+      const tmp = `${path}.${process.pid}.tmp`
+      writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf-8')
+      renameSync(tmp, path)
     }
-    const token = lockToken()
-    try {
-      writeSync(fd, token)
-      const next = fn(readLedgerAt(path))
-      if (next) {
-        const cutoff = today(Date.now() - 14 * 86_400_000)
-        for (const k of Object.keys(next.days)) if (k < cutoff) delete next.days[k]
-        const tmp = `${path}.${process.pid}.tmp`
-        writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf-8')
-        renameSync(tmp, path)
-      }
-      return true
-    } finally {
-      closeSync(fd)
-      releaseLock(lock, token)
-    }
-  }
-  return false
+  }, tries)
 }
 
 export type CapKind = 'period' | 'day' | 'time'
@@ -272,6 +173,8 @@ export class SpendGuard {
     public periodUsd = 0,
     /** Epoch ms after which reserve() refuses new calls (CapError 'time'). */
     readonly deadline: number | null = null,
+    /** Ledger key scope: none = the content step's daily cap; e.g. LIBRARY_LEDGER_SCOPE for the sweep. */
+    readonly scope?: string,
   ) {}
   /**
    * Reserve a worst-case spend of `usd`: throws CapError if it would cross a cap
@@ -282,7 +185,7 @@ export class SpendGuard {
   reserve(usd: number): Reservation {
     if (this.deadline !== null && Date.now() >= this.deadline) throw this.hit('time', usd)
     if (this.periodUsd + usd > this.caps.periodUsd) throw this.hit('period', usd)
-    const day = today()
+    const day = ledgerKey(today(), this.scope)
     let over = false
     let locked: boolean
     try {
