@@ -13,6 +13,8 @@
  * Keep in sync with frontend/src/lib/platform-env.ts (PLATFORM_ENV_SPEC).
  */
 
+import type { STTProvider, TTSProvider } from './config.js'
+
 export interface AgentEnvKey {
   key: string
   required: boolean
@@ -67,7 +69,7 @@ export const REQUIRED_AGENT_ENV_KEYS: string[] = AGENT_ENV_KEYS
   .map((k) => k.key)
 
 /** The key each voice provider (voice-io.ts) reads, for providers this manifest lists. */
-export const VOICE_PROVIDER_KEYS: Record<string, string> = {
+const VOICE_PROVIDER_KEYS: Partial<Record<STTProvider | TTSProvider, string>> = {
   'soniox': 'SONIOX_API_KEY',
   'deepgram': 'DEEPGRAM_API_KEY',
   'deepgram-flux': 'DEEPGRAM_API_KEY',
@@ -84,7 +86,7 @@ export const VOICE_PROVIDER_KEYS: Record<string, string> = {
  */
 export function missingRequiredEnv(
   env: NodeJS.ProcessEnv = process.env,
-  voice?: { stt: string; tts: string },
+  voice?: { stt: STTProvider; tts: TTSProvider },
 ): string[] {
   const keys = new Set(REQUIRED_AGENT_ENV_KEYS)
   if (voice) {
