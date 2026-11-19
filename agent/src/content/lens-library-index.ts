@@ -69,7 +69,7 @@ export function renderIndex(sessionLabel: string, pages: PageSummary[]): string 
   const L: string[] = [`# Content library — session ${sessionLabel}`, '']
   L.push(
     'Period pages from the period map (review mode). New pages are written automatically by the content-lens worker on each ' +
-      'compaction, one per period, keyed on the period\'s opening boundary row. content-profile.md and the HWM are not touched.',
+      'compaction and when a session ends, one per period spanning at least an hour, keyed on the period\'s opening boundary row. content-profile.md and the HWM are not touched.',
     '',
   )
   L.push('## Periods (chronological)', '', '| # | Date range (UTC) | Rows | Period goal | Top high-leverage item | File |', '|---|---|---|---|---|---|')
