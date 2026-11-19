@@ -14,7 +14,7 @@ import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
 import { useSkillStore, httpSkills } from '@/lib/skill-store'
 import { agentRequest, agentError, awaitingCloudUrl, isLocalAgentUrl, listError, UNREACHABLE } from '@/lib/agent-read'
-import { applySandboxPoll, pollSandbox } from '@/lib/sandbox-poll'
+import { applySandboxPoll, machineIssueText, pollSandbox } from '@/lib/sandbox-poll'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import { useThemePref } from '@/lib/use-theme'
@@ -124,6 +124,8 @@ export default function SettingsPage() {
   const [sandboxAvailable, setSandboxAvailable] = useState(false)
   // Whether the one-time /api/sandbox discovery has answered (cloud on or off).
   const [sandboxKnown, setSandboxKnown] = useState(false)
+  // Status of a failed discovery (409 claimed, 503 unverifiable); 0 = the request itself failed.
+  const [sandboxIssue, setSandboxIssue] = useState<number | null>(null)
   const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState(false)
@@ -174,7 +176,8 @@ export default function SettingsPage() {
   // loading); with cloud on, say why there is nothing to list (no machine, or not
   // started) until the URL lands; with cloud off (self-hosted), read localhost as before.
   const awaitingMachine = awaitingCloudUrl(agentUrl, connectionMode) && (!sandboxKnown || sandboxAvailable)
-  const machineMessage = !awaitingMachine || !sandboxKnown ? null : sandboxId ? START_MACHINE : SET_UP_MACHINE
+  const machineMessage = !awaitingMachine || !sandboxKnown ? null
+    : sandboxId ? START_MACHINE : sandboxIssue !== null ? machineIssueText(sandboxIssue) : SET_UP_MACHINE
 
   // The built-in list; the latest request wins (the URL can change while one is in flight).
   const agentsLoad = useRef(0)
@@ -277,9 +280,10 @@ export default function SettingsPage() {
   useEffect(() => {
     if (loading || !user) return
     // Unconfigured cloud answers 200 {available:false}; an error reply means cloud is on.
-    fetch('/api/sandbox').then(async r => ({ ok: r.ok, d: await r.json().catch(() => ({})) }))
-      .then(({ ok, d }) => {
+    fetch('/api/sandbox').then(async r => ({ ok: r.ok, status: r.status, d: await r.json().catch(() => ({})) }))
+      .then(({ ok, status, d }) => {
         setSandboxAvailable(ok ? !!d.available : true)
+        if (!ok) setSandboxIssue(status)
         setSandboxKnown(true)
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
@@ -291,7 +295,8 @@ export default function SettingsPage() {
           }
         }
       })
-      .catch(() => { setSandboxAvailable(false); setSandboxKnown(true) })
+      // A failed request says nothing about cloud: keep waiting for the machine, not localhost.
+      .catch(() => { setSandboxAvailable(true); setSandboxIssue(0); setSandboxKnown(true) })
     fetch('/api/instance')
       .then(r => (r.ok ? r.json() : Promise.reject()))
       .then(d => {

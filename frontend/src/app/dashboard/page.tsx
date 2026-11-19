@@ -24,7 +24,7 @@ import { shareSession, listSharedWithMe, importSharedSession, type SharedSession
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle, formatTime } from '@/lib/sessions'
 import { prepareSessions } from '@/lib/session-list'
 import { agentReadUrl, awaitingCloudUrl, isLocalAgentUrl } from '@/lib/agent-read'
-import { applySandboxPoll, pollSandbox } from '@/lib/sandbox-poll'
+import { applySandboxPoll, machineIssueText, pollSandbox } from '@/lib/sandbox-poll'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import type { User } from '@supabase/supabase-js'
@@ -177,13 +177,6 @@ function groupByProject(sessions: SessionInfo[], baseCwd: string | null): Projec
 
 type Provider = 'gemini' | 'openai'
 type VoiceArch = 'pipeline'
-
-/** User-facing text for /api/sandbox ownership failures (409 conflict / 503 unverifiable). */
-function machineIssueText(status: number): string {
-  return status === 409
-    ? 'This machine is claimed by another account. Please contact support.'
-    : "We couldn't verify your machine right now. Please retry in a moment."
-}
 
 export default function Dashboard() {
   useDocumentTitle('Dashboard')

@@ -42,3 +42,10 @@ export function applySandboxPoll(d: SandboxPoll, set: SandboxPollSetters): void 
     set.setAgentOnline(false)
   }
 }
+
+/** User-facing text for /api/sandbox ownership failures (409 conflict / 503 unverifiable). */
+export function machineIssueText(status: number): string {
+  return status === 409
+    ? 'This machine is claimed by another account. Please contact support.'
+    : "We couldn't verify your machine right now. Please retry in a moment."
+}
