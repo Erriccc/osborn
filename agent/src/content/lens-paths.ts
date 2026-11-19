@@ -6,6 +6,8 @@
 import {
   closeSync,
   existsSync,
+  fstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -14,12 +16,14 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
   writeSync,
 } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 
 export const PROFILE_FILE = 'content-profile.md'
 export const LOCK_FILE = '.content-lens.lock'
@@ -186,6 +190,128 @@ export function writeHwm(projectDir: string, sessionId: string, lastRowId: numbe
   writePrivateAtomic(join(projectDir, HWM_FILE), JSON.stringify(all, null, 2))
 }
 
+// ── Short read-modify-write lock on a shared file (the spend ledger, the sweep status) ──
+
+const FILE_LOCK_STALE_MS = 30_000
+const FILE_LOCK_WAIT_MS = 50
+const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+const lockToken = () => `${process.pid}.${randomBytes(8).toString('hex')}`
+
+/**
+ * Remove `path` if it is stale: rename it to a unique name (only ONE caller's
+ * rename can succeed), check the renamed file is the same stale file we judged
+ * (inode, mtime, content), and put it back with link() if a fresh one was
+ * swapped in (link fails rather than clobbers). True only to the caller that
+ * removed a stale file; any error = keep waiting.
+ */
+function removeIfStale(path: string): boolean {
+  let seen: { ino: number; mtimeMs: number; body: string }
+  try {
+    const fd = openSync(path, 'r')
+    try {
+      const st = fstatSync(fd)
+      if (Date.now() - st.mtimeMs <= FILE_LOCK_STALE_MS) return false
+      seen = { ino: st.ino, mtimeMs: st.mtimeMs, body: readFileSync(fd, 'utf-8') }
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return false // vanished between calls
+  }
+  const claimed = `${path}.stale.${process.pid}.${randomBytes(6).toString('hex')}`
+  try {
+    renameSync(path, claimed)
+  } catch {
+    return false // another caller claimed it first
+  }
+  let same = false
+  try {
+    const st = statSync(claimed)
+    same = st.ino === seen.ino && st.mtimeMs === seen.mtimeMs && readFileSync(claimed, 'utf-8') === seen.body
+  } catch {
+    /* treat as not ours */
+  }
+  if (!same) {
+    try {
+      linkSync(claimed, path) // a live file was swapped in: restore it
+    } catch {
+      /* a newer one already exists */
+    }
+  }
+  try {
+    unlinkSync(claimed)
+  } catch {
+    /* already gone */
+  }
+  return same
+}
+
+/**
+ * Claim a stale ledger lock. The judge-then-rename step runs under a short
+ * `<lock>.reap` guard so two waiters can never both act on one stale lock (or
+ * rename away the fresh lock the other just created). A guard left by a crash
+ * goes stale too and is removed the same way.
+ */
+function claimStaleLock(lock: string): boolean {
+  const guard = `${lock}.reap`
+  let g: number
+  try {
+    g = openSync(guard, 'wx')
+  } catch {
+    removeIfStale(guard)
+    return false
+  }
+  const token = lockToken()
+  try {
+    writeSync(g, token)
+    return removeIfStale(lock)
+  } catch {
+    return false
+  } finally {
+    closeSync(g)
+    releaseOwnedLock(guard, token)
+  }
+}
+
+/** Release only a lock this holder owns (its token is still in the file). */
+function releaseOwnedLock(lock: string, token: string): void {
+  try {
+    if (readFileSync(lock, 'utf-8') === token) unlinkSync(lock)
+  } catch {
+    /* already gone */
+  }
+}
+
+/**
+ * Run `fn` under a short `wx` lock file holding a unique token (stale after 30s, claimed via
+ * rename so only one waiter can remove it). Returns false, without running `fn`, when the lock
+ * could not be taken in `tries` attempts; an fs error other than EEXIST throws.
+ */
+export function withFileLock(lock: string, fn: () => void, tries: number): boolean {
+  for (let i = 0; i < tries; i++) {
+    let fd: number
+    try {
+      fd = openSync(lock, 'wx')
+    } catch (e: any) {
+      if (e?.code !== 'EEXIST') throw e
+      if (claimStaleLock(lock)) continue // we removed the stale lock: retry the wx create now
+      sleepSync(FILE_LOCK_WAIT_MS)
+      continue
+    }
+    const token = lockToken()
+    try {
+      writeSync(fd, token)
+      fn()
+      return true
+    } finally {
+      closeSync(fd)
+      releaseOwnedLock(lock, token)
+    }
+  }
+  return false
+}
+
 // ── Machine-wide Library sweep: lock, log and status (one dir per machine) ──
 
 export const SWEEP_STATUS_FILE = 'library-sweep-status.json'
@@ -246,28 +372,12 @@ export function readSweepStatus(home = libraryHomeDir()): SweepStatus | null {
 /**
  * Merge `patch` into the status file (atomic). Only the patch's own fields change: the sweep and a
  * session-end worker write different fields of the same file, so the read-merge-write runs under a
- * short exclusive lock (a few ms; a lock older than 5s is taken over) and never loses the other's
+ * short exclusive lock (withFileLock) and never loses the other's
  * fields. Never throws.
  */
 export function writeSweepStatus(patch: Partial<SweepStatus>, home = libraryHomeDir()): void {
   const path = join(home, SWEEP_STATUS_FILE)
-  const lock = `${path}.lock`
-  let fd: number | null = null
-  try {
-    mkdirSync(home, { recursive: true })
-    for (let i = 0; i < 40 && fd === null; i++) {
-      try {
-        fd = openSync(lock, 'wx', 0o600)
-      } catch (e: any) {
-        if (e?.code !== 'EEXIST') break
-        try {
-          if (Date.now() - statSync(lock).mtimeMs > 5_000) rmSync(lock, { force: true })
-        } catch {
-          /* gone already */
-        }
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
-      }
-    }
+  const merge = () => {
     let prev: Partial<SweepStatus> = {}
     try {
       prev = JSON.parse(readFileSync(path, 'utf-8'))
@@ -276,17 +386,12 @@ export function writeSweepStatus(patch: Partial<SweepStatus>, home = libraryHome
     }
     const next = { ...prev, ...patch, errors: (patch.errors ?? prev.errors ?? []).slice(0, 20) }
     writePrivateAtomic(path, JSON.stringify(next, null, 2) + '\n')
+  }
+  try {
+    mkdirSync(home, { recursive: true })
+    if (!withFileLock(`${path}.lock`, merge, 10)) merge() // lock still held: write anyway, the status is best-effort
   } catch {
     /* status is best-effort */
-  } finally {
-    if (fd !== null) {
-      try {
-        closeSync(fd)
-        rmSync(lock, { force: true })
-      } catch {
-        /* ignore */
-      }
-    }
   }
 }
 
