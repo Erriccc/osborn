@@ -74,7 +74,7 @@ import { attachDevtools, redactDiagnostics, type DevtoolsBuffer } from '../lib/d
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
-import { eventOwners, eventVisibleTo, isPersonDriver, tabsFor } from '../lib/event-scope'
+import { eventOwners, eventVisibleTo, isPersonDriver, seesTabOf, tabsFor } from '../lib/event-scope'
 import { buildJourneyState, decideRecovery, retryDelayMs, type JourneyStateFile, type PersistedJourney } from '../lib/journey-store'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -764,7 +764,7 @@ async function main() {
   // logs and audio. Token-holding agents keep the full view: a tester's supervisor reviews
   // the tester's clips and tabs.
   const isPerson = isPersonDriver
-  const seesTab = (driver: string, p: Page) => !isPerson(driver) || ownerOf(p) === driver
+  const seesTab = (driver: string, p: Page) => seesTabOf(ownerOf(p), driver)
   const seesTask = (driver: string, t: any) => !isPerson(driver) || !t?.tab?.owner || t.tab.owner === driver
   // The driver's current tab only while it is theirs: what their /status, /stream and /audio show.
   const ownedTab = (driver: string): Page | null => { const t = driverTab(driver); return t && ownerOf(t) === driver ? t : null }

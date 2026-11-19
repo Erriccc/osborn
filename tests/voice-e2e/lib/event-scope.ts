@@ -1,12 +1,15 @@
 /** A person in the /browser panel: the engine scopes what they can read to their own tabs. */
 export const isPersonDriver = (driver: string) => driver.startsWith('person:')
 
+/** Whether `viewer` may see a tab owned by `owner`: a person only their own, every other driver all. */
+export const seesTabOf = (owner: string | null | undefined, viewer: string) => !isPersonDriver(viewer) || owner === viewer
+
 /**
  * The engine's tab list as `viewer` may see it: a person sees other drivers'
  * tabs (so they can be taken over) without their URL; everyone else sees all.
  */
 export function tabsFor<P>(pages: P[], ownerOf: (p: P) => string | null | undefined, urlOf: (p: P) => string, viewer: string) {
-  return pages.map((p, i) => ({ i, url: !isPersonDriver(viewer) || ownerOf(p) === viewer ? urlOf(p) : '', owner: ownerOf(p) ?? null }))
+  return pages.map((p, i) => ({ i, url: seesTabOf(ownerOf(p), viewer) ? urlOf(p) : '', owner: ownerOf(p) ?? null }))
 }
 
 /**
